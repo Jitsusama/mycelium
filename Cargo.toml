@@ -1,0 +1,59 @@
+# Mycelium's node and its command, one crate: the library holds the model,
+# the store and the socket; the binary is the command line over them.
+[package]
+name = "mycelium"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "A nimble core for agent networks"
+repository = "https://github.com/Jitsusama/mycelium"
+publish = false
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+# The time, for the ids and times of messages the node sends.
+jiff = "0.2"
+# Folder changes, from inotify on Linux and FSEvents on macOS.
+notify = "8"
+# Whether a session's process still lives, and the machine's name, without a C
+# binding of our own.
+rustix = { version = "1", features = ["fs", "process", "system"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = [
+  "io-std",
+  "io-util",
+  "macros",
+  "net",
+  "process",
+  "rt",
+  "signal",
+  "sync",
+  "time",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unused_qualifications = "warn"
+
+# clippy's own lints and its pedantic group, as core.nix holds its Rust. A
+# lint is silenced only with `#[expect]` and its reason, never `#[allow]`.
+# The two left out are about a published library's API, which this isn't:
+# the errors and panics its docs must name.
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
