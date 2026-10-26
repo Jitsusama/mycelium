@@ -20,7 +20,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
-use notify::{RecursiveMode, Watcher};
+use notify::event::ModifyKind;
+use notify::{EventKind, RecursiveMode, Watcher};
 use rustix::fs::FlockOperation;
 use serde::Deserialize;
 use serde_json::Value;
@@ -191,6 +192,9 @@ impl Store for Folders {
                     // A failed or overflowing watch may have missed something.
                     Err(_) => vec![Change::Rescan],
                     Ok(event) if event.need_rescan() => vec![Change::Rescan],
+                    // A file opened or read holds nothing new; taken as a
+                    // change, every read would bring another.
+                    Ok(event) if !alters(event.kind) => Vec::new(),
                     Ok(event) => event
                         .paths
                         .iter()
@@ -224,6 +228,16 @@ impl Store for Folders {
             keep: Box::new(watcher),
         })
     }
+}
+
+/// Whether a watch's event may have changed what a record holds: made,
+/// written, renamed or removed, rather than opened, closed or given new
+/// permissions.
+const fn alters(kind: EventKind) -> bool {
+    !matches!(
+        kind,
+        EventKind::Access(_) | EventKind::Modify(ModifyKind::Metadata(_))
+    )
 }
 
 /// What a presence says of where its session runs and what holds it.
@@ -591,5 +605,37 @@ mod tests {
         })
         .await;
         assert!(told.is_ok(), "the message was told within {PATIENCE:?}");
+    }
+
+    #[tokio::test]
+    async fn reading_a_message_is_no_change() {
+        let (_dir, store) = store();
+        let old = "1792655652402-5GV2AH-4236-9d2030dd";
+        let new = "1793046604647-0FX11G-875563-952d5879";
+        store
+            .put_message(old, &json!({"id": old}))
+            .expect("the message is kept");
+        let mut changes = store.changes().expect("the store tells its changes");
+
+        let file = store.messages().join(format!("{old}.json"));
+        fs::read(&file).expect("a session reads it");
+        store
+            .put_message(new, &json!({"id": new}))
+            .expect("the message is kept");
+
+        // The watch tells changes in order, so the first message it tells
+        // after the read must be the one written after it.
+        let first = tokio::time::timeout(PATIENCE, async {
+            loop {
+                match changes.changes.recv().await {
+                    Some(Change::Message(told)) => return told,
+                    Some(_) => {}
+                    None => panic!("the store stopped telling"),
+                }
+            }
+        })
+        .await
+        .expect("a message was told");
+        assert_eq!(first, new, "only the message written was told");
     }
 }
