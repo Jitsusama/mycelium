@@ -79,9 +79,12 @@ same code, each line a JSON value:
 1. `{"Hello": {"machine", "realm", "version"}}`, first, from each end.
    Each end's membership admits the other or refuses it, and nothing else
    crosses until it has.
-2. `{"Have": {"messages": [ids]}}`: every message the end holds from the
-   past week, the mesh's own reach, so a link never hands back what the
-   other end has let go.
+2. `{"Have": {"messages": [ids]}}`: every message the end holds within
+   the link's reach. That reaches back to when the two machines were last
+   linked, and never past the mesh's week, so a link never hands back what
+   the other end has let go. A first link reaches back to nothing, since a
+   session takes every message that arrives as new, and a week of talk
+   from before the machines were linked was never its to hear.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first
    for each the Have didn't list, then each new one as it lands.
 4. `{"Presence": {"session", "body"}}`: a living session of the sending

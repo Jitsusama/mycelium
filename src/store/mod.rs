@@ -83,6 +83,13 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// another link holds it.
     fn claim(&self, machine: &str) -> io::Result<Option<Claim>>;
 
+    /// Until when this store was last linked with `machine`, in
+    /// milliseconds since the epoch, if it ever was.
+    fn linked_until(&self, machine: &str) -> Option<i64>;
+
+    /// Records that this store is linked with `machine` as of `at`.
+    fn mark_linked(&self, machine: &str, at: i64) -> io::Result<()>;
+
     /// Keeps the presence of a session that runs on `machine`, another
     /// machine, as that machine wrote it. Refused when the id names this
     /// machine's own session or another machine's.

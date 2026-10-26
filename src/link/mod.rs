@@ -35,8 +35,8 @@ use crate::store::{self, Change, Claim, LIVENESS_EVERY, Store};
 use dial::Connection;
 use membership::{Hello, Membership};
 
-/// How far back a link reaches for messages: the mesh's own week, so a link
-/// never hands back a message the other end has already let go.
+/// How far back a link reaches for messages at most: the mesh's own week,
+/// so a link never hands back a message the other end has already let go.
 const REACH: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// How long the other end has to say hello before the link gives up.
@@ -104,16 +104,19 @@ pub async fn run(
     // What an earlier link to that machine left behind, if it ended without
     // letting go, is stale: the other end sends its living sessions afresh.
     store::let_go(&store, &other.machine);
+    let reach = reach_start(&store, &other.machine);
+    store.mark_linked(&other.machine, now())?;
     let mut end = End {
         store,
         other: other.machine,
+        reach,
         has: HashSet::new(),
         sent: BTreeMap::new(),
         carried: HashSet::new(),
         _claim: claim,
     };
 
-    let messages = end.store.message_ids(reach_start());
+    let messages = end.store.message_ids(end.reach);
     send(&mut writing, &Frame::Have { messages }).await?;
     end.send_presence(&mut writing).await?;
 
@@ -127,10 +130,7 @@ pub async fn run(
                 None => break Ok(()),
             },
             _ = liveness.tick() => end.send_presence(&mut writing).await,
-            _ = keeping.tick() => {
-                end.keep_carried();
-                Ok(())
-            }
+            _ = keeping.tick() => end.keep_carried(),
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => end.send_messages(vec![id], &mut writing).await,
                 Some(Change::Presence) => end.send_presence(&mut writing).await,
@@ -142,6 +142,8 @@ pub async fn run(
             break Err(error);
         }
     };
+    // Had the link died outright, the last minute's mark would stand.
+    let _ = end.store.mark_linked(&end.other, now());
     store::let_go(&end.store, &end.other);
     result
 }
@@ -205,6 +207,7 @@ async fn hello(frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>) -> io::R
 struct End<S> {
     store: S,
     other: String,
+    reach: i64,
     has: HashSet<String>,
     sent: BTreeMap<String, Value>,
     carried: HashSet<String>,
@@ -263,7 +266,7 @@ impl<S: Store> End<S> {
 
     /// Sends every message within reach the other end lacks.
     async fn catch_up(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
-        let ids = self.store.message_ids(reach_start());
+        let ids = self.store.message_ids(self.reach);
         self.send_messages(ids, writing).await?;
         self.send_presence(writing).await
     }
@@ -325,13 +328,15 @@ impl<S: Store> End<S> {
         Ok(())
     }
 
-    /// Says again that every session this link carried here still stands.
-    fn keep_carried(&self) {
+    /// Says again that every session this link carried here still stands,
+    /// and marks the link as standing now.
+    fn keep_carried(&self) -> io::Result<()> {
         for session in &self.carried {
             if let Err(error) = self.store.keep_presence(session, &self.other) {
                 eprintln!("couldn't keep {session} from {}: {error}", self.other);
             }
         }
+        self.store.mark_linked(&self.other, now())
     }
 }
 
@@ -342,12 +347,27 @@ async fn send(writing: &mut (impl AsyncWrite + Unpin), frame: &Frame) -> io::Res
     writing.flush().await
 }
 
-/// When the link's reach starts, in milliseconds since the epoch.
-fn reach_start() -> i64 {
-    let reach = i64::try_from(REACH.as_millis()).unwrap_or(i64::MAX);
-    jiff::Timestamp::now()
-        .as_millisecond()
-        .saturating_sub(reach)
+/// How far back a link to `machine` reaches for messages, in milliseconds
+/// since the epoch: to when the two were last linked, a minute early for a
+/// mark a link killed outright left late, and never past the mesh's week.
+/// Messages from before two machines were ever linked never cross, since
+/// every session hearing them on the other machine would take a week of
+/// talk it was never part of as new.
+fn reach_start(store: &impl Store, machine: &str) -> i64 {
+    let now = now();
+    let week = now.saturating_sub(millis(REACH));
+    store
+        .linked_until(machine)
+        .map_or(now, |until| until.saturating_sub(millis(KEEP_EVERY)))
+        .max(week)
+}
+
+fn now() -> i64 {
+    jiff::Timestamp::now().as_millisecond()
+}
+
+fn millis(duration: Duration) -> i64 {
+    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
 fn refusal(reason: String) -> io::Error {
@@ -390,6 +410,18 @@ mod tests {
         let store = store.clone();
         let (reading, writing) = tokio::io::split(pipe);
         tokio::spawn(async move { run(store, &realm(machine), connection(reading, writing)).await })
+    }
+
+    /// Marks the two stores as last linked `ms_ago`, as if they had been
+    /// apart since.
+    fn apart_since(optimus: &Memory, equilibrius: &Memory, ms_ago: i64) {
+        let until = now() - ms_ago;
+        optimus
+            .mark_linked("equilibrius", until)
+            .expect("a memory store marks");
+        equilibrius
+            .mark_linked("optimus", until)
+            .expect("a memory store marks");
     }
 
     /// Two stores joined by a link over an in-memory pipe of `buffer` bytes,
@@ -445,11 +477,13 @@ mod tests {
         let equilibrius = Memory::default();
         let before = recent(1000, "WCJQSG", 0);
         let theirs = recent(900, "20KSI7", 0);
-        let stale = format!("{}-OLD-1-0", reach_start() - 1);
+        let stale = format!("{}-OLD-1-0", now() - millis(REACH) - 1000);
         said(&optimus, &before, "@20KSI7");
         said(&optimus, &stale, "@20KSI7");
         said(&equilibrius, &theirs, "@WCJQSG");
 
+        // Apart longer than the mesh keeps anything, so the week is the reach.
+        apart_since(&optimus, &equilibrius, 2 * millis(REACH));
         let _link = linked(&optimus, &equilibrius, 1 << 16);
         until(&equilibrius, |store| store.message(&before).is_some()).await;
         until(&optimus, |store| store.message(&theirs).is_some()).await;
@@ -476,6 +510,7 @@ mod tests {
         optimus.send_here(&ended, answer);
         said(&optimus, &next, "@20KSI7");
 
+        apart_since(&optimus, &equilibrius, 60_000);
         let _link = linked(&optimus, &equilibrius, 1 << 16);
         until(&equilibrius, |store| store.message(&next).is_some()).await;
         assert_eq!(
@@ -497,9 +532,31 @@ mod tests {
         }
         // A pipe narrower than one message, so neither end can write its
         // backlog without the other reading.
+        apart_since(&optimus, &equilibrius, 60_000);
         let _link = linked(&optimus, &equilibrius, 64);
         until(&optimus, |store| store.message_ids(0).len() == 2 * many).await;
         until(&equilibrius, |store| store.message_ids(0).len() == 2 * many).await;
+    }
+
+    #[tokio::test]
+    async fn a_first_link_carries_only_what_is_said_from_then_on() {
+        let optimus = Memory::default();
+        let equilibrius = Memory::default();
+        let before = recent(1000, "WCJQSG", 0);
+        said(&optimus, &before, "#repo/walgit-rs");
+
+        optimus.start_here("launcher", json!({"session": "launcher"}), true);
+        let _link = linked(&optimus, &equilibrius, 1 << 16);
+        // The launcher arriving says the link stands.
+        until(&equilibrius, |store| !store.presences().is_empty()).await;
+        let after = recent(0, "WCJQSG", 1);
+        said(&optimus, &after, "#repo/walgit-rs");
+        until(&equilibrius, |store| store.message(&after).is_some()).await;
+        assert_eq!(
+            equilibrius.message(&before),
+            None,
+            "talk from before the machines linked stays"
+        );
     }
 
     #[tokio::test]

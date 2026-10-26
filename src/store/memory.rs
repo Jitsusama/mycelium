@@ -21,6 +21,7 @@ struct Held {
     messages: BTreeMap<String, Value>,
     presences: BTreeMap<String, Presence>,
     claimed: BTreeSet<String>,
+    linked: BTreeMap<String, i64>,
     told: Vec<mpsc::UnboundedSender<Change>>,
 }
 
@@ -121,6 +122,15 @@ impl Store for Memory {
             store: self.clone(),
             machine: machine.to_owned(),
         })))
+    }
+
+    fn linked_until(&self, machine: &str) -> Option<i64> {
+        self.held().linked.get(machine).copied()
+    }
+
+    fn mark_linked(&self, machine: &str, at: i64) -> io::Result<()> {
+        self.held().linked.insert(machine.to_owned(), at);
+        Ok(())
     }
 
     fn put_presence(&self, session: &str, machine: &str, body: &Value) -> io::Result<()> {

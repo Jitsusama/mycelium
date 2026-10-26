@@ -124,6 +124,16 @@ impl Store for Folders {
         }
     }
 
+    fn linked_until(&self, machine: &str) -> Option<i64> {
+        let file = self.claims.join(format!("{}.linked", safe(machine).ok()?));
+        fs::read_to_string(file).ok()?.trim().parse().ok()
+    }
+
+    fn mark_linked(&self, machine: &str, at: i64) -> io::Result<()> {
+        let file = format!("{}.linked", safe(machine)?);
+        write_whole(&self.claims, &file, &Value::from(at))
+    }
+
     fn put_presence(&self, session: &str, machine: &str, body: &Value) -> io::Result<()> {
         let file = format!("{}.json", safe(session)?);
         let mut body = body.clone();
@@ -545,6 +555,16 @@ mod tests {
             store.claim("equilibrius").expect("asked").is_some(),
             "a dropped claim is free again"
         );
+    }
+
+    #[test]
+    fn when_a_machine_was_last_linked_is_kept() {
+        let (_dir, store) = store();
+        assert_eq!(store.linked_until("equilibrius"), None, "never linked");
+        store
+            .mark_linked("equilibrius", 1_793_046_604_647)
+            .expect("the time is kept");
+        assert_eq!(store.linked_until("equilibrius"), Some(1_793_046_604_647));
     }
 
     #[tokio::test]
