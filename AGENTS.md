@@ -15,9 +15,11 @@ says what crosses between machines and how clients speak to a node.
 
 ## Rules
 
-- Each seam later growth plugs into is a trait with one implementation
-  and a test fake beside it; a new kind of machine, connection or store
-  is a new implementation, never a branch inside an old one.
+- Each seam later growth plugs into is a trait with one implementation;
+  a new kind of machine, connection or store is a new implementation,
+  never a branch inside an old one. A seam with outside effects (the
+  store) has a fake that keeps the same rules; the others are tested
+  through their own implementation over an in-memory pipe.
 - Words are core.nix's glossary's: machine, not host; session, peer,
   group and address as the mesh means them; node, link and realm as
   PROTOCOL.md says.

@@ -5,26 +5,23 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::path::Path;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 use crate::group::{Pattern, Routes};
 use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership};
 use crate::mesh;
 use crate::record::Message;
 use crate::state::State;
-use crate::store::{Change, Store};
+use crate::store::{self, Change, LIVENESS_EVERY, Store};
 use crate::wire::{Draft, Event, Reply, Request, Response};
-
-/// How often sessions are judged again, since a session ending changes its
-/// process, not its presence.
-const LIVENESS_EVERY: Duration = Duration::from_secs(5);
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -35,13 +32,72 @@ const REDIAL_MOST: Duration = Duration::from_secs(60);
 /// a client that can't keep up connects again and is sent the whole state.
 const WATCH_BACKLOG: usize = 4096;
 
-/// Runs a node serving `socket` until `stop` resolves, then takes the
-/// socket down.
+/// How long a watch's client may take to read one event before the node
+/// lets it go.
+const WATCH_PATIENCE: Duration = Duration::from_secs(10);
+
+/// A node's socket, bound and taken down when dropped.
+pub struct Socket {
+    listener: UnixListener,
+    path: PathBuf,
+}
+
+impl Drop for Socket {
+    fn drop(&mut self) {
+        // The socket is the node's alone, made at bind; if it's already
+        // gone there is nothing to take down.
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Binds the socket at `path` in a folder only this account can enter,
+/// refusing a folder anyone else could, and refusing to take over a socket
+/// a live node still serves or a path that isn't a socket.
+pub fn bind(path: &Path) -> io::Result<Socket> {
+    let refused = |why: String| io::Error::new(io::ErrorKind::PermissionDenied, why);
+    if let Some(parent) = path.parent() {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+        let folder = fs::metadata(parent)?;
+        if folder.uid() != rustix::process::geteuid().as_raw() || folder.mode() & 0o077 != 0 {
+            return Err(refused(format!(
+                "{} is open to others, so the socket can't go there",
+                parent.display()
+            )));
+        }
+    }
+    if let Ok(held) = fs::symlink_metadata(path) {
+        if !held.file_type().is_socket() {
+            return Err(refused(format!(
+                "{} is not a socket, so it is left alone",
+                path.display()
+            )));
+        }
+        if std::os::unix::net::UnixStream::connect(path).is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("a node already serves {}", path.display()),
+            ));
+        }
+        fs::remove_file(path)?;
+    }
+    let listener = UnixListener::bind(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(Socket {
+        listener,
+        path: path.to_owned(),
+    })
+}
+
+/// Runs a node serving `socket` until `stop` resolves, then ends its links
+/// and lets go of the sessions they carried.
 pub async fn run<S, M, D>(
     store: S,
     membership: M,
     discovery: D,
-    socket: &Path,
+    socket: Socket,
     stop: impl Future<Output = ()>,
 ) -> io::Result<()>
 where
@@ -49,74 +105,42 @@ where
     M: Membership + Clone,
     D: Discovery,
 {
-    let listener = bind(socket)?;
-    let machine = membership.hello().machine;
-    let_go_of_elsewhere(&store);
-    let shared = Shared::new(store.clone(), machine);
+    store::let_go_of_unclaimed(&store)?;
+    let shared = Shared::new(store.clone(), membership.hello().machine);
     let mut changes = store.changes()?;
     shared.read_store();
 
+    let mut links = JoinSet::new();
     let mut found = discovery.found();
     let mut tick = tokio::time::interval(LIVENESS_EVERY);
     tokio::pin!(stop);
     let result = loop {
         tokio::select! {
             () = &mut stop => break Ok(()),
-            accepted = listener.accept() => match accepted {
+            accepted = socket.listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     tokio::spawn(serve(stream, shared.clone()));
                 }
                 Err(error) => break Err(error),
             },
             Some(dial) = found.recv() => {
-                tokio::spawn(keep_linked(dial, store.clone(), membership.clone()));
+                links.spawn(keep_linked(dial, store.clone(), membership.clone()));
             }
             _ = tick.tick() => shared.read_sessions(),
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => shared.read_message(&id),
                 Some(Change::Presence) => shared.read_sessions(),
+                Some(Change::Rescan) => shared.read_store(),
                 None => break Err(io::Error::other("the store stopped telling its changes")),
             },
         }
     };
-    // The socket is the node's alone, made at bind; if it's already gone
-    // there is nothing to take down.
-    let _ = fs::remove_file(socket);
+    // A link stopped mid-step can't let go itself, so once every one has
+    // stopped and given up its claim, the node lets go for them.
+    links.shutdown().await;
+    store::let_go_of_unclaimed(&store)?;
+    drop(socket);
     result
-}
-
-/// Lets go of every session elsewhere a node before this one left behind:
-/// no link stands yet, and each link brings its machine's sessions afresh.
-fn let_go_of_elsewhere(store: &impl Store) {
-    for presence in store.presences() {
-        if presence.elsewhere.is_some() {
-            // A presence that won't go now goes at the next start.
-            let _ = store.remove_presence(&presence.session);
-        }
-    }
-}
-
-/// Makes the socket in a folder only its owner can enter, refusing to take
-/// over one a live node still serves.
-fn bind(socket: &Path) -> io::Result<UnixListener> {
-    if let Some(parent) = socket.parent() {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
-    }
-    if socket.exists() {
-        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!("a node already serves {}", socket.display()),
-            ));
-        }
-        fs::remove_file(socket)?;
-    }
-    let listener = UnixListener::bind(socket)?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
 }
 
 /// Keeps a link up for as long as the node runs, dialling again after each
@@ -227,6 +251,7 @@ impl<S: Store> Shared<S> {
         if draft.groups.is_empty() {
             return Err("a message needs at least one group".to_owned());
         }
+        store::folders::safe(&draft.from).map_err(|error| format!("from: {error}"))?;
         let (id, body) = mesh::written(draft, std::process::id());
         self.store
             .put_message(&id, &body)
@@ -319,9 +344,18 @@ async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
                 .is_ok()
             {
                 let (id, mut events) = shared.watch(&groups, recent);
-                while let Some(event) = events.recv().await {
-                    if write(&mut writing, &event).await.is_err() {
-                        break;
+                loop {
+                    tokio::select! {
+                        event = events.recv() => {
+                            let Some(event) = event else { break };
+                            let written = tokio::time::timeout(WATCH_PATIENCE, write(&mut writing, &event)).await;
+                            if !matches!(written, Ok(Ok(()))) {
+                                break;
+                            }
+                        }
+                        // A watch's client says nothing more; anything it
+                        // does send, or its hanging up, ends the watch.
+                        _ = lines.next_line() => break,
                     }
                 }
                 shared.unwatch(id);
@@ -373,33 +407,17 @@ mod tests {
             machine: "optimus".to_owned(),
         };
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let bound = bind(&socket).expect("the socket binds");
         let node = tokio::spawn({
-            let (store, socket) = (store.clone(), socket.clone());
+            let store = store.clone();
             async move {
                 let stopped = async {
                     // A dropped sender stops the node as surely as a sent stop.
                     let _ = stopped.await;
                 };
-                run(
-                    store,
-                    membership,
-                    Listed::<Ssh>(Vec::new()),
-                    &socket,
-                    stopped,
-                )
-                .await
+                run(store, membership, Listed::<Ssh>(Vec::new()), bound, stopped).await
             }
         });
-        // The node binds its socket as soon as it runs; until then there is
-        // nothing to hear, so this test yields to it until the socket is there.
-        tokio::time::timeout(PATIENCE, async {
-            while !socket.exists() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the node binds its socket");
-
         let asked = tokio::task::spawn_blocking(move || {
             let mut watch = Client::connect(&socket).expect("the watch connects");
             let watching = watch.ask(&Request::Watch {

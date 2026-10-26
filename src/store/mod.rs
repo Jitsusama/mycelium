@@ -9,16 +9,23 @@
 //!
 //! Messages are written once by id, so a store holds the union of what
 //! every machine sent. A presence has one writer, the machine its session
-//! runs on; a store holds its own machine's and copies of others'.
+//! runs on; a store holds its own machine's and copies of others', and a
+//! copy is written and let go only by the one link that holds a claim on
+//! its machine.
 
 pub mod folders;
 #[cfg(test)]
 pub mod memory;
 
 use std::io;
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
+
+/// How often this machine's sessions are judged again, since a session
+/// ending changes its process, not its presence.
+pub const LIVENESS_EVERY: Duration = Duration::from_secs(5);
 
 /// A session's presence, as the store holds it.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +48,8 @@ pub enum Change {
     Message(String),
     /// Some presence changed.
     Presence,
+    /// Changes may have been missed, so everything should be read again.
+    Rescan,
 }
 
 /// A store's changes as they happen, until this is dropped.
@@ -50,6 +59,10 @@ pub struct Changes {
     /// Whatever keeps the changes coming, let go when this is.
     pub keep: Box<dyn Send>,
 }
+
+/// The right to carry one machine's sessions into this store, held by one
+/// link at a time and given up when dropped.
+pub type Claim = Box<dyn Send>;
 
 /// Where a node keeps the mesh's messages and presence.
 pub trait Store: Clone + Send + Sync + 'static {
@@ -66,14 +79,52 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// Every presence held, this machine's and others'.
     fn presences(&self) -> Vec<Presence>;
 
-    /// Keeps the presence of a session that runs on `machine`, another
-    /// machine, as that machine wrote it.
-    fn put_presence(&self, session: &str, machine: &str, body: Value) -> io::Result<()>;
+    /// Claims the right to carry `machine`'s sessions here, or `None` while
+    /// another link holds it.
+    fn claim(&self, machine: &str) -> io::Result<Option<Claim>>;
 
-    /// Lets go of the presence of a session that runs elsewhere; this
-    /// machine's own sessions are never touched.
-    fn remove_presence(&self, session: &str) -> io::Result<()>;
+    /// Keeps the presence of a session that runs on `machine`, another
+    /// machine, as that machine wrote it. Refused when the id names this
+    /// machine's own session or another machine's.
+    fn put_presence(&self, session: &str, machine: &str, body: &Value) -> io::Result<()>;
+
+    /// Says again that a session `machine` carries still stands, so a copy
+    /// no node keeps saying so can be judged gone.
+    fn keep_presence(&self, session: &str, machine: &str) -> io::Result<()>;
+
+    /// Lets go of the presence of a session that runs on `machine`; this
+    /// machine's own sessions, and other machines', are never touched.
+    fn remove_presence(&self, session: &str, machine: &str) -> io::Result<()>;
 
     /// Starts telling of each change.
     fn changes(&self) -> io::Result<Changes>;
+}
+
+/// Lets go of every session `machine` carried here.
+pub fn let_go(store: &impl Store, machine: &str) {
+    for presence in store.presences() {
+        if presence.elsewhere.as_deref() == Some(machine) {
+            // Letting go is tidying: a presence left behind is let go when
+            // the next link to that machine starts.
+            let _ = store.remove_presence(&presence.session, machine);
+        }
+    }
+}
+
+/// Lets go of the sessions of every machine no link carries now, as left
+/// behind by a link or node that ended without letting go.
+pub fn let_go_of_unclaimed(store: &impl Store) -> io::Result<()> {
+    let mut machines: Vec<String> = store
+        .presences()
+        .into_iter()
+        .filter_map(|p| p.elsewhere)
+        .collect();
+    machines.sort_unstable();
+    machines.dedup();
+    for machine in machines {
+        if let Some(_claim) = store.claim(&machine)? {
+            let_go(store, &machine);
+        }
+    }
+    Ok(())
 }

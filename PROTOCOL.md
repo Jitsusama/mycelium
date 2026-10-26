@@ -27,10 +27,18 @@ between machines:
 | Written once by id | messages | each machine holds the union of all |
 | One writer | a session's presence | only its own machine writes it; others hold copies |
 | Shared files | quest folders, scratch | not yet; see Coming Next |
-| This machine's own | read markers, the queue, holds on `#machine` | never |
+| This machine's own | read markers, the queue, what is said to `#machine` | never |
 
 Since nothing has two writers, no machine waits on another to agree, and
 a machine asleep only means its records arrive when it wakes.
+
+A message to the mesh's machine-wide group (`#machine`, or its older names
+`#all` and `#global`) stays on its machine, and so does an answer to one:
+a hold before optimus reboots means nothing to the Mac's sessions.
+
+A machine has one mesh, so it belongs to one realm, recorded in
+`~/.local/state/mycelium/realm` the first time a node or link runs there;
+another realm is refused, so nothing of one realm reaches another.
 
 ## The Store
 
@@ -47,8 +55,21 @@ mesh writes its own.
 
 A session's own machine judges whether it lives, from its process. The
 presence of a session elsewhere is kept with its process taken out, which
-the mesh takes as there, and with `machine` naming where it runs. It is
-let go when its machine says the session ended or when the link drops.
+the mesh takes as there, and with `machine` naming where it runs. It never
+goes over a session of this machine's or of a third machine's.
+
+One link at a time carries a machine's sessions into a store: it claims
+that machine first, by a lock in `~/.local/state/mycelium/claims/`, and a
+second link to the same machine is refused until the first ends. The link
+lets go of what it carried when the session ends or the link drops, and
+what a link killed outright left behind is let go by the next to claim
+that machine, or by the node as it starts and stops. While a link stands
+it touches each file it carried once a minute, so a copy whose time has
+stopped moving is one no link still vouches for.
+
+A presence is carried only between the two machines it links, so every
+pair of machines that should see each other's sessions links directly;
+messages, being a union, reach every machine linked by any path.
 
 ## A Link
 

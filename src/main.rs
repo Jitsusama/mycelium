@@ -102,6 +102,9 @@ struct Here {
     /// This machine's name, if not the system's.
     #[arg(long)]
     machine: Option<String>,
+    /// Mycelium's own folder, if not where it goes by default.
+    #[arg(long)]
+    state: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -151,13 +154,10 @@ fn run(command: Command) -> io::Result<()> {
                     command: remote_command.clone(),
                 })
                 .collect();
-            runtime()?.block_on(node::run(
-                store,
-                membership,
-                Listed(dials),
-                &socket,
-                stopped(),
-            ))
+            runtime()?.block_on(async {
+                let bound = node::bind(&socket)?;
+                node::run(store, membership, Listed(dials), bound, stopped()).await
+            })
         }
         Action::Link { here } => {
             let (store, membership) = open(here, realm)?;
@@ -201,7 +201,12 @@ fn run(command: Command) -> io::Result<()> {
 }
 
 fn open(here: Here, realm: String) -> io::Result<(Folders, Realm)> {
-    let store = Folders::open(here.mesh.unwrap_or_else(place::mesh))?;
+    let state = here.state.unwrap_or_else(place::state);
+    place::settle_realm(&state, &realm)?;
+    let store = Folders::open(
+        &here.mesh.unwrap_or_else(place::mesh),
+        &state.join("claims"),
+    )?;
     let membership = Realm {
         name: realm,
         machine: here.machine.unwrap_or_else(place::machine),

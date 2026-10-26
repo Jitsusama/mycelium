@@ -66,7 +66,9 @@ impl Ssh {
         for option in &self.options {
             ssh.args(["-o", option]);
         }
-        ssh.arg(&self.destination)
+        // Nothing after `--` is read as an option, whatever its name.
+        ssh.arg("--")
+            .arg(&self.destination)
             .args([self.command.as_str(), "link", "--realm", realm])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -348,7 +348,9 @@ mod tests {
         let mut heard = routes.listeners([&group("quest.4uhc5q"), &group("quest.x")]);
         heard.sort_unstable();
         assert_eq!(heard, vec![1, 2, 3, 4]);
-        assert_eq!(routes.listeners([&group("quest.4uhc5q.x")]), vec![4, 3]);
+        let mut deeper = routes.listeners([&group("quest.4uhc5q.x")]);
+        deeper.sort_unstable();
+        assert_eq!(deeper, vec![3, 4]);
     }
 
     #[test]

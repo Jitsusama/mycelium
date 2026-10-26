@@ -51,11 +51,16 @@ impl State {
     }
 
     /// Keeps `message` unless it is already held, returning it if it is new.
+    /// Messages are kept in the order they were sent, however late one
+    /// arrives, as one caught up over a link does.
     pub fn add_message(&mut self, message: Message) -> Option<Message> {
         if !self.message_ids.insert(message.id.clone()) {
             return None;
         }
-        self.messages.push_back(message.clone());
+        let at = self
+            .messages
+            .partition_point(|held| sent_first(held, &message));
+        self.messages.insert(at, message.clone());
         while self.messages.len() > KEPT_MESSAGES {
             if let Some(gone) = self.messages.pop_front() {
                 self.message_ids.remove(&gone.id);
@@ -64,8 +69,7 @@ impl State {
         Some(message)
     }
 
-    /// Keeps many messages at once, in the order they were sent, as when a
-    /// node first reads its store.
+    /// Keeps many messages at once, as when a node first reads its store.
     pub fn add_messages(&mut self, mut messages: Vec<Message>) {
         messages.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
         for message in messages {
@@ -87,6 +91,11 @@ impl State {
         found.reverse();
         found
     }
+}
+
+/// Whether `held` was sent before `message`, by time and then by id.
+fn sent_first(held: &Message, message: &Message) -> bool {
+    (&held.at, &held.id) < (&message.at, &message.id)
 }
 
 #[cfg(test)]
@@ -150,6 +159,20 @@ mod tests {
         let quests = Pattern::new("quest.*").expect("the test names a valid pattern");
         let ids: Vec<String> = state.recent(&quests, 2).into_iter().map(|m| m.id).collect();
         assert_eq!(ids, ["c", "d"]);
+    }
+
+    #[test]
+    fn a_message_arriving_late_takes_its_place_by_when_it_was_sent() {
+        let mut state = State::default();
+        state.add_message(message("b", "2026-10-26T20:00:02Z", "quest.x"));
+        state.add_message(message("c", "2026-10-26T20:00:03Z", "quest.x"));
+        state.add_message(message("a", "2026-10-26T20:00:01Z", "quest.x"));
+        let ids: Vec<String> = state
+            .recent(&Pattern::everything(), 2)
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, ["b", "c"], "the latest two, not the last to arrive");
     }
 
     #[test]

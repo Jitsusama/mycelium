@@ -12,6 +12,28 @@ use crate::record::{Intent, Message, Session, State};
 use crate::store::Presence;
 use crate::wire::Draft;
 
+/// The mesh's names for its machine-wide group. What is said there, such as
+/// a hold before a reboot, means nothing on another machine.
+const MACHINE_TARGETS: [&str; 3] = ["#machine", "#all", "#global"];
+
+/// Whether a mesh message is its machine's alone: sent to the machine-wide
+/// group, or answering a message that was, as `earlier` finds it.
+pub fn stays_here(body: &Value, earlier: impl Fn(&str) -> Option<Value>) -> bool {
+    let to_machine = |body: &Value| {
+        body.get("to").and_then(Value::as_array).is_some_and(|to| {
+            to.iter()
+                .filter_map(Value::as_str)
+                .any(|to| MACHINE_TARGETS.contains(&to))
+        })
+    };
+    to_machine(body)
+        || body
+            .get("re")
+            .and_then(Value::as_str)
+            .and_then(earlier)
+            .is_some_and(|answered| to_machine(&answered))
+}
+
 /// The group a mesh target names: `@4UHC5Q` is the peer's own group
 /// `peer.4uhc5q`, and `#quest/4uhc5q` is `quest.4uhc5q`.
 pub fn group_for(target: &str) -> Option<Group> {
@@ -158,6 +180,31 @@ mod tests {
             Some("repo.agentic-harness-pi")
         );
         assert_eq!(named("orchestrator"), None);
+    }
+
+    #[test]
+    fn what_is_said_to_the_machine_stays_on_it_with_its_answers() {
+        let hold = json!({"id": "1-16V6F4-1-0", "to": ["#all"], "intent": "hold"});
+        let earlier = |id: &str| (id == "1-16V6F4-1-0").then(|| hold.clone());
+        assert!(stays_here(&hold, earlier), "a hold to #all stays");
+        assert!(
+            stays_here(&json!({"to": ["@WCJQSG", "#machine"]}), earlier),
+            "so does one to #machine"
+        );
+        let answer = json!({"to": ["@16V6F4"], "re": "1-16V6F4-1-0"});
+        assert!(
+            stays_here(&answer, earlier),
+            "an answer to the hold stays with it"
+        );
+        let other = json!({"to": ["@16V6F4"], "re": "2-WCJQSG-1-0"});
+        assert!(
+            !stays_here(&other, earlier),
+            "an answer to anything else crosses"
+        );
+        assert!(
+            !stays_here(&json!({"to": ["#quest/4uhc5q"]}), earlier),
+            "a quest's group crosses"
+        );
     }
 
     #[test]

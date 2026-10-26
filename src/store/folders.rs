@@ -6,37 +6,55 @@
 //! stays after it ends, so whether it lives is judged from its process, as
 //! the mesh judges it. The presence of a session elsewhere is written with
 //! its process taken out, which the mesh takes as there, and with `machine`
-//! naming where it runs.
+//! naming where it runs; it is never written over a session of this
+//! machine's or of another machine's.
+//!
+//! Claims are locks on files of mycelium's own, outside the mesh, so they
+//! hold across every mycelium process on the machine and go when the
+//! process holding one does, however it ends.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use notify::{RecursiveMode, Watcher};
+use rustix::fs::FlockOperation;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::{Change, Changes, Presence, Store};
+use super::{Change, Changes, Claim, Presence, Store};
 
 /// The field naming the machine a session runs on, written only on the
 /// presence of a session elsewhere.
 const MACHINE: &str = "machine";
 
+/// Numbers each staged write of this process, so no two share a file.
+static STAGED: AtomicU64 = AtomicU64::new(0);
+
 /// The harness mesh's folders on this machine.
 #[derive(Debug, Clone)]
 pub struct Folders {
     dir: Arc<PathBuf>,
+    claims: Arc<PathBuf>,
 }
 
 impl Folders {
-    /// The mesh kept in `dir`, its two folders made if they are missing.
-    pub fn open(dir: PathBuf) -> io::Result<Self> {
-        let folders = Self { dir: Arc::new(dir) };
-        fs::create_dir_all(folders.messages())?;
-        fs::create_dir_all(folders.presence())?;
-        Ok(folders)
+    /// The mesh kept in `dir`, its two folders made if they are missing,
+    /// with claims kept as locks in `claims`.
+    pub fn open(dir: &Path, claims: &Path) -> io::Result<Self> {
+        fs::create_dir_all(dir.join("messages"))?;
+        fs::create_dir_all(dir.join("presence"))?;
+        fs::create_dir_all(claims)?;
+        // Changes name the real path, so the folders are kept by it: a path
+        // through a link, as macOS's temporary folders are, would match none.
+        Ok(Self {
+            dir: Arc::new(dir.canonicalize()?),
+            claims: Arc::new(claims.canonicalize()?),
+        })
     }
 
     fn messages(&self) -> PathBuf {
@@ -45,6 +63,14 @@ impl Folders {
 
     fn presence(&self) -> PathBuf {
         self.dir.join("presence")
+    }
+
+    /// The presence file of `session`, if `machine` carries it here.
+    fn carried(&self, session: &str, machine: &str) -> io::Result<Option<PathBuf>> {
+        let path = self.presence().join(format!("{}.json", safe(session)?));
+        let carried =
+            read::<Facts>(&path).is_some_and(|facts| facts.machine.as_deref() == Some(machine));
+        Ok(carried.then_some(path))
     }
 }
 
@@ -89,25 +115,59 @@ impl Store for Folders {
             .collect()
     }
 
-    fn put_presence(&self, session: &str, machine: &str, mut body: Value) -> io::Result<()> {
+    fn claim(&self, machine: &str) -> io::Result<Option<Claim>> {
+        let lock = fs::File::create(self.claims.join(format!("{}.lock", safe(machine)?)))?;
+        match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => Ok(Some(Box::new(lock))),
+            Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn put_presence(&self, session: &str, machine: &str, body: &Value) -> io::Result<()> {
         let file = format!("{}.json", safe(session)?);
+        let mut body = body.clone();
         let Some(fields) = body.as_object_mut() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "a presence is an object",
             ));
         };
+        if fields.get("session").and_then(Value::as_str) != Some(session) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the presence of {session:?} names another session"),
+            ));
+        }
+        if let Some(held) = read::<Facts>(&self.presence().join(&file))
+            && held.machine.as_deref() != Some(machine)
+        {
+            let whose = held.machine.unwrap_or_else(|| "this machine".to_owned());
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{session:?} is a session of {whose}'s, not {machine}'s"),
+            ));
+        }
         // Only the session's own machine can judge its process.
         fields.remove("owner");
         fields.insert(MACHINE.to_owned(), Value::String(machine.to_owned()));
         write_whole(&self.presence(), &file, &body)
     }
 
-    fn remove_presence(&self, session: &str) -> io::Result<()> {
-        let path = self.presence().join(format!("{}.json", safe(session)?));
-        match read::<Facts>(&path) {
-            Some(facts) if facts.machine.is_some() => fs::remove_file(path),
-            _ => Ok(()),
+    fn keep_presence(&self, session: &str, machine: &str) -> io::Result<()> {
+        match self.carried(session, machine)? {
+            Some(path) => fs::File::options()
+                .append(true)
+                .open(path)?
+                .set_modified(SystemTime::now()),
+            None => Ok(()),
+        }
+    }
+
+    fn remove_presence(&self, session: &str, machine: &str) -> io::Result<()> {
+        match self.carried(session, machine)? {
+            Some(path) => fs::remove_file(path),
+            None => Ok(()),
         }
     }
 
@@ -117,22 +177,29 @@ impl Store for Folders {
         let presence = self.presence();
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                let Ok(event) = event else { return };
-                for path in event.paths.iter().filter(|path| is_record(path)) {
-                    let change = if path.parent() == Some(messages.as_path()) {
-                        path.file_stem()
-                            .and_then(|id| id.to_str())
-                            .map(|id| Change::Message(id.to_owned()))
-                    } else if path.parent() == Some(presence.as_path()) {
-                        Some(Change::Presence)
-                    } else {
-                        None
-                    };
-                    if let Some(change) = change {
-                        // Nobody receives once the store's reader has gone; the
-                        // watcher goes with it.
-                        let _ = sender.send(change);
-                    }
+                let seen: Vec<Change> = match event {
+                    // A failed or overflowing watch may have missed something.
+                    Err(_) => vec![Change::Rescan],
+                    Ok(event) if event.need_rescan() => vec![Change::Rescan],
+                    Ok(event) => event
+                        .paths
+                        .iter()
+                        .filter(|path| is_record(path))
+                        .filter_map(|path| {
+                            if path.parent() == Some(messages.as_path()) {
+                                Some(Change::Message(path.file_stem()?.to_str()?.to_owned()))
+                            } else if path.parent() == Some(presence.as_path()) {
+                                Some(Change::Presence)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                };
+                for change in seen {
+                    // Nobody receives once the store's reader has gone; the
+                    // watcher goes with it.
+                    let _ = sender.send(change);
                 }
             })
             .map_err(io::Error::other)?;
@@ -194,16 +261,30 @@ fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
+/// Writes `body` to `dir/file` whole: staged under a name no other write
+/// shares, then renamed into place.
 fn write_whole(dir: &Path, file: &str, body: &Value) -> io::Result<()> {
-    let staged = dir.join(format!(".{file}.mycelium.tmp"));
-    fs::write(&staged, serde_json::to_vec(body).map_err(io::Error::other)?)?;
-    fs::rename(staged, dir.join(file))
+    let staged = dir.join(format!(
+        ".{file}.{}.{}.mycelium.tmp",
+        std::process::id(),
+        STAGED.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = serde_json::to_vec(body)
+        .map_err(io::Error::other)
+        .and_then(|bytes| fs::write(&staged, bytes))
+        .and_then(|()| fs::rename(&staged, dir.join(file)));
+    if written.is_err() {
+        // A staged file left behind is only clutter, which the mesh's own
+        // sweep clears; the write's own error is the one worth telling.
+        let _ = fs::remove_file(&staged);
+    }
+    written
 }
 
 /// `name` if it is safe as a file's name. The mesh's ids and sessions are
 /// letters, digits, `-` and `_`, so anything else, a path above all, is
 /// refused.
-fn safe(name: &str) -> io::Result<&str> {
+pub fn safe(name: &str) -> io::Result<&str> {
     let safe = !name.is_empty()
         && name
             .bytes()
@@ -213,7 +294,7 @@ fn safe(name: &str) -> io::Result<&str> {
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("{name:?} is not a mesh id"),
+            format!("{name:?} is not a mesh name: use letters, digits, - and _"),
         ))
     }
 }
@@ -266,13 +347,19 @@ fn start_ticks(pid: i32) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use serde_json::json;
 
     use super::*;
 
+    /// How long a test waits for the system to tell of a change.
+    const PATIENCE: Duration = Duration::from_secs(5);
+
     fn store() -> (tempfile::TempDir, Folders) {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let folders = Folders::open(dir.path().to_owned()).expect("the folders open");
+        let folders = Folders::open(&dir.path().join("mesh"), &dir.path().join("claims"))
+            .expect("the folders open");
         (dir, folders)
     }
 
@@ -301,6 +388,35 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_process_that_started_at_another_time_is_another_process() {
+        // A child started now must have started no earlier than this test,
+        // whatever field is read, and its pid with this test's start time
+        // names a process that has gone.
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .expect("a child starts");
+        let pid = child.id().cast_signed();
+        let started = start_ticks(pid).expect("the child has a start time");
+        let mine = me().start_ticks.expect("this process has a start time");
+        assert!(
+            started >= mine,
+            "the child started after this test: {started} < {mine}"
+        );
+        let reused = Owner {
+            pid,
+            boot_id: boot_id(),
+            start_ticks: Some(started + 1),
+        };
+        let lives = reused.lives(boot_id().as_deref());
+        // The child is only needed while its pid is judged.
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(!lives, "a pid reused by a later process has ended");
+    }
+
     #[test]
     fn a_message_is_kept_once_and_found_by_when_it_was_sent() {
         let (_dir, store) = store();
@@ -326,9 +442,10 @@ mod tests {
             store.put_message("../escape", &json!({})).is_err(),
             "a path is not an id"
         );
+        let escape = json!({"session": "../escape"});
         assert!(
             store
-                .put_presence("../escape", "equilibrius", json!({}))
+                .put_presence("../escape", "equilibrius", &escape)
                 .is_err(),
             "nor a session"
         );
@@ -343,7 +460,7 @@ mod tests {
             .expect("this machine's session is written");
         let there = json!({"session": "there", "owner": {"pid": 1}, "title": "π - walgit"});
         store
-            .put_presence("there", "equilibrius", there)
+            .put_presence("there", "equilibrius", &there)
             .expect("the session elsewhere is kept");
 
         let mut held = store.presences();
@@ -360,10 +477,18 @@ mod tests {
         );
 
         store
-            .remove_presence("here")
+            .remove_presence("here", "equilibrius")
             .expect("asking to remove this machine's session is quiet");
         store
-            .remove_presence("there")
+            .remove_presence("there", "penelope")
+            .expect("asking for another machine's is quiet");
+        assert_eq!(
+            store.presences().len(),
+            2,
+            "neither was another machine's to remove"
+        );
+        store
+            .remove_presence("there", "equilibrius")
             .expect("the session elsewhere is let go");
         let left: Vec<String> = store
             .presences()
@@ -371,5 +496,80 @@ mod tests {
             .map(|presence| presence.session)
             .collect();
         assert_eq!(left, ["here"]);
+    }
+
+    #[test]
+    fn no_machine_writes_over_a_session_not_its_own() {
+        let (_dir, store) = store();
+        let here = json!({"session": "here", "owner": {"pid": std::process::id()}});
+        write_whole(&store.presence(), "here.json", &here)
+            .expect("this machine's session is written");
+        let claimed = json!({"session": "here", "title": "not yours"});
+        assert!(
+            store.put_presence("here", "equilibrius", &claimed).is_err(),
+            "this machine's own"
+        );
+        let there = json!({"session": "there"});
+        store
+            .put_presence("there", "equilibrius", &there)
+            .expect("the Mac's own session is kept");
+        assert!(
+            store.put_presence("there", "penelope", &there).is_err(),
+            "another machine's"
+        );
+        let other = json!({"session": "other"});
+        assert!(
+            store.put_presence("there", "equilibrius", &other).is_err(),
+            "a body naming another session"
+        );
+        assert_eq!(store.presences().len(), 2, "nothing was written over");
+    }
+
+    #[test]
+    fn a_claim_is_held_by_one_at_a_time() {
+        let (_dir, store) = store();
+        let first = store
+            .claim("equilibrius")
+            .expect("a claim can be asked for");
+        assert!(first.is_some(), "the first claim is granted");
+        assert!(
+            store.claim("equilibrius").expect("asked").is_none(),
+            "a second waits"
+        );
+        assert!(
+            store.claim("penelope").expect("asked").is_some(),
+            "another machine's is free"
+        );
+        drop(first);
+        assert!(
+            store.claim("equilibrius").expect("asked").is_some(),
+            "a dropped claim is free again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_message_written_through_a_linked_path_is_told() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let real = dir.path().join("mesh");
+        fs::create_dir_all(&real).expect("the folder is made");
+        let through = dir.path().join("through");
+        std::os::unix::fs::symlink(&real, &through).expect("the link is made");
+        let store = Folders::open(&through, &dir.path().join("claims")).expect("the folders open");
+        let mut changes = store.changes().expect("the store tells its changes");
+
+        let id = "1793046604647-0FX11G-875563-952d5879";
+        fs::write(real.join("messages").join(format!("{id}.json")), b"{}")
+            .expect("a session writes");
+        let told = tokio::time::timeout(PATIENCE, async {
+            loop {
+                match changes.changes.recv().await {
+                    Some(Change::Message(told)) if told == id => return,
+                    Some(_) => {}
+                    None => panic!("the store stopped telling"),
+                }
+            }
+        })
+        .await;
+        assert!(told.is_ok(), "the message was told within {PATIENCE:?}");
     }
 }
