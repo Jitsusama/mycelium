@@ -11,6 +11,9 @@ repository = "https://github.com/Jitsusama/mycelium"
 publish = false
 
 [dependencies]
+# Shared files named by their content, fast enough to hash a quest's scratch
+# on every change.
+blake3 = "1"
 clap = { version = "4", features = ["derive", "env"] }
 # The time, for the ids and times of messages the node sends.
 jiff = "0.2"

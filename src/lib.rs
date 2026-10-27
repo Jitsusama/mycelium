@@ -13,6 +13,9 @@
 //! - [`wire`]: the local socket every client reads, pi, Quickshell or a
 //!   terminal
 //!
+//! Shared files, a quest's record and scratch on every machine sharing it,
+//! are kept by content in [`share`].
+//!
 //! Around them:
 //!
 //! - [`group`]: groups' names, patterns that hear them, and routes
@@ -30,6 +33,7 @@ pub mod mesh;
 pub mod node;
 pub mod place;
 pub mod record;
+pub mod share;
 pub mod state;
 pub mod store;
 pub mod wire;
