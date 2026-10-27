@@ -101,6 +101,12 @@ pub fn crosses(shared: &Shared) -> bool {
     {
         return false;
     }
+    // Another machine's copy, kept beside this one's for a person to
+    // settle, is this machine's alone; crossing back, it would be kept
+    // beside itself again.
+    if names.last().is_some_and(|name| name.contains(".from-")) {
+        return false;
+    }
     match shared.place {
         Place::Record => match names.as_slice() {
             [name] => BESIDE.contains(name),
@@ -209,6 +215,7 @@ mod tests {
             ".quest.lock",
             ".README.md.tmp-42-1",
             "stray.txt",
+            "attachments/map.md.from-equilibrius",
         ] {
             write(&quest.record, path, path);
         }
@@ -219,6 +226,7 @@ mod tests {
             "clone/.git/HEAD",
             "clone/src/lib.rs",
             ".node.mycelium.tmp",
+            "notes.md.from-equilibrius",
         ] {
             write(&quest.scratch, path, path);
         }
@@ -237,7 +245,7 @@ mod tests {
         assert_eq!(
             paths(&files, Place::Scratch),
             ["notes.md", "runs/one.json"],
-            "the scratch crosses without tmp/, clones or hidden files"
+            "the scratch crosses without tmp/, clones, hidden files or other machines' copies"
         );
     }
 
