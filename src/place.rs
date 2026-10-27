@@ -33,18 +33,15 @@ pub fn mesh() -> PathBuf {
 }
 
 /// Where this machine keeps shared quests, as the harness keeps them: the
-/// quest store, the quests' scratch folders and the account's home, with
-/// mycelium's own folder `state` for its ledgers.
+/// quest store and the account's home, with mycelium's own folder `state`
+/// for its ledgers.
 pub fn shares(state: &Path) -> Places {
-    let harness = Path::new("pi").join("agentic-harness.pi");
     Places {
         quests: xdg("XDG_DATA_HOME", &[".local", "share"])
-            .join(&harness)
+            .join("pi")
+            .join("agentic-harness.pi")
             .join("quest-workflow")
             .join("quests"),
-        scratches: xdg("XDG_CACHE_HOME", &[".cache"])
-            .join(harness)
-            .join("quest-workspace"),
         home: env::home_dir().unwrap_or_else(env::temp_dir),
         state: state.to_owned(),
     }
