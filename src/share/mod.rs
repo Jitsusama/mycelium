@@ -8,7 +8,10 @@
 //! own shape lets the two be merged, as a quest's journey's ([`journey`])
 //! and its harness log's ([`log`]) do.
 
+pub mod disk;
+pub mod exchange;
 pub mod journey;
+pub mod ledger;
 pub mod log;
 pub mod settle;
 pub mod tree;

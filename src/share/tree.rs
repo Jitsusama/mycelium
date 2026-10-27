@@ -55,38 +55,67 @@ pub struct Content {
 pub struct Quest {
     /// Its record's folder.
     pub record: PathBuf,
-    /// Its scratch folder.
-    pub scratch: PathBuf,
+    /// Its scratch folder, where this machine carries it.
+    pub scratch: Option<PathBuf>,
+    /// The account's home folder on this machine, which paths in the
+    /// record are written against ([`super::disk`]).
+    pub home: PathBuf,
 }
 
 impl Quest {
-    /// Where a shared file lives on this machine.
+    /// A quest kept in `record`, and `scratch` if that is carried too, by
+    /// an account at `home`.
     #[must_use]
-    pub fn path_of(&self, shared: &Shared) -> PathBuf {
-        let root = match shared.place {
-            Place::Record => &self.record,
-            Place::Scratch => &self.scratch,
-        };
-        root.join(&shared.path)
+    pub fn new(record: PathBuf, scratch: Option<PathBuf>, home: PathBuf) -> Self {
+        Self {
+            record,
+            scratch,
+            home,
+        }
     }
 
-    /// Every file of this quest that crosses, with what each holds; a
+    /// Whether this machine carries a shared file of this quest: one that
+    /// crosses, in a folder it carries.
+    #[must_use]
+    pub fn carries(&self, shared: &Shared) -> bool {
+        crosses(shared) && (shared.place == Place::Record || self.scratch.is_some())
+    }
+
+    /// Where a shared file lives on this machine.
+    pub fn path_of(&self, shared: &Shared) -> io::Result<PathBuf> {
+        let root = match shared.place {
+            Place::Record => &self.record,
+            Place::Scratch => self.scratch.as_ref().ok_or_else(|| {
+                io::Error::other(format!("this machine doesn't carry the scratch, so not {}", shared.path))
+            })?,
+        };
+        Ok(root.join(&shared.path))
+    }
+
+    /// Calls `each` with every file of this quest this machine carries; a
     /// folder that isn't here yet holds none.
-    pub fn files(&self) -> io::Result<BTreeMap<Shared, Content>> {
-        let mut files = BTreeMap::new();
-        for (place, root) in [
-            (Place::Record, &self.record),
-            (Place::Scratch, &self.scratch),
-        ] {
+    pub fn each_file(&self, each: &mut impl FnMut(Shared) -> io::Result<()>) -> io::Result<()> {
+        let scratch = self.scratch.iter().map(|root| (Place::Scratch, root));
+        for (place, root) in std::iter::once((Place::Record, &self.record)).chain(scratch) {
             walk(root, root, &mut |path| {
                 let shared = Shared { place, path };
                 if crosses(&shared) {
-                    let content = content_of(&self.path_of(&shared))?;
-                    files.insert(shared, content);
+                    each(shared)?;
                 }
                 Ok(())
             })?;
         }
+        Ok(())
+    }
+
+    /// Every file of this quest that crosses, with what each holds.
+    pub fn files(&self) -> io::Result<BTreeMap<Shared, Content>> {
+        let mut files = BTreeMap::new();
+        self.each_file(&mut |shared| {
+            let content = self.content_of(&shared)?;
+            files.insert(shared, content);
+            Ok(())
+        })?;
         Ok(files)
     }
 }
@@ -135,13 +164,13 @@ fn is_document(name: &str) -> bool {
     )
 }
 
-/// What the file at `path` holds.
-pub fn content_of(path: &Path) -> io::Result<Content> {
-    let bytes = fs::read(path)?;
-    Ok(Content {
-        hash: blake3::hash(&bytes).to_hex().to_string(),
+/// What `bytes` hold, named by their hash.
+#[must_use]
+pub fn content(bytes: &[u8]) -> Content {
+    Content {
+        hash: blake3::hash(bytes).to_hex().to_string(),
         len: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-    })
+    }
 }
 
 /// Each plain file under `folder`, by its path from `root`, leaving out
@@ -201,10 +230,12 @@ mod tests {
     #[test]
     fn only_the_record_and_the_working_material_cross() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let quest = Quest {
-            record: dir.path().join("record"),
-            scratch: dir.path().join("scratch"),
-        };
+        let scratch = dir.path().join("scratch");
+        let quest = Quest::new(
+            dir.path().join("record"),
+            Some(scratch.clone()),
+            dir.path().join("home"),
+        );
         for path in [
             "README.md",
             "JOURNEY.md",
@@ -228,7 +259,7 @@ mod tests {
             ".node.mycelium.tmp",
             "notes.md.from-equilibrius",
         ] {
-            write(&quest.scratch, path, path);
+            write(&scratch, path, path);
         }
         let files = quest.files().expect("the quest read");
         assert_eq!(
@@ -251,31 +282,28 @@ mod tests {
 
     #[test]
     fn a_file_is_named_by_what_it_holds() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        write(dir.path(), "one", "same");
-        write(dir.path(), "two", "same");
-        write(dir.path(), "three", "other");
-        let content = |name: &str| content_of(&dir.path().join(name)).expect("the file read");
+        let content = |text: &str| content(text.as_bytes());
         assert_eq!(
-            content("one"),
-            content("two"),
+            content("same"),
+            content("same"),
             "the same bytes, the same content"
         );
         assert_ne!(
-            content("one").hash,
-            content("three").hash,
+            content("same").hash,
+            content("other").hash,
             "other bytes, another hash"
         );
-        assert_eq!(content("three").len, 5, "its length is its bytes'");
+        assert_eq!(content("other").len, 5, "its length is its bytes'");
     }
 
     #[test]
     fn a_quest_not_here_yet_holds_nothing() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let quest = Quest {
-            record: dir.path().join("none"),
-            scratch: dir.path().join("neither"),
-        };
+        let quest = Quest::new(
+            dir.path().join("none"),
+            Some(dir.path().join("neither")),
+            dir.path().join("home"),
+        );
         assert!(
             quest.files().expect("nothing to read").is_empty(),
             "no folder, no files"

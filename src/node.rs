@@ -19,6 +19,7 @@ use crate::group::{Pattern, Routes};
 use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership};
 use crate::mesh;
 use crate::record::Message;
+use crate::share::exchange::Places;
 use crate::state::State;
 use crate::store::{self, Change, LIVENESS_EVERY, Store};
 use crate::wire::{Draft, Event, Reply, Request, Response};
@@ -92,11 +93,13 @@ pub fn bind(path: &Path) -> io::Result<Socket> {
 }
 
 /// Runs a node serving `socket` until `stop` resolves, then ends its links
-/// and lets go of the sessions they carried.
+/// and lets go of the sessions they carried. With `shares`, its links carry
+/// the files of the quests this machine shares.
 pub async fn run<S, M, D>(
     store: S,
     membership: M,
     discovery: D,
+    shares: Option<Places>,
     socket: Socket,
     stop: impl Future<Output = ()>,
 ) -> io::Result<()>
@@ -124,7 +127,7 @@ where
                 Err(error) => break Err(error),
             },
             Some(dial) = found.recv() => {
-                links.spawn(keep_linked(dial, store.clone(), membership.clone()));
+                links.spawn(keep_linked(dial, store.clone(), membership.clone(), shares.clone()));
             }
             _ = tick.tick() => shared.read_sessions(),
             change = changes.changes.recv() => match change {
@@ -145,12 +148,19 @@ where
 
 /// Keeps a link up for as long as the node runs, dialling again after each
 /// drop.
-async fn keep_linked(dial: impl Dial, store: impl Store, membership: impl Membership) {
+async fn keep_linked(
+    dial: impl Dial,
+    store: impl Store,
+    membership: impl Membership,
+    shares: Option<Places>,
+) {
     let mut wait = REDIAL_FIRST;
     loop {
         let started = tokio::time::Instant::now();
         let ended = match dial.dial(&membership.hello().realm).await {
-            Ok(connection) => link::run(store.clone(), &membership, connection).await,
+            Ok(connection) => {
+                link::run(store.clone(), &membership, connection, shares.clone()).await
+            }
             Err(error) => Err(error),
         };
         match ended {
@@ -415,7 +425,15 @@ mod tests {
                     // A dropped sender stops the node as surely as a sent stop.
                     let _ = stopped.await;
                 };
-                run(store, membership, Listed::<Ssh>(Vec::new()), bound, stopped).await
+                run(
+                    store,
+                    membership,
+                    Listed::<Ssh>(Vec::new()),
+                    None,
+                    bound,
+                    stopped,
+                )
+                .await
             }
         });
         let asked = tokio::task::spawn_blocking(move || {

@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use super::tree::{Place, Shared};
 use super::version::{Standing, Version};
 
-/// One end's state of a shared file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One end's state of a shared file; by default, a file it never held.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     /// What it holds, by its content's hash, or `None` once deleted.
     pub hash: Option<String>,

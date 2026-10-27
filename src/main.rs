@@ -14,6 +14,8 @@ use mycelium::link::dial::{Connection, Ssh};
 use mycelium::link::discovery::Listed;
 use mycelium::link::membership::Realm;
 use mycelium::record::Intent;
+use mycelium::share::exchange::Places;
+use mycelium::share::ledger::Ledgers;
 use mycelium::store::folders::Folders;
 use mycelium::wire::{Draft, Request};
 use mycelium::{link, node, place};
@@ -54,6 +56,15 @@ enum Action {
     Link {
         #[command(flatten)]
         here: Here,
+    },
+    /// Shares a quest with every machine this one links with: its record
+    /// and its scratch, kept the same on each, written on any. A machine
+    /// that held its own copy moves it aside first.
+    Share {
+        #[command(flatten)]
+        here: Here,
+        /// The quest's id, such as `QEST-20261013-4UHC5Q`.
+        quest: String,
     },
     /// Prints every session the node knows of, a JSON line each.
     Sessions,
@@ -145,7 +156,7 @@ fn run(command: Command) -> io::Result<()> {
             options,
             remote_command,
         } => {
-            let (store, membership) = open(here, realm)?;
+            let (store, membership, shares) = open(here, realm)?;
             let dials = destinations
                 .into_iter()
                 .map(|destination| Ssh {
@@ -156,19 +167,31 @@ fn run(command: Command) -> io::Result<()> {
                 .collect();
             runtime()?.block_on(async {
                 let bound = node::bind(&socket)?;
-                node::run(store, membership, Listed(dials), bound, stopped()).await
+                node::run(
+                    store,
+                    membership,
+                    Listed(dials),
+                    Some(shares),
+                    bound,
+                    stopped(),
+                )
+                .await
             })
         }
         Action::Link { here } => {
-            let (store, membership) = open(here, realm)?;
+            let (store, membership, shares) = open(here, realm)?;
             runtime()?.block_on(async {
                 let connection = Connection {
                     reading: Box::new(tokio::io::stdin()),
                     writing: Box::new(tokio::io::stdout()),
                     keep: Box::new(()),
                 };
-                link::run(store, &membership, connection).await
+                link::run(store, &membership, connection, Some(shares)).await
             })
+        }
+        Action::Share { here, quest } => {
+            let (_, _, shares) = open(here, realm)?;
+            share(&shares, &quest)
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Messages { groups, limit } => {
@@ -200,7 +223,7 @@ fn run(command: Command) -> io::Result<()> {
     }
 }
 
-fn open(here: Here, realm: String) -> io::Result<(Folders, Realm)> {
+fn open(here: Here, realm: String) -> io::Result<(Folders, Realm, Places)> {
     let state = here.state.unwrap_or_else(place::state);
     place::settle_realm(&state, &realm)?;
     let store = Folders::open(
@@ -211,7 +234,25 @@ fn open(here: Here, realm: String) -> io::Result<(Folders, Realm)> {
         name: realm,
         machine: here.machine.unwrap_or_else(place::machine),
     };
-    Ok((store, membership))
+    Ok((store, membership, place::shares(&state)))
+}
+
+/// Shares `quest`, which must be here to share.
+fn share(shares: &Places, quest: &str) -> io::Result<()> {
+    let record = shares.quest(quest).record;
+    if !record.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "{quest} isn't on this machine: {} holds nothing",
+                record.display()
+            ),
+        ));
+    }
+    let ledgers: Ledgers = shares.ledgers();
+    ledgers.hold(quest)?.keep()?;
+    println!("{quest} is shared; each link carries it from its next look");
+    Ok(())
 }
 
 fn runtime() -> io::Result<tokio::runtime::Runtime> {
