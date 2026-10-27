@@ -86,7 +86,10 @@ impl Quest {
         let root = match shared.place {
             Place::Record => &self.record,
             Place::Scratch => self.scratch.as_ref().ok_or_else(|| {
-                io::Error::other(format!("this machine doesn't carry the scratch, so not {}", shared.path))
+                io::Error::other(format!(
+                    "this machine doesn't carry the scratch, so not {}",
+                    shared.path
+                ))
             })?,
         };
         Ok(root.join(&shared.path))
