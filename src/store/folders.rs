@@ -611,11 +611,33 @@ mod tests {
     async fn reading_a_message_is_no_change() {
         let (_dir, store) = store();
         let old = "1792655652402-5GV2AH-4236-9d2030dd";
+        let ready = "1793046600000-MYCTST-1-0a1b2c3d";
         let new = "1793046604647-0FX11G-875563-952d5879";
         store
             .put_message(old, &json!({"id": old}))
             .expect("the message is kept");
         let mut changes = store.changes().expect("the store tells its changes");
+        let mut next_message = async || {
+            tokio::time::timeout(PATIENCE, async {
+                loop {
+                    match changes.changes.recv().await {
+                        Some(Change::Message(told)) => return told,
+                        Some(_) => {}
+                        None => panic!("the store stopped telling"),
+                    }
+                }
+            })
+            .await
+            .expect("a message was told")
+        };
+
+        // A Mac's watch batches, so the old message's write can be told
+        // after the watch begins. One written once it has begun is told
+        // after it, so once that one is heard the old write is behind us.
+        store
+            .put_message(ready, &json!({"id": ready}))
+            .expect("the message is kept");
+        while next_message().await != ready {}
 
         let file = store.messages().join(format!("{old}.json"));
         fs::read(&file).expect("a session reads it");
@@ -623,19 +645,13 @@ mod tests {
             .put_message(new, &json!({"id": new}))
             .expect("the message is kept");
 
-        // The watch tells changes in order, so the first message it tells
-        // after the read must be the one written after it.
-        let first = tokio::time::timeout(PATIENCE, async {
-            loop {
-                match changes.changes.recv().await {
-                    Some(Change::Message(told)) => return told,
-                    Some(_) => {}
-                    None => panic!("the store stopped telling"),
-                }
-            }
-        })
-        .await
-        .expect("a message was told");
+        // The watch tells changes in order, so past the marker, which one
+        // write can tell more than once, the first message it tells after
+        // the read must be the one written after it.
+        let mut first = next_message().await;
+        while first == ready {
+            first = next_message().await;
+        }
         assert_eq!(first, new, "only the message written was told");
     }
 }
