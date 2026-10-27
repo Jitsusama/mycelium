@@ -93,13 +93,13 @@ pub fn bind(path: &Path) -> io::Result<Socket> {
 }
 
 /// Runs a node serving `socket` until `stop` resolves, then ends its links
-/// and lets go of the sessions they carried. With `shares`, its links carry
-/// the files of the quests this machine shares.
+/// and lets go of the sessions they carried. With `sharing`, its links
+/// carry the files of the quests this machine shares.
 pub async fn run<S, M, D>(
     store: S,
     membership: M,
     discovery: D,
-    shares: Option<Places>,
+    sharing: Option<Places>,
     socket: Socket,
     stop: impl Future<Output = ()>,
 ) -> io::Result<()>
@@ -127,7 +127,7 @@ where
                 Err(error) => break Err(error),
             },
             Some(dial) = found.recv() => {
-                links.spawn(keep_linked(dial, store.clone(), membership.clone(), shares.clone()));
+                links.spawn(keep_linked(dial, store.clone(), membership.clone(), sharing.clone()));
             }
             _ = tick.tick() => shared.read_sessions(),
             change = changes.changes.recv() => match change {
