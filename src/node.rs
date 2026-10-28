@@ -108,7 +108,7 @@ where
     M: Membership + Clone,
     D: Discovery,
 {
-    store::let_go_of_unclaimed(&store)?;
+    store::out_of_reach_of_unclaimed(&store)?;
     let shared = Shared::new(store.clone(), membership.hello().machine);
     let mut changes = store.changes()?;
     shared.read_store();
@@ -136,10 +136,11 @@ where
             },
         }
     };
-    // A link stopped mid-step can't let go itself, so once every one has
-    // stopped and given up its claim, the node lets go for them.
+    // A link stopped mid-step can't say its sessions are out of reach, so
+    // once every one has stopped and given up its claim, the node says so
+    // for them.
     links.shutdown().await;
-    store::let_go_of_unclaimed(&store)?;
+    store::out_of_reach_of_unclaimed(&store)?;
     drop(socket);
     result
 }

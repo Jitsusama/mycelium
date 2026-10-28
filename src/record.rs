@@ -91,4 +91,7 @@ pub enum State {
     Idle,
     /// Its process has gone.
     Ended,
+    /// Its machine is out of reach, so whether it runs is unknown until a
+    /// link comes back.
+    Unreachable,
 }

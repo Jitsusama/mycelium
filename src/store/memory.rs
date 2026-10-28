@@ -48,6 +48,7 @@ impl Memory {
                 body,
                 elsewhere: None,
                 lives,
+                unreachable_since: None,
             },
         );
         held.tell(&Change::Presence);
@@ -154,6 +155,7 @@ impl Store for Memory {
                 body: body.clone(),
                 elsewhere: Some(machine.to_owned()),
                 lives: true,
+                unreachable_since: None,
             },
         );
         held.tell(&Change::Presence);
@@ -162,6 +164,18 @@ impl Store for Memory {
 
     fn keep_presence(&self, _session: &str, _machine: &str) -> io::Result<()> {
         // Memory holds no times, so there is nothing to say again.
+        Ok(())
+    }
+
+    fn mark_unreachable(&self, session: &str, machine: &str, since: i64) -> io::Result<()> {
+        let mut held = self.held();
+        if held.carries(session, machine)
+            && let Some(presence) = held.presences.get_mut(session)
+            && presence.unreachable_since.is_none()
+        {
+            presence.unreachable_since = Some(since);
+            held.tell(&Change::Presence);
+        }
         Ok(())
     }
 

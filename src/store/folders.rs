@@ -35,6 +35,10 @@ use super::{Change, Changes, Claim, Presence, Store};
 /// presence of a session elsewhere.
 const MACHINE: &str = "machine";
 
+/// The field saying since when, in milliseconds since the epoch, no link
+/// has reached the machine of a session elsewhere.
+const UNREACHABLE: &str = "unreachableSince";
+
 /// Numbers each staged write of this process, so no two share a file.
 static STAGED: AtomicU64 = AtomicU64::new(0);
 
@@ -126,6 +130,7 @@ impl Store for Folders {
                         .is_some_and(|owner| owner.lives(boot.as_deref()));
                 Some(Presence {
                     session: facts.session,
+                    unreachable_since: facts.machine.as_ref().and(facts.unreachable_since),
                     elsewhere: facts.machine,
                     lives,
                     body,
@@ -177,10 +182,36 @@ impl Store for Folders {
                 format!("{session:?} is a session of {whose}'s, not {machine}'s"),
             ));
         }
-        // Only the session's own machine can judge its process.
+        // Only the session's own machine can judge its process, and a link
+        // carrying it has reached that machine.
         fields.remove("owner");
+        fields.remove(UNREACHABLE);
         fields.insert(MACHINE.to_owned(), Value::String(machine.to_owned()));
         write_whole(&self.presence(), &file, &body)
+    }
+
+    fn mark_unreachable(&self, session: &str, machine: &str, since: i64) -> io::Result<()> {
+        let Some(path) = self.carried(session, machine)? else {
+            return Ok(());
+        };
+        let Some(mut body) = read::<Value>(&path) else {
+            return Ok(());
+        };
+        let Some(fields) = body.as_object_mut() else {
+            return Ok(());
+        };
+        if fields.contains_key(UNREACHABLE) {
+            return Ok(());
+        }
+        // The file's time is when a link last said the session stands,
+        // which the mesh reads, so marking it keeps that time.
+        let vouched = fs::metadata(&path)?.modified()?;
+        fields.insert(UNREACHABLE.to_owned(), Value::from(since));
+        write_whole(&self.presence(), &format!("{}.json", safe(session)?), &body)?;
+        fs::File::options()
+            .append(true)
+            .open(&path)?
+            .set_modified(vouched)
     }
 
     fn keep_presence(&self, session: &str, machine: &str) -> io::Result<()> {
@@ -278,6 +309,8 @@ struct Facts {
     session: String,
     owner: Option<Owner>,
     machine: Option<String>,
+    #[serde(rename = "unreachableSince")]
+    unreachable_since: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -615,6 +648,49 @@ mod tests {
             .map(|presence| presence.session)
             .collect();
         assert_eq!(left, ["here"]);
+    }
+
+    #[test]
+    fn a_session_out_of_reach_keeps_when_it_was_last_vouched_for() {
+        let (_dir, store) = store();
+        let there = json!({"session": "there"});
+        store
+            .put_presence("there", "equilibrius", &there)
+            .expect("the session elsewhere is kept");
+        let file = store.presence().join("there.json");
+        let vouched = SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_046_604);
+        fs::File::options()
+            .append(true)
+            .open(&file)
+            .and_then(|file| file.set_modified(vouched))
+            .expect("its time is set");
+
+        store
+            .mark_unreachable("there", "equilibrius", 7)
+            .expect("marked");
+        store
+            .mark_unreachable("there", "equilibrius", 9)
+            .expect("marked again");
+        let held = store.presences();
+        assert_eq!(
+            held[0].unreachable_since,
+            Some(7),
+            "it is out of reach since it was first marked"
+        );
+        assert_eq!(
+            fs::metadata(&file).and_then(|meta| meta.modified()).ok(),
+            Some(vouched),
+            "the file keeps when a link last said it stands"
+        );
+
+        store
+            .put_presence("there", "equilibrius", &there)
+            .expect("carried again");
+        assert_eq!(
+            store.presences()[0].unreachable_since,
+            None,
+            "a link carrying it again has reached its machine"
+        );
     }
 
     #[test]

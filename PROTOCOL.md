@@ -65,11 +65,16 @@ goes over a session of this machine's or of a third machine's.
 One link at a time carries a machine's sessions into a store: it claims
 that machine first, by a lock in `~/.local/state/mycelium/claims/`, and a
 second link to the same machine is refused until the first ends. The link
-lets go of what it carried when the session ends or the link drops, and
-what a link killed outright left behind is let go by the next to claim
-that machine, or by the node as it starts and stops. While a link stands
-it touches each file it carried once a minute, so a copy whose time has
-stopped moving is one no link still vouches for.
+lets go of what it carried when the session ends. When the link drops,
+it keeps what it carried but marks each `unreachableSince` the drop, in
+milliseconds since the epoch, since a dropped link says nothing of
+whether those sessions still run; what a link killed outright left is
+marked by the node as it starts and stops, since that machine was last
+linked. The next link to that machine settles them: the far end's `Have`
+names its living sessions, those are carried again and unmarked, and the
+rest are let go. While a link stands it touches each file it carried
+once a minute, and a mark keeps the file's time, so a copy whose time
+has stopped moving is one no link still vouches for.
 
 A presence is carried only between the two machines it links, so every
 pair of machines that should see each other's sessions links directly;
@@ -83,9 +88,12 @@ same code, each line a JSON value:
 1. `{"Hello": {"machine", "realm", "version"}}`, first, from each end.
    Each end's membership admits the other or refuses it, and nothing else
    crosses until it has.
-2. `{"Have": {"messages": [ids]}}`: every message the end holds within
-   the link's reach. That reaches back to when the two machines were last
-   linked, and never past the mesh's week, so a link never hands back what
+2. `{"Have": {"messages": [ids], "living": [sessions]}}`: every message
+   the end holds within the link's reach, and its machine's living
+   sessions. An end older than `living` names none, and every session of
+   its machine out of reach is let go, to come again as it sends each.
+   The reach goes back to when the two machines were last linked, and
+   never past the mesh's week, so a link never hands back what
    the other end has let go. A first link reaches back to nothing, since a
    session takes every message that arrives as new, and a week of talk
    from before the machines were linked was never its to hear.
@@ -155,6 +163,9 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events |
+
+A session's `state` is `busy`, `idle`, `ended`, or `unreachable` while no
+link reaches its machine.
 
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`

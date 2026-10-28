@@ -60,10 +60,14 @@ const LOOK_EVERY: Duration = Duration::from_secs(1);
 pub enum Frame {
     /// Who this end is; always first.
     Hello(Hello),
-    /// The ids of every message this end holds within reach.
+    /// The ids of every message this end holds within reach, and of its
+    /// machine's living sessions.
     Have {
         /// Their ids.
         messages: Vec<String>,
+        /// The living sessions' ids; an end older than this names none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        living: Option<Vec<String>>,
     },
     /// A message, as its sender wrote it.
     Message {
@@ -88,8 +92,8 @@ pub enum Frame {
     Share(Say),
 }
 
-/// Runs this end of a link until the other end leaves, then lets go of the
-/// presence of every session it carried here. With `shares`, it carries the
+/// Runs this end of a link until the other end leaves, then marks every
+/// session it carried here out of reach. With `shares`, it carries the
 /// files of the quests this machine shares too.
 pub async fn run(
     store: impl Store,
@@ -114,9 +118,6 @@ pub async fn run(
             other.machine
         )));
     };
-    // What an earlier link to that machine left behind, if it ended without
-    // letting go, is stale: the other end sends its living sessions afresh.
-    store::let_go(&store, &other.machine);
     let reach = reach_start(&store, &other.machine);
     store.mark_linked(&other.machine, now())?;
     let exchange = shares
@@ -133,7 +134,8 @@ pub async fn run(
     };
 
     let messages = end.store.message_ids(end.reach);
-    send(&mut writing, &Frame::Have { messages }).await?;
+    let living = Some(end.living().into_keys().collect());
+    send(&mut writing, &Frame::Have { messages, living }).await?;
     end.send_presence(&mut writing).await?;
 
     let mut keeping = tokio::time::interval(KEEP_EVERY);
@@ -159,8 +161,9 @@ pub async fn run(
         }
     };
     // Had the link died outright, the last minute's mark would stand.
-    let _ = end.store.mark_linked(&end.other, now());
-    store::let_go(&end.store, &end.other);
+    let left = now();
+    let _ = end.store.mark_linked(&end.other, left);
+    store::out_of_reach(&end.store, &end.other, left);
     result
 }
 
@@ -239,7 +242,13 @@ impl<S: Store> End<S> {
     ) -> io::Result<()> {
         match frame {
             Frame::Hello(_) => return Err(refusal("the other end said hello twice".to_owned())),
-            Frame::Have { messages } => {
+            Frame::Have { messages, living } => {
+                // What an earlier link to that machine left out of reach is
+                // settled now: those still living come again as presences,
+                // and the rest have ended. An end that names none can't
+                // say, so all go, and the living come again.
+                let living: HashSet<String> = living.into_iter().flatten().collect();
+                store::let_go(&self.store, &self.other, |session| living.contains(session));
                 self.has.extend(messages);
                 self.catch_up(writing).await?;
             }
@@ -346,13 +355,7 @@ impl<S: Store> End<S> {
 
     /// Sends what changed in this machine's living sessions since last sent.
     async fn send_presence(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
-        let living: BTreeMap<String, Value> = self
-            .store
-            .presences()
-            .into_iter()
-            .filter(|presence| presence.elsewhere.is_none() && presence.lives)
-            .map(|presence| (presence.session, presence.body))
-            .collect();
+        let living = self.living();
         let ended: Vec<String> = self
             .sent
             .keys()
@@ -377,6 +380,16 @@ impl<S: Store> End<S> {
             }
         }
         Ok(())
+    }
+
+    /// This machine's living sessions, as their presences say.
+    fn living(&self) -> BTreeMap<String, Value> {
+        self.store
+            .presences()
+            .into_iter()
+            .filter(|presence| presence.elsewhere.is_none() && presence.lives)
+            .map(|presence| (presence.session, presence.body))
+            .collect()
     }
 
     /// Says again that every session this link carried here still stands,
@@ -641,7 +654,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_living_session_is_carried_and_let_go_when_it_ends_or_the_link_drops() {
+    async fn a_living_session_is_carried_let_go_when_it_ends_and_unreachable_once_the_link_drops() {
         let optimus = Memory::default();
         let equilibrius = Memory::default();
         equilibrius.start_here("walgit", json!({"session": "walgit"}), true);
@@ -666,12 +679,71 @@ mod tests {
         })
         .await;
         // Stopping optimus's end closes its half of the pipe, so the Mac's
-        // end sees the link drop and lets go of what optimus carried.
+        // end sees the link drop, and keeps what optimus carried out of
+        // reach rather than gone.
         near.abort();
         until(&equilibrius, |store| {
-            store.presences().iter().all(|p| p.elsewhere.is_none())
+            store
+                .presences()
+                .iter()
+                .any(|p| p.session == "launcher" && p.unreachable_since.is_some())
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn a_link_coming_back_says_which_sessions_out_of_reach_still_run() {
+        let optimus = Memory::default();
+        let equilibrius = Memory::default();
+        optimus.start_here("launcher", json!({"session": "launcher"}), true);
+        optimus.start_here("done", json!({"session": "done"}), true);
+        let (near, far) = linked(&optimus, &equilibrius, 1 << 16);
+        until(&equilibrius, |store| store.presences().len() == 2).await;
+        near.abort();
+        far.await
+            .expect("the Mac's end runs to its end")
+            .expect("a dropped link ends quietly");
+        assert!(
+            equilibrius
+                .presences()
+                .iter()
+                .all(|p| p.unreachable_since.is_some()),
+            "both are out of reach: {:?}",
+            equilibrius.presences()
+        );
+
+        optimus.start_here("done", json!({"session": "done"}), false);
+        let _back = linked(&optimus, &equilibrius, 1 << 16);
+        until(&equilibrius, |store| {
+            matches!(
+                store.presences().as_slice(),
+                [one] if one.session == "launcher" && one.unreachable_since.is_none()
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn an_end_that_names_no_living_sessions_has_every_one_out_of_reach_let_go() {
+        let optimus = Memory::default();
+        optimus
+            .put_presence("walgit", "equilibrius", &json!({"session": "walgit"}))
+            .expect("a copy is kept");
+        store::out_of_reach(&optimus, "equilibrius", now());
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _optimus_end = end(&optimus, "optimus", near);
+        let (_far_reading, mut far_writing) = tokio::io::split(far);
+        // As an end older than naming its living sessions says it.
+        for line in [
+            serde_json::to_string(&Frame::Hello(realm("equilibrius").hello())).expect("a frame"),
+            r#"{"Have":{"messages":[]}}"#.to_owned(),
+        ] {
+            far_writing
+                .write_all(format!("{line}\n").as_bytes())
+                .await
+                .expect("the far end sends");
+        }
+        until(&optimus, |store| store.presences().is_empty()).await;
     }
 
     #[tokio::test]
