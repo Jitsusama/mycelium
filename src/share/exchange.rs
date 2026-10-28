@@ -20,7 +20,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
-use super::ledger::{Entry, Ledgers, is_quest, seen, shared_of};
+use super::ledger::{Entry, Ledgers, is_quest, shared_of};
 use super::settle::{Merge, Settled, State, beside, settle};
 use super::tree::{Place, Quest, Shared, content};
 use super::{journey, log};
@@ -317,7 +317,7 @@ impl Exchange {
             Settled::Keep => None,
             Settled::Merge(_) | Settled::Beside if !self.settles() => None,
             Settled::Take => {
-                quest.write(&shared, body.as_deref())?;
+                let written = quest.write(&shared, body.as_deref())?;
                 if is_journey(&shared) {
                     held.ledger.journey = body
                         .as_deref()
@@ -326,7 +326,7 @@ impl Exchange {
                 Some(Entry {
                     hash: theirs.hash.clone(),
                     version: joined,
-                    seen: seen(&quest.path_of(&shared)?)?,
+                    seen: written,
                 })
             }
             Settled::Merge(merge) => {
@@ -339,14 +339,14 @@ impl Exchange {
                     }
                     Merge::Log => log::merged(&ours_text, &theirs_text),
                 };
-                quest.write(&shared, Some(merged.as_bytes()))?;
+                let written = quest.write(&shared, Some(merged.as_bytes()))?;
                 if merge == Merge::Journey {
                     held.ledger.journey = Some(merged.clone());
                 }
                 Some(Entry {
                     hash: Some(content(merged.as_bytes()).hash),
                     version: joined.changed_on(&self.machine),
-                    seen: seen(&quest.path_of(&shared)?)?,
+                    seen: written,
                 })
             }
             Settled::Beside => {
