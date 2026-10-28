@@ -20,6 +20,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use super::ledger::{Seen, seen};
 use super::tree::{Content, Place, Quest, Shared, content};
 
 /// What stands for the account's home folder in a record's text as it
@@ -58,8 +59,10 @@ impl Quest {
         Ok(content(&bytes))
     }
 
-    /// Writes what crossed into a shared file, or deletes it for `None`.
-    pub fn write(&self, shared: &Shared, body: Option<&[u8]>) -> io::Result<()> {
+    /// Writes what crossed into a shared file, or deletes it for `None`,
+    /// answering what the file holds as the ledger sees it, or nothing once
+    /// deleted.
+    pub fn write(&self, shared: &Shared, body: Option<&[u8]>) -> io::Result<Option<Seen>> {
         let path = self.path_of(shared)?;
         let _lock = match shared.place {
             Place::Record => {
@@ -73,7 +76,7 @@ impl Quest {
             Some(body) => staged_write(&path, body),
             None => match fs::remove_file(&path) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-                _ => Ok(()),
+                _ => Ok(None),
             },
         }
     }
@@ -143,7 +146,12 @@ fn is_name_byte(byte: u8) -> bool {
 
 /// Writes `bytes` to `path` by a hidden file renamed over it, so nobody
 /// reads half of it.
-fn staged_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+///
+/// Answers what the file holds as the ledger sees it, taken from the staged
+/// file, whose size and time its rename keeps: seen after the rename, a
+/// session's write landing in between would be taken for this one, and
+/// never cross.
+fn staged_write(path: &Path, bytes: &[u8]) -> io::Result<Option<Seen>> {
     let folder = path
         .parent()
         .ok_or_else(|| io::Error::other(format!("{} is in no folder", path.display())))?;
@@ -157,10 +165,12 @@ fn staged_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         std::process::id()
     ));
     fs::write(&staged, bytes)?;
+    let written = seen(&staged);
     fs::rename(&staged, path).inspect_err(|_| {
         // Nothing reads a staged file, so one left behind is only clutter.
         let _ = fs::remove_file(&staged);
-    })
+    })?;
+    written
 }
 
 /// The harness's lock on a quest, held until dropped.
@@ -264,10 +274,15 @@ mod tests {
                 fs::remove_file(lock).expect("the session lets go");
             }
         });
-        quest
+        let written = quest
             .write(&readme, Some(b"cwd: \x01home\x01/src\n"))
             .expect("written once the session lets go");
         held.join().expect("the session ended");
+        assert_eq!(
+            written,
+            seen(&quest.record.join("README.md")).expect("seen"),
+            "the write answers the file as it was written"
+        );
         assert_eq!(
             fs::read_to_string(quest.record.join("README.md")).expect("read"),
             "cwd: /home/jitsusama/src\n",
