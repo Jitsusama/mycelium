@@ -100,6 +100,24 @@ impl Watch {
         walk
     }
 
+    /// Stops watching quest `id`'s folders, once it is shared no longer.
+    pub fn forget(&mut self, id: &str) {
+        let gone: Vec<Folder> = self
+            .watched
+            .iter()
+            .filter(|(quest, _)| quest == id)
+            .cloned()
+            .collect();
+        for folder in gone {
+            if let Some(watcher) = self.watcher.as_mut() {
+                // A folder already gone is no longer watched anyway.
+                let _ = watcher.unwatch(&self.scratch.join(&folder.0).join(&folder.1));
+            }
+            self.watched.remove(&folder);
+        }
+        self.changed.retain(|(quest, _)| quest != id);
+    }
+
     /// Waits up to `within` for the watcher to hear a change, for a test
     /// that must see one heard before it looks.
     #[cfg(test)]

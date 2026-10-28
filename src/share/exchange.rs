@@ -57,8 +57,20 @@ impl Places {
     /// hold gigabytes of clones and data no other machine needs.
     #[must_use]
     pub fn quest(&self, id: &str, ledger: &Ledger) -> Quest {
-        Quest::new(self.record(id), self.home.clone())
-            .sharing(self.scratch.join(id), ledger.scratch.clone())
+        let quest = Quest::new(self.record(id), self.home.clone());
+        // An ended quest's record still crosses, so the other end learns it
+        // ended, but its scratch is let be: concluding takes it away here.
+        if self.ended(id) {
+            return quest;
+        }
+        quest.sharing(self.scratch.join(id), ledger.scratch.clone())
+    }
+
+    /// Whether quest `id` has ended on this machine: its README says it
+    /// concluded or was retired.
+    #[must_use]
+    pub fn ended(&self, id: &str) -> bool {
+        fs::read_to_string(self.record(id).join("README.md")).is_ok_and(|readme| has_ended(&readme))
     }
 
     /// Names `folder` of shared quest `id`'s scratch for sharing, refusing
@@ -188,6 +200,10 @@ pub enum Say {
         /// scratch, by the quest's id; an end older than this names none.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         clones: BTreeMap<String, BTreeMap<String, Clone>>,
+        /// Those of the quests that have ended at this end; an end older
+        /// than this names none.
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        ended: BTreeSet<String>,
     },
     /// What this end holds of some of a quest's files.
     Holds {
@@ -262,6 +278,18 @@ pub struct Exchange {
     unsaid: BTreeMap<String, BTreeSet<String>>,
     /// The clones being made of those the other end holds.
     cloning: Cloning,
+    /// The quests the other end last said it shares, and those ended there,
+    /// once it has said.
+    theirs: Option<Theirs>,
+}
+
+/// The quests the other end said it shares.
+#[derive(Debug, Default)]
+struct Theirs {
+    /// Every one.
+    quests: BTreeSet<String>,
+    /// Those that have ended there.
+    ended: BTreeSet<String>,
 }
 
 /// What was last said of a shared quest's scratch.
@@ -271,6 +299,8 @@ struct Told {
     folders: BTreeSet<String>,
     /// The clones in them.
     clones: BTreeMap<String, Clone>,
+    /// Whether the quest has ended here.
+    ended: bool,
 }
 
 impl Exchange {
@@ -293,6 +323,7 @@ impl Exchange {
             pieces,
             unsaid: BTreeMap::new(),
             cloning: Cloning::default(),
+            theirs: None,
         }
     }
 
@@ -334,6 +365,14 @@ impl Exchange {
             .insert(key.to_owned());
     }
 
+    /// Whether quest `id` has ended at the other end as far as this end
+    /// knows: it said so, or it no longer names it at all.
+    fn has_ended_there(&self, id: &str) -> bool {
+        self.theirs
+            .as_ref()
+            .is_some_and(|theirs| theirs.ended.contains(id) || !theirs.quests.contains(id))
+    }
+
     /// Whether this end settles files written apart.
     fn settles(&self) -> bool {
         self.machine < self.other
@@ -348,6 +387,17 @@ impl Exchange {
         let mut shares = BTreeMap::new();
         let mut holds = Vec::new();
         for id in ledgers.quests()? {
+            let ended = self.places.ended(&id);
+            if ended && self.has_ended_there(&id) {
+                ledgers.stop(&id)?;
+                self.unsaid.remove(&id);
+                self.watch.forget(&id);
+                eprintln!(
+                    "{id} has ended here and on {}, so it is shared no longer",
+                    self.other
+                );
+                continue;
+            }
             let mut held = ledgers.hold(&id)?;
             let walk = self.watch.to_walk(&id, &held.ledger.scratch);
             let quest = self.places.quest(&id, &held.ledger).walking(&walk);
@@ -381,6 +431,7 @@ impl Exchange {
                 Told {
                     folders: held.ledger.scratch.clone(),
                     clones: held.ledger.clones.clone(),
+                    ended,
                 },
             );
         }
@@ -400,6 +451,11 @@ impl Exchange {
                     .filter(|(_, told)| !told.clones.is_empty())
                     .map(|(id, told)| (id.clone(), told.clones.clone()))
                     .collect(),
+                ended: shares
+                    .iter()
+                    .filter(|(_, told)| told.ended)
+                    .map(|(id, _)| id.clone())
+                    .collect(),
             });
         }
         says.extend(holds);
@@ -414,12 +470,24 @@ impl Exchange {
                 quests,
                 scratch,
                 clones,
+                ended,
             } => {
+                self.theirs = Some(Theirs {
+                    quests: quests.iter().cloned().collect(),
+                    ended,
+                });
                 for id in quests {
-                    self.share(&id)?;
+                    // A quest ended at both ends, which this end has
+                    // stopped sharing, isn't taken up again; one reopened
+                    // there is.
+                    if !(self.places.ended(&id) && self.has_ended_there(&id)) {
+                        self.share(&id)?;
+                    }
                 }
                 for (id, folders) in scratch {
-                    self.share_scratch(&id, &folders)?;
+                    if !self.places.ended(&id) {
+                        self.share_scratch(&id, &folders)?;
+                    }
                 }
                 for (id, clones) in clones {
                     self.clone_what(&id, &clones)?;
@@ -810,6 +878,19 @@ fn found_clones(ledger: &mut Ledger, quest: &Quest, walked: &BTreeSet<String>) -
     let changed = clones != ledger.clones;
     ledger.clones = clones;
     Ok(changed)
+}
+
+/// Whether a quest's README says it has ended: its front matter's `status`
+/// is `concluded` or `retired`.
+fn has_ended(readme: &str) -> bool {
+    let mut lines = readme.lines();
+    if lines.next().map(str::trim_end) != Some("---") {
+        return false;
+    }
+    lines
+        .take_while(|line| line.trim_end() != "---")
+        .filter_map(|line| line.strip_prefix("status:"))
+        .any(|status| matches!(status.trim(), "concluded" | "retired"))
 }
 
 fn is_journey(shared: &Shared) -> bool {
@@ -1332,6 +1413,81 @@ mod tests {
                 .is_empty(),
             "and none of them is shared"
         );
+    }
+
+    #[test]
+    fn a_quest_concluded_is_shared_until_both_ends_know_then_no_longer() {
+        let optimus = Machine::new("optimus");
+        let equilibrius = Machine::new("equilibrius");
+        let scratch = |machine: &Machine, path: &str| machine.places.scratch.join(QUEST).join(path);
+        let readme = |status: &str| format!("---\nid: {QUEST}\nstatus: {status}\n---\n# Shared\n");
+        let shares = |machine: &Machine| machine.places.ledgers().shares(QUEST);
+        optimus.write("README.md", &readme("active"));
+        let notes = scratch(&optimus, "notes/plan.md");
+        fs::create_dir_all(notes.parent().expect("a file has a folder")).expect("made");
+        fs::write(&notes, "notes\n").expect("written");
+        optimus
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("held")
+            .keep()
+            .expect("shared");
+        optimus.places.name_scratch(QUEST, "notes").expect("named");
+        let (mut near, mut far) = (
+            optimus.exchange(&equilibrius),
+            equilibrius.exchange(&optimus),
+        );
+        talk(&mut near, &mut far);
+        assert!(shares(&equilibrius), "the Mac takes the quest up");
+
+        // Concluding it writes its README and takes optimus's scratch away.
+        optimus.write("README.md", &readme("concluded"));
+        fs::remove_dir_all(optimus.places.scratch.join(QUEST)).expect("taken away");
+        // The README crosses at one look, the Mac stops at its next, and
+        // optimus at the one after it hears so.
+        for _ in 0..3 {
+            talk(&mut near, &mut far);
+        }
+        assert_eq!(
+            equilibrius.read("README.md"),
+            Some(readme("concluded")),
+            "the Mac learns it concluded"
+        );
+        assert!(
+            !shares(&optimus) && !shares(&equilibrius),
+            "and then neither end shares it"
+        );
+        assert!(
+            scratch(&equilibrius, "notes/plan.md").exists(),
+            "while the Mac keeps its notes"
+        );
+
+        fs::write(scratch(&equilibrius, "notes/plan.md"), "later\n").expect("written");
+        for _ in 0..3 {
+            talk(&mut near, &mut far);
+        }
+        assert!(
+            !optimus.places.scratch.join(QUEST).exists(),
+            "a later change on the Mac never makes optimus's scratch again"
+        );
+        assert!(
+            !shares(&optimus) && !shares(&equilibrius),
+            "nor is the quest taken up again"
+        );
+    }
+
+    #[test]
+    fn only_a_readme_saying_so_has_ended() {
+        for (readme, ended) in [
+            ("---\nid: Q\nstatus: concluded\n---\n# Q\n", true),
+            ("---\nstatus: retired\n---\n", true),
+            ("---\nstatus: active\n---\nstatus: concluded\n", false),
+            ("# Q\nstatus: concluded\n", false),
+            ("---\nstatus: concludedish\n---\n", false),
+        ] {
+            assert_eq!(has_ended(readme), ended, "{readme:?}");
+        }
     }
 
     #[test]
