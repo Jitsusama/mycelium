@@ -12,6 +12,10 @@
 //! as the node and the machine warm up. `--folder` puts the mesh's folders
 //! somewhere else, such as `/dev/shm`, to measure without the disk.
 //!
+//! `--across` writes the posts into a second machine's folders instead,
+//! linked with the node's by a link over a pipe in the same process: a
+//! link's own part in a post's time, with no network or SSH in it.
+//!
 //! ```sh
 //! nix develop -c cargo bench --bench heard -- --watches 100 --rate 200 --seconds 10
 //! ```
@@ -27,9 +31,12 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use mycelium::client::Client;
 use mycelium::group::{Group, Pattern};
-use mycelium::link::dial::Ssh;
 use mycelium::link::discovery::Listed;
 use mycelium::link::membership::Realm;
+use mycelium::link::{
+    self,
+    dial::{Connection, Ssh},
+};
 use mycelium::mesh;
 use mycelium::node;
 use mycelium::store::Store;
@@ -59,6 +66,10 @@ struct Asked {
     /// the system's temporary folder.
     #[arg(long)]
     folder: Option<PathBuf>,
+    /// Write the posts on a second machine's folders, linked with the
+    /// node's.
+    #[arg(long)]
+    across: bool,
     /// Given by `cargo bench` to every bench, and taken for nothing.
     #[arg(long, hide = true)]
     bench: bool,
@@ -66,6 +77,12 @@ struct Asked {
 
 /// A post's index, and how long it took to be heard.
 type Heard = (u32, Duration);
+
+/// Something run on a thread of its own, and how to stop it.
+type Running = (tokio::sync::oneshot::Sender<()>, JoinHandle<io::Result<()>>);
+
+/// How much a link's pipe holds each way.
+const PIPE: usize = 1 << 16;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let asked = Asked::parse();
@@ -84,6 +101,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let socket = folder.path().join("node").join("socket");
 
     let (stop, running) = run_node(store.clone(), &socket)?;
+    let (written_to, linking) = if asked.across {
+        let near = Folders::open(
+            &folder.path().join("near-mesh"),
+            &folder.path().join("near-claims"),
+        )?;
+        (near.clone(), Some(run_link(near, store.clone())?))
+    } else {
+        (store.clone(), None)
+    };
     let start = Instant::now();
     let (heard, hearing) = mpsc::channel();
     let watching = (0..asked.watches)
@@ -91,9 +117,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         .collect::<Result<Vec<_>, _>>()?;
     drop(heard);
 
-    let mut writes = post(&asked, &store, start, total)?;
+    let mut writes = post(&asked, &written_to, start, total)?;
     let (got, mut times) = gather(&hearing, total, asked.rate);
 
+    if let Some((stop, running)) = linking {
+        // The link may already have stopped, if it failed.
+        let _ = stop.send(());
+        running.join().map_err(|_| "the link panicked")??;
+    }
     // The node may already have stopped, if it failed.
     let _ = stop.send(());
     running.join().map_err(|_| "the node panicked")??;
@@ -111,10 +142,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 /// Runs a node over `store`, serving `socket`, on a thread of its own until
 /// the sender answered is sent to or dropped.
-fn run_node(
-    store: Folders,
-    socket: &Path,
-) -> io::Result<(tokio::sync::oneshot::Sender<()>, JoinHandle<io::Result<()>>)> {
+fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -140,6 +168,43 @@ fn run_node(
         ))
     });
     Ok((stop, running))
+}
+
+/// Links `near`, a second machine's folders, with `far`, the node's, over
+/// a pipe, on a thread of its own until the sender answered is sent to or
+/// dropped.
+fn run_link(near: Folders, far: Folders) -> io::Result<Running> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let running = thread::spawn(move || {
+        let (one, two) = tokio::io::duplex(PIPE);
+        runtime.block_on(async {
+            let ends = async { tokio::try_join!(end(near, "near", one), end(far, "bench", two)) };
+            tokio::select! {
+                ended = ends => ended.map(|_| ()),
+                // Sent or dropped, either way the bench is done.
+                _ = stopped => Ok(()),
+            }
+        })
+    });
+    Ok((stop, running))
+}
+
+/// Runs `machine`'s end of a link over `stream` from `store`.
+async fn end(store: Folders, machine: &str, stream: tokio::io::DuplexStream) -> io::Result<()> {
+    let (reading, writing) = tokio::io::split(stream);
+    let realm = Realm {
+        name: "bench".to_owned(),
+        machine: machine.to_owned(),
+    };
+    let connection = Connection {
+        reading: Box::new(reading),
+        writing: Box::new(writing),
+        keep: Box::new(()),
+    };
+    link::run(store, &realm, connection, None).await
 }
 
 /// Watches group `bench.g<watch>` on the socket at `socket`, once the node
@@ -235,11 +300,12 @@ fn gather(hearing: &mpsc::Receiver<Heard>, total: u32, rate: u32) -> (u32, Vec<D
 /// sorted.
 fn report(asked: &Asked, got: u32, total: u32, times: &[Duration], writes: &[Duration]) {
     println!(
-        "{} watches, each on a group of its own; {} senders; {} posts a second for {} s{}",
+        "{} watches, each on a group of its own; {} senders; {} posts a second for {} s{}{}",
         asked.watches,
         asked.senders,
         asked.rate,
         asked.seconds,
+        if asked.across { "; across a link" } else { "" },
         load().map_or(String::new(), |load| format!("; load {load}")),
     );
     println!(
