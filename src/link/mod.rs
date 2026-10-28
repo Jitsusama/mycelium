@@ -297,12 +297,18 @@ impl<S: Store> End<S> {
         let Some(mut exchange) = self.exchange.take() else {
             return Ok(());
         };
-        let (exchange, says) = tokio::task::spawn_blocking(move || {
+        let (mut exchange, says) = tokio::task::spawn_blocking(move || {
             let says = act(&mut exchange);
             (exchange, says)
         })
         .await
         .map_err(io::Error::other)?;
+        // Written here, a finding reaches this machine's sessions and, as
+        // any message does, the other's.
+        for draft in exchange.findings() {
+            let (id, body) = mesh::written(&draft, std::process::id());
+            self.kept(&id, self.store.put_message(&id, &body));
+        }
         self.exchange = Some(exchange);
         match says {
             Ok(says) => {

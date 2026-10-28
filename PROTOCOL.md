@@ -144,7 +144,10 @@ as `Share` frames:
 A file changed on one end is taken by the other. One changed on both is
 settled by the machine whose name sorts first, so the two never chase
 each other: the journey and the log keep both ends' entries, and any
-other file keeps the far end's beside it as `<file>.from-<machine>`.
+other file keeps the far end's beside it as `<file>.from-<machine>`, and
+the settling node tells the quest's sessions so: a `finding` from
+`mycelium@<machine>` to the quest's whole group, such as
+`#quest/wcjqsg/4uhc5q`, named from the README's parents outermost first.
 A deletion gives way to a write. Record text crosses with the home folder
 marked, so a path under `/home/jitsusama` reads `/Users/joel.gerber` on a
 Mac. Each write takes the quest's lock as the harness does and lands by
@@ -181,8 +184,7 @@ A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 Each lands behind a seam above, or as a seam of its own:
 
 - **Shared scratch:** a quest's scratch folder shared beside its record,
-  watched rather than looked at, with each file's mode kept, and a
-  finding told to both writers when a file is kept beside another.
+  watched rather than looked at, with each file's mode kept.
 - **The node's own log:** messages and presence numbered per machine, so
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.

@@ -383,13 +383,13 @@ pub fn safe(name: &str) -> io::Result<&str> {
     let safe = !name.is_empty()
         && name
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'@'));
     if safe {
         Ok(name)
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("{name:?} is not a mesh name: use letters, digits, - and _"),
+            format!("{name:?} is not a mesh name: use letters, digits, -, _ and @"),
         ))
     }
 }
