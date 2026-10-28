@@ -138,8 +138,12 @@ as `Share` frames:
   `~/.local/state/mycelium/before-share/<when>/<QUEST>/`.
 - `{"Holds": {"quest", "files"}}`: each changed file's state.
 - `{"Want": {"quest", "file"}}`: a file whose state is newer there.
-- `{"File": {"quest", "file", "state", "body"}}`: the file, in base64,
-  or no body once deleted. Its hash is checked before it is written.
+- `{"File": {"quest", "file", "state", "body", "mode"}}`: the file, in
+  base64, or no body once deleted, and its mode's permission bits, so a
+  secret at 0600 lands at 0600. Its hash is checked before it is written,
+  and it is made at its mode before anything is written to it. A file
+  with no mode, as from an end older than `mode` or a merged journey,
+  keeps its own. A change of mode alone waits for the file's next write.
 
 A file changed on one end is taken by the other. One changed on both is
 settled by the machine whose name sorts first, so the two never chase

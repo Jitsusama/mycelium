@@ -123,6 +123,10 @@ pub enum Say {
         state: State,
         /// What it holds, in base64, or `None` once deleted.
         body: Option<String>,
+        /// Who may read, write and run it, as its mode's permission bits;
+        /// an end older than this names none, and the file keeps its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<u32>,
     },
 }
 
@@ -241,7 +245,8 @@ impl Exchange {
                 file,
                 state,
                 body,
-            } => self.file(&quest, &file, &state, body.as_deref()),
+                mode,
+            } => self.file(&quest, &file, &state, body.as_deref(), mode),
         }
     }
 
@@ -300,7 +305,7 @@ impl Exchange {
                 Settled::Merge(_) | Settled::Beside if !self.settles() => {}
                 _ if theirs.hash.is_none() => {
                     // A deletion needs nothing sent: it is taken here.
-                    quest.write(&shared, None)?;
+                    quest.write(&shared, None, None)?;
                     held.ledger.files.insert(
                         key,
                         Entry {
@@ -342,6 +347,7 @@ impl Exchange {
             file: key.to_owned(),
             state: entry.state(),
             body,
+            mode: quest.mode_of(&shared)?,
         }])
     }
 
@@ -354,6 +360,7 @@ impl Exchange {
         key: &str,
         theirs: &State,
         body: Option<&str>,
+        mode: Option<u32>,
     ) -> io::Result<Vec<Say>> {
         let quest = self.places.quest(id);
         let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
@@ -386,7 +393,7 @@ impl Exchange {
             Settled::Keep => None,
             Settled::Merge(_) | Settled::Beside if !self.settles() => None,
             Settled::Take => {
-                let written = quest.write(&shared, body.as_deref())?;
+                let written = quest.write(&shared, body.as_deref(), mode)?;
                 if is_journey(&shared) {
                     held.ledger.journey = body
                         .as_deref()
@@ -408,7 +415,8 @@ impl Exchange {
                     }
                     Merge::Log => log::merged(&ours_text, &theirs_text),
                 };
-                let written = quest.write(&shared, Some(merged.as_bytes()))?;
+                // Both ends' entries are kept, and so is this end's mode.
+                let written = quest.write(&shared, Some(merged.as_bytes()), None)?;
                 if merge == Merge::Journey {
                     held.ledger.journey = Some(merged.clone());
                 }
@@ -423,7 +431,7 @@ impl Exchange {
                     place: shared.place,
                     path: beside(&shared.path, &self.other),
                 };
-                quest.write(&theirs_at, body.as_deref())?;
+                quest.write(&theirs_at, body.as_deref(), mode)?;
                 self.kept_beside(id, key, &theirs_at.path);
                 let ours_entry = held.ledger.files.get(key).cloned().unwrap_or_default();
                 Some(Entry {
@@ -721,6 +729,60 @@ mod tests {
             equilibrius.read("attachments/map.md"),
             None,
             "and its removal did"
+        );
+    }
+
+    #[test]
+    fn a_file_crosses_with_who_may_read_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode_of = |machine: &Machine, path: &str| {
+            fs::metadata(machine.places.quests.join(QUEST).join(path))
+                .expect("there")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        let optimus = Machine::new("optimus");
+        let equilibrius = Machine::new("equilibrius");
+        optimus.write("attachments/hub.env", "TOKEN=1\n");
+        fs::set_permissions(
+            optimus
+                .places
+                .quests
+                .join(QUEST)
+                .join("attachments/hub.env"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .expect("made the owner's alone");
+        optimus
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("held")
+            .keep()
+            .expect("shared");
+        let (mut near, mut far) = (
+            optimus.exchange(&equilibrius),
+            equilibrius.exchange(&optimus),
+        );
+        talk(&mut near, &mut far);
+        assert_eq!(
+            mode_of(&equilibrius, "attachments/hub.env"),
+            0o600,
+            "it lands as only its owner may read it"
+        );
+
+        optimus.write("attachments/hub.env", "TOKEN=2\n");
+        talk(&mut near, &mut far);
+        assert_eq!(
+            equilibrius.read("attachments/hub.env").as_deref(),
+            Some("TOKEN=2\n"),
+            "a change crosses"
+        );
+        assert_eq!(
+            mode_of(&equilibrius, "attachments/hub.env"),
+            0o600,
+            "still as only its owner may read it"
         );
     }
 }

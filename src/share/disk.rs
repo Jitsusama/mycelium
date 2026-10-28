@@ -16,7 +16,9 @@
 
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -59,10 +61,25 @@ impl Quest {
         Ok(content(&bytes))
     }
 
-    /// Writes what crossed into a shared file, or deletes it for `None`,
-    /// answering what the file holds as the ledger sees it, or nothing once
-    /// deleted.
-    pub fn write(&self, shared: &Shared, body: Option<&[u8]>) -> io::Result<Option<Seen>> {
+    /// Who may read, write and run a shared file, as its mode's permission
+    /// bits, or nothing once it is gone.
+    pub fn mode_of(&self, shared: &Shared) -> io::Result<Option<u32>> {
+        match fs::metadata(self.path_of(shared)?) {
+            Ok(metadata) => Ok(Some(metadata.permissions().mode() & PERMISSIONS)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Writes what crossed into a shared file at `mode`, or at the mode it
+    /// has already without one, or deletes it for `None`, answering what
+    /// the file holds as the ledger sees it, or nothing once deleted.
+    pub fn write(
+        &self,
+        shared: &Shared,
+        body: Option<&[u8]>,
+        mode: Option<u32>,
+    ) -> io::Result<Option<Seen>> {
         let path = self.path_of(shared)?;
         let _lock = match shared.place {
             Place::Record => {
@@ -72,8 +89,8 @@ impl Quest {
             Place::Scratch => None,
         };
         match body {
-            Some(body) if translates(shared) => staged_write(&path, &local(body, &self.home)),
-            Some(body) => staged_write(&path, body),
+            Some(body) if translates(shared) => staged_write(&path, &local(body, &self.home), mode),
+            Some(body) => staged_write(&path, body, mode),
             None => match fs::remove_file(&path) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
                 _ => Ok(None),
@@ -151,7 +168,10 @@ fn is_name_byte(byte: u8) -> bool {
 /// file, whose size and time its rename keeps: seen after the rename, a
 /// session's write landing in between would be taken for this one, and
 /// never cross.
-fn staged_write(path: &Path, bytes: &[u8]) -> io::Result<Option<Seen>> {
+///
+/// The file is made at `mode`, or at the mode `path` has already, and only
+/// then written, so a secret is never readable by more than it should be.
+fn staged_write(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<Option<Seen>> {
     let folder = path
         .parent()
         .ok_or_else(|| io::Error::other(format!("{} is in no folder", path.display())))?;
@@ -164,7 +184,26 @@ fn staged_write(path: &Path, bytes: &[u8]) -> io::Result<Option<Seen>> {
         name.to_string_lossy(),
         std::process::id()
     ));
-    fs::write(&staged, bytes)?;
+    let mode = match mode {
+        Some(mode) => Some(mode & PERMISSIONS),
+        None => fs::metadata(path)
+            .ok()
+            .map(|held| held.permissions().mode() & PERMISSIONS),
+    };
+    // One left by an earlier process of the same id would keep its mode.
+    let _ = fs::remove_file(&staged);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    if let Some(mode) = mode {
+        options.mode(mode);
+    }
+    let mut file = options.open(&staged)?;
+    if let Some(mode) = mode {
+        // The mask may have taken bits the mode gives; it never adds any.
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
+    }
+    file.write_all(bytes)?;
+    drop(file);
     let written = seen(&staged);
     fs::rename(&staged, path).inspect_err(|_| {
         // Nothing reads a staged file, so one left behind is only clutter.
@@ -172,6 +211,9 @@ fn staged_write(path: &Path, bytes: &[u8]) -> io::Result<Option<Seen>> {
     })?;
     written
 }
+
+/// The bits of a mode that say who may read, write and run a file.
+const PERMISSIONS: u32 = 0o777;
 
 /// The harness's lock on a quest, held until dropped.
 struct QuestLock(PathBuf);
@@ -275,7 +317,7 @@ mod tests {
             }
         });
         let written = quest
-            .write(&readme, Some(b"cwd: \x01home\x01/src\n"))
+            .write(&readme, Some(b"cwd: \x01home\x01/src\n"), None)
             .expect("written once the session lets go");
         held.join().expect("the session ended");
         assert_eq!(
@@ -294,11 +336,44 @@ mod tests {
             Some(&b"cwd: \x01home\x01/src\n"[..]),
             "and read as it crosses"
         );
-        quest.write(&readme, None).expect("deleted");
+        quest.write(&readme, None, None).expect("deleted");
         assert_eq!(
             quest.read(&readme).expect("read"),
             None,
             "a deletion removes it"
+        );
+    }
+
+    #[test]
+    fn a_file_is_written_at_its_mode_or_keeps_its_own() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let quest = Quest::new(
+            dir.path().join("record"),
+            None,
+            PathBuf::from("/home/jitsusama"),
+        );
+        let secret = record("attachments/hub.env");
+        quest
+            .write(&secret, Some(b"one"), Some(0o600))
+            .expect("written");
+        assert_eq!(
+            quest.mode_of(&secret).expect("read"),
+            Some(0o600),
+            "written at the mode given"
+        );
+        quest.write(&secret, Some(b"two"), None).expect("written");
+        assert_eq!(
+            quest.mode_of(&secret).expect("read"),
+            Some(0o600),
+            "and kept by a write that gives none"
+        );
+        quest
+            .write(&secret, Some(b"three"), Some(0o755))
+            .expect("written");
+        assert_eq!(
+            quest.mode_of(&secret).expect("read"),
+            Some(0o755),
+            "a mode is given whole, whatever the mask"
         );
     }
 }
