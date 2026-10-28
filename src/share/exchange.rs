@@ -20,9 +20,9 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
-use super::ledger::{Entry, Ledgers, is_quest, shared_of};
+use super::ledger::{Entry, Ledger, Ledgers, is_quest, shared_of};
 use super::settle::{Merge, Settled, State, beside, settle};
-use super::tree::{Place, Quest, Shared, content};
+use super::tree::{Place, Quest, Shared, content, may_name};
 use super::{journey, log};
 use crate::group::Group;
 use crate::record::Intent;
@@ -33,6 +33,8 @@ use crate::wire::Draft;
 pub struct Places {
     /// The quest store: a folder a quest.
     pub quests: PathBuf,
+    /// The quests' scratch folders: one a quest, by its id.
+    pub scratch: PathBuf,
     /// The account's home folder.
     pub home: PathBuf,
     /// Mycelium's own folder, where the ledgers are kept and a quest's
@@ -41,13 +43,75 @@ pub struct Places {
 }
 
 impl Places {
-    /// Where `id` is kept on this machine. Only its record is carried so
-    /// far: a scratch folder can hold hundreds of thousands of files, too
-    /// many to look over every second, and secrets whose modes must cross
-    /// with them, so it waits on a watch and on modes.
+    /// Where `id`'s record is kept on this machine.
     #[must_use]
-    pub fn quest(&self, id: &str) -> Quest {
-        Quest::new(self.quests.join(id), None, self.home.clone())
+    pub fn record(&self, id: &str) -> PathBuf {
+        self.quests.join(id)
+    }
+
+    /// Where `id` is kept on this machine: its record, and the folders of
+    /// its scratch its ledger names, never the whole, since a scratch can
+    /// hold gigabytes of clones and data no other machine needs.
+    #[must_use]
+    pub fn quest(&self, id: &str, ledger: &Ledger) -> Quest {
+        Quest::new(self.record(id), self.home.clone())
+            .sharing(self.scratch.join(id), ledger.scratch.clone())
+    }
+
+    /// Names `folder` of shared quest `id`'s scratch for sharing, refusing
+    /// one that may not be named, isn't there, is a git clone, or is too
+    /// heavy to cross, saying which.
+    pub fn name_scratch(&self, id: &str, folder: &str) -> io::Result<()> {
+        let refused = |why: String| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{folder} of {id}'s scratch can't be shared: {why}"),
+            )
+        };
+        if !may_name(folder) {
+            return Err(refused(
+                "only a folder right in the scratch may be, and never tmp/, build output \
+                 or a hidden one"
+                    .to_owned(),
+            ));
+        }
+        let at = self.scratch.join(id).join(folder);
+        if !at.is_dir() {
+            return Err(refused(format!("{} is no folder", at.display())));
+        }
+        if at.join(".git").exists() {
+            return Err(refused(
+                "it is a git clone, which is fetched again from its remote rather than copied"
+                    .to_owned(),
+            ));
+        }
+        let only = Quest::new(self.record(id), self.home.clone())
+            .sharing(self.scratch.join(id), BTreeSet::from([folder.to_owned()]));
+        let (mut files, mut bytes) = (0_u64, 0_u64);
+        only.each_file(&mut |shared| {
+            if shared.place != Place::Scratch {
+                return Ok(());
+            }
+            let len = fs::metadata(only.path_of(&shared)?)?.len();
+            if len > LARGEST_FILE {
+                return Err(refused(format!(
+                    "{} holds {len} bytes, more than the {LARGEST_FILE} a file may until \
+                     large files cross in pieces",
+                    shared.path
+                )));
+            }
+            files += 1;
+            bytes += len;
+            if files > MOST_FILES || bytes > MOST_BYTES {
+                return Err(refused(format!(
+                    "it holds more than {MOST_FILES} files or {MOST_BYTES} bytes"
+                )));
+            }
+            Ok(())
+        })?;
+        let mut held = self.ledgers().hold(id)?;
+        held.ledger.scratch.insert(folder.to_owned());
+        held.keep()
     }
 
     /// This machine's ledgers.
@@ -77,6 +141,15 @@ impl Places {
     }
 }
 
+/// The most files a scratch folder named for sharing may hold, so a
+/// folder of bulk data isn't named by mistake.
+const MOST_FILES: u64 = 10_000;
+/// The most bytes a scratch folder named for sharing may hold.
+const MOST_BYTES: u64 = 1 << 30;
+/// The largest file a scratch folder named for sharing may hold, since a
+/// file crosses in one frame until large files cross in pieces.
+const LARGEST_FILE: u64 = 64 << 20;
+
 /// How many quests deep a quest may sit under others.
 const MOST_NESTED: usize = 16;
 
@@ -98,6 +171,10 @@ pub enum Say {
     Shares {
         /// Their ids.
         quests: Vec<String>,
+        /// The folders of each quest's scratch that are shared, by the
+        /// quest's id; an end older than this names none.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        scratch: BTreeMap<String, BTreeSet<String>>,
     },
     /// What this end holds of some of a quest's files.
     Holds {
@@ -135,8 +212,9 @@ pub struct Exchange {
     places: Places,
     machine: String,
     other: String,
-    /// The quests last said to be shared.
-    told: BTreeSet<String>,
+    /// The quests last said to be shared, with the folders of each one's
+    /// scratch.
+    told: BTreeMap<String, BTreeSet<String>>,
     /// What the quests' sessions should hear, not yet said.
     findings: Vec<Draft>,
 }
@@ -149,7 +227,7 @@ impl Exchange {
             places,
             machine,
             other,
-            told: BTreeSet::new(),
+            told: BTreeMap::new(),
             findings: Vec::new(),
         }
     }
@@ -193,21 +271,17 @@ impl Exchange {
     /// and what changed of the rest.
     pub fn look(&mut self) -> io::Result<Vec<Say>> {
         let ledgers = self.places.ledgers();
-        let quests: BTreeSet<String> = ledgers.quests()?.into_iter().collect();
-        let mut says = Vec::new();
-        if quests != self.told {
-            says.push(Say::Shares {
-                quests: quests.iter().cloned().collect(),
-            });
-        }
-        for id in &quests {
-            let mut held = ledgers.hold(id)?;
-            let changed = held.ledger.scan(&self.places.quest(id), &self.machine)?;
+        let mut shares = BTreeMap::new();
+        let mut holds = Vec::new();
+        for id in ledgers.quests()? {
+            let mut held = ledgers.hold(&id)?;
+            let quest = self.places.quest(&id, &held.ledger);
+            let changed = held.ledger.scan(&quest, &self.machine)?;
             if !changed.is_empty() {
                 held.keep()?;
             }
             let states = held.ledger.states();
-            let files: BTreeMap<String, State> = if self.told.contains(id) {
+            let files: BTreeMap<String, State> = if self.told.contains_key(&id) {
                 states
                     .into_iter()
                     .filter(|(key, _)| changed.contains(key))
@@ -215,23 +289,41 @@ impl Exchange {
             } else {
                 states
             };
-            if !files.is_empty() || !self.told.contains(id) {
-                says.push(Say::Holds {
+            if !files.is_empty() || !self.told.contains_key(&id) {
+                holds.push(Say::Holds {
                     quest: id.clone(),
                     files,
                 });
             }
+            shares.insert(id, held.ledger.scratch.clone());
         }
-        self.told = quests;
+        // Which folders are shared is said first, so the other end carries
+        // a newly named folder's files by the time it hears of them.
+        let mut says = Vec::new();
+        if shares != self.told {
+            says.push(Say::Shares {
+                quests: shares.keys().cloned().collect(),
+                scratch: shares
+                    .iter()
+                    .filter(|(_, folders)| !folders.is_empty())
+                    .map(|(id, folders)| (id.clone(), folders.clone()))
+                    .collect(),
+            });
+        }
+        says.extend(holds);
+        self.told = shares;
         Ok(says)
     }
 
     /// Takes what the other end said, returning what this end says back.
     pub fn hear(&mut self, say: Say) -> io::Result<Vec<Say>> {
         match say {
-            Say::Shares { quests } => {
+            Say::Shares { quests, scratch } => {
                 for id in quests {
                     self.share(&id)?;
+                }
+                for (id, folders) in scratch {
+                    self.share_scratch(&id, &folders)?;
                 }
                 Ok(Vec::new())
             }
@@ -250,14 +342,48 @@ impl Exchange {
         }
     }
 
-    /// Starts sharing `id` if this end doesn't yet, moving its own copy
-    /// aside first.
+    /// Starts sharing `id` if this end doesn't yet, moving its own record
+    /// aside first. None of its scratch is shared until a folder of it is
+    /// named.
     fn share(&self, id: &str) -> io::Result<()> {
         let ledgers = self.places.ledgers();
         if !is_quest(id) || ledgers.shares(id) {
             return Ok(());
         }
-        let quest = self.places.quest(id);
+        self.move_aside(&self.places.record(id), id, "record")?;
+        ledgers.hold(id)?.keep()
+    }
+
+    /// Starts sharing each of `folders` of `id`'s scratch this end doesn't
+    /// yet, moving its own copy of each aside first; a name that may not be
+    /// shared, or a quest this end doesn't share, is passed over.
+    fn share_scratch(&self, id: &str, folders: &BTreeSet<String>) -> io::Result<()> {
+        let ledgers = self.places.ledgers();
+        if !is_quest(id) || !ledgers.shares(id) {
+            return Ok(());
+        }
+        let mut held = ledgers.hold(id)?;
+        let new: Vec<&String> = folders
+            .iter()
+            .filter(|folder| may_name(folder) && !held.ledger.scratch.contains(*folder))
+            .collect();
+        if new.is_empty() {
+            return Ok(());
+        }
+        for folder in new {
+            let at = self.places.scratch.join(id).join(folder);
+            self.move_aside(&at, id, &format!("scratch/{folder}"))?;
+            held.ledger.scratch.insert(folder.clone());
+        }
+        held.keep()
+    }
+
+    /// Moves this machine's copy of `id`'s `name`, at `folder`, aside into
+    /// mycelium's own folder, if it has one, so nothing it held is lost.
+    fn move_aside(&self, folder: &std::path::Path, id: &str, name: &str) -> io::Result<()> {
+        if !folder.exists() {
+            return Ok(());
+        }
         let aside = self
             .places
             .state
@@ -267,25 +393,21 @@ impl Exchange {
                     .strftime("%Y%m%dT%H%M%SZ")
                     .to_string(),
             )
-            .join(id);
-        let scratch = quest.scratch.iter().map(|folder| (folder, "scratch"));
-        for (folder, name) in std::iter::once((&quest.record, "record")).chain(scratch) {
-            if folder.exists() {
-                fs::create_dir_all(&aside)?;
-                fs::rename(folder, aside.join(name))?;
-                eprintln!(
-                    "moved this machine's copy of {id}'s {name} aside to {}",
-                    aside.display()
-                );
-            }
-        }
-        ledgers.hold(id)?.keep()
+            .join(id)
+            .join(name);
+        fs::create_dir_all(aside.parent().unwrap_or(&aside))?;
+        fs::rename(folder, &aside)?;
+        eprintln!(
+            "moved this machine's copy of {id}'s {name} aside to {}",
+            aside.display()
+        );
+        Ok(())
     }
 
     /// Asks for each file the other end holds that this end should take.
     fn held(&self, id: &str, files: BTreeMap<String, State>) -> io::Result<Vec<Say>> {
-        let quest = self.places.quest(id);
         let mut held = self.places.ledgers().hold(id)?;
+        let quest = self.places.quest(id, &held.ledger);
         if !held.ledger.scan(&quest, &self.machine)?.is_empty() {
             held.keep()?;
         }
@@ -327,14 +449,14 @@ impl Exchange {
 
     /// Sends a file the other end asked for, as this end holds it now.
     fn want(&self, id: &str, key: &str) -> io::Result<Vec<Say>> {
-        let quest = self.places.quest(id);
-        let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
-            return Ok(Vec::new());
-        };
         if !self.places.ledgers().shares(id) {
             return Ok(Vec::new());
         }
         let mut held = self.places.ledgers().hold(id)?;
+        let quest = self.places.quest(id, &held.ledger);
+        let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
+            return Ok(Vec::new());
+        };
         if !held.ledger.scan(&quest, &self.machine)?.is_empty() {
             held.keep()?;
         }
@@ -362,10 +484,6 @@ impl Exchange {
         body: Option<&str>,
         mode: Option<u32>,
     ) -> io::Result<Vec<Say>> {
-        let quest = self.places.quest(id);
-        let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
-            return Ok(Vec::new());
-        };
         if !self.places.ledgers().shares(id) {
             return Ok(Vec::new());
         }
@@ -380,6 +498,10 @@ impl Exchange {
             ));
         }
         let mut held = self.places.ledgers().hold(id)?;
+        let quest = self.places.quest(id, &held.ledger);
+        let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
+            return Ok(Vec::new());
+        };
         let scanned = !held.ledger.scan(&quest, &self.machine)?.is_empty();
         let ours = held
             .ledger
@@ -479,6 +601,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("a temporary folder");
             let places = Places {
                 quests: dir.path().join("quests"),
+                scratch: dir.path().join("scratch"),
                 home: dir.path().join("home"),
                 state: dir.path().join("state"),
             };
@@ -729,6 +852,121 @@ mod tests {
             equilibrius.read("attachments/map.md"),
             None,
             "and its removal did"
+        );
+    }
+
+    #[test]
+    fn only_the_scratch_folders_named_cross_and_the_far_ends_own_moves_aside() {
+        let optimus = Machine::new("optimus");
+        let equilibrius = Machine::new("equilibrius");
+        let scratch = |machine: &Machine, path: &str| machine.places.scratch.join(QUEST).join(path);
+        let put = |machine: &Machine, path: &str, text: &str| {
+            let path = scratch(machine, path);
+            fs::create_dir_all(path.parent().expect("a file has a folder")).expect("made");
+            fs::write(path, text).expect("written");
+        };
+        optimus.write("README.md", "# Shared\n");
+        put(&optimus, "notes/plan.md", "notes\n");
+        put(&optimus, "notes/runs/one.json", "{}\n");
+        put(&optimus, "hub-home/big.bin", "bulk\n");
+        put(&optimus, "tmp/session.log", "a session's own\n");
+        put(&equilibrius, "notes/old.md", "the Mac's own notes\n");
+        optimus
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("held")
+            .keep()
+            .expect("shared");
+        optimus
+            .places
+            .name_scratch(QUEST, "notes")
+            .expect("notes named");
+
+        let (mut near, mut far) = (
+            optimus.exchange(&equilibrius),
+            equilibrius.exchange(&optimus),
+        );
+        talk(&mut near, &mut far);
+        let read = |machine: &Machine, path: &str| fs::read_to_string(scratch(machine, path)).ok();
+        assert_eq!(
+            read(&equilibrius, "notes/plan.md").as_deref(),
+            Some("notes\n"),
+            "the named folder crossed"
+        );
+        assert_eq!(
+            read(&equilibrius, "notes/runs/one.json").as_deref(),
+            Some("{}\n"),
+            "with what is in it"
+        );
+        assert_eq!(
+            read(&equilibrius, "notes/old.md"),
+            None,
+            "the far end's own folder moved aside"
+        );
+        let aside = fs::read_dir(equilibrius.places.state.join("before-share"))
+            .expect("something moved aside")
+            .map(|entry| entry.expect("an entry").path())
+            .find(|at| at.join(QUEST).join("scratch/notes/old.md").exists());
+        assert!(aside.is_some(), "where nothing is lost");
+        for path in ["hub-home/big.bin", "tmp/session.log"] {
+            assert_eq!(read(&equilibrius, path), None, "{path} stayed home");
+        }
+
+        put(&equilibrius, "notes/plan.md", "notes, from the Mac\n");
+        talk(&mut near, &mut far);
+        assert_eq!(
+            read(&optimus, "notes/plan.md").as_deref(),
+            Some("notes, from the Mac\n"),
+            "and a change crosses back"
+        );
+
+        put(&optimus, "bench/run.csv", "1,2\n");
+        optimus
+            .places
+            .name_scratch(QUEST, "bench")
+            .expect("bench named");
+        talk(&mut near, &mut far);
+        assert_eq!(
+            read(&equilibrius, "bench/run.csv").as_deref(),
+            Some("1,2\n"),
+            "a folder named once the quest is shared crosses too"
+        );
+    }
+
+    #[test]
+    fn a_clone_or_a_heavy_folder_is_refused_when_named() {
+        let optimus = Machine::new("optimus");
+        let put = |path: &str, bytes: &[u8]| {
+            let path = optimus.places.scratch.join(QUEST).join(path);
+            fs::create_dir_all(path.parent().expect("a file has a folder")).expect("made");
+            fs::write(path, bytes).expect("written");
+        };
+        put("ttc/.git/HEAD", b"ref: refs/heads/main\n");
+        put("ttc/src/lib.rs", b"\n");
+        for at in 0..=MOST_FILES {
+            put(&format!("many/{at}"), b"");
+        }
+        let named = |folder: &str| optimus.places.name_scratch(QUEST, folder);
+        for (folder, why) in [
+            ("ttc", "git clone"),
+            ("many", "more than"),
+            ("tmp", "never tmp/"),
+            ("gone", "no folder"),
+        ] {
+            let error = named(folder).expect_err("refused").to_string();
+            assert!(error.contains(why), "{folder} refused as {why}: {error}");
+        }
+        assert!(
+            optimus
+                .places
+                .ledgers()
+                .hold(QUEST)
+                .expect("held")
+                .ledger
+                .scratch
+                .is_empty(),
+            "and none of them is shared"
         );
     }
 

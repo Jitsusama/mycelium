@@ -7,7 +7,7 @@
 //! a scan then finds nothing new in it. Each file's size and modification
 //! time are kept too, so a scan hashes only what may have changed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -62,6 +62,9 @@ pub struct Ledger {
     /// written apart is taken against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journey: Option<String>,
+    /// The folders of the quest's scratch that are shared, by name.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub scratch: BTreeSet<String>,
 }
 
 /// A shared file's key in a ledger and on a link: its place and its path.
@@ -258,7 +261,7 @@ mod tests {
     use super::*;
 
     fn quest(dir: &Path) -> Quest {
-        Quest::new(dir.join("record"), None, dir.join("home"))
+        Quest::new(dir.join("record"), dir.join("home"))
     }
 
     fn write(quest: &Quest, path: &str, text: &str) {
