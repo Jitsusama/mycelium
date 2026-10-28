@@ -13,19 +13,15 @@
 //! copy is written and let go only by the one link that holds a claim on
 //! its machine.
 
+mod ends;
 pub mod folders;
 #[cfg(test)]
 pub mod memory;
 
 use std::io;
-use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
-
-/// How often this machine's sessions are judged again, since a session
-/// ending changes its process, not its presence.
-pub const LIVENESS_EVERY: Duration = Duration::from_secs(5);
 
 /// A session's presence, as the store holds it.
 #[derive(Debug, Clone, PartialEq)]

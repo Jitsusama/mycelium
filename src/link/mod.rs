@@ -37,7 +37,7 @@ use tokio::sync::mpsc;
 
 use crate::mesh;
 use crate::share::exchange::{Exchange, Places, Say};
-use crate::store::{self, Change, Claim, LIVENESS_EVERY, Store};
+use crate::store::{self, Change, Claim, Store};
 use dial::Connection;
 use membership::{Hello, Membership};
 
@@ -136,7 +136,6 @@ pub async fn run(
     send(&mut writing, &Frame::Have { messages }).await?;
     end.send_presence(&mut writing).await?;
 
-    let mut liveness = tokio::time::interval(LIVENESS_EVERY);
     let mut keeping = tokio::time::interval(KEEP_EVERY);
     let mut looking = tokio::time::interval(LOOK_EVERY);
     let result = loop {
@@ -146,7 +145,6 @@ pub async fn run(
                 Some(Err(error)) => Err(error),
                 None => break Ok(()),
             },
-            _ = liveness.tick() => end.send_presence(&mut writing).await,
             _ = keeping.tick() => end.keep_carried(),
             _ = looking.tick() => end.share(Exchange::look, &mut writing).await,
             change = changes.changes.recv() => match change {

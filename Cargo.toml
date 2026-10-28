@@ -21,9 +21,9 @@ clap = { version = "4", features = ["derive", "env"] }
 jiff = "0.2"
 # Folder changes, from inotify on Linux and FSEvents on macOS.
 notify = "8"
-# Whether a session's process still lives, and the machine's name, without a C
-# binding of our own.
-rustix = { version = "1", features = ["fs", "process", "system"] }
+# Whether a session's process still lives, the moment it ends, and the
+# machine's name, without a C binding of our own.
+rustix = { version = "1", features = ["event", "fs", "process", "system"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = [
