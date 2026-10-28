@@ -158,12 +158,19 @@ is newly named, or when it can't be watched; a watch that fails or
 overflows has every folder walked. A change found while hearing the
 other end is said at the next look:
 
-- `{"Shares": {"quests", "scratch", "clones"}}`: every quest it shares,
-  the scratch folders named of each, by quest, and the clones in them,
-  each `{"remote", "branch"}` by its path. The other end starts sharing
+- `{"Shares": {"quests", "scratch", "clones", "ended"}}`: every quest it
+  shares, the scratch folders named of each, by quest, the clones in
+  them, each `{"remote", "branch"}` by its path, and the quests whose
+  README says `concluded` or `retired`. The other end starts sharing
   any quest or folder it didn't, first moving its own copy aside to
   `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. It is said
   before the files, so a folder's files are carried once heard of.
+  An ended quest's record still crosses, so the README saying it ended
+  reaches the other end, but its scratch is let be. Once a quest has
+  ended at an end and the other says it ended there too, or no longer
+  names it, that end stops sharing it and isn't taken up again, its
+  files left as they are. An end older than `ended` names none, so a
+  quest stays shared with it.
 - `{"Holds": {"quest", "files"}}`: each changed file's state.
 - `{"Want": {"quest", "file", "at"}}`: a file whose state is newer
   there, from offset `at`. An end older than `at` names none and is

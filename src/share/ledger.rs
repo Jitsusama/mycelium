@@ -266,6 +266,15 @@ impl Ledgers {
         self.folder.join(format!("{quest}.json")).exists()
     }
 
+    /// Stops sharing `quest`, leaving its files as they are.
+    pub fn stop(&self, quest: &str) -> io::Result<()> {
+        let held = self.hold(quest)?;
+        match fs::remove_file(&held.path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
+    }
+
     /// Holds `quest`'s ledger for changing, a new one if it has none,
     /// waiting for anyone else on this machine holding it.
     pub fn hold(&self, quest: &str) -> io::Result<Held> {
