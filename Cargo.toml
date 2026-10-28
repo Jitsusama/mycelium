@@ -41,6 +41,12 @@ tokio = { version = "1", features = [
 [dev-dependencies]
 tempfile = "3"
 
+# How fast the node is, each a program printing what it measured; see
+# benches/README.md.
+[[bench]]
+name = "heard"
+harness = false
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

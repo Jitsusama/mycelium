@@ -11,6 +11,8 @@ says what crosses between machines and how clients speak to a node.
 - `src/store/`: where a node keeps messages and presence
 - `src/link/`: two machines' stores kept as one, with its seams for
   dialling, discovery and membership
+- `benches/`: how fast the node is, each bench a program printing what
+  it measured
 - `nix/`: the package, the checks and the tree's own rules
 
 ## Rules
