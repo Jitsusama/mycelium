@@ -16,13 +16,14 @@
 
 use std::fs;
 use std::io;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::ledger::{Seen, seen};
+use super::pieces::{PIECE, piece_of};
 use super::tree::{Content, Place, Quest, Shared, content};
 
 /// What stands for the account's home folder in a record's text as it
@@ -51,6 +52,28 @@ impl Quest {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         }
+    }
+
+    /// The piece of a shared file at `at`, as it crosses, with the length
+    /// of the whole, or nothing once it is gone. A file whose text is
+    /// translated is read whole, since its length is its translation's.
+    pub fn read_piece(&self, shared: &Shared, at: u64) -> io::Result<Option<(Vec<u8>, u64)>> {
+        if translates(shared) {
+            return Ok(self.read(shared)?.map(|bytes| {
+                let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                (piece_of(&bytes, at).to_vec(), len)
+            }));
+        }
+        let mut file = match fs::File::open(self.path_of(shared)?) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let len = file.metadata()?.len();
+        file.seek(SeekFrom::Start(at))?;
+        let mut piece = Vec::new();
+        file.take(PIECE).read_to_end(&mut piece)?;
+        Ok(Some((piece, len)))
     }
 
     /// What a shared file holds, named as it crosses.

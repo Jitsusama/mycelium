@@ -21,6 +21,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
 use super::ledger::{Entry, Ledger, Ledgers, is_quest, shared_of};
+use super::pieces::{PIECE, Pieces, Staged};
 use super::settle::{Merge, Settled, State, beside, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
 use super::{journey, log};
@@ -95,8 +96,8 @@ impl Places {
             let len = fs::metadata(only.path_of(&shared)?)?.len();
             if len > LARGEST_FILE {
                 return Err(refused(format!(
-                    "{} holds {len} bytes, more than the {LARGEST_FILE} a file may until \
-                     large files cross in pieces",
+                    "{} holds {len} bytes, more than the {LARGEST_FILE} a file may, since \
+                     each is held whole once it lands",
                     shared.path
                 )));
             }
@@ -146,8 +147,8 @@ impl Places {
 const MOST_FILES: u64 = 10_000;
 /// The most bytes a scratch folder named for sharing may hold.
 const MOST_BYTES: u64 = 1 << 30;
-/// The largest file a scratch folder named for sharing may hold, since a
-/// file crosses in one frame until large files cross in pieces.
+/// The largest file a scratch folder named for sharing may hold: a file
+/// crosses in pieces, but is held whole once it lands, to be settled.
 const LARGEST_FILE: u64 = 64 << 20;
 
 /// How many quests deep a quest may sit under others.
@@ -189,6 +190,28 @@ pub enum Say {
         quest: String,
         /// The file's key.
         file: String,
+        /// Where in it to go on from, for a file crossing in pieces; an end
+        /// older than pieces names none, and is sent the file whole.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<u64>,
+    },
+    /// A piece of a file larger than one, as it crosses ([`pieces`]).
+    Piece {
+        /// The quest's id.
+        quest: String,
+        /// The file's key.
+        file: String,
+        /// Its state on the end that sent it.
+        state: State,
+        /// Where in the file the piece begins.
+        at: u64,
+        /// How long the whole file is.
+        len: u64,
+        /// What the piece holds, in base64.
+        body: String,
+        /// Who may read, write and run the file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<u32>,
     },
     /// A file, as it crosses.
     File {
@@ -217,18 +240,27 @@ pub struct Exchange {
     told: BTreeMap<String, BTreeSet<String>>,
     /// What the quests' sessions should hear, not yet said.
     findings: Vec<Draft>,
+    /// The large files crossing from the other end, a piece at a time.
+    pieces: Pieces,
 }
 
 impl Exchange {
-    /// `machine`'s end of the talk with `other`.
+    /// `machine`'s end of the talk with `other`, clearing any crossing an
+    /// earlier link to `other` left unfinished, since nothing goes on with
+    /// it.
     #[must_use]
     pub fn new(places: Places, machine: String, other: String) -> Self {
+        let pieces = Pieces::from(&places.state, &other);
+        if let Err(error) = pieces.clear() {
+            eprintln!("couldn't clear what an earlier link to {other} left staged: {error}");
+        }
         Self {
             places,
             machine,
             other,
             told: BTreeMap::new(),
             findings: Vec::new(),
+            pieces,
         }
     }
 
@@ -331,7 +363,16 @@ impl Exchange {
                 self.share(&quest)?;
                 self.held(&quest, files)
             }
-            Say::Want { quest, file } => self.want(&quest, &file),
+            Say::Want { quest, file, at } => self.want(&quest, &file, at),
+            Say::Piece {
+                quest,
+                file,
+                state,
+                at,
+                len,
+                body,
+                mode,
+            } => self.piece(&quest, &file, &state, (at, len), &body, mode),
             Say::File {
                 quest,
                 file,
@@ -441,6 +482,7 @@ impl Exchange {
                 _ => wants.push(Say::Want {
                     quest: id.to_owned(),
                     file: key,
+                    at: Some(0),
                 }),
             }
         }
@@ -448,7 +490,7 @@ impl Exchange {
     }
 
     /// Sends a file the other end asked for, as this end holds it now.
-    fn want(&self, id: &str, key: &str) -> io::Result<Vec<Say>> {
+    fn want(&self, id: &str, key: &str, at: Option<u64>) -> io::Result<Vec<Say>> {
         if !self.places.ledgers().shares(id) {
             return Ok(Vec::new());
         }
@@ -463,14 +505,64 @@ impl Exchange {
         let Some(entry) = held.ledger.files.get(key) else {
             return Ok(Vec::new());
         };
-        let body = quest.read(&shared)?.map(|bytes| STANDARD.encode(bytes));
+        let mode = quest.mode_of(&shared)?;
+        let body = match at {
+            None => quest.read(&shared)?,
+            Some(at) => match quest.read_piece(&shared, at)? {
+                Some((piece, len)) if at > 0 || len > PIECE => {
+                    return Ok(vec![Say::Piece {
+                        quest: id.to_owned(),
+                        file: key.to_owned(),
+                        state: entry.state(),
+                        at,
+                        len,
+                        body: STANDARD.encode(piece),
+                        mode,
+                    }]);
+                }
+                // A file of one piece crosses whole.
+                whole => whole.map(|(piece, _)| piece),
+            },
+        };
         Ok(vec![Say::File {
             quest: id.to_owned(),
             file: key.to_owned(),
             state: entry.state(),
-            body,
-            mode: quest.mode_of(&shared)?,
+            body: body.map(|bytes| STANDARD.encode(bytes)),
+            mode,
         }])
+    }
+
+    /// Stages a piece of a file the other end sent, asking for the next,
+    /// and takes the file as a whole one once it is whole.
+    fn piece(
+        &mut self,
+        id: &str,
+        key: &str,
+        theirs: &State,
+        (at, len): (u64, u64),
+        body: &str,
+        mode: Option<u32>,
+    ) -> io::Result<Vec<Say>> {
+        let Some(hash) = theirs.hash.as_deref() else {
+            return Ok(Vec::new());
+        };
+        if !self.places.ledgers().shares(id) {
+            return Ok(Vec::new());
+        }
+        let body = STANDARD
+            .decode(body)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        match self.pieces.stage(id, key, hash, at, len, &body)? {
+            Staged::More(next) => Ok(vec![Say::Want {
+                quest: id.to_owned(),
+                file: key.to_owned(),
+                at: Some(next),
+            }]),
+            Staged::Whole(whole) => self.take_file(id, key, theirs, Some(&whole), mode),
+            // The crossing begun again over it carries on.
+            Staged::Astray => Ok(Vec::new()),
+        }
     }
 
     /// Takes a file the other end sent, by how it settles against this
@@ -491,7 +583,20 @@ impl Exchange {
             .map(|body| STANDARD.decode(body))
             .transpose()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if body.as_deref().map(|body| content(body).hash) != theirs.hash {
+        self.take_file(id, key, theirs, body.as_deref(), mode)
+    }
+
+    /// Takes a whole file the other end sent, or its deletion for `None`,
+    /// as [`Self::file`] does.
+    fn take_file(
+        &mut self,
+        id: &str,
+        key: &str,
+        theirs: &State,
+        body: Option<&[u8]>,
+        mode: Option<u32>,
+    ) -> io::Result<Vec<Say>> {
+        if body.map(|body| content(body).hash) != theirs.hash {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("{key} of {id} doesn't hold what its hash says"),
@@ -515,11 +620,10 @@ impl Exchange {
             Settled::Keep => None,
             Settled::Merge(_) | Settled::Beside if !self.settles() => None,
             Settled::Take => {
-                let written = quest.write(&shared, body.as_deref(), mode)?;
+                let written = quest.write(&shared, body, mode)?;
                 if is_journey(&shared) {
-                    held.ledger.journey = body
-                        .as_deref()
-                        .map(|body| String::from_utf8_lossy(body).into_owned());
+                    held.ledger.journey =
+                        body.map(|body| String::from_utf8_lossy(body).into_owned());
                 }
                 Some(Entry {
                     hash: theirs.hash.clone(),
@@ -530,7 +634,7 @@ impl Exchange {
             Settled::Merge(merge) => {
                 let ours_text = quest.read(&shared)?.unwrap_or_default();
                 let ours_text = String::from_utf8_lossy(&ours_text);
-                let theirs_text = String::from_utf8_lossy(body.as_deref().unwrap_or_default());
+                let theirs_text = String::from_utf8_lossy(body.unwrap_or_default());
                 let merged = match merge {
                     Merge::Journey => {
                         journey::merged(held.ledger.journey.as_deref(), &ours_text, &theirs_text)
@@ -553,7 +657,7 @@ impl Exchange {
                     place: shared.place,
                     path: beside(&shared.path, &self.other),
                 };
-                quest.write(&theirs_at, body.as_deref(), mode)?;
+                quest.write(&theirs_at, body, mode)?;
                 self.kept_beside(id, key, &theirs_at.path);
                 let ours_entry = held.ledger.files.get(key).cloned().unwrap_or_default();
                 Some(Entry {
@@ -931,6 +1035,82 @@ mod tests {
             read(&equilibrius, "bench/run.csv").as_deref(),
             Some("1,2\n"),
             "a folder named once the quest is shared crosses too"
+        );
+    }
+
+    #[test]
+    fn a_large_file_crosses_a_piece_to_a_frame() {
+        let optimus = Machine::new("optimus");
+        let equilibrius = Machine::new("equilibrius");
+        let at = |machine: &Machine| machine.places.scratch.join(QUEST).join("bench/run.bin");
+        let bytes: Vec<u8> = (0..=u8::MAX)
+            .cycle()
+            .take(usize::try_from(2 * PIECE).expect("a size") + 512 * 1024)
+            .collect();
+        fs::create_dir_all(at(&optimus).parent().expect("a folder")).expect("made");
+        fs::write(at(&optimus), &bytes).expect("written");
+        optimus
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("held")
+            .keep()
+            .expect("shared");
+        optimus
+            .places
+            .name_scratch(QUEST, "bench")
+            .expect("bench named");
+        let (mut near, mut far) = (
+            optimus.exchange(&equilibrius),
+            equilibrius.exchange(&optimus),
+        );
+
+        // Passed by hand, to see each frame: what optimus sends for each
+        // thing equilibrius asks.
+        let mut to_far = near.look().expect("optimus looks");
+        far.look().expect("equilibrius looks");
+        let mut pieces = Vec::new();
+        for _ in 0..20 {
+            let mut to_near = Vec::new();
+            for say in to_far.drain(..) {
+                if let Say::Piece { at, body, .. } = &say {
+                    pieces.push((*at, STANDARD.decode(body).expect("base64").len()));
+                }
+                assert!(
+                    !matches!(&say, Say::File { file, .. } if file.ends_with("run.bin")),
+                    "the large file never crosses in one frame"
+                );
+                to_near.extend(far.hear(say).expect("equilibrius hears"));
+            }
+            for say in to_near {
+                to_far.extend(near.hear(say).expect("optimus hears"));
+            }
+            if to_far.is_empty() {
+                break;
+            }
+        }
+        let piece = usize::try_from(PIECE).expect("a size");
+        assert_eq!(
+            pieces,
+            [(0, piece), (PIECE, piece), (2 * PIECE, 512 * 1024)],
+            "it crossed in three pieces, each asked for once the last was staged"
+        );
+        assert!(
+            fs::read(at(&equilibrius)).expect("it crossed") == bytes,
+            "and landed whole"
+        );
+        assert!(
+            matches!(
+                near.hear(Say::Want {
+                    quest: QUEST.to_owned(),
+                    file: "scratch/bench/run.bin".to_owned(),
+                    at: None,
+                })
+                .expect("optimus hears")
+                .as_slice(),
+                [Say::File { body: Some(_), .. }]
+            ),
+            "an end older than pieces, naming no offset, is sent it whole"
         );
     }
 

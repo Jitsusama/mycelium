@@ -145,7 +145,16 @@ as `Share` frames:
   `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. It is said
   before the files, so a folder's files are carried once heard of.
 - `{"Holds": {"quest", "files"}}`: each changed file's state.
-- `{"Want": {"quest", "file"}}`: a file whose state is newer there.
+- `{"Want": {"quest", "file", "at"}}`: a file whose state is newer
+  there, from offset `at`. An end older than `at` names none and is
+  sent the file whole.
+- `{"Piece": {"quest", "file", "state", "at", "len", "body", "mode"}}`:
+  for a file over 1 MiB, the 1 MiB of it at `at`, of `len` in all.
+  The receiving end stages it under
+  `~/.local/state/mycelium/pieces/<machine>/` and asks for the next, so
+  the link's messages pass between pieces. Once whole, it is taken as a
+  `File`; a piece that doesn't follow what is staged is passed over, and
+  a link's start clears what an earlier one left.
 - `{"File": {"quest", "file", "state", "body", "mode"}}`: the file, in
   base64, or no body once deleted, and its mode's permission bits, so a
   secret at 0600 lands at 0600. Its hash is checked before it is written,
@@ -195,9 +204,8 @@ A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 
 Each lands behind a seam above, or as a seam of its own:
 
-- **Shared scratch:** a named folder's large files crossing in pieces,
-  the folder watched rather than looked at, and a git clone carried as
-  its remote and branch for the far end to clone.
+- **Shared scratch:** a named folder watched rather than looked at, and
+  a git clone carried as its remote and branch for the far end to clone.
 - **The node's own log:** messages and presence numbered per machine, so
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.
