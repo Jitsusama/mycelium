@@ -35,6 +35,10 @@ pub struct Presence {
     /// Whether it still lives: judged from its process on this machine,
     /// and taken as so for a session elsewhere while a link carries it.
     pub lives: bool,
+    /// Since when, in milliseconds since the epoch, no link has reached
+    /// the machine it runs on, so whether it lives is unknown; `None` while
+    /// a link carries it, and always for this machine's own.
+    pub unreachable_since: Option<i64>,
 }
 
 /// What changed in a store.
@@ -95,6 +99,11 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// no node keeps saying so can be judged gone.
     fn keep_presence(&self, session: &str, machine: &str) -> io::Result<()>;
 
+    /// Keeps the presence of a session that runs on `machine` but marks it
+    /// out of reach since `since`, unless it is marked so already; carrying
+    /// it again clears the mark.
+    fn mark_unreachable(&self, session: &str, machine: &str, since: i64) -> io::Result<()>;
+
     /// Lets go of the presence of a session that runs on `machine`; this
     /// machine's own sessions, and other machines', are never touched.
     fn remove_presence(&self, session: &str, machine: &str) -> io::Result<()>;
@@ -103,10 +112,10 @@ pub trait Store: Clone + Send + Sync + 'static {
     fn changes(&self) -> io::Result<Changes>;
 }
 
-/// Lets go of every session `machine` carried here.
-pub fn let_go(store: &impl Store, machine: &str) {
+/// Lets go of every session `machine` carried here but those `kept`.
+pub fn let_go(store: &impl Store, machine: &str, kept: impl Fn(&str) -> bool) {
     for presence in store.presences() {
-        if presence.elsewhere.as_deref() == Some(machine) {
+        if presence.elsewhere.as_deref() == Some(machine) && !kept(&presence.session) {
             // Letting go is tidying: a presence left behind is let go when
             // the next link to that machine starts.
             let _ = store.remove_presence(&presence.session, machine);
@@ -114,9 +123,23 @@ pub fn let_go(store: &impl Store, machine: &str) {
     }
 }
 
-/// Lets go of the sessions of every machine no link carries now, as left
-/// behind by a link or node that ended without letting go.
-pub fn let_go_of_unclaimed(store: &impl Store) -> io::Result<()> {
+/// Marks every session `machine` carried here out of reach since `since`:
+/// a link that drops says nothing of whether they still run, so they stay
+/// until a link to that machine comes back and says which do.
+pub fn out_of_reach(store: &impl Store, machine: &str, since: i64) {
+    for presence in store.presences() {
+        if presence.elsewhere.as_deref() == Some(machine)
+            && let Err(error) = store.mark_unreachable(&presence.session, machine, since)
+        {
+            eprintln!("couldn't mark {} out of reach: {error}", presence.session);
+        }
+    }
+}
+
+/// Marks out of reach the sessions of every machine no link carries now,
+/// as left behind by a link or node that ended without saying so, since
+/// that machine was last linked.
+pub fn out_of_reach_of_unclaimed(store: &impl Store) -> io::Result<()> {
     let mut machines: Vec<String> = store
         .presences()
         .into_iter()
@@ -126,7 +149,10 @@ pub fn let_go_of_unclaimed(store: &impl Store) -> io::Result<()> {
     machines.dedup();
     for machine in machines {
         if let Some(_claim) = store.claim(&machine)? {
-            let_go(store, &machine);
+            let since = store
+                .linked_until(&machine)
+                .unwrap_or_else(|| jiff::Timestamp::now().as_millisecond());
+            out_of_reach(store, &machine, since);
         }
     }
     Ok(())

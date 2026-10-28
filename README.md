@@ -12,8 +12,9 @@ The harness mesh's messages and presence, carried between machines:
 
 - A message any pi session sends reaches the sessions of every linked
   machine, and theirs reach it.
-- A session on another machine is seen with the machine it runs on, and
-  let go when it ends or the link drops.
+- A session on another machine is seen with the machine it runs on, let
+  go when it ends, and shown as unreachable while no link reaches its
+  machine.
 - A quest shared with `mycelium share` keeps the same record on every
   linked machine, with a journal written on both keeping both entries.
 - Links run over SSH, so a machine needs nothing but the `mycelium`

@@ -104,6 +104,7 @@ pub fn message(body: &Value) -> Option<Message> {
 pub fn session(presence: &Presence, here: &str) -> Option<Session> {
     let said = Said::deserialize(&presence.body).ok()?;
     let state = match (presence.lives, said.busy, said.state.as_deref()) {
+        _ if presence.unreachable_since.is_some() => State::Unreachable,
         (false, _, _) => State::Ended,
         (true, true, _) | (true, _, Some("busy")) => State::Busy,
         (true, _, _) => State::Idle,
@@ -258,6 +259,7 @@ mod tests {
             }),
             elsewhere: elsewhere.map(str::to_owned),
             lives,
+            unreachable_since: None,
         };
         let here = session(&presence(true, None), "optimus").expect("a presence reads");
         assert_eq!(
@@ -269,5 +271,16 @@ mod tests {
         assert_eq!(there.machine, "equilibrius");
         let ended = session(&presence(false, None), "optimus").expect("a presence reads");
         assert_eq!(ended.state, State::Ended);
+        let out_of_reach = Presence {
+            unreachable_since: Some(1_793_046_604_647),
+            ..presence(true, Some("equilibrius"))
+        };
+        assert_eq!(
+            session(&out_of_reach, "optimus")
+                .expect("a presence reads")
+                .state,
+            State::Unreachable,
+            "a session whose machine is out of reach reads as unreachable"
+        );
     }
 }
