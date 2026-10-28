@@ -189,7 +189,10 @@ other file keeps the far end's beside it as `<file>.from-<machine>`, and
 the settling node tells the quest's sessions so: a `finding` from
 `mycelium@<machine>` to the quest's whole group, such as
 `#quest/wcjqsg/4uhc5q`, named from the README's parents outermost first.
-A deletion gives way to a write. Record text crosses with the home folder
+A deletion gives way to a write. A scratch file is taken as deleted only
+while its named folder is there: a folder gone whole, as concluding a
+quest takes a machine's whole scratch, is no word on another machine's
+copy. Record text crosses with the home folder
 marked, so a path under `/home/jitsusama` reads `/Users/joel.gerber` on a
 Mac. Each write takes the quest's lock as the harness does and lands by
 rename, so a session never reads half a file.

@@ -1335,6 +1335,58 @@ mod tests {
     }
 
     #[test]
+    fn a_scratch_taken_away_whole_is_no_word_on_the_other_machines() {
+        let optimus = Machine::new("optimus");
+        let equilibrius = Machine::new("equilibrius");
+        let scratch = |machine: &Machine, path: &str| machine.places.scratch.join(QUEST).join(path);
+        let put = |path: &str, text: &str| {
+            let path = scratch(&optimus, path);
+            fs::create_dir_all(path.parent().expect("a file has a folder")).expect("made");
+            fs::write(path, text).expect("written");
+        };
+        optimus.write("README.md", "# Shared\n");
+        put("notes/plan.md", "notes\n");
+        put("notes/old.md", "old notes\n");
+        optimus
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("held")
+            .keep()
+            .expect("shared");
+        optimus.places.name_scratch(QUEST, "notes").expect("named");
+        let (mut near, mut far) = (
+            optimus.exchange(&equilibrius),
+            equilibrius.exchange(&optimus),
+        );
+        talk(&mut near, &mut far);
+        assert!(
+            scratch(&equilibrius, "notes/old.md").exists(),
+            "the notes cross"
+        );
+
+        fs::remove_file(scratch(&optimus, "notes/old.md")).expect("removed");
+        assert!(near.watch.wait(HEARD_WITHIN), "optimus hears it");
+        talk(&mut near, &mut far);
+        assert!(
+            !scratch(&equilibrius, "notes/old.md").exists(),
+            "a file removed from a named folder is removed there too"
+        );
+
+        // Concluding a quest takes this machine's whole scratch away.
+        fs::remove_dir_all(optimus.places.scratch.join(QUEST)).expect("taken away");
+        assert!(near.watch.wait(HEARD_WITHIN), "optimus hears it");
+        talk(&mut near, &mut far);
+        assert_eq!(
+            fs::read_to_string(scratch(&equilibrius, "notes/plan.md"))
+                .ok()
+                .as_deref(),
+            Some("notes\n"),
+            "but the Mac's copy stays when optimus's scratch goes whole"
+        );
+    }
+
+    #[test]
     fn a_clone_crosses_as_its_remote_and_is_made_where_it_is_lacking() {
         let optimus = Machine::new("optimus");
         let equilibrius = Machine::new("equilibrius");
