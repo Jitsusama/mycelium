@@ -14,12 +14,14 @@ The harness mesh's messages and presence, carried between machines:
   machine, and theirs reach it.
 - A session on another machine is seen with the machine it runs on, and
   let go when it ends or the link drops.
+- A quest shared with `mycelium share` keeps the same record on every
+  linked machine, with a journal written on both keeping both entries.
 - Links run over SSH, so a machine needs nothing but the `mycelium`
   command and an SSH login.
 - Each node serves a local socket in niri's shape, which pi, Quickshell
   or a terminal reads.
 
-[PROTOCOL.md](PROTOCOL.md) says how, and what comes next: shared files,
+[PROTOCOL.md](PROTOCOL.md) says how, and what comes next: shared scratch,
 the node's own log, connections of its own and providers for machines
 such as hosted sandboxes.
 
@@ -29,6 +31,9 @@ such as hosted sandboxes.
 # On each machine the node reaches, only the command is needed.
 # On the machine that dials:
 mycelium --realm work node --ssh joel.gerber@192.168.4.32
+
+# Then, on either machine, share a quest with every machine it links:
+mycelium --realm work share QEST-20261013-4UHC5Q
 ```
 
 ## Lineage

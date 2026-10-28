@@ -26,7 +26,7 @@ between machines:
 | --- | --- | --- |
 | Written once by id | messages | each machine holds the union of all |
 | One writer | a session's presence | only its own machine writes it; others hold copies |
-| Shared files | quest folders, scratch | not yet; see Coming Next |
+| Shared files | a shared quest's record | each machine holds the same, settled as below |
 | This machine's own | read markers, the queue, what is said to `#machine` | never |
 
 Since nothing has two writers, no machine waits on another to agree, and
@@ -91,6 +91,9 @@ same code, each line a JSON value:
    end's machine, again whenever it changes.
 5. `{"Ended": {"session"}}`: a session of the sending end's machine has
    ended.
+6. `{"Share": say}`: talk about shared quests, as below. An end that
+   shares nothing sends none, so it still links with an end older than
+   sharing.
 
 Three seams shape a link:
 
@@ -102,6 +105,38 @@ Three seams shape a link:
 - **Membership** (`link::membership::Membership`): which machines to admit.
   Today, a realm: any machine of the same realm speaking the same version,
   never the machine itself.
+
+## A Shared Quest
+
+`mycelium share QEST-...` shares a quest from this machine, and each link
+carries it from its next look. A quest is shared while its ledger,
+`~/.local/state/mycelium/shared/<QUEST>.json`, says so; the ledger keeps
+each file's version, counted per machine, and its content's hash.
+
+Only the quest's record crosses: its README, journey, log, documents and
+attachments, never a lock, a staging file or a copy kept beside. The
+scratch folder waits for a watch of its own, since a scratch can hold
+hundreds of thousands of files.
+
+Once a second, each end looks at its shared quests and says what changed,
+as `Share` frames:
+
+- `{"Shares": {"quests"}}`: every quest it shares. The other end starts
+  sharing any it didn't, first moving its own copy aside to
+  `~/.local/state/mycelium/before-share/<when>/<QUEST>/`.
+- `{"Holds": {"quest", "files"}}`: each changed file's state.
+- `{"Want": {"quest", "file"}}`: a file whose state is newer there.
+- `{"File": {"quest", "file", "state", "body"}}`: the file, in base64,
+  or no body once deleted. Its hash is checked before it is written.
+
+A file changed on one end is taken by the other. One changed on both is
+settled by the machine whose name sorts first, so the two never chase
+each other: the journey and the log keep both ends' entries, and any
+other file keeps the far end's beside it as `<file>.from-<machine>`.
+A deletion gives way to a write. Record text crosses with the home folder
+marked, so a path under `/home/jitsusama` reads `/Users/joel.gerber` on a
+Mac. Each write takes the quest's lock as the harness does and lands by
+rename, so a session never reads half a file.
 
 ## The Socket
 
@@ -130,9 +165,9 @@ A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 
 Each lands behind a seam above, or as a seam of its own:
 
-- **Shared files:** quest folders and scratch the same on every machine,
-  each version kept by its content's hash and the version it came from,
-  so a write that crosses another keeps both and tells both writers.
+- **Shared scratch:** a quest's scratch folder shared beside its record,
+  watched rather than looked at, with each file's mode kept, and a
+  finding told to both writers when a file is kept beside another.
 - **The node's own log:** messages and presence numbered per machine, so
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.

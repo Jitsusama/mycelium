@@ -13,6 +13,11 @@
 //! Each end reads in a task of its own, so two ends sending a week of
 //! messages at once never wait on each other.
 //!
+//! Where a machine shares quests, its end also carries their files
+//! ([`crate::share::exchange`]), looking for changes every second. An end
+//! that shares none says nothing of them, so it links with an end too old
+//! to know of sharing.
+//!
 //! How an end is reached is [`dial`]'s, and which ends to reach is
 //! [`discovery`]'s.
 
@@ -31,6 +36,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tokio::sync::mpsc;
 
 use crate::mesh;
+use crate::share::exchange::{Exchange, Places, Say};
 use crate::store::{self, Change, Claim, LIVENESS_EVERY, Store};
 use dial::Connection;
 use membership::{Hello, Membership};
@@ -45,6 +51,9 @@ const HELLO_WITHIN: Duration = Duration::from_secs(30);
 /// How often this end says again that the sessions it carried here still
 /// stand, so a copy nothing keeps saying so can be judged gone.
 const KEEP_EVERY: Duration = Duration::from_secs(60);
+
+/// How often this end looks for changes in the quests it shares.
+const LOOK_EVERY: Duration = Duration::from_secs(1);
 
 /// One line on a link.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,14 +84,18 @@ pub enum Frame {
         /// Its id.
         session: String,
     },
+    /// Something said about shared quests.
+    Share(Say),
 }
 
 /// Runs this end of a link until the other end leaves, then lets go of the
-/// presence of every session it carried here.
+/// presence of every session it carried here. With `shares`, it carries the
+/// files of the quests this machine shares too.
 pub async fn run(
     store: impl Store,
     membership: &impl Membership,
     connection: Connection,
+    shares: Option<Places>,
 ) -> io::Result<()> {
     let Connection {
         reading,
@@ -106,6 +119,8 @@ pub async fn run(
     store::let_go(&store, &other.machine);
     let reach = reach_start(&store, &other.machine);
     store.mark_linked(&other.machine, now())?;
+    let exchange = shares
+        .map(|places| Exchange::new(places, membership.hello().machine, other.machine.clone()));
     let mut end = End {
         store,
         other: other.machine,
@@ -113,6 +128,7 @@ pub async fn run(
         has: HashSet::new(),
         sent: BTreeMap::new(),
         carried: HashSet::new(),
+        exchange,
         _claim: claim,
     };
 
@@ -122,6 +138,7 @@ pub async fn run(
 
     let mut liveness = tokio::time::interval(LIVENESS_EVERY);
     let mut keeping = tokio::time::interval(KEEP_EVERY);
+    let mut looking = tokio::time::interval(LOOK_EVERY);
     let result = loop {
         let step = tokio::select! {
             frame = frames.recv() => match frame {
@@ -131,6 +148,7 @@ pub async fn run(
             },
             _ = liveness.tick() => end.send_presence(&mut writing).await,
             _ = keeping.tick() => end.keep_carried(),
+            _ = looking.tick() => end.share(Exchange::look, &mut writing).await,
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => end.send_messages(vec![id], &mut writing).await,
                 Some(Change::Presence) => end.send_presence(&mut writing).await,
@@ -211,6 +229,7 @@ struct End<S> {
     has: HashSet<String>,
     sent: BTreeMap<String, Value>,
     carried: HashSet<String>,
+    exchange: Option<Exchange>,
     _claim: Claim,
 }
 
@@ -251,6 +270,40 @@ impl<S: Store> End<S> {
                 self.carried.remove(&session);
                 self.store.remove_presence(&session, &self.other)?;
             }
+            Frame::Share(say) => {
+                self.share(move |exchange| exchange.hear(say), writing)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Has the exchange act on the disk, away from the link's own work,
+    /// and sends what it says. A quest that fails to share is told of and
+    /// tried again at the next look, rather than ending the link, which
+    /// would only meet it again at every redial.
+    async fn share(
+        &mut self,
+        act: impl FnOnce(&mut Exchange) -> io::Result<Vec<Say>> + Send + 'static,
+        writing: &mut (impl AsyncWrite + Unpin),
+    ) -> io::Result<()> {
+        let Some(mut exchange) = self.exchange.take() else {
+            return Ok(());
+        };
+        let (exchange, says) = tokio::task::spawn_blocking(move || {
+            let says = act(&mut exchange);
+            (exchange, says)
+        })
+        .await
+        .map_err(io::Error::other)?;
+        self.exchange = Some(exchange);
+        match says {
+            Ok(says) => {
+                for say in says {
+                    send(writing, &Frame::Share(say)).await?;
+                }
+            }
+            Err(error) => eprintln!("sharing quests with {}: {error}", self.other),
         }
         Ok(())
     }
@@ -407,9 +460,39 @@ mod tests {
         machine: &'static str,
         pipe: DuplexStream,
     ) -> tokio::task::JoinHandle<io::Result<()>> {
+        sharing_end(store, machine, pipe, None)
+    }
+
+    /// Runs `machine`'s end of a link over `pipe`, sharing the quests kept
+    /// in `shares`.
+    fn sharing_end(
+        store: &Memory,
+        machine: &'static str,
+        pipe: DuplexStream,
+        shares: Option<Places>,
+    ) -> tokio::task::JoinHandle<io::Result<()>> {
         let store = store.clone();
         let (reading, writing) = tokio::io::split(pipe);
-        tokio::spawn(async move { run(store, &realm(machine), connection(reading, writing)).await })
+        tokio::spawn(async move {
+            run(store, &realm(machine), connection(reading, writing), shares).await
+        })
+    }
+
+    /// Waits until the file at `path` holds `text`. Nothing tells of a
+    /// write to a quest's folder, so it looks again every few milliseconds
+    /// until it does, or gives up.
+    async fn until_file(path: &std::path::Path, text: &str) {
+        let waited = tokio::time::timeout(PATIENCE, async {
+            while std::fs::read_to_string(path).ok().as_deref() != Some(text) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            waited.is_ok(),
+            "{} didn't come to hold {text:?} within {PATIENCE:?}",
+            path.display()
+        );
     }
 
     /// Marks the two stores as last linked `ms_ago`, as if they had been
@@ -688,5 +771,35 @@ mod tests {
             optimus.presences().is_empty(),
             "the presence naming another session was refused"
         );
+    }
+
+    #[tokio::test]
+    async fn a_shared_quests_record_is_carried_both_ways() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = |machine: &str| Places {
+            quests: dir.path().join(machine).join("quests"),
+            home: dir.path().join(machine).join("home"),
+            state: dir.path().join(machine).join("state"),
+        };
+        let (here, there) = (places("optimus"), places("equilibrius"));
+        let quest = "QEST-20261013-4UHC5Q";
+        let ours = here.quests.join(quest).join("README.md");
+        let theirs = there.quests.join(quest).join("README.md");
+        std::fs::create_dir_all(here.quests.join(quest)).expect("the quest made");
+        std::fs::write(&ours, "# Shared\n").expect("its README written");
+        here.ledgers()
+            .hold(quest)
+            .expect("its ledger held")
+            .keep()
+            .expect("the quest shared");
+
+        let (optimus, equilibrius) = (Memory::default(), Memory::default());
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _near = sharing_end(&optimus, "optimus", near, Some(here));
+        let _far = sharing_end(&equilibrius, "equilibrius", far, Some(there));
+
+        until_file(&theirs, "# Shared\n").await;
+        std::fs::write(&theirs, "# Changed there\n").expect("changed on the far end");
+        until_file(&ours, "# Changed there\n").await;
     }
 }

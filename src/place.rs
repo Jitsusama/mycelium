@@ -1,10 +1,13 @@
 //! Where a node keeps things on its machine, by realm: its socket, its own
-//! folder, the harness mesh's folders, and what the machine is called.
+//! folder, the harness mesh's folders, the harness's quests, and what the
+//! machine is called.
 
 use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+use crate::share::exchange::Places;
 
 /// The socket the node for `realm` serves: in the login's runtime folder
 /// where the system has one (Linux), otherwise in the account's own
@@ -27,6 +30,21 @@ pub fn mesh() -> PathBuf {
         .join("pi")
         .join("agentic-harness.pi")
         .join("mesh-workflow")
+}
+
+/// Where this machine keeps shared quests, as the harness keeps them: the
+/// quest store and the account's home, with mycelium's own folder `state`
+/// for its ledgers.
+pub fn shares(state: &Path) -> Places {
+    Places {
+        quests: xdg("XDG_DATA_HOME", &[".local", "share"])
+            .join("pi")
+            .join("agentic-harness.pi")
+            .join("quest-workflow")
+            .join("quests"),
+        home: env::home_dir().unwrap_or_else(env::temp_dir),
+        state: state.to_owned(),
+    }
 }
 
 /// This machine's name, as the system gives it, up to its first dot.
@@ -65,9 +83,16 @@ pub fn settle_realm(state: &Path, realm: &str) -> io::Result<()> {
 }
 
 fn state_home() -> PathBuf {
-    env::var_os("XDG_STATE_HOME")
+    xdg("XDG_STATE_HOME", &[".local", "state"])
+}
+
+/// The folder an XDG variable names, or its default under the home folder.
+fn xdg(variable: &str, default: &[&str]) -> PathBuf {
+    env::var_os(variable)
         .map(PathBuf::from)
-        .or_else(|| env::home_dir().map(|home| home.join(".local").join("state")))
+        .or_else(|| {
+            env::home_dir().map(|home| default.iter().fold(home, |path, name| path.join(name)))
+        })
         .unwrap_or_else(env::temp_dir)
 }
 
