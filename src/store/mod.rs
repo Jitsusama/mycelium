@@ -1,5 +1,5 @@
-//! The store: where a node keeps the mesh's messages and presence on its
-//! machine.
+//! The store: where a node keeps the mesh's messages, presence and leases
+//! on its machine.
 //!
 //! Today that is the harness mesh's own folders ([`folders`]), so sessions
 //! go on reading and writing them unchanged while the node carries them to
@@ -46,7 +46,7 @@ pub struct Presence {
 pub enum Change {
     /// A message landed.
     Message(String),
-    /// Some presence changed.
+    /// Some presence changed, or the leases a session holds.
     Presence,
     /// Changes may have been missed, so everything should be read again.
     Rescan,
@@ -104,9 +104,20 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// it again clears the mark.
     fn mark_unreachable(&self, session: &str, machine: &str, since: i64) -> io::Result<()>;
 
-    /// Lets go of the presence of a session that runs on `machine`; this
-    /// machine's own sessions, and other machines', are never touched.
+    /// Lets go of the presence of a session that runs on `machine`, and of
+    /// the leases it holds; this machine's own sessions, and other
+    /// machines', are never touched.
     fn remove_presence(&self, session: &str, machine: &str) -> io::Result<()>;
+
+    /// Every holding of leases kept here, as the mesh writes them: one per
+    /// session, this machine's and those carried from others.
+    fn holdings(&self) -> Vec<Value>;
+
+    /// Keeps the leases held by a session that runs on `machine`, another
+    /// machine, as that machine said them, or lets them go when there are
+    /// none. Refused when the id names a holding of this machine's or of
+    /// another machine's.
+    fn put_leases(&self, session: &str, machine: &str, leases: &[Value]) -> io::Result<()>;
 
     /// Starts telling of each change.
     fn changes(&self) -> io::Result<Changes>;

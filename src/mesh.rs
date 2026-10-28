@@ -34,6 +34,43 @@ pub fn stays_here(body: &Value, earlier: impl Fn(&str) -> Option<Value>) -> bool
             .is_some_and(|answered| to_machine(&answered))
 }
 
+/// The leases of `session`, a session of this machine's, that another
+/// machine can weigh: its change leases and its hands', each a file named by
+/// its repository and its path there, as `core.nix:flake.nix`, so a session
+/// in another clone of it overlaps. A change named by an absolute path, as a
+/// file outside any checkout or a whole checkout rewritten is, names this
+/// machine's disk, and where a checkout lies here is no matter there, so
+/// neither crosses. Holdings carried from another machine never go on.
+pub fn carried_leases(holdings: &[Value], session: &str) -> Vec<Value> {
+    holdings
+        .iter()
+        .filter(|holding| holding.get("machine").is_none())
+        .filter(|holding| {
+            holding
+                .get("handOf")
+                .or_else(|| holding.get("session"))
+                .and_then(Value::as_str)
+                == Some(session)
+        })
+        .filter_map(|holding| holding.get("leases").and_then(Value::as_array))
+        .flatten()
+        .filter(|lease| {
+            lease.get("kind").and_then(Value::as_str) == Some("change")
+                && lease
+                    .get("subject")
+                    .and_then(Value::as_str)
+                    .is_some_and(|subject| !subject.is_empty() && !subject.starts_with('/'))
+        })
+        .map(|lease| {
+            let mut lease = lease.clone();
+            if let Some(fields) = lease.as_object_mut() {
+                fields.remove("checkout");
+            }
+            lease
+        })
+        .collect()
+}
+
 /// The group a mesh target names: `@4UHC5Q` is the peer's own group
 /// `peer.4uhc5q`, and `#quest/4uhc5q` is `quest.4uhc5q`.
 pub fn group_for(target: &str) -> Option<Group> {
@@ -166,6 +203,43 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn only_changes_to_a_repositorys_files_go_to_other_machines() {
+        let change = |subject: &str| {
+            json!({"kind": "change", "subject": subject, "since": "s", "until": "u",
+                   "checkout": "/home/jitsusama/src/core.nix"})
+        };
+        let holdings = [
+            json!({"session": "01a1", "leases": [
+                change("core.nix:flake.nix"),
+                change("/home/jitsusama/notes.md"),
+                change("/home/jitsusama/src/core.nix"),
+                {"kind": "heavy", "subject": "build", "since": "s", "until": "u"},
+            ]}),
+            json!({"session": "01a1-hand", "handOf": "01a1",
+                   "leases": [change("mycelium:src/mesh.rs")]}),
+            json!({"session": "01b2", "leases": [change("core.nix:README.md")]}),
+            json!({"session": "01a1", "machine": "equilibrius",
+                   "leases": [change("core.nix:carried.nix")]}),
+        ];
+        let subjects: Vec<Value> = carried_leases(&holdings, "01a1")
+            .iter()
+            .map(|lease| lease["subject"].clone())
+            .collect();
+        assert_eq!(
+            subjects,
+            [json!("core.nix:flake.nix"), json!("mycelium:src/mesh.rs")],
+            "its changes and its hand's to a repository's files, not another session's, \
+             one carried here, an absolute path or heavy work"
+        );
+        assert!(
+            carried_leases(&holdings, "01a1")
+                .iter()
+                .all(|lease| lease.get("checkout").is_none()),
+            "and where the checkout lies here stays here"
+        );
+    }
 
     #[test]
     fn targets_name_groups() {

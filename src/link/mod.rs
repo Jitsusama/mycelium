@@ -82,6 +82,10 @@ pub enum Frame {
         session: String,
         /// The presence.
         body: Value,
+        /// The change leases it holds that the other machine can weigh; an
+        /// end older than this names none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        leases: Option<Vec<Value>>,
     },
     /// A session of this end's machine has ended.
     Ended {
@@ -228,7 +232,8 @@ struct End<S> {
     other: String,
     reach: i64,
     has: HashSet<String>,
-    sent: BTreeMap<String, Value>,
+    /// Each living session's presence and leases, as last sent.
+    sent: BTreeMap<String, (Value, Vec<Value>)>,
     carried: HashSet<String>,
     exchange: Option<Exchange>,
     _claim: Claim,
@@ -266,10 +271,20 @@ impl<S: Store> End<S> {
                     );
                 }
             }
-            Frame::Presence { session, body } => {
+            Frame::Presence {
+                session,
+                body,
+                leases,
+            } => {
                 let put = self.store.put_presence(&session, &self.other, &body);
                 if put.is_ok() {
                     self.carried.insert(session.clone());
+                    if let Some(leases) = leases {
+                        self.kept(
+                            &session,
+                            self.store.put_leases(&session, &self.other, &leases),
+                        );
+                    }
                 }
                 self.kept(&session, put);
             }
@@ -372,17 +387,20 @@ impl<S: Store> End<S> {
             self.sent.remove(&session);
             send(writing, &Frame::Ended { session }).await?;
         }
+        let holdings = self.store.holdings();
         for (session, body) in living {
-            if self.sent.get(&session) != Some(&body) {
+            let said = (body, mesh::carried_leases(&holdings, &session));
+            if self.sent.get(&session) != Some(&said) {
                 send(
                     writing,
                     &Frame::Presence {
                         session: session.clone(),
-                        body: body.clone(),
+                        body: said.0.clone(),
+                        leases: Some(said.1.clone()),
                     },
                 )
                 .await?;
-                self.sent.insert(session, body);
+                self.sent.insert(session, said);
             }
         }
         Ok(())
@@ -698,6 +716,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_sessions_changes_are_carried_with_it_and_go_when_it_ends() {
+        let optimus = Memory::default();
+        let equilibrius = Memory::default();
+        let change = |subject: &str| {
+            json!({"kind": "change", "subject": subject, "since": "s",
+                   "until": "2999-01-01T00:00:00.000Z"})
+        };
+        let leases_of = |store: &Memory| -> Vec<Value> {
+            store
+                .holdings()
+                .iter()
+                .filter(|holding| holding["machine"] == "equilibrius")
+                .flat_map(|holding| holding["leases"].as_array().cloned().unwrap_or_default())
+                .collect()
+        };
+        equilibrius.start_here("walgit", json!({"session": "walgit"}), true);
+        equilibrius.hold_here(
+            "walgit",
+            json!({"session": "walgit", "leases": [change("core.nix:flake.nix")]}),
+        );
+
+        let _link = linked(&optimus, &equilibrius, 1 << 16);
+        until(&optimus, |store| leases_of(store).len() == 1).await;
+        assert_eq!(
+            leases_of(&optimus)[0]["subject"],
+            "core.nix:flake.nix",
+            "the Mac session's change is held here, marked as the Mac's"
+        );
+
+        equilibrius.hold_here("walgit", json!({"session": "walgit", "leases": []}));
+        until(&optimus, |store| leases_of(store).is_empty()).await;
+
+        equilibrius.hold_here(
+            "walgit",
+            json!({"session": "walgit", "leases": [change("mycelium:src/mesh.rs")]}),
+        );
+        until(&optimus, |store| leases_of(store).len() == 1).await;
+        equilibrius.start_here("walgit", json!({"session": "walgit"}), false);
+        until(&optimus, |store| store.holdings().is_empty()).await;
+    }
+
+    #[tokio::test]
     async fn a_link_coming_back_says_which_sessions_out_of_reach_still_run() {
         let optimus = Memory::default();
         let equilibrius = Memory::default();
@@ -826,6 +886,7 @@ mod tests {
             Frame::Presence {
                 session: "launcher".to_owned(),
                 body: json!({"session": "not-launcher"}),
+                leases: None,
             },
             Frame::Message {
                 id: good.clone(),

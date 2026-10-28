@@ -20,6 +20,7 @@ pub struct Memory(Arc<Mutex<Held>>);
 struct Held {
     messages: BTreeMap<String, Value>,
     presences: BTreeMap<String, Presence>,
+    holdings: BTreeMap<String, Value>,
     claimed: BTreeSet<String>,
     linked: BTreeMap<String, i64>,
     told: Vec<mpsc::UnboundedSender<Change>>,
@@ -54,6 +55,13 @@ impl Memory {
         held.tell(&Change::Presence);
     }
 
+    /// Has a session of this machine's hold leases, as `holding` says.
+    pub fn hold_here(&self, session: &str, holding: Value) {
+        let mut held = self.held();
+        held.holdings.insert(session.to_owned(), holding);
+        held.tell(&Change::Presence);
+    }
+
     /// Sends a message from this machine, as a session here would.
     pub fn send_here(&self, id: &str, body: Value) {
         let mut held = self.held();
@@ -73,6 +81,14 @@ impl Held {
     fn tell(&mut self, change: &Change) {
         self.told
             .retain(|sender| sender.send(change.clone()).is_ok());
+    }
+
+    fn holds_for(&self, session: &str, machine: &str) -> bool {
+        self.holdings
+            .get(session)
+            .and_then(|holding| holding.get("machine"))
+            .and_then(Value::as_str)
+            == Some(machine)
     }
 
     fn carries(&self, session: &str, machine: &str) -> bool {
@@ -183,8 +199,35 @@ impl Store for Memory {
         let mut held = self.held();
         if held.carries(session, machine) {
             held.presences.remove(session);
+            if held.holds_for(session, machine) {
+                held.holdings.remove(session);
+            }
             held.tell(&Change::Presence);
         }
+        Ok(())
+    }
+
+    fn holdings(&self) -> Vec<Value> {
+        self.held().holdings.values().cloned().collect()
+    }
+
+    fn put_leases(&self, session: &str, machine: &str, leases: &[Value]) -> io::Result<()> {
+        let mut held = self.held();
+        if held.holdings.contains_key(session) && !held.holds_for(session, machine) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "not that machine's holding",
+            ));
+        }
+        if leases.is_empty() {
+            held.holdings.remove(session);
+        } else {
+            held.holdings.insert(
+                session.to_owned(),
+                serde_json::json!({"session": session, "leases": leases, "machine": machine}),
+            );
+        }
+        held.tell(&Change::Presence);
         Ok(())
     }
 

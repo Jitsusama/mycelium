@@ -5,7 +5,7 @@
 //! PROTOCOL.md says what crosses between machines and how. Each seam later
 //! growth plugs into is a trait with one implementation today:
 //!
-//! - [`store`]: where a node keeps messages and presence; the harness
+//! - [`store`]: where a node keeps messages, presence and leases; the harness
 //!   mesh's own folders today
 //! - [`link`]: two machines' stores kept as one, with its own seams for
 //!   how a machine is reached ([`link::dial`]), which machines to reach

@@ -1,5 +1,5 @@
 //! The harness mesh's own folders as a store: one JSON file per message in
-//! `messages/` and one per session in `presence/`.
+//! `messages/`, and one per session in `presence/` and in `leases/`.
 //!
 //! Every file is written whole, through a dot-file renamed into place, as
 //! the mesh writes its own, so no reader sees half of one. A session's file
@@ -8,7 +8,9 @@
 //! process exits (see `ends`). The presence of a session elsewhere is written with
 //! its process taken out, which the mesh takes as there, and with `machine`
 //! naming where it runs; it is never written over a session of this
-//! machine's or of another machine's.
+//! machine's or of another machine's. The leases such a session holds are
+//! kept in one holding of its own, marked the same way, which goes with its
+//! presence.
 //!
 //! Claims are locks on files of mycelium's own, outside the mesh, so they
 //! hold across every mycelium process on the machine and go when the
@@ -55,6 +57,7 @@ impl Folders {
     pub fn open(dir: &Path, claims: &Path) -> io::Result<Self> {
         fs::create_dir_all(dir.join("messages"))?;
         fs::create_dir_all(dir.join("presence"))?;
+        fs::create_dir_all(dir.join("leases"))?;
         fs::create_dir_all(claims)?;
         // Changes name the real path, so the folders are kept by it: a path
         // through a link, as macOS's temporary folders are, would match none.
@@ -70,6 +73,10 @@ impl Folders {
 
     fn presence(&self) -> PathBuf {
         self.dir.join("presence")
+    }
+
+    fn leases(&self) -> PathBuf {
+        self.dir.join("leases")
     }
 
     /// Watches the process of each living session of this machine's, so
@@ -225,16 +232,49 @@ impl Store for Folders {
     }
 
     fn remove_presence(&self, session: &str, machine: &str) -> io::Result<()> {
-        match self.carried(session, machine)? {
-            Some(path) => fs::remove_file(path),
-            None => Ok(()),
+        let Some(path) = self.carried(session, machine)? else {
+            return Ok(());
+        };
+        fs::remove_file(path)?;
+        self.put_leases(session, machine, &[])
+    }
+
+    fn holdings(&self) -> Vec<Value> {
+        records(&self.leases())
+            .filter_map(|path| read::<Value>(&path))
+            .collect()
+    }
+
+    fn put_leases(&self, session: &str, machine: &str, leases: &[Value]) -> io::Result<()> {
+        let file = format!("{}.json", safe(session)?);
+        let path = self.leases().join(&file);
+        if let Some(held) = read::<Value>(&path)
+            && held.get(MACHINE).and_then(Value::as_str) != Some(machine)
+        {
+            let whose = held
+                .get(MACHINE)
+                .and_then(Value::as_str)
+                .unwrap_or("this machine");
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{session:?} holds leases of {whose}'s, not {machine}'s"),
+            ));
         }
+        if leases.is_empty() {
+            return match fs::remove_file(path) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            };
+        }
+        let holding = serde_json::json!({"session": session, "leases": leases, MACHINE: machine});
+        write_whole(&self.leases(), &file, &holding)
     }
 
     fn changes(&self) -> io::Result<Changes> {
         let (sender, changes) = mpsc::unbounded_channel();
         let messages = self.messages();
         let presence = self.presence();
+        let leases = self.leases();
         let ends = Arc::new(Ends::new(sender.clone())?);
         let watching = {
             let folders = self.clone();
@@ -258,7 +298,9 @@ impl Store for Folders {
                         .filter_map(|path| {
                             if path.parent() == Some(messages.as_path()) {
                                 Some(Change::Message(path.file_stem()?.to_str()?.to_owned()))
-                            } else if path.parent() == Some(presence.as_path()) {
+                            } else if path.parent() == Some(presence.as_path())
+                                || path.parent() == Some(leases.as_path())
+                            {
                                 Some(Change::Presence)
                             } else {
                                 None
@@ -285,6 +327,9 @@ impl Store for Folders {
             .map_err(io::Error::other)?;
         watcher
             .watch(&self.presence(), RecursiveMode::NonRecursive)
+            .map_err(io::Error::other)?;
+        watcher
+            .watch(&self.leases(), RecursiveMode::NonRecursive)
             .map_err(io::Error::other)?;
         Ok(Changes {
             changes,
@@ -718,6 +763,45 @@ mod tests {
             "a body naming another session"
         );
         assert_eq!(store.presences().len(), 2, "nothing was written over");
+    }
+
+    #[test]
+    fn a_sessions_leases_elsewhere_are_kept_apart_from_this_machines_and_go_with_it() {
+        let (_dir, store) = store();
+        let change = json!({"kind": "change", "subject": "core.nix:flake.nix",
+                            "since": "s", "until": "u"});
+        let own = json!({"session": "here", "leases": [change]});
+        write_whole(&store.leases(), "here.json", &own).expect("this machine's holding");
+        assert!(
+            store
+                .put_leases("here", "equilibrius", std::slice::from_ref(&change))
+                .is_err(),
+            "a holding of this machine's is never written over"
+        );
+        store
+            .put_presence("there", "equilibrius", &json!({"session": "there"}))
+            .expect("the Mac's session is kept");
+        store
+            .put_leases("there", "equilibrius", std::slice::from_ref(&change))
+            .expect("and its leases");
+        assert!(
+            store.put_leases("there", "penelope", &[]).is_err(),
+            "nor is another machine's let go"
+        );
+        let carried = read::<Value>(&store.leases().join("there.json")).expect("written");
+        assert_eq!(
+            carried,
+            json!({"session": "there", "leases": [change], "machine": "equilibrius"}),
+            "held as the mesh holds a peer's, marked as the Mac's"
+        );
+        store
+            .remove_presence("there", "equilibrius")
+            .expect("let go");
+        assert_eq!(
+            store.holdings(),
+            vec![own],
+            "its leases go with it, and this machine's stay"
+        );
     }
 
     #[test]
