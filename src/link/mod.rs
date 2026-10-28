@@ -460,11 +460,39 @@ mod tests {
         machine: &'static str,
         pipe: DuplexStream,
     ) -> tokio::task::JoinHandle<io::Result<()>> {
+        sharing_end(store, machine, pipe, None)
+    }
+
+    /// Runs `machine`'s end of a link over `pipe`, sharing the quests kept
+    /// in `shares`.
+    fn sharing_end(
+        store: &Memory,
+        machine: &'static str,
+        pipe: DuplexStream,
+        shares: Option<Places>,
+    ) -> tokio::task::JoinHandle<io::Result<()>> {
         let store = store.clone();
         let (reading, writing) = tokio::io::split(pipe);
         tokio::spawn(async move {
-            run(store, &realm(machine), connection(reading, writing), None).await
+            run(store, &realm(machine), connection(reading, writing), shares).await
         })
+    }
+
+    /// Waits until the file at `path` holds `text`. Nothing tells of a
+    /// write to a quest's folder, so it looks again every few milliseconds
+    /// until it does, or gives up.
+    async fn until_file(path: &std::path::Path, text: &str) {
+        let waited = tokio::time::timeout(PATIENCE, async {
+            while std::fs::read_to_string(path).ok().as_deref() != Some(text) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            waited.is_ok(),
+            "{} didn't come to hold {text:?} within {PATIENCE:?}",
+            path.display()
+        );
     }
 
     /// Marks the two stores as last linked `ms_ago`, as if they had been
@@ -743,5 +771,35 @@ mod tests {
             optimus.presences().is_empty(),
             "the presence naming another session was refused"
         );
+    }
+
+    #[tokio::test]
+    async fn a_shared_quests_record_is_carried_both_ways() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = |machine: &str| Places {
+            quests: dir.path().join(machine).join("quests"),
+            home: dir.path().join(machine).join("home"),
+            state: dir.path().join(machine).join("state"),
+        };
+        let (here, there) = (places("optimus"), places("equilibrius"));
+        let quest = "QEST-20261013-4UHC5Q";
+        let ours = here.quests.join(quest).join("README.md");
+        let theirs = there.quests.join(quest).join("README.md");
+        std::fs::create_dir_all(here.quests.join(quest)).expect("the quest made");
+        std::fs::write(&ours, "# Shared\n").expect("its README written");
+        here.ledgers()
+            .hold(quest)
+            .expect("its ledger held")
+            .keep()
+            .expect("the quest shared");
+
+        let (optimus, equilibrius) = (Memory::default(), Memory::default());
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _near = sharing_end(&optimus, "optimus", near, Some(here));
+        let _far = sharing_end(&equilibrius, "equilibrius", far, Some(there));
+
+        until_file(&theirs, "# Shared\n").await;
+        std::fs::write(&theirs, "# Changed there\n").expect("changed on the far end");
+        until_file(&ours, "# Changed there\n").await;
     }
 }
