@@ -99,8 +99,15 @@ same code, each line a JSON value:
    from before the machines were linked was never its to hear.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first
    for each the Have didn't list, then each new one as it lands.
-4. `{"Presence": {"session", "body"}}`: a living session of the sending
-   end's machine, again whenever it changes.
+4. `{"Presence": {"session", "body", "leases"}}`: a living session of
+   the sending end's machine, again whenever it or its leases change.
+   `leases` are the mesh's `change` leases it and its hands hold on a
+   repository's files, named as `core.nix:flake.nix`, so a session in
+   another clone there is told it overlaps; one named by an absolute
+   path names the sender's disk and stays, as does its `checkout`. The
+   other end keeps them as one holding of the session's, marked with
+   `machine`, never over a holding of its own machine's, and lets it go
+   with the presence. An end older than `leases` sends none.
 5. `{"Ended": {"session"}}`: a session of the sending end's machine has
    ended.
 6. `{"Share": say}`: talk about shared quests, as below. An end that
