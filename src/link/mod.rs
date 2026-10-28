@@ -854,6 +854,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let places = |machine: &str| Places {
             quests: dir.path().join(machine).join("quests"),
+            scratch: dir.path().join(machine).join("scratch"),
             home: dir.path().join(machine).join("home"),
             state: dir.path().join(machine).join("state"),
         };

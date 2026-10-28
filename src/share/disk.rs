@@ -301,11 +301,7 @@ mod tests {
     #[test]
     fn a_record_is_written_under_the_quests_lock() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let quest = Quest::new(
-            dir.path().join("record"),
-            None,
-            PathBuf::from("/home/jitsusama"),
-        );
+        let quest = Quest::new(dir.path().join("record"), PathBuf::from("/home/jitsusama"));
         let readme = record("README.md");
         fs::create_dir_all(&quest.record).expect("the record made");
         fs::write(quest.record.join(LOCK), "{}").expect("a session holds the lock");
@@ -347,11 +343,7 @@ mod tests {
     #[test]
     fn a_file_is_written_at_its_mode_or_keeps_its_own() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let quest = Quest::new(
-            dir.path().join("record"),
-            None,
-            PathBuf::from("/home/jitsusama"),
-        );
+        let quest = Quest::new(dir.path().join("record"), PathBuf::from("/home/jitsusama"));
         let secret = record("attachments/hub.env");
         quest
             .write(&secret, Some(b"one"), Some(0o600))

@@ -58,13 +58,19 @@ enum Action {
         here: Here,
     },
     /// Shares a quest with every machine this one links with: its record,
-    /// kept the same on each, written on any. A machine that held its own
-    /// copy moves it aside first.
+    /// kept the same on each, written on any, and the folders of its
+    /// scratch named. A machine that held its own copy of either moves it
+    /// aside first.
     Share {
         #[command(flatten)]
         here: Here,
         /// The quest's id, such as `QEST-20261013-4UHC5Q`.
         quest: String,
+        /// A folder of the quest's scratch to share too, such as `notes`;
+        /// none is shared unless named, and one holding more than 10,000
+        /// files or 1 GiB is refused.
+        #[arg(long)]
+        scratch: Vec<String>,
     },
     /// Prints every session the node knows of, a JSON line each.
     Sessions,
@@ -189,9 +195,13 @@ fn run(command: Command) -> io::Result<()> {
                 link::run(store, &membership, connection, Some(shares)).await
             })
         }
-        Action::Share { here, quest } => {
+        Action::Share {
+            here,
+            quest,
+            scratch,
+        } => {
             let (_, _, shares) = open(here, realm)?;
-            share(&shares, &quest)
+            share(&shares, &quest, &scratch)
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Messages { groups, limit } => {
@@ -237,9 +247,10 @@ fn open(here: Here, realm: String) -> io::Result<(Folders, Realm, Places)> {
     Ok((store, membership, place::shares(&state)))
 }
 
-/// Shares `quest`, which must be here to share.
-fn share(shares: &Places, quest: &str) -> io::Result<()> {
-    let record = shares.quest(quest).record;
+/// Shares `quest`, which must be here to share, with each of the folders
+/// of its scratch named in `scratch`.
+fn share(shares: &Places, quest: &str, scratch: &[String]) -> io::Result<()> {
+    let record = shares.record(quest);
     if !record.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -251,7 +262,17 @@ fn share(shares: &Places, quest: &str) -> io::Result<()> {
     }
     let ledgers: Ledgers = shares.ledgers();
     ledgers.hold(quest)?.keep()?;
-    println!("{quest} is shared; each link carries it from its next look");
+    for folder in scratch {
+        shares.name_scratch(quest, folder)?;
+    }
+    let folders = ledgers.hold(quest)?.ledger.scratch;
+    let with = if folders.is_empty() {
+        "none of its scratch".to_owned()
+    } else {
+        let names: Vec<String> = folders.into_iter().collect();
+        format!("its scratch's {}", names.join(", "))
+    };
+    println!("{quest} is shared, with {with}; each link carries it from its next look");
     Ok(())
 }
 

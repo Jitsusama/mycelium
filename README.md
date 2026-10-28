@@ -16,7 +16,8 @@ The harness mesh's messages and presence, carried between machines:
   go when it ends, and shown as unreachable while no link reaches its
   machine.
 - A quest shared with `mycelium share` keeps the same record on every
-  linked machine, with a journal written on both keeping both entries.
+  linked machine, with a journal written on both keeping both entries,
+  and the same folders of its scratch, those named with `--scratch`.
 - Links run over SSH, so a machine needs nothing but the `mycelium`
   command and an SSH login.
 - Each node serves a local socket in niri's shape, which pi, Quickshell

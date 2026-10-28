@@ -5,13 +5,15 @@
 //! README, its journey, its documents in their kind folders, its
 //! attachments and its harness log, and nothing else in its folder, since
 //! the rest is each machine's own bookkeeping (the quest's lock, its stale
-//! copies, files being written). Its scratch is its working material,
-//! without `tmp/`, which is a session's `$TMPDIR`, without any git clone,
-//! whose trees name it by absolute path, and without links, such as a
-//! build's out-link into the Nix store. Anything hidden stays home in
-//! either: a file being written, or a machine's own note.
+//! copies, files being written). Of its scratch, only the folders named
+//! for sharing cross, since a scratch can hold gigabytes of clones and
+//! data, and never `tmp/`, which is a session's `$TMPDIR`. Within a named
+//! folder, no git clone crosses, since its trees name it by absolute path
+//! and two machines writing one break it, no build output, and no links,
+//! such as a build's out-link into the Nix store. Anything hidden stays
+//! home in either: a file being written, or a machine's own note.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,6 +24,10 @@ const DOCUMENT_FOLDERS: [&str; 4] = ["plans", "research", "briefs", "reports"];
 const ATTACHMENTS: &str = "attachments";
 /// The record's files that sit beside its README.
 const BESIDE: [&str; 3] = ["README.md", "JOURNEY.md", "harness.log"];
+/// The scratch's folder that is a session's `$TMPDIR`.
+const TMP: &str = "tmp";
+/// Folders a build fills, which each machine builds for itself.
+const BUILT: [&str; 2] = ["target", "node_modules"];
 
 /// Which of a quest's two folders a file is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -57,28 +63,53 @@ pub struct Quest {
     pub record: PathBuf,
     /// Its scratch folder, where this machine carries it.
     pub scratch: Option<PathBuf>,
+    /// The folders in its scratch that are shared, by name.
+    pub folders: BTreeSet<String>,
     /// The account's home folder on this machine, which paths in the
     /// record are written against ([`super::disk`]).
     pub home: PathBuf,
 }
 
 impl Quest {
-    /// A quest kept in `record`, and `scratch` if that is carried too, by
-    /// an account at `home`.
+    /// A quest kept in `record` by an account at `home`, sharing nothing
+    /// of its scratch.
     #[must_use]
-    pub fn new(record: PathBuf, scratch: Option<PathBuf>, home: PathBuf) -> Self {
+    pub fn new(record: PathBuf, home: PathBuf) -> Self {
         Self {
             record,
-            scratch,
+            scratch: None,
+            folders: BTreeSet::new(),
             home,
         }
     }
 
+    /// The same quest, with its scratch in `scratch`, sharing `folders`
+    /// of it.
+    #[must_use]
+    pub fn sharing(self, scratch: PathBuf, folders: BTreeSet<String>) -> Self {
+        Self {
+            scratch: Some(scratch),
+            folders,
+            ..self
+        }
+    }
+
     /// Whether this machine carries a shared file of this quest: one that
-    /// crosses, in a folder it carries.
+    /// crosses, in its record or in a scratch folder it shares.
     #[must_use]
     pub fn carries(&self, shared: &Shared) -> bool {
-        crosses(shared) && (shared.place == Place::Record || self.scratch.is_some())
+        crosses(shared)
+            && match shared.place {
+                Place::Record => true,
+                Place::Scratch => {
+                    self.scratch.is_some()
+                        && shared
+                            .path
+                            .split('/')
+                            .next()
+                            .is_some_and(|folder| self.folders.contains(folder))
+                }
+            }
     }
 
     /// Where a shared file lives on this machine.
@@ -98,11 +129,16 @@ impl Quest {
     /// Calls `each` with every file of this quest this machine carries; a
     /// folder that isn't here yet holds none.
     pub fn each_file(&self, each: &mut impl FnMut(Shared) -> io::Result<()>) -> io::Result<()> {
-        let scratch = self.scratch.iter().map(|root| (Place::Scratch, root));
-        for (place, root) in std::iter::once((Place::Record, &self.record)).chain(scratch) {
-            walk(root, root, &mut |path| {
+        let folders = self.scratch.iter().flat_map(|root| {
+            self.folders
+                .iter()
+                .map(move |folder| (Place::Scratch, root, root.join(folder)))
+        });
+        let record = (Place::Record, &self.record, self.record.clone());
+        for (place, root, folder) in std::iter::once(record).chain(folders) {
+            walk(root, &folder, &mut |path| {
                 let shared = Shared { place, path };
-                if crosses(&shared) {
+                if self.carries(&shared) {
                     each(shared)?;
                 }
                 Ok(())
@@ -146,8 +182,25 @@ pub fn crosses(shared: &Shared) -> bool {
             [ATTACHMENTS, ..] => true,
             _ => false,
         },
-        Place::Scratch => names.first() != Some(&"tmp"),
+        Place::Scratch => {
+            names.len() > 1
+                && names.first().is_some_and(|folder| may_name(folder))
+                && !names.iter().any(|name| BUILT.contains(name))
+        }
     }
+}
+
+/// Whether `folder` may be named for sharing in a quest's scratch: one
+/// folder, neither hidden, nor `tmp/`, nor build output, nor another
+/// machine's copy.
+#[must_use]
+pub fn may_name(folder: &str) -> bool {
+    !folder.is_empty()
+        && !folder.contains('/')
+        && !folder.starts_with('.')
+        && !folder.contains(".from-")
+        && folder != TMP
+        && !BUILT.contains(&folder)
 }
 
 /// Whether a name is a quest document's: a kind, a date and an id.
@@ -177,7 +230,8 @@ pub fn content(bytes: &[u8]) -> Content {
 }
 
 /// Each plain file under `folder`, by its path from `root`, leaving out
-/// links, and any folder holding a git clone.
+/// links, hidden folders, build output, and any folder holding a git
+/// clone, so none of those is ever looked through.
 fn walk(
     root: &Path,
     folder: &Path,
@@ -195,7 +249,9 @@ fn walk(
         let entry = entry?;
         let kind = entry.file_type()?;
         let path = entry.path();
-        if kind.is_dir() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if kind.is_dir() && !name.starts_with('.') && !BUILT.contains(&name.as_ref()) {
             walk(root, &path, each)?;
         } else if kind.is_file()
             && let Some(within) = relative(root, &path)
@@ -231,13 +287,12 @@ mod tests {
     }
 
     #[test]
-    fn only_the_record_and_the_working_material_cross() {
+    fn only_the_record_and_the_scratch_folders_named_cross() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let scratch = dir.path().join("scratch");
-        let quest = Quest::new(
-            dir.path().join("record"),
-            Some(scratch.clone()),
-            dir.path().join("home"),
+        let quest = Quest::new(dir.path().join("record"), dir.path().join("home")).sharing(
+            scratch.clone(),
+            BTreeSet::from(["notes".to_owned(), "clone".to_owned()]),
         );
         for path in [
             "README.md",
@@ -254,13 +309,20 @@ mod tests {
             write(&quest.record, path, path);
         }
         for path in [
-            "notes.md",
-            "runs/one.json",
-            "tmp/big.bin",
+            "notes/plan.md",
+            "notes/runs/one.json",
+            "notes/runs/target/debug/big",
+            "notes/web/node_modules/left-pad/index.js",
+            "notes/.direnv/env",
+            "notes/ttc/.git/HEAD",
+            "notes/ttc/src/lib.rs",
+            "notes/.plan.md.42.mycelium.tmp",
+            "notes/plan.md.from-equilibrius",
             "clone/.git/HEAD",
             "clone/src/lib.rs",
-            ".node.mycelium.tmp",
-            "notes.md.from-equilibrius",
+            "hub-home/big.bin",
+            "tmp/big.bin",
+            "loose.md",
         ] {
             write(&scratch, path, path);
         }
@@ -278,9 +340,28 @@ mod tests {
         );
         assert_eq!(
             paths(&files, Place::Scratch),
-            ["notes.md", "runs/one.json"],
-            "the scratch crosses without tmp/, clones, hidden files or other machines' copies"
+            ["notes/plan.md", "notes/runs/one.json"],
+            "only the named folders cross, without clones, build output, hidden files or \
+             other machines' copies"
         );
+    }
+
+    #[test]
+    fn only_a_folder_of_the_scratch_may_be_named() {
+        for folder in ["notes", "hub-home", "bench"] {
+            assert!(may_name(folder), "{folder} may be named");
+        }
+        for folder in [
+            "",
+            "tmp",
+            "target",
+            "node_modules",
+            ".direnv",
+            "notes/runs",
+            "notes.from-equilibrius",
+        ] {
+            assert!(!may_name(folder), "{folder:?} may not be named");
+        }
     }
 
     #[test]
@@ -302,10 +383,9 @@ mod tests {
     #[test]
     fn a_quest_not_here_yet_holds_nothing() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let quest = Quest::new(
-            dir.path().join("none"),
-            Some(dir.path().join("neither")),
-            dir.path().join("home"),
+        let quest = Quest::new(dir.path().join("none"), dir.path().join("home")).sharing(
+            dir.path().join("neither"),
+            BTreeSet::from(["notes".to_owned()]),
         );
         assert!(
             quest.files().expect("nothing to read").is_empty(),

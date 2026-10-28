@@ -125,17 +125,25 @@ carries it from its next look. A quest is shared while its ledger,
 `~/.local/state/mycelium/shared/<QUEST>.json`, says so; the ledger keeps
 each file's version, counted per machine, and its content's hash.
 
-Only the quest's record crosses: its README, journey, log, documents and
-attachments, never a lock, a staging file or a copy kept beside. The
-scratch folder waits for a watch of its own, since a scratch can hold
-hundreds of thousands of files.
+The quest's record crosses: its README, journey, log, documents and
+attachments, never a lock, a staging file or a copy kept beside. Of its
+scratch, only the folders named cross, as `mycelium share QEST-...
+--scratch notes` names `notes`, since a scratch can hold gigabytes of
+clones and data. A folder holding more than 10,000 files or 1 GiB, or a
+file over 64 MiB, is refused when named, and so are `tmp/`, build output
+and a git clone, which is fetched again from its remote rather than
+copied. Within a named folder, hidden files, links, `target/`,
+`node_modules/` and any git clone stay home. A folder once named stays
+shared.
 
 Once a second, each end looks at its shared quests and says what changed,
 as `Share` frames:
 
-- `{"Shares": {"quests"}}`: every quest it shares. The other end starts
-  sharing any it didn't, first moving its own copy aside to
-  `~/.local/state/mycelium/before-share/<when>/<QUEST>/`.
+- `{"Shares": {"quests", "scratch"}}`: every quest it shares, and the
+  scratch folders named of each, by quest. The other end starts sharing
+  any quest or folder it didn't, first moving its own copy aside to
+  `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. It is said
+  before the files, so a folder's files are carried once heard of.
 - `{"Holds": {"quest", "files"}}`: each changed file's state.
 - `{"Want": {"quest", "file"}}`: a file whose state is newer there.
 - `{"File": {"quest", "file", "state", "body", "mode"}}`: the file, in
@@ -187,8 +195,9 @@ A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 
 Each lands behind a seam above, or as a seam of its own:
 
-- **Shared scratch:** a quest's scratch folder shared beside its record,
-  watched rather than looked at, with each file's mode kept.
+- **Shared scratch:** a named folder's large files crossing in pieces,
+  the folder watched rather than looked at, and a git clone carried as
+  its remote and branch for the far end to clone.
 - **The node's own log:** messages and presence numbered per machine, so
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.
