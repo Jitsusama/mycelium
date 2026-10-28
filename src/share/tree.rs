@@ -94,6 +94,16 @@ impl Quest {
         }
     }
 
+    /// The same quest, walking only `folders` of the scratch folders it
+    /// shares, as a look does for those a watch saw change.
+    #[must_use]
+    pub fn walking(self, folders: &BTreeSet<String>) -> Self {
+        Self {
+            folders: self.folders.intersection(folders).cloned().collect(),
+            ..self
+        }
+    }
+
     /// Whether this machine carries a shared file of this quest: one that
     /// crosses, in its record or in a scratch folder it shares.
     #[must_use]

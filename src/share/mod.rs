@@ -18,3 +18,4 @@ pub mod pieces;
 pub mod settle;
 pub mod tree;
 pub mod version;
+pub mod watch;

@@ -137,7 +137,11 @@ copied. Within a named folder, hidden files, links, `target/`,
 shared.
 
 Once a second, each end looks at its shared quests and says what changed,
-as `Share` frames:
+as `Share` frames. A look reads over each record, a few dozen files, but
+walks a named scratch folder only when a watch heard it change, when it
+is newly named, or when it can't be watched; a watch that fails or
+overflows has every folder walked. A change found while hearing the
+other end is said at the next look:
 
 - `{"Shares": {"quests", "scratch"}}`: every quest it shares, and the
   scratch folders named of each, by quest. The other end starts sharing
@@ -204,8 +208,8 @@ A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 
 Each lands behind a seam above, or as a seam of its own:
 
-- **Shared scratch:** a named folder watched rather than looked at, and
-  a git clone carried as its remote and branch for the far end to clone.
+- **Shared clones:** a git clone in a shared quest's scratch carried as
+  its remote and branch, for the far end to clone itself.
 - **The node's own log:** messages and presence numbered per machine, so
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.
