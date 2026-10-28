@@ -4,7 +4,8 @@
 //! Every file is written whole, through a dot-file renamed into place, as
 //! the mesh writes its own, so no reader sees half of one. A session's file
 //! stays after it ends, so whether it lives is judged from its process, as
-//! the mesh judges it. The presence of a session elsewhere is written with
+//! the mesh judges it, and its end is told as a change the moment its
+//! process exits (see `ends`). The presence of a session elsewhere is written with
 //! its process taken out, which the mesh takes as there, and with `machine`
 //! naming where it runs; it is never written over a session of this
 //! machine's or of another machine's.
@@ -27,6 +28,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use super::ends::Ends;
 use super::{Change, Changes, Claim, Presence, Store};
 
 /// The field naming the machine a session runs on, written only on the
@@ -64,6 +66,22 @@ impl Folders {
 
     fn presence(&self) -> PathBuf {
         self.dir.join("presence")
+    }
+
+    /// Watches the process of each living session of this machine's, so
+    /// its end is told.
+    fn watch_ends(&self, ends: &Ends) {
+        let boot = boot_id();
+        let presence = self.presence();
+        let owners = records(&presence)
+            .filter_map(|path| read::<Facts>(&path))
+            .filter(|facts| facts.machine.is_none())
+            .filter_map(|facts| facts.owner);
+        for owner in owners {
+            if owner.lives(boot.as_deref()) {
+                ends.watch(owner.pid, || owner.lives(boot.as_deref()));
+            }
+        }
     }
 
     /// The presence file of `session`, if `machine` carries it here.
@@ -186,6 +204,13 @@ impl Store for Folders {
         let (sender, changes) = mpsc::unbounded_channel();
         let messages = self.messages();
         let presence = self.presence();
+        let ends = Arc::new(Ends::new(sender.clone())?);
+        let watching = {
+            let folders = self.clone();
+            let ends = Arc::clone(&ends);
+            move || folders.watch_ends(&ends)
+        };
+        watching();
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let seen: Vec<Change> = match event {
@@ -210,6 +235,13 @@ impl Store for Folders {
                         })
                         .collect(),
                 };
+                // A presence written or read again may name a new process.
+                if seen
+                    .iter()
+                    .any(|change| matches!(change, Change::Presence | Change::Rescan))
+                {
+                    watching();
+                }
                 for change in seen {
                     // Nobody receives once the store's reader has gone; the
                     // watcher goes with it.
@@ -225,7 +257,7 @@ impl Store for Folders {
             .map_err(io::Error::other)?;
         Ok(Changes {
             changes,
-            keep: Box::new(watcher),
+            keep: Box::new((watcher, ends)),
         })
     }
 }
@@ -271,8 +303,14 @@ impl Owner {
         if rustix::process::test_kill_process(pid).is_err() {
             return false;
         }
-        match (self.start_ticks, start_ticks(self.pid)) {
-            (Some(written), Some(now)) => written == now,
+        let now = stat(self.pid);
+        // A process that has exited stays a zombie until its parent reaps
+        // it, which a signal still reaches; it has ended all the same.
+        if now.as_ref().is_some_and(|now| now.exited) {
+            return false;
+        }
+        match (self.start_ticks, now) {
+            (Some(written), Some(now)) => written == now.start_ticks,
             _ => true,
         }
     }
@@ -359,14 +397,26 @@ fn boot_id() -> Option<String> {
     )
 }
 
-/// When process `pid` started, in clock ticks since boot (Linux).
-fn start_ticks(pid: i32) -> Option<u64> {
+/// What the system says of a process (Linux).
+struct Stat {
+    /// When it started, in clock ticks since boot.
+    start_ticks: u64,
+    /// Whether it has exited, though not yet been reaped.
+    exited: bool,
+}
+
+/// What the system says of process `pid`, where it says (Linux).
+fn stat(pid: i32) -> Option<Stat> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // The command's name, in parentheses, may hold spaces, so the fields
-    // are counted from the last `)`: the start time is the 22nd field, the
-    // 20th after it.
-    let after = &stat[stat.rfind(')')? + 1..];
-    after.split_whitespace().nth(19)?.parse().ok()
+    // are counted from the last `)`: the state is the 3rd field, the 1st
+    // after it, and the start time the 22nd, the 20th after it.
+    let mut after = stat[stat.rfind(')')? + 1..].split_whitespace();
+    let state = after.next()?;
+    Some(Stat {
+        exited: matches!(state, "Z" | "X"),
+        start_ticks: after.nth(18)?.parse().ok()?,
+    })
 }
 
 #[cfg(test)]
@@ -379,6 +429,11 @@ mod tests {
 
     /// How long a test waits for the system to tell of a change.
     const PATIENCE: Duration = Duration::from_secs(5);
+
+    /// When process `pid` started, in clock ticks since boot (Linux).
+    fn start_ticks(pid: i32) -> Option<u64> {
+        stat(pid).map(|stat| stat.start_ticks)
+    }
 
     fn store() -> (tempfile::TempDir, Folders) {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -439,6 +494,46 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert!(!lives, "a pid reused by a later process has ended");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_session_ending_is_told_the_moment_its_process_exits() {
+        let (_dir, store) = store();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("a child starts");
+        let pid = child.id().cast_signed();
+        // Written before the changes are asked for, so the folder tells
+        // nothing of it: only the process's end can.
+        let presence = json!({
+            "session": "ending",
+            "owner": {"pid": pid, "bootId": boot_id(), "startTicks": start_ticks(pid)},
+        });
+        write_whole(&store.presence(), "ending.json", &presence).expect("its presence written");
+        let mut changes = store.changes().expect("the store tells its changes");
+        let lives = |store: &Folders| store.presences().iter().any(|one| one.lives);
+        assert!(lives(&store), "the session lives while its process runs");
+
+        // Killed and left unreaped, as a zombie, which a signal still
+        // reaches, until the test is done with it.
+        child.kill().expect("the child is killed");
+        let told = tokio::time::timeout(PATIENCE, async {
+            while let Some(change) = changes.changes.recv().await {
+                if change == Change::Presence && !lives(&store) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        let _ = child.wait();
+        assert_eq!(
+            told,
+            Ok(true),
+            "the session's end wasn't told within {PATIENCE:?}"
+        );
     }
 
     #[test]

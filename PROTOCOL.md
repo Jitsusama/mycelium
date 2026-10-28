@@ -53,8 +53,12 @@ them between machines:
 Every file is written whole, through a dot-file renamed into place, as the
 mesh writes its own.
 
-A session's own machine judges whether it lives, from its process. The
-presence of a session elsewhere is kept with its process taken out, which
+A session's own machine judges whether it lives, from its process, and is
+told the moment it ends: on Linux the node holds each session's process
+by a pidfd, which wakes it as the process exits, so nothing is judged on a
+timer; a Mac judges every session again each few seconds until it has a
+way of its own. A process that has exited but not been reaped has ended.
+The presence of a session elsewhere is kept with its process taken out, which
 the mesh takes as there, and with `machine` naming where it runs. It never
 goes over a session of this machine's or of a third machine's.
 

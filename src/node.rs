@@ -21,7 +21,7 @@ use crate::mesh;
 use crate::record::Message;
 use crate::share::exchange::Places;
 use crate::state::State;
-use crate::store::{self, Change, LIVENESS_EVERY, Store};
+use crate::store::{self, Change, Store};
 use crate::wire::{Draft, Event, Reply, Request, Response};
 
 /// How long a link waits before dialling again after it dropped, at first
@@ -115,7 +115,6 @@ where
 
     let mut links = JoinSet::new();
     let mut found = discovery.found();
-    let mut tick = tokio::time::interval(LIVENESS_EVERY);
     tokio::pin!(stop);
     let result = loop {
         tokio::select! {
@@ -129,7 +128,6 @@ where
             Some(dial) = found.recv() => {
                 links.spawn(keep_linked(dial, store.clone(), membership.clone(), sharing.clone()));
             }
-            _ = tick.tick() => shared.read_sessions(),
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => shared.read_message(&id),
                 Some(Change::Presence) => shared.read_sessions(),
