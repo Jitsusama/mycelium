@@ -250,6 +250,29 @@ mod tests {
     }
 
     #[test]
+    fn a_nodes_finding_is_written_as_the_mesh_reads_it() {
+        let draft = Draft {
+            from: "mycelium@optimus".to_owned(),
+            groups: vec![Group::new("quest.wcjqsg.4uhc5q").expect("a group")],
+            intent: Some(Intent::Finding),
+            text: "kept beside".to_owned(),
+            re: None,
+        };
+        let (id, body) = written(&draft, 4242);
+        crate::store::folders::safe(&id).expect("its id is a name the store keeps");
+        assert!(
+            id.contains("-mycelium@optimus-4242-"),
+            "its id names its sender and the node's pid: {id}"
+        );
+        assert_eq!(
+            body["to"],
+            json!(["#quest/wcjqsg/4uhc5q"]),
+            "it goes to the quest's whole group"
+        );
+        assert_eq!(body["intent"], json!("finding"));
+    }
+
+    #[test]
     fn a_presence_reads_as_a_session_where_it_runs() {
         let presence = |lives, elsewhere: Option<&str>| Presence {
             session: "01a1".to_owned(),

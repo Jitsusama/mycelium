@@ -24,6 +24,9 @@ use super::ledger::{Entry, Ledgers, is_quest, shared_of};
 use super::settle::{Merge, Settled, State, beside, settle};
 use super::tree::{Place, Quest, Shared, content};
 use super::{journey, log};
+use crate::group::Group;
+use crate::record::Intent;
+use crate::wire::Draft;
 
 /// Where this machine keeps quests, and mycelium's own folder.
 #[derive(Debug, Clone)]
@@ -52,6 +55,40 @@ impl Places {
     pub fn ledgers(&self) -> Ledgers {
         Ledgers::in_state(&self.state)
     }
+
+    /// The group the sessions on quest `id` hear, named by the short ids of
+    /// the quests above it, outermost first, as the mesh names it: a group
+    /// is heard by its own and its parents' names, never a part of one.
+    #[must_use]
+    pub fn group(&self, id: &str) -> Option<Group> {
+        let mut shorts = Vec::new();
+        let mut quest = Some(id.to_owned());
+        while let Some(at) = quest {
+            // A parent named twice is a loop no quest store should hold.
+            if shorts.len() > MOST_NESTED {
+                return None;
+            }
+            shorts.push(at.rsplit('-').next()?.to_lowercase());
+            let readme = fs::read_to_string(self.quests.join(&at).join("README.md")).ok()?;
+            quest = parent(&readme);
+        }
+        shorts.reverse();
+        Group::new(format!("quest.{}", shorts.join("."))).ok()
+    }
+}
+
+/// How many quests deep a quest may sit under others.
+const MOST_NESTED: usize = 16;
+
+/// The quest a README's front matter names as its parent, if any.
+fn parent(readme: &str) -> Option<String> {
+    let front = readme.strip_prefix("---\n")?.split("\n---").next()?;
+    let parent = front
+        .lines()
+        .find_map(|line| line.strip_prefix("parent:"))?
+        .trim()
+        .trim_matches(['"', '\'']);
+    (!parent.is_empty() && parent != "null" && parent != "~").then(|| parent.to_owned())
 }
 
 /// What one end says to the other about shared quests.
@@ -96,6 +133,8 @@ pub struct Exchange {
     other: String,
     /// The quests last said to be shared.
     told: BTreeSet<String>,
+    /// What the quests' sessions should hear, not yet said.
+    findings: Vec<Draft>,
 }
 
 impl Exchange {
@@ -107,6 +146,36 @@ impl Exchange {
             machine,
             other,
             told: BTreeSet::new(),
+            findings: Vec::new(),
+        }
+    }
+
+    /// What the shared quests' sessions should hear since last asked, as
+    /// findings this machine's node sends: from `mycelium@<machine>`, since
+    /// it is no session, with any dash in the machine's name made `_`, as a
+    /// mesh id parts its sender from the rest by dashes.
+    pub fn findings(&mut self) -> Vec<Draft> {
+        std::mem::take(&mut self.findings)
+    }
+
+    /// Tells the sessions on quest `id` that its file `key` was written on
+    /// both machines apart, and where the other's now is.
+    fn kept_beside(&mut self, id: &str, key: &str, beside: &str) {
+        let text = format!(
+            "{key} of {id} was written on {other} and {here} apart. {here} kept its own, \
+             and {other}'s is beside it on {here} as {beside}: read both and keep what each says.",
+            other = self.other,
+            here = self.machine,
+        );
+        match self.places.group(id) {
+            Some(group) => self.findings.push(Draft {
+                from: format!("mycelium@{}", self.machine.replace('-', "_")),
+                groups: vec![group],
+                intent: Some(Intent::Finding),
+                text,
+                re: None,
+            }),
+            None => eprintln!("{text} (its sessions' group couldn't be read, so none was told)"),
         }
     }
 
@@ -280,7 +349,7 @@ impl Exchange {
     /// end's as it stands now, saying what this end then holds if that is
     /// something new.
     fn file(
-        &self,
+        &mut self,
         id: &str,
         key: &str,
         theirs: &State,
@@ -355,11 +424,7 @@ impl Exchange {
                     path: beside(&shared.path, &self.other),
                 };
                 quest.write(&theirs_at, body.as_deref())?;
-                eprintln!(
-                    "{key} of {id} was written on {} and here apart: this machine's is kept, \
-                     and {}'s is beside it as {}",
-                    self.other, self.other, theirs_at.path
-                );
+                self.kept_beside(id, key, &theirs_at.path);
                 let ours_entry = held.ledger.files.get(key).cloned().unwrap_or_default();
                 Some(Entry {
                     version: joined.changed_on(&self.machine),
@@ -551,11 +616,20 @@ mod tests {
     }
 
     #[test]
-    fn a_document_written_on_both_ends_keeps_the_others_beside() {
+    fn a_document_written_on_both_ends_keeps_the_others_beside_and_says_so() {
         let optimus = Machine::new("optimus");
         let equilibrius = Machine::new("equilibrius");
         let plan = "plans/PLAN-20261026-IZH11J.md";
         optimus.write(plan, "one\n");
+        optimus.write(
+            "README.md",
+            "---\nid: QEST-20261013-4UHC5Q\nparent: QEST-20261007-WCJQSG\n---\n",
+        );
+        for machine in [&optimus, &equilibrius] {
+            let above = machine.places.quests.join("QEST-20261007-WCJQSG");
+            fs::create_dir_all(&above).expect("made");
+            fs::write(above.join("README.md"), "---\nparent: null\n---\n").expect("written");
+        }
         optimus
             .places
             .ledgers()
@@ -595,6 +669,27 @@ mod tests {
             None,
             "and never crosses back"
         );
+        let told = far.findings();
+        assert_eq!(told.len(), 1, "the settler tells of it once: {told:?}");
+        assert_eq!(
+            (
+                told[0].from.as_str(),
+                told[0].groups[0].as_str(),
+                told[0].intent
+            ),
+            (
+                "mycelium@equilibrius",
+                "quest.wcjqsg.4uhc5q",
+                Some(Intent::Finding)
+            ),
+            "as a finding to the quest's whole group"
+        );
+        assert!(
+            told[0].text.contains(&beside(plan, "optimus")),
+            "naming where the other's is: {}",
+            told[0].text
+        );
+        assert!(near.findings().is_empty(), "the other end tells nothing");
     }
 
     #[test]
