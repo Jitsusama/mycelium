@@ -16,6 +16,7 @@ use std::time::UNIX_EPOCH;
 use rustix::fs::FlockOperation;
 use serde::{Deserialize, Serialize};
 
+use super::clones::Clone;
 use super::settle::State;
 use super::tree::{Quest, Shared};
 use super::version::Version;
@@ -65,6 +66,10 @@ pub struct Ledger {
     /// The folders of the quest's scratch that are shared, by name.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub scratch: BTreeSet<String>,
+    /// The git clones in those folders, by their paths in the scratch, as
+    /// this machine last found them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub clones: BTreeMap<String, Clone>,
 }
 
 /// A shared file's key in a ledger and on a link: its place and its path.
