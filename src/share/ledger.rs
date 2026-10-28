@@ -133,7 +133,8 @@ impl Ledger {
         })?;
         for (key, entry) in &mut self.files {
             if !present.contains(key)
-                && shared_of(key).is_some_and(|shared| quest.carries(&shared))
+                && shared_of(key)
+                    .is_some_and(|shared| quest.carries(&shared) && quest.may_be_removed(&shared))
                 && gone(entry, machine)
             {
                 changed.push(key.clone());
@@ -151,10 +152,11 @@ impl Ledger {
         let key = key_of(shared);
         match seen(&quest.path_of(shared)?)? {
             Some(now) => self.saw(quest, shared, &key, now, machine),
-            None => Ok(self
-                .files
-                .get_mut(&key)
-                .is_some_and(|entry| gone(entry, machine))),
+            None => Ok(quest.may_be_removed(shared)
+                && self
+                    .files
+                    .get_mut(&key)
+                    .is_some_and(|entry| gone(entry, machine))),
         }
     }
 

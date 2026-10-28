@@ -161,6 +161,26 @@ impl Quest {
         Ok(())
     }
 
+    /// Whether a file of this quest's that isn't there may be taken as
+    /// removed, for every machine: always in the record, and in the scratch
+    /// only while the named folder it was in is there. A folder taken away
+    /// whole, as concluding a quest takes this machine's whole scratch, is
+    /// no word on another machine's copy, so its files aren't taken as
+    /// removed.
+    #[must_use]
+    pub fn may_be_removed(&self, shared: &Shared) -> bool {
+        match shared.place {
+            Place::Record => true,
+            Place::Scratch => self.scratch.as_ref().is_some_and(|root| {
+                shared
+                    .path
+                    .split('/')
+                    .next()
+                    .is_some_and(|folder| root.join(folder).is_dir())
+            }),
+        }
+    }
+
     /// Whether a git clone at `path` in the scratch is one this quest
     /// shares: a named folder, or a folder within one, never hidden or
     /// build output.
