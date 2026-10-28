@@ -57,9 +57,9 @@ enum Action {
         #[command(flatten)]
         here: Here,
     },
-    /// Shares a quest with every machine this one links with: its record
-    /// and its scratch, kept the same on each, written on any. A machine
-    /// that held its own copy moves it aside first.
+    /// Shares a quest with every machine this one links with: its record,
+    /// kept the same on each, written on any. A machine that held its own
+    /// copy moves it aside first.
     Share {
         #[command(flatten)]
         here: Here,
