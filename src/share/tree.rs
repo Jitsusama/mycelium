@@ -18,6 +18,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use super::clones::Clone;
+
 /// The folders a quest's documents sit in, one per kind.
 const DOCUMENT_FOLDERS: [&str; 4] = ["plans", "research", "briefs", "reports"];
 /// The folder of what a quest's documents cite.
@@ -146,15 +148,51 @@ impl Quest {
         });
         let record = (Place::Record, &self.record, self.record.clone());
         for (place, root, folder) in std::iter::once(record).chain(folders) {
-            walk(root, &folder, &mut |path| {
-                let shared = Shared { place, path };
-                if self.carries(&shared) {
-                    each(shared)?;
+            walk(root, &folder, &mut |found| {
+                if let Found::File(path) = found {
+                    let shared = Shared { place, path };
+                    if self.carries(&shared) {
+                        each(shared)?;
+                    }
                 }
                 Ok(())
             })?;
         }
         Ok(())
+    }
+
+    /// Whether a git clone at `path` in the scratch is one this quest
+    /// shares: a named folder, or a folder within one, never hidden or
+    /// build output.
+    #[must_use]
+    pub fn holds_clone(&self, path: &str) -> bool {
+        let names: Vec<&str> = path.split('/').collect();
+        names
+            .first()
+            .is_some_and(|folder| may_name(folder) && self.folders.contains(*folder))
+            && names
+                .iter()
+                .all(|name| !name.is_empty() && !name.starts_with('.') && !BUILT.contains(name))
+    }
+
+    /// Every git clone within the scratch folders this quest shares, by
+    /// its path in the scratch, as its remote and branch say it, or
+    /// nothing where they can't be read.
+    pub fn clones(&self) -> io::Result<BTreeMap<String, Option<Clone>>> {
+        let mut clones = BTreeMap::new();
+        let Some(root) = &self.scratch else {
+            return Ok(clones);
+        };
+        for folder in &self.folders {
+            walk(root, &root.join(folder), &mut |found| {
+                if let Found::Clone(path) = found {
+                    let clone = Clone::read(&root.join(&path));
+                    clones.insert(path, clone);
+                }
+                Ok(())
+            })?;
+        }
+        Ok(clones)
     }
 
     /// Every file of this quest that crosses, with what each holds.
@@ -240,12 +278,13 @@ pub fn content(bytes: &[u8]) -> Content {
 }
 
 /// Each plain file under `folder`, by its path from `root`, leaving out
-/// links, hidden folders, build output, and any folder holding a git
-/// clone, so none of those is ever looked through.
+/// links, hidden folders and build output, so none of those is ever looked
+/// through, and each folder holding a git clone, which is told of but not
+/// looked through either.
 fn walk(
     root: &Path,
     folder: &Path,
-    each: &mut impl FnMut(String) -> io::Result<()>,
+    each: &mut impl FnMut(Found) -> io::Result<()>,
 ) -> io::Result<()> {
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
@@ -253,7 +292,10 @@ fn walk(
         Err(error) => return Err(error),
     };
     if folder != root && folder.join(".git").exists() {
-        return Ok(());
+        return match relative(root, folder) {
+            Some(within) => each(Found::Clone(within)),
+            None => Ok(()),
+        };
     }
     for entry in entries {
         let entry = entry?;
@@ -266,10 +308,18 @@ fn walk(
         } else if kind.is_file()
             && let Some(within) = relative(root, &path)
         {
-            each(within)?;
+            each(Found::File(within))?;
         }
     }
     Ok(())
+}
+
+/// What a walk finds, by its path from the walk's root.
+enum Found {
+    /// A plain file.
+    File(String),
+    /// A folder holding a git clone, which isn't walked.
+    Clone(String),
 }
 
 fn relative(root: &Path, path: &Path) -> Option<String> {

@@ -130,11 +130,19 @@ attachments, never a lock, a staging file or a copy kept beside. Of its
 scratch, only the folders named cross, as `mycelium share QEST-...
 --scratch notes` names `notes`, since a scratch can hold gigabytes of
 clones and data. A folder holding more than 10,000 files or 1 GiB, or a
-file over 64 MiB, is refused when named, and so are `tmp/`, build output
-and a git clone, which is fetched again from its remote rather than
-copied. Within a named folder, hidden files, links, `target/`,
-`node_modules/` and any git clone stay home. A folder once named stays
-shared.
+file over 64 MiB, is refused when named, and so are `tmp/` and build
+output. Within a named folder, hidden files, links, `target/` and
+`node_modules/` stay home. A folder once named stays shared.
+
+A git clone, named or within a named folder, crosses as its `origin`
+and branch, never file by file, since two machines writing one `.git`
+break it. The other end clones any it lacks with `git clone`, beside
+its link rather than in it, and never into a folder already there; one
+that fails is told in the node's log and tried again at the next link.
+Only a remote over the network crosses (`https://`, `ssh://` or
+`user@machine:path`): a local path names a disk the other end lacks, and
+a transport such as `ext::` runs a command. A clone with no such
+`origin` is refused when named and stays home within a named folder.
 
 Once a second, each end looks at its shared quests and says what changed,
 as `Share` frames. A look reads over each record, a few dozen files, but
@@ -143,8 +151,9 @@ is newly named, or when it can't be watched; a watch that fails or
 overflows has every folder walked. A change found while hearing the
 other end is said at the next look:
 
-- `{"Shares": {"quests", "scratch"}}`: every quest it shares, and the
-  scratch folders named of each, by quest. The other end starts sharing
+- `{"Shares": {"quests", "scratch", "clones"}}`: every quest it shares,
+  the scratch folders named of each, by quest, and the clones in them,
+  each `{"remote", "branch"}` by its path. The other end starts sharing
   any quest or folder it didn't, first moving its own copy aside to
   `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. It is said
   before the files, so a folder's files are carried once heard of.
@@ -208,8 +217,6 @@ A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 
 Each lands behind a seam above, or as a seam of its own:
 
-- **Shared clones:** a git clone in a shared quest's scratch carried as
-  its remote and branch, for the far end to clone itself.
 - **The node's own log:** messages and presence numbered per machine, so
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.

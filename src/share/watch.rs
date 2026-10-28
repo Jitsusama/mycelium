@@ -116,6 +116,12 @@ impl Watch {
     /// Starts watching `folder`, answering whether it is watched.
     fn start(&mut self, (id, folder): &Folder) -> bool {
         let at = self.scratch.join(id).join(folder);
+        // A folder that is a git clone crosses as its remote, and walking it
+        // only finds its `.git`, where watching it whole could spend the
+        // watches a machine has on a large clone's every folder.
+        if at.join(".git").exists() {
+            return false;
+        }
         self.watcher.as_mut().is_some_and(|watcher| {
             // A folder not there yet is walked until it is, then watched.
             watcher.watch(&at, RecursiveMode::Recursive).is_ok()

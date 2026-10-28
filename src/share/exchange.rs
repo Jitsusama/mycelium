@@ -20,6 +20,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
+use super::clones::{Clone, Cloning};
 use super::ledger::{Entry, Ledger, Ledgers, is_quest, shared_of};
 use super::pieces::{PIECE, Pieces, Staged};
 use super::settle::{Merge, Settled, State, beside, settle};
@@ -82,10 +83,16 @@ impl Places {
             return Err(refused(format!("{} is no folder", at.display())));
         }
         if at.join(".git").exists() {
-            return Err(refused(
-                "it is a git clone, which is fetched again from its remote rather than copied"
-                    .to_owned(),
-            ));
+            // A clone crosses as its remote, so how much it holds is no
+            // matter, but one that can't be made again from it is refused.
+            if !Clone::read(&at).is_some_and(|clone| clone.may_clone()) {
+                return Err(refused(
+                    "it is a git clone with no origin another machine can clone from".to_owned(),
+                ));
+            }
+            let mut held = self.ledgers().hold(id)?;
+            held.ledger.scratch.insert(folder.to_owned());
+            return held.keep();
         }
         let only = Quest::new(self.record(id), self.home.clone())
             .sharing(self.scratch.join(id), BTreeSet::from([folder.to_owned()]));
@@ -177,6 +184,10 @@ pub enum Say {
         /// quest's id; an end older than this names none.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         scratch: BTreeMap<String, BTreeSet<String>>,
+        /// The git clones in those folders, by each one's path in the
+        /// scratch, by the quest's id; an end older than this names none.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        clones: BTreeMap<String, BTreeMap<String, Clone>>,
     },
     /// What this end holds of some of a quest's files.
     Holds {
@@ -237,8 +248,8 @@ pub struct Exchange {
     machine: String,
     other: String,
     /// The quests last said to be shared, with the folders of each one's
-    /// scratch.
-    told: BTreeMap<String, BTreeSet<String>>,
+    /// scratch and the clones in them.
+    told: BTreeMap<String, Told>,
     /// What the quests' sessions should hear, not yet said.
     findings: Vec<Draft>,
     /// The large files crossing from the other end, a piece at a time.
@@ -249,6 +260,17 @@ pub struct Exchange {
     /// The files of each quest found changed other than by a look, which
     /// the next look says.
     unsaid: BTreeMap<String, BTreeSet<String>>,
+    /// The clones being made of those the other end holds.
+    cloning: Cloning,
+}
+
+/// What was last said of a shared quest's scratch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Told {
+    /// The folders named.
+    folders: BTreeSet<String>,
+    /// The clones in them.
+    clones: BTreeMap<String, Clone>,
 }
 
 impl Exchange {
@@ -270,6 +292,7 @@ impl Exchange {
             findings: Vec::new(),
             pieces,
             unsaid: BTreeMap::new(),
+            cloning: Cloning::default(),
         }
     }
 
@@ -320,6 +343,7 @@ impl Exchange {
     /// shared if that changed, everything held of a quest newly shared,
     /// and what changed of the rest.
     pub fn look(&mut self) -> io::Result<Vec<Say>> {
+        self.cloning.reap();
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
         let mut holds = Vec::new();
@@ -332,7 +356,8 @@ impl Exchange {
                 .scan(&quest, &self.machine)?
                 .into_iter()
                 .collect();
-            if !changed.is_empty() {
+            let clones_changed = found_clones(&mut held.ledger, &quest, &walk)?;
+            if !changed.is_empty() || clones_changed {
                 held.keep()?;
             }
             changed.extend(self.unsaid.remove(&id).unwrap_or_default());
@@ -351,7 +376,13 @@ impl Exchange {
                     files,
                 });
             }
-            shares.insert(id, held.ledger.scratch.clone());
+            shares.insert(
+                id,
+                Told {
+                    folders: held.ledger.scratch.clone(),
+                    clones: held.ledger.clones.clone(),
+                },
+            );
         }
         // Which folders are shared is said first, so the other end carries
         // a newly named folder's files by the time it hears of them.
@@ -361,8 +392,13 @@ impl Exchange {
                 quests: shares.keys().cloned().collect(),
                 scratch: shares
                     .iter()
-                    .filter(|(_, folders)| !folders.is_empty())
-                    .map(|(id, folders)| (id.clone(), folders.clone()))
+                    .filter(|(_, told)| !told.folders.is_empty())
+                    .map(|(id, told)| (id.clone(), told.folders.clone()))
+                    .collect(),
+                clones: shares
+                    .iter()
+                    .filter(|(_, told)| !told.clones.is_empty())
+                    .map(|(id, told)| (id.clone(), told.clones.clone()))
                     .collect(),
             });
         }
@@ -374,12 +410,19 @@ impl Exchange {
     /// Takes what the other end said, returning what this end says back.
     pub fn hear(&mut self, say: Say) -> io::Result<Vec<Say>> {
         match say {
-            Say::Shares { quests, scratch } => {
+            Say::Shares {
+                quests,
+                scratch,
+                clones,
+            } => {
                 for id in quests {
                     self.share(&id)?;
                 }
                 for (id, folders) in scratch {
                     self.share_scratch(&id, &folders)?;
+                }
+                for (id, clones) in clones {
+                    self.clone_what(&id, &clones)?;
                 }
                 Ok(Vec::new())
             }
@@ -441,6 +484,38 @@ impl Exchange {
             held.ledger.scratch.insert(folder.clone());
         }
         held.keep()
+    }
+
+    /// Starts making each of `clones` of quest `id` this end lacks, in a
+    /// scratch folder it shares, leaving any folder already there as it is.
+    fn clone_what(&mut self, id: &str, clones: &BTreeMap<String, Clone>) -> io::Result<()> {
+        if !is_quest(id) || !self.places.ledgers().shares(id) {
+            return Ok(());
+        }
+        let held = self.places.ledgers().hold(id)?;
+        let quest = self.places.quest(id, &held.ledger);
+        drop(held);
+        for (path, clone) in clones {
+            let shared = Shared {
+                place: Place::Scratch,
+                path: path.clone(),
+            };
+            if !quest.holds_clone(path) {
+                continue;
+            }
+            let Ok(folder) = quest.path_of(&shared) else {
+                continue;
+            };
+            if self.cloning.start(&folder, clone)? {
+                eprintln!(
+                    "cloning {} into {} for {id}, as {} holds it",
+                    clone.remote,
+                    folder.display(),
+                    self.other
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Moves this machine's copy of `id`'s `name`, at `folder`, aside into
@@ -711,6 +786,30 @@ impl Exchange {
         }
         Ok(says)
     }
+}
+
+/// Enters in `ledger` the clones found in the scratch folders `walked` of
+/// `quest`, forgetting those no longer there, and answers whether that
+/// changed what it holds. A clone that can't be made again is left out.
+fn found_clones(ledger: &mut Ledger, quest: &Quest, walked: &BTreeSet<String>) -> io::Result<bool> {
+    let mut clones: BTreeMap<String, Clone> = ledger
+        .clones
+        .iter()
+        .filter(|(path, _)| {
+            path.split('/')
+                .next()
+                .is_some_and(|folder| !walked.contains(folder))
+        })
+        .map(|(path, clone)| (path.clone(), clone.clone()))
+        .collect();
+    for (path, clone) in quest.clones()? {
+        if let Some(clone) = clone.filter(Clone::may_clone) {
+            clones.insert(path, clone);
+        }
+    }
+    let changed = clones != ledger.clones;
+    ledger.clones = clones;
+    Ok(changed)
 }
 
 fn is_journey(shared: &Shared) -> bool {
@@ -1200,7 +1299,7 @@ mod tests {
     }
 
     #[test]
-    fn a_clone_or_a_heavy_folder_is_refused_when_named() {
+    fn a_clone_with_no_origin_or_a_heavy_folder_is_refused_when_named() {
         let optimus = Machine::new("optimus");
         let put = |path: &str, bytes: &[u8]| {
             let path = optimus.places.scratch.join(QUEST).join(path);
@@ -1233,6 +1332,77 @@ mod tests {
                 .is_empty(),
             "and none of them is shared"
         );
+    }
+
+    #[test]
+    fn a_clone_crosses_as_its_remote_and_is_made_where_it_is_lacking() {
+        let optimus = Machine::new("optimus");
+        let equilibrius = Machine::new("equilibrius");
+        let scratch = |machine: &Machine, path: &str| machine.places.scratch.join(QUEST).join(path);
+        let put = |path: &str, text: &str| {
+            let path = scratch(&optimus, path);
+            fs::create_dir_all(path.parent().expect("a file has a folder")).expect("made");
+            fs::write(path, text).expect("written");
+        };
+        let origin = |url: &str| format!("[remote \"origin\"]\n\turl = {url}\n");
+        optimus.write("README.md", "# Shared\n");
+        put("notes/plan.md", "notes\n");
+        put(
+            "notes/ttc/.git/config",
+            &origin("https://nowhere.invalid/ttc.git"),
+        );
+        put("notes/ttc/.git/HEAD", "ref: refs/heads/main\n");
+        put("notes/ttc/src/lib.rs", "// the clone's own\n");
+        put(
+            "notes/mine/.git/config",
+            &origin("/home/jitsusama/src/mine"),
+        );
+        put("notes/mine/.git/HEAD", "ref: refs/heads/main\n");
+        put(
+            "crash/.git/config",
+            &origin("git@nowhere.invalid:crash.git"),
+        );
+        put(
+            "crash/.git/HEAD",
+            "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n",
+        );
+        optimus
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("held")
+            .keep()
+            .expect("shared");
+        for folder in ["notes", "crash"] {
+            optimus.places.name_scratch(QUEST, folder).expect("named");
+        }
+
+        let (mut near, mut far) = (
+            optimus.exchange(&equilibrius),
+            equilibrius.exchange(&optimus),
+        );
+        talk(&mut near, &mut far);
+        assert_eq!(
+            fs::read_to_string(scratch(&equilibrius, "notes/plan.md"))
+                .ok()
+                .as_deref(),
+            Some("notes\n"),
+            "the notes cross"
+        );
+        assert!(
+            !scratch(&equilibrius, "notes/ttc/src/lib.rs").exists(),
+            "but no file of a clone does"
+        );
+        assert_eq!(
+            far.cloning.making(),
+            vec![
+                scratch(&equilibrius, "crash"),
+                scratch(&equilibrius, "notes/ttc")
+            ],
+            "each clone with a remote over the network is made from it instead, \
+             and one from a path on optimus's disk is left out"
+        );
+        far.cloning.wait();
     }
 
     #[test]
