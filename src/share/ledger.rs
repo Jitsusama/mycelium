@@ -7,7 +7,7 @@
 //! a scan then finds nothing new in it. Each file's size and modification
 //! time are kept too, so a scan hashes only what may have changed.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -110,38 +110,70 @@ pub fn seen(path: &Path) -> io::Result<Option<Seen>> {
 impl Ledger {
     /// Looks at every file of `quest` against what this machine last saw,
     /// adding one to `machine`'s count for each whose content changed,
-    /// came or went, and returns the key of each.
+    /// came or went, and returns the key of each. Only a file `quest`
+    /// carries is found gone, so a quest walking some of its folders finds
+    /// nothing gone from the rest.
     pub fn scan(&mut self, quest: &Quest, machine: &str) -> io::Result<Vec<String>> {
         let mut changed = Vec::new();
-        let mut present = Vec::new();
+        let mut present = HashSet::new();
         quest.each_file(&mut |shared| {
             let key = key_of(&shared);
-            present.push(key.clone());
-            let path = quest.path_of(&shared)?;
-            let Some(now) = seen(&path)? else {
-                return Ok(());
-            };
-            let entry = self.files.entry(key.clone()).or_default();
-            if entry.seen == Some(now) && entry.hash.is_some() {
-                return Ok(());
-            }
-            let hash = quest.content_of(&shared)?.hash;
-            if entry.hash.as_deref() != Some(hash.as_str()) {
-                entry.hash = Some(hash);
-                entry.version = entry.version.changed_on(machine);
+            present.insert(key.clone());
+            if let Some(now) = seen(&quest.path_of(&shared)?)?
+                && self.saw(quest, &shared, &key, now, machine)?
+            {
                 changed.push(key);
             }
-            entry.seen = Some(now);
             Ok(())
         })?;
         for (key, entry) in &mut self.files {
-            if entry.hash.is_some() && !present.contains(key) {
-                entry.hash = None;
-                entry.seen = None;
-                entry.version = entry.version.changed_on(machine);
+            if !present.contains(key)
+                && shared_of(key).is_some_and(|shared| quest.carries(&shared))
+                && gone(entry, machine)
+            {
                 changed.push(key.clone());
             }
         }
+        Ok(changed)
+    }
+
+    /// Looks at one file of `quest` against what this machine last saw, as
+    /// [`Self::scan`] does, answering whether it changed, came or went.
+    pub fn scan_one(&mut self, quest: &Quest, shared: &Shared, machine: &str) -> io::Result<bool> {
+        if !quest.carries(shared) {
+            return Ok(false);
+        }
+        let key = key_of(shared);
+        match seen(&quest.path_of(shared)?)? {
+            Some(now) => self.saw(quest, shared, &key, now, machine),
+            None => Ok(self
+                .files
+                .get_mut(&key)
+                .is_some_and(|entry| gone(entry, machine))),
+        }
+    }
+
+    /// Enters file `key`, seen on disk as `now`, hashing it only if it may
+    /// have changed, and answering whether it did.
+    fn saw(
+        &mut self,
+        quest: &Quest,
+        shared: &Shared,
+        key: &str,
+        now: Seen,
+        machine: &str,
+    ) -> io::Result<bool> {
+        let entry = self.files.entry(key.to_owned()).or_default();
+        if entry.seen == Some(now) && entry.hash.is_some() {
+            return Ok(false);
+        }
+        let hash = quest.content_of(shared)?.hash;
+        let changed = entry.hash.as_deref() != Some(hash.as_str());
+        if changed {
+            entry.hash = Some(hash);
+            entry.version = entry.version.changed_on(machine);
+        }
+        entry.seen = Some(now);
         Ok(changed)
     }
 
@@ -153,6 +185,18 @@ impl Ledger {
             .map(|(key, entry)| (key.clone(), entry.state()))
             .collect()
     }
+}
+
+/// Enters a file as gone from this machine's disk, unless it was already,
+/// answering whether it was there before.
+fn gone(entry: &mut Entry, machine: &str) -> bool {
+    if entry.hash.is_none() {
+        return false;
+    }
+    entry.hash = None;
+    entry.seen = None;
+    entry.version = entry.version.changed_on(machine);
+    true
 }
 
 /// Where this machine keeps its ledgers, one a shared quest.

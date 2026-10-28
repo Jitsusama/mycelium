@@ -24,6 +24,7 @@ use super::ledger::{Entry, Ledger, Ledgers, is_quest, shared_of};
 use super::pieces::{PIECE, Pieces, Staged};
 use super::settle::{Merge, Settled, State, beside, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
+use super::watch::Watch;
 use super::{journey, log};
 use crate::group::Group;
 use crate::record::Intent;
@@ -242,6 +243,12 @@ pub struct Exchange {
     findings: Vec<Draft>,
     /// The large files crossing from the other end, a piece at a time.
     pieces: Pieces,
+    /// The shared scratch folders, watched so a look walks only those that
+    /// changed.
+    watch: Watch,
+    /// The files of each quest found changed other than by a look, which
+    /// the next look says.
+    unsaid: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Exchange {
@@ -255,12 +262,14 @@ impl Exchange {
             eprintln!("couldn't clear what an earlier link to {other} left staged: {error}");
         }
         Self {
+            watch: Watch::new(places.scratch.clone()),
             places,
             machine,
             other,
             told: BTreeMap::new(),
             findings: Vec::new(),
             pieces,
+            unsaid: BTreeMap::new(),
         }
     }
 
@@ -293,6 +302,15 @@ impl Exchange {
         }
     }
 
+    /// Keeps file `key` of quest `id`, found changed other than by a look,
+    /// for the next look to say.
+    fn unsay(&mut self, id: &str, key: &str) {
+        self.unsaid
+            .entry(id.to_owned())
+            .or_default()
+            .insert(key.to_owned());
+    }
+
     /// Whether this end settles files written apart.
     fn settles(&self) -> bool {
         self.machine < self.other
@@ -307,11 +325,17 @@ impl Exchange {
         let mut holds = Vec::new();
         for id in ledgers.quests()? {
             let mut held = ledgers.hold(&id)?;
-            let quest = self.places.quest(&id, &held.ledger);
-            let changed = held.ledger.scan(&quest, &self.machine)?;
+            let walk = self.watch.to_walk(&id, &held.ledger.scratch);
+            let quest = self.places.quest(&id, &held.ledger).walking(&walk);
+            let mut changed: BTreeSet<String> = held
+                .ledger
+                .scan(&quest, &self.machine)?
+                .into_iter()
+                .collect();
             if !changed.is_empty() {
                 held.keep()?;
             }
+            changed.extend(self.unsaid.remove(&id).unwrap_or_default());
             let states = held.ledger.states();
             let files: BTreeMap<String, State> = if self.told.contains_key(&id) {
                 states
@@ -446,17 +470,18 @@ impl Exchange {
     }
 
     /// Asks for each file the other end holds that this end should take.
-    fn held(&self, id: &str, files: BTreeMap<String, State>) -> io::Result<Vec<Say>> {
+    fn held(&mut self, id: &str, files: BTreeMap<String, State>) -> io::Result<Vec<Say>> {
         let mut held = self.places.ledgers().hold(id)?;
         let quest = self.places.quest(id, &held.ledger);
-        if !held.ledger.scan(&quest, &self.machine)?.is_empty() {
-            held.keep()?;
-        }
         let mut wants = Vec::new();
         for (key, theirs) in files {
             let Some(shared) = shared_of(&key).filter(|shared| quest.carries(shared)) else {
                 continue;
             };
+            if held.ledger.scan_one(&quest, &shared, &self.machine)? {
+                held.keep()?;
+                self.unsay(id, &key);
+            }
             let ours = held
                 .ledger
                 .files
@@ -490,7 +515,7 @@ impl Exchange {
     }
 
     /// Sends a file the other end asked for, as this end holds it now.
-    fn want(&self, id: &str, key: &str, at: Option<u64>) -> io::Result<Vec<Say>> {
+    fn want(&mut self, id: &str, key: &str, at: Option<u64>) -> io::Result<Vec<Say>> {
         if !self.places.ledgers().shares(id) {
             return Ok(Vec::new());
         }
@@ -499,8 +524,9 @@ impl Exchange {
         let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
             return Ok(Vec::new());
         };
-        if !held.ledger.scan(&quest, &self.machine)?.is_empty() {
+        if held.ledger.scan_one(&quest, &shared, &self.machine)? {
             held.keep()?;
+            self.unsay(id, key);
         }
         let Some(entry) = held.ledger.files.get(key) else {
             return Ok(Vec::new());
@@ -607,7 +633,10 @@ impl Exchange {
         let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
             return Ok(Vec::new());
         };
-        let scanned = !held.ledger.scan(&quest, &self.machine)?.is_empty();
+        let scanned = held.ledger.scan_one(&quest, &shared, &self.machine)?;
+        if scanned {
+            self.unsay(id, key);
+        }
         let ours = held
             .ledger
             .files
@@ -691,6 +720,8 @@ fn is_journey(shared: &Shared) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use super::super::watch::HEARD_WITHIN;
 
     const QUEST: &str = "QEST-20261013-4UHC5Q";
 
@@ -1017,12 +1048,24 @@ mod tests {
             assert_eq!(read(&equilibrius, path), None, "{path} stayed home");
         }
 
+        // The Mac's look walks its notes once, and watches them from then.
         put(&equilibrius, "notes/plan.md", "notes, from the Mac\n");
         talk(&mut near, &mut far);
         assert_eq!(
             read(&optimus, "notes/plan.md").as_deref(),
             Some("notes, from the Mac\n"),
             "and a change crosses back"
+        );
+        put(&equilibrius, "notes/runs/two.json", "[]\n");
+        assert!(
+            far.watch.wait(HEARD_WITHIN),
+            "the Mac's watch hears its notes change"
+        );
+        talk(&mut near, &mut far);
+        assert_eq!(
+            read(&optimus, "notes/runs/two.json").as_deref(),
+            Some("[]\n"),
+            "so what the watch heard crosses too"
         );
 
         put(&optimus, "bench/run.csv", "1,2\n");
@@ -1035,6 +1078,48 @@ mod tests {
             read(&equilibrius, "bench/run.csv").as_deref(),
             Some("1,2\n"),
             "a folder named once the quest is shared crosses too"
+        );
+    }
+
+    #[test]
+    fn a_change_found_while_hearing_the_other_end_is_still_said() {
+        let optimus = Machine::new("optimus");
+        let equilibrius = Machine::new("equilibrius");
+        optimus.write("attachments/a.md", "a\n");
+        optimus.write("attachments/b.md", "b\n");
+        optimus
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("held")
+            .keep()
+            .expect("shared");
+        let (mut near, mut far) = (
+            optimus.exchange(&equilibrius),
+            equilibrius.exchange(&optimus),
+        );
+        talk(&mut near, &mut far);
+
+        // Optimus writes a.md, but hears of the Mac's b.md before it looks.
+        optimus.write("attachments/a.md", "a, again\n");
+        equilibrius.write("attachments/b.md", "b, from the Mac\n");
+        for say in far.look().expect("equilibrius looks") {
+            for answer in near.hear(say).expect("optimus hears") {
+                for file in far.hear(answer).expect("equilibrius hears") {
+                    near.hear(file).expect("optimus hears");
+                }
+            }
+        }
+        talk(&mut near, &mut far);
+        assert_eq!(
+            equilibrius.read("attachments/a.md").as_deref(),
+            Some("a, again\n"),
+            "optimus's change, found while it heard the Mac, still crossed"
+        );
+        assert_eq!(
+            optimus.read("attachments/b.md").as_deref(),
+            Some("b, from the Mac\n"),
+            "as the Mac's did"
         );
     }
 
