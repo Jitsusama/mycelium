@@ -182,17 +182,7 @@ pub fn watch(dir: &Path) -> io::Result<(notify::RecommendedWatcher, mpsc::Unboun
         .create(dir)?;
     let (tell, told) = mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        let records = event.map_or(true, |event| {
-            event.need_rescan()
-                || event.paths.iter().any(|path| {
-                    path.extension().is_some_and(|ext| ext == "json")
-                        && !path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .is_some_and(|name| name.starts_with('.'))
-                })
-        });
-        if records {
+        if changes_a_record(&event) {
             // The node has stopped hearing once nothing receives this.
             let _ = tell.send(());
         }
@@ -202,6 +192,33 @@ pub fn watch(dir: &Path) -> io::Result<(notify::RecommendedWatcher, mpsc::Unboun
         .watch(dir, notify::RecursiveMode::NonRecursive)
         .map_err(io::Error::other)?;
     Ok((watcher, told))
+}
+
+/// Whether `event` may change what is held: a record written, renamed or
+/// removed, or events missed. Opening or reading one changes nothing, and
+/// a Linux watch hears those too, the node's own reads of the records
+/// among them, so answering them would have the node read the records
+/// again without end.
+fn changes_a_record(event: &notify::Result<notify::Event>) -> bool {
+    let Ok(event) = event else {
+        return true;
+    };
+    if event.need_rescan() {
+        return true;
+    }
+    let only_looked = matches!(
+        event.kind,
+        notify::EventKind::Access(_)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Metadata(_))
+    );
+    !only_looked
+        && event.paths.iter().any(|path| {
+            path.extension().is_some_and(|ext| ext == "json")
+                && !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with('.'))
+        })
 }
 
 fn runs(pid: u32) -> bool {
@@ -214,6 +231,42 @@ fn runs(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notify::event::{AccessKind, AccessMode, CreateKind, EventKind, ModifyKind};
+
+    #[test]
+    fn only_a_records_change_is_told_never_its_reading() {
+        let at = |kind: EventKind, name: &str| {
+            Ok(notify::Event::new(kind).add_path(PathBuf::from("/run/work.held").join(name)))
+        };
+        let cases = [
+            (EventKind::Create(CreateKind::File), "ab12.json", true),
+            (EventKind::Modify(ModifyKind::Any), "ab12.json", true),
+            (
+                EventKind::Access(AccessKind::Open(AccessMode::Read)),
+                "ab12.json",
+                false,
+            ),
+            (
+                EventKind::Access(AccessKind::Close(AccessMode::Read)),
+                "ab12.json",
+                false,
+            ),
+            (EventKind::Access(AccessKind::Read), "ab12.json", false),
+            (EventKind::Create(CreateKind::File), ".ab12.json", false),
+            (EventKind::Create(CreateKind::File), "ab12.sock", false),
+        ];
+        for (kind, name, told) in cases {
+            assert_eq!(
+                changes_a_record(&at(kind, name)),
+                told,
+                "{kind:?} of {name}"
+            );
+        }
+        assert!(
+            changes_a_record(&Err(notify::Error::generic("the queue overflowed"))),
+            "a watch that failed may have missed a change"
+        );
+    }
 
     #[tokio::test]
     async fn what_a_terminal_says_crosses_whole() {
