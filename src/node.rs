@@ -122,6 +122,13 @@ where
     let hello = membership.hello();
     let shared = Shared::new(store.clone(), hello.machine, place::held(&hello.realm));
     let mut changes = store.changes()?;
+    let (_watching_held, mut held) = match hold::watch(&shared.held) {
+        Ok((watcher, held)) => (Some(watcher), held),
+        Err(error) => {
+            eprintln!("what is held isn't watched, so is read only with presence: {error}");
+            (None, mpsc::unbounded_channel().1)
+        }
+    };
     shared.read_store();
 
     let mut links = JoinSet::new();
@@ -139,6 +146,7 @@ where
             Some(dial) = found.recv() => {
                 links.spawn(keep_linked(dial, store.clone(), membership.clone(), sharing.clone()));
             }
+            Some(()) = held.recv() => shared.read_sessions(),
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => shared.read_message(&id),
                 Some(Change::Presence) => shared.read_sessions(),
@@ -244,10 +252,8 @@ impl<S: Store> Shared<S> {
         self.read_sessions();
     }
 
-    /// Judges every session again and sends what changed. What is held is
-    /// read with them: a holder writes its record as its program starts,
-    /// well before pi has written a presence, and a presence that somehow
-    /// came first is read again at its next change.
+    /// Judges every session again and sends what changed, with what is
+    /// held on this machine, which the node also watches.
     fn read_sessions(&self) {
         let held = hold::held(&self.held);
         let sessions = self
@@ -256,7 +262,12 @@ impl<S: Store> Shared<S> {
             .iter()
             .filter_map(|presence| {
                 let mut session = mesh::session(presence, &self.machine)?;
-                session.held = mesh::held_by(presence, &held);
+                if let Some(one) = mesh::held_by(presence, &held) {
+                    session.held = Some(one.id.clone());
+                    // A held session is in whichever window joined it
+                    // last and is still joined, or in none.
+                    session.window = one.windows.last().cloned();
+                }
                 Some(session)
             })
             .collect();

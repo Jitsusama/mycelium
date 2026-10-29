@@ -19,10 +19,15 @@ pub mod holder;
 
 use std::fs;
 use std::io;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
+use notify::Watcher;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::sync::mpsc;
+
+use crate::record::Window;
 
 /// What a holder keeps beside its socket, saying what it holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +44,10 @@ pub struct Held {
     pub pid: u32,
     /// When it was started, as an RFC 3339 time.
     pub since: String,
+    /// The windows joined to it that said which they are, the latest
+    /// last; each goes the moment its terminal leaves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<Window>,
 }
 
 /// A terminal's size.
@@ -57,10 +66,13 @@ pub enum Said {
     Typed(Vec<u8>),
     /// The terminal's size, first on joining and again on each change.
     Size(Size),
+    /// The window the terminal is, once on joining, if it can say.
+    Window(Window),
 }
 
 const TYPED: u8 = 0;
 const SIZE: u8 = 1;
+const WINDOW: u8 = 2;
 
 impl Said {
     /// The frame this is sent as: a tag, a length of two bytes, and what
@@ -82,6 +94,13 @@ impl Said {
                 frames.extend_from_slice(&size.rows.to_be_bytes());
                 frames.extend_from_slice(&size.cols.to_be_bytes());
             }
+            Self::Window(window) => {
+                // A window is a few short names, far under a frame's length.
+                let body = serde_json::to_vec(window).unwrap_or_default();
+                frames.push(WINDOW);
+                frames.extend_from_slice(&length(&body).to_be_bytes());
+                frames.extend_from_slice(&body);
+            }
         }
         frames
     }
@@ -102,6 +121,9 @@ impl Said {
                 rows: u16::from_be_bytes([*r0, *r1]),
                 cols: u16::from_be_bytes([*c0, *c1]),
             }))),
+            (WINDOW, _) => serde_json::from_slice(&body)
+                .map(|window| Some(Self::Window(window)))
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
             (tag, _) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("a terminal sent a frame this holder doesn't know, tagged {tag}"),
@@ -147,6 +169,38 @@ pub fn held(dir: &Path) -> Vec<Held> {
     all
 }
 
+/// Watches `dir`, made if it isn't there, telling `changed` each time what
+/// is held there changes: a session held or let go, or a window joined or
+/// left. The watch lasts as long as what this answers is kept.
+pub fn watch(dir: &Path) -> io::Result<(notify::RecommendedWatcher, mpsc::UnboundedReceiver<()>)> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    let (tell, told) = mpsc::unbounded_channel();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let records = event.map_or(true, |event| {
+            event.need_rescan()
+                || event.paths.iter().any(|path| {
+                    path.extension().is_some_and(|ext| ext == "json")
+                        && !path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.starts_with('.'))
+                })
+        });
+        if records {
+            // The node has stopped hearing once nothing receives this.
+            let _ = tell.send(());
+        }
+    })
+    .map_err(io::Error::other)?;
+    watcher
+        .watch(dir, notify::RecursiveMode::NonRecursive)
+        .map_err(io::Error::other)?;
+    Ok((watcher, told))
+}
+
 fn runs(pid: u32) -> bool {
     i32::try_from(pid)
         .ok()
@@ -168,6 +222,11 @@ mod tests {
             }),
             Said::Typed(b"echo hi\r".to_vec()),
             Said::Typed(long.clone()),
+            Said::Window(Window {
+                terminal: "kitty".to_owned(),
+                id: "13".to_owned(),
+                within: Some("unix:@kitty-6753".to_owned()),
+            }),
         ];
         let sent: Vec<u8> = said.iter().flat_map(Said::encode).collect();
         let mut reading = sent.as_slice();
@@ -180,11 +239,12 @@ mod tests {
             said[..2],
             "a size and a few bytes cross as sent"
         );
-        let typed: Vec<u8> = heard[2..]
+        assert_eq!(heard.last(), said.last(), "a window crosses as it was said");
+        let typed: Vec<u8> = heard[2..heard.len() - 1]
             .iter()
             .flat_map(|one| match one {
                 Said::Typed(bytes) => bytes.clone(),
-                Said::Size(_) => Vec::new(),
+                Said::Size(_) | Said::Window(_) => Vec::new(),
             })
             .collect();
         assert_eq!(

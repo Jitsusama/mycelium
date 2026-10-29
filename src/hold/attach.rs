@@ -11,14 +11,16 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 
 use super::{Said, Size};
+use crate::record::Window;
 
 /// The size a terminal that won't say its own is taken to have.
 const SIZE_UNSAID: Size = Size { rows: 24, cols: 80 };
 
 /// Joins the holder serving `socket` from this process's own terminal,
-/// raw while joined, telling the holder each size it takes, until the
-/// program ends.
+/// raw while joined, telling the holder the window it is and each size it
+/// takes, until the program ends.
 pub async fn join_here(socket: &Path) -> io::Result<()> {
+    let window = window_of(|name| std::env::var(name).ok());
     let _raw = Raw::enter()?;
     let (tell, sizes) = mpsc::unbounded_channel();
     let mut changes = signal(SignalKind::window_change())?;
@@ -33,9 +35,21 @@ pub async fn join_here(socket: &Path) -> io::Result<()> {
     };
     let size = size_here().unwrap_or(SIZE_UNSAID);
     tokio::select! {
-        joined = join(socket, size, tokio::io::stdin(), tokio::io::stdout(), sizes) => joined,
+        joined = join(socket, size, window, tokio::io::stdin(), tokio::io::stdout(), sizes) => joined,
         () = watching => Ok(()),
     }
+}
+
+/// The window a terminal is, from the variables `named` gives, as the
+/// harness names it: a kitty window by its id within kitty's socket.
+/// Other terminals don't say yet.
+pub fn window_of(named: impl Fn(&str) -> Option<String>) -> Option<Window> {
+    let id = named("KITTY_WINDOW_ID").filter(|id| !id.is_empty())?;
+    Some(Window {
+        terminal: "kitty".to_owned(),
+        id,
+        within: named("KITTY_LISTEN_ON").filter(|within| !within.is_empty()),
+    })
 }
 
 /// This process's terminal's size, if it has one that says.
@@ -75,14 +89,16 @@ impl Drop for Raw {
     }
 }
 
-/// Joins the holder serving `socket` at `size`: what `input` gives is typed
-/// into the program, each size from `sizes` is the terminal's new one, and
-/// the program's output goes to `output`. It answers once the holder lets
+/// Joins the holder serving `socket` at `size`, as `window` if it is one
+/// that says: what `input` gives is typed into the program, each size from
+/// `sizes` is the terminal's new one, and the program's output goes to
+/// `output`. It answers once the holder lets
 /// it go, which it does when the program ends. Once `input` ends, nothing
 /// more is typed, but the program's output still comes.
 pub async fn join(
     socket: &Path,
     size: Size,
+    window: Option<Window>,
     input: impl AsyncRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
     sizes: mpsc::UnboundedReceiver<Size>,
@@ -90,6 +106,9 @@ pub async fn join(
     let stream = UnixStream::connect(socket).await?;
     let (mut from, mut to) = stream.into_split();
     to.write_all(&Said::Size(size).encode()).await?;
+    if let Some(window) = window {
+        to.write_all(&Said::Window(window).encode()).await?;
+    }
     let showing = async {
         tokio::io::copy(&mut from, &mut output).await?;
         output.flush().await
@@ -124,5 +143,29 @@ async fn type_into(
             // closed connection as leaving, so the connection stays.
             else => std::future::pending::<()>().await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_kitty_window_says_which_it_is() {
+        let kitty = |name: &str| match name {
+            "KITTY_WINDOW_ID" => Some("13".to_owned()),
+            "KITTY_LISTEN_ON" => Some("unix:@kitty-6753".to_owned()),
+            _ => None,
+        };
+        assert_eq!(
+            window_of(kitty),
+            Some(Window {
+                terminal: "kitty".to_owned(),
+                id: "13".to_owned(),
+                within: Some("unix:@kitty-6753".to_owned()),
+            }),
+            "its id within kitty's socket, as the harness names it"
+        );
+        assert_eq!(window_of(|_| None), None, "another terminal says nothing");
     }
 }
