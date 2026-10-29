@@ -425,12 +425,21 @@ Each lands behind a seam above, or as a seam of its own:
   number N?", in place of the mesh's folders.
 - **Places and what they can do:** a machine says what it is, and the
   node places work and starts it held on whichever machine it chose,
-  which admits or refuses it on its own facts; next, the launcher and pi
-  start sessions through it.
+  which admits or refuses it on its own facts. The launcher and pi
+  already start sessions through it; next, a place says what it offers,
+  such as evaluating and building for a system, so work that needs it is
+  placed there.
+- **Steers across links:** the launcher's talk, pause, resume and stop
+  sent to its node, carried over the link to the one machine holding
+  that address and written into the session's inbox there, with a
+  talk's replies carried back line by line.
 - **Providers:** programs beside a node that offer shapes of machine,
   make one, start a session on it, reach it and end it with its cost,
   and say when one is lost, such as Aquifer's, which lives outside this
   repository. A machine a provider made shows as a place like any other.
+  A machine that can't dial out is dialled in: a link over any program's
+  input and output, as SSH is one, reaching a node that answers links on
+  a port only its own machine can reach.
 - **Connections of the node's own:** machines dialled by key, found on the
   network without a cloud, and encrypted always, behind `Dial` and
   `Discovery`; membership then checks the realm's enrolled keys. SSH
