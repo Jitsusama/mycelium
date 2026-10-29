@@ -33,6 +33,7 @@ use mycelium::client::Client;
 use mycelium::group::{Group, Pattern};
 use mycelium::link::discovery::Listed;
 use mycelium::link::membership::Realm;
+use mycelium::link::refused::Refusals;
 use mycelium::link::{
     self,
     dial::{Connection, Ssh},
@@ -165,6 +166,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
             node::Given {
                 sharing: None,
                 starter: None,
+                refusals: Refusals::default(),
             },
             bound,
             until_stopped,
@@ -206,6 +208,7 @@ async fn end(store: Folders, machine: &str, stream: tokio::io::DuplexStream) -> 
         reading: Box::new(reading),
         writing: Box::new(writing),
         keep: Box::new(()),
+        refused: None,
     };
     link::run(store, &realm, connection, None, None).await
 }

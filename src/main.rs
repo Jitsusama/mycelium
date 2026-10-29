@@ -14,6 +14,7 @@ use mycelium::hold::start::Starter;
 use mycelium::link::dial::{Connection, Ssh};
 use mycelium::link::discovery::Listed;
 use mycelium::link::membership::Realm;
+use mycelium::link::refused::Refusals;
 use mycelium::placement::{Need, Work};
 use mycelium::record::Intent;
 use mycelium::share::exchange::Places;
@@ -321,9 +322,15 @@ fn run(command: Command) -> io::Result<()> {
 /// Runs this machine's node on `socket`, keeping linked over `dials`,
 /// until it is asked to stop.
 fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Ssh>) -> io::Result<()> {
+    let refused = here
+        .state
+        .clone()
+        .unwrap_or_else(place::state)
+        .join("refused");
     let (store, membership, shares) = open(here, realm)?;
     let given = node::Given {
         sharing: Some(shares),
+        refusals: Refusals::kept_in(refused),
         starter: Some(Starter {
             program: std::env::current_exe()?,
             // A node that is a systemd unit, as on Linux, would stop
@@ -351,6 +358,7 @@ fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
             reading: Box::new(tokio::io::stdin()),
             writing: Box::new(tokio::io::stdout()),
             keep: Box::new(()),
+            refused: None,
         };
         let starting = link::starts::Starting {
             node: socket,

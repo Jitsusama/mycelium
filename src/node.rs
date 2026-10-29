@@ -18,6 +18,7 @@ use tokio::task::JoinSet;
 use crate::facts;
 use crate::group::{Pattern, Routes};
 use crate::hold::{self, start, start::Starter};
+use crate::link::refused::Refusals;
 use crate::link::starts::{Asks, Starting};
 use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership};
 use crate::mesh;
@@ -33,6 +34,10 @@ use crate::wire::{Draft, Event, Reply, Request, Response, Start, Started};
 /// and at most; each failure in a row doubles the wait.
 const REDIAL_FIRST: Duration = Duration::from_secs(2);
 const REDIAL_MOST: Duration = Duration::from_secs(60);
+
+/// How long a link's way in may take to finish saying why it ended, once
+/// the link is over.
+const SAID_WITHIN: Duration = Duration::from_secs(5);
 
 /// How many events a watch may fall behind by before the node lets it go;
 /// a client that can't keep up connects again and is sent the whole state.
@@ -110,6 +115,8 @@ pub struct Given {
     pub sharing: Option<Places>,
     /// How it starts the sessions it is asked to, if it starts any.
     pub starter: Option<Starter>,
+    /// How it keeps the refusals of links whose way in turned it away.
+    pub refusals: Refusals,
 }
 
 /// Runs a node serving `socket` until `stop` resolves, then ends its links
@@ -129,7 +136,11 @@ where
 {
     store::out_of_reach_of_unclaimed(&store)?;
     let hello = membership.hello();
-    let Given { sharing, starter } = given;
+    let Given {
+        sharing,
+        starter,
+        refusals,
+    } = given;
     let shared = Shared {
         held: place::held(&hello.realm),
         store: store.clone(),
@@ -171,7 +182,7 @@ where
                         Arc::new(move |words: &[String]| dial.there(words))
                     })),
                 };
-                let carries = (sharing.clone(), starting);
+                let carries = (sharing.clone(), starting, refusals.clone());
                 links.spawn(keep_linked(dial, store.clone(), membership.clone(), carries));
             }
             Some(()) = held.recv() => shared.read_sessions(),
@@ -193,30 +204,60 @@ where
 }
 
 /// Keeps a link up for as long as the node runs, dialling again after each
-/// drop, carrying the quests shared and starts.
+/// drop, carrying the quests shared and starts. A link whose way in turned
+/// this machine away waits out its refusal instead, logging it once.
 async fn keep_linked(
     dial: Arc<impl Dial>,
     store: impl Store,
     membership: impl Membership,
-    (shares, starting): (Option<Places>, Starting),
+    (shares, starting, refusals): (Option<Places>, Starting, Refusals),
 ) {
+    let words = dial.there(&[]);
+    if let Some(left) = refusals.waiting(&words) {
+        eprintln!(
+            "{} turned this machine away before, so it isn't dialled for {}{}",
+            dial.describe(),
+            in_hours(left),
+            sooner(&refusals, &words),
+        );
+        tokio::time::sleep(left).await;
+    }
     let mut wait = REDIAL_FIRST;
     loop {
         let started = tokio::time::Instant::now();
-        let ended = match dial.dial(&membership.hello().realm).await {
-            Ok(connection) => {
+        let (ended, refused) = match dial.dial(&membership.hello().realm).await {
+            Ok(mut connection) => {
+                let refused = connection.refused.take();
                 let starting = Some(starting.clone());
-                link::run(
+                let ended = link::run(
                     store.clone(),
                     &membership,
                     connection,
                     shares.clone(),
                     starting,
                 )
-                .await
+                .await;
+                (ended, said_why(refused).await)
             }
-            Err(error) => Err(error),
+            Err(error) => (Err(error), None),
         };
+        if let Some(why) = refused {
+            eprintln!(
+                "{} turned this machine away ({why}), so it isn't dialled again for {}{}",
+                dial.describe(),
+                in_hours(refusals.lasting),
+                sooner(&refusals, &words),
+            );
+            if let Err(error) = refusals.remember(&words, &why) {
+                eprintln!("its refusal isn't remembered past this node: {error}");
+            }
+            tokio::time::sleep(refusals.lasting).await;
+            wait = REDIAL_FIRST;
+            continue;
+        }
+        if let Err(error) = refusals.forget(&words) {
+            eprintln!("a refusal of {} wasn't forgotten: {error}", dial.describe());
+        }
         match ended {
             Ok(()) => eprintln!("the link over {} ended", dial.describe()),
             Err(error) => eprintln!("the link over {} failed: {error}", dial.describe()),
@@ -227,6 +268,36 @@ async fn keep_linked(
         }
         tokio::time::sleep(wait).await;
         wait = (wait * 2).min(REDIAL_MOST);
+    }
+}
+
+/// Why a way in that has ended turned this machine away, if it did.
+async fn said_why(refused: Option<tokio::task::JoinHandle<Option<String>>>) -> Option<String> {
+    // The link is over and its process gone, so what it said is all but
+    // read; a way in that hangs on to its output is taken as not refusing.
+    tokio::time::timeout(SAID_WITHIN, refused?)
+        .await
+        .ok()?
+        .ok()?
+}
+
+/// How to have a refused link dialled sooner, when its refusal is kept.
+fn sooner(refusals: &Refusals, words: &[String]) -> String {
+    refusals.record(words).map_or_else(String::new, |record| {
+        format!(
+            ", or until {} is removed and the node started again",
+            record.display()
+        )
+    })
+}
+
+/// `wait` in whole hours, rounded up, as a log line says it.
+fn in_hours(wait: Duration) -> String {
+    let hours = wait.as_secs().div_ceil(60 * 60);
+    if hours == 1 {
+        "an hour".to_owned()
+    } else {
+        format!("{hours} hours")
     }
 }
 
@@ -735,6 +806,7 @@ mod tests {
             let given = Given {
                 sharing: None,
                 starter,
+                refusals: Refusals::default(),
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -793,7 +865,82 @@ mod tests {
             reading: Box::new(reading),
             writing: Box::new(writing),
             keep: Box::new(()),
+            refused: None,
         }
+    }
+
+    /// A dial whose way in always turns this machine away, telling
+    /// `dialled` each time it is dialled.
+    struct Refusing {
+        dialled: mpsc::UnboundedSender<tokio::time::Instant>,
+    }
+
+    impl Dial for Refusing {
+        fn describe(&self) -> String {
+            "a way in that refuses".to_owned()
+        }
+
+        fn dial(&self, _realm: &str) -> impl Future<Output = io::Result<Connection>> + Send {
+            let _ = self.dialled.send(tokio::time::Instant::now());
+            // The other end hangs up before saying hello, as SSH does.
+            let (near, _far) = tokio::io::duplex(64);
+            let mut connection = piped(near);
+            connection.refused = Some(tokio::spawn(async {
+                Some("joel@equilibrius: Permission denied (publickey).".to_owned())
+            }));
+            std::future::ready(Ok(connection))
+        }
+
+        fn there(&self, words: &[String]) -> Vec<String> {
+            let mut there = vec!["into-equilibrius".to_owned()];
+            there.extend_from_slice(words);
+            there
+        }
+    }
+
+    #[tokio::test]
+    async fn a_link_that_turned_this_machine_away_isnt_dialled_again_until_it_lapses() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (dialled, mut dials) = mpsc::unbounded_channel();
+        // Longer than the first redial after a drop, so a second dial this
+        // late was held back by the refusal, not by the usual wait.
+        let refusals = Refusals {
+            folder: Some(dir.path().join("refused")),
+            lasting: REDIAL_FIRST + Duration::from_secs(1),
+        };
+        let starting = Starting {
+            node: dir.path().join("work.sock"),
+            held: dir.path().join("work.held"),
+            asking: None,
+        };
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "optimus".to_owned(),
+        };
+        let dial = Arc::new(Refusing { dialled });
+        let words = dial.there(&[]);
+        let keeping = tokio::spawn(keep_linked(
+            dial,
+            Memory::default(),
+            membership,
+            (None, starting, refusals.clone()),
+        ));
+
+        let first = dials.recv().await.expect("the link is dialled");
+        let second = tokio::time::timeout(PATIENCE, dials.recv())
+            .await
+            .expect("the link is dialled again once its refusal lapses")
+            .expect("the link is kept");
+        assert!(
+            second - first >= refusals.lasting,
+            "a refused link waits out its refusal, not {:?}",
+            second - first
+        );
+        assert!(
+            refusals.waiting(&words).is_some(),
+            "the refusal is remembered for a node started again"
+        );
+        keeping.abort();
     }
 
     #[tokio::test]
@@ -1050,6 +1197,7 @@ mod tests {
                 let given = Given {
                     sharing: None,
                     starter: None,
+                    refusals: Refusals::default(),
                 };
                 run(
                     store,
@@ -1145,6 +1293,7 @@ mod tests {
                     program: holder,
                     scoped: false,
                 }),
+                refusals: Refusals::default(),
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
