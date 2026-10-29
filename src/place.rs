@@ -1,6 +1,6 @@
 //! Where a node keeps things on its machine, by realm: its socket, its own
-//! folder, the harness mesh's folders, the harness's quests, and what the
-//! machine is called.
+//! folder, the harness mesh's folders, the harness's quests and machine
+//! queue, and what the machine is called.
 
 use std::env;
 use std::fs;
@@ -20,6 +20,13 @@ pub fn socket(realm: &str) -> PathBuf {
 /// holder's socket and record, beside the node's socket.
 pub fn held(realm: &str) -> PathBuf {
     runtime().join(format!("{realm}.held"))
+}
+
+/// The record of the harness's machine queue, which says the room the
+/// machine has for more work: in the login's runtime folder, so nowhere
+/// on a system with none, as the harness keeps it.
+pub fn queue() -> Option<PathBuf> {
+    env::var_os("XDG_RUNTIME_DIR").map(|dir| PathBuf::from(dir).join("jobs").join("queue.json"))
 }
 
 fn runtime() -> PathBuf {

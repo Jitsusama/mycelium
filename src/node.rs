@@ -312,6 +312,7 @@ impl<S: Store> Shared<S> {
                 Ok(Response::Machine(Box::new(facts::measure(
                     &self.machine,
                     &home,
+                    place::queue().as_deref(),
                 ))))
             }
             Request::Messages { groups, limit } => {
