@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::group::Group;
+use crate::hold::Held;
 use crate::record::{Intent, Message, Session, State, Want, Window};
 use crate::store::Presence;
 use crate::wire::Draft;
@@ -176,9 +177,23 @@ pub fn session(presence: &Presence, here: &str) -> Option<Session> {
                 id: terminal.value,
                 within: terminal.scope,
             }),
+        held: None,
         at: said.at,
         presence: presence.body.clone(),
     })
+}
+
+/// The id of what is held here that holds this machine's session: the
+/// holder whose program is the session's own process, as a session started
+/// with `mycelium hold -- pi` is.
+pub fn held_by(presence: &Presence, held: &[Held]) -> Option<String> {
+    if presence.elsewhere.is_some() {
+        return None;
+    }
+    let pid = presence.body.get("owner")?.get("pid")?.as_u64()?;
+    held.iter()
+        .find(|one| u64::from(one.pid) == pid)
+        .map(|one| one.id.clone())
 }
 
 /// How a quest's id begins, which an older presence names among what it
@@ -469,6 +484,41 @@ mod tests {
                 .as_deref(),
             Some("QEST-20261013-4UHC5Q"),
             "an older presence's quest is the one it owns"
+        );
+    }
+
+    #[test]
+    fn a_session_here_says_what_holds_it() {
+        let presence = |pid: u32, elsewhere: Option<&str>| Presence {
+            session: "01a1".to_owned(),
+            body: json!({"session": "01a1", "owner": {"pid": pid}}),
+            elsewhere: elsewhere.map(str::to_owned),
+            lives: true,
+            unreachable_since: None,
+        };
+        let held = |id: &str, pid| Held {
+            id: id.to_owned(),
+            command: vec!["pi".to_owned()],
+            folder: "/home/jitsusama".into(),
+            holder: 1,
+            pid,
+            since: "2026-10-28T23:00:00Z".to_owned(),
+        };
+        let here = [held("5b992038", 4242), held("0d1e2f3a", 77)];
+        assert_eq!(
+            held_by(&presence(4242, None), &here).as_deref(),
+            Some("5b992038"),
+            "the holder whose program is the session's process"
+        );
+        assert_eq!(
+            held_by(&presence(4243, None), &here),
+            None,
+            "a session no holder runs isn't held"
+        );
+        assert_eq!(
+            held_by(&presence(4242, Some("equilibrius")), &here),
+            None,
+            "a process elsewhere is never one held here"
         );
     }
 }
