@@ -104,9 +104,16 @@ pub fn begins_in(folder: Option<&Path>, home: &Path) -> PathBuf {
     }
 }
 
+/// The words that run a session on a Mac at Utility quality of service, so
+/// it yields the processor to what the person is doing, as the sessions
+/// mac-pi starts do. Linux has no such words: the node's service sits
+/// below the person's programs already.
+const YIELDING_ON_A_MAC: [&str; 3] = ["/usr/sbin/taskpolicy", "-c", "utility"];
+
 /// `command` run through the person's login shell, as a terminal would
 /// run it, so it has their environment rather than a service's: a pi
-/// started without it has no model token and ends at once.
+/// started without it has no model token and ends at once. On a Mac it
+/// runs yielding to the person's own programs.
 #[must_use]
 pub fn through_login_shell(command: &[String]) -> Vec<String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| {
@@ -116,12 +123,17 @@ pub fn through_login_shell(command: &[String]) -> Vec<String> {
             "/bin/sh".to_owned()
         }
     });
-    let mut through = vec![
+    let mut through: Vec<String> = if cfg!(target_os = "macos") {
+        YIELDING_ON_A_MAC.map(str::to_owned).to_vec()
+    } else {
+        Vec::new()
+    };
+    through.extend([
         shell,
         "-lic".to_owned(),
         r#"exec "$@""#.to_owned(),
         "mycelium".to_owned(),
-    ];
+    ]);
     through.extend_from_slice(command);
     through
 }
@@ -143,8 +155,18 @@ mod tests {
     #[test]
     fn a_program_runs_through_the_login_shell_with_its_words_kept_apart() {
         let words = through_login_shell(&["pi".to_owned(), "say \"hi\" $HOME".to_owned()]);
+        let yielding = if cfg!(target_os = "macos") {
+            YIELDING_ON_A_MAC.len()
+        } else {
+            0
+        };
         assert_eq!(
-            words[1..],
+            words[..yielding],
+            YIELDING_ON_A_MAC[..yielding],
+            "a Mac's session yields to the person's programs"
+        );
+        assert_eq!(
+            words[yielding + 1..],
             ["-lic", r#"exec "$@""#, "mycelium", "pi", "say \"hi\" $HOME"],
             "the shell execs the words as given, never reading them as its own"
         );
