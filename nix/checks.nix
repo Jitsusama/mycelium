@@ -1,9 +1,11 @@
 # Every check `nix flake check` runs: the crate built with its tests, held to
 # clippy and rustfmt, and every other tracked file to its own linter, with the
-# tree's own rules last (tree.sh).
+# tree's own rules (tree.sh); and on Linux, the command linked in whole.
 {
   pkgs,
   package,
+  # The command linked in whole, or null on a system with no musl.
+  static,
   source,
 }:
 let
@@ -64,4 +66,18 @@ in
     shellcheck --enable=all nix/tree.sh
     bash nix/tree.sh
   '';
+}
+// pkgs.lib.optionalAttrs (static != null) {
+  # The command linked in whole needs no library, so it runs where no Nix
+  # is. Its tests pass as it builds, as the other build's do.
+  mycelium-needs-no-libraries =
+    pkgs.runCommand "mycelium-needs-no-libraries" { nativeBuildInputs = [ pkgs.file ]; }
+      ''
+        said=$(file --brief --dereference ${static}/bin/mycelium)
+        case $said in
+          *"static-pie linked"* | *"statically linked"*) ;;
+          *) echo "the static mycelium is linked to libraries: $said"; exit 1 ;;
+        esac
+        touch $out
+      '';
 }
