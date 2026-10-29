@@ -6,6 +6,7 @@
 //! something costs a walk, never a change.
 
 use std::collections::BTreeSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 #[cfg(test)]
@@ -23,6 +24,10 @@ pub type Folder = (String, String);
 pub struct Watch {
     /// The quests' scratch folders, one a quest, by its id.
     scratch: PathBuf,
+    /// `scratch` with every link in it resolved, once it is there. macOS's
+    /// watcher names a change by this path, so a scratch reached through a
+    /// link, as `/var` is `/private/var` on a Mac, is matched by it.
+    resolved: Option<PathBuf>,
     /// The watcher, unless one couldn't be made, when every folder is
     /// walked at every look.
     watcher: Option<RecommendedWatcher>,
@@ -71,6 +76,7 @@ impl Watch {
         .ok();
         Self {
             scratch,
+            resolved: None,
             watcher,
             watched: BTreeSet::new(),
             heard,
@@ -140,6 +146,9 @@ impl Watch {
         if at.join(".git").exists() {
             return false;
         }
+        if self.resolved.is_none() {
+            self.resolved = fs::canonicalize(&self.scratch).ok();
+        }
         self.watcher.as_mut().is_some_and(|watcher| {
             // A folder not there yet is walked until it is, then watched.
             watcher.watch(&at, RecursiveMode::Recursive).is_ok()
@@ -158,7 +167,11 @@ impl Watch {
             match heard {
                 Heard::Anything => self.changed.extend(self.watched.iter().cloned()),
                 Heard::At(path) => {
-                    if let Some((folder, whole)) = folder_of(&self.scratch, &path) {
+                    let found = folder_of(&self.scratch, &path).or_else(|| {
+                        let resolved = self.resolved.as_deref()?;
+                        folder_of(resolved, &path)
+                    });
+                    if let Some((folder, whole)) = found {
                         if whole {
                             self.watched.remove(&folder);
                         }
@@ -247,6 +260,26 @@ mod tests {
             watch.to_walk(QUEST, &both),
             BTreeSet::from([named("notes")]),
             "only the folder that changed is walked"
+        );
+    }
+
+    #[test]
+    fn a_change_is_matched_to_its_folder_through_a_linked_scratch() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let real = dir.path().join("real");
+        fs::create_dir_all(real.join(QUEST).join("notes")).expect("made");
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(&real, &linked).expect("linked");
+        let mut watch = Watch::new(linked.clone());
+        let notes = shared(&["notes"]);
+        watch.to_walk(QUEST, &notes);
+
+        fs::write(linked.join(QUEST).join("notes/plan.md"), "plan\n").expect("written");
+        assert!(watch.wait(HEARD_WITHIN), "the watcher hears the write");
+        assert_eq!(
+            watch.to_walk(QUEST, &notes),
+            BTreeSet::from([named("notes")]),
+            "a change named by the resolved path is still its folder's"
         );
     }
 
