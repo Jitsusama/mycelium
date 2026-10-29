@@ -20,6 +20,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::declared::{Effect, Taint};
+use crate::disk::Band;
 use crate::facts::{AcceleratorKind, Machine, Readiness};
 use crate::room::Limit;
 
@@ -156,6 +157,9 @@ pub const ON_BATTERY: &str = "on-battery";
 /// The key of the taint a machine past its queue's memory limit carries.
 pub const MEMORY_PRESSURE: &str = "memory-pressure";
 
+/// The key of the taint a machine whose home's disk is filling carries.
+pub const DISK_PRESSURE: &str = "disk-pressure";
+
 /// Places `work` among `machines`.
 #[must_use]
 pub fn place(work: &Work, machines: &[Machine]) -> Placement {
@@ -241,6 +245,12 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
         taints.push(condition(
             MEMORY_PRESSURE,
             "its queue starts no work for want of memory",
+        ));
+    }
+    if machine.disk_band.is_some_and(|band| band > Band::Healthy) {
+        taints.push(condition(
+            DISK_PRESSURE,
+            "its disk guard says its disk is filling",
         ));
     }
     taints
@@ -340,6 +350,7 @@ mod tests {
         let nowhere = Sources {
             home: "/".into(),
             queue: None,
+            disk_guard: None,
             declared: "/nowhere".into(),
             reached: "/nowhere".into(),
         };
@@ -500,6 +511,33 @@ mod tests {
             placed(&place(&fleet, &only)),
             Some("optimus"),
             "unless the work tolerates it"
+        );
+    }
+
+    #[test]
+    fn a_machine_whose_disk_is_filling_goes_after_one_with_room() {
+        let mut optimus = machine("optimus", "linux", 30, &[]);
+        let mut penelope = machine("penelope", "linux", 2, &[]);
+        optimus.disk_band = Some(Band::Pressure);
+        penelope.disk_band = Some(Band::Healthy);
+        let realm = [optimus.clone(), penelope.clone()];
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &realm)),
+            Some("penelope"),
+            "a disk past healthy ranks its machine last, room or not"
+        );
+        let mut tolerant = needing(Vec::new());
+        tolerant.tolerates = vec![DISK_PRESSURE.to_owned()];
+        assert_eq!(
+            placed(&place(&tolerant, &realm)),
+            Some("optimus"),
+            "unless the work doesn't mind"
+        );
+        optimus.disk_band = None;
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[optimus, penelope])),
+            Some("optimus"),
+            "a disk no guard bands is no reason to pass a machine by"
         );
     }
 
