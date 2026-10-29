@@ -17,16 +17,16 @@ use tokio::task::JoinSet;
 
 use crate::facts;
 use crate::group::{Pattern, Routes};
-use crate::hold;
+use crate::hold::{self, start, start::Starter};
 use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership};
 use crate::mesh;
 use crate::place;
-use crate::placement;
+use crate::placement::{self, Placement};
 use crate::record::Message;
 use crate::share::exchange::Places;
 use crate::state::State;
 use crate::store::{self, Change, Store};
-use crate::wire::{Draft, Event, Reply, Request, Response};
+use crate::wire::{Draft, Event, Reply, Request, Response, Start, Started};
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -103,14 +103,21 @@ pub fn bind(path: &Path) -> io::Result<Socket> {
     })
 }
 
+/// What a node is given to run with besides its seams.
+pub struct Given {
+    /// The quests this machine shares, whose files its links carry.
+    pub sharing: Option<Places>,
+    /// How it starts the sessions it is asked to, if it starts any.
+    pub starter: Option<Starter>,
+}
+
 /// Runs a node serving `socket` until `stop` resolves, then ends its links
-/// and lets go of the sessions they carried. With `sharing`, its links
-/// carry the files of the quests this machine shares.
+/// and lets go of the sessions they carried.
 pub async fn run<S, M, D>(
     store: S,
     membership: M,
     discovery: D,
-    sharing: Option<Places>,
+    given: Given,
     socket: Socket,
     stop: impl Future<Output = ()>,
 ) -> io::Result<()>
@@ -121,7 +128,15 @@ where
 {
     store::out_of_reach_of_unclaimed(&store)?;
     let hello = membership.hello();
-    let shared = Shared::new(store.clone(), hello.machine, place::held(&hello.realm));
+    let Given { sharing, starter } = given;
+    let shared = Shared {
+        held: place::held(&hello.realm),
+        store: store.clone(),
+        machine: hello.machine,
+        realm: hello.realm,
+        starter: starter.map(Arc::new),
+        inner: Arc::default(),
+    };
     let mut changes = store.changes()?;
     let (_watching_held, mut held) = match hold::watch(&shared.held) {
         Ok((watcher, held)) => (Some(watcher), held),
@@ -199,8 +214,10 @@ async fn keep_linked(
 struct Shared<S> {
     store: S,
     machine: String,
+    realm: String,
     /// The realm's folder of held sessions on this machine.
     held: PathBuf,
+    starter: Option<Arc<Starter>>,
     inner: Arc<Mutex<Inner>>,
 }
 
@@ -209,7 +226,9 @@ impl<S: Clone> Clone for Shared<S> {
         Self {
             store: self.store.clone(),
             machine: self.machine.clone(),
+            realm: self.realm.clone(),
             held: self.held.clone(),
+            starter: self.starter.clone(),
             inner: self.inner.clone(),
         }
     }
@@ -224,15 +243,6 @@ struct Inner {
 }
 
 impl<S: Store> Shared<S> {
-    fn new(store: S, machine: String, held: PathBuf) -> Self {
-        Self {
-            store,
-            machine,
-            held,
-            inner: Arc::default(),
-        }
-    }
-
     fn lock(&self) -> MutexGuard<'_, Inner> {
         // A panic while holding the lock leaves the state as it was before
         // the change that panicked, so carrying on with it is sound.
@@ -336,7 +346,54 @@ impl<S: Store> Shared<S> {
             }
             Request::Send(draft) => self.send(&draft).map(Response::Sent),
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
+            Request::Start(_) => Err("a start is answered by `start`".to_owned()),
         }
+    }
+
+    /// Starts a program held on the machine placement chooses, answering
+    /// where and how to join it, or why it didn't start.
+    async fn start(&self, asked: Start) -> Reply {
+        let Some(starter) = self.starter.clone() else {
+            return Err("this node starts no sessions".to_owned());
+        };
+        if asked.command.is_empty() {
+            return Err("nothing to start: name a program".to_owned());
+        }
+        if !asked.folder.is_absolute() {
+            return Err(format!(
+                "{} isn't a full path, so it would name no folder here",
+                asked.folder.display()
+            ));
+        }
+        let machine = match placement::place(&asked.work, &self.machines()) {
+            Placement::Placed { machine, .. } => machine,
+            Placement::Pending { misses } => {
+                return Err(format!(
+                    "nowhere now, though a machine out of reach would do: {}",
+                    placement::said(&misses)
+                ));
+            }
+            Placement::Refused { misses } => {
+                return Err(format!("nowhere: {}", placement::said(&misses)));
+            }
+        };
+        if machine != self.machine {
+            return Err(format!(
+                "{machine} would take it, but a node starts sessions only on its own machine yet"
+            ));
+        }
+        let realm = self.realm.clone();
+        let command = start::through_login_shell(&asked.command);
+        let held =
+            tokio::task::spawn_blocking(move || starter.start(&realm, &asked.folder, &command))
+                .await
+                .map_err(|error| format!("its start stopped: {error}"))?
+                .map_err(|error| format!("it didn't start: {error}"))?;
+        Ok(Response::Started(Started {
+            attach: start::attach_here(&self.realm, &held),
+            machine,
+            held,
+        }))
     }
 
     /// Starts a watch: its first events are the whole state, taken under
@@ -431,7 +488,10 @@ async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
             }
             return;
         }
-        let reply = request.and_then(|request| shared.answer(request));
+        let reply = match request {
+            Ok(Request::Start(asked)) => shared.start(asked).await,
+            asked => asked.and_then(|request| shared.answer(request)),
+        };
         if write(&mut writing, &reply).await.is_err() {
             return;
         }
@@ -484,11 +544,15 @@ mod tests {
                     // A dropped sender stops the node as surely as a sent stop.
                     let _ = stopped.await;
                 };
+                let given = Given {
+                    sharing: None,
+                    starter: None,
+                };
                 run(
                     store,
                     membership,
                     Listed::<Ssh>(Vec::new()),
-                    None,
+                    given,
                     bound,
                     stopped,
                 )
@@ -558,5 +622,102 @@ mod tests {
             !dir.path().join("mycelium").join("work.sock").exists(),
             "the socket is taken down"
         );
+    }
+
+    #[tokio::test]
+    async fn a_node_starts_what_it_is_asked_where_placement_says_or_says_why_not() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        // A holder that says it holds at once, writing down what it was
+        // given to hold.
+        let given = dir.path().join("given");
+        let holder = dir.path().join("holder");
+        fs::write(
+            &holder,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho held\n",
+                given.display()
+            ),
+        )
+        .expect("the stand-in holder is written");
+        fs::set_permissions(&holder, fs::Permissions::from_mode(0o755))
+            .expect("the stand-in holder runs");
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "optimus".to_owned(),
+        };
+        let bound = bind(&socket).expect("the socket binds");
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let node = tokio::spawn(async move {
+            let given = Given {
+                sharing: None,
+                starter: Some(Starter {
+                    program: holder,
+                    scoped: false,
+                }),
+            };
+            let stopped = async {
+                // A dropped sender stops the node as surely as a sent stop.
+                let _ = stopped.await;
+            };
+            let nobody = Listed::<Ssh>(Vec::new());
+            run(Memory::default(), membership, nobody, given, bound, stopped).await
+        });
+
+        let folder = dir.path().to_owned();
+        let answers = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            let mut start = |needs| {
+                let work = placement::Work {
+                    needs,
+                    prefers: Vec::new(),
+                    tolerates: Vec::new(),
+                    may_wait: false,
+                };
+                let command = vec!["pi".to_owned(), "--continue".to_owned()];
+                let asked = Request::Start(Start {
+                    work,
+                    folder: folder.clone(),
+                    command,
+                });
+                client.ask(&asked).expect("the node answers")
+            };
+            let elsewhere = placement::Need::Machine("equilibrius".to_owned());
+            (start(vec![elsewhere]), start(Vec::new()))
+        });
+        let (refused, started) = tokio::time::timeout(PATIENCE, answers)
+            .await
+            .expect("the node answers in time")
+            .expect("the client asks");
+        assert_eq!(
+            refused,
+            Err("nowhere: optimus isn't equilibrius".to_owned()),
+            "a start nowhere can take says why, as the launcher shows it"
+        );
+        let Ok(Response::Started(started)) = started else {
+            panic!("a start any machine can take starts here: {started:?}");
+        };
+        assert_eq!(started.machine, "optimus");
+        assert_eq!(
+            started.attach,
+            ["mycelium", "--realm", "work", "attach", &started.held],
+            "it says the words that join it"
+        );
+        let given = fs::read_to_string(&given).expect("the holder was started");
+        let given: Vec<&str> = given.lines().collect();
+        assert_eq!(
+            given[..5],
+            ["--realm", "work", "holder", "--id", &started.held],
+            "the holder holds it under the id the node answers"
+        );
+        assert_eq!(
+            given[9..],
+            ["-lic", r#"exec "$@""#, "mycelium", "pi", "--continue"],
+            "the program starts through the login shell: {given:?}"
+        );
+
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
     }
 }

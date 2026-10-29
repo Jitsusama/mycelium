@@ -4,6 +4,8 @@
 //! one per line, for as long as the client stays: first the whole state,
 //! then each change.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::facts::Machine;
@@ -23,6 +25,8 @@ pub enum Request {
     Machines,
     /// Which machine of the realm `work` should go to.
     Place(Work),
+    /// Start a program held where placement chooses.
+    Start(Start),
     /// The latest messages to the groups `groups` hears, oldest first.
     Messages {
         /// Which groups.
@@ -39,6 +43,28 @@ pub enum Request {
         /// How many of the latest messages the first state holds.
         recent: usize,
     },
+}
+
+/// A program to start held, and where.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Start {
+    /// What the machine it starts on must be.
+    pub work: Work,
+    /// The folder it starts in, a full path on that machine.
+    pub folder: PathBuf,
+    /// The program and its arguments, run through the login shell there.
+    pub command: Vec<String>,
+}
+
+/// A program started held.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Started {
+    /// The machine it runs on.
+    pub machine: String,
+    /// Its held id there.
+    pub held: String,
+    /// The words that join it, run from a terminal on this machine.
+    pub attach: Vec<String>,
 }
 
 /// A message as a client writes it; the node gives it its id and time.
@@ -72,6 +98,8 @@ pub enum Response {
     Machines(Vec<Machine>),
     /// Where the work asked about goes.
     Placement(Placement),
+    /// The program asked for, started.
+    Started(Started),
     /// The messages asked for.
     Messages(Vec<Message>),
     /// The message as sent.

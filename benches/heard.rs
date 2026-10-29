@@ -162,7 +162,10 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
             store,
             realm,
             Listed::<Ssh>(Vec::new()),
-            None,
+            node::Given {
+                sharing: None,
+                starter: None,
+            },
             bound,
             until_stopped,
         ))

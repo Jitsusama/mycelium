@@ -3,19 +3,22 @@
 //! machine can take it up again, as dtach does.
 //!
 //! Each holder is a process of its own, outside the node, since a service
-//! manager restarting the node stops everything the node started. It
+//! manager restarting the node stops everything the node started; a node
+//! that starts one as a systemd unit puts it in a scope of its own. It
 //! serves one socket, `<id>.sock`, in the realm's folder of held sessions,
 //! beside a record, `<id>.json`, saying what it holds; both go when the
 //! program ends.
 //!
 //! - [`holder`]: the holder, keeping the program's terminal
 //! - [`attach`]: a terminal joining a holder
+//! - [`start`]: starting a holder in a process of its own
 //!
 //! What a joined terminal sends its holder is framed, as [`Said`]; what
 //! the holder sends back is the program's output as it came.
 
 pub mod attach;
 pub mod holder;
+pub mod start;
 
 use std::fs;
 use std::io;

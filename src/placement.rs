@@ -15,6 +15,7 @@
 //! fits work against the room a machine has: its room only ranks it.
 
 use std::cmp::Reverse;
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
@@ -103,6 +104,50 @@ pub enum Because {
     Ranked,
     /// No link reaches it now.
     Unreachable,
+}
+
+impl fmt::Display for Need {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Need::Machine(name) => write!(f, "machine {name}"),
+            Need::System(system) => write!(f, "system {system}"),
+            Need::Arch(arch) => write!(f, "arch {arch}"),
+            Need::Reach(network) => write!(f, "reach {network}"),
+            Need::Accelerator(AcceleratorKind::Gpu) => write!(f, "a gpu"),
+            Need::Accelerator(AcceleratorKind::Npu) => write!(f, "an npu"),
+        }
+    }
+}
+
+impl fmt::Display for Because {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Because::Lacks(Need::Machine(name)) => write!(f, "isn't {name}"),
+            Because::Lacks(need) => write!(f, "lacks {need}"),
+            Because::Unknown(need) => write!(f, "hasn't said {need}"),
+            Because::Refuses(taint) => write!(f, "refuses: {}", taint.why),
+            Because::RatherNot(taint) => write!(f, "would rather not: {}", taint.why),
+            Because::Ranked => write!(f, "ranked lower"),
+            Because::Unreachable => write!(f, "is out of reach"),
+        }
+    }
+}
+
+/// Each machine's reasons, in words a person reads: `optimus lacks system
+/// macos; penelope is out of reach`.
+#[must_use]
+pub fn said(misses: &[Miss]) -> String {
+    if misses.is_empty() {
+        return "the realm knows no machine".to_owned();
+    }
+    misses
+        .iter()
+        .map(|miss| {
+            let reasons: Vec<String> = miss.because.iter().map(ToString::to_string).collect();
+            format!("{} {}", miss.machine, reasons.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// The key of the taint a machine on its battery carries.
