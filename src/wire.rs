@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::facts::Machine;
 use crate::group::{Group, Pattern};
+use crate::placement::{Placement, Work};
 use crate::record::{Intent, Message, Session};
 
 /// What a client asks of the node.
@@ -20,6 +21,8 @@ pub enum Request {
     /// What every machine of the realm is: this one measured now, then
     /// each other one as its links last carried it.
     Machines,
+    /// Which machine of the realm `work` should go to.
+    Place(Work),
     /// The latest messages to the groups `groups` hears, oldest first.
     Messages {
         /// Which groups.
@@ -67,6 +70,8 @@ pub enum Response {
     Machine(Box<Machine>),
     /// Every machine, this one first.
     Machines(Vec<Machine>),
+    /// Where the work asked about goes.
+    Placement(Placement),
     /// The messages asked for.
     Messages(Vec<Message>),
     /// The message as sent.

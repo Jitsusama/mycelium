@@ -23,6 +23,10 @@ pub struct Machine {
     /// Its operating system, as it names itself, such as "NixOS 26.11
     /// (Zokor)" or "macOS 26.1".
     pub os: Option<String>,
+    /// Its kind of system, as Rust names it: `linux` or `macos`; unknown
+    /// from a node too old to say.
+    #[serde(default)]
+    pub system: Option<String>,
     /// Its architecture, as Rust names it: `x86_64` or `aarch64`.
     pub arch: String,
     /// Its maker's name for it, such as "Dell Inc. XPS 14 DA14260".
@@ -129,6 +133,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         measured_at: now.to_string(),
         state: Readiness::Ready,
         os: read.os,
+        system: Some(std::env::consts::OS.to_owned()),
         arch: std::env::consts::ARCH.to_owned(),
         model: read.model,
         cpu: read.cpu,

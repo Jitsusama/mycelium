@@ -21,6 +21,7 @@ use crate::hold;
 use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership};
 use crate::mesh;
 use crate::place;
+use crate::placement;
 use crate::record::Message;
 use crate::share::exchange::Places;
 use crate::state::State;
@@ -308,20 +309,28 @@ impl<S: Store> Shared<S> {
         facts::measure(&self.machine, &facts::Sources::here())
     }
 
+    /// Every machine of the realm: this one measured now, then each other
+    /// as its links last carried it.
+    fn machines(&self) -> Vec<facts::Machine> {
+        let mut all = vec![self.measure()];
+        all.extend(
+            self.store
+                .machines()
+                .into_iter()
+                .filter(|one| one.name != self.machine),
+        );
+        all
+    }
+
     fn answer(&self, request: Request) -> Reply {
         match request {
             Request::Sessions => Ok(Response::Sessions(self.lock().state.sessions())),
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
-            Request::Machines => {
-                let mut all = vec![self.measure()];
-                all.extend(
-                    self.store
-                        .machines()
-                        .into_iter()
-                        .filter(|one| one.name != self.machine),
-                );
-                Ok(Response::Machines(all))
-            }
+            Request::Machines => Ok(Response::Machines(self.machines())),
+            Request::Place(work) => Ok(Response::Placement(placement::place(
+                &work,
+                &self.machines(),
+            ))),
             Request::Messages { groups, limit } => {
                 Ok(Response::Messages(self.lock().state.recent(&groups, limit)))
             }
