@@ -157,9 +157,15 @@ same code, each line a JSON value:
 Three seams shape a link:
 
 - **Dialling** (`link::dial::Dial`): how a machine reaches another's end,
-  and how a terminal here runs a command there. Today, SSH: the other
-  end is `mycelium link` run there, over the SSH session's pipes, and
-  SSH has proved which machine it is.
+  and how a terminal here runs a command there. SSH (`--ssh`): the
+  other end is `mycelium link` run there, over the SSH session's pipes,
+  and SSH has proved which machine it is. Or a provider's program
+  (`--via PROGRAM:PLACE`), for a machine SSH can't reach: run as
+  `PROGRAM link --realm REALM PLACE`, it carries the link over its own
+  input and output to `mycelium link` on that machine, and run as
+  `PROGRAM run PLACE -- WORDS` from a terminal, it runs `WORDS` there.
+  Its error output is passed on, and a line saying the other end
+  "turned this machine away" is waited out as a refused SSH key is.
 - **Discovery** (`link::discovery::Discovery`): which machines to link
   with, as they are found. Today, a list given to the node.
 - **Membership** (`link::membership::Membership`): which machines to admit.
@@ -465,11 +471,11 @@ Each lands behind a seam above, or as a seam of its own:
   make one, start a session on it, reach it and end it with its cost,
   and say when one is lost, such as Aquifer's, which lives outside this
   repository. A machine a provider made shows as a place like any other.
-  A machine that can't dial out is dialled in: a link over any program's
-  input and output, as SSH is one, reaching a node that answers links on
-  a port only its own machine can reach.
+  A machine that can't dial out is dialled in, through its provider's
+  program (`--via`, above), reaching a node that answers links on a port
+  only its own machine can reach, which is next.
 - **Connections of the node's own:** machines dialled by key, found on the
   network without a cloud, and encrypted always, behind `Dial` and
   `Discovery`; membership then checks the realm's enrolled keys. SSH
-  stays the only dial until a machine has no SSH path, per-pair keys
-  become the burden, or SSH itself makes a link miss 5 ms.
+  and providers' programs stay the only dials until per-pair keys become
+  the burden, or SSH itself makes a link miss 5 ms.

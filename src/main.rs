@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use mycelium::client::Client;
 use mycelium::group::{Group, Pattern};
 use mycelium::hold::start::Starter;
-use mycelium::link::dial::{Connection, Ssh};
+use mycelium::link::dial::{Connection, Program, Ssh, Way};
 use mycelium::link::discovery::Listed;
 use mycelium::link::membership::Realm;
 use mycelium::link::refused::Refusals;
@@ -53,6 +53,11 @@ enum Action {
         /// The `mycelium` command on the other machines.
         #[arg(long, default_value = "mycelium")]
         remote_command: String,
+        /// A machine to keep linked with through a provider's program, as
+        /// `PROGRAM:PLACE`, such as `aquifer-link:sandbox-1`; given again
+        /// for each. PROTOCOL.md says what the program is asked.
+        #[arg(long = "via", value_parser = Program::parse)]
+        programs: Vec<Program>,
     },
     /// Runs this machine's end of a link over standard input and output, as
     /// another machine's node starts it over SSH.
@@ -262,16 +267,17 @@ fn run(command: Command) -> io::Result<()> {
             destinations,
             options,
             remote_command,
+            programs,
         } => {
-            let dials = destinations
-                .into_iter()
-                .map(|destination| Ssh {
-                    destination,
-                    options: options.clone(),
-                    command: remote_command.clone(),
-                })
-                .collect();
-            run_node(here, realm, &socket, dials)
+            let over_ssh = destinations.into_iter().map(|destination| Ssh {
+                destination,
+                options: options.clone(),
+                command: remote_command.clone(),
+            });
+            let dials = over_ssh
+                .map(Way::Ssh)
+                .chain(programs.into_iter().map(Way::Program));
+            run_node(here, realm, &socket, dials.collect())
         }
         Action::Link { here } => run_link(here, realm, socket),
         Action::Share {
@@ -340,7 +346,7 @@ fn run(command: Command) -> io::Result<()> {
 
 /// Runs this machine's node on `socket`, keeping linked over `dials`,
 /// until it is asked to stop.
-fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Ssh>) -> io::Result<()> {
+fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Way>) -> io::Result<()> {
     let refused = here
         .state
         .clone()

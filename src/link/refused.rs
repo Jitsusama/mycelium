@@ -19,13 +19,15 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 /// How long a refused link waits before it is dialled again.
 pub const REFUSED_FOR: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// What SSH says when the other machine turns this one away, rather than
-/// being out of reach: a key it doesn't take, a host key that doesn't
-/// match what this machine knows, or too many keys tried.
-const TURNED_AWAY: [&str; 3] = [
+/// What a way in says when the other machine turns this one away, rather
+/// than being out of reach. SSH's: a key it doesn't take, a host key that
+/// doesn't match what this machine knows, or too many keys tried. A
+/// provider's program says it in mycelium's own words.
+const TURNED_AWAY: [&str; 4] = [
     "Permission denied (",
     "Host key verification failed",
     "Too many authentication failures",
+    "turned this machine away",
 ];
 
 /// How a node keeps the refusals of its links.
