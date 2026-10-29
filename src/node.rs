@@ -611,7 +611,7 @@ impl<S: Store> Shared<S> {
 
     /// Starts a watch: its first events are the whole state, taken under
     /// the same lock as every later change, so none is missed or doubled.
-    fn watch(&self, groups: &Pattern, recent: usize) -> (u64, mpsc::Receiver<Event>) {
+    fn watch(&self, groups: Option<&Pattern>, recent: usize) -> (u64, mpsc::Receiver<Event>) {
         let mut inner = self.lock();
         let (sender, receiver) = mpsc::channel(WATCH_BACKLOG);
         let first = [
@@ -619,7 +619,7 @@ impl<S: Store> Shared<S> {
                 sessions: inner.state.sessions(),
             },
             Event::MessagesChanged {
-                messages: inner.state.recent(groups, recent),
+                messages: groups.map_or_else(Vec::new, |groups| inner.state.recent(groups, recent)),
             },
         ];
         for event in first {
@@ -629,7 +629,9 @@ impl<S: Store> Shared<S> {
         let id = inner.next_watch;
         inner.next_watch += 1;
         inner.watches.insert(id, sender);
-        inner.routes.insert(groups, id);
+        if let Some(groups) = groups {
+            inner.routes.insert(groups, id);
+        }
         (id, receiver)
     }
 
@@ -689,7 +691,7 @@ async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
                 .await
                 .is_ok()
             {
-                let (id, mut events) = shared.watch(&groups, recent);
+                let (id, mut events) = shared.watch(groups.as_ref(), recent);
                 loop {
                     tokio::select! {
                         event = events.recv() => {
@@ -1354,7 +1356,7 @@ mod tests {
         let asked = tokio::task::spawn_blocking(move || {
             let mut watch = Client::connect(&socket).expect("the watch connects");
             let watching = watch.ask(&Request::Watch {
-                groups: Pattern::new("peer.*").expect("a valid pattern"),
+                groups: Some(Pattern::new("peer.*").expect("a valid pattern")),
                 recent: 10,
             });
             assert_eq!(watching.expect("the node answers"), Ok(Response::Watching));
