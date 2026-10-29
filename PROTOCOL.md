@@ -249,15 +249,23 @@ placed by: its `name`, `measured_at`, `state` (`ready` for a node answering
 for itself or a machine a link carries, `unreachable` for one no link
 reaches now, as of when one last did), `os`, `arch`, `model`, `cpu`
 (`model`, `cores`), `memory` and `disk` in bytes (the disk holding its
-account's home), and `accelerators` (each a `kind`, `gpu` or `npu`, and
-its `driver`). A fact that can't be read is `null`, never a guess.
+account's home), `accelerators` (each a `kind`, `gpu` or `npu`, and its
+`driver`), and `power`: `on_battery`, true only with a battery of its
+own and nothing plugged in, and `charge`, its own batteries' mean in
+percent, `null` for a machine with none. A fact that can't be read is
+`null`, never a guess.
 
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,
 `memory_available` in bytes, `pressure` (`cpu`, `memory` and `io`, the
-share of the last ten seconds some work waited on each, in percent) and
+share of the last ten seconds some work waited on each, in percent),
 `takes` (how many more `builds` and `vm_tests` it would start now, which
-says nothing of a session). It is `null` where no harness keeps a queue,
+says nothing of a session) and `over`, the queue's limits the machine is
+at or past now, as the queue judges them: `memory`, when it starts no
+work, and `cpu`, when it starts no build beside a VM test. `over` is
+empty when the machine is past none, so `takes` of none with nothing
+`over` means a full queue, not a pressed machine, and `null` from a
+queue too old to say. The room is `null` where no harness keeps a queue,
 or where the queue's record is of another shape or unwritten for two
 minutes. A machine keeps no reserve of mycelium's: its own slices keep
 its person's share.
