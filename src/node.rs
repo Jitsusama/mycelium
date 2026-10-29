@@ -43,6 +43,13 @@ pub struct Socket {
     path: PathBuf,
 }
 
+impl Socket {
+    /// The next client to connect.
+    pub async fn accept(&self) -> io::Result<UnixStream> {
+        self.listener.accept().await.map(|(stream, _)| stream)
+    }
+}
+
 impl Drop for Socket {
     fn drop(&mut self) {
         // The socket is the node's alone, made at bind; if it's already
@@ -119,8 +126,8 @@ where
     let result = loop {
         tokio::select! {
             () = &mut stop => break Ok(()),
-            accepted = socket.listener.accept() => match accepted {
-                Ok((stream, _)) => {
+            accepted = socket.accept() => match accepted {
+                Ok(stream) => {
                     tokio::spawn(serve(stream, shared.clone()));
                 }
                 Err(error) => break Err(error),

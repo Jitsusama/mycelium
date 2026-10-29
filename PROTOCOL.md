@@ -239,6 +239,32 @@ A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 `quest.4uhc5q`, and a peer's `@4UHC5Q` is `peer.4uhc5q`. A pattern takes
 `*` for any one token and a final `>` for one or more.
 
+## A Held Session
+
+`mycelium hold -- <program>` starts a program on a terminal that a
+holder of its own keeps, so the window it started in can close and
+`mycelium attach <id>` take it up again from any terminal on the
+machine. The holder is its own process, in a session of its own, rather
+than the node's: restarting the node's service stops everything the node
+started, and a closing window hangs up on its own session only.
+
+Each holder serves `<id>.sock` in `$XDG_RUNTIME_DIR/mycelium/<realm>.held`
+(the temporary folder on macOS), reachable only by its account, beside
+`<id>.json`, which says what it holds: `id`, `command`, `folder`, the
+`holder`'s and the program's `pid`, and `since`. Both go when the program
+ends. `mycelium held` lists every record whose holder still runs. The
+program is told its id in `MYCELIUM_HELD`, and loses the variables naming
+the window it started in.
+
+A joined terminal sends frames of a tag byte, a two-byte big-endian
+length and what it carries: tag 0 is bytes typed, and tag 1 is its size,
+rows then columns, two bytes each, sent on joining and on each change.
+The holder sends back the program's output as it comes. Any number may
+join at once; the program takes the latest size it was told. One joining
+at the size the program already has makes it one column narrower first,
+so the program draws itself again. Leaving is closing the connection;
+the holder closes it once the program has ended.
+
 ## Coming Next
 
 Each lands behind a seam above, or as a seam of its own:

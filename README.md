@@ -18,6 +18,9 @@ The harness mesh's messages and presence, carried between machines:
 - A quest shared with `mycelium share` keeps the same record on every
   linked machine, with a journal written on both keeping both entries,
   and the same folders of its scratch, those named with `--scratch`.
+- A program started with `mycelium hold` outlives the window it started
+  in, and `mycelium attach` takes it up again from any terminal on the
+  machine.
 - Links run over SSH, so a machine needs nothing but the `mycelium`
   command and an SSH login.
 - Each node serves a local socket in niri's shape, which pi, Quickshell
@@ -36,6 +39,11 @@ mycelium --realm work node --ssh joel.gerber@192.168.4.32
 
 # Then, on either machine, share a quest with every machine it links:
 mycelium --realm work share QEST-20261013-4UHC5Q
+
+# Hold a session, close its window, and take it up again elsewhere:
+mycelium --realm work hold -- pi
+mycelium --realm work held
+mycelium --realm work attach 5b992038
 ```
 
 ## Lineage
