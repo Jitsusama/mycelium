@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::group::Group;
-use crate::record::{Intent, Message, Session, State};
+use crate::record::{Intent, Message, Session, State, Want, Window};
 use crate::store::Presence;
 use crate::wire::Draft;
 
@@ -164,9 +164,25 @@ pub fn session(presence: &Presence, here: &str) -> Option<Session> {
         step: said.step,
         since: said.since,
         orchestrated_by: said.orchestrated_by,
+        quest: said
+            .quest
+            .or_else(|| said.owns.into_iter().find(|owned| owned.starts_with(QUEST))),
+        wants: said.wants,
+        window: said
+            .terminal
+            .filter(|_| presence.elsewhere.is_none())
+            .map(|terminal| Window {
+                terminal: terminal.driver_id,
+                id: terminal.value,
+                within: terminal.scope,
+            }),
         at: said.at,
     })
 }
+
+/// How a quest's id begins, which an older presence names among what it
+/// owns, before presences said their quest.
+const QUEST: &str = "QEST-";
 
 #[derive(Deserialize)]
 struct Sent {
@@ -195,7 +211,21 @@ struct Said {
     step: Option<String>,
     title: Option<String>,
     orchestrated_by: Option<String>,
+    quest: Option<String>,
+    #[serde(default)]
+    owns: Vec<String>,
+    wants: Option<Want>,
+    terminal: Option<Terminal>,
     at: String,
+}
+
+/// A session's window, as the harness's terminal driver names it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Terminal {
+    driver_id: String,
+    value: String,
+    scope: Option<String>,
 }
 
 #[cfg(test)]
@@ -378,6 +408,61 @@ mod tests {
                 .state,
             State::Unreachable,
             "a session whose machine is out of reach reads as unreachable"
+        );
+    }
+
+    #[test]
+    fn a_session_says_its_quest_and_wants_and_here_its_window() {
+        let presence = |body: Value, elsewhere: Option<&str>| Presence {
+            session: "01a1".to_owned(),
+            body,
+            elsewhere: elsewhere.map(str::to_owned),
+            lives: true,
+            unreachable_since: None,
+        };
+        let said = json!({
+            "session": "01a1", "addresses": ["4UHC5Q"], "at": "2026-10-28T21:50:00Z",
+            "quest": "QEST-20261013-4UHC5Q", "owns": ["QEST-20261007-WCJQSG", "mycelium"],
+            "wants": {"kind": "question", "since": "2026-10-28T21:49:00Z", "said": "which?"},
+            "terminal": {"driverId": "kitty", "kind": "kitty-window", "hostId": "optimus",
+                "value": "13", "scope": "unix:@kitty-6753"},
+        });
+        let here = session(&presence(said.clone(), None), "optimus").expect("a presence reads");
+        assert_eq!(
+            here.quest.as_deref(),
+            Some("QEST-20261013-4UHC5Q"),
+            "the quest it says it works on, over one it owns"
+        );
+        assert_eq!(
+            here.wants.map(|wants| wants.kind).as_deref(),
+            Some("question")
+        );
+        assert_eq!(
+            here.window,
+            Some(Window {
+                terminal: "kitty".to_owned(),
+                id: "13".to_owned(),
+                within: Some("unix:@kitty-6753".to_owned()),
+            }),
+            "a session here says the window it runs in"
+        );
+        let there =
+            session(&presence(said, Some("equilibrius")), "optimus").expect("a presence reads");
+        assert_eq!(
+            there.window, None,
+            "a window on another machine can't be gone to from this one"
+        );
+        let older = json!({
+            "session": "01a1", "addresses": ["4UHC5Q"], "at": "2026-10-28T21:50:00Z",
+            "owns": ["mycelium", "QEST-20261013-4UHC5Q"],
+        });
+        assert_eq!(
+            session(&presence(older, None), "optimus")
+                .expect("a presence reads")
+                .quest
+                .as_deref(),
+            Some("QEST-20261013-4UHC5Q"),
+            "an older presence's quest is the one it owns"
         );
     }
 }
