@@ -89,12 +89,13 @@ messages, being a union, reach every machine linked by any path.
 `link::run` runs one end of a link over any byte stream. Both ends run the
 same code, each line a JSON value:
 
-1. `{"Hello": {"machine", "realm", "version", "facts", "starts"}}`,
-   first, from each end. Each end's membership admits the other or
-   refuses it, and nothing else crosses until it has. `facts` says the
-   end hears and says what a machine is; an end older than it says
-   nothing of machines and is sent nothing. `starts` says it carries
-   starts; an end older than it is asked none.
+1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
+   "steers"}}`, first, from each end. Each end's membership admits the
+   other or refuses it, and nothing else crosses until it has. `facts`
+   says the end hears and says what a machine is; an end older than it
+   says nothing of machines and is sent nothing. `starts` says it
+   carries starts, and `steers` steers; an end older than either is
+   asked none of it.
 2. `{"Have": {"messages": [ids], "living": [sessions]}}`: every message
    the end holds within the link's reach, and its machine's living
    sessions. An end older than `living` names none, and every session of
@@ -133,8 +134,25 @@ same code, each line a JSON value:
    that node admits or refuses it on its own facts as they are then.
    The end doesn't start it itself, since a process SSH started sits
    outside its person's login session.
-9. `{"Started": {"ask", "reply"}}`: the other end's node's reply to
-   the ask of that number, as its socket answered it.
+9. `{"Started": {"ask", "reply"}}`: the other end's reply to the ask
+   of that number: its node's, as its socket answered, for a start, and
+   its own for a steer.
+10. `{"Steer": {"ask", "address", "steer"}}`: put what the person says
+    into the inbox of the session going by `address` on the other end's
+    machine, as a `"Steer"` request says it. The other end writes it
+    there itself, since a steer is only a file. A steer with an `id`
+    opens a talk, which the other end follows from then on.
+11. `{"Follow": {"talks": [{"address", "id", "has"}]}}`: after the
+    Have, the talks the sending end follows that no stage has ended and
+    that were written within a day, with how many bytes of each it has,
+    so the other end carries on with those whose files are on its
+    machine, across a dropped link.
+12. `{"Replies": {"address", "id", "from", "lines"}}`: whole lines a
+    session on the sending end's machine added to a talk's file, from
+    byte `from` on, looked for each second. The other end adds only what
+    its copy lacks, and only to a talk its own machine opened. A
+    `replied` or `failed` stage ends the following, as does a day with
+    nothing written.
 
 Three seams shape a link:
 
@@ -241,6 +259,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Machines"` | `{"Machines": [machine]}`, this machine first, then each other |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"Start": {"work", "folder", "command"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
+| `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine"}}`, where it was put |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events |
@@ -376,6 +395,19 @@ over the dial, such as `ssh -t equilibrius mycelium --realm work attach
 mycelium is too old to start sessions, or it doesn't answer within 30
 seconds.
 
+`"Steer"` puts `steer`, in the harness's own shape (`text`, an `act` of
+`pause`, `resume` or `stop`, `at`, `from` and a talk's `id`), into the
+steer inbox of the session going by `address` on the machine it runs on:
+`~/.local/state/pi/agentic-harness.pi/steer/<ADDRESS>/`, or the folder
+`--steer` names, under a temporary name renamed to end in `.json`. A
+session on another machine is steered through the link reaching it. A
+talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking
+machine first, and the lines its session writes are carried back to it,
+so a talk reads the same wherever its session runs. It is an error,
+saying why, when no session goes by `address` now, as `no session goes
+by SAK9FZ now`, when its machine is out of reach, when it runs on two
+machines at once, or when the link can't carry it.
+
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`
 and `Message`. A client that falls too far behind is let go, and connects
@@ -429,10 +461,6 @@ Each lands behind a seam above, or as a seam of its own:
   already start sessions through it; next, a place says what it offers,
   such as evaluating and building for a system, so work that needs it is
   placed there.
-- **Steers across links:** the launcher's talk, pause, resume and stop
-  sent to its node, carried over the link to the one machine holding
-  that address and written into the session's inbox there, with a
-  talk's replies carried back line by line.
 - **Providers:** programs beside a node that offer shapes of machine,
   make one, start a session on it, reach it and end it with its cost,
   and say when one is lost, such as Aquifer's, which lives outside this
