@@ -20,6 +20,7 @@
 //! Around them:
 //!
 //! - [`facts`]: what this machine is, as its node measures it
+//! - [`room`]: the room it has for more work, as its queue says
 //! - [`group`]: groups' names, patterns that hear them, and routes
 //! - [`record`]: messages and sessions, as clients read them
 //! - [`mesh`]: the harness mesh's files read as records
@@ -37,6 +38,7 @@ pub mod mesh;
 pub mod node;
 pub mod place;
 pub mod record;
+pub mod room;
 pub mod share;
 pub mod state;
 pub mod store;

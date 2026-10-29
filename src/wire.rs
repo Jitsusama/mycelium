@@ -56,7 +56,7 @@ pub struct Draft {
 pub type Reply = Result<Response, String>;
 
 /// What a request is answered with when it succeeds.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Response {
     /// The sessions asked for.
     Sessions(Vec<Session>),

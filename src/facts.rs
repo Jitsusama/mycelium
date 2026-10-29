@@ -1,15 +1,17 @@
 //! What this machine is, as its node measures it: the facts work can be
-//! placed by. Only what can be read from the machine itself is here;
-//! what must be declared (its reach, its cost, the reserve kept for its
-//! person) and what changes by the minute (its headroom) come later. A
-//! fact that can't be read is unknown, never a guess.
+//! placed by. Only what can be read from the machine itself is here,
+//! with the room its own queue says it has; what must be declared (its
+//! reach, its cost) comes later. A fact that can't be read is unknown,
+//! never a guess.
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::room::{self, Room};
+
 /// This machine, as measured when asked.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
     /// Its name, up to its first dot.
     pub name: String,
@@ -33,6 +35,9 @@ pub struct Machine {
     /// Its graphics and neural processors, by the driver that runs each;
     /// unknown where they can't be listed.
     pub accelerators: Option<Vec<Accelerator>>,
+    /// The room it has for more work, as its queue says, or unknown where
+    /// nobody keeps one.
+    pub room: Option<Room>,
 }
 
 /// Whether a machine takes work. A node answering for itself is ready;
@@ -73,13 +78,15 @@ pub enum AcceleratorKind {
     Npu,
 }
 
-/// Measures this machine, named `name`, whose account's home is `home`.
+/// Measures this machine, named `name`, whose account's home is `home`
+/// and whose queue keeps its record at `queue`, if anywhere.
 #[must_use]
-pub fn measure(name: &str, home: &Path) -> Machine {
+pub fn measure(name: &str, home: &Path, queue: Option<&Path>) -> Machine {
     let read = here::read();
+    let now = jiff::Timestamp::now();
     Machine {
         name: name.to_owned(),
-        measured_at: jiff::Timestamp::now().to_string(),
+        measured_at: now.to_string(),
         state: Readiness::Ready,
         os: read.os,
         arch: std::env::consts::ARCH.to_owned(),
@@ -88,6 +95,7 @@ pub fn measure(name: &str, home: &Path) -> Machine {
         memory: read.memory,
         disk: disk_of(home),
         accelerators: read.accelerators,
+        room: queue.and_then(|queue| room::read(queue, now.as_second())),
     }
 }
 
@@ -387,7 +395,7 @@ mod tests {
     #[test]
     fn this_machine_is_measured_without_guessing() {
         let home = tempfile::tempdir().expect("a temporary folder");
-        let machine = measure("trial", home.path());
+        let machine = measure("trial", home.path(), Some(&home.path().join("queue.json")));
         assert_eq!(machine.name, "trial", "it carries the name it was given");
         assert_eq!(
             machine.arch,
@@ -416,6 +424,10 @@ mod tests {
         assert_eq!(
             said["state"], "ready",
             "a node answering for itself is ready"
+        );
+        assert!(
+            said["room"].is_null(),
+            "with no queue kept, its room is unknown"
         );
     }
 }

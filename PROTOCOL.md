@@ -241,8 +241,18 @@ placed by: its `name`, `measured_at`, `state` (`ready` for a node answering
 for itself), `os`, `arch`, `model`, `cpu` (`model`, `cores`), `memory` and
 `disk` in bytes (the disk holding its account's home), and `accelerators`
 (each a `kind`, `gpu` or `npu`, and its `driver`). A fact that can't be
-read is `null`, never a guess. It stays on this machine's socket: no link
-carries it yet, nor what must be declared or changes by the minute.
+read is `null`, never a guess.
+
+Its `room` is the room it has for more work, as the harness's machine
+queue says it, since that queue is what starts work there: `said_at`,
+`memory_available` in bytes, `pressure` (`cpu`, `memory` and `io`, the
+share of the last ten seconds some work waited on each, in percent) and
+`takes` (how many more `builds` and `vm_tests` it would start now, which
+says nothing of a session). It is `null` where no harness keeps a queue,
+or where the queue's record is of another shape or unwritten for two
+minutes. A machine keeps no reserve of mycelium's: its own slices keep
+its person's share. All of this stays on this machine's socket: no link
+carries it yet, nor what must be declared.
 
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`
@@ -292,9 +302,9 @@ Each lands behind a seam above, or as a seam of its own:
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.
 - **Places and what they can do:** a machine says on its socket what it
-  is today; next, what is declared of it in its configuration (its
-  reach, the reserve kept for its person, the refusals it enforces) and
-  what it can take on now, carried across links as sessions are. Work
+  is and the room its queue says it has; next, what is declared of it in
+  its configuration (its reach and the refusals it enforces), carried
+  across links as sessions are. Work
   says what it needs and prefers, and placement answers placed, pending
   or refused, naming each place and the need it failed. A place admits
   or refuses work itself, so a placer's view can't override it.
