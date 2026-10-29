@@ -13,8 +13,19 @@ use crate::share::exchange::Places;
 /// where the system has one (Linux), otherwise in the account's own
 /// temporary folder (macOS gives each account its own).
 pub fn socket(realm: &str) -> PathBuf {
-    let base = env::var_os("XDG_RUNTIME_DIR").map_or_else(env::temp_dir, PathBuf::from);
-    base.join("mycelium").join(format!("{realm}.sock"))
+    runtime().join(format!("{realm}.sock"))
+}
+
+/// The folder of the sessions held in `realm` on this machine, each a
+/// holder's socket and record, beside the node's socket.
+pub fn held(realm: &str) -> PathBuf {
+    runtime().join(format!("{realm}.held"))
+}
+
+fn runtime() -> PathBuf {
+    env::var_os("XDG_RUNTIME_DIR")
+        .map_or_else(env::temp_dir, PathBuf::from)
+        .join("mycelium")
 }
 
 /// Mycelium's own folder on this machine: the realm it belongs to, and the

@@ -14,7 +14,8 @@
 //!   terminal
 //!
 //! Shared files, a quest's record and scratch on every machine sharing it,
-//! are kept by content in [`share`].
+//! are kept by content in [`share`]. Sessions whose terminals outlive their
+//! windows are kept by holders of their own, in [`hold`].
 //!
 //! Around them:
 //!
@@ -28,6 +29,7 @@
 
 pub mod client;
 pub mod group;
+pub mod hold;
 pub mod link;
 pub mod mesh;
 pub mod node;

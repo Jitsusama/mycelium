@@ -3,9 +3,9 @@
 //! Quickshell read the socket themselves; nothing here is how a person uses
 //! the network.
 
-use std::io::{self, Write};
-use std::path::PathBuf;
-use std::process::ExitCode;
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
+use std::process::{ExitCode, Stdio};
 
 use clap::{Parser, Subcommand};
 use mycelium::client::Client;
@@ -18,7 +18,7 @@ use mycelium::share::exchange::Places;
 use mycelium::share::ledger::Ledgers;
 use mycelium::store::folders::Folders;
 use mycelium::wire::{Draft, Request};
-use mycelium::{link, node, place};
+use mycelium::{hold, link, node, place};
 
 #[derive(Parser)]
 #[command(version, about = "A nimble core for agent networks")]
@@ -99,6 +99,37 @@ enum Action {
         #[arg(long)]
         text: String,
     },
+    /// Starts a program on a terminal a holder of its own keeps, so its
+    /// window can close and `attach` take it up again from any terminal;
+    /// then joins it, unless `--detached`.
+    Hold {
+        /// The folder it starts in, if not this one.
+        #[arg(long)]
+        folder: Option<PathBuf>,
+        /// Prints its id and leaves it running, unjoined.
+        #[arg(long)]
+        detached: bool,
+        /// The program and its arguments, after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Joins a held session from this terminal; closing it only leaves.
+    Attach {
+        /// Its id, as `held` lists it.
+        id: String,
+    },
+    /// Prints every session held on this machine, a JSON line each.
+    Held,
+    /// Holds a program, as `hold` starts it, in a process of its own.
+    #[command(hide = true)]
+    Holder {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        folder: PathBuf,
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     /// Prints the node's events as they come, a JSON line each.
     Watch {
         /// Which groups' messages, such as `quest.*`.
@@ -162,7 +193,6 @@ fn run(command: Command) -> io::Result<()> {
             options,
             remote_command,
         } => {
-            let (store, membership, shares) = open(here, realm)?;
             let dials = destinations
                 .into_iter()
                 .map(|destination| Ssh {
@@ -171,18 +201,7 @@ fn run(command: Command) -> io::Result<()> {
                     command: remote_command.clone(),
                 })
                 .collect();
-            runtime()?.block_on(async {
-                let bound = node::bind(&socket)?;
-                node::run(
-                    store,
-                    membership,
-                    Listed(dials),
-                    Some(shares),
-                    bound,
-                    stopped(),
-                )
-                .await
-            })
+            run_node(here, realm, &socket, dials)
         }
         Action::Link { here } => {
             let (store, membership, shares) = open(here, realm)?;
@@ -222,6 +241,20 @@ fn run(command: Command) -> io::Result<()> {
                 re: None,
             }),
         ),
+        Action::Hold {
+            folder,
+            detached,
+            command,
+        } => hold(&realm, folder, detached, &command),
+        Action::Attach { id } => attach(&place::held(&realm), &id),
+        Action::Held => hold::held(&place::held(&realm))
+            .iter()
+            .try_for_each(print_line),
+        Action::Holder {
+            id,
+            folder,
+            command,
+        } => be_holder(&place::held(&realm), &id, &folder, &command),
         Action::Watch { groups, recent } => {
             let mut client = Client::connect(&socket)?;
             print_line(&client.ask(&Request::Watch { groups, recent })?)?;
@@ -231,6 +264,24 @@ fn run(command: Command) -> io::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Runs this machine's node on `socket`, keeping linked over `dials`,
+/// until it is asked to stop.
+fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Ssh>) -> io::Result<()> {
+    let (store, membership, shares) = open(here, realm)?;
+    runtime()?.block_on(async {
+        let bound = node::bind(socket)?;
+        node::run(
+            store,
+            membership,
+            Listed(dials),
+            Some(shares),
+            bound,
+            stopped(),
+        )
+        .await
+    })
 }
 
 fn open(here: Here, realm: String) -> io::Result<(Folders, Realm, Places)> {
@@ -276,6 +327,101 @@ fn share(shares: &Places, quest: &str, scratch: &[String]) -> io::Result<()> {
     Ok(())
 }
 
+/// Holds `command`, started in `folder` or this one, and joins it from
+/// this terminal unless `detached`, when it prints its id instead.
+fn hold(
+    realm: &str,
+    folder: Option<PathBuf>,
+    detached: bool,
+    command: &[String],
+) -> io::Result<()> {
+    let folder = match folder {
+        Some(folder) => folder,
+        None => std::env::current_dir()?,
+    };
+    let id = start_holder(realm, &folder, command)?;
+    if detached {
+        println!("{id}");
+        Ok(())
+    } else {
+        attach(&place::held(realm), &id)
+    }
+}
+
+/// Starts the holder for `command` in a process of its own, answering its
+/// id once it holds.
+fn start_holder(realm: &str, folder: &Path, command: &[String]) -> io::Result<String> {
+    let id = hold::new_id();
+    let mut holder = std::process::Command::new(std::env::current_exe()?)
+        .args(["--realm", realm, "holder", "--id", &id, "--folder"])
+        .arg(folder)
+        .arg("--")
+        .args(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut said = String::new();
+    if let Some(out) = holder.stdout.take() {
+        io::BufReader::new(out).read_line(&mut said)?;
+    }
+    match said.trim() {
+        "held" => Ok(id),
+        "" => Err(io::Error::other("its holder ended without holding it")),
+        why => Err(io::Error::other(format!(
+            "couldn't hold {}: {why}",
+            command.join(" ")
+        ))),
+    }
+}
+
+/// Is the holder `hold` starts: in a session of its own, so the window it
+/// was started from never hangs up on it, saying `held` once a terminal
+/// can join, or why it can't.
+fn be_holder(dir: &Path, id: &str, folder: &Path, command: &[String]) -> io::Result<()> {
+    rustix::process::setsid()?;
+    let holding = hold::holder::Holding {
+        dir,
+        id,
+        command,
+        folder,
+    };
+    let held = runtime()?.block_on(hold::holder::hold(&holding, |_| {
+        let mut out = io::stdout();
+        writeln!(out, "held")?;
+        out.flush()?;
+        // Nobody reads it from here on, and writing to a pipe nobody
+        // reads would end this process.
+        let nowhere = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
+        rustix::stdio::dup2_stdout(&nowhere)?;
+        Ok(())
+    }));
+    if let Err(error) = &held {
+        // Said to whoever started it, if it hadn't said `held` yet.
+        let _ = writeln!(io::stdout(), "{error}");
+    }
+    held.map(|_| ())
+}
+
+/// Joins the session held as `id` from this terminal until it ends.
+fn attach(dir: &Path, id: &str) -> io::Result<()> {
+    let socket = hold::socket(dir, id);
+    if !socket.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("nothing is held as {id}; `mycelium held` lists what is"),
+        ));
+    }
+    let runtime = runtime()?;
+    let joined = runtime.block_on(hold::attach::join_here(&socket));
+    // Typing is read on a thread of its own, waiting on a key nobody will
+    // press now.
+    runtime.shutdown_background();
+    joined?;
+    eprintln!("mycelium: the session held as {id} has ended");
+    Ok(())
+}
+
 fn runtime() -> io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -298,7 +444,7 @@ async fn stopped() {
     }
 }
 
-fn print_reply(socket: &std::path::Path, request: &Request) -> io::Result<()> {
+fn print_reply(socket: &Path, request: &Request) -> io::Result<()> {
     print_line(&Client::connect(socket)?.ask(request)?)
 }
 
