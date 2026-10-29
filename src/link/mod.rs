@@ -219,9 +219,11 @@ async fn hello(frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>) -> io::R
         Some(Ok(Frame::Hello(other))) => Ok(other),
         Some(Ok(_)) => Err(refusal("the other end didn't say hello first".to_owned())),
         Some(Err(error)) => Err(error),
+        // Why is the dial's to say, as SSH does on its own error output: a
+        // machine it can't find, a key refused, or no mycelium there.
         None => Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
-            "the other end closed before saying hello; is mycelium on its PATH?",
+            "the other end closed before saying hello",
         )),
     }
 }
