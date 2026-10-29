@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -18,6 +18,7 @@ use tokio::task::JoinSet;
 
 use super::{Held, Said, Size, socket};
 use crate::node;
+use crate::record::Window;
 
 /// How many pieces of output a joined terminal may fall behind by before
 /// it misses some; it is caught up by the program's next redraw.
@@ -82,8 +83,9 @@ pub async fn hold(
         holder: std::process::id(),
         pid: child.id().unwrap_or_default(),
         since: jiff::Timestamp::now().to_string(),
+        windows: Vec::new(),
     };
-    let record = Record::write(holding.dir, &held)?;
+    let record = Arc::new(Record::write(holding.dir, &held)?);
     ready(&held)?;
 
     let (reading, writing) = pty.into_split();
@@ -99,7 +101,12 @@ pub async fn hold(
             status = child.wait() => break status?,
             accepted = socket.accept() => {
                 if let Ok(stream) = accepted {
-                    joined.spawn(serve(stream, terminal.clone(), output.subscribe()));
+                    joined.spawn(serve(
+                        stream,
+                        terminal.clone(),
+                        output.subscribe(),
+                        record.clone(),
+                    ));
                 }
             }
             Some(_) = joined.join_next(), if !joined.is_empty() => {}
@@ -108,7 +115,7 @@ pub async fn hold(
     // The program's last output still reaches whoever is joined, and then
     // each is let go as the output ends.
     drop(socket);
-    drop(record);
+    record.end();
     if tokio::time::timeout(LAST_WORDS, &mut reader).await.is_err() {
         reader.abort();
     }
@@ -155,14 +162,24 @@ async fn serve(
     stream: UnixStream,
     terminal: Arc<Terminal>,
     mut output: broadcast::Receiver<Arc<[u8]>>,
+    record: Arc<Record>,
 ) {
     let (mut reading, mut writing) = stream.into_split();
     let typing = async {
         let mut joining = true;
+        // Its window leaves the record however the terminal goes.
+        let mut window = Joined {
+            record: &record,
+            key: None,
+        };
         while let Ok(Some(said)) = Said::read(&mut reading).await {
             let done = match said {
                 Said::Typed(bytes) => terminal.writing.lock().await.write_all(&bytes).await,
                 Said::Size(size) => terminal.resize(size, std::mem::take(&mut joining)).await,
+                Said::Window(said) => {
+                    window.is(said);
+                    Ok(())
+                }
             };
             if done.is_err() {
                 return;
@@ -206,24 +223,120 @@ fn size_of(size: Size) -> pty_process::Size {
     pty_process::Size::new(size.rows, size.cols)
 }
 
-/// The record beside a holder's socket, taken away when dropped.
-struct Record(std::path::PathBuf);
+/// The record beside a holder's socket, written again as windows join and
+/// leave, and taken away once the holder ends or is dropped.
+struct Record {
+    path: PathBuf,
+    staged: PathBuf,
+    kept: Mutex<Kept>,
+}
+
+/// What the record says, and each joined window by its terminal's key.
+struct Kept {
+    held: Held,
+    windows: Vec<(u64, Window)>,
+    next: u64,
+    ended: bool,
+}
 
 impl Record {
     fn write(dir: &Path, held: &Held) -> io::Result<Self> {
-        let path = dir.join(format!("{}.json", held.id));
-        let staged = dir.join(format!(".{}.json.tmp", held.id));
-        fs::write(&staged, serde_json::to_vec(held).map_err(io::Error::other)?)?;
-        fs::rename(&staged, &path)?;
-        Ok(Self(path))
+        let record = Self {
+            path: dir.join(format!("{}.json", held.id)),
+            staged: dir.join(format!(".{}.json.tmp", held.id)),
+            kept: Mutex::new(Kept {
+                held: held.clone(),
+                windows: Vec::new(),
+                next: 0,
+                ended: false,
+            }),
+        };
+        record.save(&record.kept())?;
+        Ok(record)
+    }
+
+    fn kept(&self) -> std::sync::MutexGuard<'_, Kept> {
+        self.kept.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Writes the record whole, through a staged file renamed into place,
+    /// unless the holder has ended.
+    fn save(&self, kept: &Kept) -> io::Result<()> {
+        if kept.ended {
+            return Ok(());
+        }
+        let held = Held {
+            windows: kept
+                .windows
+                .iter()
+                .map(|(_, window)| window.clone())
+                .collect(),
+            ..kept.held.clone()
+        };
+        fs::write(
+            &self.staged,
+            serde_json::to_vec(&held).map_err(io::Error::other)?,
+        )?;
+        fs::rename(&self.staged, &self.path)
+    }
+
+    /// Adds a joined terminal's window, the latest, answering its key.
+    fn joined(&self, window: Window) -> u64 {
+        let mut kept = self.kept();
+        let key = kept.next;
+        kept.next += 1;
+        kept.windows.push((key, window));
+        // A record that can't be written keeps what it said before; the
+        // next join or leave writes it whole again.
+        let _ = self.save(&kept);
+        key
+    }
+
+    /// Takes away the window of the terminal keyed `key`, which has left.
+    fn left(&self, key: u64) {
+        let mut kept = self.kept();
+        kept.windows.retain(|(each, _)| *each != key);
+        // As in `joined`, the next change writes it whole again.
+        let _ = self.save(&kept);
+    }
+
+    /// Takes the record away for good, so no terminal leaving after can
+    /// write it back.
+    fn end(&self) {
+        self.kept().ended = true;
+        // The record is this holder's alone; if it's already gone there is
+        // nothing to take away.
+        let _ = fs::remove_file(&self.path);
     }
 }
 
 impl Drop for Record {
     fn drop(&mut self) {
-        // The record is this holder's alone; if it's already gone there is
-        // nothing to take away.
-        let _ = fs::remove_file(&self.0);
+        self.end();
+    }
+}
+
+/// A joined terminal's window in the record, taken away when dropped.
+struct Joined<'a> {
+    record: &'a Record,
+    key: Option<u64>,
+}
+
+impl Joined<'_> {
+    /// The terminal says it is `window`, in place of any it said before.
+    fn is(&mut self, window: Window) {
+        if let Some(key) = self.key.take() {
+            self.record.left(key);
+        }
+        self.key = Some(self.record.joined(window));
+    }
+}
+
+impl Drop for Joined<'_> {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.take() {
+            self.record.left(key);
+        }
     }
 }
 
@@ -251,12 +364,13 @@ mod tests {
     }
 
     impl Joined {
-        fn join(socket: PathBuf, size: Size) -> Self {
+        fn join(socket: PathBuf, size: Size, window: Option<Window>) -> Self {
             let (typing, input) = tokio::io::duplex(4096);
             let (output, shown) = tokio::io::duplex(1 << 16);
             let (sizes, told) = mpsc::unbounded_channel();
-            let task =
-                tokio::spawn(async move { attach::join(&socket, size, input, output, told).await });
+            let task = tokio::spawn(async move {
+                attach::join(&socket, size, window, input, output, told).await
+            });
             Self {
                 typing,
                 shown,
@@ -334,13 +448,13 @@ mod tests {
             rows: 30,
             cols: 100,
         };
-        let mut first = Joined::join(socket(&dir, &held.id), size);
+        let mut first = Joined::join(socket(&dir, &held.id), size, None);
         first.types("echo \"[$MYCELIUM_HELD] $((40 + 2))\"\r").await;
         first.sees("[trial1] 42").await;
         first.task.abort();
         let _ = first.task.await;
 
-        let mut again = Joined::join(socket(&dir, &held.id), size);
+        let mut again = Joined::join(socket(&dir, &held.id), size, None);
         again.types("stty size; echo still $((6 * 7))\r").await;
         again.sees("30 100").await;
         again.sees("still 42").await;
@@ -375,6 +489,65 @@ mod tests {
         assert!(
             !socket(&dir, "trial1").exists() && !dir.join("trial1.json").exists(),
             "its socket and record are gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_window_is_listed_only_while_it_is_joined() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let windows = async |changes: &mut mpsc::UnboundedReceiver<()>, wanted: &[&str]| {
+            let found = tokio::time::timeout(PATIENCE, async {
+                loop {
+                    let listed: Vec<String> = listed(&dir)
+                        .first()
+                        .map(|one| one.windows.iter().map(|window| window.id.clone()).collect())
+                        .unwrap_or_default();
+                    if listed == wanted {
+                        return;
+                    }
+                    changes.recv().await;
+                }
+            })
+            .await;
+            assert!(found.is_ok(), "the windows listed never became {wanted:?}");
+        };
+        let kitty = |id: &str| {
+            Some(Window {
+                terminal: "kitty".to_owned(),
+                id: id.to_owned(),
+                within: Some("unix:@kitty-6753".to_owned()),
+            })
+        };
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+
+        let mut first = Joined::join(socket(&dir, &held.id), size, kitty("13"));
+        first.types("echo one-$((0 + 1))\r").await;
+        first.sees("one-1").await;
+        let mut second = Joined::join(socket(&dir, &held.id), size, kitty("14"));
+        second.types("echo two-$((1 + 1))\r").await;
+        second.sees("two-2").await;
+        windows(&mut changes, &["13", "14"]).await;
+
+        first.task.abort();
+        let _ = first.task.await;
+        windows(&mut changes, &["14"]).await;
+        second.task.abort();
+        let _ = second.task.await;
+        windows(&mut changes, &[]).await;
+
+        let mut last = Joined::join(socket(&dir, &held.id), size, None);
+        last.types("exit\r").await;
+        let _ = tokio::time::timeout(PATIENCE, holder)
+            .await
+            .expect("the holder ends with its program");
+        assert!(
+            listed(&dir).is_empty(),
+            "a window leaving after can't bring it back"
         );
     }
 

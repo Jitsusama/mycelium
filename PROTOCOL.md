@@ -229,10 +229,12 @@ kitty's socket). Only a session of this machine's has a `window`, since a
 window is gone to on its own machine. A session of this machine's that a
 holder keeps, as one started with `mycelium hold -- pi` is, says `held`:
 the id `mycelium attach` takes it up by. It is known by the holder's
-program being the session's own process. Its `presence` goes along whole, as
-its session wrote it, for a reader that shows more of it, such as the
-launcher; a session elsewhere's has its process taken out. Whether a
-session lives is its `state`, never anything in its presence.
+program being the session's own process, and its `window` is the latest
+window joined to its holder that is still joined, or none. Its
+`presence` goes along whole, as its session wrote it, for a reader that
+shows more of it, such as the launcher; a session elsewhere's has its
+process taken out. Whether a session lives is its `state`, never
+anything in its presence.
 
 A machine is what its node measures of it when asked, the facts work is
 placed by: its `name`, `measured_at`, `state` (`ready` for a node answering
@@ -263,14 +265,19 @@ started, and a closing window hangs up on its own session only.
 Each holder serves `<id>.sock` in `$XDG_RUNTIME_DIR/mycelium/<realm>.held`
 (the temporary folder on macOS), reachable only by its account, beside
 `<id>.json`, which says what it holds: `id`, `command`, `folder`, the
-`holder`'s and the program's `pid`, and `since`. Both go when the program
-ends. `mycelium held` lists every record whose holder still runs. The
-program is told its id in `MYCELIUM_HELD`, and loses the variables naming
+`holder`'s and the program's `pid`, `since`, and the `windows` joined to
+it that said which they are, the latest last. A window leaves the record
+the moment its terminal leaves, and both go when the program ends.
+`mycelium held` lists every record whose holder still runs. The program
+is told its id in `MYCELIUM_HELD`, and loses the variables naming
 the window it started in.
 
 A joined terminal sends frames of a tag byte, a two-byte big-endian
 length and what it carries: tag 0 is bytes typed, and tag 1 is its size,
 rows then columns, two bytes each, sent on joining and on each change.
+Tag 2 is the window the terminal is, as JSON in a session's `window`
+shape, once on joining when it can say: `mycelium attach` in a kitty
+window says its id and kitty's socket.
 The holder sends back the program's output as it comes. Any number may
 join at once; the program takes the latest size it was told. One joining
 at the size the program already has makes it one column narrower first,

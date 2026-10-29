@@ -183,17 +183,15 @@ pub fn session(presence: &Presence, here: &str) -> Option<Session> {
     })
 }
 
-/// The id of what is held here that holds this machine's session: the
-/// holder whose program is the session's own process, as a session started
-/// with `mycelium hold -- pi` is.
-pub fn held_by(presence: &Presence, held: &[Held]) -> Option<String> {
+/// What is held here that holds this machine's session: the holder whose
+/// program is the session's own process, as a session started with
+/// `mycelium hold -- pi` is.
+pub fn held_by<'a>(presence: &Presence, held: &'a [Held]) -> Option<&'a Held> {
     if presence.elsewhere.is_some() {
         return None;
     }
     let pid = presence.body.get("owner")?.get("pid")?.as_u64()?;
-    held.iter()
-        .find(|one| u64::from(one.pid) == pid)
-        .map(|one| one.id.clone())
+    held.iter().find(|one| u64::from(one.pid) == pid)
 }
 
 /// How a quest's id begins, which an older presence names among what it
@@ -503,10 +501,11 @@ mod tests {
             holder: 1,
             pid,
             since: "2026-10-28T23:00:00Z".to_owned(),
+            windows: Vec::new(),
         };
         let here = [held("5b992038", 4242), held("0d1e2f3a", 77)];
         assert_eq!(
-            held_by(&presence(4242, None), &here).as_deref(),
+            held_by(&presence(4242, None), &here).map(|one| one.id.as_str()),
             Some("5b992038"),
             "the holder whose program is the session's process"
         );
