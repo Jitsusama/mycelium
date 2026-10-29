@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::facts::Machine;
 use crate::group::{Group, Pattern};
 use crate::record::{Intent, Message, Session};
 
@@ -14,6 +15,8 @@ use crate::record::{Intent, Message, Session};
 pub enum Request {
     /// Every session the node knows of, on this machine and others.
     Sessions,
+    /// What this machine is, as its node measures it now.
+    Machine,
     /// The latest messages to the groups `groups` hears, oldest first.
     Messages {
         /// Which groups.
@@ -57,6 +60,8 @@ pub type Reply = Result<Response, String>;
 pub enum Response {
     /// The sessions asked for.
     Sessions(Vec<Session>),
+    /// This machine, boxed since it is far larger than any other answer.
+    Machine(Box<Machine>),
     /// The messages asked for.
     Messages(Vec<Message>),
     /// The message as sent.

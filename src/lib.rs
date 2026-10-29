@@ -19,6 +19,7 @@
 //!
 //! Around them:
 //!
+//! - [`facts`]: what this machine is, as its node measures it
 //! - [`group`]: groups' names, patterns that hear them, and routes
 //! - [`record`]: messages and sessions, as clients read them
 //! - [`mesh`]: the harness mesh's files read as records
@@ -28,6 +29,7 @@
 //! - [`place`]: where a node keeps things on its machine
 
 pub mod client;
+pub mod facts;
 pub mod group;
 pub mod hold;
 pub mod link;
