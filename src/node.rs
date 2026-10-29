@@ -1498,10 +1498,16 @@ mod tests {
             ["--folder", &home.display().to_string()],
             "a start naming no folder begins in its machine's home"
         );
+        // Which words a login shell takes, and a Mac's yielding before
+        // them, is start's own test; here, only that the node uses them.
+        let through = start::through_login_shell(&["pi".to_owned(), "--continue".to_owned()]);
         assert_eq!(
-            given[9..],
-            ["-lic", r#"exec "$@""#, "mycelium", "pi", "--continue"],
-            "the program starts through the login shell: {given:?}"
+            given[7..],
+            ["--"]
+                .into_iter()
+                .chain(through.iter().map(String::as_str))
+                .collect::<Vec<_>>(),
+            "the program starts through the login shell"
         );
 
         drop(stop);
