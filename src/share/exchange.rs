@@ -1531,7 +1531,13 @@ mod tests {
 
         // Concluding a quest takes this machine's whole scratch away.
         fs::remove_dir_all(optimus.places.scratch.join(QUEST)).expect("taken away");
-        assert!(near.watch.wait(HEARD_WITHIN), "optimus hears it");
+        // inotify hears a watched folder go with the folder holding it, so
+        // on Linux the look walks it and must find nothing to remove. macOS's
+        // FSEvents didn't hear it within the wait in any of 20KSI7's runs on
+        // equilibrius (2026-10-29); unheard, the folder isn't walked, which
+        // also crosses nothing, so the Mac's copy stays either way.
+        let heard = near.watch.wait(HEARD_WITHIN);
+        assert!(heard || !cfg!(target_os = "linux"), "optimus hears it");
         talk(&mut near, &mut far);
         assert_eq!(
             fs::read_to_string(scratch(&equilibrius, "notes/plan.md"))
