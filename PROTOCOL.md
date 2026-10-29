@@ -224,6 +224,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Machine"` | `{"Machine": machine}`, this machine as measured now |
 | `"Machines"` | `{"Machines": [machine]}`, this machine first, then each other |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
+| `{"Start": {"work", "folder", "command"}}` | `{"Started": {"machine", "held", "attach"}}` |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events |
@@ -307,6 +308,17 @@ chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only
 ranks it.
 
+`"Start"` places `work` as `"Place"` does and starts `command` held
+there, in `folder`, a full path on that machine, through the person's
+login shell (`$SHELL -lic`), so it has their environment rather than
+the node's. The answer is the `machine`, the `held` id and `attach`, the
+words that join it from a terminal on the asking machine, to be run as
+given. A start that isn't placed, or doesn't start, is an error saying
+why, such as `nowhere: optimus isn't equilibrius`. A node run as a
+systemd unit starts each holder in a scope of its own,
+`mycelium-pi-<held>.scope` in `app.slice`, so the session outlives the
+node. For now a node starts sessions only on its own machine.
+
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`
 and `Message`. A client that falls too far behind is let go, and connects
@@ -355,9 +367,10 @@ Each lands behind a seam above, or as a seam of its own:
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.
 - **Places and what they can do:** a machine says what it is, and the
-  node places work among the realm's machines by it; next, a machine
-  admits or refuses the work placed on it, so a placer's view can't
-  override it, and starting a session goes through both.
+  node places work and starts it held on its own machine; next, a start
+  placed on another machine crosses the link to that machine's node,
+  which admits or refuses it on its own facts, so a placer's view can't
+  override it.
 - **Providers:** programs beside a node that offer shapes of machine,
   make one, start a session on it, reach it and end it with its cost,
   and say when one is lost, such as Aquifer's, which lives outside this

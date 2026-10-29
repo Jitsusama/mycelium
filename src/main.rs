@@ -3,13 +3,14 @@
 //! Quickshell read the socket themselves; nothing here is how a person uses
 //! the network.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use mycelium::client::Client;
 use mycelium::group::{Group, Pattern};
+use mycelium::hold::start::Starter;
 use mycelium::link::dial::{Connection, Ssh};
 use mycelium::link::discovery::Listed;
 use mycelium::link::membership::Realm;
@@ -18,7 +19,7 @@ use mycelium::record::Intent;
 use mycelium::share::exchange::Places;
 use mycelium::share::ledger::Ledgers;
 use mycelium::store::folders::Folders;
-use mycelium::wire::{Draft, Request};
+use mycelium::wire::{Draft, Request, Start};
 use mycelium::{hold, link, node, place};
 
 #[derive(Parser)]
@@ -106,6 +107,10 @@ enum Action {
         #[arg(long)]
         text: String,
     },
+    /// Asks the node to start a program held, on the machine of the realm
+    /// placement chooses, through that person's login shell; prints the
+    /// machine, its id and the words that attach to it.
+    Start(Starting),
     /// Starts a program on a terminal a holder of its own keeps, so its
     /// window can close and `attach` take it up again from any terminal;
     /// then joins it, unless `--detached`.
@@ -149,6 +154,20 @@ enum Action {
 }
 
 /// What a node or a link's end needs of this machine.
+/// A program to start, as its flags say it.
+#[derive(clap::Args)]
+struct Starting {
+    /// What the machine must be, as for `place`.
+    #[command(flatten)]
+    work: Asked,
+    /// The folder it starts in, if not this one.
+    #[arg(long)]
+    folder: Option<PathBuf>,
+    /// The program and its arguments, after `--`.
+    #[arg(last = true, required = true)]
+    command: Vec<String>,
+}
+
 /// Work to be placed, as its flags say it.
 #[derive(clap::Args)]
 struct Asked {
@@ -263,6 +282,7 @@ fn run(command: Command) -> io::Result<()> {
         Action::Machine => print_reply(&socket, &Request::Machine),
         Action::Machines => print_reply(&socket, &Request::Machines),
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
+        Action::Start(asked) => start(&socket, asked),
         Action::Messages { groups, limit } => {
             print_reply(&socket, &Request::Messages { groups, limit })
         }
@@ -310,17 +330,18 @@ fn run(command: Command) -> io::Result<()> {
 /// until it is asked to stop.
 fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Ssh>) -> io::Result<()> {
     let (store, membership, shares) = open(here, realm)?;
+    let given = node::Given {
+        sharing: Some(shares),
+        starter: Some(Starter {
+            program: std::env::current_exe()?,
+            // A node that is a systemd unit, as on Linux, would stop
+            // every session it started when the unit stops.
+            scoped: cfg!(target_os = "linux") && std::env::var_os("INVOCATION_ID").is_some(),
+        }),
+    };
     runtime()?.block_on(async {
         let bound = node::bind(socket)?;
-        node::run(
-            store,
-            membership,
-            Listed(dials),
-            Some(shares),
-            bound,
-            stopped(),
-        )
-        .await
+        node::run(store, membership, Listed(dials), given, bound, stopped()).await
     })
 }
 
@@ -369,6 +390,21 @@ fn share(shares: &Places, quest: &str, scratch: &[String]) -> io::Result<()> {
 
 /// Holds `command`, started in `folder` or this one, and joins it from
 /// this terminal unless `detached`, when it prints its id instead.
+/// Asks the node to start `command` in `folder`, or this one, where
+/// placement says `work` should go.
+fn start(socket: &Path, asked: Starting) -> io::Result<()> {
+    let folder = match asked.folder {
+        Some(folder) => std::path::absolute(folder)?,
+        None => std::env::current_dir()?,
+    };
+    let start = Start {
+        work: asked.work.into(),
+        folder,
+        command: asked.command,
+    };
+    print_reply(socket, &Request::Start(start))
+}
+
 fn hold(
     realm: &str,
     folder: Option<PathBuf>,
@@ -379,39 +415,16 @@ fn hold(
         Some(folder) => folder,
         None => std::env::current_dir()?,
     };
-    let id = start_holder(realm, &folder, command)?;
+    let starter = Starter {
+        program: std::env::current_exe()?,
+        scoped: false,
+    };
+    let id = starter.start(realm, &folder, command)?;
     if detached {
         println!("{id}");
         Ok(())
     } else {
         attach(&place::held(realm), &id)
-    }
-}
-
-/// Starts the holder for `command` in a process of its own, answering its
-/// id once it holds.
-fn start_holder(realm: &str, folder: &Path, command: &[String]) -> io::Result<String> {
-    let id = hold::new_id();
-    let mut holder = std::process::Command::new(std::env::current_exe()?)
-        .args(["--realm", realm, "holder", "--id", &id, "--folder"])
-        .arg(folder)
-        .arg("--")
-        .args(command)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let mut said = String::new();
-    if let Some(out) = holder.stdout.take() {
-        io::BufReader::new(out).read_line(&mut said)?;
-    }
-    match said.trim() {
-        "held" => Ok(id),
-        "" => Err(io::Error::other("its holder ended without holding it")),
-        why => Err(io::Error::other(format!(
-            "couldn't hold {}: {why}",
-            command.join(" ")
-        ))),
     }
 }
 
