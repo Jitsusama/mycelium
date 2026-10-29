@@ -22,6 +22,7 @@
 //! - [`facts`]: what this machine is, as its node measures it
 //! - [`room`]: the room it has for more work, as its queue says
 //! - [`declared`]: what its configuration says of it
+//! - [`reach`]: whether the networks it reaches only now and then answer
 //! - [`placement`]: which machine work goes to, by what each says it is
 //! - [`group`]: groups' names, patterns that hear them, and routes
 //! - [`record`]: messages and sessions, as clients read them
@@ -41,6 +42,7 @@ pub mod mesh;
 pub mod node;
 pub mod place;
 pub mod placement;
+pub mod reach;
 pub mod record;
 pub mod room;
 pub mod share;

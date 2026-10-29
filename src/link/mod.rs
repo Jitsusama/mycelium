@@ -987,6 +987,7 @@ mod tests {
             home: "/".into(),
             queue: None,
             declared: "/nowhere".into(),
+            reached: "/nowhere".into(),
         };
         let mut penelope = facts::measure("penelope", &nowhere);
         penelope.state = Readiness::Ready;

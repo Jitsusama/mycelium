@@ -303,10 +303,7 @@ fn is(machine: &Machine, need: &Need) -> Option<bool> {
         Need::Machine(name) => Some(&machine.name == name),
         Need::System(system) => machine.system.as_ref().map(|its| its == system),
         Need::Arch(arch) => Some(&machine.arch == arch),
-        Need::Reach(network) => machine
-            .declared
-            .as_ref()
-            .map(|declared| declared.reach.contains(network)),
+        Need::Reach(network) => reaches(machine, network),
         Need::Accelerator(kind) => machine
             .accelerators
             .as_ref()
@@ -314,10 +311,26 @@ fn is(machine: &Machine, need: &Need) -> Option<bool> {
     }
 }
 
+/// Whether `machine` reaches `network`: always, as its configuration
+/// declares; now, as the probe its configuration names last answered; or
+/// unknown, while that probe hasn't been heard or nothing is declared.
+fn reaches(machine: &Machine, network: &str) -> Option<bool> {
+    let declared = machine.declared.as_ref()?;
+    if declared.reach.iter().any(|always| always == network) {
+        return Some(true);
+    }
+    if declared.probes.contains_key(network) {
+        return machine.reached.get(network).copied();
+    }
+    Some(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::declared::Declared;
+    use std::collections::BTreeMap;
+
+    use crate::declared::{Declared, Probe};
     use crate::facts::{self, Accelerator, Power, Sources};
     use crate::room::{Pressure, Room, Takes};
 
@@ -328,6 +341,7 @@ mod tests {
             home: "/".into(),
             queue: None,
             declared: "/nowhere".into(),
+            reached: "/nowhere".into(),
         };
         Machine {
             system: Some(system.to_owned()),
@@ -353,6 +367,7 @@ mod tests {
             }),
             declared: Some(Declared {
                 reach: reach.iter().map(|&one| one.to_owned()).collect(),
+                probes: BTreeMap::new(),
                 outlives: Vec::new(),
                 costs_money: false,
                 taints: Vec::new(),
@@ -553,6 +568,49 @@ mod tests {
             )),
             Some("optimus"),
             "an accelerator it lists meets the need"
+        );
+    }
+
+    #[test]
+    fn a_network_reached_now_and_then_is_met_while_its_probe_answers() {
+        let mut laptop = machine("optimus", "linux", 8, &["internet"]);
+        if let Some(declared) = laptop.declared.as_mut() {
+            declared.probes = BTreeMap::from([(
+                "home".to_owned(),
+                Probe {
+                    connect: "192.0.2.1:53".to_owned(),
+                },
+            )]);
+        }
+        let home = || needing(vec![Need::Reach("home".to_owned())]);
+        let because = |placement: Placement| match placement {
+            Placement::Refused { misses } => misses[0].because.clone(),
+            other => panic!("refused, not {other:?}"),
+        };
+        assert_eq!(
+            because(place(&home(), std::slice::from_ref(&laptop))),
+            [Because::Unknown(Need::Reach("home".to_owned()))],
+            "a probe not yet heard says nothing"
+        );
+        laptop.reached.insert("home".to_owned(), false);
+        assert_eq!(
+            because(place(&home(), std::slice::from_ref(&laptop))),
+            [Because::Lacks(Need::Reach("home".to_owned()))],
+            "a probe that didn't answer lacks it"
+        );
+        laptop.reached.insert("home".to_owned(), true);
+        assert_eq!(
+            placed(&place(&home(), std::slice::from_ref(&laptop))),
+            Some("optimus"),
+            "a probe that answered meets it"
+        );
+        assert_eq!(
+            placed(&place(
+                &needing(vec![Need::Reach("internet".to_owned())]),
+                &[laptop]
+            )),
+            Some("optimus"),
+            "a network declared outright needs no probe"
         );
     }
 }

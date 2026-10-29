@@ -10,6 +10,7 @@
 //! no taint it doesn't tolerate applies, and the machine itself enforces
 //! it, since what is said here only saves work a trip.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -19,14 +20,26 @@ use serde::{Deserialize, Serialize};
 /// What a machine's configuration says of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Declared {
-    /// The networks work there reaches, such as `home` or `internet`.
+    /// The networks work there always reaches, such as `internet`.
     pub reach: Vec<String>,
+    /// The networks work there reaches only some of the time, such as a
+    /// laptop's `home`, each reached while its probe answers.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub probes: BTreeMap<String, Probe>,
     /// What a session held there outlives.
     pub outlives: Vec<Outlives>,
     /// Whether work there costs money.
     pub costs_money: bool,
     /// What it refuses, or would rather not take.
     pub taints: Vec<Taint>,
+}
+
+/// How a network is found reached: a connection that opens to an address
+/// only that network serves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Probe {
+    /// The `host:port` a connection is opened to.
+    pub connect: String,
 }
 
 /// Something a held session can outlive.
@@ -105,6 +118,7 @@ mod tests {
             read(&file),
             Some(Declared {
                 reach: vec!["home".to_owned(), "internet".to_owned()],
+                probes: BTreeMap::new(),
                 outlives: vec![Outlives::WindowClose, Outlives::NodeRestart],
                 costs_money: false,
                 taints: vec![Taint {

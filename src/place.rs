@@ -37,6 +37,12 @@ pub fn declared() -> PathBuf {
         .join("declared.json")
 }
 
+/// The node's record of which networks this machine's probes reached,
+/// beside its sockets, for every realm's node and link to read.
+pub fn reached() -> PathBuf {
+    runtime().join("reached.json")
+}
+
 fn runtime() -> PathBuf {
     env::var_os("XDG_RUNTIME_DIR")
         .map_or_else(env::temp_dir, PathBuf::from)

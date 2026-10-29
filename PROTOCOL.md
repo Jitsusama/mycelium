@@ -291,8 +291,11 @@ minutes. A machine keeps no reserve of mycelium's: its own slices keep
 its person's share.
 
 Its `declared` is what its configuration says of it, which can't be
-measured: `reach`, the networks work there reaches, such as `home` or
-`internet`; `outlives`, what a session held there outlives
+measured: `reach`, the networks work there always reaches, such as
+`internet`; `probes`, the networks it reaches only some of the time,
+such as a laptop's `home`, each by a probe whose `connect` is the
+`host:port` a connection opens to only while that network is reached;
+`outlives`, what a session held there outlives
 (`window_close`, `node_restart`, `sleep`, `reboot`); `costs_money`; and
 `taints`, what it refuses, each a `key` work tolerates it by, an
 `effect` (`never`, or `prefer_not` while anywhere else will do) and
@@ -301,13 +304,22 @@ measured: `reach`, the networks work there reaches, such as `home` or
 the machine enforces its own taints. It is `null` where nothing is
 declared, or where the file isn't in this shape, which the node logs.
 
+Its `reached` says whether each probed network answered, by name. The
+node opens a connection to each probe every 30 seconds, giving each 3
+to answer, and writes the round to `reached.json` beside its sockets,
+where each end of a link on the machine reads it; a record older than
+90 seconds says nothing, so a network is unknown rather than stale
+while no node probes.
+
 `"Machines"` gives each other machine as its own end of a link last
 said it, about once a minute.
 
 `"Place"` asks which of those machines work should go to. The work says
 its `needs` and `prefers`, each one of `{"machine": name}`,
 `{"system": "linux"}`, `{"arch": "x86_64"}`, `{"reach": network}` or
-`{"accelerator": "gpu"}`, the earliest preference most wanted; the keys
+`{"accelerator": "gpu"}`, the earliest preference most wanted (a
+machine reaches a network it declares in `reach`, or one it probes
+while its probe last answered, and lacks one whose probe didn't); the keys
 of the taints it `tolerates`; and whether it `may_wait` for a machine out
 of reach. A machine carries the taints its configuration declares, and
 while they last, `on-battery` and `memory-pressure` (past its queue's
