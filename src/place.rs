@@ -29,6 +29,14 @@ pub fn queue() -> Option<PathBuf> {
     env::var_os("XDG_RUNTIME_DIR").map(|dir| PathBuf::from(dir).join("jobs").join("queue.json"))
 }
 
+/// What this machine's configuration declares of it, where the account's
+/// built configuration writes it.
+pub fn declared() -> PathBuf {
+    xdg("XDG_CONFIG_HOME", &[".config"])
+        .join("mycelium")
+        .join("declared.json")
+}
+
 fn runtime() -> PathBuf {
     env::var_os("XDG_RUNTIME_DIR")
         .map_or_else(env::temp_dir, PathBuf::from)

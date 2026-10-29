@@ -1,13 +1,14 @@
 //! What this machine is, as its node measures it: the facts work can be
-//! placed by. Only what can be read from the machine itself is here,
-//! with the room its own queue says it has; what must be declared (its
-//! reach, its cost) comes later. A fact that can't be read is unknown,
-//! never a guess.
+//! placed by: what can be read from the machine itself, the room its own
+//! queue says it has, and what its configuration declares. A fact that
+//! can't be read is unknown, never a guess.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::declared::{self, Declared};
+use crate::place;
 use crate::room::{self, Room};
 
 /// This machine, as measured when asked.
@@ -38,6 +39,32 @@ pub struct Machine {
     /// The room it has for more work, as its queue says, or unknown where
     /// nobody keeps one.
     pub room: Option<Room>,
+    /// What its configuration says of it, or unknown where it says
+    /// nothing.
+    pub declared: Option<Declared>,
+}
+
+/// Where a machine's facts are read from, beyond the machine itself.
+#[derive(Debug, Clone)]
+pub struct Sources {
+    /// Its account's home, whose disk is the one measured.
+    pub home: PathBuf,
+    /// Its queue's record, if it keeps one anywhere.
+    pub queue: Option<PathBuf>,
+    /// What its configuration declares.
+    pub declared: PathBuf,
+}
+
+impl Sources {
+    /// Where this machine's account keeps each.
+    #[must_use]
+    pub fn here() -> Self {
+        Self {
+            home: std::env::home_dir().unwrap_or_else(std::env::temp_dir),
+            queue: place::queue(),
+            declared: place::declared(),
+        }
+    }
 }
 
 /// Whether a machine takes work. A node answering for itself is ready,
@@ -81,10 +108,9 @@ pub enum AcceleratorKind {
     Npu,
 }
 
-/// Measures this machine, named `name`, whose account's home is `home`
-/// and whose queue keeps its record at `queue`, if anywhere.
+/// Measures this machine, named `name`, reading the rest from `sources`.
 #[must_use]
-pub fn measure(name: &str, home: &Path, queue: Option<&Path>) -> Machine {
+pub fn measure(name: &str, sources: &Sources) -> Machine {
     let read = here::read();
     let now = jiff::Timestamp::now();
     Machine {
@@ -96,9 +122,13 @@ pub fn measure(name: &str, home: &Path, queue: Option<&Path>) -> Machine {
         model: read.model,
         cpu: read.cpu,
         memory: read.memory,
-        disk: disk_of(home),
+        disk: disk_of(&sources.home),
         accelerators: read.accelerators,
-        room: queue.and_then(|queue| room::read(queue, now.as_second())),
+        room: sources
+            .queue
+            .as_deref()
+            .and_then(|queue| room::read(queue, now.as_second())),
+        declared: declared::read(&sources.declared),
     }
 }
 
@@ -398,7 +428,14 @@ mod tests {
     #[test]
     fn this_machine_is_measured_without_guessing() {
         let home = tempfile::tempdir().expect("a temporary folder");
-        let machine = measure("trial", home.path(), Some(&home.path().join("queue.json")));
+        let machine = measure(
+            "trial",
+            &Sources {
+                home: home.path().to_owned(),
+                queue: Some(home.path().join("queue.json")),
+                declared: home.path().join("declared.json"),
+            },
+        );
         assert_eq!(machine.name, "trial", "it carries the name it was given");
         assert_eq!(
             machine.arch,
@@ -431,6 +468,10 @@ mod tests {
         assert!(
             said["room"].is_null(),
             "with no queue kept, its room is unknown"
+        );
+        assert!(
+            said["declared"].is_null(),
+            "with no configuration, nothing declared is known"
         );
     }
 }

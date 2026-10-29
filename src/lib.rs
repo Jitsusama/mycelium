@@ -21,6 +21,7 @@
 //!
 //! - [`facts`]: what this machine is, as its node measures it
 //! - [`room`]: the room it has for more work, as its queue says
+//! - [`declared`]: what its configuration says of it
 //! - [`group`]: groups' names, patterns that hear them, and routes
 //! - [`record`]: messages and sessions, as clients read them
 //! - [`mesh`]: the harness mesh's files read as records
@@ -30,6 +31,7 @@
 //! - [`place`]: where a node keeps things on its machine
 
 pub mod client;
+pub mod declared;
 pub mod facts;
 pub mod group;
 pub mod hold;

@@ -42,7 +42,6 @@ use tokio::sync::mpsc;
 
 use crate::facts::{self, Machine, Readiness};
 use crate::mesh;
-use crate::place;
 use crate::share::exchange::{Exchange, Places, Say};
 use crate::store::{self, Change, Claim, Store};
 use dial::Connection;
@@ -345,12 +344,10 @@ impl<S: Store> End<S> {
             return Ok(());
         }
         let here = self.here.clone();
-        let machine = tokio::task::spawn_blocking(move || {
-            let home = std::env::home_dir().unwrap_or_else(std::env::temp_dir);
-            facts::measure(&here, &home, place::queue().as_deref())
-        })
-        .await
-        .map_err(io::Error::other)?;
+        let machine =
+            tokio::task::spawn_blocking(move || facts::measure(&here, &facts::Sources::here()))
+                .await
+                .map_err(io::Error::other)?;
         send(writing, &Frame::Machine(Box::new(machine))).await
     }
 
@@ -853,7 +850,12 @@ mod tests {
             "an end that doesn't say it knows of machines hears none: {heard:?}"
         );
 
-        let mut penelope = facts::measure("penelope", std::path::Path::new("/"), None);
+        let nowhere = facts::Sources {
+            home: "/".into(),
+            queue: None,
+            declared: "/nowhere".into(),
+        };
+        let mut penelope = facts::measure("penelope", &nowhere);
         penelope.state = Readiness::Ready;
         for frame in [
             Frame::Have {
