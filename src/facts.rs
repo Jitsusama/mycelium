@@ -145,6 +145,16 @@ pub enum AcceleratorKind {
 pub fn measure(name: &str, sources: &Sources) -> Machine {
     let read = here::read();
     let now = jiff::Timestamp::now();
+    let declared = declared::read(&sources.declared);
+    // A machine given a share of its host lists the host's processors, so
+    // what it declares it is given comes first.
+    let cpu = Cpu {
+        cores: declared
+            .as_ref()
+            .and_then(|declared| declared.cores)
+            .or(read.cpu.cores),
+        ..read.cpu
+    };
     Machine {
         name: name.to_owned(),
         measured_at: now.to_string(),
@@ -153,7 +163,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         system: Some(std::env::consts::OS.to_owned()),
         arch: std::env::consts::ARCH.to_owned(),
         model: read.model,
-        cpu: read.cpu,
+        cpu,
         memory: read.memory,
         disk: disk_of(&sources.home),
         disk_band: sources
@@ -166,7 +176,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
             .queue
             .as_deref()
             .and_then(|queue| room::read(queue, now.as_second())),
-        declared: declared::read(&sources.declared),
+        declared,
         reached: reach::read(&sources.reached, now.as_second()),
     }
 }
@@ -647,6 +657,33 @@ mod tests {
         assert!(
             said["declared"].is_null(),
             "with no configuration, nothing declared is known"
+        );
+    }
+
+    #[test]
+    fn a_machine_declaring_its_processors_is_taken_at_its_word() {
+        let home = tempfile::tempdir().expect("a temporary folder");
+        let declared = home.path().join("declared.json");
+        std::fs::write(
+            &declared,
+            r#"{"reach": [], "outlives": [], "costs_money": true, "taints": [],
+                "cores": 3}"#,
+        )
+        .expect("the configuration is written");
+        let machine = measure(
+            "trial",
+            &Sources {
+                home: home.path().to_owned(),
+                queue: None,
+                disk_guard: None,
+                declared,
+                reached: home.path().join("reached.json"),
+            },
+        );
+        assert_eq!(
+            machine.cpu.cores,
+            Some(3),
+            "the processors it is given, not those it lists"
         );
     }
 }

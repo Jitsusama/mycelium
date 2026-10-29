@@ -1,6 +1,6 @@
 //! What a machine's own configuration says of it: what can't be measured
-//! from the machine, such as the networks work there reaches or what it
-//! refuses. Only the machine's built configuration declares it, as a file
+//! from the machine, such as the networks work there reaches, what it
+//! refuses, or how many processors it is given where it shows more. Only the machine's built configuration declares it, as a file
 //! it writes where every end of a link on the machine finds it; nothing
 //! said at run time changes it. A machine whose configuration says
 //! nothing, or says it in a shape this build doesn't read, declares
@@ -32,6 +32,11 @@ pub struct Declared {
     pub costs_money: bool,
     /// What it refuses, or would rather not take.
     pub taints: Vec<Taint>,
+    /// How many processors work there may use, where the machine shows more
+    /// than it is given, as a virtual machine held to a share of its host
+    /// does; the processors it lists where it says nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cores: Option<u32>,
 }
 
 /// How a network is found reached, as the machine's configuration knows
@@ -131,6 +136,7 @@ mod tests {
                     effect: Effect::PreferNot,
                     why: "its person works here".to_owned(),
                 }],
+                cores: None,
             }),
             "it reads as declared"
         );
@@ -178,6 +184,23 @@ mod tests {
                 ),
             ])),
             "each probe reads as the kind it names"
+        );
+    }
+
+    #[test]
+    fn a_machine_given_a_share_of_its_host_says_how_many_processors() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        fs::write(
+            &file,
+            r#"{"reach": [], "outlives": [], "costs_money": true, "taints": [],
+                "cores": 4}"#,
+        )
+        .expect("the configuration is written");
+        assert_eq!(
+            read(&file).and_then(|declared| declared.cores),
+            Some(4),
+            "the processors it is given read as declared"
         );
     }
 }
