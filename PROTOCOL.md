@@ -27,7 +27,7 @@ between machines:
 | Written once by id | messages | each machine holds the union of all |
 | One writer | a session's presence | only its own machine writes it; others hold copies |
 | Shared files | a shared quest's record | each machine holds the same, settled as below |
-| This machine's own | read markers, the queue, what is said to `#machine` | never |
+| This machine's own | read markers, the queue, what is said to `#machine`, held sessions, what the machine is | never |
 
 Since nothing has two writers, no machine waits on another to agree, and
 a machine asleep only means its records arrive when it wakes.
@@ -281,9 +281,19 @@ Each lands behind a seam above, or as a seam of its own:
 - **The node's own log:** messages and presence numbered per machine, so
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.
+- **Places and what they can do:** a machine says on its socket what it
+  is today; next, what is declared of it in its configuration (its
+  reach, the reserve kept for its person, the refusals it enforces) and
+  what it can take on now, carried across links as sessions are. Work
+  says what it needs and prefers, and placement answers placed, pending
+  or refused, naming each place and the need it failed. A place admits
+  or refuses work itself, so a placer's view can't override it.
+- **Providers:** programs beside a node that offer shapes of machine,
+  make one, start a session on it, reach it and end it with its cost,
+  and say when one is lost, such as Aquifer's, which lives outside this
+  repository. A machine a provider made shows as a place like any other.
 - **Connections of the node's own:** machines dialled by key, found on the
   network without a cloud, and encrypted always, behind `Dial` and
-  `Discovery`; membership then checks the realm's enrolled keys.
-- **Providers:** programs beside a node that make machines and start
-  sessions on them, such as Aquifer's, which lives outside this
-  repository.
+  `Discovery`; membership then checks the realm's enrolled keys. SSH
+  stays the only dial until a machine has no SSH path, per-pair keys
+  become the burden, or SSH itself makes a link miss 5 ms.
