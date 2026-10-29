@@ -263,6 +263,10 @@ struct Inner {
     watches: HashMap<u64, mpsc::Sender<Event>>,
     routes: Routes<u64>,
     next_watch: u64,
+    /// The connection each present process holds now, by its id, so a
+    /// connection another replaced says nothing when it closes.
+    present: HashMap<i32, u64>,
+    next_present: u64,
 }
 
 impl<S: Store> Shared<S> {
@@ -381,8 +385,36 @@ impl<S: Store> Shared<S> {
             }
             Request::Send(draft) => self.send(&draft).map(Response::Sent),
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
+            Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
         }
+    }
+
+    /// Counts `pid` present through a new connection, which replaces any
+    /// it held before, answering which connection that is.
+    fn present(&self, pid: i32) -> u64 {
+        let connection = {
+            let mut inner = self.lock();
+            inner.next_present += 1;
+            let connection = inner.next_present;
+            inner.present.insert(pid, connection);
+            connection
+        };
+        self.store.present(pid);
+        connection
+    }
+
+    /// Says `pid` has ended as `connection` closed, unless a later
+    /// connection of its own has taken that one's place.
+    fn gone(&self, pid: i32, connection: u64) {
+        {
+            let mut inner = self.lock();
+            if inner.present.get(&pid) != Some(&connection) {
+                return;
+            }
+            inner.present.remove(&pid);
+        }
+        self.store.ended(pid);
     }
 
     /// Starts a program held on the machine placement chooses, answering
@@ -491,11 +523,18 @@ impl Inner {
 /// Serves one client: requests answered a line each, or a watch for as long
 /// as it stays.
 async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
+    // The kernel says which process is at the other end, so no client can
+    // say it is present for another.
+    let process = stream.peer_cred().ok().and_then(|cred| cred.pid());
     let (reading, mut writing) = stream.into_split();
     let mut lines = BufReader::new(reading).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let request = serde_json::from_str::<Request>(&line)
             .map_err(|error| format!("not a request: {error}"));
+        if let Ok(Request::Present) = request {
+            be_present(&shared, process, lines, writing).await;
+            return;
+        }
         if let Ok(Request::Watch { groups, recent }) = request {
             if write(&mut writing, &Reply::Ok(Response::Watching))
                 .await
@@ -530,6 +569,36 @@ async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
     }
 }
 
+/// Counts `process` present until it hangs up, then says it has ended. A
+/// process the kernel won't name is refused, since its end couldn't be told.
+async fn be_present<S: Store>(
+    shared: &Shared<S>,
+    process: Option<i32>,
+    mut lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    mut writing: tokio::net::unix::OwnedWriteHalf,
+) {
+    let Some(pid) = process else {
+        let refused = Reply::Err(
+            "the node can't tell which process is at the other end, so can't count it present"
+                .to_owned(),
+        );
+        // A client that hung up already hears nothing either way.
+        let _ = write(&mut writing, &refused).await;
+        return;
+    };
+    if write(&mut writing, &Reply::Ok(Response::Present))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let connection = shared.present(pid);
+    // A present process says nothing more; its hanging up, or the socket
+    // failing, is its end.
+    while let Ok(Some(_)) = lines.next_line().await {}
+    shared.gone(pid, connection);
+}
+
 async fn write(
     writing: &mut tokio::net::unix::OwnedWriteHalf,
     value: &impl serde::Serialize,
@@ -549,6 +618,7 @@ mod tests {
     use crate::link::dial::{Connection, Ssh};
     use crate::link::discovery::Listed;
     use crate::link::membership::Realm;
+    use crate::record;
     use crate::record::Intent;
     use crate::store::memory::Memory;
 
@@ -810,6 +880,71 @@ mod tests {
             let stopped = node.await.expect("the node runs to its end");
             assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_present_process_hanging_up_ends_its_session_at_once() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let store = Memory::default();
+        // The session is this test's own process's, as the kernel names the
+        // process at the other end of each connection the test makes.
+        let presence = json!({
+            "session": "01a1",
+            "addresses": ["4UHC5Q"],
+            "at": "2026-10-29T06:00:00Z",
+            "owner": {"pid": std::process::id()},
+        });
+        store.start_here("01a1", presence, true);
+        let (stop, node) = node::<Ssh>(&store, "optimus", Vec::new(), None, &socket);
+
+        let asked = tokio::task::spawn_blocking(move || {
+            let stands = |client: &mut Client| {
+                let Ok(Ok(Response::Sessions(all))) = client.ask(&Request::Sessions) else {
+                    panic!("the node lists its sessions");
+                };
+                all.into_iter()
+                    .find(|one| one.id == "01a1")
+                    .map(|one| one.state)
+            };
+            let mut present = Client::connect(&socket).expect("the process connects");
+            let said = present.ask(&Request::Present).expect("the node answers");
+            assert_eq!(
+                said,
+                Ok(Response::Present),
+                "the process is counted present"
+            );
+            let mut other = Client::connect(&socket).expect("another client connects");
+            assert_eq!(stands(&mut other), Some(record::State::Idle), "it runs");
+            drop(other);
+            let mut asking = Client::connect(&socket).expect("a client connects");
+            assert_eq!(
+                stands(&mut asking),
+                Some(record::State::Idle),
+                "a connection that never said it was present ends nothing as it closes"
+            );
+
+            drop(present);
+            // Nothing tells a client when the node has heard the hang-up,
+            // so it asks again every few milliseconds until it has.
+            while stands(&mut asking) == Some(record::State::Idle) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            stands(&mut asking)
+        });
+        let stood = tokio::time::timeout(PATIENCE, asked)
+            .await
+            .expect("the node hears the hang-up in time")
+            .expect("the client asks");
+        assert_eq!(
+            stood,
+            Some(record::State::Ended),
+            "the session ended though its process runs on, since it hung up"
+        );
+
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
     }
 
     #[tokio::test]

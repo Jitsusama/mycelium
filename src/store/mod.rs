@@ -121,6 +121,17 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// another machine's.
     fn put_leases(&self, session: &str, machine: &str, leases: &[Value]) -> io::Result<()>;
 
+    /// Says this machine's process `pid` has ended, since the connection
+    /// it held to say it was present closed. A session it owns is judged
+    /// ended from now on, until `pid` is present again or no process of
+    /// that id is left, so a Mac, where no process can be watched, need not
+    /// wait for its next look.
+    fn ended(&self, pid: i32);
+
+    /// Says this machine's process `pid` is present, taking back an end
+    /// said of it before.
+    fn present(&self, pid: i32);
+
     /// What each other machine last said it is, by name.
     fn machines(&self) -> Vec<Machine>;
 
