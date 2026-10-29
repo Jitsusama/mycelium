@@ -11,6 +11,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::{Change, Changes, Claim, Presence, Store};
+use crate::facts::Machine;
 
 /// A store in memory, shared by its clones as the folders are.
 #[derive(Clone, Default)]
@@ -23,6 +24,7 @@ struct Held {
     holdings: BTreeMap<String, Value>,
     claimed: BTreeSet<String>,
     linked: BTreeMap<String, i64>,
+    machines: BTreeMap<String, Machine>,
     told: Vec<mpsc::UnboundedSender<Change>>,
 }
 
@@ -228,6 +230,17 @@ impl Store for Memory {
             );
         }
         held.tell(&Change::Presence);
+        Ok(())
+    }
+
+    fn machines(&self) -> Vec<Machine> {
+        self.held().machines.values().cloned().collect()
+    }
+
+    fn put_machine(&self, machine: &Machine) -> io::Result<()> {
+        self.held()
+            .machines
+            .insert(machine.name.clone(), machine.clone());
         Ok(())
     }
 

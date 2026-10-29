@@ -76,6 +76,8 @@ enum Action {
     Sessions,
     /// Prints what this machine is, as its node measures it.
     Machine,
+    /// Prints what every machine of the realm is, this one first.
+    Machines,
     /// Prints the latest messages, a JSON line each.
     Messages {
         /// Which groups, such as `quest.*`.
@@ -226,6 +228,7 @@ fn run(command: Command) -> io::Result<()> {
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Machine => print_reply(&socket, &Request::Machine),
+        Action::Machines => print_reply(&socket, &Request::Machines),
         Action::Messages { groups, limit } => {
             print_reply(&socket, &Request::Messages { groups, limit })
         }

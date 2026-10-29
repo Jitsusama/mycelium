@@ -21,6 +21,11 @@ pub struct Hello {
     pub realm: String,
     /// The link's version it speaks.
     pub version: u32,
+    /// Whether it says what its machine is, and keeps what the other end
+    /// says; an end older than this does neither, and would end a link
+    /// that sent it.
+    #[serde(default)]
+    pub facts: bool,
 }
 
 /// Which machines a node links with.
@@ -48,6 +53,7 @@ impl Membership for Realm {
             machine: self.machine.clone(),
             realm: self.name.clone(),
             version: VERSION,
+            facts: true,
         }
     }
 
