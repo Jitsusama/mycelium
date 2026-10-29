@@ -1,7 +1,7 @@
 //! Dialling: how one machine reaches another's end of a link, as a byte
-//! stream each way. SSH carries it today ([`Ssh`]); a connection of the
-//! node's own, or a provider's for machines such as Aquifer's, plugs in
-//! behind the same trait.
+//! stream each way. SSH carries it ([`Ssh`]), or a provider's program for
+//! machines SSH can't reach, such as a cloud machine behind its provider's
+//! gateway ([`Program`]); [`Way`] is either, so one node links over both.
 
 use std::io;
 use std::process::Stdio;
@@ -89,6 +89,118 @@ fn quoted(word: &str) -> String {
     }
 }
 
+/// A machine reached through a program of its provider's, which mycelium
+/// knows nothing of but this: run as `PROGRAM link --realm REALM PLACE`, it
+/// carries the link over its own input and output to `mycelium link` on
+/// the machine it calls `PLACE`; run as `PROGRAM run PLACE -- WORDS` from a
+/// terminal, it runs `WORDS` there in that terminal. What it says on its
+/// error output is passed on, and a line saying the other end "turned this
+/// machine away" is a refusal, waited out as SSH's are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Program {
+    /// The program, by its path or as found on `PATH`.
+    pub program: String,
+    /// Which machine it reaches, in the program's own words.
+    pub place: String,
+}
+
+impl Program {
+    /// Reads `PROGRAM:PLACE`, as `--via` takes it, such as
+    /// `aquifer-link:sandbox-1`.
+    ///
+    /// # Errors
+    ///
+    /// When either half is missing.
+    pub fn parse(via: &str) -> Result<Self, String> {
+        match via.split_once(':') {
+            Some((program, place)) if !program.is_empty() && !place.is_empty() => Ok(Self {
+                program: program.to_owned(),
+                place: place.to_owned(),
+            }),
+            _ => Err(format!(
+                "{via} isn't a program and a place, written PROGRAM:PLACE, such as aquifer-link:sandbox-1"
+            )),
+        }
+    }
+}
+
+impl Dial for Program {
+    fn describe(&self) -> String {
+        format!("{} {}", self.program, self.place)
+    }
+
+    fn dial(&self, realm: &str) -> impl Future<Output = io::Result<Connection>> + Send {
+        let mut program = tokio::process::Command::new(&self.program);
+        program.args(["link", "--realm", realm, self.place.as_str()]);
+        // As with SSH, the link's first line is the wait.
+        std::future::ready(carried(program))
+    }
+
+    fn there(&self, words: &[String]) -> Vec<String> {
+        [self.program.as_str(), "run", self.place.as_str(), "--"]
+            .map(str::to_owned)
+            .into_iter()
+            .chain(words.iter().cloned())
+            .collect()
+    }
+}
+
+/// Any way a node dials, so one node links over SSH and programs at once.
+#[derive(Debug, Clone)]
+pub enum Way {
+    /// Over SSH.
+    Ssh(Ssh),
+    /// Through a provider's program.
+    Program(Program),
+}
+
+impl Dial for Way {
+    fn describe(&self) -> String {
+        match self {
+            Self::Ssh(ssh) => ssh.describe(),
+            Self::Program(program) => program.describe(),
+        }
+    }
+
+    async fn dial(&self, realm: &str) -> io::Result<Connection> {
+        match self {
+            Self::Ssh(ssh) => ssh.dial(realm).await,
+            Self::Program(program) => program.dial(realm).await,
+        }
+    }
+
+    fn there(&self, words: &[String]) -> Vec<String> {
+        match self {
+            Self::Ssh(ssh) => ssh.there(words),
+            Self::Program(program) => program.there(words),
+        }
+    }
+}
+
+/// Runs `command` with the link over its input and output, passing on
+/// what it says on its error output and reading that for a refusal.
+fn carried(mut command: tokio::process::Command) -> io::Result<Connection> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn()?;
+    let (Some(writing), Some(reading)) = (child.stdin.take(), child.stdout.take()) else {
+        return Err(io::Error::other("the link's program gave no pipes"));
+    };
+    let refused = child
+        .stderr
+        .take()
+        .map(|said| tokio::spawn(refused::turned_away(said)));
+    Ok(Connection {
+        reading: Box::new(reading),
+        writing: Box::new(writing),
+        keep: Box::new(child),
+        refused,
+    })
+}
+
 impl Ssh {
     fn spawn(&self, realm: &str) -> io::Result<Connection> {
         let mut ssh = tokio::process::Command::new("ssh");
@@ -105,28 +217,109 @@ impl Ssh {
             ssh.args(["-o", option]);
         }
         // Nothing after `--` is read as an option, whatever its name.
-        ssh.arg("--")
-            .arg(&self.destination)
-            .args([self.command.as_str(), "link", "--realm", realm])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            // Read to tell a refused key from a machine out of reach, and
-            // passed on as SSH would have said it.
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = ssh.spawn()?;
-        let (Some(writing), Some(reading)) = (child.stdin.take(), child.stdout.take()) else {
-            return Err(io::Error::other("ssh gave no pipes"));
-        };
-        let refused = child
-            .stderr
-            .take()
-            .map(|said| tokio::spawn(refused::turned_away(said)));
-        Ok(Connection {
-            reading: Box::new(reading),
-            writing: Box::new(writing),
-            keep: Box::new(child),
-            refused,
-        })
+        ssh.arg("--").arg(&self.destination).args([
+            self.command.as_str(),
+            "link",
+            "--realm",
+            realm,
+        ]);
+        carried(ssh)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    #[test]
+    fn a_way_through_a_program_names_the_program_and_its_place() {
+        assert_eq!(
+            Program::parse("aquifer-link:sandbox-1:2"),
+            Ok(Program {
+                program: "aquifer-link".to_owned(),
+                place: "sandbox-1:2".to_owned(),
+            }),
+            "the place is everything after the first colon"
+        );
+        for wrong in ["aquifer-link", ":sandbox-1", "aquifer-link:"] {
+            assert!(Program::parse(wrong).is_err(), "{wrong} is refused");
+        }
+    }
+
+    #[test]
+    fn a_program_runs_words_there_as_given() {
+        let program = Program::parse("aquifer-link:sandbox-1").expect("a way");
+        assert_eq!(
+            program.there(&["mycelium".to_owned(), "attach".to_owned(), "a b".to_owned()]),
+            [
+                "aquifer-link",
+                "run",
+                "sandbox-1",
+                "--",
+                "mycelium",
+                "attach",
+                "a b"
+            ],
+            "the program is given each word apart, never a line for a shell"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_program_carries_the_link_and_says_when_it_was_turned_away() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let script = dir.path().join("provider");
+        let asked = dir.path().join("asked");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n\
+                 echo 'the gateway turned this machine away: no login' >&2\nexec cat\n",
+                asked.display()
+            ),
+        )
+        .expect("the provider is written");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).expect("the provider runs");
+        let way = Way::Program(Program {
+            program: script.display().to_string(),
+            place: "sandbox-1".to_owned(),
+        });
+
+        let mut connection = way.dial("work").await.expect("the program starts");
+        connection
+            .writing
+            .write_all(b"hello\n")
+            .await
+            .expect("the link takes words");
+        drop(connection.writing);
+        let mut heard = String::new();
+        connection
+            .reading
+            .read_to_string(&mut heard)
+            .await
+            .expect("the link gives words back");
+        assert_eq!(
+            heard, "hello\n",
+            "the link runs over the program's own pipes"
+        );
+        let refused = connection
+            .refused
+            .expect("a program's error output is read")
+            .await
+            .expect("the reading ends");
+        assert_eq!(
+            refused.as_deref(),
+            Some("the gateway turned this machine away: no login"),
+            "a program says a refusal as SSH does"
+        );
+        assert_eq!(
+            fs::read_to_string(&asked).expect("the provider was asked"),
+            "link\n--realm\nwork\nsandbox-1\n",
+            "the program is asked to link in the realm, to its place"
+        );
     }
 }
