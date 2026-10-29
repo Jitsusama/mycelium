@@ -34,12 +34,17 @@ pub struct Declared {
     pub taints: Vec<Taint>,
 }
 
-/// How a network is found reached: a connection that opens to an address
-/// only that network serves.
+/// How a network is found reached, as the machine's configuration knows
+/// best: by an address only that network serves, or by a test of its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Probe {
-    /// The `host:port` a connection is opened to.
-    pub connect: String,
+#[serde(rename_all = "snake_case")]
+pub enum Probe {
+    /// A connection that opens to this `host:port`.
+    Connect(String),
+    /// A program and its words, run with no shell, that exits 0. It suits
+    /// a network no address tells apart, such as one known by its Wi-Fi
+    /// or a tunnel's link, which only the machine itself can say.
+    Run(Vec<String>),
 }
 
 /// Something a held session can outlive.
@@ -144,5 +149,35 @@ mod tests {
         )
         .expect("written");
         assert_eq!(read(&file), None, "nor is a word this build doesn't know");
+    }
+
+    #[test]
+    fn a_probe_connects_or_runs_a_command() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        fs::write(
+            &file,
+            r#"{"reach": ["internet"],
+                "probes": {"home": {"connect": "192.0.2.1:53"},
+                           "office": {"run": ["test", "-e", "/run/office"]}},
+                "outlives": [], "costs_money": false, "taints": []}"#,
+        )
+        .expect("the configuration is written");
+        let probes = read(&file).map(|declared| declared.probes);
+        assert_eq!(
+            probes,
+            Some(BTreeMap::from([
+                ("home".to_owned(), Probe::Connect("192.0.2.1:53".to_owned())),
+                (
+                    "office".to_owned(),
+                    Probe::Run(vec![
+                        "test".to_owned(),
+                        "-e".to_owned(),
+                        "/run/office".to_owned()
+                    ])
+                ),
+            ])),
+            "each probe reads as the kind it names"
+        );
     }
 }

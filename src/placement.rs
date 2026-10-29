@@ -613,12 +613,8 @@ mod tests {
     fn a_network_reached_now_and_then_is_met_while_its_probe_answers() {
         let mut laptop = machine("optimus", "linux", 8, &["internet"]);
         if let Some(declared) = laptop.declared.as_mut() {
-            declared.probes = BTreeMap::from([(
-                "home".to_owned(),
-                Probe {
-                    connect: "192.0.2.1:53".to_owned(),
-                },
-            )]);
+            declared.probes =
+                BTreeMap::from([("home".to_owned(), Probe::Connect("192.0.2.1:53".to_owned()))]);
         }
         let home = || needing(vec![Need::Reach("home".to_owned())]);
         let because = |placement: Placement| match placement {

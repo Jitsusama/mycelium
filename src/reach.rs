@@ -2,8 +2,8 @@
 //! reached now. A laptop reaches its home only at home, and a company's
 //! services only while its tunnel is up, so its configuration names a
 //! probe for each such network rather than declaring it (`declared`).
-//! The machine's node opens a connection to each probe in turn and writes
-//! which answered beside its socket, where every end of a link on the
+//! The machine's node tries each probe, opening its connection or running
+//! its command, and writes which answered beside its socket, where every end of a link on the
 //! machine reads it, as the queue's record is read. A record its node has
 //! stopped writing says nothing, never what was once so.
 
@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -43,8 +44,8 @@ struct Record {
 pub async fn probe(probes: &BTreeMap<String, Probe>) -> BTreeMap<String, bool> {
     let mut asking = JoinSet::new();
     for (network, probe) in probes {
-        let (network, address) = (network.clone(), probe.connect.clone());
-        asking.spawn(async move { (network, answers(&address).await) });
+        let (network, probe) = (network.clone(), probe.clone());
+        asking.spawn(async move { (network, answers(&probe).await) });
     }
     let mut reached = BTreeMap::new();
     while let Some(answer) = asking.join_next().await {
@@ -55,12 +56,39 @@ pub async fn probe(probes: &BTreeMap<String, Probe>) -> BTreeMap<String, bool> {
     reached
 }
 
+/// Whether `probe` answers in time.
+async fn answers(probe: &Probe) -> bool {
+    match probe {
+        Probe::Connect(address) => opens(address).await,
+        Probe::Run(command) => succeeds(command).await,
+    }
+}
+
 /// Whether a connection to `address`, a `host:port`, opens in time.
-async fn answers(address: &str) -> bool {
+async fn opens(address: &str) -> bool {
     let opening = tokio::net::TcpStream::connect(address);
     matches!(
         tokio::time::timeout(ANSWERED_WITHIN, opening).await,
         Ok(Ok(_))
+    )
+}
+
+/// Whether `command`, a program and its words, exits 0 in time. One that
+/// can't start, or runs too long, is killed and hasn't answered.
+async fn succeeds(command: &[String]) -> bool {
+    let Some((program, words)) = command.split_first() else {
+        return false;
+    };
+    let running = tokio::process::Command::new(program)
+        .args(words)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .status();
+    matches!(
+        tokio::time::timeout(ANSWERED_WITHIN, running).await,
+        Ok(Ok(status)) if status.success()
     )
 }
 
@@ -126,23 +154,34 @@ mod tests {
             gone.local_addr().expect("it has an address")
         };
         let probes = BTreeMap::from([
-            (
-                "home".to_owned(),
-                Probe {
-                    connect: open.to_string(),
-                },
-            ),
-            (
-                "office".to_owned(),
-                Probe {
-                    connect: closed.to_string(),
-                },
-            ),
+            ("home".to_owned(), Probe::Connect(open.to_string())),
+            ("office".to_owned(), Probe::Connect(closed.to_string())),
         ]);
         assert_eq!(
             probe(&probes).await,
             BTreeMap::from([("home".to_owned(), true), ("office".to_owned(), false)]),
             "a probe that opens is reached, one refused isn't"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_network_is_reached_while_its_command_succeeds() {
+        let run = |words: &[&str]| Probe::Run(words.iter().map(|&word| word.to_owned()).collect());
+        let probes = BTreeMap::from([
+            ("home".to_owned(), run(&["true"])),
+            ("office".to_owned(), run(&["false"])),
+            ("lab".to_owned(), run(&["mycelium-has-no-such-program"])),
+            ("nowhere".to_owned(), Probe::Run(Vec::new())),
+        ]);
+        assert_eq!(
+            probe(&probes).await,
+            BTreeMap::from([
+                ("home".to_owned(), true),
+                ("lab".to_owned(), false),
+                ("nowhere".to_owned(), false),
+                ("office".to_owned(), false),
+            ]),
+            "only a command that exits 0 reaches its network"
         );
     }
 
