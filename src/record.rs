@@ -4,6 +4,7 @@
 //! PROTOCOL.md says what each field means and which machine may write it.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::group::Group;
 
@@ -89,6 +90,11 @@ pub struct Session {
     pub window: Option<Window>,
     /// When its machine last wrote its presence.
     pub at: String,
+    /// Its presence whole, as its session wrote it, for a reader that
+    /// shows more of it than the fields above; a session elsewhere's has
+    /// its process taken out. Whether it lives is `state`, never this.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub presence: Value,
 }
 
 /// What a session waits on its person for.

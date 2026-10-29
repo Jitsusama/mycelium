@@ -177,6 +177,7 @@ pub fn session(presence: &Presence, here: &str) -> Option<Session> {
                 within: terminal.scope,
             }),
         at: said.at,
+        presence: presence.body.clone(),
     })
 }
 
@@ -445,6 +446,11 @@ mod tests {
                 within: Some("unix:@kitty-6753".to_owned()),
             }),
             "a session here says the window it runs in"
+        );
+        assert_eq!(
+            here.presence["owns"],
+            json!(["QEST-20261007-WCJQSG", "mycelium"]),
+            "its presence goes along whole, for a reader that shows more of it"
         );
         let there =
             session(&presence(said, Some("equilibrius")), "optimus").expect("a presence reads");
