@@ -214,6 +214,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | Request | Reply |
 | --- | --- |
 | `"Sessions"` | `{"Sessions": [session]}`, this machine's and others' |
+| `"Machine"` | `{"Machine": machine}`, this machine as measured now |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events |
@@ -229,6 +230,14 @@ window is gone to on its own machine. Its `presence` goes along whole, as
 its session wrote it, for a reader that shows more of it, such as the
 launcher; a session elsewhere's has its process taken out. Whether a
 session lives is its `state`, never anything in its presence.
+
+A machine is what its node measures of it when asked, the facts work is
+placed by: its `name`, `measured_at`, `state` (`ready` for a node answering
+for itself), `os`, `arch`, `model`, `cpu` (`model`, `cores`), `memory` and
+`disk` in bytes (the disk holding its account's home), and `accelerators`
+(each a `kind`, `gpu` or `npu`, and its `driver`). A fact that can't be
+read is `null`, never a guess. It stays on this machine's socket: no link
+carries it yet, nor what must be declared or changes by the minute.
 
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`

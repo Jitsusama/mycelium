@@ -15,6 +15,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use crate::facts;
 use crate::group::{Pattern, Routes};
 use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership};
 use crate::mesh;
@@ -278,6 +279,15 @@ impl<S: Store> Shared<S> {
     fn answer(&self, request: Request) -> Reply {
         match request {
             Request::Sessions => Ok(Response::Sessions(self.lock().state.sessions())),
+            // A handful of small files read, or one sysctl on a Mac: quick
+            // enough to answer in place, and always as the machine is now.
+            Request::Machine => {
+                let home = std::env::home_dir().unwrap_or_else(std::env::temp_dir);
+                Ok(Response::Machine(Box::new(facts::measure(
+                    &self.machine,
+                    &home,
+                ))))
+            }
             Request::Messages { groups, limit } => {
                 Ok(Response::Messages(self.lock().state.recent(&groups, limit)))
             }

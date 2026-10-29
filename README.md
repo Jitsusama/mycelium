@@ -24,7 +24,8 @@ The harness mesh's messages and presence, carried between machines:
 - Links run over SSH, so a machine needs nothing but the `mycelium`
   command and an SSH login.
 - Each node serves a local socket in niri's shape, which pi, Quickshell
-  or a terminal reads.
+  or a terminal reads, and says on it what its machine is (`mycelium
+  machine`), the facts work will be placed by.
 
 [PROTOCOL.md](PROTOCOL.md) says how, and what comes next: shared scratch,
 the node's own log, connections of its own and providers for machines
