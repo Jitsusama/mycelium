@@ -150,6 +150,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
     // Bound here, so a watch may connect before the node has begun.
     let bound = runtime.block_on(async { node::bind(socket) })?;
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let steers = socket.with_file_name("steer");
     let running = thread::spawn(move || {
         let realm = Realm {
             name: "bench".to_owned(),
@@ -167,6 +168,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 sharing: None,
                 starter: None,
                 refusals: Refusals::default(),
+                steers,
             },
             bound,
             until_stopped,

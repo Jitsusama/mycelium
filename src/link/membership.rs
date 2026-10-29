@@ -31,6 +31,11 @@ pub struct Hello {
     /// link that asked.
     #[serde(default)]
     pub starts: bool,
+    /// Whether it carries steers, writing them into its sessions' inboxes
+    /// and carrying talks' replies back; an end older than this does
+    /// neither, and would end a link that sent one.
+    #[serde(default)]
+    pub steers: bool,
 }
 
 /// Which machines a node links with.
@@ -60,6 +65,7 @@ impl Membership for Realm {
             version: VERSION,
             facts: true,
             starts: true,
+            steers: true,
         }
     }
 
