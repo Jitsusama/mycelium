@@ -29,6 +29,14 @@ pub fn queue() -> Option<PathBuf> {
     env::var_os("XDG_RUNTIME_DIR").map(|dir| PathBuf::from(dir).join("jobs").join("queue.json"))
 }
 
+/// The status of the machine's disk guard, which says how full each disk
+/// is: in the login's runtime folder, so nowhere on a system with none, as
+/// the guard keeps it.
+pub fn disk_guard() -> Option<PathBuf> {
+    env::var_os("XDG_RUNTIME_DIR")
+        .map(|dir| PathBuf::from(dir).join("disk-guard").join("status.json"))
+}
+
 /// What this machine's configuration declares of it, where the account's
 /// built configuration writes it.
 pub fn declared() -> PathBuf {

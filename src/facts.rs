@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::declared::{self, Declared};
+use crate::disk::{self, Band};
 use crate::place;
 use crate::reach;
 use crate::room::{self, Room};
@@ -39,6 +40,10 @@ pub struct Machine {
     pub memory: Option<u64>,
     /// The size of the disk holding its account's home, in bytes.
     pub disk: Option<u64>,
+    /// How full that disk is, as the machine's disk guard bands it, or
+    /// unknown where no guard keeps one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_band: Option<Band>,
     /// Its graphics and neural processors, by the driver that runs each;
     /// unknown where they can't be listed.
     pub accelerators: Option<Vec<Accelerator>>,
@@ -63,6 +68,8 @@ pub struct Sources {
     pub home: PathBuf,
     /// Its queue's record, if it keeps one anywhere.
     pub queue: Option<PathBuf>,
+    /// Its disk guard's status, if it keeps one anywhere.
+    pub disk_guard: Option<PathBuf>,
     /// What its configuration declares.
     pub declared: PathBuf,
     /// Its node's record of which probed networks answered.
@@ -76,6 +83,7 @@ impl Sources {
         Self {
             home: std::env::home_dir().unwrap_or_else(std::env::temp_dir),
             queue: place::queue(),
+            disk_guard: place::disk_guard(),
             declared: place::declared(),
             reached: place::reached(),
         }
@@ -148,6 +156,10 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         cpu: read.cpu,
         memory: read.memory,
         disk: disk_of(&sources.home),
+        disk_band: sources
+            .disk_guard
+            .as_deref()
+            .and_then(|status| disk::band(status, &sources.home, now.as_second())),
         accelerators: read.accelerators,
         power: read.power,
         room: sources
@@ -594,6 +606,7 @@ mod tests {
             &Sources {
                 home: home.path().to_owned(),
                 queue: Some(home.path().join("queue.json")),
+                disk_guard: Some(home.path().join("status.json")),
                 declared: home.path().join("declared.json"),
                 reached: home.path().join("reached.json"),
             },

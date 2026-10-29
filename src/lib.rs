@@ -21,6 +21,7 @@
 //!
 //! - [`facts`]: what this machine is, as its node measures it
 //! - [`room`]: the room it has for more work, as its queue says
+//! - [`disk`]: how full its home's disk is, as its disk guard says
 //! - [`declared`]: what its configuration says of it
 //! - [`reach`]: whether the networks it reaches only now and then answer
 //! - [`placement`]: which machine work goes to, by what each says it is
@@ -34,6 +35,7 @@
 
 pub mod client;
 pub mod declared;
+pub mod disk;
 pub mod facts;
 pub mod group;
 pub mod hold;

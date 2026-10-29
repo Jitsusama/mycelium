@@ -269,11 +269,14 @@ for itself or a machine a link carries, `unreachable` for one no link
 reaches now, as of when one last did), `os`, `system` (`linux` or
 `macos`, `null` from a node too old to say it), `arch`, `model`, `cpu`
 (`model`, `cores`), `memory` and `disk` in bytes (the disk holding its
-account's home), `accelerators` (each a `kind`, `gpu` or `npu`, and its
-`driver`), and `power`: `on_battery`, true only with a battery of its
-own and nothing plugged in, and `charge`, its own batteries' mean in
-percent, `null` for a machine with none. A fact that can't be read is
-`null`, never a guess.
+account's home), `disk_band`, how full that disk is as the machine's
+disk guard bands it (`healthy`, `pressure`, `urgent` or `critical`,
+from the guard's `status.json` while its heartbeat is under two minutes
+old, and absent otherwise), `accelerators` (each a `kind`, `gpu` or
+`npu`, and its `driver`), and `power`: `on_battery`, true only with a
+battery of its own and nothing plugged in, and `charge`, its own
+batteries' mean in percent, `null` for a machine with none. A fact that
+can't be read is `null`, never a guess.
 
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,
@@ -319,13 +322,14 @@ its `needs` and `prefers`, each one of `{"machine": name}`,
 `{"system": "linux"}`, `{"arch": "x86_64"}`, `{"reach": network}` or
 `{"accelerator": "gpu"}`, the earliest preference most wanted (a
 machine reaches a network it declares in `reach`, or one it probes
-while its probe last answered, and lacks one whose probe didn't); the keys
-of the taints it `tolerates`; and whether it `may_wait` for a machine out
-of reach. A machine carries the taints its configuration declares, and
-while they last, `on-battery` and `memory-pressure` (past its queue's
-memory limit), each `prefer_not`. A machine qualifies when it is in
-reach, is what each need asks (a fact it never said meets none), and
-carries no `never` taint the work doesn't tolerate. Of those, one with no
+while its probe last answered, and lacks one whose probe didn't); the
+keys of the taints it `tolerates`; and whether it `may_wait` for a
+machine out of reach. A machine carries the taints its configuration
+declares, and while they last, `on-battery`, `memory-pressure` (past
+its queue's memory limit) and `disk-pressure` (its `disk_band` past
+`healthy`), each `prefer_not`. A machine qualifies when it is in reach,
+is what each need asks (a fact it never said meets none), and carries
+no `never` taint the work doesn't tolerate. Of those, one with no
 `prefer_not` taint goes first, then the most preferences met, then the
 most memory free, then by name. The answer is
 `{"placed": {"machine", "passed"}}`, `{"pending": {"misses"}}` when

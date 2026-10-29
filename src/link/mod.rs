@@ -986,6 +986,7 @@ mod tests {
         let nowhere = facts::Sources {
             home: "/".into(),
             queue: None,
+            disk_guard: None,
             declared: "/nowhere".into(),
             reached: "/nowhere".into(),
         };
