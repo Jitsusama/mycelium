@@ -1054,6 +1054,7 @@ mod tests {
             node: dir.path().join("work.sock"),
             held: dir.path().join("work.held"),
             asking: None,
+            steers: dir.path().join("steer"),
         };
         let membership = Realm {
             name: "work".to_owned(),
