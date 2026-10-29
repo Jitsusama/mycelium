@@ -29,6 +29,8 @@ struct Held {
     /// the test said of them.
     ended: BTreeSet<i64>,
     told: Vec<mpsc::UnboundedSender<Change>>,
+    /// How many times a message has been read.
+    messages_read: usize,
 }
 
 /// A claim on a memory store, given up when dropped.
@@ -72,6 +74,24 @@ impl Memory {
         let mut held = self.held();
         held.messages.insert(id.to_owned(), body);
         held.tell(&Change::Message(id.to_owned()));
+    }
+
+    /// How many times a message has been read, as each is a file opened
+    /// where the store is folders.
+    pub fn messages_read(&self) -> usize {
+        self.held().messages_read
+    }
+
+    /// Holds `body` as message `id` without telling anyone, as one a watch
+    /// missed.
+    pub fn miss(&self, id: &str, body: Value) {
+        self.held().messages.insert(id.to_owned(), body);
+    }
+
+    /// Says a watch may have missed something, as one that overflowed
+    /// does.
+    pub fn overflow(&self) {
+        self.held().tell(&Change::Rescan);
     }
 
     fn held(&self) -> MutexGuard<'_, Held> {
@@ -119,7 +139,9 @@ impl Store for Memory {
     }
 
     fn message(&self, id: &str) -> Option<Value> {
-        self.held().messages.get(id).cloned()
+        let mut held = self.held();
+        held.messages_read += 1;
+        held.messages.get(id).cloned()
     }
 
     fn put_message(&self, id: &str, body: &Value) -> io::Result<()> {

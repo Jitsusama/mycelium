@@ -71,6 +71,12 @@ impl State {
         Some(message)
     }
 
+    /// Whether the message `id` is held.
+    #[must_use]
+    pub fn holds_message(&self, id: &str) -> bool {
+        self.message_ids.contains(id)
+    }
+
     /// Keeps many messages at once, as when a node first reads its store.
     pub fn add_messages(&mut self, mut messages: Vec<Message>) {
         messages.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
