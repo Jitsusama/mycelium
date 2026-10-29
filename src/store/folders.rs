@@ -32,6 +32,10 @@ use tokio::sync::mpsc;
 
 use super::ends::Ends;
 use super::{Change, Changes, Claim, Presence, Store};
+use crate::facts::Machine;
+
+/// How what another machine says it is ends, beside its claim.
+const SAID: &str = ".machine";
 
 /// The field naming the machine a session runs on, written only on the
 /// presence of a session elsewhere.
@@ -268,6 +272,30 @@ impl Store for Folders {
         }
         let holding = serde_json::json!({"session": session, "leases": leases, MACHINE: machine});
         write_whole(&self.leases(), &file, &holding)
+    }
+
+    fn machines(&self) -> Vec<Machine> {
+        let Ok(entries) = fs::read_dir(&*self.claims) else {
+            return Vec::new();
+        };
+        let mut machines: Vec<Machine> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.ends_with(SAID))
+            })
+            .filter_map(|entry| read(&entry.path()))
+            .collect();
+        machines.sort_by(|a, b| a.name.cmp(&b.name));
+        machines
+    }
+
+    fn put_machine(&self, machine: &Machine) -> io::Result<()> {
+        let file = format!("{}{SAID}", safe(&machine.name)?);
+        let body = serde_json::to_value(machine).map_err(io::Error::other)?;
+        write_whole(&self.claims, &file, &body)
     }
 
     fn changes(&self) -> io::Result<Changes> {

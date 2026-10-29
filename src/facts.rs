@@ -40,13 +40,16 @@ pub struct Machine {
     pub room: Option<Room>,
 }
 
-/// Whether a machine takes work. A node answering for itself is ready;
-/// the other states are a machine asleep, out of reach or taken back.
+/// Whether a machine takes work. A node answering for itself is ready,
+/// and so is another machine while a link carries what it says; states
+/// for a machine asleep or taken back come later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Readiness {
     /// It takes work.
     Ready,
+    /// No link reaches it now, so what it says is as of when one last did.
+    Unreachable,
 }
 
 /// A machine's processor.

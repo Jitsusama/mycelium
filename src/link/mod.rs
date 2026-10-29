@@ -10,6 +10,11 @@
 //! own machine can say whether it lives; one link at a time carries a
 //! machine's sessions into a store, by the store's claim.
 //!
+//! Each end also says what its machine is, as its node would measure it,
+//! when the link starts and again each minute, and keeps what the other
+//! end says of its own machine, which turns out of reach when the link
+//! drops. Only an end whose hello says it knows of this hears it.
+//!
 //! Each end reads in a task of its own, so two ends sending a week of
 //! messages at once never wait on each other.
 //!
@@ -35,7 +40,9 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
+use crate::facts::{self, Machine, Readiness};
 use crate::mesh;
+use crate::place;
 use crate::share::exchange::{Exchange, Places, Say};
 use crate::store::{self, Change, Claim, Store};
 use dial::Connection;
@@ -49,7 +56,8 @@ const REACH: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const HELLO_WITHIN: Duration = Duration::from_secs(30);
 
 /// How often this end says again that the sessions it carried here still
-/// stand, so a copy nothing keeps saying so can be judged gone.
+/// stand, so a copy nothing keeps saying so can be judged gone, and says
+/// again what its machine is, whose room changes by the minute.
 const KEEP_EVERY: Duration = Duration::from_secs(60);
 
 /// How often this end looks for changes in the quests it shares.
@@ -94,6 +102,8 @@ pub enum Frame {
     },
     /// Something said about shared quests.
     Share(Say),
+    /// What this end's machine is, as measured as it was sent.
+    Machine(Box<Machine>),
 }
 
 /// Runs this end of a link until the other end leaves, then marks every
@@ -128,6 +138,8 @@ pub async fn run(
         .map(|places| Exchange::new(places, membership.hello().machine, other.machine.clone()));
     let mut end = End {
         store,
+        here: membership.hello().machine,
+        facts: other.facts,
         other: other.machine,
         reach,
         has: HashSet::new(),
@@ -140,9 +152,12 @@ pub async fn run(
     let messages = end.store.message_ids(end.reach);
     let living = Some(end.living().into_keys().collect());
     send(&mut writing, &Frame::Have { messages, living }).await?;
+    end.send_machine(&mut writing).await?;
     end.send_presence(&mut writing).await?;
 
-    let mut keeping = tokio::time::interval(KEEP_EVERY);
+    // The start has just said all of it, so the first keep is a minute on.
+    let mut keeping =
+        tokio::time::interval_at(tokio::time::Instant::now() + KEEP_EVERY, KEEP_EVERY);
     let mut looking = tokio::time::interval(LOOK_EVERY);
     let result = loop {
         let step = tokio::select! {
@@ -151,7 +166,7 @@ pub async fn run(
                 Some(Err(error)) => Err(error),
                 None => break Ok(()),
             },
-            _ = keeping.tick() => end.keep_carried(),
+            _ = keeping.tick() => end.keep(&mut writing).await,
             _ = looking.tick() => end.share(Exchange::look, &mut writing).await,
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => end.send_messages(vec![id], &mut writing).await,
@@ -231,6 +246,10 @@ async fn hello(frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>) -> io::R
 /// This end of a link, and what it knows of the other.
 struct End<S> {
     store: S,
+    /// This end's machine.
+    here: String,
+    /// Whether the other end hears what this end's machine is.
+    facts: bool,
     other: String,
     reach: i64,
     has: HashSet<String>,
@@ -298,8 +317,48 @@ impl<S: Store> End<S> {
                 self.share(move |exchange| exchange.hear(say), writing)
                     .await?;
             }
+            Frame::Machine(said) => self.keep_machine(*said),
         }
         Ok(())
+    }
+
+    /// Keeps what the other end says its machine is, which only it can
+    /// say: a machine named otherwise is refused, and it is ready while
+    /// this link carries it, whatever it claims.
+    fn keep_machine(&self, mut said: Machine) {
+        if said.name != self.other {
+            self.kept(
+                &said.name,
+                Err(refusal(format!("{} spoke for another machine", self.other))),
+            );
+            return;
+        }
+        said.state = Readiness::Ready;
+        self.kept(&said.name, self.store.put_machine(&said));
+    }
+
+    /// Says what this end's machine is, measured now, to an end that hears
+    /// it. Measuring reads a few files, or runs `sysctl` on a Mac, so it
+    /// runs away from the link's own work.
+    async fn send_machine(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        if !self.facts {
+            return Ok(());
+        }
+        let here = self.here.clone();
+        let machine = tokio::task::spawn_blocking(move || {
+            let home = std::env::home_dir().unwrap_or_else(std::env::temp_dir);
+            facts::measure(&here, &home, place::queue().as_deref())
+        })
+        .await
+        .map_err(io::Error::other)?;
+        send(writing, &Frame::Machine(Box::new(machine))).await
+    }
+
+    /// Says again that what this link carried here stands, and what this
+    /// end's machine is now.
+    async fn keep(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        self.keep_carried()?;
+        self.send_machine(writing).await
     }
 
     /// Has the exchange act on the disk, away from the link's own work,
@@ -718,6 +777,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn each_end_says_what_its_machine_is_which_stays_out_of_reach_once_the_link_drops() {
+        let optimus = Memory::default();
+        let equilibrius = Memory::default();
+        equilibrius.start_here("walgit", json!({"session": "walgit"}), true);
+
+        let (_near, far) = linked(&optimus, &equilibrius, 1 << 16);
+        // A machine says what it is before its sessions, so once one is
+        // carried, so is what it said.
+        until(&optimus, |store| !store.presences().is_empty()).await;
+        let said = optimus.machines();
+        assert_eq!(
+            said.iter()
+                .map(|one| (one.name.as_str(), one.state))
+                .collect::<Vec<_>>(),
+            [("equilibrius", Readiness::Ready)],
+            "the far machine is kept as ready while linked"
+        );
+        assert_eq!(
+            said[0].arch,
+            std::env::consts::ARCH,
+            "as it measured itself"
+        );
+
+        far.abort();
+        until(&optimus, |store| {
+            store
+                .presences()
+                .iter()
+                .all(|p| p.unreachable_since.is_some())
+        })
+        .await;
+        assert_eq!(
+            optimus
+                .machines()
+                .iter()
+                .map(|one| (one.name.as_str(), one.state))
+                .collect::<Vec<_>>(),
+            [("equilibrius", Readiness::Unreachable)],
+            "what it said stays, as of when the link last carried it"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_older_end_hears_nothing_of_machines_and_none_speaks_for_another() {
+        let optimus = Memory::default();
+        optimus.start_here("launcher", json!({"session": "launcher"}), true);
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _optimus_end = end(&optimus, "optimus", near);
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+
+        let older = Hello {
+            facts: false,
+            ..realm("equilibrius").hello()
+        };
+        send(&mut far_writing, &Frame::Hello(older))
+            .await
+            .expect("the far end says hello");
+        let mut lines = BufReader::new(far_reading).lines();
+        let mut heard = Vec::new();
+        let waited = tokio::time::timeout(PATIENCE, async {
+            while let Some(line) = lines.next_line().await.expect("the pipe reads") {
+                let frame = serde_json::from_str::<Frame>(&line).expect("a frame");
+                let presence = matches!(frame, Frame::Presence { .. });
+                heard.push(frame);
+                if presence {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(waited.is_ok(), "optimus's session never crossed");
+        assert!(
+            !heard.iter().any(|frame| matches!(frame, Frame::Machine(_))),
+            "an end that doesn't say it knows of machines hears none: {heard:?}"
+        );
+
+        let mut penelope = facts::measure("penelope", std::path::Path::new("/"), None);
+        penelope.state = Readiness::Ready;
+        for frame in [
+            Frame::Have {
+                messages: Vec::new(),
+                living: Some(vec!["walgit".to_owned()]),
+            },
+            Frame::Machine(Box::new(penelope)),
+            Frame::Presence {
+                session: "walgit".to_owned(),
+                body: json!({"session": "walgit"}),
+                leases: None,
+            },
+        ] {
+            send(&mut far_writing, &frame)
+                .await
+                .expect("the far end speaks");
+        }
+        until(&optimus, |store| {
+            store.presences().iter().any(|p| p.session == "walgit")
+        })
+        .await;
+        assert!(
+            optimus.machines().is_empty(),
+            "equilibrius can't say what penelope is"
+        );
+    }
+
+    #[tokio::test]
     async fn a_sessions_changes_are_carried_with_it_and_go_when_it_ends() {
         let optimus = Memory::default();
         let equilibrius = Memory::default();
@@ -849,6 +1013,7 @@ mod tests {
             machine: "penelope".to_owned(),
             realm: "personal".to_owned(),
             version: VERSION,
+            facts: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await

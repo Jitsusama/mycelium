@@ -302,18 +302,26 @@ impl<S: Store> Shared<S> {
         mesh::message(&body).ok_or_else(|| "the message didn't read back".to_owned())
     }
 
+    /// This machine as it is now: a handful of small files read, or one
+    /// sysctl on a Mac, quick enough to answer in place.
+    fn measure(&self) -> facts::Machine {
+        let home = std::env::home_dir().unwrap_or_else(std::env::temp_dir);
+        facts::measure(&self.machine, &home, place::queue().as_deref())
+    }
+
     fn answer(&self, request: Request) -> Reply {
         match request {
             Request::Sessions => Ok(Response::Sessions(self.lock().state.sessions())),
-            // A handful of small files read, or one sysctl on a Mac: quick
-            // enough to answer in place, and always as the machine is now.
-            Request::Machine => {
-                let home = std::env::home_dir().unwrap_or_else(std::env::temp_dir);
-                Ok(Response::Machine(Box::new(facts::measure(
-                    &self.machine,
-                    &home,
-                    place::queue().as_deref(),
-                ))))
+            Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
+            Request::Machines => {
+                let mut all = vec![self.measure()];
+                all.extend(
+                    self.store
+                        .machines()
+                        .into_iter()
+                        .filter(|one| one.name != self.machine),
+                );
+                Ok(Response::Machines(all))
             }
             Request::Messages { groups, limit } => {
                 Ok(Response::Messages(self.lock().state.recent(&groups, limit)))

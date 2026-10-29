@@ -25,9 +25,9 @@ between machines:
 | Shape | Records | How it crosses |
 | --- | --- | --- |
 | Written once by id | messages | each machine holds the union of all |
-| One writer | a session's presence | only its own machine writes it; others hold copies |
+| One writer | a session's presence, what a machine is | only its own machine writes it; others hold copies |
 | Shared files | a shared quest's record | each machine holds the same, settled as below |
-| This machine's own | read markers, the queue, what is said to `#machine`, held sessions, what the machine is | never |
+| This machine's own | read markers, the queue, what is said to `#machine`, held sessions | never |
 
 Since nothing has two writers, no machine waits on another to agree, and
 a machine asleep only means its records arrive when it wakes.
@@ -85,9 +85,11 @@ messages, being a union, reach every machine linked by any path.
 `link::run` runs one end of a link over any byte stream. Both ends run the
 same code, each line a JSON value:
 
-1. `{"Hello": {"machine", "realm", "version"}}`, first, from each end.
-   Each end's membership admits the other or refuses it, and nothing else
-   crosses until it has.
+1. `{"Hello": {"machine", "realm", "version", "facts"}}`, first, from
+   each end. Each end's membership admits the other or refuses it, and
+   nothing else crosses until it has. `facts` says the end hears and
+   says what a machine is; an end older than it says nothing of
+   machines and is sent nothing.
 2. `{"Have": {"messages": [ids], "living": [sessions]}}`: every message
    the end holds within the link's reach, and its machine's living
    sessions. An end older than `living` names none, and every session of
@@ -113,6 +115,11 @@ same code, each line a JSON value:
 6. `{"Share": say}`: talk about shared quests, as below. An end that
    shares nothing sends none, so it still links with an end older than
    sharing.
+7. `{"Machine": machine}`: what the sending end's machine is, measured
+   as it is sent, as a node answers `"Machine"`: after the Have, before
+   its sessions, and again each minute. The other end keeps it only if
+   it names the sending machine, as ready while the link stands and as
+   unreachable, with what it last said, once the link drops.
 
 Three seams shape a link:
 
@@ -215,6 +222,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | --- | --- |
 | `"Sessions"` | `{"Sessions": [session]}`, this machine's and others' |
 | `"Machine"` | `{"Machine": machine}`, this machine as measured now |
+| `"Machines"` | `{"Machines": [machine]}`, this machine first, then each other |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events |
@@ -238,10 +246,11 @@ anything in its presence.
 
 A machine is what its node measures of it when asked, the facts work is
 placed by: its `name`, `measured_at`, `state` (`ready` for a node answering
-for itself), `os`, `arch`, `model`, `cpu` (`model`, `cores`), `memory` and
-`disk` in bytes (the disk holding its account's home), and `accelerators`
-(each a `kind`, `gpu` or `npu`, and its `driver`). A fact that can't be
-read is `null`, never a guess.
+for itself or a machine a link carries, `unreachable` for one no link
+reaches now, as of when one last did), `os`, `arch`, `model`, `cpu`
+(`model`, `cores`), `memory` and `disk` in bytes (the disk holding its
+account's home), and `accelerators` (each a `kind`, `gpu` or `npu`, and
+its `driver`). A fact that can't be read is `null`, never a guess.
 
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,
@@ -251,8 +260,9 @@ share of the last ten seconds some work waited on each, in percent) and
 says nothing of a session). It is `null` where no harness keeps a queue,
 or where the queue's record is of another shape or unwritten for two
 minutes. A machine keeps no reserve of mycelium's: its own slices keep
-its person's share. All of this stays on this machine's socket: no link
-carries it yet, nor what must be declared.
+its person's share. `"Machines"` gives each other machine as its own
+end of a link last said it, about once a minute; what must be declared
+of a machine comes later.
 
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`
@@ -301,10 +311,9 @@ Each lands behind a seam above, or as a seam of its own:
 - **The node's own log:** messages and presence numbered per machine, so
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.
-- **Places and what they can do:** a machine says on its socket what it
-  is and the room its queue says it has; next, what is declared of it in
-  its configuration (its reach and the refusals it enforces), carried
-  across links as sessions are. Work
+- **Places and what they can do:** a machine says what it is and the
+  room its queue says it has, and links carry it; next, what is declared
+  of it in its configuration (its reach and the refusals it enforces). Work
   says what it needs and prefers, and placement answers placed, pending
   or refused, naming each place and the need it failed. A place admits
   or refuses work itself, so a placer's view can't override it.

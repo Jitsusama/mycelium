@@ -11,7 +11,7 @@
 //! every machine sent. A presence has one writer, the machine its session
 //! runs on; a store holds its own machine's and copies of others', and a
 //! copy is written and let go only by the one link that holds a claim on
-//! its machine.
+//! its machine. What another machine says it is has that one writer too.
 
 mod ends;
 pub mod folders;
@@ -22,6 +22,8 @@ use std::io;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
+
+use crate::facts::{Machine, Readiness};
 
 /// A session's presence, as the store holds it.
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +121,13 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// another machine's.
     fn put_leases(&self, session: &str, machine: &str, leases: &[Value]) -> io::Result<()>;
 
+    /// What each other machine last said it is, by name.
+    fn machines(&self) -> Vec<Machine>;
+
+    /// Keeps what another machine, `machine.name`, says it is, in place of
+    /// what it said before.
+    fn put_machine(&self, machine: &Machine) -> io::Result<()>;
+
     /// Starts telling of each change.
     fn changes(&self) -> io::Result<Changes>;
 }
@@ -138,6 +147,15 @@ pub fn let_go(store: &impl Store, machine: &str, kept: impl Fn(&str) -> bool) {
 /// a link that drops says nothing of whether they still run, so they stay
 /// until a link to that machine comes back and says which do.
 pub fn out_of_reach(store: &impl Store, machine: &str, since: i64) {
+    // What it said it is stays, as of when a link last carried it.
+    if let Some(mut said) = store.machines().into_iter().find(|one| one.name == machine)
+        && said.state != Readiness::Unreachable
+    {
+        said.state = Readiness::Unreachable;
+        if let Err(error) = store.put_machine(&said) {
+            eprintln!("couldn't mark {machine} out of reach: {error}");
+        }
+    }
     for presence in store.presences() {
         if presence.elsewhere.as_deref() == Some(machine)
             && let Err(error) = store.mark_unreachable(&presence.session, machine, since)
@@ -155,6 +173,7 @@ pub fn out_of_reach_of_unclaimed(store: &impl Store) -> io::Result<()> {
         .presences()
         .into_iter()
         .filter_map(|p| p.elsewhere)
+        .chain(store.machines().into_iter().map(|one| one.name))
         .collect();
     machines.sort_unstable();
     machines.dedup();
