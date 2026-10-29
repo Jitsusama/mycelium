@@ -58,6 +58,10 @@ told the moment it ends: on Linux the node holds each session's process
 by a pidfd, which wakes it as the process exits, so nothing is judged on a
 timer; a Mac judges every session again each few seconds until it has a
 way of its own. A process that has exited but not been reaped has ended.
+A process that holds a `Present` connection to its node (see The Socket)
+is told ended the moment that connection closes, on either system, since
+the kernel closes it however the process ends; without one, or between
+one closing and the next, it is judged by its process as before.
 The presence of a session elsewhere is kept with its process taken out, which
 the mesh takes as there, and with `machine` naming where it runs. It never
 goes over a session of this machine's or of a third machine's.
@@ -240,6 +244,15 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events |
+| `"Present"` | `"Present"`, then held open while its process runs |
+
+A `Present` connection counts the process at its other end, as the
+kernel names it, present until the connection closes; then every session
+that process owns is ended at once. It says nothing more, and a later
+`Present` from the same process takes its place, so the earlier one's
+close ends nothing. A process no longer there, or one that is present
+again, is let go of. A node that can't tell which process connected
+refuses.
 
 A session's `state` is `busy`, `idle`, `ended`, or `unreachable` while no
 link reaches its machine. Beside its `id`, `address`, `machine` and

@@ -5,7 +5,8 @@
 //! the mesh writes its own, so no reader sees half of one. A session's file
 //! stays after it ends, so whether it lives is judged from its process, as
 //! the mesh judges it, and its end is told as a change the moment its
-//! process exits (see `ends`). The presence of a session elsewhere is written with
+//! process exits (see `ends`), or the moment the connection it held to its
+//! node to say it was present closes. The presence of a session elsewhere is written with
 //! its process taken out, which the mesh takes as there, and with `machine`
 //! naming where it runs; it is never written over a session of this
 //! machine's or of another machine's. The leases such a session holds are
@@ -16,11 +17,12 @@
 //! hold across every mycelium process on the machine and go when the
 //! process holding one does, however it ends.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use notify::event::ModifyKind;
@@ -53,6 +55,11 @@ static STAGED: AtomicU64 = AtomicU64::new(0);
 pub struct Folders {
     dir: Arc<PathBuf>,
     claims: Arc<PathBuf>,
+    /// This machine's processes said to have ended as their connections
+    /// closed, whose sessions are judged ended whatever their process.
+    ended: Arc<Mutex<BTreeSet<i32>>>,
+    /// Each reader of this store's changes, told of an end said here.
+    told: Arc<Mutex<Vec<mpsc::UnboundedSender<Change>>>>,
 }
 
 impl Folders {
@@ -68,7 +75,22 @@ impl Folders {
         Ok(Self {
             dir: Arc::new(dir.canonicalize()?),
             claims: Arc::new(claims.canonicalize()?),
+            ended: Arc::default(),
+            told: Arc::default(),
         })
+    }
+
+    fn ended_processes(&self) -> MutexGuard<'_, BTreeSet<i32>> {
+        // Each change to the set is one insert or remove, whole either way.
+        self.ended.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Tells every reader the sessions should be judged again.
+    fn tell_presence(&self) {
+        self.told
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|told| told.send(Change::Presence).is_ok());
     }
 
     fn messages(&self) -> PathBuf {
@@ -130,15 +152,15 @@ impl Store for Folders {
 
     fn presences(&self) -> Vec<Presence> {
         let boot = boot_id();
+        let ended = self.ended_processes().clone();
         records(&self.presence())
             .filter_map(|path| read::<Value>(&path))
             .filter_map(|body| {
                 let facts = Facts::deserialize(&body).ok()?;
                 let lives = facts.machine.is_some()
-                    || facts
-                        .owner
-                        .as_ref()
-                        .is_some_and(|owner| owner.lives(boot.as_deref()));
+                    || facts.owner.as_ref().is_some_and(|owner| {
+                        !ended.contains(&owner.pid) && owner.lives(boot.as_deref())
+                    });
                 Some(Presence {
                     session: facts.session,
                     unreachable_since: facts.machine.as_ref().and(facts.unreachable_since),
@@ -298,8 +320,29 @@ impl Store for Folders {
         write_whole(&self.claims, &file, &body)
     }
 
+    fn ended(&self, pid: i32) {
+        {
+            let mut ended = self.ended_processes();
+            // An id no process holds any more might be taken by a new one,
+            // which has said nothing of ending.
+            ended.retain(|&each| process_exists(each));
+            ended.insert(pid);
+        }
+        self.tell_presence();
+    }
+
+    fn present(&self, pid: i32) {
+        if self.ended_processes().remove(&pid) {
+            self.tell_presence();
+        }
+    }
+
     fn changes(&self) -> io::Result<Changes> {
         let (sender, changes) = mpsc::unbounded_channel();
+        self.told
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(sender.clone());
         let messages = self.messages();
         let presence = self.presence();
         let leases = self.leases();
@@ -392,6 +435,12 @@ struct Owner {
     pid: i32,
     boot_id: Option<String>,
     start_ticks: Option<u64>,
+}
+
+/// Whether any process holds the id `pid`, a zombie included.
+fn process_exists(pid: i32) -> bool {
+    rustix::process::Pid::from_raw(pid)
+        .is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
 }
 
 impl Owner {
@@ -639,6 +688,37 @@ mod tests {
             told,
             Ok(true),
             "the session's end wasn't told within {PATIENCE:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_process_said_to_have_ended_ends_its_session_until_it_is_present() {
+        let (_dir, store) = store();
+        let mine = me();
+        let presence = json!({
+            "session": "mine",
+            "owner": {"pid": mine.pid, "bootId": mine.boot_id, "startTicks": mine.start_ticks},
+        });
+        write_whole(&store.presence(), "mine.json", &presence).expect("its presence written");
+        let mut changes = store.changes().expect("the store tells its changes");
+        let lives = |store: &Folders| store.presences().iter().any(|one| one.lives);
+        assert!(lives(&store), "the session lives while its process runs");
+
+        store.ended(mine.pid);
+        assert!(
+            !lives(&store),
+            "a session whose process said it ended is ended, though the process runs"
+        );
+        assert_eq!(
+            changes.changes.try_recv(),
+            Ok(Change::Presence),
+            "the end is told to the store's reader at once"
+        );
+
+        store.present(mine.pid);
+        assert!(
+            lives(&store),
+            "the session lives again once its process is present"
         );
     }
 

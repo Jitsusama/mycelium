@@ -2,7 +2,8 @@
 //! and a terminal reach it: a client writes one request as a JSON line and
 //! reads one reply as a JSON line. A `Watch` reply is followed by events,
 //! one per line, for as long as the client stays: first the whole state,
-//! then each change.
+//! then each change. A `Present` connection is held open by its process
+//! for as long as it runs.
 
 use std::path::PathBuf;
 
@@ -36,6 +37,12 @@ pub enum Request {
     },
     /// Send a message on the mesh, as a session would.
     Send(Draft),
+    /// Counts the connection's own process present for as long as it keeps
+    /// the connection open, so a session it owns is judged ended the moment
+    /// the connection closes, as the kernel closes it however the process
+    /// ends. The process is the one the kernel says is at the other end, so
+    /// no process can speak for another. It says nothing more.
+    Present,
     /// The whole state, then each change, for as long as the client stays.
     Watch {
         /// Which groups' messages to send; sessions are always sent.
@@ -114,6 +121,8 @@ pub enum Response {
     Sent(Message),
     /// Events follow, one per line.
     Watching,
+    /// The process is counted present until it hangs up.
+    Present,
 }
 
 /// A change, as a watch sends it.

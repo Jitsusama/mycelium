@@ -25,6 +25,9 @@ struct Held {
     claimed: BTreeSet<String>,
     linked: BTreeMap<String, i64>,
     machines: BTreeMap<String, Machine>,
+    /// Processes said to have ended, whose sessions are ended whatever
+    /// the test said of them.
+    ended: BTreeSet<i64>,
     told: Vec<mpsc::UnboundedSender<Change>>,
 }
 
@@ -130,7 +133,33 @@ impl Store for Memory {
     }
 
     fn presences(&self) -> Vec<Presence> {
-        self.held().presences.values().cloned().collect()
+        let held = self.held();
+        held.presences
+            .values()
+            .cloned()
+            .map(|mut presence| {
+                let owner = presence.body.pointer("/owner/pid").and_then(Value::as_i64);
+                if presence.elsewhere.is_none()
+                    && owner.is_some_and(|pid| held.ended.contains(&pid))
+                {
+                    presence.lives = false;
+                }
+                presence
+            })
+            .collect()
+    }
+
+    fn ended(&self, pid: i32) {
+        let mut held = self.held();
+        held.ended.insert(pid.into());
+        held.tell(&Change::Presence);
+    }
+
+    fn present(&self, pid: i32) {
+        let mut held = self.held();
+        if held.ended.remove(&pid.into()) {
+            held.tell(&Change::Presence);
+        }
     }
 
     fn claim(&self, machine: &str) -> io::Result<Option<Claim>> {
