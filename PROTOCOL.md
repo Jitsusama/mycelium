@@ -165,7 +165,10 @@ Three seams shape a link:
   input and output to `mycelium link` on that machine, and run as
   `PROGRAM run PLACE -- WORDS` from a terminal, it runs `WORDS` there.
   Its error output is passed on, and a line saying the other end
-  "turned this machine away" is waited out as a refused SSH key is.
+  "turned this machine away" is taken as a refused SSH key is. A
+  refused link isn't dialled again until its record in the node's
+  `refused/` folder is removed, which the node's log names, so no
+  retry of ours shows the other machine a failed login.
 - **Discovery** (`link::discovery::Discovery`): which machines to link
   with, as they are found. Today, a list given to the node.
 - **Membership** (`link::membership::Membership`): which machines to admit.

@@ -1,13 +1,16 @@
 //! Links whose way in turned this machine away, as SSH does when the other
-//! machine doesn't take this one's key. Such a link isn't dialled again for
-//! hours: dialling it every minute only fails again, and every failure is a
-//! refused login that the other machine, and whoever watches it, sees.
+//! machine doesn't take this one's key. Such a link isn't dialled again
+//! until someone says it may be: dialling it again, however seldom, only
+//! fails again, and every failure is a refused login that the other
+//! machine, and whoever watches it, sees. Nothing on this machine can tell
+//! when the other starts taking its key, so no wait of ours would be right.
 //!
 //! A refusal is remembered in the node's state by the words that dial the
-//! link, so a node started again doesn't dial it at once either, while a
-//! link whose words change, as when its configuration does, is dialled at
-//! once. Removing the record and starting the node again dials it sooner,
-//! as once the other machine takes the key.
+//! link, so a node started again doesn't dial it either, while a link whose
+//! words change, as when its configuration does, is dialled at once.
+//! Removing the record, as once the other machine takes the key, withdraws
+//! it: the node looks for it every `LOOK_EVERY`, on its own disk alone, and
+//! dials once it is gone.
 
 use std::fs;
 use std::io;
@@ -16,8 +19,8 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
-/// How long a refused link waits before it is dialled again.
-pub const REFUSED_FOR: Duration = Duration::from_secs(6 * 60 * 60);
+/// How often a node looks whether a refusal it keeps was withdrawn.
+pub const LOOK_EVERY: Duration = Duration::from_secs(60);
 
 /// What a way in says when the other machine turns this one away, rather
 /// than being out of reach. SSH's: a key it doesn't take, a host key that
@@ -34,41 +37,47 @@ const TURNED_AWAY: [&str; 4] = [
 #[derive(Debug, Clone)]
 pub struct Refusals {
     /// The folder they are remembered in, or none to keep them only while
-    /// the node runs.
+    /// the node runs, standing until it ends.
     pub folder: Option<PathBuf>,
-    /// How long a refused link waits before it is dialled again.
-    pub lasting: Duration,
+    /// How often a refusal kept there is looked for.
+    pub look_every: Duration,
 }
 
 impl Default for Refusals {
     fn default() -> Self {
         Self {
             folder: None,
-            lasting: REFUSED_FOR,
+            look_every: LOOK_EVERY,
         }
     }
 }
 
 impl Refusals {
-    /// Refusals remembered in `folder` for as long as `REFUSED_FOR`.
+    /// Refusals remembered in `folder`, looked for every `LOOK_EVERY`.
     #[must_use]
     pub fn kept_in(folder: PathBuf) -> Self {
         Self {
             folder: Some(folder),
-            lasting: REFUSED_FOR,
+            look_every: LOOK_EVERY,
         }
     }
 
-    /// How long the link dialled by `words` has yet to wait, if it was
-    /// turned away within `lasting`.
+    /// Whether a refusal of the link dialled by `words` is remembered, and
+    /// not yet withdrawn.
     #[must_use]
-    pub fn waiting(&self, words: &[String]) -> Option<Duration> {
-        let written = fs::metadata(self.record(words)?).ok()?.modified().ok()?;
-        // A record written in the future, by a clock set back, waits in full.
-        let since = written.elapsed().unwrap_or_default();
-        self.lasting
-            .checked_sub(since)
-            .filter(|left| !left.is_zero())
+    pub fn stands(&self, words: &[String]) -> bool {
+        self.record(words).is_some_and(|record| record.exists())
+    }
+
+    /// Waits until the refusal of the link dialled by `words` is withdrawn,
+    /// which a refusal kept nowhere never is while the node runs.
+    pub async fn withdrawn(&self, words: &[String]) {
+        if self.folder.is_none() {
+            std::future::pending::<()>().await;
+        }
+        while self.stands(words) {
+            tokio::time::sleep(self.look_every).await;
+        }
     }
 
     /// Remembers that the link dialled by `words` was turned away, and why.
@@ -161,31 +170,25 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let refusals = Refusals::kept_in(dir.path().join("refused"));
         let equilibrius = words("equilibrius");
-        assert_eq!(refusals.waiting(&equilibrius), None, "nothing refused yet");
+        assert!(!refusals.stands(&equilibrius), "nothing refused yet");
 
         refusals
             .remember(&equilibrius, "Permission denied (publickey).")
             .expect("the refusal is remembered");
-        let left = refusals.waiting(&equilibrius).expect("the link waits");
+        assert!(refusals.stands(&equilibrius), "the link waits");
         assert!(
-            left > REFUSED_FOR.saturating_sub(Duration::from_secs(60)) && left <= REFUSED_FOR,
-            "it waits about {REFUSED_FOR:?}, not {left:?}"
+            Refusals::kept_in(dir.path().join("refused")).stands(&equilibrius),
+            "a node started again reads the same refusal"
         );
-        let again = Refusals::kept_in(dir.path().join("refused")).waiting(&equilibrius);
         assert!(
-            again.is_some_and(|again| again <= left),
-            "a node started again reads the same refusal, not {again:?}"
-        );
-        assert_eq!(
-            refusals.waiting(&words("equilibrius.local")),
-            None,
+            !refusals.stands(&words("equilibrius.local")),
             "a link whose words changed is dialled at once"
         );
 
         refusals
             .forget(&equilibrius)
             .expect("the refusal is forgotten");
-        assert_eq!(refusals.waiting(&equilibrius), None, "and dialled again");
+        assert!(!refusals.stands(&equilibrius), "and dialled again");
         refusals
             .forget(&equilibrius)
             .expect("forgetting what isn't remembered is no error");
@@ -199,6 +202,34 @@ mod tests {
             .remember(&equilibrius, "Permission denied (publickey).")
             .expect("nothing is written");
         assert_eq!(refusals.record(&equilibrius), None, "no record is kept");
-        assert_eq!(refusals.waiting(&equilibrius), None, "so none is waited on");
+        assert!(!refusals.stands(&equilibrius), "so none is read back");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_stands_until_its_record_is_removed() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let refusals = Refusals {
+            folder: Some(dir.path().join("refused")),
+            look_every: Duration::from_millis(10),
+        };
+        let equilibrius = words("equilibrius");
+        refusals
+            .remember(&equilibrius, "Permission denied (publickey).")
+            .expect("the refusal is remembered");
+        let waiting = {
+            let (refusals, equilibrius) = (refusals.clone(), equilibrius.clone());
+            tokio::spawn(async move { refusals.withdrawn(&equilibrius).await })
+        };
+        // That nothing withdraws it can only be shown over a span, here ten
+        // looks' worth, rather than waited on as an event.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!waiting.is_finished(), "no time withdraws a refusal");
+
+        let record = refusals.record(&equilibrius).expect("a record is kept");
+        fs::remove_file(record).expect("the record is removed");
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("removing the record withdraws the refusal")
+            .expect("the wait ends");
     }
 }

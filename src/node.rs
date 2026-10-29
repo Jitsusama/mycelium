@@ -211,7 +211,8 @@ where
 
 /// Keeps a link up for as long as the node runs, dialling again after each
 /// drop, carrying the quests shared and starts. A link whose way in turned
-/// this machine away waits out its refusal instead, logging it once.
+/// this machine away waits until its refusal is withdrawn instead, logging
+/// it once.
 async fn keep_linked(
     dial: Arc<impl Dial>,
     store: impl Store,
@@ -219,14 +220,13 @@ async fn keep_linked(
     (shares, starting, refusals): (Option<Places>, Starting, Refusals),
 ) {
     let words = dial.there(&[]);
-    if let Some(left) = refusals.waiting(&words) {
+    if refusals.stands(&words) {
         eprintln!(
-            "{} turned this machine away before, so it isn't dialled for {}{}",
+            "{} turned this machine away before, so it isn't dialled {}",
             dial.describe(),
-            in_hours(left),
-            sooner(&refusals, &words),
+            until_withdrawn(&refusals, &words),
         );
-        tokio::time::sleep(left).await;
+        refusals.withdrawn(&words).await;
     }
     let mut wait = REDIAL_FIRST;
     loop {
@@ -249,15 +249,14 @@ async fn keep_linked(
         };
         if let Some(why) = refused {
             eprintln!(
-                "{} turned this machine away ({why}), so it isn't dialled again for {}{}",
+                "{} turned this machine away ({why}), so it isn't dialled again {}",
                 dial.describe(),
-                in_hours(refusals.lasting),
-                sooner(&refusals, &words),
+                until_withdrawn(&refusals, &words),
             );
             if let Err(error) = refusals.remember(&words, &why) {
                 eprintln!("its refusal isn't remembered past this node: {error}");
             }
-            tokio::time::sleep(refusals.lasting).await;
+            refusals.withdrawn(&words).await;
             wait = REDIAL_FIRST;
             continue;
         }
@@ -287,24 +286,12 @@ async fn said_why(refused: Option<tokio::task::JoinHandle<Option<String>>>) -> O
         .ok()?
 }
 
-/// How to have a refused link dialled sooner, when its refusal is kept.
-fn sooner(refusals: &Refusals, words: &[String]) -> String {
-    refusals.record(words).map_or_else(String::new, |record| {
-        format!(
-            ", or until {} is removed and the node started again",
-            record.display()
-        )
-    })
-}
-
-/// `wait` in whole hours, rounded up, as a log line says it.
-fn in_hours(wait: Duration) -> String {
-    let hours = wait.as_secs().div_ceil(60 * 60);
-    if hours == 1 {
-        "an hour".to_owned()
-    } else {
-        format!("{hours} hours")
-    }
+/// What has a refused link dialled again.
+fn until_withdrawn(refusals: &Refusals, words: &[String]) -> String {
+    refusals.record(words).map_or_else(
+        || "until the node starts again".to_owned(),
+        |record| format!("until {} is removed", record.display()),
+    )
 }
 
 /// What the node's loop and every client share.
@@ -1043,14 +1030,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_link_that_turned_this_machine_away_isnt_dialled_again_until_it_lapses() {
+    async fn a_link_that_turned_this_machine_away_isnt_dialled_again_until_that_is_withdrawn() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (dialled, mut dials) = mpsc::unbounded_channel();
-        // Longer than the first redial after a drop, so a second dial this
-        // late was held back by the refusal, not by the usual wait.
         let refusals = Refusals {
             folder: Some(dir.path().join("refused")),
-            lasting: REDIAL_FIRST + Duration::from_secs(1),
+            look_every: Duration::from_millis(50),
         };
         let starting = Starting {
             node: dir.path().join("work.sock"),
@@ -1071,20 +1056,26 @@ mod tests {
             (None, starting, refusals.clone()),
         ));
 
-        let first = dials.recv().await.expect("the link is dialled");
-        let second = tokio::time::timeout(PATIENCE, dials.recv())
-            .await
-            .expect("the link is dialled again once its refusal lapses")
-            .expect("the link is kept");
+        dials.recv().await.expect("the link is dialled");
+        // Past the first redial after a drop and many looks: that no dial
+        // comes can only be shown over a span, not waited on as an event.
         assert!(
-            second - first >= refusals.lasting,
-            "a refused link waits out its refusal, not {:?}",
-            second - first
+            tokio::time::timeout(REDIAL_FIRST * 2, dials.recv())
+                .await
+                .is_err(),
+            "a refused link isn't dialled again while its refusal stands"
         );
         assert!(
-            refusals.waiting(&words).is_some(),
+            refusals.stands(&words),
             "the refusal is remembered for a node started again"
         );
+
+        let record = refusals.record(&words).expect("the refusal is kept");
+        fs::remove_file(record).expect("the refusal is withdrawn");
+        tokio::time::timeout(PATIENCE, dials.recv())
+            .await
+            .expect("the link is dialled again once its refusal is withdrawn")
+            .expect("the link is kept");
         keeping.abort();
     }
 
