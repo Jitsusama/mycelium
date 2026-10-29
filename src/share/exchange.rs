@@ -21,7 +21,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
 use super::clones::{Clone, Cloning};
-use super::ledger::{Entry, Ledger, Ledgers, is_quest, shared_of};
+use super::ledger::{Entry, Ledger, Ledgers, clock, is_quest, lasting, shared_of};
 use super::pieces::{PIECE, Pieces, Staged};
 use super::settle::{Merge, Settled, State, beside, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
@@ -800,7 +800,9 @@ impl Exchange {
                 Some(Entry {
                     hash: theirs.hash.clone(),
                     version: joined,
-                    seen: written,
+                    // Kept only once it can be trusted, so a change made
+                    // here just after is seen.
+                    seen: written.and_then(|written| lasting(written, clock())),
                 })
             }
             Settled::Merge(merge) => {
@@ -821,7 +823,7 @@ impl Exchange {
                 Some(Entry {
                     hash: Some(content(merged.as_bytes()).hash),
                     version: joined.changed_on(&self.machine),
-                    seen: written,
+                    seen: written.and_then(|written| lasting(written, clock())),
                 })
             }
             Settled::Beside => {
