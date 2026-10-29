@@ -13,6 +13,7 @@ use mycelium::group::{Group, Pattern};
 use mycelium::link::dial::{Connection, Ssh};
 use mycelium::link::discovery::Listed;
 use mycelium::link::membership::Realm;
+use mycelium::placement::{Need, Work};
 use mycelium::record::Intent;
 use mycelium::share::exchange::Places;
 use mycelium::share::ledger::Ledgers;
@@ -78,6 +79,8 @@ enum Action {
     Machine,
     /// Prints what every machine of the realm is, this one first.
     Machines,
+    /// Prints which machine of the realm work should go to, or why none.
+    Place(Asked),
     /// Prints the latest messages, a JSON line each.
     Messages {
         /// Which groups, such as `quest.*`.
@@ -146,6 +149,36 @@ enum Action {
 }
 
 /// What a node or a link's end needs of this machine.
+/// Work to be placed, as its flags say it.
+#[derive(clap::Args)]
+struct Asked {
+    /// What a machine must be, as `kind=value`: `machine`, `system`,
+    /// `arch`, `reach` or `accelerator`, such as `system=linux`; given
+    /// again for each.
+    #[arg(long = "need", value_parser = need)]
+    needs: Vec<Need>,
+    /// What a machine had rather be, in the same words, most wanted first.
+    #[arg(long = "prefer", value_parser = need)]
+    prefers: Vec<Need>,
+    /// A taint the work doesn't mind, by its key, such as `on-battery`.
+    #[arg(long = "tolerate")]
+    tolerates: Vec<String>,
+    /// Waits for a machine out of reach rather than being refused.
+    #[arg(long)]
+    may_wait: bool,
+}
+
+impl From<Asked> for Work {
+    fn from(asked: Asked) -> Self {
+        Work {
+            needs: asked.needs,
+            prefers: asked.prefers,
+            tolerates: asked.tolerates,
+            may_wait: asked.may_wait,
+        }
+    }
+}
+
 #[derive(clap::Args)]
 struct Here {
     /// The harness mesh's folders, if not where the harness keeps them.
@@ -229,6 +262,7 @@ fn run(command: Command) -> io::Result<()> {
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Machine => print_reply(&socket, &Request::Machine),
         Action::Machines => print_reply(&socket, &Request::Machines),
+        Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
         Action::Messages { groups, limit } => {
             print_reply(&socket, &Request::Messages { groups, limit })
         }
@@ -458,6 +492,15 @@ fn print_line(value: &impl serde::Serialize) -> io::Result<()> {
     let mut out = io::stdout().lock();
     serde_json::to_writer(&mut out, value).map_err(io::Error::other)?;
     writeln!(out)
+}
+
+fn need(said: &str) -> Result<Need, String> {
+    let (kind, value) = said
+        .split_once('=')
+        .ok_or_else(|| format!("{said:?} is not kind=value, such as system=linux"))?;
+    serde_json::from_value(serde_json::json!({ kind: value })).map_err(|_| {
+        format!("{said:?} is not a need: machine, system, arch, reach or accelerator (gpu, npu)")
+    })
 }
 
 fn intent(name: &str) -> Result<Intent, String> {

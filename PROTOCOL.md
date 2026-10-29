@@ -223,6 +223,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Sessions"` | `{"Sessions": [session]}`, this machine's and others' |
 | `"Machine"` | `{"Machine": machine}`, this machine as measured now |
 | `"Machines"` | `{"Machines": [machine]}`, this machine first, then each other |
+| `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events |
@@ -247,7 +248,8 @@ anything in its presence.
 A machine is what its node measures of it when asked, the facts work is
 placed by: its `name`, `measured_at`, `state` (`ready` for a node answering
 for itself or a machine a link carries, `unreachable` for one no link
-reaches now, as of when one last did), `os`, `arch`, `model`, `cpu`
+reaches now, as of when one last did), `os`, `system` (`linux` or
+`macos`, `null` from a node too old to say it), `arch`, `model`, `cpu`
 (`model`, `cores`), `memory` and `disk` in bytes (the disk holding its
 account's home), `accelerators` (each a `kind`, `gpu` or `npu`, and its
 `driver`), and `power`: `on_battery`, true only with a battery of its
@@ -283,6 +285,27 @@ declared, or where the file isn't in this shape, which the node logs.
 
 `"Machines"` gives each other machine as its own end of a link last
 said it, about once a minute.
+
+`"Place"` asks which of those machines work should go to. The work says
+its `needs` and `prefers`, each one of `{"machine": name}`,
+`{"system": "linux"}`, `{"arch": "x86_64"}`, `{"reach": network}` or
+`{"accelerator": "gpu"}`, the earliest preference most wanted; the keys
+of the taints it `tolerates`; and whether it `may_wait` for a machine out
+of reach. A machine carries the taints its configuration declares, and
+while they last, `on-battery` and `memory-pressure` (past its queue's
+memory limit), each `prefer_not`. A machine qualifies when it is in
+reach, is what each need asks (a fact it never said meets none), and
+carries no `never` taint the work doesn't tolerate. Of those, one with no
+`prefer_not` taint goes first, then the most preferences met, then the
+most memory free, then by name. The answer is
+`{"placed": {"machine", "passed"}}`, `{"pending": {"misses"}}` when
+only a machine out of reach would do and the work may wait, or
+`{"refused": {"misses"}}`; each miss names a `machine` and `because`:
+`{"lacks": need}`, `{"unknown": need}`, `{"refuses": taint}`,
+`{"rather_not": taint}`, `"ranked"` or `"unreachable"`. Placement only
+chooses: a machine says whether work starts there when asked, by its
+own queue and taints, so nothing fits work against its room, which only
+ranks it.
 
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`
@@ -331,13 +354,10 @@ Each lands behind a seam above, or as a seam of its own:
 - **The node's own log:** messages and presence numbered per machine, so
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.
-- **Places and what they can do:** a machine says what it is and the
-  room its queue says it has and what its configuration declares, and
-  links carry it; next, conditions such as pressure that taint it while
-  they last. Work
-  says what it needs and prefers, and placement answers placed, pending
-  or refused, naming each place and the need it failed. A place admits
-  or refuses work itself, so a placer's view can't override it.
+- **Places and what they can do:** a machine says what it is, and the
+  node places work among the realm's machines by it; next, a machine
+  admits or refuses the work placed on it, so a placer's view can't
+  override it, and starting a session goes through both.
 - **Providers:** programs beside a node that offer shapes of machine,
   make one, start a session on it, reach it and end it with its cost,
   and say when one is lost, such as Aquifer's, which lives outside this
