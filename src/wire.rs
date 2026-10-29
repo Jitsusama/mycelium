@@ -50,8 +50,12 @@ pub enum Request {
 pub struct Start {
     /// What the machine it starts on must be.
     pub work: Work,
-    /// The folder it starts in, a full path on that machine.
-    pub folder: PathBuf,
+    /// The folder it starts in on that machine: a full path, or a path
+    /// within its home, since only that machine knows where its home is.
+    /// It starts in its home when this names none or names no folder
+    /// there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
     /// The program and its arguments, run through the login shell there.
     pub command: Vec<String>,
 }
@@ -63,6 +67,10 @@ pub struct Started {
     pub machine: String,
     /// Its held id there.
     pub held: String,
+    /// The folder it began in there, which is its home when the one
+    /// asked for isn't a folder there.
+    #[serde(default)]
+    pub folder: PathBuf,
     /// The words that join it, run from a terminal on this machine.
     pub attach: Vec<String>,
 }

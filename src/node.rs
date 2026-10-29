@@ -391,12 +391,6 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        if !asked.folder.is_absolute() {
-            return Err(format!(
-                "{} isn't a full path, so it would name no folder here",
-                asked.folder.display()
-            ));
-        }
         let machine = match placement::place(&asked.work, &self.machines()) {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } => {
@@ -415,14 +409,19 @@ impl<S: Store> Shared<S> {
         let Some(starter) = self.starter.clone() else {
             return Err(format!("{machine}'s node starts no sessions"));
         };
+        let Some(home) = std::env::home_dir() else {
+            return Err(format!("{machine} has no home to start it in"));
+        };
+        let folder = start::begins_in(asked.folder.as_deref(), &home);
         let realm = self.realm.clone();
         let command = start::through_login_shell(&asked.command);
-        let held =
-            tokio::task::spawn_blocking(move || starter.start(&realm, &asked.folder, &command))
-                .await
-                .map_err(|error| format!("its start stopped: {error}"))?
-                .map_err(|error| format!("it didn't start: {error}"))?;
+        let begins = folder.clone();
+        let held = tokio::task::spawn_blocking(move || starter.start(&realm, &begins, &command))
+            .await
+            .map_err(|error| format!("its start stopped: {error}"))?
+            .map_err(|error| format!("it didn't start: {error}"))?;
         Ok(Response::Started(Started {
+            folder,
             attach: start::attach_here(&self.realm, &held),
             machine,
             held,
@@ -775,7 +774,7 @@ mod tests {
             let there = placement::Need::Machine("equilibrius".to_owned());
             let asked = Request::Start(Start {
                 work: work(vec![there]),
-                folder,
+                folder: Some(folder),
                 command: vec!["pi".to_owned()],
             });
             client.ask(&asked).expect("the node answers")
@@ -944,23 +943,20 @@ mod tests {
         let folder = dir.path().to_owned();
         let answers = tokio::task::spawn_blocking(move || {
             let mut client = Client::connect(&socket).expect("the client connects");
-            let mut start = |needs| {
-                let work = placement::Work {
-                    needs,
-                    prefers: Vec::new(),
-                    tolerates: Vec::new(),
-                    may_wait: false,
-                };
+            let mut start = |needs, folder| {
                 let command = vec!["pi".to_owned(), "--continue".to_owned()];
                 let asked = Request::Start(Start {
-                    work,
-                    folder: folder.clone(),
+                    work: work(needs),
+                    folder,
                     command,
                 });
                 client.ask(&asked).expect("the node answers")
             };
             let elsewhere = placement::Need::Machine("equilibrius".to_owned());
-            (start(vec![elsewhere]), start(Vec::new()))
+            (
+                start(vec![elsewhere], Some(folder)),
+                start(Vec::new(), None),
+            )
         });
         let (refused, started) = tokio::time::timeout(PATIENCE, answers)
             .await
@@ -986,6 +982,13 @@ mod tests {
             given[..5],
             ["--realm", "work", "holder", "--id", &started.held],
             "the holder holds it under the id the node answers"
+        );
+        let home = std::env::home_dir().expect("the tests run with a home");
+        assert_eq!(started.folder, home, "it says the folder it began in");
+        assert_eq!(
+            given[5..7],
+            ["--folder", &home.display().to_string()],
+            "a start naming no folder begins in its machine's home"
         );
         assert_eq!(
             given[9..],

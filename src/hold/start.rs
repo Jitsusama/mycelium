@@ -91,6 +91,19 @@ impl Starter {
     }
 }
 
+/// The folder a start asking for `folder` begins in on a machine whose
+/// home is `home`: a full path as it is, a path within home, or home when
+/// it names none or names no folder here, so a checkout kept at the same
+/// place under each machine's home is found on either.
+#[must_use]
+pub fn begins_in(folder: Option<&Path>, home: &Path) -> PathBuf {
+    // Joining a full path gives that path, so both kinds read alike.
+    match folder.map(|folder| home.join(folder)) {
+        Some(wanted) if wanted.is_dir() => wanted,
+        _ => home.to_owned(),
+    }
+}
+
 /// `command` run through the person's login shell, as a terminal would
 /// run it, so it has their environment rather than a service's: a pi
 /// started without it has no model token and ends at once.
@@ -125,6 +138,7 @@ pub fn attach_here(realm: &str, id: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn a_program_runs_through_the_login_shell_with_its_words_kept_apart() {
@@ -134,5 +148,23 @@ mod tests {
             ["-lic", r#"exec "$@""#, "mycelium", "pi", "say \"hi\" $HOME"],
             "the shell execs the words as given, never reading them as its own"
         );
+    }
+
+    #[test]
+    fn a_start_begins_in_the_folder_it_names_under_home_or_else_at_home() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let home = home.path();
+        let src = home.join("src").join("core.nix");
+        fs::create_dir_all(&src).expect("a checkout is made");
+        let cases = [
+            (Some(Path::new("src/core.nix")), src.clone()),
+            (Some(src.as_path()), src.clone()),
+            (Some(Path::new("src/elsewhere")), home.to_owned()),
+            (Some(Path::new("/no/such/folder")), home.to_owned()),
+            (None, home.to_owned()),
+        ];
+        for (asked, begins) in cases {
+            assert_eq!(begins_in(asked, home), begins, "asked for {asked:?}");
+        }
     }
 }

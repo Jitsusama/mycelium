@@ -160,7 +160,9 @@ struct Starting {
     /// What the machine must be, as for `place`.
     #[command(flatten)]
     work: Asked,
-    /// The folder it starts in, if not this one.
+    /// The folder it starts in, found at the same place under the home of
+    /// the machine it starts on when it is under this one's; if none, or
+    /// none there, that machine's home.
     #[arg(long)]
     folder: Option<PathBuf>,
     /// The program and its arguments, after `--`.
@@ -402,12 +404,18 @@ fn share(shares: &Places, quest: &str, scratch: &[String]) -> io::Result<()> {
 
 /// Holds `command`, started in `folder` or this one, and joins it from
 /// this terminal unless `detached`, when it prints its id instead.
-/// Asks the node to start `command` in `folder`, or this one, where
-/// placement says `work` should go.
+/// Asks the node to start `command` where placement says `work` should
+/// go, in `folder` as it stands under home there, or in home.
 fn start(socket: &Path, asked: Starting) -> io::Result<()> {
-    let folder = match asked.folder {
-        Some(folder) => std::path::absolute(folder)?,
-        None => std::env::current_dir()?,
+    let folder = asked.folder.map(std::path::absolute).transpose()?;
+    // A folder under home is said within it, since another machine's
+    // home is elsewhere: /home/joel here is /Users/joel on a Mac.
+    let folder = match (folder, std::env::home_dir()) {
+        (Some(folder), Some(home)) => match folder.strip_prefix(&home) {
+            Ok(within) => Some(within.to_owned()),
+            Err(_) => Some(folder),
+        },
+        (folder, _) => folder,
     };
     let start = Start {
         work: asked.work.into(),

@@ -236,7 +236,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Machine"` | `{"Machine": machine}`, this machine as measured now |
 | `"Machines"` | `{"Machines": [machine]}`, this machine first, then each other |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
-| `{"Start": {"work", "folder", "command"}}` | `{"Started": {"machine", "held", "attach"}}` |
+| `{"Start": {"work", "folder", "command"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events |
@@ -326,20 +326,24 @@ own queue and taints, so nothing fits work against its room, which only
 ranks it.
 
 `"Start"` places `work` as `"Place"` does and starts `command` held
-there, in `folder`, a full path on that machine, through the person's
-login shell (`$SHELL -lic`), so it has their environment rather than
-the node's. The answer is the `machine`, the `held` id and `attach`, the
-words that join it from a terminal on the asking machine, to be run as
-given. A start that isn't placed, or doesn't start, is an error saying
-why, such as `nowhere: optimus isn't equilibrius`. A node run as a
-systemd unit starts each holder in a scope of its own,
-`mycelium-pi-<held>.scope` in `app.slice`, so the session outlives the
-node. A start placed on another machine is asked of it through the link
-this node keeps to it, and its `attach` comes back as the words that
-run that machine's own over the dial, such as `ssh -t equilibrius
-mycelium --realm work attach <held>`. It fails with a reason when no
-link reaches the machine, its mycelium is too old to start sessions, or
-it doesn't answer within 30 seconds.
+there through the person's login shell (`$SHELL -lic`), so it has their
+environment rather than the node's. It begins in `folder`: a full path
+on that machine, or a path within its home, such as `src/core.nix`,
+since each machine's home is its own; `mycelium start --folder` says a
+folder under home that way. It begins in its home when `folder` is
+none or names no folder there. The answer is the `machine`, the `held`
+id, the `folder` it began in, and `attach`, the words that join it from
+a terminal on the asking machine, to be run as given. A start that
+isn't placed, or doesn't start, is an error saying why, such as
+`nowhere: optimus isn't equilibrius`. A node run as a systemd unit
+starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in
+`app.slice`, so the session outlives the node. A start placed on
+another machine is asked of it through the link this node keeps to it,
+and its `attach` comes back as the words that run that machine's own
+over the dial, such as `ssh -t equilibrius mycelium --realm work attach
+<held>`. It fails with a reason when no link reaches the machine, its
+mycelium is too old to start sessions, or it doesn't answer within 30
+seconds.
 
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`
