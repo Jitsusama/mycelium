@@ -309,9 +309,11 @@ its person's share.
 Its `declared` is what its configuration says of it, which can't be
 measured: `reach`, the networks work there always reaches, such as
 `internet`; `probes`, the networks it reaches only some of the time,
-such as a laptop's `home`, each by a probe whose `connect` is the
-`host:port` a connection opens to only while that network is reached;
-`outlives`, what a session held there outlives
+such as a laptop's `home`, each by a probe: `{"connect": "host:port"}`,
+an address a connection opens to only while that network is reached, or
+`{"run": [program, words]}`, a command run with no shell that exits 0
+only then, for a network no address tells apart, such as one known by
+its Wi-Fi or a tunnel's link; `outlives`, what a session held there outlives
 (`window_close`, `node_restart`, `sleep`, `reboot`); `costs_money`; and
 `taints`, what it refuses, each a `key` work tolerates it by, an
 `effect` (`never`, or `prefer_not` while anywhere else will do) and
@@ -321,11 +323,11 @@ the machine enforces its own taints. It is `null` where nothing is
 declared, or where the file isn't in this shape, which the node logs.
 
 Its `reached` says whether each probed network answered, by name. The
-node opens a connection to each probe every 30 seconds, giving each 3
-to answer, and writes the round to `reached.json` beside its sockets,
-where each end of a link on the machine reads it; a record older than
-90 seconds says nothing, so a network is unknown rather than stale
-while no node probes.
+node tries each probe every 30 seconds, giving each 3 to answer (a
+command still running then is killed), and writes the round to
+`reached.json` beside its sockets, where each end of a link on the
+machine reads it; a record older than 90 seconds says nothing, so a
+network is unknown rather than stale while no node probes.
 
 `"Machines"` gives each other machine as its own end of a link last
 said it, about once a minute.
