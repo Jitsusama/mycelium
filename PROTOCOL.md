@@ -102,8 +102,10 @@ same code, each line a JSON value:
    from before the machines were linked was never its to hear.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first
    for each the Have didn't list, then each new one as it lands.
-4. `{"Presence": {"session", "body", "leases"}}`: a living session of
-   the sending end's machine, again whenever it or its leases change.
+4. `{"Presence": {"session", "body", "leases", "held"}}`: a living
+   session of the sending end's machine, again whenever it, its leases
+   or its `held` id change. `held` is the id a holder there keeps it by,
+   which the other end writes into the carried presence as `heldAs`.
    `leases` are the mesh's `change` leases it and its hands hold on a
    repository's files, named as `core.nix:flake.nix`, so a session in
    another clone there is told it overlaps; one named by an absolute
@@ -246,11 +248,16 @@ from an older presence, the quest among what it owns), what it `wants` of
 its person (`kind`, `since`, `said`) while it waits, and the `window` it
 runs in (`terminal`, `id`, `within`, such as a kitty window's id and
 kitty's socket). Only a session of this machine's has a `window`, since a
-window is gone to on its own machine. A session of this machine's that a
-holder keeps, as one started with `mycelium hold -- pi` is, says `held`:
-the id `mycelium attach` takes it up by. It is known by the holder's
-program being the session's own process, and its `window` is the latest
-window joined to its holder that is still joined, or none. Its
+window is gone to on its own machine. A session a holder keeps, as one
+started with `mycelium hold -- pi` is, says `held`: the id `mycelium
+attach` takes it up by on its machine. It is known by the holder's
+program being the session's own process, which only its own machine
+sees, so a link carries it with the presence. A held session of this
+machine's has as its `window` the latest window joined to its holder
+that is still joined, or none. A held session says `attach` too, the
+words that join it from a terminal on this machine, to be run as given:
+`mycelium` here, or the dial's words for a machine a link of this node's
+reaches, and none while no link does. Its
 `presence` goes along whole, as its session wrote it, for a reader that
 shows more of it, such as the launcher; a session elsewhere's has its
 process taken out. Whether a session lives is its `state`, never
