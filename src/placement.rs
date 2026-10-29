@@ -382,6 +382,7 @@ mod tests {
                 outlives: Vec::new(),
                 costs_money: false,
                 taints: Vec::new(),
+                cores: None,
             }),
             ..facts::measure(name, &nowhere)
         }

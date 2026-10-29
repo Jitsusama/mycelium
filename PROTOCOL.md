@@ -342,10 +342,13 @@ an address a connection opens to only while that network is reached, or
 `{"run": [program, words]}`, a command run with no shell that exits 0
 only then, for a network no address tells apart, such as one known by
 its Wi-Fi or a tunnel's link; `outlives`, what a session held there outlives
-(`window_close`, `node_restart`, `sleep`, `reboot`); `costs_money`; and
+(`window_close`, `node_restart`, `sleep`, `reboot`); `costs_money`;
 `taints`, what it refuses, each a `key` work tolerates it by, an
 `effect` (`never`, or `prefer_not` while anywhere else will do) and
-`why`. Only the account's built configuration writes it, as
+`why`; and, where given, `cores`, how many processors work there may use
+when the machine lists more than it is given, as a virtual machine held
+to a share of its host does, which its `cpu`'s `cores` then says. Only
+the machine's own built configuration writes it, as
 `~/.config/mycelium/declared.json` (or under `XDG_CONFIG_HOME`), and
 the machine enforces its own taints. It is `null` where nothing is
 declared, or where the file isn't in this shape, which the node logs.
