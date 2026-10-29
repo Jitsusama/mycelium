@@ -49,6 +49,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tokio::sync::{mpsc, oneshot};
 
 use crate::facts::{self, Machine, Readiness};
+use crate::hold;
 use crate::mesh;
 use crate::share::exchange::{Exchange, Places, Say};
 use crate::store::{self, Change, Claim, Store};
@@ -103,6 +104,9 @@ pub enum Frame {
         /// end older than this names none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         leases: Option<Vec<Value>>,
+        /// The id a holder on this end's machine keeps it by, if one does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        held: Option<String>,
     },
     /// A session of this end's machine has ended.
     Ended {
@@ -174,6 +178,7 @@ pub async fn run(
         here: membership.hello().machine,
         facts: other.facts,
         starts: other.starts,
+        held: starting.as_ref().map(|starting| starting.held.clone()),
         node: starting.map(|starting| starting.node),
         answering,
         asks: HashMap::new(),
@@ -313,7 +318,10 @@ struct End<S> {
     reach: i64,
     has: HashSet<String>,
     /// Each living session's presence and leases, as last sent.
-    sent: BTreeMap<String, (Value, Vec<Value>)>,
+    sent: BTreeMap<String, (Value, Vec<Value>, Option<String>)>,
+    /// The realm's folder of held sessions on this machine, if this end
+    /// says which hold its sessions.
+    held: Option<PathBuf>,
     carried: HashSet<String>,
     exchange: Option<Exchange>,
     _claim: Claim,
@@ -353,9 +361,17 @@ impl<S: Store> End<S> {
             }
             Frame::Presence {
                 session,
-                body,
+                mut body,
                 leases,
+                held,
             } => {
+                // The held id is the link's to say, never the presence's.
+                if let Some(fields) = body.as_object_mut() {
+                    fields.remove(mesh::HELD_AS);
+                    if let Some(held) = held {
+                        fields.insert(mesh::HELD_AS.to_owned(), Value::String(held));
+                    }
+                }
                 let put = self.store.put_presence(&session, &self.other, &body);
                 if put.is_ok() {
                     self.carried.insert(session.clone());
@@ -549,8 +565,8 @@ impl<S: Store> End<S> {
             send(writing, &Frame::Ended { session }).await?;
         }
         let holdings = self.store.holdings();
-        for (session, body) in living {
-            let said = (body, mesh::carried_leases(&holdings, &session));
+        for (session, (body, held)) in living {
+            let said = (body, mesh::carried_leases(&holdings, &session), held);
             if self.sent.get(&session) != Some(&said) {
                 send(
                     writing,
@@ -558,6 +574,7 @@ impl<S: Store> End<S> {
                         session: session.clone(),
                         body: said.0.clone(),
                         leases: Some(said.1.clone()),
+                        held: said.2.clone(),
                     },
                 )
                 .await?;
@@ -567,13 +584,18 @@ impl<S: Store> End<S> {
         Ok(())
     }
 
-    /// This machine's living sessions, as their presences say.
-    fn living(&self) -> BTreeMap<String, Value> {
+    /// This machine's living sessions, as their presences say, with the id
+    /// a holder here keeps each by, if one does.
+    fn living(&self) -> BTreeMap<String, (Value, Option<String>)> {
+        let held = self.held.as_deref().map(hold::held).unwrap_or_default();
         self.store
             .presences()
             .into_iter()
             .filter(|presence| presence.elsewhere.is_none() && presence.lives)
-            .map(|presence| (presence.session, presence.body))
+            .map(|presence| {
+                let id = mesh::held_by(&presence, &held).map(|one| one.id.clone());
+                (presence.session, (presence.body, id))
+            })
             .collect()
     }
 
@@ -978,6 +1000,7 @@ mod tests {
                 session: "walgit".to_owned(),
                 body: json!({"session": "walgit"}),
                 leases: None,
+                held: None,
             },
         ] {
             send(&mut far_writing, &frame)
@@ -1168,6 +1191,7 @@ mod tests {
                 session: "launcher".to_owned(),
                 body: json!({"session": "not-launcher"}),
                 leases: None,
+                held: None,
             },
             Frame::Message {
                 id: good.clone(),

@@ -177,11 +177,22 @@ pub fn session(presence: &Presence, here: &str) -> Option<Session> {
                 id: terminal.value,
                 within: terminal.scope,
             }),
-        held: None,
+        // Its own machine's holders are read where they run; a link writes
+        // the id one keeps a session elsewhere by into its presence.
+        held: presence
+            .elsewhere
+            .as_ref()
+            .and_then(|_| presence.body.get(HELD_AS)?.as_str())
+            .map(str::to_owned),
+        attach: None,
         at: said.at,
         presence: presence.body.clone(),
     })
 }
+
+/// The field of a presence carried from another machine that a link writes
+/// the session's held id into, as that machine's holder keeps it.
+pub const HELD_AS: &str = "heldAs";
 
 /// What is held here that holds this machine's session: the holder whose
 /// program is the session's own process, as a session started with

@@ -340,6 +340,7 @@ fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Ssh>) -> io::Re
 /// this machine to its node at `socket`, which runs in its person's login
 /// session.
 fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
+    let held = place::held(&realm);
     let (store, membership, shares) = open(here, realm)?;
     runtime()?.block_on(async {
         let connection = Connection {
@@ -349,6 +350,7 @@ fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
         };
         let starting = link::starts::Starting {
             node: socket,
+            held,
             asking: None,
         };
         link::run(store, &membership, connection, Some(shares), Some(starting)).await

@@ -23,7 +23,7 @@ use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership
 use crate::mesh;
 use crate::place;
 use crate::placement::{self, Placement};
-use crate::record::Message;
+use crate::record::{Message, Session};
 use crate::share::exchange::Places;
 use crate::state::State;
 use crate::store::{self, Change, Store};
@@ -165,6 +165,7 @@ where
                 let dial = Arc::new(dial);
                 let starting = Starting {
                     node: socket.path.clone(),
+                    held: shared.held.clone(),
                     asking: Some((shared.asks.clone(), {
                         let dial = dial.clone();
                         Arc::new(move |words: &[String]| dial.there(words))
@@ -301,6 +302,7 @@ impl<S: Store> Shared<S> {
                     // last and is still joined, or in none.
                     session.window = one.windows.last().cloned();
                 }
+                session.attach = self.attach(&session);
                 Some(session)
             })
             .collect();
@@ -333,6 +335,17 @@ impl<S: Store> Shared<S> {
             .put_message(&id, &body)
             .map_err(|error| format!("the store refused the message: {error}"))?;
         mesh::message(&body).ok_or_else(|| "the message didn't read back".to_owned())
+    }
+
+    /// The words that join `session` from a terminal here, when it is held
+    /// here or on a machine a link of this node's reaches.
+    fn attach(&self, session: &Session) -> Option<Vec<String>> {
+        let words = start::attach_here(&self.realm, session.held.as_ref()?);
+        if session.machine == self.machine {
+            return Some(words);
+        }
+        let there = self.asks.there(&session.machine)?;
+        Some(there(&words))
     }
 
     /// This machine as it is now: a handful of small files read, or one
@@ -561,6 +574,55 @@ mod tests {
         (holder, given)
     }
 
+    /// Holds session `0e50` on equilibrius, whose store is `store`, as its
+    /// holder there keeps it by `5e551011`, answering the held folder.
+    fn hold_a_session(dir: &Path, store: &Memory) -> PathBuf {
+        let held = dir.join("equilibrius.held");
+        fs::create_dir(&held).expect("the held folder is made");
+        let keeps = hold::Held {
+            id: "5e551011".to_owned(),
+            command: vec!["pi".to_owned()],
+            folder: dir.to_owned(),
+            holder: std::process::id(),
+            pid: 4242,
+            since: "2026-10-29T06:00:00Z".to_owned(),
+            windows: Vec::new(),
+        };
+        let record = serde_json::to_vec(&keeps).expect("a record");
+        fs::write(held.join("5e551011.json"), record).expect("the record is written");
+        fs::write(held.join("5e551011.sock"), "").expect("its socket stands");
+        let presence = json!({
+            "session": "0e50",
+            "addresses": ["SAK9FZ"],
+            "at": "2026-10-29T06:00:00Z",
+            "owner": {"pid": 4242},
+        });
+        store.start_here("0e50", presence, true);
+        held
+    }
+
+    /// Session `id` once the node at `socket` lists it.
+    async fn listed(socket: PathBuf, id: &'static str) -> Session {
+        let listed = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            // Nothing tells a client when the link has carried a session,
+            // so it asks again every few milliseconds until it has.
+            loop {
+                let Ok(Ok(Response::Sessions(all))) = client.ask(&Request::Sessions) else {
+                    panic!("the node lists its sessions");
+                };
+                if let Some(one) = all.into_iter().find(|one| one.id == id) {
+                    return one;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        tokio::time::timeout(PATIENCE, listed)
+            .await
+            .expect("the node lists it in time")
+            .expect("the client asks")
+    }
+
     fn work(needs: Vec<placement::Need>) -> placement::Work {
         placement::Work {
             needs,
@@ -609,6 +671,7 @@ mod tests {
     struct Piped {
         store: Memory,
         socket: PathBuf,
+        held: PathBuf,
     }
 
     impl Dial for Piped {
@@ -620,12 +683,17 @@ mod tests {
             let (near, far) = tokio::io::duplex(1 << 16);
             let store = self.store.clone();
             let node = self.socket.clone();
+            let held_here = self.held.clone();
             tokio::spawn(async move {
                 let realm = Realm {
                     name: "work".to_owned(),
                     machine: "equilibrius".to_owned(),
                 };
-                let starting = Starting { node, asking: None };
+                let starting = Starting {
+                    node,
+                    held: held_here,
+                    asking: None,
+                };
                 // The test judges the link by what crosses it.
                 let _ = link::run(store, &realm, piped(far), None, Some(starting)).await;
             });
@@ -649,7 +717,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_start_placed_on_another_machine_is_started_by_that_machines_node() {
+    async fn another_machines_node_starts_and_joins_its_held_sessions_for_this_one() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (holder, given) = stand_in_holder(dir.path());
         let far_socket = dir.path().join("equilibrius").join("work.sock");
@@ -662,9 +730,11 @@ mod tests {
         let nobody = Vec::<Piped>::new();
         let far = node(&far_store, "equilibrius", nobody, Some(holds), &far_socket);
         let near_store = Memory::default();
+        let held = hold_a_session(dir.path(), &far_store);
         let dial = Piped {
             store: far_store,
             socket: far_socket,
+            held,
         };
         let near = node(&near_store, "optimus", vec![dial], None, &near_socket);
         // Nothing tells the test when the link has said what equilibrius
@@ -680,6 +750,24 @@ mod tests {
         })
         .await
         .expect("the link says what equilibrius is");
+        let carried = listed(near_socket.clone(), "0e50").await;
+        assert_eq!(carried.held.as_deref(), Some("5e551011"));
+        assert_eq!(
+            carried.attach,
+            Some(
+                [
+                    "into-equilibrius",
+                    "mycelium",
+                    "--realm",
+                    "work",
+                    "attach",
+                    "5e551011"
+                ]
+                .map(str::to_owned)
+                .to_vec()
+            ),
+            "a session held elsewhere is joined through the dial that reaches it"
+        );
 
         let folder = dir.path().to_owned();
         let started = tokio::task::spawn_blocking(move || {

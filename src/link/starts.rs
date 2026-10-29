@@ -31,6 +31,9 @@ pub struct Starting {
     /// This machine's node's socket, which a start the other end asks of
     /// this machine is handed to.
     pub node: PathBuf,
+    /// The realm's folder of held sessions on this machine, whose ids its
+    /// sessions' presences carry, so the other end can join them.
+    pub held: PathBuf,
     /// For a link this machine's node keeps: where the node asks its
     /// starts of the other machine, and how a command runs there.
     pub asking: Option<(Asks, There)>,
@@ -85,6 +88,13 @@ impl Asks {
             })),
             other => other,
         }
+    }
+
+    /// How a command runs on `machine` from here, while a link reaches it.
+    #[must_use]
+    pub fn there(&self, machine: &str) -> Option<There> {
+        let links = self.lock();
+        Some(links.by_machine.get(machine)?.there.clone())
     }
 
     /// Takes the starts asked of `machine` for the link reaching it, until
