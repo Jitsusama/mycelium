@@ -20,6 +20,12 @@
 //! node, whose answer comes back. Only an end whose hello says it carries
 //! them is asked.
 //!
+//! Each end also carries steers ([`steers`]): its node asks the other
+//! machine to put what the person says into a session's inbox there, and
+//! the other end writes it, then carries back each line the session adds
+//! to the talk it opens. Only an end whose hello says it carries them is
+//! asked.
+//!
 //! Each end reads in a task of its own, so two ends sending a week of
 //! messages at once never wait on each other.
 //!
@@ -36,6 +42,7 @@ pub mod discovery;
 pub mod membership;
 pub mod refused;
 pub mod starts;
+pub mod steers;
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -54,10 +61,11 @@ use crate::hold;
 use crate::mesh;
 use crate::share::exchange::{Exchange, Places, Say};
 use crate::store::{self, Change, Claim, Store};
-use crate::wire::{Reply, Start};
+use crate::wire::{Reply, Response, Start};
 use dial::Connection;
 use membership::{Hello, Membership};
-use starts::{Ask, Starting};
+use starts::{Ask, Asked, Starting};
+use steers::{Following, Replies};
 
 /// How far back a link reaches for messages at most: the mesh's own week,
 /// so a link never hands back a message the other end has already let go.
@@ -125,7 +133,24 @@ pub enum Frame {
         /// What to start.
         start: Start,
     },
-    /// The other end's machine's answer to an ask.
+    /// Put a steer into a session's inbox on the other end's machine.
+    Steer {
+        /// Which ask, so its answer finds it.
+        ask: u64,
+        /// The session's address.
+        address: String,
+        /// What is said, in the harness's own shape.
+        steer: Value,
+    },
+    /// The talks this end follows and how much of each it has, so the
+    /// other end carries on with those whose sessions run there.
+    Follow {
+        /// The talks.
+        talks: Vec<crate::steer::Talk>,
+    },
+    /// Lines a session on this end's machine added to a talk.
+    Replies(Replies),
+    /// The other end's machine's answer to an ask, a start's or a steer's.
     Started {
         /// Which ask.
         ask: u64,
@@ -175,11 +200,15 @@ pub async fn run(
         None => (None, None),
     };
     let (answering, mut answered) = mpsc::unbounded_channel();
+    let inboxes = starting.as_ref().map(|starting| starting.steers.clone());
     let mut end = End {
         store,
         here: membership.hello().machine,
         facts: other.facts,
         starts: other.starts,
+        steers: other.steers,
+        following: inboxes.clone().map(Following::new),
+        inboxes,
         held: starting.as_ref().map(|starting| starting.held.clone()),
         node: starting.map(|starting| starting.node),
         answering,
@@ -199,6 +228,7 @@ pub async fn run(
     send(&mut writing, &Frame::Have { messages, living }).await?;
     end.send_machine(&mut writing).await?;
     end.send_presence(&mut writing).await?;
+    end.send_follow(&mut writing).await?;
 
     // The start has just said all of it, so the first keep is a minute on.
     let mut keeping =
@@ -216,7 +246,7 @@ pub async fn run(
             Some((ask, reply)) = answered.recv() => {
                 send(&mut writing, &Frame::Started { ask, reply }).await
             }
-            _ = looking.tick() => end.share(Exchange::look, &mut writing).await,
+            _ = looking.tick() => end.look(&mut writing).await,
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => end.send_messages(vec![id], &mut writing).await,
                 Some(Change::Presence) => end.send_presence(&mut writing).await,
@@ -309,6 +339,12 @@ struct End<S> {
     facts: bool,
     /// Whether the other end carries starts.
     starts: bool,
+    /// Whether the other end carries steers.
+    steers: bool,
+    /// This machine's sessions' steer inboxes, if this end carries steers.
+    inboxes: Option<PathBuf>,
+    /// The talks this end carries back to the other.
+    following: Option<Following>,
     /// This machine's node's socket, which starts asked of it go to.
     node: Option<PathBuf>,
     /// Where the answers to starts asked of this machine go, to be sent.
@@ -396,6 +432,33 @@ impl<S: Store> End<S> {
             }
             Frame::Machine(said) => self.keep_machine(*said),
             Frame::Start { ask, start } => self.answer(ask, start),
+            Frame::Steer {
+                ask,
+                address,
+                steer,
+            } => {
+                let reply = match self.following.as_mut() {
+                    Some(following) => {
+                        following
+                            .deliver(&address, &steer)
+                            .map(|()| Response::Steered {
+                                machine: self.here.clone(),
+                            })
+                    }
+                    None => Err(format!("{} carries no steers over this link", self.here)),
+                };
+                send(writing, &Frame::Started { ask, reply }).await?;
+            }
+            Frame::Follow { talks } => {
+                if let Some(following) = self.following.as_mut() {
+                    following.follow(talks);
+                }
+            }
+            Frame::Replies(replies) => {
+                if let Some(inboxes) = &self.inboxes {
+                    self.kept(&replies.id, steers::keep(inboxes, &replies));
+                }
+            }
             Frame::Started { ask, reply } => {
                 // An ask its asker has given up on is answered to nobody.
                 if let Some(answer) = self.asks.remove(&ask) {
@@ -409,10 +472,14 @@ impl<S: Store> End<S> {
     /// Asks the other machine to start what this machine's node placed
     /// there, or answers why it can't be asked.
     async fn ask(&mut self, ask: Ask, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
-        if !self.starts {
+        let carried = match &ask.asked {
+            Asked::Start(_) => self.starts.then_some(()).ok_or("start sessions"),
+            Asked::Steer(_) => self.steers.then_some(()).ok_or("carry steers"),
+        };
+        if let Err(cannot) = carried {
             // The asker may have given up; then nobody hears it.
             let _ = ask.answer.send(Err(format!(
-                "{}'s mycelium is too old to start sessions",
+                "{}'s mycelium is too old to {cannot}",
                 self.other
             )));
             return Ok(());
@@ -420,8 +487,50 @@ impl<S: Store> End<S> {
         let id = self.next_ask;
         self.next_ask += 1;
         self.asks.insert(id, ask.answer);
-        let start = ask.start;
-        send(writing, &Frame::Start { ask: id, start }).await
+        let frame = match ask.asked {
+            Asked::Start(start) => Frame::Start { ask: id, start },
+            Asked::Steer(steer) => Frame::Steer {
+                ask: id,
+                address: steer.address,
+                steer: Value::Object(steer.body),
+            },
+        };
+        send(writing, &frame).await
+    }
+
+    /// Tells an end that carries steers which talks this end follows, so
+    /// it carries on with those whose sessions run on its machine.
+    async fn send_follow(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        let Some(inboxes) = self.inboxes.clone().filter(|_| self.steers) else {
+            return Ok(());
+        };
+        let talks = tokio::task::spawn_blocking(move || crate::steer::open_talks(&inboxes))
+            .await
+            .map_err(io::Error::other)?;
+        if talks.is_empty() {
+            return Ok(());
+        }
+        send(writing, &Frame::Follow { talks }).await
+    }
+
+    /// Looks for changes in the quests shared and the talks followed,
+    /// away from the link's own work, and sends what it finds.
+    async fn look(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        self.share(Exchange::look, writing).await?;
+        let Some(mut following) = self.following.take() else {
+            return Ok(());
+        };
+        let (following, carried) = tokio::task::spawn_blocking(move || {
+            let carried = following.look();
+            (following, carried)
+        })
+        .await
+        .map_err(io::Error::other)?;
+        self.following = Some(following);
+        for replies in carried {
+            send(writing, &Frame::Replies(replies)).await?;
+        }
+        Ok(())
     }
 
     /// Hands a start the other end asks of this machine to its node, away
@@ -962,6 +1071,7 @@ mod tests {
         let older = Hello {
             facts: false,
             starts: false,
+            steers: false,
             ..realm("equilibrius").hello()
         };
         send(&mut far_writing, &Frame::Hello(older))
@@ -1156,6 +1266,7 @@ mod tests {
             version: VERSION,
             facts: true,
             starts: true,
+            steers: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await

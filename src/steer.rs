@@ -66,10 +66,10 @@ impl Steer {
         if text.trim().is_empty() && act.is_none() {
             return Err("a steer says something or does something".to_owned());
         }
-        if let Some(id) = body.get("id") {
-            if !id.as_str().is_some_and(is_talk) {
-                return Err(format!("{id} can't name a talk"));
-            }
+        if let Some(id) = body.get("id")
+            && !id.as_str().is_some_and(is_talk)
+        {
+            return Err(format!("{id} can't name a talk"));
         }
         Ok(Self { address, body })
     }
@@ -97,9 +97,7 @@ impl Steer {
 fn is_talk(id: &str) -> bool {
     let mut bytes = id.bytes();
     let fits = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-';
-    id.len() <= 64
-        && bytes.next().is_some_and(fits)
-        && bytes.all(|byte| fits(byte) || byte == b'.')
+    id.len() <= 64 && bytes.next().is_some_and(fits) && bytes.all(|byte| fits(byte) || byte == b'.')
 }
 
 /// A name that sorts after every one made before it here: the time in
@@ -110,23 +108,35 @@ fn named_now() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     let made = MADE.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "{}-{:x}{made:04x}",
-        since.as_millis(),
-        std::process::id()
-    )
+    format!("{}-{:x}{made:04x}", since.as_millis(), std::process::id())
 }
 
-/// The file a talk's events go in.
+/// The file a talk's events go in, if `address` and `talk` can name one:
+/// what another machine says of a talk becomes a path here, so neither may
+/// reach outside the inboxes.
 #[must_use]
-pub fn replies(inboxes: &Path, address: &str, talk: &str) -> PathBuf {
-    inboxes.join(address).join("replies").join(format!("{talk}.jsonl"))
+pub fn replies(inboxes: &Path, address: &str, talk: &str) -> Option<PathBuf> {
+    let addressed = !address.is_empty()
+        && address
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit());
+    (addressed && is_talk(talk)).then(|| {
+        inboxes
+            .join(address)
+            .join("replies")
+            .join(format!("{talk}.jsonl"))
+    })
 }
 
 /// Makes a talk's file if it isn't there, empty, so whoever watches it
 /// finds it from the start.
 pub fn open_talk(inboxes: &Path, address: &str, talk: &str) -> io::Result<()> {
-    let path = replies(inboxes, address, talk);
+    let path = replies(inboxes, address, talk).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{address} {talk} can't name a talk"),
+        )
+    })?;
     if let Some(folder) = path.parent() {
         fs::create_dir_all(folder)?;
     }
@@ -179,7 +189,12 @@ pub fn ends(lines: &str) -> bool {
     lines.lines().any(|line| {
         serde_json::from_str::<Value>(line)
             .ok()
-            .and_then(|event| event.get("stage")?.as_str().map(|stage| ENDED.contains(&stage)))
+            .and_then(|event| {
+                event
+                    .get("stage")?
+                    .as_str()
+                    .map(|stage| ENDED.contains(&stage))
+            })
             .unwrap_or(false)
     })
 }
@@ -212,11 +227,17 @@ pub fn open_talks(inboxes: &Path) -> Vec<Talk> {
             let path = file.path();
             let (Some(address), Some(id)) = (
                 address.file_name().to_str().map(str::to_owned),
-                path.file_stem().and_then(|stem| stem.to_str()).map(str::to_owned),
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(str::to_owned),
             ) else {
                 continue;
             };
-            if path.extension().is_none_or(|extension| extension != "jsonl") || !is_talk(&id) {
+            if path
+                .extension()
+                .is_none_or(|extension| extension != "jsonl")
+                || !is_talk(&id)
+            {
                 continue;
             }
             let Ok(meta) = file.metadata() else { continue };
@@ -250,8 +271,11 @@ mod tests {
     #[test]
     fn a_steer_is_written_whole_under_a_name_in_the_order_said() {
         let inboxes = inboxes();
-        let first = Steer::new("ab12cd", &json!({"text": "hello", "from": "joel", "extra": 1}))
-            .expect("a steer");
+        let first = Steer::new(
+            "ab12cd",
+            &json!({"text": "hello", "from": "joel", "extra": 1}),
+        )
+        .expect("a steer");
         let second = Steer::new("AB12CD", &json!({"act": "pause"})).expect("a steer");
         let one = first.deliver(inboxes.path()).expect("delivered");
         let two = second.deliver(inboxes.path()).expect("delivered");
@@ -271,7 +295,9 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
         assert!(
-            names.iter().all(|name| name.ends_with(".json")),
+            names
+                .iter()
+                .all(|name| Path::new(name).extension().is_some_and(|it| it == "json")),
             "no temporary name is left: {names:?}"
         );
     }
@@ -298,7 +324,17 @@ mod tests {
     #[test]
     fn only_whole_lines_are_read_and_none_is_appended_twice() {
         let inboxes = inboxes();
-        let far = replies(inboxes.path(), "AB12", "talk-1");
+        let far = replies(inboxes.path(), "AB12", "talk-1").expect("a talk's file");
+        assert_eq!(
+            replies(inboxes.path(), "..", "talk-1"),
+            None,
+            "no address reaches outside the inboxes"
+        );
+        assert_eq!(
+            replies(inboxes.path(), "AB12", "../x"),
+            None,
+            "nor does a talk"
+        );
         let near = inboxes.path().join("near.jsonl");
         fs::create_dir_all(far.parent().expect("a folder")).expect("made");
         fs::write(&far, "{\"stage\":\"delivered\"}\n{\"stage\":\"rep").expect("written");
@@ -314,7 +350,8 @@ mod tests {
         assert!(!ends(&lines), "a talk delivered hasn't ended");
 
         let mut file = OpenOptions::new().append(true).open(&far).expect("opened");
-        file.write_all(b"lying\"}\n{\"stage\":\"replied\"}\n").expect("written");
+        file.write_all(b"lying\"}\n{\"stage\":\"replied\"}\n")
+            .expect("written");
         let (more, _) = lines_from(&far, next).expect("read");
         append(&near, next + 1, &more).expect("a gap is left alone");
         assert_eq!(fs::read_to_string(&near).expect("read"), lines, "no gap");
@@ -333,7 +370,7 @@ mod tests {
         open_talk(inboxes.path(), "AB12", "talk-1").expect("opened");
         open_talk(inboxes.path(), "AB12", "talk-2").expect("opened");
         fs::write(
-            replies(inboxes.path(), "AB12", "talk-2"),
+            replies(inboxes.path(), "AB12", "talk-2").expect("a talk's file"),
             "{\"stage\":\"failed\"}\n",
         )
         .expect("written");

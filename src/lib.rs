@@ -15,7 +15,9 @@
 //!
 //! Shared files, a quest's record and scratch on every machine sharing it,
 //! are kept by content in [`share`]. Sessions whose terminals outlive their
-//! windows are kept by holders of their own, in [`hold`].
+//! windows are kept by holders of their own, in [`hold`]. What the person
+//! says to a session from outside its window reaches its inbox through
+//! [`steer`], on whichever machine it runs.
 //!
 //! Around them:
 //!
@@ -49,5 +51,6 @@ pub mod record;
 pub mod room;
 pub mod share;
 pub mod state;
+pub mod steer;
 pub mod store;
 pub mod wire;

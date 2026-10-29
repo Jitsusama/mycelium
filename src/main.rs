@@ -112,6 +112,14 @@ enum Action {
     /// placement chooses, through that person's login shell; prints the
     /// machine, its id and the words that attach to it.
     Start(Starting),
+    /// Puts what is said into the steer inbox of the session going by
+    /// ADDRESS, on whichever machine it runs; reads the steer from input,
+    /// as the harness writes one: `{"text": "..."}`, with `act` and `id` if
+    /// it pauses, resumes, stops or opens a talk.
+    Steer {
+        /// The session's address.
+        address: String,
+    },
     /// Starts a program on a terminal a holder of its own keeps, so its
     /// window can close and `attach` take it up again from any terminal;
     /// then joins it, unless `--detached`.
@@ -206,6 +214,9 @@ struct Here {
     /// The harness mesh's folders, if not where the harness keeps them.
     #[arg(long)]
     mesh: Option<PathBuf>,
+    /// The sessions' steer inboxes, if not where the harness keeps them.
+    #[arg(long)]
+    steer: Option<PathBuf>,
     /// This machine's name, if not the system's.
     #[arg(long)]
     machine: Option<String>,
@@ -276,6 +287,11 @@ fn run(command: Command) -> io::Result<()> {
         Action::Machines => print_reply(&socket, &Request::Machines),
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
         Action::Start(asked) => start(&socket, asked),
+        Action::Steer { address } => {
+            let steer = serde_json::from_reader(io::stdin().lock())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+            print_reply(&socket, &Request::Steer { address, steer })
+        }
         Action::Messages { groups, limit } => {
             print_reply(&socket, &Request::Messages { groups, limit })
         }
@@ -327,10 +343,12 @@ fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Ssh>) -> io::Re
         .clone()
         .unwrap_or_else(place::state)
         .join("refused");
+    let steers = here.steer.clone().unwrap_or_else(place::steer);
     let (store, membership, shares) = open(here, realm)?;
     let given = node::Given {
         sharing: Some(shares),
         refusals: Refusals::kept_in(refused),
+        steers,
         starter: Some(Starter {
             program: std::env::current_exe()?,
             // A node that is a systemd unit, as on Linux, would stop
@@ -349,9 +367,10 @@ fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Ssh>) -> io::Re
 /// Runs this machine's end of a link over this process's own input and
 /// output, as SSH carries it, handing the starts the other end asks of
 /// this machine to its node at `socket`, which runs in its person's login
-/// session.
+/// session, and writing the steers it carries into this machine's inboxes.
 fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
     let held = place::held(&realm);
+    let steers = here.steer.clone().unwrap_or_else(place::steer);
     let (store, membership, shares) = open(here, realm)?;
     runtime()?.block_on(async {
         let connection = Connection {
@@ -364,6 +383,7 @@ fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
             node: socket,
             held,
             asking: None,
+            steers,
         };
         link::run(store, &membership, connection, Some(shares), Some(starting)).await
     })

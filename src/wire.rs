@@ -28,6 +28,15 @@ pub enum Request {
     Place(Work),
     /// Start a program held where placement chooses.
     Start(Start),
+    /// Put what the person says into a session's steer inbox, on the one
+    /// machine running the session that goes by `address`, in the
+    /// harness's own shape: text, act, at, from and id.
+    Steer {
+        /// The session's address.
+        address: String,
+        /// What is said, as the launcher writes it.
+        steer: serde_json::Value,
+    },
     /// The latest messages to the groups `groups` hears, oldest first.
     Messages {
         /// Which groups.
@@ -115,6 +124,13 @@ pub enum Response {
     Placement(Placement),
     /// The program asked for, started.
     Started(Started),
+    /// The steer asked for, in its session's inbox on `machine`. A talk's
+    /// replies follow in its replies file on this machine, as they would
+    /// for a session here.
+    Steered {
+        /// The machine the session runs on.
+        machine: String,
+    },
     /// The messages asked for.
     Messages(Vec<Message>),
     /// The message as sent.

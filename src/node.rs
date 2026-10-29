@@ -24,9 +24,10 @@ use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership
 use crate::mesh;
 use crate::place;
 use crate::placement::{self, Placement};
-use crate::record::{Message, Session};
+use crate::record::{Message, Session, State as SessionState};
 use crate::share::exchange::Places;
 use crate::state::State;
+use crate::steer::{self, Steer};
 use crate::store::{self, Change, Store};
 use crate::wire::{Draft, Event, Reply, Request, Response, Start, Started};
 
@@ -117,6 +118,8 @@ pub struct Given {
     pub starter: Option<Starter>,
     /// How it keeps the refusals of links whose way in turned it away.
     pub refusals: Refusals,
+    /// This machine's sessions' steer inboxes.
+    pub steers: PathBuf,
 }
 
 /// Runs a node serving `socket` until `stop` resolves, then ends its links
@@ -140,9 +143,11 @@ where
         sharing,
         starter,
         refusals,
+        steers,
     } = given;
     let shared = Shared {
         held: place::held(&hello.realm),
+        steers,
         store: store.clone(),
         machine: hello.machine,
         realm: hello.realm,
@@ -181,6 +186,7 @@ where
                         let dial = dial.clone();
                         Arc::new(move |words: &[String]| dial.there(words))
                     })),
+                    steers: shared.steers.clone(),
                 };
                 let carries = (sharing.clone(), starting, refusals.clone());
                 links.spawn(keep_linked(dial, store.clone(), membership.clone(), carries));
@@ -308,6 +314,8 @@ struct Shared<S> {
     realm: String,
     /// The realm's folder of held sessions on this machine.
     held: PathBuf,
+    /// This machine's sessions' steer inboxes.
+    steers: PathBuf,
     starter: Option<Arc<Starter>>,
     /// The links this node asks other machines' starts through.
     asks: Asks,
@@ -321,6 +329,7 @@ impl<S: Clone> Clone for Shared<S> {
             machine: self.machine.clone(),
             realm: self.realm.clone(),
             held: self.held.clone(),
+            steers: self.steers.clone(),
             starter: self.starter.clone(),
             asks: self.asks.clone(),
             inner: self.inner.clone(),
@@ -469,7 +478,65 @@ impl<S: Store> Shared<S> {
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
             Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
+            Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
         }
+    }
+
+    /// Puts what the person says into the inbox of the session going by
+    /// `address`, on the one machine it runs on: here, or through the link
+    /// reaching that machine. A talk's file is opened here first, so the
+    /// replies carried back land where the person's launcher reads them.
+    async fn steer(&self, address: &str, said: &serde_json::Value) -> Reply {
+        let steer = Steer::new(address, said)?;
+        let address = steer.address.clone();
+        let sessions: Vec<Session> = self
+            .lock()
+            .state
+            .sessions()
+            .into_iter()
+            .filter(|session| session.address.eq_ignore_ascii_case(&address))
+            .collect();
+        let mut running: Vec<String> = sessions
+            .iter()
+            .filter(|session| matches!(session.state, SessionState::Busy | SessionState::Idle))
+            .map(|session| session.machine.clone())
+            .collect();
+        running.sort();
+        running.dedup();
+        let machine = match running.as_slice() {
+            [one] => one.clone(),
+            [] => {
+                return Err(sessions
+                    .iter()
+                    .find(|session| session.state == SessionState::Unreachable)
+                    .map_or_else(
+                        || format!("no session goes by {address} now"),
+                        |session| {
+                            format!(
+                                "{} is out of reach, so {address} can't be told now",
+                                session.machine
+                            )
+                        },
+                    ));
+            }
+            many => {
+                return Err(format!(
+                    "{address} runs on {}, so it isn't told twice",
+                    many.join(" and ")
+                ));
+            }
+        };
+        if let Some(talk) = steer.talk() {
+            steer::open_talk(&self.steers, &address, talk)
+                .map_err(|error| format!("its talk didn't open here: {error}"))?;
+        }
+        if machine != self.machine {
+            return self.asks.steer(&machine, steer).await;
+        }
+        steer
+            .deliver(&self.steers)
+            .map_err(|error| format!("its inbox refused it: {error}"))?;
+        Ok(Response::Steered { machine })
     }
 
     /// Counts `pid` present through a new connection, which replaces any
@@ -643,6 +710,7 @@ async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
         }
         let reply = match request {
             Ok(Request::Start(asked)) => shared.start(asked).await,
+            Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await,
             asked => asked.and_then(|request| shared.answer(request)),
         };
         if write(&mut writing, &reply).await.is_err() {
@@ -784,7 +852,8 @@ mod tests {
     }
 
     /// Runs a node of `machine` in the work realm on `socket`, linked over
-    /// `dials`, until `stop` is dropped.
+    /// `dials`, until `stop` is dropped, its steer inboxes beside the
+    /// socket.
     fn node<D: Dial + Clone>(
         store: &Memory,
         machine: &str,
@@ -802,11 +871,13 @@ mod tests {
         let bound = bind(socket).expect("the socket binds");
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let store = store.clone();
+        let steers = inboxes(socket);
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
                 starter,
                 refusals: Refusals::default(),
+                steers,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -836,6 +907,7 @@ mod tests {
             let store = self.store.clone();
             let node = self.socket.clone();
             let held_here = self.held.clone();
+            let steers = inboxes(&self.socket);
             tokio::spawn(async move {
                 let realm = Realm {
                     name: "work".to_owned(),
@@ -845,6 +917,7 @@ mod tests {
                     node,
                     held: held_here,
                     asking: None,
+                    steers,
                 };
                 // The test judges the link by what crosses it.
                 let _ = link::run(store, &realm, piped(far), None, Some(starting)).await;
@@ -857,6 +930,75 @@ mod tests {
             there.extend_from_slice(words);
             there
         }
+    }
+
+    /// What the node at `socket` answers `request`.
+    async fn ask(socket: PathBuf, request: Request) -> Reply {
+        let asked = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            client.ask(&request).expect("the node answers")
+        });
+        tokio::time::timeout(PATIENCE, asked)
+            .await
+            .expect("the node answers in time")
+            .expect("the client asks")
+    }
+
+    /// Steers the session held on equilibrius from the node at
+    /// `near_socket`, and has its talk answered there, as its session would,
+    /// until the answer is carried back to `near_steers`.
+    async fn steers_the_session_on_equilibrius(
+        near_socket: &Path,
+        near_steers: &Path,
+        far_steers: &Path,
+    ) {
+        let asked = Request::Steer {
+            address: "sak9fz".to_owned(),
+            steer: json!({"text": "how goes it?", "from": "joel", "id": "t1"}),
+        };
+        assert_eq!(
+            ask(near_socket.to_owned(), asked).await,
+            Ok(Response::Steered {
+                machine: "equilibrius".to_owned()
+            }),
+            "a session on another machine is steered there"
+        );
+        let inbox: Vec<_> = fs::read_dir(far_steers.join("SAK9FZ"))
+            .expect("equilibrius's inbox for it is made")
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|it| it == "json"))
+            .collect();
+        assert_eq!(inbox.len(), 1, "the steer is in its inbox there, once");
+        let replied = "{\"stage\":\"replied\",\"text\":\"well\"}\n";
+        let far_talk = steer::replies(far_steers, "SAK9FZ", "t1").expect("a talk");
+        // The harness makes its talks' folder as it writes the first event.
+        fs::create_dir_all(far_talk.parent().expect("a folder")).expect("made");
+        fs::write(&far_talk, replied).expect("the session answers");
+        let near_talk = steer::replies(near_steers, "SAK9FZ", "t1").expect("a talk");
+        // Nothing tells the test when the link has carried the answer, so
+        // it looks again every few milliseconds until it has.
+        tokio::time::timeout(PATIENCE, async {
+            while fs::read_to_string(&near_talk).unwrap_or_default() != replied {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the talk's answer comes back to where it was asked");
+        let nobody = Request::Steer {
+            address: "NOPE".to_owned(),
+            steer: json!({"text": "hello"}),
+        };
+        assert_eq!(
+            ask(near_socket.to_owned(), nobody).await,
+            Err("no session goes by NOPE now".to_owned()),
+            "a steer for nobody is refused"
+        );
+    }
+
+    /// The steer inboxes of the test machine whose node's socket is
+    /// `socket`.
+    fn inboxes(socket: &Path) -> PathBuf {
+        socket.with_file_name("steer")
     }
 
     fn piped(pipe: tokio::io::DuplexStream) -> Connection {
@@ -944,11 +1086,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn another_machines_node_starts_and_joins_its_held_sessions_for_this_one() {
+    async fn another_machines_node_starts_joins_and_steers_its_sessions_for_this_one() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (holder, given) = stand_in_holder(dir.path());
         let far_socket = dir.path().join("equilibrius").join("work.sock");
         let near_socket = dir.path().join("optimus").join("work.sock");
+        let near_steers = inboxes(&near_socket);
+        let far_steers = inboxes(&far_socket);
         let far_store = Memory::default();
         let holds = Starter {
             program: holder,
@@ -996,21 +1140,13 @@ mod tests {
             "a session held elsewhere is joined through the dial that reaches it"
         );
 
-        let folder = dir.path().to_owned();
-        let started = tokio::task::spawn_blocking(move || {
-            let mut client = Client::connect(&near_socket).expect("the client connects");
-            let there = placement::Need::Machine("equilibrius".to_owned());
-            let asked = Request::Start(Start {
-                work: work(vec![there]),
-                folder: Some(folder),
-                command: vec!["pi".to_owned()],
-            });
-            client.ask(&asked).expect("the node answers")
+        let there = placement::Need::Machine("equilibrius".to_owned());
+        let asked = Request::Start(Start {
+            work: work(vec![there]),
+            folder: Some(dir.path().to_owned()),
+            command: vec!["pi".to_owned()],
         });
-        let started = tokio::time::timeout(PATIENCE, started)
-            .await
-            .expect("the node answers in time")
-            .expect("the client asks");
+        let started = ask(near_socket.clone(), asked).await;
         let Ok(Response::Started(started)) = started else {
             panic!("equilibrius's node starts it: {started:?}");
         };
@@ -1032,6 +1168,8 @@ mod tests {
             given.lines().any(|word| word == started.held),
             "under the id its node answered: {given}"
         );
+
+        steers_the_session_on_equilibrius(&near_socket, &near_steers, &far_steers).await;
 
         for (stop, node) in [near, far] {
             drop(stop);
@@ -1187,6 +1325,7 @@ mod tests {
         };
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let bound = bind(&socket).expect("the socket binds");
+        let steers = dir.path().join("steer");
         let node = tokio::spawn({
             let store = store.clone();
             async move {
@@ -1198,6 +1337,7 @@ mod tests {
                     sharing: None,
                     starter: None,
                     refusals: Refusals::default(),
+                    steers,
                 };
                 run(
                     store,
@@ -1286,6 +1426,7 @@ mod tests {
         };
         let bound = bind(&socket).expect("the socket binds");
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let steers = dir.path().join("steer");
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -1294,6 +1435,7 @@ mod tests {
                     scoped: false,
                 }),
                 refusals: Refusals::default(),
+                steers,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.

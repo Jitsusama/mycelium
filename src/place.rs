@@ -72,6 +72,15 @@ pub fn mesh() -> PathBuf {
         .join("mesh-workflow")
 }
 
+/// The sessions' steer inboxes on this machine, a folder an address, where
+/// the harness reads them.
+pub fn steer() -> PathBuf {
+    state_home()
+        .join("pi")
+        .join("agentic-harness.pi")
+        .join("steer")
+}
+
 /// Where this machine keeps shared quests, as the harness keeps them: the
 /// quest store, the quests' scratch folders and the account's home, with
 /// mycelium's own folder `state` for its ledgers.
