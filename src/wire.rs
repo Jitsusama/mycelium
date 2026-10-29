@@ -75,8 +75,9 @@ pub enum Event {
     },
     /// One session, new or changed.
     SessionChanged {
-        /// As it now stands.
-        session: Session,
+        /// As it now stands, boxed since a session is far larger than
+        /// any other event.
+        session: Box<Session>,
     },
     /// A session is gone from the mesh.
     SessionForgotten {

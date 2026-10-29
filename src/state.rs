@@ -44,7 +44,9 @@ impl State {
         for session in sessions {
             if self.sessions.get(&session.id) != Some(&session) {
                 self.sessions.insert(session.id.clone(), session.clone());
-                events.push(Event::SessionChanged { session });
+                events.push(Event::SessionChanged {
+                    session: Box::new(session),
+                });
             }
         }
         events
@@ -129,6 +131,9 @@ mod tests {
             step: None,
             since: None,
             orchestrated_by: None,
+            quest: None,
+            wants: None,
+            window: None,
             at: "2026-10-26T20:00:00Z".to_owned(),
         }
     }
@@ -193,7 +198,7 @@ mod tests {
             [
                 Event::SessionForgotten { id: "a".to_owned() },
                 Event::SessionChanged {
-                    session: session("b", Standing::Busy)
+                    session: Box::new(session("b", Standing::Busy))
                 },
             ]
         );

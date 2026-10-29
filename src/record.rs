@@ -77,8 +77,43 @@ pub struct Session {
     /// The orchestrator it answers to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrated_by: Option<String>,
+    /// The quest it works on, by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quest: Option<String>,
+    /// What it waits on its person for, while it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wants: Option<Want>,
+    /// The window it runs in, for going to it. Only a session of this
+    /// machine's has one, since a window is reached on its own machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<Window>,
     /// When its machine last wrote its presence.
     pub at: String,
+}
+
+/// What a session waits on its person for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Want {
+    /// What kind of wait, in the mesh's words: a question, an approval,
+    /// blocked or an action.
+    pub kind: String,
+    /// Since when, as an RFC 3339 instant.
+    pub since: String,
+    /// What it asked or said, in one short line.
+    pub said: String,
+}
+
+/// A terminal's window, as the terminal names it: for kitty, the window's
+/// id and the socket kitty is told things on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Window {
+    /// The terminal, such as `kitty`.
+    pub terminal: String,
+    /// The window's id, within its terminal.
+    pub id: String,
+    /// What the id is unique within, such as kitty's socket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<String>,
 }
 
 /// How a session stands.

@@ -219,7 +219,13 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events |
 
 A session's `state` is `busy`, `idle`, `ended`, or `unreachable` while no
-link reaches its machine.
+link reaches its machine. Beside its `id`, `address`, `machine` and
+`groups`, it carries what its presence says of it: its `quest` by id (or,
+from an older presence, the quest among what it owns), what it `wants` of
+its person (`kind`, `since`, `said`) while it waits, and the `window` it
+runs in (`terminal`, `id`, `within`, such as a kitty window's id and
+kitty's socket). Only a session of this machine's has a `window`, since a
+window is gone to on its own machine.
 
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`
