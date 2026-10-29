@@ -820,10 +820,19 @@ mod tests {
             "another machine's is free"
         );
         drop(first);
-        assert!(
-            store.claim("equilibrius").expect("asked").is_some(),
-            "a dropped claim is free again"
-        );
+        // A claim's lock belongs to its open file, and a process another
+        // test forks holds a copy of every descriptor until it execs, so
+        // the lock can outlast the drop for that instant. It comes free
+        // once the copy closes.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let again = loop {
+            let claim = store.claim("equilibrius").expect("asked");
+            if claim.is_some() || std::time::Instant::now() > deadline {
+                break claim;
+            }
+            std::thread::yield_now();
+        };
+        assert!(again.is_some(), "a dropped claim is free again");
     }
 
     #[test]
