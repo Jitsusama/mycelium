@@ -278,11 +278,22 @@ impl<S: Store> Shared<S> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Reads every message and session the store holds.
+    /// Reads the messages the store holds that the node doesn't yet, and
+    /// every session. A message is written once by its id and never
+    /// changes, so one already held isn't read again: a rescan after a
+    /// watch overflowed lists the messages rather than reading them all,
+    /// whose every open a Linux watch hears, which would overflow it
+    /// again. The node holds far more messages than the mesh keeps, its
+    /// week, so none it let go is read again.
     fn read_store(&self) {
-        let messages = self
-            .store
-            .message_ids(0)
+        let ids = self.store.message_ids(0);
+        let unread: Vec<String> = {
+            let inner = self.lock();
+            ids.into_iter()
+                .filter(|id| !inner.state.holds_message(id))
+                .collect()
+        };
+        let messages = unread
             .iter()
             .filter_map(|id| mesh::message(&self.store.message(id)?))
             .collect();
@@ -880,6 +891,74 @@ mod tests {
             let stopped = node.await.expect("the node runs to its end");
             assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_watch_that_overflowed_reads_only_the_messages_it_missed() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let store = Memory::default();
+        let (stop, node) = node::<Ssh>(&store, "optimus", Vec::new(), None, &socket);
+        let said = |text: &str, pid| {
+            let draft = Draft {
+                from: "joel".to_owned(),
+                groups: vec![Group::new("peer.4uhc5q").expect("a valid group")],
+                intent: None,
+                text: text.to_owned(),
+                re: None,
+            };
+            mesh::written(&draft, pid)
+        };
+        let (heard, body) = said("first", 1);
+        store.send_here(&heard, body);
+        let texts = |wanted: usize| {
+            let socket = socket.clone();
+            let listed = tokio::task::spawn_blocking(move || {
+                let mut client = Client::connect(&socket).expect("the client connects");
+                let asked = Request::Messages {
+                    groups: Pattern::new("peer.*").expect("a valid pattern"),
+                    limit: 10,
+                };
+                // Nothing tells a client when the node has read the
+                // store, so it asks again every few milliseconds until it
+                // holds as many as are wanted.
+                loop {
+                    let Ok(Ok(Response::Messages(all))) = client.ask(&asked) else {
+                        panic!("the node lists its messages");
+                    };
+                    if all.len() >= wanted {
+                        return all.into_iter().map(|one| one.text).collect::<Vec<_>>();
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            });
+            async move {
+                tokio::time::timeout(PATIENCE, listed)
+                    .await
+                    .expect("the node reads them in time")
+                    .expect("the client asks")
+            }
+        };
+        assert_eq!(texts(1).await, ["first"], "a message told of is read");
+
+        let read = store.messages_read();
+        let (missed, body) = said("missed", 2);
+        store.miss(&missed, body);
+        store.overflow();
+        assert_eq!(
+            texts(2).await,
+            ["first", "missed"],
+            "a rescan reads the message it missed"
+        );
+        assert_eq!(
+            store.messages_read() - read,
+            1,
+            "and not again the one it holds, whose opens would overflow a watch again"
+        );
+
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
     }
 
     #[tokio::test]
