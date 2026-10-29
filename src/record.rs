@@ -88,6 +88,10 @@ pub struct Session {
     /// machine's has one, since a window is reached on its own machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<Window>,
+    /// The id a holder on this machine keeps it by, past any window, which
+    /// `mycelium attach` takes up; only a session of this machine's has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
     /// When its machine last wrote its presence.
     pub at: String,
     /// Its presence whole, as its session wrote it, for a reader that

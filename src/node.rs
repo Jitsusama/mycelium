@@ -17,8 +17,10 @@ use tokio::task::JoinSet;
 
 use crate::facts;
 use crate::group::{Pattern, Routes};
+use crate::hold;
 use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership};
 use crate::mesh;
+use crate::place;
 use crate::record::Message;
 use crate::share::exchange::Places;
 use crate::state::State;
@@ -117,7 +119,8 @@ where
     D: Discovery,
 {
     store::out_of_reach_of_unclaimed(&store)?;
-    let shared = Shared::new(store.clone(), membership.hello().machine);
+    let hello = membership.hello();
+    let shared = Shared::new(store.clone(), hello.machine, place::held(&hello.realm));
     let mut changes = store.changes()?;
     shared.read_store();
 
@@ -187,6 +190,8 @@ async fn keep_linked(
 struct Shared<S> {
     store: S,
     machine: String,
+    /// The realm's folder of held sessions on this machine.
+    held: PathBuf,
     inner: Arc<Mutex<Inner>>,
 }
 
@@ -195,6 +200,7 @@ impl<S: Clone> Clone for Shared<S> {
         Self {
             store: self.store.clone(),
             machine: self.machine.clone(),
+            held: self.held.clone(),
             inner: self.inner.clone(),
         }
     }
@@ -209,10 +215,11 @@ struct Inner {
 }
 
 impl<S: Store> Shared<S> {
-    fn new(store: S, machine: String) -> Self {
+    fn new(store: S, machine: String, held: PathBuf) -> Self {
         Self {
             store,
             machine,
+            held,
             inner: Arc::default(),
         }
     }
@@ -237,13 +244,21 @@ impl<S: Store> Shared<S> {
         self.read_sessions();
     }
 
-    /// Judges every session again and sends what changed.
+    /// Judges every session again and sends what changed. What is held is
+    /// read with them: a holder writes its record as its program starts,
+    /// well before pi has written a presence, and a presence that somehow
+    /// came first is read again at its next change.
     fn read_sessions(&self) {
+        let held = hold::held(&self.held);
         let sessions = self
             .store
             .presences()
             .iter()
-            .filter_map(|presence| mesh::session(presence, &self.machine))
+            .filter_map(|presence| {
+                let mut session = mesh::session(presence, &self.machine)?;
+                session.held = mesh::held_by(presence, &held);
+                Some(session)
+            })
             .collect();
         let mut inner = self.lock();
         for event in inner.state.set_sessions(sessions) {
