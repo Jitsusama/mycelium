@@ -4,6 +4,11 @@
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+
+/// How long a holder has to say it holds before it is given up on.
+const HOLDS_WITHIN: Duration = Duration::from_secs(10);
 
 /// How holders are started.
 #[derive(Debug, Clone)]
@@ -22,8 +27,8 @@ impl Starter {
     ///
     /// # Errors
     ///
-    /// When the holder can't be started, or ends without holding, saying
-    /// why where it can.
+    /// When the holder can't be started, ends without holding, or says
+    /// nothing within ten seconds, saying why where it can.
     pub fn start(&self, realm: &str, folder: &Path, command: &[String]) -> io::Result<String> {
         let id = super::new_id();
         let mut holder = if self.scoped {
@@ -52,17 +57,36 @@ impl Starter {
                 Stdio::null()
             })
             .spawn()?;
-        let mut said = String::new();
-        if let Some(out) = holder.stdout.take() {
-            io::BufReader::new(out).read_line(&mut said)?;
+        let out = holder.stdout.take();
+        let (told, said) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut said = String::new();
+            if let Some(out) = out {
+                // A holder whose pipe fails says nothing, as one that ends.
+                let _ = io::BufReader::new(out).read_line(&mut said);
+            }
+            // Nobody hears it once the start has given up.
+            let _ = told.send(said);
+        });
+        let said = said.recv_timeout(HOLDS_WITHIN);
+        if said.is_err() {
+            // It is given up on either way; one already gone can't be killed.
+            let _ = holder.kill();
         }
-        match said.trim() {
-            "held" => Ok(id),
-            "" => Err(io::Error::other("its holder ended without holding it")),
-            why => Err(io::Error::other(format!(
+        // The holder stays this process's child for as long as it holds,
+        // so it is waited on, or every session ended would leave a zombie.
+        std::thread::spawn(move || holder.wait());
+        match said.as_deref().map(str::trim) {
+            Ok("held") => Ok(id),
+            Ok("") => Err(io::Error::other("its holder ended without holding it")),
+            Ok(why) => Err(io::Error::other(format!(
                 "couldn't hold {}: {why}",
                 command.join(" ")
             ))),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("its holder said nothing within {HOLDS_WITHIN:?}"),
+            )),
         }
     }
 }
