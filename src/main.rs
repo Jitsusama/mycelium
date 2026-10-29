@@ -326,7 +326,10 @@ fn run(command: Command) -> io::Result<()> {
         } => be_holder(&place::held(&realm), &id, &folder, &command),
         Action::Watch { groups, recent } => {
             let mut client = Client::connect(&socket)?;
-            print_line(&client.ask(&Request::Watch { groups, recent })?)?;
+            print_line(&client.ask(&Request::Watch {
+                groups: Some(groups),
+                recent,
+            })?)?;
             while let Some(event) = client.next_event()? {
                 print_line(&event)?;
             }

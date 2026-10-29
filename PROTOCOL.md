@@ -262,7 +262,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine"}}`, where it was put |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
-| `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events |
+| `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
 
 A `Present` connection counts the process at its other end, as the

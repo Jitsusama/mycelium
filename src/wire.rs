@@ -54,9 +54,13 @@ pub enum Request {
     Present,
     /// The whole state, then each change, for as long as the client stays.
     Watch {
-        /// Which groups' messages to send; sessions are always sent.
-        groups: Pattern,
-        /// How many of the latest messages the first state holds.
+        /// Which groups' messages to send, or none when not given; sessions
+        /// are always sent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        groups: Option<Pattern>,
+        /// How many of the latest messages the first state holds, none when
+        /// not given.
+        #[serde(default)]
         recent: usize,
     },
 }
@@ -170,4 +174,37 @@ pub enum Event {
         /// The message.
         message: Message,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_watch_naming_no_groups_hears_only_sessions() {
+        let sessions_only = Request::Watch {
+            groups: None,
+            recent: 0,
+        };
+        for said in [
+            r#"{"Watch":{}}"#,
+            r#"{"Watch":{"groups":null}}"#,
+            r#"{"Watch":{"recent":0}}"#,
+        ] {
+            assert_eq!(
+                serde_json::from_str::<Request>(said).expect("a watch reads"),
+                sessions_only,
+                "{said}"
+            );
+        }
+        assert_eq!(
+            serde_json::to_string(&sessions_only).expect("a watch writes"),
+            r#"{"Watch":{"recent":0}}"#,
+            "a watch naming no groups says none"
+        );
+        assert!(
+            serde_json::from_str::<Request>(r#"{"Watch":{"groups":[]}}"#).is_err(),
+            "a pattern is one string, never a list"
+        );
+    }
 }

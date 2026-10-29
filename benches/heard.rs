@@ -226,7 +226,10 @@ fn watch_group(
 ) -> Result<JoinHandle<()>, Box<dyn Error>> {
     let mut client = Client::connect(socket)?;
     let groups = Pattern::new(format!("bench.g{watch}"))?;
-    match client.ask(&Request::Watch { groups, recent: 0 })? {
+    match client.ask(&Request::Watch {
+        groups: Some(groups),
+        recent: 0,
+    })? {
         Ok(Response::Watching) => {}
         other => return Err(format!("the node didn't watch: {other:?}").into()),
     }
