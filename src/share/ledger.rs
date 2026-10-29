@@ -5,13 +5,16 @@
 //! file's content change on its disk, so the ledger is how it tells a
 //! change it made from one it took: a file it took is entered as taken, and
 //! a scan then finds nothing new in it. Each file's size and modification
-//! time are kept too, so a scan hashes only what may have changed.
+//! time are kept too, so a scan hashes only what may have changed, once
+//! they can be trusted: a file's clock ticks coarsely, so one changed
+//! again within a tick of being hashed keeps its time, and a size and time
+//! that recent are hashed again rather than kept, as git does.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rustix::fs::FlockOperation;
 use serde::{Deserialize, Serialize};
@@ -97,6 +100,26 @@ pub fn shared_of(key: &str) -> Option<Shared> {
     })
 }
 
+/// The coarsest a filesystem's clock may tick, FAT's two seconds; Linux's
+/// own tick its timer, a few milliseconds.
+const GRAIN: Duration = Duration::from_secs(2);
+
+/// Now, in nanoseconds since the epoch, as a file's time is kept.
+#[must_use]
+pub fn clock() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos())
+}
+
+/// `seen`, read at `read_at`, if it may stand for the content read then:
+/// only once the file was last changed a clock's grain before, since a
+/// change within the same tick leaves the same time.
+#[must_use]
+pub fn lasting(seen: Seen, read_at: u128) -> Option<Seen> {
+    (seen.modified + GRAIN.as_nanos() < read_at).then_some(seen)
+}
+
 /// A file's size and modification time, if it is there.
 pub fn seen(path: &Path) -> io::Result<Option<Seen>> {
     match fs::metadata(path) {
@@ -174,13 +197,14 @@ impl Ledger {
         if entry.seen == Some(now) && entry.hash.is_some() {
             return Ok(false);
         }
+        let read_at = clock();
         let hash = quest.content_of(shared)?.hash;
         let changed = entry.hash.as_deref() != Some(hash.as_str());
         if changed {
             entry.hash = Some(hash);
             entry.version = entry.version.changed_on(machine);
         }
-        entry.seen = Some(now);
+        entry.seen = lasting(now, read_at);
         Ok(changed)
     }
 
@@ -328,6 +352,49 @@ mod tests {
         let path = quest.record.join(path);
         fs::create_dir_all(path.parent().expect("a file has a folder")).expect("its folder made");
         fs::write(path, text).expect("the file written");
+    }
+
+    #[test]
+    fn a_change_within_a_tick_of_a_scan_is_seen() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let quest = quest(dir.path());
+        let mut ledger = Ledger::default();
+        let tick = SystemTime::now();
+        let written = |text: &str| {
+            write(&quest, "README.md", text);
+            // Both writes in one tick of the file's clock.
+            fs::File::options()
+                .write(true)
+                .open(quest.record.join("README.md"))
+                .and_then(|file| file.set_modified(tick))
+                .expect("its time set");
+        };
+        written("one");
+        ledger.scan(&quest, "optimus").expect("scanned");
+        written("two");
+        assert_eq!(
+            ledger.scan(&quest, "optimus").expect("scanned"),
+            ["record/README.md"],
+            "the same size and time just after a hash are hashed again"
+        );
+    }
+
+    #[test]
+    fn a_size_and_time_stand_once_a_grain_has_passed() {
+        let seen = Seen {
+            len: 3,
+            modified: 10 * GRAIN.as_nanos(),
+        };
+        assert_eq!(
+            lasting(seen, seen.modified + GRAIN.as_nanos() / 2),
+            None,
+            "within a grain, it may have changed since"
+        );
+        assert_eq!(
+            lasting(seen, seen.modified + 2 * GRAIN.as_nanos()),
+            Some(seen),
+            "long changed before it was read, it stands"
+        );
     }
 
     #[test]
