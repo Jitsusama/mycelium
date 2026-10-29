@@ -3,12 +3,14 @@
 //! queue says it has, and what its configuration declares. A fact that
 //! can't be read is unknown, never a guess.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::declared::{self, Declared};
 use crate::place;
+use crate::reach;
 use crate::room::{self, Room};
 
 /// This machine, as measured when asked.
@@ -48,6 +50,10 @@ pub struct Machine {
     /// What its configuration says of it, or unknown where it says
     /// nothing.
     pub declared: Option<Declared>,
+    /// Whether each network its configuration probes answered when its
+    /// node last probed, by name; a network not in it is unknown.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reached: BTreeMap<String, bool>,
 }
 
 /// Where a machine's facts are read from, beyond the machine itself.
@@ -59,6 +65,8 @@ pub struct Sources {
     pub queue: Option<PathBuf>,
     /// What its configuration declares.
     pub declared: PathBuf,
+    /// Its node's record of which probed networks answered.
+    pub reached: PathBuf,
 }
 
 impl Sources {
@@ -69,6 +77,7 @@ impl Sources {
             home: std::env::home_dir().unwrap_or_else(std::env::temp_dir),
             queue: place::queue(),
             declared: place::declared(),
+            reached: place::reached(),
         }
     }
 }
@@ -146,6 +155,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
             .as_deref()
             .and_then(|queue| room::read(queue, now.as_second())),
         declared: declared::read(&sources.declared),
+        reached: reach::read(&sources.reached, now.as_second()),
     }
 }
 
@@ -585,6 +595,7 @@ mod tests {
                 home: home.path().to_owned(),
                 queue: Some(home.path().join("queue.json")),
                 declared: home.path().join("declared.json"),
+                reached: home.path().join("reached.json"),
             },
         );
         assert_eq!(machine.name, "trial", "it carries the name it was given");

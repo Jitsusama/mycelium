@@ -333,6 +333,8 @@ fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Ssh>) -> io::Re
     };
     runtime()?.block_on(async {
         let bound = node::bind(socket)?;
+        // Probing ends with the runtime, when the node does.
+        tokio::spawn(mycelium::reach::keep(place::declared(), place::reached()));
         node::run(store, membership, Listed(dials), given, bound, stopped()).await
     })
 }
