@@ -26,6 +26,11 @@ pub struct Hello {
     /// that sent it.
     #[serde(default)]
     pub facts: bool,
+    /// Whether it carries starts, asked of its machine's node and
+    /// answered; an end older than this does neither, and would end a
+    /// link that asked.
+    #[serde(default)]
+    pub starts: bool,
 }
 
 /// Which machines a node links with.
@@ -54,6 +59,7 @@ impl Membership for Realm {
             realm: self.name.clone(),
             version: VERSION,
             facts: true,
+            starts: true,
         }
     }
 

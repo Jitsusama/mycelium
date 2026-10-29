@@ -25,6 +25,10 @@ pub trait Dial: Send + Sync + 'static {
 
     /// Reaches the other end, which runs in `realm`.
     fn dial(&self, realm: &str) -> impl Future<Output = io::Result<Connection>> + Send;
+
+    /// The words that run `words` on the machine it reaches, from a
+    /// terminal here, where `mycelium` names that machine's own.
+    fn there(&self, words: &[String]) -> Vec<String>;
 }
 
 /// A machine reached over SSH, whose end of the link is `mycelium link`
@@ -48,6 +52,34 @@ impl Dial for Ssh {
         // SSH is running once it is spawned, so there is nothing to wait
         // on here: the link's first line is the wait.
         std::future::ready(self.spawn(realm))
+    }
+
+    fn there(&self, words: &[String]) -> Vec<String> {
+        let mut there = vec!["ssh".to_owned(), "-t".to_owned()];
+        for option in &self.options {
+            there.extend(["-o".to_owned(), option.clone()]);
+        }
+        there.extend(["--".to_owned(), self.destination.clone()]);
+        // SSH hands the other machine one line its shell reads, so each
+        // word is quoted for that shell.
+        there.extend(words.iter().enumerate().map(|(at, word)| {
+            if at == 0 && word == "mycelium" {
+                quoted(&self.command)
+            } else {
+                quoted(word)
+            }
+        }));
+        there
+    }
+}
+
+/// `word` as a shell reads it back whole.
+fn quoted(word: &str) -> String {
+    let plain = |byte: u8| byte.is_ascii_alphanumeric() || b"-_./=:@%+,".contains(&byte);
+    if !word.is_empty() && word.bytes().all(plain) {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
     }
 }
 

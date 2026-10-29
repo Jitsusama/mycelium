@@ -85,11 +85,12 @@ messages, being a union, reach every machine linked by any path.
 `link::run` runs one end of a link over any byte stream. Both ends run the
 same code, each line a JSON value:
 
-1. `{"Hello": {"machine", "realm", "version", "facts"}}`, first, from
-   each end. Each end's membership admits the other or refuses it, and
-   nothing else crosses until it has. `facts` says the end hears and
-   says what a machine is; an end older than it says nothing of
-   machines and is sent nothing.
+1. `{"Hello": {"machine", "realm", "version", "facts", "starts"}}`,
+   first, from each end. Each end's membership admits the other or
+   refuses it, and nothing else crosses until it has. `facts` says the
+   end hears and says what a machine is; an end older than it says
+   nothing of machines and is sent nothing. `starts` says it carries
+   starts; an end older than it is asked none.
 2. `{"Have": {"messages": [ids], "living": [sessions]}}`: every message
    the end holds within the link's reach, and its machine's living
    sessions. An end older than `living` names none, and every session of
@@ -120,12 +121,21 @@ same code, each line a JSON value:
    its sessions, and again each minute. The other end keeps it only if
    it names the sending machine, as ready while the link stands and as
    unreachable, with what it last said, once the link drops.
+8. `{"Start": {"ask", "start"}}`: start a session held on the other
+   end's machine, as a `"Start"` request says it. The other end hands it
+   to its own node's socket, with a need for its own machine added, so
+   that node admits or refuses it on its own facts as they are then.
+   The end doesn't start it itself, since a process SSH started sits
+   outside its person's login session.
+9. `{"Started": {"ask", "reply"}}`: the other end's node's reply to
+   the ask of that number, as its socket answered it.
 
 Three seams shape a link:
 
-- **Dialling** (`link::dial::Dial`): how a machine reaches another's end.
-  Today, SSH: the other end is `mycelium link` run there, over the SSH
-  session's pipes, and SSH has proved which machine it is.
+- **Dialling** (`link::dial::Dial`): how a machine reaches another's end,
+  and how a terminal here runs a command there. Today, SSH: the other
+  end is `mycelium link` run there, over the SSH session's pipes, and
+  SSH has proved which machine it is.
 - **Discovery** (`link::discovery::Discovery`): which machines to link
   with, as they are found. Today, a list given to the node.
 - **Membership** (`link::membership::Membership`): which machines to admit.
@@ -317,7 +327,12 @@ given. A start that isn't placed, or doesn't start, is an error saying
 why, such as `nowhere: optimus isn't equilibrius`. A node run as a
 systemd unit starts each holder in a scope of its own,
 `mycelium-pi-<held>.scope` in `app.slice`, so the session outlives the
-node. For now a node starts sessions only on its own machine.
+node. A start placed on another machine is asked of it through the link
+this node keeps to it, and its `attach` comes back as the words that
+run that machine's own over the dial, such as `ssh -t equilibrius
+mycelium --realm work attach <held>`. It fails with a reason when no
+link reaches the machine, its mycelium is too old to start sessions, or
+it doesn't answer within 30 seconds.
 
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`
@@ -367,10 +382,9 @@ Each lands behind a seam above, or as a seam of its own:
   catching up is one question, "what do you have from machine X after
   number N?", in place of the mesh's folders.
 - **Places and what they can do:** a machine says what it is, and the
-  node places work and starts it held on its own machine; next, a start
-  placed on another machine crosses the link to that machine's node,
-  which admits or refuses it on its own facts, so a placer's view can't
-  override it.
+  node places work and starts it held on whichever machine it chose,
+  which admits or refuses it on its own facts; next, the launcher and pi
+  start sessions through it.
 - **Providers:** programs beside a node that offer shapes of machine,
   make one, start a session on it, reach it and end it with its cost,
   and say when one is lost, such as Aquifer's, which lives outside this

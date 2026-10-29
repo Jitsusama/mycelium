@@ -18,6 +18,7 @@ use tokio::task::JoinSet;
 use crate::facts;
 use crate::group::{Pattern, Routes};
 use crate::hold::{self, start, start::Starter};
+use crate::link::starts::{Asks, Starting};
 use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership};
 use crate::mesh;
 use crate::place;
@@ -135,6 +136,7 @@ where
         machine: hello.machine,
         realm: hello.realm,
         starter: starter.map(Arc::new),
+        asks: Asks::default(),
         inner: Arc::default(),
     };
     let mut changes = store.changes()?;
@@ -160,7 +162,16 @@ where
                 Err(error) => break Err(error),
             },
             Some(dial) = found.recv() => {
-                links.spawn(keep_linked(dial, store.clone(), membership.clone(), sharing.clone()));
+                let dial = Arc::new(dial);
+                let starting = Starting {
+                    node: socket.path.clone(),
+                    asking: Some((shared.asks.clone(), {
+                        let dial = dial.clone();
+                        Arc::new(move |words: &[String]| dial.there(words))
+                    })),
+                };
+                let carries = (sharing.clone(), starting);
+                links.spawn(keep_linked(dial, store.clone(), membership.clone(), carries));
             }
             Some(()) = held.recv() => shared.read_sessions(),
             change = changes.changes.recv() => match change {
@@ -181,19 +192,27 @@ where
 }
 
 /// Keeps a link up for as long as the node runs, dialling again after each
-/// drop.
+/// drop, carrying the quests shared and starts.
 async fn keep_linked(
-    dial: impl Dial,
+    dial: Arc<impl Dial>,
     store: impl Store,
     membership: impl Membership,
-    shares: Option<Places>,
+    (shares, starting): (Option<Places>, Starting),
 ) {
     let mut wait = REDIAL_FIRST;
     loop {
         let started = tokio::time::Instant::now();
         let ended = match dial.dial(&membership.hello().realm).await {
             Ok(connection) => {
-                link::run(store.clone(), &membership, connection, shares.clone()).await
+                let starting = Some(starting.clone());
+                link::run(
+                    store.clone(),
+                    &membership,
+                    connection,
+                    shares.clone(),
+                    starting,
+                )
+                .await
             }
             Err(error) => Err(error),
         };
@@ -218,6 +237,8 @@ struct Shared<S> {
     /// The realm's folder of held sessions on this machine.
     held: PathBuf,
     starter: Option<Arc<Starter>>,
+    /// The links this node asks other machines' starts through.
+    asks: Asks,
     inner: Arc<Mutex<Inner>>,
 }
 
@@ -229,6 +250,7 @@ impl<S: Clone> Clone for Shared<S> {
             realm: self.realm.clone(),
             held: self.held.clone(),
             starter: self.starter.clone(),
+            asks: self.asks.clone(),
             inner: self.inner.clone(),
         }
     }
@@ -353,9 +375,6 @@ impl<S: Store> Shared<S> {
     /// Starts a program held on the machine placement chooses, answering
     /// where and how to join it, or why it didn't start.
     async fn start(&self, asked: Start) -> Reply {
-        let Some(starter) = self.starter.clone() else {
-            return Err("this node starts no sessions".to_owned());
-        };
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
@@ -378,10 +397,11 @@ impl<S: Store> Shared<S> {
             }
         };
         if machine != self.machine {
-            return Err(format!(
-                "{machine} would take it, but a node starts sessions only on its own machine yet"
-            ));
+            return self.asks.ask(&machine, asked).await;
         }
+        let Some(starter) = self.starter.clone() else {
+            return Err(format!("{machine}'s node starts no sessions"));
+        };
         let realm = self.realm.clone();
         let command = start::through_login_shell(&asked.command);
         let held =
@@ -514,7 +534,7 @@ mod tests {
     use super::*;
     use crate::client::Client;
     use crate::group::Group;
-    use crate::link::dial::Ssh;
+    use crate::link::dial::{Connection, Ssh};
     use crate::link::discovery::Listed;
     use crate::link::membership::Realm;
     use crate::record::Intent;
@@ -522,6 +542,188 @@ mod tests {
 
     /// How long the test waits on the node before failing.
     const PATIENCE: Duration = Duration::from_secs(5);
+
+    /// A holder in `dir` that says it holds at once, writing down in the
+    /// file it answers beside it what it was given to hold.
+    fn stand_in_holder(dir: &Path) -> (PathBuf, PathBuf) {
+        let given = dir.join("given");
+        let holder = dir.join("holder");
+        fs::write(
+            &holder,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho held\n",
+                given.display()
+            ),
+        )
+        .expect("the stand-in holder is written");
+        fs::set_permissions(&holder, fs::Permissions::from_mode(0o755))
+            .expect("the stand-in holder runs");
+        (holder, given)
+    }
+
+    fn work(needs: Vec<placement::Need>) -> placement::Work {
+        placement::Work {
+            needs,
+            prefers: Vec::new(),
+            tolerates: Vec::new(),
+            may_wait: false,
+        }
+    }
+
+    /// Runs a node of `machine` in the work realm on `socket`, linked over
+    /// `dials`, until `stop` is dropped.
+    fn node<D: Dial + Clone>(
+        store: &Memory,
+        machine: &str,
+        dials: Vec<D>,
+        starter: Option<Starter>,
+        socket: &Path,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: machine.to_owned(),
+        };
+        let bound = bind(socket).expect("the socket binds");
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let store = store.clone();
+        let node = tokio::spawn(async move {
+            let given = Given {
+                sharing: None,
+                starter,
+            };
+            let stopped = async {
+                // A dropped sender stops the node as surely as a sent stop.
+                let _ = stopped.await;
+            };
+            run(store, membership, Listed(dials), given, bound, stopped).await
+        });
+        (stop, node)
+    }
+
+    /// A dial to equilibrius over a pipe, whose far end runs equilibrius's
+    /// end of the link on `store`, handing starts to its node at `socket`.
+    #[derive(Clone)]
+    struct Piped {
+        store: Memory,
+        socket: PathBuf,
+    }
+
+    impl Dial for Piped {
+        fn describe(&self) -> String {
+            "a pipe to equilibrius".to_owned()
+        }
+
+        fn dial(&self, _realm: &str) -> impl Future<Output = io::Result<Connection>> + Send {
+            let (near, far) = tokio::io::duplex(1 << 16);
+            let store = self.store.clone();
+            let node = self.socket.clone();
+            tokio::spawn(async move {
+                let realm = Realm {
+                    name: "work".to_owned(),
+                    machine: "equilibrius".to_owned(),
+                };
+                let starting = Starting { node, asking: None };
+                // The test judges the link by what crosses it.
+                let _ = link::run(store, &realm, piped(far), None, Some(starting)).await;
+            });
+            std::future::ready(Ok(piped(near)))
+        }
+
+        fn there(&self, words: &[String]) -> Vec<String> {
+            let mut there = vec!["into-equilibrius".to_owned()];
+            there.extend_from_slice(words);
+            there
+        }
+    }
+
+    fn piped(pipe: tokio::io::DuplexStream) -> Connection {
+        let (reading, writing) = tokio::io::split(pipe);
+        Connection {
+            reading: Box::new(reading),
+            writing: Box::new(writing),
+            keep: Box::new(()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_start_placed_on_another_machine_is_started_by_that_machines_node() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (holder, given) = stand_in_holder(dir.path());
+        let far_socket = dir.path().join("equilibrius").join("work.sock");
+        let near_socket = dir.path().join("optimus").join("work.sock");
+        let far_store = Memory::default();
+        let holds = Starter {
+            program: holder,
+            scoped: false,
+        };
+        let nobody = Vec::<Piped>::new();
+        let far = node(&far_store, "equilibrius", nobody, Some(holds), &far_socket);
+        let near_store = Memory::default();
+        let dial = Piped {
+            store: far_store,
+            socket: far_socket,
+        };
+        let near = node(&near_store, "optimus", vec![dial], None, &near_socket);
+        // Nothing tells the test when the link has said what equilibrius
+        // is, so it looks again every few milliseconds until it has.
+        tokio::time::timeout(PATIENCE, async {
+            while !near_store
+                .machines()
+                .iter()
+                .any(|one| one.name == "equilibrius")
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the link says what equilibrius is");
+
+        let folder = dir.path().to_owned();
+        let started = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&near_socket).expect("the client connects");
+            let there = placement::Need::Machine("equilibrius".to_owned());
+            let asked = Request::Start(Start {
+                work: work(vec![there]),
+                folder,
+                command: vec!["pi".to_owned()],
+            });
+            client.ask(&asked).expect("the node answers")
+        });
+        let started = tokio::time::timeout(PATIENCE, started)
+            .await
+            .expect("the node answers in time")
+            .expect("the client asks");
+        let Ok(Response::Started(started)) = started else {
+            panic!("equilibrius's node starts it: {started:?}");
+        };
+        assert_eq!(started.machine, "equilibrius");
+        assert_eq!(
+            started.attach,
+            [
+                "into-equilibrius",
+                "mycelium",
+                "--realm",
+                "work",
+                "attach",
+                &started.held
+            ],
+            "its words join it through the dial that reaches equilibrius"
+        );
+        let given = fs::read_to_string(&given).expect("equilibrius's holder was started");
+        assert!(
+            given.lines().any(|word| word == started.held),
+            "under the id its node answered: {given}"
+        );
+
+        for (stop, node) in [near, far] {
+            drop(stop);
+            let stopped = node.await.expect("the node runs to its end");
+            assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+        }
+    }
 
     #[tokio::test]
     async fn a_watch_gets_the_whole_state_then_a_message_a_client_sent() {
@@ -628,20 +830,7 @@ mod tests {
     async fn a_node_starts_what_it_is_asked_where_placement_says_or_says_why_not() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("mycelium").join("work.sock");
-        // A holder that says it holds at once, writing down what it was
-        // given to hold.
-        let given = dir.path().join("given");
-        let holder = dir.path().join("holder");
-        fs::write(
-            &holder,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho held\n",
-                given.display()
-            ),
-        )
-        .expect("the stand-in holder is written");
-        fs::set_permissions(&holder, fs::Permissions::from_mode(0o755))
-            .expect("the stand-in holder runs");
+        let (holder, given) = stand_in_holder(dir.path());
         let membership = Realm {
             name: "work".to_owned(),
             machine: "optimus".to_owned(),
