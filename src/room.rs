@@ -11,7 +11,11 @@
 //!
 //! Only the record's `v`, `at`, `heartbeat`, `machine` and `room` are
 //! read, which the harness keeps as a contract: a change to any of them
-//! changes `v`.
+//! changes `v`, and a field added to them doesn't.
+//!
+//! Whether the machine is under pressure is the queue's own verdict, the
+//! limits it is past by name, never the queue's numbers judged again
+//! here, which would drift from the queue's own rules.
 
 use std::fs;
 use std::path::Path;
@@ -30,6 +34,20 @@ pub struct Room {
     pub pressure: Pressure,
     /// How many more of each kind of work its queue would start now.
     pub takes: Takes,
+    /// The queue's limits the machine is at or past now, none when it is
+    /// under none, or unknown from a queue too old to say.
+    pub over: Option<Vec<Limit>>,
+}
+
+/// A limit of the queue's that a machine can be past.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Limit {
+    /// So much waits on memory that the queue starts no work.
+    Memory,
+    /// So much waits on a processor that the queue starts no build beside
+    /// a VM test.
+    Cpu,
 }
 
 /// The share of the last ten seconds in which some work waited on each,
@@ -87,6 +105,7 @@ fn said(record: &[u8], now: i64) -> Option<Room> {
     struct Machine {
         available_gib: f64,
         pressure: Pressure,
+        over: Option<Vec<String>>,
     }
     #[derive(Deserialize)]
     struct Left {
@@ -114,6 +133,13 @@ fn said(record: &[u8], now: i64) -> Option<Room> {
             builds: queue.room.builds,
             vm_tests: queue.room.vms,
         },
+        // A limit a later queue names that this build doesn't know is
+        // left out, rather than losing the rest of the room.
+        over: queue.machine.over.map(|over| {
+            over.iter()
+                .filter_map(|limit| serde_json::from_value(limit.as_str().into()).ok())
+                .collect()
+        }),
     })
 }
 
@@ -124,6 +150,13 @@ mod tests {
     const KEPT_AT: i64 = 1_793_248_698;
 
     fn record(v: u64, heartbeat: i64) -> Vec<u8> {
+        let mut record = older(v, heartbeat);
+        record["machine"]["over"] = serde_json::json!(["memory", "swap"]);
+        record.to_string().into_bytes()
+    }
+
+    /// As a queue wrote it before it said which limits it was past.
+    fn older(v: u64, heartbeat: i64) -> serde_json::Value {
         serde_json::json!({
             "v": v,
             "at": "2026-10-29T04:38:18.818Z",
@@ -139,8 +172,6 @@ mod tests {
             "jobs": [],
             "wasted": {"today": 0, "day": "2026-10-29", "minute": "2026-10-29T04:38"}
         })
-        .to_string()
-        .into_bytes()
     }
 
     #[test]
@@ -159,8 +190,16 @@ mod tests {
                     builds: 8,
                     vm_tests: 1,
                 },
+                over: Some(vec![Limit::Memory]),
             }),
-            "its free memory in bytes, its pressure and what it would start"
+            "its free memory in bytes, its pressure, what it would start, and \
+             the limits it is past that this build knows"
+        );
+        let older = older(1, KEPT_AT).to_string().into_bytes();
+        assert_eq!(
+            said(&older, KEPT_AT).and_then(|room| room.over),
+            None,
+            "a queue that doesn't say its limits leaves them unknown"
         );
     }
 

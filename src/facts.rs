@@ -36,6 +36,8 @@ pub struct Machine {
     /// Its graphics and neural processors, by the driver that runs each;
     /// unknown where they can't be listed.
     pub accelerators: Option<Vec<Accelerator>>,
+    /// What it runs on now, or unknown where that can't be read.
+    pub power: Option<Power>,
     /// The room it has for more work, as its queue says, or unknown where
     /// nobody keeps one.
     pub room: Option<Room>,
@@ -98,6 +100,15 @@ pub struct Accelerator {
     pub driver: String,
 }
 
+/// What a machine runs on, as it was measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Power {
+    /// Whether it runs on its battery, with nothing plugged in.
+    pub on_battery: bool,
+    /// How full its battery is, in percent, or unknown where it has none.
+    pub charge: Option<u8>,
+}
+
 /// The kinds of accelerator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -124,6 +135,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         memory: read.memory,
         disk: disk_of(&sources.home),
         accelerators: read.accelerators,
+        power: read.power,
         room: sources
             .queue
             .as_deref()
@@ -140,6 +152,7 @@ struct Read {
     cpu: Cpu,
     memory: Option<u64>,
     accelerators: Option<Vec<Accelerator>>,
+    power: Option<Power>,
 }
 
 fn disk_of(home: &Path) -> Option<u64> {
@@ -154,6 +167,8 @@ mod here {
     use std::fs;
 
     use super::{Accelerator, AcceleratorKind, Cpu, Read, linux};
+
+    const SUPPLIES: &str = "/sys/class/power_supply";
 
     pub(super) fn read() -> Read {
         let cpuinfo = fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
@@ -181,7 +196,30 @@ mod here {
                     .chain(drivers("/sys/class/accel", "accel", AcceleratorKind::Npu))
                     .collect(),
             ),
+            power: supplies().and_then(|supplies| linux::power(&supplies)),
         }
+    }
+
+    /// Each power supply the kernel lists, or none where it can't list
+    /// them.
+    fn supplies() -> Option<Vec<linux::Supply>> {
+        let said = |entry: &fs::DirEntry, file: &str| {
+            fs::read_to_string(entry.path().join(file))
+                .map(|text| text.trim().to_owned())
+                .unwrap_or_default()
+        };
+        Some(
+            fs::read_dir(SUPPLIES)
+                .ok()?
+                .filter_map(Result::ok)
+                .map(|entry| linux::Supply {
+                    kind: said(&entry, "type"),
+                    scope: said(&entry, "scope"),
+                    online: said(&entry, "online") == "1",
+                    capacity: said(&entry, "capacity").parse().ok(),
+                })
+                .collect(),
+        )
     }
 
     /// The driver of each device in `class` named `prefix` and a number:
@@ -254,6 +292,7 @@ mod here {
             // A Mac's graphics and neural engines can't be listed without
             // a binding this crate doesn't have.
             accelerators: None,
+            power: said("/usr/bin/pmset", &["-g", "batt"]).and_then(|said| macos::power(&said)),
         }
     }
 }
@@ -274,6 +313,7 @@ mod here {
             },
             memory: None,
             accelerators: None,
+            power: None,
         }
     }
 }
@@ -341,6 +381,47 @@ mod linux {
             kib.trim().parse::<u64>().ok()?.checked_mul(1024)
         })
     }
+
+    /// A power supply, as the kernel says it in its folder's files.
+    pub(super) struct Supply {
+        /// `Mains`, `USB`, `Battery` and the like.
+        pub(super) kind: String,
+        /// `Device` for a peripheral's own, such as a mouse's battery.
+        pub(super) scope: String,
+        /// Whether it supplies power now.
+        pub(super) online: bool,
+        /// A battery's charge, in percent.
+        pub(super) capacity: Option<u8>,
+    }
+
+    /// What the machine runs on: its battery when it has one and nothing
+    /// else supplies it, its batteries' charge being their mean.
+    /// Peripherals' batteries are none of its own.
+    pub(super) fn power(supplies: &[Supply]) -> Option<super::Power> {
+        let own = |supply: &&Supply| supply.scope != "Device";
+        let batteries: Vec<&Supply> = supplies
+            .iter()
+            .filter(own)
+            .filter(|supply| supply.kind == "Battery")
+            .collect();
+        let plugged = supplies
+            .iter()
+            .filter(own)
+            .any(|supply| supply.kind != "Battery" && supply.online);
+        let charges: Vec<u32> = batteries
+            .iter()
+            .filter_map(|battery| battery.capacity.map(u32::from))
+            .collect();
+        let count = u32::try_from(charges.len()).ok()?;
+        Some(super::Power {
+            on_battery: !batteries.is_empty() && !plugged,
+            charge: charges
+                .iter()
+                .sum::<u32>()
+                .checked_div(count)
+                .and_then(|mean| u8::try_from(mean).ok()),
+        })
+    }
 }
 
 /// Reading what macOS's tools say.
@@ -355,6 +436,22 @@ mod macos {
             let (name, value) = line.split_once(':')?;
             let value = value.trim();
             (name.trim() == key && !value.is_empty()).then(|| value.to_owned())
+        })
+    }
+
+    /// What the machine runs on, as `pmset -g batt` says it: what it
+    /// draws from first, then a line for its battery, if it has one.
+    pub(super) fn power(said: &str) -> Option<super::Power> {
+        let mut lines = said.lines();
+        let drawing = lines.next()?.strip_prefix("Now drawing from ")?;
+        let charge = lines.find_map(|line| {
+            let (_, after) = line.split_once("-InternalBattery")?;
+            let (_, percent) = after.split_once('\t')?;
+            percent.split_once('%')?.0.trim().parse().ok()
+        });
+        Some(super::Power {
+            on_battery: drawing.contains("'Battery Power'"),
+            charge,
         })
     }
 }
@@ -403,6 +500,55 @@ mod tests {
             Some(65_011_712 * 1024),
             "meminfo's KiB as bytes"
         );
+    }
+
+    #[test]
+    fn a_machine_runs_on_its_battery_only_with_nothing_plugged_in() {
+        let supply = |kind: &str, scope: &str, online, capacity| linux::Supply {
+            kind: kind.to_owned(),
+            scope: scope.to_owned(),
+            online,
+            capacity,
+        };
+        let power = |on_battery, charge| Some(Power { on_battery, charge });
+        assert_eq!(
+            linux::power(&[
+                supply("Mains", "", true, None),
+                supply("Battery", "", false, Some(56)),
+                supply("USB", "System", true, None),
+            ]),
+            power(false, Some(56)),
+            "a laptop plugged in, as optimus says it"
+        );
+        assert_eq!(
+            linux::power(&[
+                supply("Mains", "", false, None),
+                supply("Battery", "", false, Some(80)),
+                supply("Battery", "", false, Some(40)),
+                supply("Battery", "Device", false, Some(5)),
+                supply("USB", "System", false, None),
+            ]),
+            power(true, Some(60)),
+            "unplugged, its own batteries' mean, not a mouse's"
+        );
+        assert_eq!(
+            linux::power(&[supply("Battery", "Device", true, Some(5))]),
+            power(false, None),
+            "a desktop with a wireless mouse has no battery of its own"
+        );
+
+        let unplugged = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27525219)\t73%; discharging; 5:12 remaining present: true\n";
+        assert_eq!(
+            macos::power(unplugged),
+            power(true, Some(73)),
+            "a Mac on its battery"
+        );
+        assert_eq!(
+            macos::power("Now drawing from 'AC Power'\n"),
+            power(false, None),
+            "a Mac with no battery"
+        );
+        assert_eq!(macos::power(""), None, "nothing said is unknown");
     }
 
     #[test]
