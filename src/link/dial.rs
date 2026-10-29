@@ -7,6 +7,9 @@ use std::io;
 use std::process::Stdio;
 
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::task::JoinHandle;
+
+use crate::link::refused;
 
 /// A link's byte streams, and whatever must live as long as they do.
 pub struct Connection {
@@ -16,6 +19,9 @@ pub struct Connection {
     pub writing: Box<dyn AsyncWrite + Unpin + Send>,
     /// Kept until the link is over, such as the process carrying it.
     pub keep: Box<dyn Send>,
+    /// Why the way in turned this machine away, if it did, known once it
+    /// has ended; none for a way in that never refuses.
+    pub refused: Option<JoinHandle<Option<String>>>,
 }
 
 /// A way to reach another machine's end of a link.
@@ -104,15 +110,23 @@ impl Ssh {
             .args([self.command.as_str(), "link", "--realm", realm])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            // Read to tell a refused key from a machine out of reach, and
+            // passed on as SSH would have said it.
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut child = ssh.spawn()?;
         let (Some(writing), Some(reading)) = (child.stdin.take(), child.stdout.take()) else {
             return Err(io::Error::other("ssh gave no pipes"));
         };
+        let refused = child
+            .stderr
+            .take()
+            .map(|said| tokio::spawn(refused::turned_away(said)));
         Ok(Connection {
             reading: Box::new(reading),
             writing: Box::new(writing),
             keep: Box::new(child),
+            refused,
         })
     }
 }

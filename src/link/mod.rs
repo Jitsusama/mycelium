@@ -34,6 +34,7 @@
 pub mod dial;
 pub mod discovery;
 pub mod membership;
+pub mod refused;
 pub mod starts;
 
 use std::collections::BTreeMap;
@@ -148,6 +149,7 @@ pub async fn run(
         reading,
         mut writing,
         keep: _keep,
+        ..
     } = connection;
     let mut changes = store.changes()?;
     let (mut frames, _reader) = read_frames(reading);
@@ -669,6 +671,7 @@ mod tests {
             reading: Box::new(reading),
             writing: Box::new(writing),
             keep: Box::new(()),
+            refused: None,
         }
     }
 
