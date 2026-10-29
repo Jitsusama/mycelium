@@ -305,8 +305,7 @@ impl<S: Store> Shared<S> {
     /// This machine as it is now: a handful of small files read, or one
     /// sysctl on a Mac, quick enough to answer in place.
     fn measure(&self) -> facts::Machine {
-        let home = std::env::home_dir().unwrap_or_else(std::env::temp_dir);
-        facts::measure(&self.machine, &home, place::queue().as_deref())
+        facts::measure(&self.machine, &facts::Sources::here())
     }
 
     fn answer(&self, request: Request) -> Reply {
