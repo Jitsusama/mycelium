@@ -207,7 +207,7 @@ async fn end(store: Folders, machine: &str, stream: tokio::io::DuplexStream) -> 
         writing: Box::new(writing),
         keep: Box::new(()),
     };
-    link::run(store, &realm, connection, None).await
+    link::run(store, &realm, connection, None, None).await
 }
 
 /// Watches group `bench.g<watch>` on the socket at `socket`, once the node

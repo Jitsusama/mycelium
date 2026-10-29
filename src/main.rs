@@ -259,17 +259,7 @@ fn run(command: Command) -> io::Result<()> {
                 .collect();
             run_node(here, realm, &socket, dials)
         }
-        Action::Link { here } => {
-            let (store, membership, shares) = open(here, realm)?;
-            runtime()?.block_on(async {
-                let connection = Connection {
-                    reading: Box::new(tokio::io::stdin()),
-                    writing: Box::new(tokio::io::stdout()),
-                    keep: Box::new(()),
-                };
-                link::run(store, &membership, connection, Some(shares)).await
-            })
-        }
+        Action::Link { here } => run_link(here, realm, socket),
         Action::Share {
             here,
             quest,
@@ -342,6 +332,26 @@ fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Ssh>) -> io::Re
     runtime()?.block_on(async {
         let bound = node::bind(socket)?;
         node::run(store, membership, Listed(dials), given, bound, stopped()).await
+    })
+}
+
+/// Runs this machine's end of a link over this process's own input and
+/// output, as SSH carries it, handing the starts the other end asks of
+/// this machine to its node at `socket`, which runs in its person's login
+/// session.
+fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
+    let (store, membership, shares) = open(here, realm)?;
+    runtime()?.block_on(async {
+        let connection = Connection {
+            reading: Box::new(tokio::io::stdin()),
+            writing: Box::new(tokio::io::stdout()),
+            keep: Box::new(()),
+        };
+        let starting = link::starts::Starting {
+            node: socket,
+            asking: None,
+        };
+        link::run(store, &membership, connection, Some(shares), Some(starting)).await
     })
 }
 

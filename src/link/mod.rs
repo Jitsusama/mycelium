@@ -15,6 +15,11 @@
 //! end says of its own machine, which turns out of reach when the link
 //! drops. Only an end whose hello says it knows of this hears it.
 //!
+//! Each end also carries starts ([`starts`]): its node asks the other
+//! machine to start a session held, and the other end hands it to its own
+//! node, whose answer comes back. Only an end whose hello says it carries
+//! them is asked.
+//!
 //! Each end reads in a task of its own, so two ends sending a week of
 //! messages at once never wait on each other.
 //!
@@ -29,23 +34,28 @@
 pub mod dial;
 pub mod discovery;
 pub mod membership;
+pub mod starts;
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::facts::{self, Machine, Readiness};
 use crate::mesh;
 use crate::share::exchange::{Exchange, Places, Say};
 use crate::store::{self, Change, Claim, Store};
+use crate::wire::{Reply, Start};
 use dial::Connection;
 use membership::{Hello, Membership};
+use starts::{Ask, Starting};
 
 /// How far back a link reaches for messages at most: the mesh's own week,
 /// so a link never hands back a message the other end has already let go.
@@ -103,16 +113,32 @@ pub enum Frame {
     Share(Say),
     /// What this end's machine is, as measured as it was sent.
     Machine(Box<Machine>),
+    /// Start a session held on the other end's machine.
+    Start {
+        /// Which ask, so its answer finds it.
+        ask: u64,
+        /// What to start.
+        start: Start,
+    },
+    /// The other end's machine's answer to an ask.
+    Started {
+        /// Which ask.
+        ask: u64,
+        /// Its node's answer.
+        reply: Reply,
+    },
 }
 
 /// Runs this end of a link until the other end leaves, then marks every
 /// session it carried here out of reach. With `shares`, it carries the
-/// files of the quests this machine shares too.
+/// files of the quests this machine shares too, and with `starting`, it
+/// carries starts.
 pub async fn run(
     store: impl Store,
     membership: &impl Membership,
     connection: Connection,
     shares: Option<Places>,
+    starting: Option<Starting>,
 ) -> io::Result<()> {
     let Connection {
         reading,
@@ -135,10 +161,23 @@ pub async fn run(
     store.mark_linked(&other.machine, now())?;
     let exchange = shares
         .map(|places| Exchange::new(places, membership.hello().machine, other.machine.clone()));
+    let (mut asked, _reaching) = match starting.as_ref().and_then(|s| s.asking.clone()) {
+        Some((asks, there)) => {
+            let (asked, reaching) = asks.reach(&other.machine, there);
+            (Some(asked), Some(reaching))
+        }
+        None => (None, None),
+    };
+    let (answering, mut answered) = mpsc::unbounded_channel();
     let mut end = End {
         store,
         here: membership.hello().machine,
         facts: other.facts,
+        starts: other.starts,
+        node: starting.map(|starting| starting.node),
+        answering,
+        asks: HashMap::new(),
+        next_ask: 0,
         other: other.machine,
         reach,
         has: HashSet::new(),
@@ -166,6 +205,10 @@ pub async fn run(
                 None => break Ok(()),
             },
             _ = keeping.tick() => end.keep(&mut writing).await,
+            Some(ask) = next(&mut asked) => end.ask(ask, &mut writing).await,
+            Some((ask, reply)) = answered.recv() => {
+                send(&mut writing, &Frame::Started { ask, reply }).await
+            }
             _ = looking.tick() => end.share(Exchange::look, &mut writing).await,
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => end.send_messages(vec![id], &mut writing).await,
@@ -183,6 +226,14 @@ pub async fn run(
     let _ = end.store.mark_linked(&end.other, left);
     store::out_of_reach(&end.store, &end.other, left);
     result
+}
+
+/// The next of what `asked` holds, or never when there is none.
+async fn next<T>(asked: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
+    match asked {
+        Some(asked) => asked.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// The task reading a link's frames, stopped when this end of the link is,
@@ -249,6 +300,15 @@ struct End<S> {
     here: String,
     /// Whether the other end hears what this end's machine is.
     facts: bool,
+    /// Whether the other end carries starts.
+    starts: bool,
+    /// This machine's node's socket, which starts asked of it go to.
+    node: Option<PathBuf>,
+    /// Where the answers to starts asked of this machine go, to be sent.
+    answering: mpsc::UnboundedSender<(u64, Reply)>,
+    /// Starts asked of the other machine and not yet answered.
+    asks: HashMap<u64, oneshot::Sender<Reply>>,
+    next_ask: u64,
     other: String,
     reach: i64,
     has: HashSet<String>,
@@ -317,8 +377,51 @@ impl<S: Store> End<S> {
                     .await?;
             }
             Frame::Machine(said) => self.keep_machine(*said),
+            Frame::Start { ask, start } => self.answer(ask, start),
+            Frame::Started { ask, reply } => {
+                // An ask its asker has given up on is answered to nobody.
+                if let Some(answer) = self.asks.remove(&ask) {
+                    let _ = answer.send(reply);
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Asks the other machine to start what this machine's node placed
+    /// there, or answers why it can't be asked.
+    async fn ask(&mut self, ask: Ask, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        if !self.starts {
+            // The asker may have given up; then nobody hears it.
+            let _ = ask.answer.send(Err(format!(
+                "{}'s mycelium is too old to start sessions",
+                self.other
+            )));
+            return Ok(());
+        }
+        let id = self.next_ask;
+        self.next_ask += 1;
+        self.asks.insert(id, ask.answer);
+        let start = ask.start;
+        send(writing, &Frame::Start { ask: id, start }).await
+    }
+
+    /// Hands a start the other end asks of this machine to its node, away
+    /// from the link's own work, since starting waits on the holder.
+    fn answer(&self, ask: u64, start: Start) {
+        let answering = self.answering.clone();
+        let Some(node) = self.node.clone() else {
+            let refused = Err(format!("{} starts nothing over this link", self.here));
+            // The link outlives this call, so its loop is there to send it.
+            let _ = answering.send((ask, refused));
+            return;
+        };
+        let here = self.here.clone();
+        tokio::spawn(async move {
+            let reply = starts::answer(node, here, start).await;
+            // A link that dropped meanwhile has nobody to answer.
+            let _ = answering.send((ask, reply));
+        });
     }
 
     /// Keeps what the other end says its machine is, which only it can
@@ -567,7 +670,14 @@ mod tests {
         let store = store.clone();
         let (reading, writing) = tokio::io::split(pipe);
         tokio::spawn(async move {
-            run(store, &realm(machine), connection(reading, writing), shares).await
+            run(
+                store,
+                &realm(machine),
+                connection(reading, writing),
+                shares,
+                None,
+            )
+            .await
         })
     }
 
@@ -826,6 +936,7 @@ mod tests {
 
         let older = Hello {
             facts: false,
+            starts: false,
             ..realm("equilibrius").hello()
         };
         send(&mut far_writing, &Frame::Hello(older))
@@ -1016,6 +1127,7 @@ mod tests {
             realm: "personal".to_owned(),
             version: VERSION,
             facts: true,
+            starts: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await
