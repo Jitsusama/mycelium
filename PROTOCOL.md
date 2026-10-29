@@ -225,7 +225,10 @@ from an older presence, the quest among what it owns), what it `wants` of
 its person (`kind`, `since`, `said`) while it waits, and the `window` it
 runs in (`terminal`, `id`, `within`, such as a kitty window's id and
 kitty's socket). Only a session of this machine's has a `window`, since a
-window is gone to on its own machine.
+window is gone to on its own machine. Its `presence` goes along whole, as
+its session wrote it, for a reader that shows more of it, such as the
+launcher; a session elsewhere's has its process taken out. Whether a
+session lives is its `state`, never anything in its presence.
 
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`
