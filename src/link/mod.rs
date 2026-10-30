@@ -34,6 +34,12 @@
 //! that shares none says nothing of them, so it links with an end too old
 //! to know of sharing.
 //!
+//! An end whose machine leaves (`leaves_at`) tells an end that can release
+//! it, once no session runs there any more, that it has handed over
+//! ([`crate::handover::handed_over`]), having said all it holds; the link
+//! then ends with [`Ending::HandedOver`] if the other end holds all of it,
+//! for that end's node to release the machine.
+//!
 //! How an end is reached is [`dial`]'s, and which ends to reach is
 //! [`discovery`]'s.
 
@@ -57,6 +63,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tokio::sync::{mpsc, oneshot};
 
 use crate::facts::{self, Machine, Readiness};
+use crate::handover;
 use crate::hold;
 use crate::mesh;
 use crate::share::exchange::{Exchange, Places, Say};
@@ -157,6 +164,20 @@ pub enum Frame {
         /// Its node's answer.
         reply: Reply,
     },
+    /// This end's machine, which leaves, has handed over: no session runs
+    /// there now, and all it holds of the quests it shares has been said.
+    /// Sent only to an end that said it `releases`.
+    HandedOver,
+}
+
+/// How a link ended without failing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    /// The other end left.
+    Left,
+    /// The other end's machine handed over, and this end holds all it
+    /// said, so the machine may be released.
+    HandedOver,
 }
 
 /// Runs this end of a link until the other end leaves, then marks every
@@ -169,19 +190,18 @@ pub async fn run(
     connection: Connection,
     shares: Option<Places>,
     starting: Option<Starting>,
-) -> io::Result<()> {
+) -> io::Result<Ending> {
     let Connection {
         reading,
         mut writing,
         keep: _keep,
+        releases,
         ..
     } = connection;
     let mut changes = store.changes()?;
     let (mut frames, _reader) = read_frames(reading);
 
-    send(&mut writing, &Frame::Hello(membership.hello())).await?;
-    let other = hello(&mut frames).await?;
-    membership.admit(&other).map_err(refusal)?;
+    let other = greet(&mut writing, &mut frames, membership, releases).await?;
     let Some(claim) = store.claim(&other.machine)? else {
         return Err(refusal(format!(
             "a link to {} already carries it here",
@@ -208,6 +228,10 @@ pub async fn run(
         facts: other.facts,
         starts: other.starts,
         steers: other.steers,
+        handover: Handover {
+            releases: other.releases,
+            ..Handover::default()
+        },
         following: inboxes.clone().map(Following::new),
         inboxes,
         held: starting.as_ref().map(|starting| starting.held.clone()),
@@ -240,7 +264,7 @@ pub async fn run(
             frame = frames.recv() => match frame {
                 Some(Ok(frame)) => end.take(frame, &mut writing).await,
                 Some(Err(error)) => Err(error),
-                None => break Ok(()),
+                None => break Ok(Ending::Left),
             },
             _ = keeping.tick() => end.keep(&mut writing).await,
             Some(ask) = next(&mut asked) => end.ask(ask, &mut writing).await,
@@ -252,11 +276,14 @@ pub async fn run(
                 Some(Change::Message(id)) => end.send_messages(vec![id], &mut writing).await,
                 Some(Change::Presence) => end.send_presence(&mut writing).await,
                 Some(Change::Rescan) => end.catch_up(&mut writing).await,
-                None => break Ok(()),
+                None => break Ok(Ending::Left),
             },
         };
         if let Err(error) = step {
             break Err(error);
+        }
+        if end.handover.done {
+            break Ok(Ending::HandedOver);
         }
     };
     // Had the link died outright, the last minute's mark would stand.
@@ -308,6 +335,24 @@ fn read_frames(
     (frames, Reader(task))
 }
 
+/// Says this end's hello, saying whether its way in `releases` the other
+/// end's machine, and hears and admits the other end's.
+async fn greet(
+    writing: &mut (impl AsyncWrite + Unpin),
+    frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
+    membership: &impl Membership,
+    releases: bool,
+) -> io::Result<Hello> {
+    let ours = Hello {
+        releases,
+        ..membership.hello()
+    };
+    send(writing, &Frame::Hello(ours)).await?;
+    let other = hello(frames).await?;
+    membership.admit(&other).map_err(refusal)?;
+    Ok(other)
+}
+
 /// The other end's hello, which must come first and soon.
 async fn hello(frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>) -> io::Result<Hello> {
     let first = tokio::time::timeout(HELLO_WITHIN, frames.recv())
@@ -345,6 +390,8 @@ struct End<S> {
     starts: bool,
     /// Whether the other end carries steers.
     steers: bool,
+    /// Where either machine's handover stands.
+    handover: Handover,
     /// This machine's sessions' steer inboxes, if this end carries steers.
     inboxes: Option<PathBuf>,
     /// The talks this end carries back to the other.
@@ -367,6 +414,21 @@ struct End<S> {
     carried: HashSet<String>,
     exchange: Option<Exchange>,
     _claim: Claim,
+}
+
+/// Where a machine's handover stands, at one end of a link.
+#[derive(Debug, Default)]
+struct Handover {
+    /// Whether the other end can release this end's machine, and so is
+    /// told when it has handed over.
+    releases: bool,
+    /// When this end's machine leaves, as it last declared.
+    leaves: Option<jiff::Timestamp>,
+    /// Whether a session has run on this end's machine since the link came.
+    ran: bool,
+    /// Whether the other end's machine has handed over, with this end
+    /// holding all it said.
+    done: bool,
 }
 
 impl<S: Store> End<S> {
@@ -463,6 +525,7 @@ impl<S: Store> End<S> {
                     self.kept(&replies.id, steers::keep(inboxes, &replies));
                 }
             }
+            Frame::HandedOver => self.heard_handed_over(),
             Frame::Started { ask, reply } => {
                 // An ask its asker has given up on is answered to nobody.
                 if let Some(answer) = self.asks.remove(&ask) {
@@ -583,14 +646,51 @@ impl<S: Store> End<S> {
         })
         .await
         .map_err(io::Error::other)?;
+        self.handover.leaves = machine
+            .declared
+            .as_ref()
+            .and_then(|declared| declared.leaves_at);
         send(writing, &Frame::Machine(Box::new(machine))).await
     }
 
     /// Says again that what this link carried here stands, and what this
-    /// end's machine is now.
+    /// end's machine is now, and whether it has handed over.
     async fn keep(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
         self.keep_carried()?;
-        self.send_machine(writing).await
+        self.send_machine(writing).await?;
+        self.hand_over(writing).await
+    }
+
+    /// Tells an end that can release this machine that it has handed over
+    /// (`handover::handed_over`), once it has, saying first all it holds
+    /// of the quests it shares.
+    async fn hand_over(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        if !self.handover.releases {
+            return Ok(());
+        }
+        let running = self.living().len();
+        self.handover.ran |= running > 0;
+        let Handover { leaves, ran, .. } = self.handover;
+        if !handover::handed_over(leaves, jiff::Timestamp::now(), ran, running) {
+            return Ok(());
+        }
+        self.share(Exchange::look, writing).await?;
+        send(writing, &Frame::HandedOver).await
+    }
+
+    /// Takes the other end's word that its machine has handed over, if this
+    /// end holds all it said: frames cross in the order they are said, so
+    /// every file it holds has been heard of, and asked for if wanted.
+    fn heard_handed_over(&mut self) {
+        let lacking = self.exchange.as_ref().map_or(0, Exchange::waiting);
+        if lacking == 0 {
+            self.handover.done = true;
+        } else {
+            eprintln!(
+                "{} has handed over, but {lacking} of its files haven't reached this machine yet",
+                self.other
+            );
+        }
     }
 
     /// Has the exchange act on the disk, away from the link's own work,
@@ -670,6 +770,7 @@ impl<S: Store> End<S> {
     /// Sends what changed in this machine's living sessions since last sent.
     async fn send_presence(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
         let living = self.living();
+        self.handover.ran |= !living.is_empty();
         let ended: Vec<String> = self
             .sent
             .keys()
@@ -786,6 +887,7 @@ mod tests {
             writing: Box::new(writing),
             keep: Box::new(()),
             refused: None,
+            releases: false,
         }
     }
 
@@ -817,6 +919,7 @@ mod tests {
                 None,
             )
             .await
+            .map(|_| ())
         })
     }
 
@@ -1272,6 +1375,7 @@ mod tests {
             facts: true,
             starts: true,
             steers: true,
+            releases: false,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await
@@ -1365,5 +1469,184 @@ mod tests {
         until_file(&theirs, "# Shared\n").await;
         std::fs::write(&theirs, "# Changed there\n").expect("changed on the far end");
         until_file(&ours, "# Changed there\n").await;
+    }
+
+    #[tokio::test]
+    async fn a_link_that_can_release_ends_once_the_other_machine_hands_over() {
+        let optimus = Memory::default();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        let optimus_end = tokio::spawn(async move {
+            run(
+                optimus,
+                &realm("optimus"),
+                Connection {
+                    releases: true,
+                    ..connection(reading, writing)
+                },
+                None,
+                None,
+            )
+            .await
+        });
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let mut lines = BufReader::new(far_reading).lines();
+        let first = lines
+            .next_line()
+            .await
+            .expect("the pipe reads")
+            .expect("optimus says hello");
+        let Ok(Frame::Hello(hello)) = serde_json::from_str::<Frame>(&first) else {
+            panic!("optimus's first line is its hello: {first}");
+        };
+        assert!(hello.releases, "an end that can release says so");
+
+        for frame in [
+            Frame::Hello(realm("lent").hello()),
+            Frame::Have {
+                messages: Vec::new(),
+                living: Some(Vec::new()),
+            },
+            Frame::HandedOver,
+        ] {
+            send(&mut far_writing, &frame)
+                .await
+                .expect("the far end speaks");
+        }
+        let ended = tokio::time::timeout(PATIENCE, optimus_end)
+            .await
+            .expect("optimus's end ends")
+            .expect("optimus's end runs");
+
+        assert_eq!(
+            ended.expect("the link doesn't fail"),
+            Ending::HandedOver,
+            "holding all the other machine said, it may be released"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_machine_handing_over_with_a_file_on_its_way_is_kept_until_it_comes() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = |machine: &str| Places {
+            quests: dir.path().join(machine).join("quests"),
+            scratch: dir.path().join(machine).join("scratch"),
+            home: dir.path().join(machine).join("home"),
+            state: dir.path().join(machine).join("state"),
+        };
+        let (home, lent) = (places("optimus"), places("lent"));
+        let quest = "QEST-20261013-4UHC5Q";
+        std::fs::create_dir_all(lent.quests.join(quest)).expect("the quest made");
+        std::fs::write(lent.quests.join(quest).join("README.md"), "# Shared\n")
+            .expect("its README written");
+        lent.ledgers()
+            .hold(quest)
+            .expect("its ledger held")
+            .keep()
+            .expect("the quest shared");
+        let mut exchange = Exchange::new(lent, "lent".to_owned(), "optimus".to_owned());
+
+        let optimus = Memory::default();
+        let store = optimus.clone();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        let optimus_end = tokio::spawn(async move {
+            run(
+                store,
+                &realm("optimus"),
+                Connection {
+                    releases: true,
+                    ..connection(reading, writing)
+                },
+                Some(home),
+                None,
+            )
+            .await
+        });
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let mut lines = BufReader::new(far_reading).lines();
+
+        // The lent machine offers its README and hands over at once, then
+        // says a message, which optimus keeps only once it has heard all
+        // before it.
+        let said = recent(0, "20KSI7", 0);
+        let mut frames = vec![
+            Frame::Hello(realm("lent").hello()),
+            Frame::Have {
+                messages: Vec::new(),
+                living: Some(Vec::new()),
+            },
+        ];
+        frames.extend(
+            exchange
+                .look()
+                .expect("the lent machine looks")
+                .into_iter()
+                .map(Frame::Share),
+        );
+        frames.push(Frame::HandedOver);
+        frames.push(Frame::Message {
+            id: said.clone(),
+            body: json!({"id": said, "to": ["@WCJQSG"]}),
+        });
+        for frame in &frames {
+            send(&mut far_writing, frame)
+                .await
+                .expect("the lent machine speaks");
+        }
+        until(&optimus, |store| store.message(&said).is_some()).await;
+        assert!(
+            !optimus_end.is_finished(),
+            "optimus keeps the link while the README it asked for is on its way"
+        );
+
+        for frame in files_asked_for(&mut lines, &mut exchange)
+            .await
+            .into_iter()
+            .map(Frame::Share)
+            .chain([Frame::HandedOver])
+        {
+            send(&mut far_writing, &frame)
+                .await
+                .expect("the lent machine speaks");
+        }
+        let ended = tokio::time::timeout(PATIENCE, optimus_end)
+            .await
+            .expect("optimus's end ends")
+            .expect("optimus's end runs");
+        assert_eq!(
+            ended.expect("the link doesn't fail"),
+            Ending::HandedOver,
+            "once the README came, the lent machine may be released"
+        );
+    }
+
+    /// The files `exchange` gives for what the other end asks of it over
+    /// `lines`, once it has asked for any.
+    async fn files_asked_for(
+        lines: &mut tokio::io::Lines<BufReader<ReadHalf<DuplexStream>>>,
+        exchange: &mut Exchange,
+    ) -> Vec<Say> {
+        let mut files = Vec::new();
+        let asked = tokio::time::timeout(PATIENCE, async {
+            while files.is_empty() {
+                let line = lines
+                    .next_line()
+                    .await
+                    .expect("the pipe reads")
+                    .expect("the other end speaks");
+                if let Ok(Frame::Share(say)) = serde_json::from_str::<Frame>(&line) {
+                    let answers = exchange.hear(say).expect("the exchange hears");
+                    files.extend(
+                        answers
+                            .into_iter()
+                            .filter(|answer| matches!(answer, Say::File { .. })),
+                    );
+                }
+            }
+        })
+        .await;
+        assert!(asked.is_ok(), "the other end asked for a file");
+        files
     }
 }

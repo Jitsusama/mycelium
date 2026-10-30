@@ -281,6 +281,9 @@ pub struct Exchange {
     /// The quests the other end last said it shares, and those ended there,
     /// once it has said.
     theirs: Option<Theirs>,
+    /// The files asked of the other end and not yet taken, by quest and
+    /// file.
+    wanted: BTreeSet<(String, String)>,
 }
 
 /// The quests the other end said it shares.
@@ -324,7 +327,16 @@ impl Exchange {
             unsaid: BTreeMap::new(),
             cloning: Cloning::default(),
             theirs: None,
+            wanted: BTreeSet::new(),
         }
+    }
+
+    /// How many files this end has asked of the other and not yet taken.
+    /// Once the other end has said all it holds, none means this end holds
+    /// all of it, as frames cross in the order they are said.
+    #[must_use]
+    pub fn waiting(&self) -> usize {
+        self.wanted.len()
     }
 
     /// What the shared quests' sessions should hear since last asked, as
@@ -625,6 +637,8 @@ impl Exchange {
                 held.keep()?;
                 self.unsay(id, &key);
             }
+            // Asked again below if it still should be.
+            self.wanted.remove(&(id.to_owned(), key.clone()));
             let ours = held
                 .ledger
                 .files
@@ -647,11 +661,14 @@ impl Exchange {
                     );
                     held.keep()?;
                 }
-                _ => wants.push(Say::Want {
-                    quest: id.to_owned(),
-                    file: key,
-                    at: Some(0),
-                }),
+                _ => {
+                    self.wanted.insert((id.to_owned(), key.clone()));
+                    wants.push(Say::Want {
+                        quest: id.to_owned(),
+                        file: key,
+                        at: Some(0),
+                    });
+                }
             }
         }
         Ok(wants)
@@ -765,6 +782,7 @@ impl Exchange {
         body: Option<&[u8]>,
         mode: Option<u32>,
     ) -> io::Result<Vec<Say>> {
+        self.wanted.remove(&(id.to_owned(), key.to_owned()));
         if body.map(|body| content(body).hash) != theirs.hash {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1020,6 +1038,47 @@ mod tests {
             optimus.read("README.md").as_deref(),
             Some("# Changed there\n"),
             "a change comes back"
+        );
+    }
+
+    #[test]
+    fn a_file_asked_for_is_waited_on_until_it_comes() {
+        let optimus = Machine::new("optimus");
+        let equilibrius = Machine::new("equilibrius");
+        optimus.write("README.md", "# Shared\n");
+        optimus
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("held")
+            .keep()
+            .expect("shared");
+        let (mut near, mut far) = (
+            optimus.exchange(&equilibrius),
+            equilibrius.exchange(&optimus),
+        );
+
+        let mut wants = Vec::new();
+        for say in near.look().expect("optimus looks") {
+            wants.extend(far.hear(say).expect("equilibrius hears"));
+        }
+        assert!(
+            far.waiting() > 0,
+            "equilibrius waits on the README it asked for: {wants:?}"
+        );
+
+        let mut files = Vec::new();
+        for want in wants {
+            files.extend(near.hear(want).expect("optimus hears"));
+        }
+        for file in files {
+            far.hear(file).expect("equilibrius hears");
+        }
+        assert_eq!(far.waiting(), 0, "once it came, nothing is waited on");
+        assert_eq!(
+            equilibrius.read("README.md").as_deref(),
+            Some("# Shared\n"),
+            "the README crossed"
         );
     }
 

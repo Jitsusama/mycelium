@@ -14,6 +14,10 @@ pub const VERSION: u32 = 1;
 
 /// What an end of a link says of itself, first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each says on the wire what an end knows of, apart, so an older end leaves it out"
+)]
 pub struct Hello {
     /// Its machine's name.
     pub machine: String,
@@ -36,6 +40,12 @@ pub struct Hello {
     /// neither, and would end a link that sent one.
     #[serde(default)]
     pub steers: bool,
+    /// Whether its way to the other end's machine can release that machine
+    /// once it hands over, as a provider's program can a machine it lent;
+    /// only an end that dialled one says so, and an end older than this
+    /// is never handed over to.
+    #[serde(default)]
+    pub releases: bool,
 }
 
 /// Which machines a node links with.
@@ -66,6 +76,7 @@ impl Membership for Realm {
             facts: true,
             starts: true,
             steers: true,
+            releases: false,
         }
     }
 

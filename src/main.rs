@@ -392,6 +392,7 @@ fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
             writing: Box::new(tokio::io::stdout()),
             keep: Box::new(()),
             refused: None,
+            releases: false,
         };
         let starting = link::starts::Starting {
             node: socket,
@@ -399,7 +400,9 @@ fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
             asking: None,
             steers,
         };
-        link::run(store, &membership, connection, Some(shares), Some(starting)).await
+        link::run(store, &membership, connection, Some(shares), Some(starting))
+            .await
+            .map(|_| ())
     })
 }
 

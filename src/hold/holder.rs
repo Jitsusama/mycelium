@@ -569,8 +569,10 @@ mod tests {
         first.task.abort();
         let _ = first.task.await;
 
+        // Told of the nudge and the size back, the program may read only
+        // the last, as both can come within one of its sleeps: that it
+        // reads its size at all is the word reaching it.
         let mut again = Joined::join(socket(&dir, &held.id), size, None);
-        again.sees("30 99").await;
         again.sees("30 100").await;
     }
 

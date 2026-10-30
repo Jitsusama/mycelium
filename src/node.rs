@@ -272,7 +272,24 @@ async fn keep_linked(
             eprintln!("a refusal of {} wasn't forgotten: {error}", dial.describe());
         }
         match ended {
-            Ok(()) => eprintln!("the link over {} ended", dial.describe()),
+            Ok(link::Ending::HandedOver) => match dial.release().await {
+                Some(Ok(())) => {
+                    eprintln!(
+                        "the machine over {} handed over and was released",
+                        dial.describe()
+                    );
+                    return;
+                }
+                Some(Err(error)) => eprintln!(
+                    "the machine over {} handed over, but wasn't released: {error}",
+                    dial.describe()
+                ),
+                None => eprintln!(
+                    "the machine over {} handed over, but nothing here releases it",
+                    dial.describe()
+                ),
+            },
+            Ok(link::Ending::Left) => eprintln!("the link over {} ended", dial.describe()),
             Err(error) => eprintln!("the link over {} failed: {error}", dial.describe()),
         }
         // A link that stood a while starts the waits over.
@@ -1034,6 +1051,7 @@ mod tests {
             writing: Box::new(writing),
             keep: Box::new(()),
             refused: None,
+            releases: false,
         }
     }
 
