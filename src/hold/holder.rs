@@ -1,6 +1,7 @@
 //! The holder: one process keeping one program's terminal, and serving
-//! any terminal that joins it. Every joined terminal sees the program's
-//! output and types into it, and the program's size is the one the latest
+//! any terminal that joins it. Every joined terminal is given the modes
+//! the program asked for, then sees the program's output and types into
+//! it, and the program's size is the one the latest
 //! to join or resize gave. Leaving is closing the connection; the program
 //! runs on.
 
@@ -16,6 +17,7 @@ use tokio::net::UnixStream;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
+use super::modes::Modes;
 use super::{Held, Said, Size, socket};
 use crate::node;
 use crate::record::Window;
@@ -95,7 +97,11 @@ pub async fn hold(
         size: Mutex::new(FIRST_SIZE),
         drawn: output.clone(),
     });
-    let mut reader = tokio::spawn(read_output(reading, output.clone()));
+    let shown = Arc::new(Shown {
+        modes: Mutex::new(Modes::default()),
+        output,
+    });
+    let mut reader = tokio::spawn(read_output(reading, shown.clone()));
     let mut joined = JoinSet::new();
     let status = loop {
         tokio::select! {
@@ -105,7 +111,7 @@ pub async fn hold(
                     joined.spawn(serve(
                         stream,
                         terminal.clone(),
-                        output.subscribe(),
+                        shown.join(),
                         record.clone(),
                     ));
                 }
@@ -120,7 +126,7 @@ pub async fn hold(
     if tokio::time::timeout(LAST_WORDS, &mut reader).await.is_err() {
         reader.abort();
     }
-    drop(output);
+    drop(shown);
     let _ = tokio::time::timeout(LAST_WORDS, async {
         while joined.join_next().await.is_some() {}
     })
@@ -179,12 +185,38 @@ impl Terminal {
     }
 }
 
-/// One joined terminal: what it types goes to the program, and the
-/// program's output comes back, until either side ends.
+/// What the program shows, and the modes it asked for in showing it, as
+/// every joined terminal takes them.
+struct Shown {
+    modes: Mutex<Modes>,
+    output: broadcast::Sender<Arc<[u8]>>,
+}
+
+impl Shown {
+    /// Passes `bytes` to every joined terminal, reading them for modes.
+    fn show(&self, bytes: &[u8]) {
+        let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
+        modes.saw(bytes);
+        // With nobody joined there is nobody to show it to.
+        let _ = self.output.send(Arc::from(bytes));
+    }
+
+    /// What a terminal joining now is given first, and its share of all
+    /// that is shown after. Both are had under the lock `show` takes, so
+    /// no mode is missed between them, or given twice.
+    fn join(&self) -> (Vec<u8>, broadcast::Receiver<Arc<[u8]>>) {
+        let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
+        (modes.restored(), self.output.subscribe())
+    }
+}
+
+/// One joined terminal: it is given the program's modes, what it types
+/// goes to the program, and the program's output comes back, until
+/// either side ends.
 async fn serve(
     stream: UnixStream,
     terminal: Arc<Terminal>,
-    mut output: broadcast::Receiver<Arc<[u8]>>,
+    (modes, mut output): (Vec<u8>, broadcast::Receiver<Arc<[u8]>>),
     record: Arc<Record>,
 ) {
     let (mut reading, mut writing) = stream.into_split();
@@ -210,6 +242,9 @@ async fn serve(
         }
     };
     let showing = async {
+        if writing.write_all(&modes).await.is_err() {
+            return;
+        }
         loop {
             match output.recv().await {
                 Ok(bytes) => {
@@ -229,7 +264,7 @@ async fn serve(
 }
 
 /// Passes the program's output to every joined terminal until it ends.
-async fn read_output(mut reading: OwnedReadPty, output: broadcast::Sender<Arc<[u8]>>) {
+async fn read_output(mut reading: OwnedReadPty, shown: Arc<Shown>) {
     let mut buffer = vec![0u8; 8192];
     // A terminal whose program has gone reads as an error on Linux and as
     // its end elsewhere; either way there is no more.
@@ -237,8 +272,7 @@ async fn read_output(mut reading: OwnedReadPty, output: broadcast::Sender<Arc<[u
         if read == 0 {
             return;
         }
-        // With nobody joined there is nobody to show it to.
-        let _ = output.send(Arc::from(&buffer[..read]));
+        shown.show(&buffer[..read]);
     }
 }
 
@@ -538,6 +572,28 @@ mod tests {
         let mut again = Joined::join(socket(&dir, &held.id), size, None);
         again.sees("30 99").await;
         again.sees("30 100").await;
+    }
+
+    #[tokio::test]
+    async fn a_terminal_joining_later_is_given_the_modes_the_program_asked_for() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut first = Joined::join(socket(&dir, &held.id), size, None);
+        // What is typed comes back as typed, its escapes spelt out, so only
+        // the program's own output carries the modes themselves.
+        first
+            .types("printf '\\033[?1049h\\033[?1006h%s\\n' \"$((6 * 7)) set\"\r")
+            .await;
+        first.sees("42 set").await;
+        first.task.abort();
+        let _ = first.task.await;
+
+        let mut again = Joined::join(socket(&dir, &held.id), size, None);
+        again.sees("\u{1b}[?1006h\u{1b}[?1049h").await;
     }
 
     #[tokio::test]
