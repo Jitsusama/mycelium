@@ -3,15 +3,17 @@
 //! queue, and what the machine is called.
 
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
 
 use crate::share::exchange::Places;
 
-/// The socket the node for `realm` serves: in the login's runtime folder
-/// where the system has one (Linux), otherwise in the account's own
-/// temporary folder (macOS gives each account its own).
+/// The socket the node for `realm` serves, in the login's runtime folder
+/// ([`login_runtime`]), or the temporary folder on a system with none.
 pub fn socket(realm: &str) -> PathBuf {
     runtime().join(format!("{realm}.sock"))
 }
@@ -26,15 +28,54 @@ pub fn held(realm: &str) -> PathBuf {
 /// machine has for more work: in the login's runtime folder, so nowhere
 /// on a system with none, as the harness keeps it.
 pub fn queue() -> Option<PathBuf> {
-    env::var_os("XDG_RUNTIME_DIR").map(|dir| PathBuf::from(dir).join("jobs").join("queue.json"))
+    login_runtime().map(|dir| dir.join("jobs").join("queue.json"))
 }
 
 /// The status of the machine's disk guard, which says how full each disk
 /// is: in the login's runtime folder, so nowhere on a system with none, as
 /// the guard keeps it.
 pub fn disk_guard() -> Option<PathBuf> {
-    env::var_os("XDG_RUNTIME_DIR")
-        .map(|dir| PathBuf::from(dir).join("disk-guard").join("status.json"))
+    login_runtime().map(|dir| dir.join("disk-guard").join("status.json"))
+}
+
+/// The login's own runtime folder, as the harness finds it: what
+/// `XDG_RUNTIME_DIR` names, or on macOS, which has none, the account's own
+/// temporary folder as the system names it. Not `TMPDIR`, which the
+/// harness moves for a session's quest. None on any other system without
+/// one.
+fn login_runtime() -> Option<PathBuf> {
+    static DARWIN: OnceLock<Option<PathBuf>> = OnceLock::new();
+    runtime_of(
+        env::var_os("XDG_RUNTIME_DIR"),
+        cfg!(target_os = "macos"),
+        || DARWIN.get_or_init(darwin_temporary).clone(),
+    )
+}
+
+/// The runtime folder `xdg` names, else on a Mac (`mac`) the one
+/// `darwin` gives.
+fn runtime_of(
+    xdg: Option<OsString>,
+    mac: bool,
+    darwin: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    match xdg {
+        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
+        _ if mac => darwin(),
+        _ => None,
+    }
+}
+
+/// The account's own temporary folder on macOS, as `getconf` says it, or
+/// none if it won't.
+fn darwin_temporary() -> Option<PathBuf> {
+    let said = Command::new("/usr/bin/getconf")
+        .arg("DARWIN_USER_TEMP_DIR")
+        .output()
+        .ok()?;
+    let dir = String::from_utf8(said.stdout).ok()?;
+    let dir = dir.trim();
+    (said.status.success() && !dir.is_empty()).then(|| PathBuf::from(dir))
 }
 
 /// What this machine's configuration declares of it, where the account's
@@ -52,8 +93,8 @@ pub fn reached() -> PathBuf {
 }
 
 fn runtime() -> PathBuf {
-    env::var_os("XDG_RUNTIME_DIR")
-        .map_or_else(env::temp_dir, PathBuf::from)
+    login_runtime()
+        .unwrap_or_else(env::temp_dir)
         .join("mycelium")
 }
 
@@ -152,6 +193,33 @@ fn xdg(variable: &str, default: &[&str]) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mac_keeps_its_runtime_folder_where_the_system_says() {
+        let darwin = || Some(PathBuf::from("/var/folders/xb/T"));
+        assert_eq!(
+            runtime_of(None, true, darwin),
+            Some(PathBuf::from("/var/folders/xb/T")),
+            "a Mac, with no XDG_RUNTIME_DIR, has the account's temporary folder"
+        );
+        assert_eq!(
+            runtime_of(Some("/run/user/501".into()), true, darwin),
+            Some(PathBuf::from("/run/user/501")),
+            "one that names a runtime folder keeps it"
+        );
+        assert_eq!(
+            runtime_of(None, false, darwin),
+            None,
+            "another system without one has none"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_names_its_own_temporary_folder() {
+        let dir = darwin_temporary().expect("getconf names it");
+        assert!(dir.is_dir(), "{} is a folder", dir.display());
+    }
 
     #[test]
     fn a_machine_stays_in_the_realm_it_first_joined() {
