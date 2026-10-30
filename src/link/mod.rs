@@ -1600,27 +1600,8 @@ mod tests {
             "optimus keeps the link while the README it asked for is on its way"
         );
 
-        let mut files = Vec::new();
-        let asked = tokio::time::timeout(PATIENCE, async {
-            while files.is_empty() {
-                let line = lines
-                    .next_line()
-                    .await
-                    .expect("the pipe reads")
-                    .expect("optimus speaks");
-                if let Ok(Frame::Share(say)) = serde_json::from_str::<Frame>(&line) {
-                    let answers = exchange.hear(say).expect("the lent machine hears");
-                    files.extend(
-                        answers
-                            .into_iter()
-                            .filter(|answer| matches!(answer, Say::File { .. })),
-                    );
-                }
-            }
-        })
-        .await;
-        assert!(asked.is_ok(), "optimus asked for the README");
-        for frame in files
+        for frame in files_asked_for(&mut lines, &mut exchange)
+            .await
             .into_iter()
             .map(Frame::Share)
             .chain([Frame::HandedOver])
@@ -1638,5 +1619,34 @@ mod tests {
             Ending::HandedOver,
             "once the README came, the lent machine may be released"
         );
+    }
+
+    /// The files `exchange` gives for what the other end asks of it over
+    /// `lines`, once it has asked for any.
+    async fn files_asked_for(
+        lines: &mut tokio::io::Lines<BufReader<ReadHalf<DuplexStream>>>,
+        exchange: &mut Exchange,
+    ) -> Vec<Say> {
+        let mut files = Vec::new();
+        let asked = tokio::time::timeout(PATIENCE, async {
+            while files.is_empty() {
+                let line = lines
+                    .next_line()
+                    .await
+                    .expect("the pipe reads")
+                    .expect("the other end speaks");
+                if let Ok(Frame::Share(say)) = serde_json::from_str::<Frame>(&line) {
+                    let answers = exchange.hear(say).expect("the exchange hears");
+                    files.extend(
+                        answers
+                            .into_iter()
+                            .filter(|answer| matches!(answer, Say::File { .. })),
+                    );
+                }
+            }
+        })
+        .await;
+        assert!(asked.is_ok(), "the other end asked for a file");
+        files
     }
 }
