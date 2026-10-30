@@ -179,7 +179,10 @@ Three seams shape a link:
   a release that fails leaves the machine dialled again, so the
   program keeps its own pace. Its error output is passed on, and a line
   saying the other end "turned this machine away" is taken as a refused
-  SSH key is. A
+  SSH key is. Either way, the far `mycelium link` looks each minute at
+  the `mycelium` its search path names, and once that is another build
+  than the one it runs, as after its machine's configuration changes,
+  it ends, so its dialler starts the new one. A
   refused link isn't dialled again until its record in the node's
   `refused/` folder is removed, which the node's log names, so no
   retry of ours shows the other machine a failed login.

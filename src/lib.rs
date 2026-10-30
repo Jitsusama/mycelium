@@ -37,6 +37,7 @@
 //! - [`node`]: the node itself
 //! - [`client`]: a client of the socket
 //! - [`place`]: where a node keeps things on its machine
+//! - [`install`]: whether the build a process runs is still installed
 
 pub mod client;
 pub mod declared;
@@ -45,6 +46,7 @@ pub mod facts;
 pub mod group;
 pub mod handover;
 pub mod hold;
+pub mod install;
 pub mod link;
 pub mod mesh;
 pub mod node;
