@@ -256,9 +256,12 @@ rename, so a session never reads half a file.
 
 ## The Socket
 
-Each node serves one unix socket, `$XDG_RUNTIME_DIR/mycelium/<realm>.sock`
-on Linux and the account's temporary folder on macOS, reachable only by
-its account. It speaks as niri's does: a client writes one request as a
+Each node serves one unix socket, `<runtime>/mycelium/<realm>.sock`,
+reachable only by its account. The runtime folder is `$XDG_RUNTIME_DIR` on
+Linux, and on macOS, which has none, the account's own temporary folder as
+`getconf DARWIN_USER_TEMP_DIR` names it, not `TMPDIR`, which a session's
+quest may move. The harness's machine queue and the disk guard keep their
+records there too. It speaks as niri's does: a client writes one request as a
 JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 
 | Request | Reply |
@@ -449,8 +452,8 @@ machine. The holder is its own process, in a session of its own, rather
 than the node's: restarting the node's service stops everything the node
 started, and a closing window hangs up on its own session only.
 
-Each holder serves `<id>.sock` in `$XDG_RUNTIME_DIR/mycelium/<realm>.held`
-(the temporary folder on macOS), reachable only by its account, beside
+Each holder serves `<id>.sock` in `<runtime>/mycelium/<realm>.held`,
+reachable only by its account, beside
 `<id>.json`, which says what it holds: `id`, `command`, `folder`, the
 `holder`'s and the program's `pid`, `since`, and the `windows` joined to
 it that said which they are, the latest last. A window leaves the record
