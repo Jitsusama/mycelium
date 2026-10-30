@@ -80,8 +80,8 @@ fn said(leaves: Timestamp, now: Timestamp) -> String {
     };
     format!(
         "This machine leaves at {} ({when}), and nothing kept only here \
-         outlasts it. Commit and push what you have, write down what's next \
-         where your work is kept, and stop.",
+         outlasts it. Commit and push what you have, put what can't be pushed \
+         and a note of what's next where your work is shared, and stop.",
         leaves.strftime("%H:%M UTC")
     )
 }
@@ -177,8 +177,9 @@ mod tests {
             said.get("text").and_then(Value::as_str),
             Some(
                 "This machine leaves at 18:34 UTC (in 10 minutes), and nothing \
-                 kept only here outlasts it. Commit and push what you have, write \
-                 down what's next where your work is kept, and stop."
+                 kept only here outlasts it. Commit and push what you have, put \
+                 what can't be pushed and a note of what's next where your work \
+                 is shared, and stop."
             ),
             "it says when, and what to do before then"
         );

@@ -353,8 +353,9 @@ as `{"personal": "pi-claude"}`, of which a realm hears only its own; and
 `leaves_at`, the time it leaves the realm, as a machine lent for a while
 does, in RFC 3339, after which it is no longer one of `"Machines"`; from
 ten minutes before then, its node puts a steer into the inbox of each
-session running there, once, saying when it leaves and to commit, push
-and stop, with `from` `"machine"` and no `act`. Only
+session running there, once, saying when it leaves and to commit and
+push, to put what can't be pushed and a note of what's next where its
+work is shared, and to stop, with `from` `"machine"` and no `act`. Only
 the machine's own built configuration writes it, as
 `~/.config/mycelium/declared.json` (or under `XDG_CONFIG_HOME`), and
 the machine enforces its own taints. It is `null` where nothing is
