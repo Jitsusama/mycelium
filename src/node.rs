@@ -430,10 +430,10 @@ impl<S: Store> Shared<S> {
         Some(there(&words))
     }
 
-    /// This machine as it is now: a handful of small files read, or one
-    /// sysctl on a Mac, quick enough to answer in place.
+    /// This machine as it is now, as its realm hears it: a handful of small
+    /// files read, or one sysctl on a Mac, quick enough to answer in place.
     fn measure(&self) -> facts::Machine {
-        facts::measure(&self.machine, &facts::Sources::here())
+        facts::measure_in(&self.machine, &self.realm, &facts::Sources::here())
     }
 
     /// Every machine of the realm: this one measured now, then each other

@@ -140,6 +140,15 @@ pub enum AcceleratorKind {
     Npu,
 }
 
+/// Measures this machine, named `name`, as `realm` hears it: what it
+/// declares of other realms is left out.
+#[must_use]
+pub fn measure_in(name: &str, realm: &str, sources: &Sources) -> Machine {
+    let mut machine = measure(name, sources);
+    machine.declared = machine.declared.map(|said| said.in_realm(realm));
+    machine
+}
+
 /// Measures this machine, named `name`, reading the rest from `sources`.
 #[must_use]
 pub fn measure(name: &str, sources: &Sources) -> Machine {
@@ -684,6 +693,33 @@ mod tests {
             machine.cpu.cores,
             Some(3),
             "the processors it is given, not those it lists"
+        );
+    }
+
+    #[test]
+    fn a_realm_measures_nothing_a_machine_declares_of_another() {
+        let home = tempfile::tempdir().expect("a temporary folder");
+        let declared = home.path().join("declared.json");
+        std::fs::write(
+            &declared,
+            r#"{"reach": [], "outlives": [], "costs_money": false, "taints": [],
+                "agents": {"work": "pi", "personal": "pi-claude"}}"#,
+        )
+        .expect("the configuration is written");
+        let sources = Sources {
+            home: home.path().to_owned(),
+            queue: None,
+            disk_guard: None,
+            declared,
+            reached: home.path().join("reached.json"),
+        };
+        let agents = measure_in("optimus", "work", &sources)
+            .declared
+            .map(|said| said.agents);
+        assert_eq!(
+            agents,
+            Some(BTreeMap::from([("work".to_owned(), "pi".to_owned())])),
+            "the work realm hears what work's sessions start with, and of no other realm"
         );
     }
 }
