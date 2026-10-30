@@ -1524,4 +1524,119 @@ mod tests {
             "holding all the other machine said, it may be released"
         );
     }
+
+    #[tokio::test]
+    async fn a_machine_handing_over_with_a_file_on_its_way_is_kept_until_it_comes() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = |machine: &str| Places {
+            quests: dir.path().join(machine).join("quests"),
+            scratch: dir.path().join(machine).join("scratch"),
+            home: dir.path().join(machine).join("home"),
+            state: dir.path().join(machine).join("state"),
+        };
+        let (home, lent) = (places("optimus"), places("lent"));
+        let quest = "QEST-20261013-4UHC5Q";
+        std::fs::create_dir_all(lent.quests.join(quest)).expect("the quest made");
+        std::fs::write(lent.quests.join(quest).join("README.md"), "# Shared\n")
+            .expect("its README written");
+        lent.ledgers()
+            .hold(quest)
+            .expect("its ledger held")
+            .keep()
+            .expect("the quest shared");
+        let mut exchange = Exchange::new(lent, "lent".to_owned(), "optimus".to_owned());
+
+        let optimus = Memory::default();
+        let store = optimus.clone();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        let optimus_end = tokio::spawn(async move {
+            run(
+                store,
+                &realm("optimus"),
+                Connection {
+                    releases: true,
+                    ..connection(reading, writing)
+                },
+                Some(home),
+                None,
+            )
+            .await
+        });
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let mut lines = BufReader::new(far_reading).lines();
+
+        // The lent machine offers its README and hands over at once, then
+        // says a message, which optimus keeps only once it has heard all
+        // before it.
+        let said = recent(0, "20KSI7", 0);
+        let mut frames = vec![
+            Frame::Hello(realm("lent").hello()),
+            Frame::Have {
+                messages: Vec::new(),
+                living: Some(Vec::new()),
+            },
+        ];
+        frames.extend(
+            exchange
+                .look()
+                .expect("the lent machine looks")
+                .into_iter()
+                .map(Frame::Share),
+        );
+        frames.push(Frame::HandedOver);
+        frames.push(Frame::Message {
+            id: said.clone(),
+            body: json!({"id": said, "to": ["@WCJQSG"]}),
+        });
+        for frame in &frames {
+            send(&mut far_writing, frame)
+                .await
+                .expect("the lent machine speaks");
+        }
+        until(&optimus, |store| store.message(&said).is_some()).await;
+        assert!(
+            !optimus_end.is_finished(),
+            "optimus keeps the link while the README it asked for is on its way"
+        );
+
+        let mut files = Vec::new();
+        let asked = tokio::time::timeout(PATIENCE, async {
+            while files.is_empty() {
+                let line = lines
+                    .next_line()
+                    .await
+                    .expect("the pipe reads")
+                    .expect("optimus speaks");
+                if let Ok(Frame::Share(say)) = serde_json::from_str::<Frame>(&line) {
+                    let answers = exchange.hear(say).expect("the lent machine hears");
+                    files.extend(
+                        answers
+                            .into_iter()
+                            .filter(|answer| matches!(answer, Say::File { .. })),
+                    );
+                }
+            }
+        })
+        .await;
+        assert!(asked.is_ok(), "optimus asked for the README");
+        for frame in files
+            .into_iter()
+            .map(Frame::Share)
+            .chain([Frame::HandedOver])
+        {
+            send(&mut far_writing, &frame)
+                .await
+                .expect("the lent machine speaks");
+        }
+        let ended = tokio::time::timeout(PATIENCE, optimus_end)
+            .await
+            .expect("optimus's end ends")
+            .expect("optimus's end runs");
+        assert_eq!(
+            ended.expect("the link doesn't fail"),
+            Ending::HandedOver,
+            "once the README came, the lent machine may be released"
+        );
+    }
 }
