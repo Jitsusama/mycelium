@@ -39,6 +39,10 @@ pub struct Work {
     /// Whether it may wait for a machine out of reach to come back.
     #[serde(default)]
     pub may_wait: bool,
+    /// How long it runs, where it says: a machine that leaves before then
+    /// is passed over, as one that has left always is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lasts: Option<jiff::SignedDuration>,
 }
 
 /// Something a machine is, which work can need or prefer.
@@ -105,6 +109,8 @@ pub enum Because {
     Ranked,
     /// No link reaches it now.
     Unreachable,
+    /// It leaves at this time, before the work would end.
+    LeavesFirst(jiff::Timestamp),
 }
 
 impl fmt::Display for Need {
@@ -130,6 +136,7 @@ impl fmt::Display for Because {
             Because::RatherNot(taint) => write!(f, "would rather not: {}", taint.why),
             Because::Ranked => write!(f, "ranked lower"),
             Because::Unreachable => write!(f, "is out of reach"),
+            Because::LeavesFirst(at) => write!(f, "leaves at {at}, before the work ends"),
         }
     }
 }
@@ -163,7 +170,12 @@ pub const DISK_PRESSURE: &str = "disk-pressure";
 /// Places `work` among `machines`.
 #[must_use]
 pub fn place(work: &Work, machines: &[Machine]) -> Placement {
-    let mut judged: Vec<Judged> = machines.iter().map(|one| judge(work, one)).collect();
+    place_at(work, machines, jiff::Timestamp::now())
+}
+
+/// Places `work` among `machines` as of `now`.
+fn place_at(work: &Work, machines: &[Machine], now: jiff::Timestamp) -> Placement {
+    let mut judged: Vec<Judged> = machines.iter().map(|one| judge(work, one, now)).collect();
     // Machines that qualify, those no taint would rather not have first,
     // then by how many preferences each meets, earliest most, then by the
     // memory it has free; a name settles the rest, so one ask answers the
@@ -269,10 +281,20 @@ struct Judged {
     free: u64,
 }
 
-fn judge(work: &Work, machine: &Machine) -> Judged {
+fn judge(work: &Work, machine: &Machine, now: jiff::Timestamp) -> Judged {
     let mut hard = Vec::new();
     if machine.state == Readiness::Unreachable {
         hard.push(Because::Unreachable);
+    }
+    if let Some(leaves) = machine.declared.as_ref().and_then(|said| said.leaves_at) {
+        // Work lasting longer than time can say outlasts every machine
+        // that leaves.
+        let ends = work
+            .lasts
+            .map_or(Some(now), |lasts| now.checked_add(lasts).ok());
+        if ends.is_none_or(|ends| leaves <= ends) {
+            hard.push(Because::LeavesFirst(leaves));
+        }
     }
     for need in &work.needs {
         match is(machine, need) {
@@ -384,6 +406,7 @@ mod tests {
                 taints: Vec::new(),
                 cores: None,
                 agents: BTreeMap::new(),
+                leaves_at: None,
             }),
             ..facts::measure(name, &nowhere)
         }
@@ -402,6 +425,7 @@ mod tests {
             prefers: Vec::new(),
             tolerates: Vec::new(),
             may_wait: false,
+            lasts: None,
         }
     }
 
@@ -570,6 +594,43 @@ mod tests {
                 },
             ],
             "each machine says why not now"
+        );
+    }
+
+    #[test]
+    fn work_never_goes_to_a_machine_that_leaves_before_it_ends() {
+        let now: jiff::Timestamp = "2026-10-30T01:20:00Z".parse().expect("a time");
+        let mut sandbox = machine("sandbox", "linux", 30, &[]);
+        let leaves = now + jiff::SignedDuration::from_mins(40);
+        sandbox.declared.as_mut().expect("declared").leaves_at = Some(leaves);
+        let realm = [machine("optimus", "linux", 8, &[]), sandbox];
+        let mut work = needing(Vec::new());
+        assert_eq!(
+            placed(&place_at(&work, &realm, now)),
+            Some("sandbox"),
+            "work that says nothing of how long it runs may go where there is room"
+        );
+
+        work.lasts = Some(jiff::SignedDuration::from_hours(1));
+        let Placement::Placed { machine, passed } = place_at(&work, &realm, now) else {
+            panic!("work that outlasts the sandbox goes elsewhere")
+        };
+        assert_eq!(machine, "optimus", "to the machine that stays");
+        assert_eq!(
+            passed,
+            [Miss {
+                machine: "sandbox".to_owned(),
+                because: vec![Because::LeavesFirst(leaves)],
+            }],
+            "saying when the sandbox leaves"
+        );
+
+        work.lasts = None;
+        work.needs = vec![Need::Machine("sandbox".to_owned())];
+        work.may_wait = true;
+        assert!(
+            matches!(place_at(&work, &realm, leaves), Placement::Refused { .. }),
+            "once it has left, nothing goes there, and nothing waits for it"
         );
     }
 

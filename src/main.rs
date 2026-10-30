@@ -201,6 +201,10 @@ struct Asked {
     /// Waits for a machine out of reach rather than being refused.
     #[arg(long)]
     may_wait: bool,
+    /// How long the work runs, such as `90m` or `2h`, so it goes nowhere
+    /// that leaves before then.
+    #[arg(long)]
+    lasts: Option<jiff::SignedDuration>,
 }
 
 impl From<Asked> for Work {
@@ -210,6 +214,7 @@ impl From<Asked> for Work {
             prefers: asked.prefers,
             tolerates: asked.tolerates,
             may_wait: asked.may_wait,
+            lasts: asked.lasts,
         }
     }
 }
