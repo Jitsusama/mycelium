@@ -89,11 +89,12 @@ pub async fn hold(
     ready(&held)?;
 
     let (reading, writing) = pty.into_split();
+    let (output, _) = broadcast::channel(OUTPUT_BACKLOG);
     let terminal = Arc::new(Terminal {
         writing: tokio::sync::Mutex::new(writing),
         size: Mutex::new(FIRST_SIZE),
+        drawn: output.clone(),
     });
-    let (output, _) = broadcast::channel(OUTPUT_BACKLOG);
     let mut reader = tokio::spawn(read_output(reading, output.clone()));
     let mut joined = JoinSet::new();
     let status = loop {
@@ -127,16 +128,30 @@ pub async fn hold(
     Ok(status.code())
 }
 
+/// The longest a program joined at the size it has is kept one column
+/// narrower, for one that draws nothing when its size changes.
+const NUDGE_HELD: Duration = Duration::from_millis(500);
+
+/// How long the narrower size stands once the program has drawn, so one
+/// that was drawing for its own reasons as the nudge came still reads it.
+const NUDGE_SEEN: Duration = Duration::from_millis(50);
+
 /// The program's terminal, as every joined terminal shares it.
 struct Terminal {
     writing: tokio::sync::Mutex<OwnedWritePty>,
     size: Mutex<Size>,
+    /// What the program draws, to know it has drawn since a nudge.
+    drawn: broadcast::Sender<Arc<[u8]>>,
 }
 
 impl Terminal {
     /// Gives the program `size`. A terminal joining at the size the program
     /// already has nudges it one column narrower first, so the program is
     /// told of a change and draws itself again, as dtach's redraw does.
+    /// A program reads its size once it is told it changed, and one told
+    /// twice before it looks finds the size it had and draws nothing new,
+    /// as pi does, so the narrower size stands until the program has drawn
+    /// since.
     async fn resize(&self, size: Size, joining: bool) -> io::Result<()> {
         let writing = self.writing.lock().await;
         let was = std::mem::replace(
@@ -148,9 +163,17 @@ impl Terminal {
                 cols: size.cols.saturating_sub(1).max(1),
                 ..size
             };
+            let mut drawn = self.drawn.subscribe();
             writing
                 .resize(size_of(narrower))
                 .map_err(io::Error::other)?;
+            let _ = tokio::time::timeout(NUDGE_HELD, async {
+                // Drawing too much to keep up with, or ended, it has drawn
+                // all the same.
+                let _ = drawn.recv().await;
+                tokio::time::sleep(NUDGE_SEEN).await;
+            })
+            .await;
         }
         writing.resize(size_of(size)).map_err(io::Error::other)
     }
@@ -490,6 +513,31 @@ mod tests {
             !socket(&dir, "trial1").exists() && !dir.join("trial1.json").exists(),
             "its socket and record are gone"
         );
+    }
+
+    #[tokio::test]
+    async fn a_program_joined_at_the_size_it_has_is_told_its_size_changed() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut first = Joined::join(socket(&dir, &held.id), size, None);
+        // It reads its size only when told, after the sleep it is in, as a
+        // program busy drawing reads it after its frame. A shell of its
+        // own keeps no job control, so its sleeps share its group and the
+        // terminal's word of a new size reaches it every time.
+        first
+            .types("sh -c 'trap \"stty size\" WINCH; echo $((6 * 7)) set; while :; do sleep 0.05; done'\r")
+            .await;
+        first.sees("42 set").await;
+        first.task.abort();
+        let _ = first.task.await;
+
+        let mut again = Joined::join(socket(&dir, &held.id), size, None);
+        again.sees("30 99").await;
+        again.sees("30 100").await;
     }
 
     #[tokio::test]
