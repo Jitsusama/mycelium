@@ -17,6 +17,7 @@ use tokio::task::JoinSet;
 
 use crate::facts;
 use crate::group::{Pattern, Routes};
+use crate::handover::Told;
 use crate::hold::{self, start, start::Starter};
 use crate::link::refused::Refusals;
 use crate::link::starts::{Asks, Starting};
@@ -39,6 +40,10 @@ const REDIAL_MOST: Duration = Duration::from_secs(60);
 /// How long a link's way in may take to finish saying why it ended, once
 /// the link is over.
 const SAID_WITHIN: Duration = Duration::from_secs(5);
+
+/// How often the node looks whether its machine leaves soon enough for its
+/// sessions to be told to hand over (`handover`).
+const LEAVING_EVERY: Duration = Duration::from_secs(60);
 
 /// How many events a watch may fall behind by before the node lets it go;
 /// a client that can't keep up connects again and is sent the whole state.
@@ -167,6 +172,8 @@ where
 
     let mut links = JoinSet::new();
     let mut found = discovery.found();
+    let mut leaving = tokio::time::interval(LEAVING_EVERY);
+    leaving.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tokio::pin!(stop);
     let result = loop {
         tokio::select! {
@@ -192,6 +199,7 @@ where
                 links.spawn(keep_linked(dial, store.clone(), membership.clone(), carries));
             }
             Some(()) = held.recv() => shared.read_sessions(),
+            _ = leaving.tick() => shared.hand_over(),
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => shared.read_message(&id),
                 Some(Change::Presence) => shared.read_sessions(),
@@ -334,6 +342,8 @@ struct Inner {
     /// connection another replaced says nothing when it closes.
     present: HashMap<i32, u64>,
     next_present: u64,
+    /// The sessions told this machine leaves.
+    told: Told,
 }
 
 impl<S: Store> Shared<S> {
@@ -434,6 +444,32 @@ impl<S: Store> Shared<S> {
     /// files read, or one sysctl on a Mac, quick enough to answer in place.
     fn measure(&self) -> facts::Machine {
         facts::measure_in(&self.machine, &self.realm, &facts::Sources::here())
+    }
+
+    /// Tells each session running here that hasn't been told yet, once this
+    /// machine leaves soon (`handover`), through its steer inbox.
+    fn hand_over(&self) {
+        let leaves = self
+            .measure()
+            .declared
+            .and_then(|declared| declared.leaves_at);
+        let due = {
+            let inner = self.lock();
+            inner.told.due(
+                &self.machine,
+                leaves,
+                jiff::Timestamp::now(),
+                &inner.state.sessions(),
+            )
+        };
+        for steer in due {
+            match steer.deliver(&self.steers) {
+                Ok(_) => self.lock().told.told(&steer.address),
+                Err(error) => {
+                    eprintln!("{} wasn't told this machine leaves: {error}", steer.address);
+                }
+            }
+        }
     }
 
     /// Every machine of the realm: this one measured now, then each other

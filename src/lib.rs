@@ -17,7 +17,9 @@
 //! are kept by content in [`share`]. Sessions whose terminals outlive their
 //! windows are kept by holders of their own, in [`hold`]. What the person
 //! says to a session from outside its window reaches its inbox through
-//! [`steer`], on whichever machine it runs.
+//! [`steer`], on whichever machine it runs. A machine that says when it
+//! leaves tells its own sessions the same way, before it does, in
+//! [`handover`].
 //!
 //! Around them:
 //!
@@ -40,6 +42,7 @@ pub mod declared;
 pub mod disk;
 pub mod facts;
 pub mod group;
+pub mod handover;
 pub mod hold;
 pub mod link;
 pub mod mesh;
