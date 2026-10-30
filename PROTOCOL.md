@@ -349,7 +349,9 @@ its Wi-Fi or a tunnel's link; `outlives`, what a session held there outlives
 when the machine lists more than it is given, as a virtual machine held
 to a share of its host does, which its `cpu`'s `cores` then says; and
 `agents`, by realm, the command an agent session starts with there, such
-as `{"personal": "pi-claude"}`, of which a realm hears only its own. Only
+as `{"personal": "pi-claude"}`, of which a realm hears only its own; and
+`leaves_at`, the time it leaves the realm, as a machine lent for a while
+does, in RFC 3339, after which it is no longer one of `"Machines"`. Only
 the machine's own built configuration writes it, as
 `~/.config/mycelium/declared.json` (or under `XDG_CONFIG_HOME`), and
 the machine enforces its own taints. It is `null` where nothing is
@@ -371,12 +373,14 @@ its `needs` and `prefers`, each one of `{"machine": name}`,
 `{"accelerator": "gpu"}`, the earliest preference most wanted (a
 machine reaches a network it declares in `reach`, or one it probes
 while its probe last answered, and lacks one whose probe didn't); the
-keys of the taints it `tolerates`; and whether it `may_wait` for a
-machine out of reach. A machine carries the taints its configuration
+keys of the taints it `tolerates`; whether it `may_wait` for a machine
+out of reach; and how long it `lasts`, as an ISO 8601 duration such as
+`PT2H` (`2h` reads too). A machine carries the taints its configuration
 declares, and while they last, `on-battery`, `memory-pressure` (past
 its queue's memory limit) and `disk-pressure` (its `disk_band` past
 `healthy`), each `prefer_not`. A machine qualifies when it is in reach,
-is what each need asks (a fact it never said meets none), and carries
+leaves after the work ends (now, for work that doesn't say how long it
+lasts), is what each need asks (a fact it never said meets none), and carries
 no `never` taint the work doesn't tolerate. Of those, one with no
 `prefer_not` taint goes first, then the most preferences met, then the
 most memory free, then by name. The answer is
@@ -384,7 +388,8 @@ most memory free, then by name. The answer is
 only a machine out of reach would do and the work may wait, or
 `{"refused": {"misses"}}`; each miss names a `machine` and `because`:
 `{"lacks": need}`, `{"unknown": need}`, `{"refuses": taint}`,
-`{"rather_not": taint}`, `"ranked"` or `"unreachable"`. Placement only
+`{"rather_not": taint}`, `"ranked"`, `"unreachable"` or
+`{"leaves_first": time}`. Placement only
 chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only
 ranks it.
