@@ -383,6 +383,7 @@ mod tests {
                 costs_money: false,
                 taints: Vec::new(),
                 cores: None,
+                agents: BTreeMap::new(),
             }),
             ..facts::measure(name, &nowhere)
         }

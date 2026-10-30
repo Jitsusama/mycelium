@@ -204,6 +204,7 @@ pub async fn run(
     let mut end = End {
         store,
         here: membership.hello().machine,
+        realm: membership.hello().realm,
         facts: other.facts,
         starts: other.starts,
         steers: other.steers,
@@ -335,6 +336,9 @@ struct End<S> {
     store: S,
     /// This end's machine.
     here: String,
+    /// The realm the link is in, which hears what this end's machine
+    /// declares of it alone.
+    realm: String,
     /// Whether the other end hears what this end's machine is.
     facts: bool,
     /// Whether the other end carries starts.
@@ -573,11 +577,12 @@ impl<S: Store> End<S> {
         if !self.facts {
             return Ok(());
         }
-        let here = self.here.clone();
-        let machine =
-            tokio::task::spawn_blocking(move || facts::measure(&here, &facts::Sources::here()))
-                .await
-                .map_err(io::Error::other)?;
+        let (here, realm) = (self.here.clone(), self.realm.clone());
+        let machine = tokio::task::spawn_blocking(move || {
+            facts::measure_in(&here, &realm, &facts::Sources::here())
+        })
+        .await
+        .map_err(io::Error::other)?;
         send(writing, &Frame::Machine(Box::new(machine))).await
     }
 

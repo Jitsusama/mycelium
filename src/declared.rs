@@ -37,6 +37,21 @@ pub struct Declared {
     /// does; the processors it lists where it says nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cores: Option<u32>,
+    /// The command an agent session starts with there, by realm, such as
+    /// `pi` in one and `pi-claude` in another, for whatever starts one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agents: BTreeMap<String, String>,
+}
+
+impl Declared {
+    /// What it declares as `realm` hears it: the command its agent
+    /// sessions start with in that realm only, so no realm learns what
+    /// another starts, or that the machine belongs to another.
+    #[must_use]
+    pub fn in_realm(mut self, realm: &str) -> Self {
+        self.agents.retain(|named, _| named == realm);
+        self
+    }
 }
 
 /// How a network is found reached, as the machine's configuration knows
@@ -137,8 +152,31 @@ mod tests {
                     why: "its person works here".to_owned(),
                 }],
                 cores: None,
+                agents: BTreeMap::new(),
             }),
             "it reads as declared"
+        );
+    }
+
+    #[test]
+    fn a_realm_hears_only_what_its_own_agent_sessions_start_with() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        fs::write(
+            &file,
+            r#"{"reach": [], "outlives": [], "costs_money": false, "taints": [],
+                "agents": {"work": "pi", "personal": "pi-claude"}}"#,
+        )
+        .expect("the configuration is written");
+        let declared = read(&file).expect("it reads");
+        assert_eq!(
+            declared.clone().in_realm("personal").agents,
+            BTreeMap::from([("personal".to_owned(), "pi-claude".to_owned())]),
+            "the personal realm hears its own command and nothing of work"
+        );
+        assert!(
+            declared.in_realm("elsewhere").agents.is_empty(),
+            "a realm the machine starts no agent in hears none"
         );
     }
 

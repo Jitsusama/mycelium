@@ -347,7 +347,9 @@ its Wi-Fi or a tunnel's link; `outlives`, what a session held there outlives
 `effect` (`never`, or `prefer_not` while anywhere else will do) and
 `why`; and, where given, `cores`, how many processors work there may use
 when the machine lists more than it is given, as a virtual machine held
-to a share of its host does, which its `cpu`'s `cores` then says. Only
+to a share of its host does, which its `cpu`'s `cores` then says; and
+`agents`, by realm, the command an agent session starts with there, such
+as `{"personal": "pi-claude"}`, of which a realm hears only its own. Only
 the machine's own built configuration writes it, as
 `~/.config/mycelium/declared.json` (or under `XDG_CONFIG_HOME`), and
 the machine enforces its own taints. It is `null` where nothing is
