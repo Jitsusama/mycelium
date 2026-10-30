@@ -290,6 +290,15 @@ mod tests {
         let mut watch = Watch::new(dir.path().to_owned());
         let notes = shared(&["notes"]);
         watch.to_walk(QUEST, &notes);
+        // FSEvents can tell of the folders made just before it watched;
+        // what it heard comes in order, so once it hears a first build,
+        // all it had of those has come too and is taken here.
+        fs::write(dir.path().join(QUEST).join("notes/target/first"), "built").expect("written");
+        assert!(
+            watch.wait(HEARD_WITHIN),
+            "the watcher hears the first build"
+        );
+        watch.to_walk(QUEST, &notes);
 
         fs::write(dir.path().join(QUEST).join("notes/target/big"), "built").expect("written");
         assert!(watch.wait(HEARD_WITHIN), "the watcher hears the build");
