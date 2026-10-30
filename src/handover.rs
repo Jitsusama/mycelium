@@ -4,7 +4,9 @@
 //! there, once, to put its work somewhere that lasts and stop. It says so
 //! through the session's steer inbox, as coming from the machine rather
 //! than the person, and asks for nothing but words: a steer from the
-//! machine never pauses or stops a session itself.
+//! machine never pauses or stops a session itself. Once none runs there,
+//! it has handed over ([`handed_over`]), and a link whose way in can
+//! release the machine lets it go, as [`crate::link`] says.
 
 use std::collections::BTreeSet;
 
@@ -68,6 +70,16 @@ impl Told {
     }
 }
 
+/// Whether a machine that leaves at `leaves` has handed over at `now`,
+/// with `running` sessions there now and, as `ran` says, whether any ran
+/// there since it linked: it says when it leaves, and none runs there now
+/// after one has, or after its handover has begun. So a machine lent for
+/// work isn't let go before any work reaches it, nor kept once it's done.
+#[must_use]
+pub fn handed_over(leaves: Option<Timestamp>, now: Timestamp, ran: bool, running: usize) -> bool {
+    leaves.is_some_and(|leaves| running == 0 && (ran || now >= leaves - HANDOVER))
+}
+
 /// What a session is told, at `now`, of its machine leaving at `leaves`.
 fn said(leaves: Timestamp, now: Timestamp) -> String {
     let minutes = u64::try_from(now.duration_until(leaves).as_secs())
@@ -109,6 +121,31 @@ mod tests {
 
     fn addresses(steers: &[Steer]) -> Vec<&str> {
         steers.iter().map(|steer| steer.address.as_str()).collect()
+    }
+
+    #[test]
+    fn a_machine_hands_over_once_its_work_is_done_or_its_handover_begun() {
+        let early = leaves() - HANDOVER - SignedDuration::from_secs(1);
+        assert!(
+            handed_over(Some(leaves()), early, true, 0),
+            "a machine whose sessions have all ended has handed over"
+        );
+        assert!(
+            !handed_over(Some(leaves()), early, true, 1),
+            "one with a session running hasn't"
+        );
+        assert!(
+            !handed_over(Some(leaves()), early, false, 0),
+            "nor has one no work has reached yet"
+        );
+        assert!(
+            handed_over(Some(leaves()), leaves() - HANDOVER, false, 0),
+            "unless its handover has begun"
+        );
+        assert!(
+            !handed_over(None, leaves(), true, 0),
+            "a machine that says nothing of leaving never hands over"
+        );
     }
 
     #[test]

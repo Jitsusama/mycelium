@@ -18,8 +18,9 @@
 //! windows are kept by holders of their own, in [`hold`]. What the person
 //! says to a session from outside its window reaches its inbox through
 //! [`steer`], on whichever machine it runs. A machine that says when it
-//! leaves tells its own sessions the same way, before it does, in
-//! [`handover`].
+//! leaves tells its own sessions the same way, before it does, and once
+//! they are done and the machines it links with hold all it shares, a
+//! machine that can release it does, in [`handover`].
 //!
 //! Around them:
 //!

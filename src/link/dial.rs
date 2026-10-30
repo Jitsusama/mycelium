@@ -22,6 +22,9 @@ pub struct Connection {
     /// Why the way in turned this machine away, if it did, known once it
     /// has ended; none for a way in that never refuses.
     pub refused: Option<JoinHandle<Option<String>>>,
+    /// Whether the way in can release the machine it reaches once that
+    /// machine hands over ([`Dial::release`]).
+    pub releases: bool,
 }
 
 /// A way to reach another machine's end of a link.
@@ -35,6 +38,13 @@ pub trait Dial: Send + Sync + 'static {
     /// The words that run `words` on the machine it reaches, from a
     /// terminal here, where `mycelium` names that machine's own.
     fn there(&self, words: &[String]) -> Vec<String>;
+
+    /// Lets the machine it reaches go, once that machine has handed over,
+    /// as a provider destroys a machine it lent; none for a way that can't,
+    /// which SSH never does.
+    fn release(&self) -> impl Future<Output = Option<io::Result<()>>> + Send {
+        std::future::ready(None)
+    }
 }
 
 /// A machine reached over SSH, whose end of the link is `mycelium link`
@@ -93,8 +103,9 @@ fn quoted(word: &str) -> String {
 /// knows nothing of but this: run as `PROGRAM link --realm REALM PLACE`, it
 /// carries the link over its own input and output to `mycelium link` on
 /// the machine it calls `PLACE`; run as `PROGRAM run PLACE -- WORDS` from a
-/// terminal, it runs `WORDS` there in that terminal. What it says on its
-/// error output is passed on, and a line saying the other end "turned this
+/// terminal, it runs `WORDS` there in that terminal; run as `PROGRAM
+/// release PLACE`, it lets that machine go. What it says on its error
+/// output is passed on, and a line saying the other end "turned this
 /// machine away" is a refusal, waited out as SSH's are.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
@@ -133,7 +144,10 @@ impl Dial for Program {
         let mut program = tokio::process::Command::new(&self.program);
         program.args(["link", "--realm", realm, self.place.as_str()]);
         // As with SSH, the link's first line is the wait.
-        std::future::ready(carried(program))
+        std::future::ready(carried(program).map(|connection| Connection {
+            releases: true,
+            ..connection
+        }))
     }
 
     fn there(&self, words: &[String]) -> Vec<String> {
@@ -142,6 +156,24 @@ impl Dial for Program {
             .into_iter()
             .chain(words.iter().cloned())
             .collect()
+    }
+
+    async fn release(&self) -> Option<io::Result<()>> {
+        let ran = tokio::process::Command::new(&self.program)
+            .args(["release", self.place.as_str()])
+            .stdin(Stdio::null())
+            .status()
+            .await;
+        Some(ran.and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!(
+                    "{} release {} ended {status}",
+                    self.program, self.place
+                )))
+            }
+        }))
     }
 }
 
@@ -175,6 +207,13 @@ impl Dial for Way {
             Self::Program(program) => program.there(words),
         }
     }
+
+    async fn release(&self) -> Option<io::Result<()>> {
+        match self {
+            Self::Ssh(ssh) => ssh.release().await,
+            Self::Program(program) => program.release().await,
+        }
+    }
 }
 
 /// Runs `command` with the link over its input and output, passing on
@@ -198,6 +237,7 @@ fn carried(mut command: tokio::process::Command) -> io::Result<Connection> {
         writing: Box::new(writing),
         keep: Box::new(child),
         refused,
+        releases: false,
     })
 }
 
@@ -321,5 +361,64 @@ mod tests {
             "link\n--realm\nwork\nsandbox-1\n",
             "the program is asked to link in the realm, to its place"
         );
+    }
+
+    /// A provider program at `dir`/provider running `body`, put in place by
+    /// a child process, since another test's fork holding the file open
+    /// for writing would keep it from running.
+    fn provider(dir: &std::path::Path, body: &str) -> String {
+        let text = dir.join("provider.sh");
+        let program = dir.join("provider");
+        fs::write(&text, format!("#!/bin/sh\n{body}")).expect("the provider is written");
+        let put = std::process::Command::new("install")
+            .args(["-m", "755"])
+            .arg(&text)
+            .arg(&program)
+            .status()
+            .expect("install runs");
+        assert!(put.success(), "the provider is put in place");
+        program.display().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_program_releases_the_machine_it_reaches_and_ssh_never_does() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let asked = dir.path().join("asked");
+        let program = provider(
+            dir.path(),
+            &format!("printf '%s\\n' \"$@\" > '{}'\n", asked.display()),
+        );
+        let way = Way::Program(Program {
+            program,
+            place: "sandbox-1".to_owned(),
+        });
+
+        let released = way.release().await.expect("a program can release");
+
+        assert!(released.is_ok(), "it is released: {released:?}");
+        assert_eq!(
+            fs::read_to_string(&asked).expect("the provider was asked"),
+            "release\nsandbox-1\n",
+            "the program is asked to release its place"
+        );
+        let ssh = Way::Ssh(Ssh {
+            destination: "equilibrius".to_owned(),
+            options: Vec::new(),
+            command: "mycelium".to_owned(),
+        });
+        assert!(ssh.release().await.is_none(), "SSH releases nothing");
+    }
+
+    #[tokio::test]
+    async fn a_release_that_fails_says_so() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let way = Way::Program(Program {
+            program: provider(dir.path(), "exit 3\n"),
+            place: "sandbox-1".to_owned(),
+        });
+
+        let released = way.release().await.expect("a program can release");
+
+        assert!(released.is_err(), "a release ending 3 failed");
     }
 }

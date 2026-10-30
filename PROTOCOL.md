@@ -90,12 +90,14 @@ messages, being a union, reach every machine linked by any path.
 same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
-   "steers"}}`, first, from each end. Each end's membership admits the
-   other or refuses it, and nothing else crosses until it has. `facts`
-   says the end hears and says what a machine is; an end older than it
-   says nothing of machines and is sent nothing. `starts` says it
-   carries starts, and `steers` steers; an end older than either is
-   asked none of it.
+   "steers", "releases"}}`, first, from each end. Each end's membership
+   admits the other or refuses it, and nothing else crosses until it
+   has. `facts` says the end hears and says what a machine is; an end
+   older than it says nothing of machines and is sent nothing. `starts`
+   says it carries starts, and `steers` steers; an end older than either
+   is asked none of it. `releases` says the end's way to the other
+   end's machine can release that machine, as a provider's program can;
+   only such an end is told the machine has handed over.
 2. `{"Have": {"messages": [ids], "living": [sessions]}}`: every message
    the end holds within the link's reach, and its machine's living
    sessions. An end older than `living` names none, and every session of
@@ -153,6 +155,14 @@ same code, each line a JSON value:
     its copy lacks, and only to a talk its own machine opened. A
     `replied` or `failed` stage ends the following, as does a day with
     nothing written.
+13. `"HandedOver"`: the sending end's machine has handed over, sent at
+    each minute's Machine to an end that `releases`, once that machine
+    declares `leaves_at`, no session runs there, and one ran there since
+    the link came or its handover has begun. The sender first says all
+    it holds of the quests it shares. Frames cross in order, so if the
+    other end then waits on no file from it, it holds all of them: its
+    link ends, and its node releases the machine and dials it no more.
+    An end older than this never hands over, so it is never released.
 
 Three seams shape a link:
 
@@ -163,9 +173,13 @@ Three seams shape a link:
   (`--via PROGRAM:PLACE`), for a machine SSH can't reach: run as
   `PROGRAM link --realm REALM PLACE`, it carries the link over its own
   input and output to `mycelium link` on that machine, and run as
-  `PROGRAM run PLACE -- WORDS` from a terminal, it runs `WORDS` there.
-  Its error output is passed on, and a line saying the other end
-  "turned this machine away" is taken as a refused SSH key is. A
+  `PROGRAM run PLACE -- WORDS` from a terminal, it runs `WORDS` there,
+  and run as `PROGRAM release PLACE` once that machine has handed over,
+  it lets the machine go, as its provider destroys a machine it lent;
+  a release that fails leaves the machine dialled again, so the
+  program keeps its own pace. Its error output is passed on, and a line
+  saying the other end "turned this machine away" is taken as a refused
+  SSH key is. A
   refused link isn't dialled again until its record in the node's
   `refused/` folder is removed, which the node's log names, so no
   retry of ours shows the other machine a failed login.
