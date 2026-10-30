@@ -148,11 +148,13 @@ mod tests {
             .await
             .expect("a listener binds");
         let open = listening.local_addr().expect("it has an address");
-        // A port just let go of answers nothing.
-        let closed = {
-            let gone = std::net::TcpListener::bind("127.0.0.1:0").expect("a listener binds");
-            gone.local_addr().expect("it has an address")
-        };
+        // A port bound but never listened on refuses, and stays this
+        // test's, where one let go of could be taken by a test beside it.
+        let refusing = tokio::net::TcpSocket::new_v4().expect("a socket");
+        refusing
+            .bind("127.0.0.1:0".parse().expect("an address"))
+            .expect("it binds");
+        let closed = refusing.local_addr().expect("it has an address");
         let probes = BTreeMap::from([
             ("home".to_owned(), Probe::Connect(open.to_string())),
             ("office".to_owned(), Probe::Connect(closed.to_string())),
