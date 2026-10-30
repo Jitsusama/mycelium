@@ -437,15 +437,15 @@ impl<S: Store> Shared<S> {
     }
 
     /// Every machine of the realm: this one measured now, then each other
-    /// as its links last carried it.
+    /// as its links last carried it, but for those that said they would
+    /// leave and have.
     fn machines(&self) -> Vec<facts::Machine> {
+        let now = jiff::Timestamp::now();
         let mut all = vec![self.measure()];
-        all.extend(
-            self.store
-                .machines()
-                .into_iter()
-                .filter(|one| one.name != self.machine),
-        );
+        all.extend(self.store.machines().into_iter().filter(|one| {
+            one.name != self.machine
+                && !one.declared.as_ref().is_some_and(|said| said.has_left(now))
+        }));
         all
     }
 
@@ -837,6 +837,7 @@ mod tests {
             prefers: Vec::new(),
             tolerates: Vec::new(),
             may_wait: false,
+            lasts: None,
         }
     }
 
@@ -1077,6 +1078,56 @@ mod tests {
             .expect("the link is dialled again once its refusal is withdrawn")
             .expect("the link is kept");
         keeping.abort();
+    }
+
+    #[tokio::test]
+    async fn a_machine_that_has_left_is_no_longer_one_of_the_realms() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let nowhere = facts::Sources {
+            home: "/".into(),
+            queue: None,
+            disk_guard: None,
+            declared: "/nowhere".into(),
+            reached: "/nowhere".into(),
+        };
+        let lent = |name: &str, leaves: jiff::Timestamp| facts::Machine {
+            declared: Some(crate::declared::Declared {
+                reach: Vec::new(),
+                probes: std::collections::BTreeMap::new(),
+                outlives: Vec::new(),
+                costs_money: true,
+                taints: Vec::new(),
+                cores: None,
+                agents: std::collections::BTreeMap::new(),
+                leaves_at: Some(leaves),
+            }),
+            ..facts::measure(name, &nowhere)
+        };
+        let now = jiff::Timestamp::now();
+        let minute = jiff::SignedDuration::from_mins(1);
+        store
+            .put_machine(&lent("gone", now - minute))
+            .expect("what it said is kept");
+        store
+            .put_machine(&lent("staying", now + minute * 60))
+            .expect("what it said is kept");
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let names = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            let Ok(Ok(Response::Machines(all))) = client.ask(&Request::Machines) else {
+                panic!("the node lists its machines");
+            };
+            all.into_iter().map(|one| one.name).collect::<Vec<_>>()
+        })
+        .await
+        .expect("the machines are asked for");
+        assert_eq!(
+            names,
+            ["optimus", "staying"],
+            "a machine past the time it said it leaves is no longer listed"
+        );
     }
 
     #[tokio::test]

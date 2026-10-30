@@ -1,8 +1,9 @@
 //! What a machine's own configuration says of it: what can't be measured
 //! from the machine, such as the networks work there reaches, what it
-//! refuses, or how many processors it is given where it shows more. Only the machine's built configuration declares it, as a file
-//! it writes where every end of a link on the machine finds it; nothing
-//! said at run time changes it. A machine whose configuration says
+//! refuses, how many processors it is given where it shows more, or when
+//! it leaves. Only the machine's built configuration declares it, as a
+//! file it writes where every end of a link on the machine finds it;
+//! nothing said at run time changes it. A machine whose configuration says
 //! nothing, or says it in a shape this build doesn't read, declares
 //! nothing known, never a guess.
 //!
@@ -41,6 +42,11 @@ pub struct Declared {
     /// `pi` in one and `pi-claude` in another, for whatever starts one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub agents: BTreeMap<String, String>,
+    /// When it leaves the realm, as a machine lent for a while does: it
+    /// takes no work that would outlast it, and once it has left, it is
+    /// no longer one of the realm's machines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leaves_at: Option<jiff::Timestamp>,
 }
 
 impl Declared {
@@ -51,6 +57,12 @@ impl Declared {
     pub fn in_realm(mut self, realm: &str) -> Self {
         self.agents.retain(|named, _| named == realm);
         self
+    }
+
+    /// Whether it has left by `now`.
+    #[must_use]
+    pub fn has_left(&self, now: jiff::Timestamp) -> bool {
+        self.leaves_at.is_some_and(|leaves| leaves <= now)
     }
 }
 
@@ -153,6 +165,7 @@ mod tests {
                 }],
                 cores: None,
                 agents: BTreeMap::new(),
+                leaves_at: None,
             }),
             "it reads as declared"
         );
@@ -239,6 +252,41 @@ mod tests {
             read(&file).and_then(|declared| declared.cores),
             Some(4),
             "the processors it is given read as declared"
+        );
+    }
+
+    #[test]
+    fn a_machine_lent_for_a_while_says_when_it_leaves() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        fs::write(
+            &file,
+            r#"{"reach": [], "outlives": [], "costs_money": true, "taints": [],
+                "leaves_at": "2026-10-30T02:18:25Z"}"#,
+        )
+        .expect("the configuration is written");
+        let declared = read(&file).expect("it reads");
+        let leaves: jiff::Timestamp = "2026-10-30T02:18:25Z".parse().expect("a time");
+        assert_eq!(declared.leaves_at, Some(leaves), "it reads as declared");
+        assert!(
+            !declared.has_left(leaves - jiff::SignedDuration::from_secs(1)),
+            "it is still here a moment before"
+        );
+        assert!(
+            declared.has_left(leaves),
+            "and has left once its time comes"
+        );
+
+        fs::write(
+            &file,
+            r#"{"reach": [], "outlives": [], "costs_money": true, "taints": [],
+                "leaves_at": "soon"}"#,
+        )
+        .expect("written");
+        assert_eq!(
+            read(&file),
+            None,
+            "a time this build can't read is never guessed"
         );
     }
 }

@@ -17,8 +17,9 @@ blake3 = "1"
 # A shared file's bytes in a link's JSON lines.
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
-# The time, for the ids and times of messages the node sends.
-jiff = "0.2"
+# The time, for the ids and times of messages the node sends, and when a
+# machine says it leaves.
+jiff = { version = "0.2", features = ["serde"] }
 # Folder changes, from inotify on Linux and FSEvents on macOS.
 notify = "8"
 # A held session's terminal, with the program's controlling terminal set as
