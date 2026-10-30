@@ -12,12 +12,15 @@
 //! - [`holder`]: the holder, keeping the program's terminal
 //! - [`attach`]: a terminal joining a holder
 //! - [`start`]: starting a holder in a process of its own
+//! - [`modes`]: what the program asked of its terminal, for one joining
 //!
 //! What a joined terminal sends its holder is framed, as [`Said`]; what
-//! the holder sends back is the program's output as it came.
+//! the holder sends back is the modes the program asked for so far, then
+//! the program's output as it came.
 
 pub mod attach;
 pub mod holder;
+pub mod modes;
 pub mod start;
 
 use std::fs;
