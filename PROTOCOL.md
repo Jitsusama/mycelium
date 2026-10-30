@@ -351,7 +351,10 @@ to a share of its host does, which its `cpu`'s `cores` then says; and
 `agents`, by realm, the command an agent session starts with there, such
 as `{"personal": "pi-claude"}`, of which a realm hears only its own; and
 `leaves_at`, the time it leaves the realm, as a machine lent for a while
-does, in RFC 3339, after which it is no longer one of `"Machines"`. Only
+does, in RFC 3339, after which it is no longer one of `"Machines"`; from
+ten minutes before then, its node puts a steer into the inbox of each
+session running there, once, saying when it leaves and to commit, push
+and stop, with `from` `"machine"` and no `act`. Only
 the machine's own built configuration writes it, as
 `~/.config/mycelium/declared.json` (or under `XDG_CONFIG_HOME`), and
 the machine enforces its own taints. It is `null` where nothing is
