@@ -21,7 +21,7 @@ use mycelium::share::exchange::Places;
 use mycelium::share::ledger::Ledgers;
 use mycelium::store::folders::Folders;
 use mycelium::wire::{Draft, Request, Start};
-use mycelium::{hold, link, node, place};
+use mycelium::{hold, install, link, node, place};
 
 #[derive(Parser)]
 #[command(version, about = "A nimble core for agent networks")]
@@ -383,6 +383,7 @@ fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Way>) -> io::Re
 /// this machine to its node at `socket`, which runs in its person's login
 /// session, and writing the steers it carries into this machine's inboxes.
 fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
+    let running = install::running();
     let held = place::held(&realm);
     let steers = here.steer.clone().unwrap_or_else(place::steer);
     let (store, membership, shares) = open(here, realm)?;
@@ -400,9 +401,17 @@ fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
             asking: None,
             steers,
         };
-        link::run(store, &membership, connection, Some(shares), Some(starting))
-            .await
-            .map(|_| ())
+        // A build installed since this end began ends it, for its dialler
+        // to start the new one.
+        tokio::select! {
+            ended = link::run(store, &membership, connection, Some(shares), Some(starting)) => {
+                ended.map(|_| ())
+            }
+            newer = install::replaced(running) => {
+                eprintln!("{} is installed now, so this link ends for it", newer.display());
+                Ok(())
+            }
+        }
     })
 }
 

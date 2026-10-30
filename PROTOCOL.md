@@ -177,7 +177,10 @@ Three seams shape a link:
   and run as `PROGRAM release PLACE` once that machine has handed over,
   it lets the machine go, as its provider destroys a machine it lent;
   a release that fails leaves the machine dialled again, so the
-  program keeps its own pace. Its error output is passed on, and a line
+  program keeps its own pace. Either way, the far `mycelium link` looks
+  each minute at the `mycelium` its search path names, and once that is
+  another build than the one it runs, as after its machine's
+  configuration changes, it ends, so its dialler starts the new one. Its error output is passed on, and a line
   saying the other end "turned this machine away" is taken as a refused
   SSH key is. A
   refused link isn't dialled again until its record in the node's
