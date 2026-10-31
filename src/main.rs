@@ -101,6 +101,13 @@ enum Action {
     Machines,
     /// Prints which machine of the realm work should go to, or why none.
     Place(Asked),
+    /// Asks a machine to update itself to its configuration's main, this
+    /// one or one this machine links with directly, and prints how that
+    /// ended, as its updater said it.
+    Update {
+        /// The machine, such as `penelope`.
+        machine: String,
+    },
     /// Prints the latest messages, a JSON line each.
     Messages {
         /// Which groups, such as `quest.*`.
@@ -311,6 +318,7 @@ fn run(command: Command) -> io::Result<()> {
         Action::Machine => print_reply(&socket, &Request::Machine),
         Action::Machines => print_reply(&socket, &Request::Machines),
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
+        Action::Update { machine } => print_reply(&socket, &Request::Update { machine }),
         Action::Start(asked) => start(&socket, asked),
         Action::Steer { address } => {
             let steer = serde_json::from_reader(io::stdin().lock())
@@ -384,6 +392,7 @@ fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Way>) -> io::Re
             scoped: cfg!(target_os = "linux") && std::env::var_os("INVOCATION_ID").is_some(),
         }),
         awake: Awake::here(),
+        updater: place::updater(),
     };
     runtime()?.block_on(async {
         let bound = node::bind(socket)?;

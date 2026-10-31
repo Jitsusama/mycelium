@@ -375,6 +375,7 @@ mod tests {
             disk_guard: None,
             declared: "/nowhere".into(),
             reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
         };
         Machine {
             system: Some(system.to_owned()),

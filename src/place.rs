@@ -38,6 +38,26 @@ pub fn disk_guard() -> Option<PathBuf> {
     login_runtime().map(|dir| dir.join("disk-guard").join("status.json"))
 }
 
+/// The socket the machine's updater takes asks on, where the system's
+/// configuration puts it ([`crate::update`]).
+pub fn updater() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        PathBuf::from("/var/run/update-to-main.sock")
+    } else {
+        PathBuf::from("/run/update-to-main/ask.sock")
+    }
+}
+
+/// Where the machine's updater keeps its last update's ending, beside its
+/// socket.
+pub fn updated() -> PathBuf {
+    if cfg!(target_os = "macos") {
+        PathBuf::from("/var/run/update-to-main.last.json")
+    } else {
+        PathBuf::from("/run/update-to-main/last.json")
+    }
+}
+
 /// The login's own runtime folder, as the harness finds it: what
 /// `XDG_RUNTIME_DIR` names, or on macOS, which has none, the account's own
 /// temporary folder as the system names it. Not `TMPDIR`, which the

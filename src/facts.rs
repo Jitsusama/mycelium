@@ -13,6 +13,7 @@ use crate::disk::{self, Band};
 use crate::place;
 use crate::reach;
 use crate::room::{self, Room};
+use crate::update;
 use crate::within;
 
 /// This machine, as measured when asked.
@@ -60,6 +61,12 @@ pub struct Machine {
     /// node last probed, by name; a network not in it is unknown.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reached: BTreeMap<String, bool>,
+    /// How its last update to its configuration's main ended, as its
+    /// updater keeps it ([`crate::update`]): the commit it runs after it,
+    /// and whether it waits on a restart. Unknown where no updater keeps
+    /// one, as since the machine last started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated: Option<serde_json::Value>,
 }
 
 /// Where a machine's facts are read from, beyond the machine itself.
@@ -75,6 +82,8 @@ pub struct Sources {
     pub declared: PathBuf,
     /// Its node's record of which probed networks answered.
     pub reached: PathBuf,
+    /// Its updater's last update's ending.
+    pub updated: PathBuf,
 }
 
 impl Sources {
@@ -87,6 +96,7 @@ impl Sources {
             disk_guard: place::disk_guard(),
             declared: place::declared(),
             reached: place::reached(),
+            updated: place::updated(),
         }
     }
 }
@@ -199,6 +209,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         room,
         declared,
         reached: reach::read(&sources.reached, now.as_second()),
+        updated: update::last(&sources.updated),
     }
 }
 
@@ -640,6 +651,7 @@ mod tests {
                 disk_guard: Some(home.path().join("status.json")),
                 declared: home.path().join("declared.json"),
                 reached: home.path().join("reached.json"),
+                updated: home.path().join("last.json"),
             },
         );
         assert_eq!(machine.name, "trial", "it carries the name it was given");
@@ -699,6 +711,7 @@ mod tests {
                 disk_guard: None,
                 declared,
                 reached: home.path().join("reached.json"),
+                updated: home.path().join("last.json"),
             },
         );
         assert_eq!(
@@ -728,6 +741,7 @@ mod tests {
             disk_guard: None,
             declared,
             reached: home.path().join("reached.json"),
+            updated: home.path().join("last.json"),
         };
         // A charge no machine running these tests reads of itself.
         let draining = Power {
@@ -756,6 +770,32 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_says_how_its_last_update_ended() {
+        let home = tempfile::tempdir().expect("a temporary folder");
+        let sources = Sources {
+            home: home.path().to_owned(),
+            queue: None,
+            disk_guard: None,
+            declared: home.path().join("declared.json"),
+            reached: home.path().join("reached.json"),
+            updated: home.path().join("last.json"),
+        };
+        assert_eq!(
+            measure("penelope", &sources).updated,
+            None,
+            "unknown before its updater keeps an ending"
+        );
+        let done = serde_json::json!({"step": "done", "commit": "c0ffee",
+            "applied": "next-boot", "restart": "a new kernel", "restarted": []});
+        std::fs::write(&sources.updated, done.to_string()).expect("kept");
+        assert_eq!(
+            measure("penelope", &sources).updated,
+            Some(done),
+            "then as its updater kept it, a restart it waits on included"
+        );
+    }
+
+    #[test]
     fn a_realm_measures_nothing_a_machine_declares_of_another() {
         let home = tempfile::tempdir().expect("a temporary folder");
         let declared = home.path().join("declared.json");
@@ -771,6 +811,7 @@ mod tests {
             disk_guard: None,
             declared,
             reached: home.path().join("reached.json"),
+            updated: home.path().join("last.json"),
         };
         let agents = measure_in("optimus", "work", &sources)
             .declared

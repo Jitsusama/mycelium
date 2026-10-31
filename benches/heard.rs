@@ -171,6 +171,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 refusals: Refusals::default(),
                 steers,
                 awake: Awake::by(None),
+                updater: "/nowhere".into(),
             },
             bound,
             until_stopped,

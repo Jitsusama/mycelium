@@ -46,6 +46,15 @@ pub enum Request {
     },
     /// Send a message on the mesh, as a session would.
     Send(Draft),
+    /// Update `machine` to its configuration's main, through its updater,
+    /// and say how that ended. Nothing in it says what to build: the
+    /// machine's configuration does. Another machine is asked only
+    /// through a link that reaches it directly, and takes it only over a
+    /// link whose key proved which machine asked.
+    Update {
+        /// The machine to update.
+        machine: String,
+    },
     /// Counts the connection's own process present for as long as it keeps
     /// the connection open, so a session it owns is judged ended the moment
     /// the connection closes, as the kernel closes it however the process
@@ -139,6 +148,10 @@ pub enum Response {
     Messages(Vec<Message>),
     /// The message as sent.
     Sent(Message),
+    /// How the update asked for ended, as the machine's updater said it:
+    /// one JSON object naming its `step`, such as `done` or `refused`, and
+    /// the commit the machine runs after it.
+    Updated(serde_json::Value),
     /// Events follow, one per line.
     Watching,
     /// The process is counted present until it hangs up.

@@ -151,6 +151,11 @@ pub enum Frame {
         /// What is said, in the harness's own shape.
         steer: Value,
     },
+    /// Update the other end's machine to its configuration's main.
+    Update {
+        /// Which ask, so its answer finds it.
+        ask: u64,
+    },
     /// The talks this end follows and how much of each it has, so the
     /// other end carries on with those whose sessions run there.
     Follow {
@@ -229,9 +234,7 @@ pub async fn run(
         store,
         here: membership.hello().machine,
         realm: membership.hello().realm,
-        facts: other.facts,
-        starts: other.starts,
-        steers: other.steers,
+        proven: membership.proves(),
         handover: Handover {
             releases: other.releases,
             ..Handover::default()
@@ -247,7 +250,8 @@ pub async fn run(
         answering,
         asks: HashMap::new(),
         next_ask: 0,
-        other: other.machine,
+        other: other.machine.clone(),
+        said: other,
         reach,
         has: HashSet::new(),
         sent: BTreeMap::new(),
@@ -417,12 +421,9 @@ struct End<S> {
     /// The realm the link is in, which hears what this end's machine
     /// declares of it alone.
     realm: String,
-    /// Whether the other end hears what this end's machine is.
-    facts: bool,
-    /// Whether the other end carries starts.
-    starts: bool,
-    /// Whether the other end carries steers.
-    steers: bool,
+    /// Whether the other end is proven to be its machine, so may ask this
+    /// one to update.
+    proven: bool,
     /// Where either machine's handover stands.
     handover: Handover,
     /// When this end last heard the other, and whether it should have.
@@ -439,6 +440,9 @@ struct End<S> {
     asks: HashMap<u64, oneshot::Sender<Reply>>,
     next_ask: u64,
     other: String,
+    /// What the other end said of itself in its hello: what it hears of
+    /// and carries.
+    said: Hello,
     reach: i64,
     has: HashSet<String>,
     /// Each living session's presence and leases, as last sent.
@@ -563,6 +567,7 @@ impl<S: Store> End<S> {
                 };
                 send(writing, &Frame::Started { ask, reply }).await?;
             }
+            Frame::Update { ask } => self.update(ask),
             Frame::Follow { talks } => {
                 if let Some(following) = self.following.as_mut() {
                     following.follow(talks);
@@ -588,8 +593,9 @@ impl<S: Store> End<S> {
     /// there, or answers why it can't be asked.
     async fn ask(&mut self, ask: Ask, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
         let carried = match &ask.asked {
-            Asked::Start(_) => self.starts.then_some(()).ok_or("start sessions"),
-            Asked::Steer(_) => self.steers.then_some(()).ok_or("carry steers"),
+            Asked::Start(_) => self.said.starts.then_some(()).ok_or("start sessions"),
+            Asked::Steer(_) => self.said.steers.then_some(()).ok_or("carry steers"),
+            Asked::Update => self.said.updates.then_some(()).ok_or("be asked to update"),
         };
         if let Err(cannot) = carried {
             // The asker may have given up; then nobody hears it.
@@ -609,6 +615,7 @@ impl<S: Store> End<S> {
                 address: steer.address,
                 steer: Value::Object(steer.body),
             },
+            Asked::Update => Frame::Update { ask: id },
         };
         send(writing, &frame).await
     }
@@ -616,7 +623,7 @@ impl<S: Store> End<S> {
     /// Tells an end that carries steers which talks this end follows, so
     /// it carries on with those whose sessions run on its machine.
     async fn send_follow(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
-        let Some(inboxes) = self.inboxes.clone().filter(|_| self.steers) else {
+        let Some(inboxes) = self.inboxes.clone().filter(|_| self.said.steers) else {
             return Ok(());
         };
         let talks = tokio::task::spawn_blocking(move || crate::steer::open_talks(&inboxes))
@@ -666,6 +673,42 @@ impl<S: Store> End<S> {
         });
     }
 
+    /// Hands an update the other end asks of this machine to its node, away
+    /// from the link's own work, since it takes minutes: only when the
+    /// other end is proven to be its machine, so nobody else may ask.
+    fn update(&self, ask: u64) {
+        let answering = self.answering.clone();
+        let refused = if self.proven {
+            self.node
+                .clone()
+                .ok_or_else(|| format!("{} updates over no link", self.here))
+        } else {
+            Err(format!(
+                "{} updates only when asked over a link its key proved, which this one isn't",
+                self.here
+            ))
+        };
+        let node = match refused {
+            Ok(node) => node,
+            Err(why) => {
+                eprintln!(
+                    "{} asked {} to update, refused: {why}",
+                    self.other, self.here
+                );
+                // The link outlives this call, so its loop is there to send it.
+                let _ = answering.send((ask, Err(why)));
+                return;
+            }
+        };
+        eprintln!("{} asked {} to update", self.other, self.here);
+        let here = self.here.clone();
+        tokio::spawn(async move {
+            let reply = starts::update(node, here).await;
+            // A link that dropped meanwhile has nobody to answer.
+            let _ = answering.send((ask, reply));
+        });
+    }
+
     /// Keeps what the other end says its machine is, which only it can
     /// say: a machine named otherwise is refused, and it is ready while
     /// this link carries it, whatever it claims.
@@ -685,7 +728,7 @@ impl<S: Store> End<S> {
     /// it. Measuring reads a few files, or runs `sysctl` on a Mac, so it
     /// runs away from the link's own work.
     async fn send_machine(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
-        if !self.facts {
+        if !self.said.facts {
             return Ok(());
         }
         let (here, realm) = (self.here.clone(), self.realm.clone());
@@ -1338,6 +1381,7 @@ mod tests {
             disk_guard: None,
             declared: "/nowhere".into(),
             reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
         };
         let mut penelope = facts::measure("penelope", &nowhere);
         penelope.state = Readiness::Ready;
@@ -1504,6 +1548,7 @@ mod tests {
             starts: true,
             steers: true,
             releases: false,
+            updates: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await

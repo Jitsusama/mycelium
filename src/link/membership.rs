@@ -46,6 +46,11 @@ pub struct Hello {
     /// is never handed over to.
     #[serde(default)]
     pub releases: bool,
+    /// Whether it carries asks to update its machine, handing one to its
+    /// node when its key proved who asked and refusing it otherwise; an
+    /// end older than this does neither, and would end a link that asked.
+    #[serde(default)]
+    pub updates: bool,
 }
 
 /// Which machines a node links with.
@@ -55,6 +60,13 @@ pub trait Membership: Send + Sync + 'static {
 
     /// Admits the other end, or says why not.
     fn admit(&self, other: &Hello) -> Result<(), String>;
+
+    /// Whether the other end is proven to be the machine it says by more
+    /// than its hello, as a pinned key proves it, so it may ask this
+    /// machine to update. None is, unless the membership says so.
+    fn proves(&self) -> bool {
+        false
+    }
 }
 
 /// A realm: every machine of the same realm, speaking the same version,
@@ -77,6 +89,7 @@ impl Membership for Realm {
             starts: true,
             steers: true,
             releases: false,
+            updates: true,
         }
     }
 
@@ -129,6 +142,10 @@ impl<M: Membership> Membership for Proven<M> {
                 self.far, other.machine
             ))
         }
+    }
+
+    fn proves(&self) -> bool {
+        true
     }
 }
 

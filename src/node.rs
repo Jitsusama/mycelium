@@ -131,6 +131,8 @@ pub struct Given {
     pub steers: PathBuf,
     /// How it keeps its machine awake while it holds sessions.
     pub awake: Awake,
+    /// The socket its machine's updater takes asks on.
+    pub updater: PathBuf,
 }
 
 /// Tells each machine within this one, as its configuration declares
@@ -177,10 +179,12 @@ where
         refusals,
         steers,
         mut awake,
+        updater,
     } = given;
     let shared = Shared {
         held: place::held(&hello.realm),
         steers,
+        updater,
         store: store.clone(),
         machine: hello.machine,
         realm: hello.realm,
@@ -375,6 +379,8 @@ struct Shared<S> {
     held: PathBuf,
     /// This machine's sessions' steer inboxes.
     steers: PathBuf,
+    /// The socket its machine's updater takes asks on.
+    updater: PathBuf,
     starter: Option<Arc<Starter>>,
     /// The links this node asks other machines' starts through.
     asks: Asks,
@@ -407,6 +413,7 @@ impl<S: Clone> Clone for Shared<S> {
             realm: self.realm.clone(),
             held: self.held.clone(),
             steers: self.steers.clone(),
+            updater: self.updater.clone(),
             starter: self.starter.clone(),
             asks: self.asks.clone(),
             inner: self.inner.clone(),
@@ -710,7 +717,23 @@ impl<S: Store> Shared<S> {
             Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
+            Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
         }
+    }
+
+    /// Updates `machine` to its configuration's main: this one through its
+    /// updater, saying each step in the node's log, and another through
+    /// the link reaching it. Answers how the update ended.
+    async fn update(&self, machine: &str) -> Reply {
+        if machine != self.machine {
+            return self.asks.update(machine).await;
+        }
+        let ending = crate::update::ask(&self.updater, |step| {
+            eprintln!("updating {machine}: {step}");
+        })
+        .await?;
+        eprintln!("updated {machine}: {ending}");
+        Ok(Response::Updated(ending))
     }
 
     /// Puts what the person says into the inbox of the session going by
@@ -956,6 +979,7 @@ async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
         let reply = match request {
             Ok(Request::Start(asked)) => shared.start(asked).await,
             Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await,
+            Ok(Request::Update { machine }) => shared.update(&machine).await,
             asked => asked.and_then(|request| shared.answer(request)),
         };
         if write(&mut writing, &reply).await.is_err() {
@@ -1012,7 +1036,7 @@ mod tests {
     use crate::group::Group;
     use crate::link::dial::{Connection, Ssh};
     use crate::link::discovery::Listed;
-    use crate::link::membership::Realm;
+    use crate::link::membership::{Proven, Realm};
     use crate::record;
     use crate::record::Intent;
     use crate::store::memory::Memory;
@@ -1126,6 +1150,7 @@ mod tests {
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let store = store.clone();
         let steers = inboxes(socket);
+        let updater = updater_of(socket);
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -1133,6 +1158,7 @@ mod tests {
                 refusals: Refusals::default(),
                 steers,
                 awake: Awake::by(None),
+                updater,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -1150,6 +1176,9 @@ mod tests {
         store: Memory,
         socket: PathBuf,
         held: PathBuf,
+        /// Whether equilibrius's end knows the far end is optimus, as a
+        /// pinned key proves it.
+        proven: bool,
     }
 
     impl Dial for Piped {
@@ -1163,6 +1192,7 @@ mod tests {
             let node = self.socket.clone();
             let held_here = self.held.clone();
             let steers = inboxes(&self.socket);
+            let proven = self.proven;
             tokio::spawn(async move {
                 let realm = Realm {
                     name: "work".to_owned(),
@@ -1175,7 +1205,15 @@ mod tests {
                     steers,
                 };
                 // The test judges the link by what crosses it.
-                let _ = link::run(store, &realm, piped(far), None, Some(starting)).await;
+                let _ = if proven {
+                    let by_key = Proven {
+                        by: realm,
+                        far: "optimus".to_owned(),
+                    };
+                    link::run(store, &by_key, piped(far), None, Some(starting)).await
+                } else {
+                    link::run(store, &realm, piped(far), None, Some(starting)).await
+                };
             });
             std::future::ready(Ok(piped(near)))
         }
@@ -1254,6 +1292,11 @@ mod tests {
     /// `socket`.
     fn inboxes(socket: &Path) -> PathBuf {
         socket.with_file_name("steer")
+    }
+
+    /// Where the updater of a node on `socket` is asked, beside it.
+    fn updater_of(socket: &Path) -> PathBuf {
+        socket.with_file_name("update.sock")
     }
 
     fn piped(pipe: tokio::io::DuplexStream) -> Connection {
@@ -1358,6 +1401,7 @@ mod tests {
             disk_guard: None,
             declared: "/nowhere".into(),
             reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
         };
         let lent = |name: &str, leaves: jiff::Timestamp| facts::Machine {
             declared: Some(crate::declared::Declared {
@@ -1442,6 +1486,7 @@ mod tests {
             disk_guard: None,
             declared: "/nowhere".into(),
             reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
         };
         facts::Machine {
             measured_at: at.to_owned(),
@@ -1574,6 +1619,7 @@ mod tests {
             store: far_store,
             socket: far_socket,
             held,
+            proven: false,
         };
         let near = node(&near_store, "optimus", vec![dial], None, &near_socket);
         // Nothing tells the test when the link has said what equilibrius
@@ -1640,6 +1686,114 @@ mod tests {
         steers_the_session_on_equilibrius(&near_socket, &near_steers, &far_steers).await;
 
         for (stop, node) in [near, far] {
+            drop(stop);
+            let stopped = node.await.expect("the node runs to its end");
+            assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+        }
+    }
+
+    /// A node running in a test: what stops it, and what it ends with.
+    type Running = (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+    );
+
+    /// An updater at `socket`, in a folder that is already there, answering
+    /// each ask with a step and then `ending`.
+    fn stand_in_updater(socket: &Path, ending: Value) {
+        let listener = UnixListener::bind(socket).expect("listening");
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let line = format!("{}\n{ending}\n", json!({"step": "fetching"}));
+                let (reading, mut writing) = stream.into_split();
+                let mut asked = BufReader::new(reading).lines();
+                if asked.next_line().await.ok().flatten().as_deref() == Some("update") {
+                    let _ = writing.write_all(line.as_bytes()).await;
+                }
+            }
+        });
+    }
+
+    /// Runs equilibrius's node and optimus's, linked, equilibrius's end
+    /// `proven` or not, once optimus has heard what equilibrius is.
+    async fn linked_to_equilibrius(dir: &Path, proven: bool) -> (PathBuf, [Running; 2]) {
+        let far_socket = dir.join("equilibrius").join("work.sock");
+        let near_socket = dir.join("optimus").join("work.sock");
+        let far_store = Memory::default();
+        let far = node(
+            &far_store,
+            "equilibrius",
+            Vec::<Piped>::new(),
+            None,
+            &far_socket,
+        );
+        let near_store = Memory::default();
+        let dial = Piped {
+            store: far_store,
+            socket: far_socket,
+            held: dir.join("held"),
+            proven,
+        };
+        let near = node(&near_store, "optimus", vec![dial], None, &near_socket);
+        // Nothing tells the test when the link has said what equilibrius
+        // is, so it looks again every few milliseconds until it has.
+        tokio::time::timeout(PATIENCE, async {
+            while !near_store
+                .machines()
+                .iter()
+                .any(|one| one.name == "equilibrius")
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the link says what equilibrius is");
+        (near_socket, [near, far])
+    }
+
+    #[tokio::test]
+    async fn a_machine_updates_when_asked_over_a_link_its_key_proved_and_only_then() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let done = json!({"step": "done", "commit": "c0ffee", "applied": "now",
+            "restart": null, "restarted": []});
+        let (near_socket, nodes) = linked_to_equilibrius(dir.path(), true).await;
+        // equilibrius's node has made its folder by now, as only it may.
+        stand_in_updater(
+            &updater_of(&dir.path().join("equilibrius").join("work.sock")),
+            done.clone(),
+        );
+        let update = |machine: &str| Request::Update {
+            machine: machine.to_owned(),
+        };
+        let updated = ask(near_socket.clone(), update("equilibrius")).await;
+        assert_eq!(
+            updated,
+            Ok(Response::Updated(done)),
+            "its node asks its updater, and the ending comes back"
+        );
+        let here = ask(near_socket, update("optimus")).await;
+        assert!(
+            here.as_ref().is_err_and(
+                |why| why.starts_with("no updater answers at") && why.contains("update.sock")
+            ),
+            "a machine with no updater says where it looked: {here:?}"
+        );
+        stop(nodes).await;
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (near_socket, nodes) = linked_to_equilibrius(dir.path(), false).await;
+        let refused = ask(near_socket, update("equilibrius")).await;
+        assert_eq!(
+            refused,
+            Err("equilibrius updates only when asked over a link its key proved, which this one isn't".to_owned()),
+            "a link nothing proved can't ask"
+        );
+        stop(nodes).await;
+    }
+
+    /// Stops each of `nodes`, checking it stops cleanly.
+    async fn stop(nodes: [Running; 2]) {
+        for (stop, node) in nodes {
             drop(stop);
             let stopped = node.await.expect("the node runs to its end");
             assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
@@ -1807,6 +1961,7 @@ mod tests {
                     refusals: Refusals::default(),
                     steers,
                     awake: Awake::by(None),
+                    updater: "/nowhere".into(),
                 };
                 run(
                     store,
@@ -1906,6 +2061,7 @@ mod tests {
                 refusals: Refusals::default(),
                 steers,
                 awake: Awake::by(None),
+                updater: "/nowhere".into(),
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
