@@ -560,9 +560,11 @@ own, `heard` being when its file was last written, and none is marked
 live. The node reads a source whole whenever a change reaches its
 folder, as its program writes each file whole and renames it into
 place; a file it removes takes its records with it, sent as `gone`. A
-source it can't read, or one of a folder's files, is a source `refused`
-in `health`, with why, while the records it could read are still
-served. A folder not there yet is looked for again each minute. A kind
+file or folder not there, not written yet or removed, holds nothing,
+which is no trouble, and a folder not there is looked for again each
+minute. A source it can't read, or one of a folder's files, is a source
+`refused` in `health`, with why, while the records it could read are
+still served. A kind
 the node holds itself, `session` or `machine`, can't be served.
 
 ## A Held Session
