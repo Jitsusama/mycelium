@@ -213,6 +213,21 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
     }
 }
 
+/// What this machine runs on now, read alone and as [`measure`] reads it:
+/// a machine within another has its host's power while its host's word
+/// stands. Cheap enough to read each time a session changes, as measuring
+/// everything isn't.
+#[must_use]
+pub fn power(sources: &Sources) -> Option<Power> {
+    let host = declared::read(&sources.declared)
+        .and_then(|declared| declared.within)
+        .and_then(|within| within::told(&within.file, jiff::Timestamp::now()));
+    match host {
+        Some(host) => host.power,
+        None => here::power(),
+    }
+}
+
 /// What the system's own files or tools say, before the parts every
 /// system reads alike.
 struct Read {
@@ -235,7 +250,7 @@ mod here {
 
     use std::fs;
 
-    use super::{Accelerator, AcceleratorKind, Cpu, Read, linux};
+    use super::{Accelerator, AcceleratorKind, Cpu, Power, Read, linux};
 
     const SUPPLIES: &str = "/sys/class/power_supply";
 
@@ -265,8 +280,13 @@ mod here {
                     .chain(drivers("/sys/class/accel", "accel", AcceleratorKind::Npu))
                     .collect(),
             ),
-            power: supplies().and_then(|supplies| linux::power(&supplies)),
+            power: power(),
         }
+    }
+
+    /// What it runs on now, as its power supplies say.
+    pub(super) fn power() -> Option<Power> {
+        supplies().and_then(|supplies| linux::power(&supplies))
     }
 
     /// Each power supply the kernel lists, or none where it can't list
@@ -327,17 +347,24 @@ mod here {
 
     use std::process::Command;
 
-    use super::{Cpu, Read, macos};
+    use super::{Cpu, Power, Read, macos};
+
+    /// What `program` says, asked with `args`, or nothing where it fails.
+    fn said(program: &str, args: &[&str]) -> Option<String> {
+        Command::new(program)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+    }
+
+    /// What it runs on now, as `pmset` says.
+    pub(super) fn power() -> Option<Power> {
+        said("/usr/bin/pmset", &["-g", "batt"]).and_then(|said| macos::power(&said))
+    }
 
     pub(super) fn read() -> Read {
-        let said = |program: &str, args: &[&str]| {
-            Command::new(program)
-                .args(args)
-                .output()
-                .ok()
-                .filter(|out| out.status.success())
-                .and_then(|out| String::from_utf8(out.stdout).ok())
-        };
         let sysctl = said(
             "/usr/sbin/sysctl",
             &[
@@ -361,7 +388,7 @@ mod here {
             // A Mac's graphics and neural engines can't be listed without
             // a binding this crate doesn't have.
             accelerators: None,
-            power: said("/usr/bin/pmset", &["-g", "batt"]).and_then(|said| macos::power(&said)),
+            power: power(),
         }
     }
 }
@@ -370,7 +397,12 @@ mod here {
 mod here {
     //! Elsewhere, only what Rust itself knows.
 
-    use super::{Cpu, Read};
+    use super::{Cpu, Power, Read};
+
+    /// Nothing says what it runs on.
+    pub(super) fn power() -> Option<Power> {
+        None
+    }
 
     pub(super) fn read() -> Read {
         Read {
@@ -382,7 +414,7 @@ mod here {
             },
             memory: None,
             accelerators: None,
-            power: None,
+            power: power(),
         }
     }
 }
@@ -760,6 +792,11 @@ mod tests {
             Some(draining),
             "it is on its battery while its host is"
         );
+        assert_eq!(
+            power(&sources),
+            Some(draining),
+            "and its power read alone says so too"
+        );
         let long_ago = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
         within::tell(&host_says, &says(long_ago)).expect("told");
         assert_ne!(
@@ -767,6 +804,7 @@ mod tests {
             Some(draining),
             "and reads its own once its host has long said nothing"
         );
+        assert_ne!(power(&sources), Some(draining), "read alone too");
     }
 
     #[test]

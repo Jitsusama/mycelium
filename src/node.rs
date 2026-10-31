@@ -716,7 +716,9 @@ impl<S: Store> Shared<S> {
             .map(|queue| room::queued_by(&queue, now))
             .unwrap_or_default();
         let holds = awake::at_work(&held, &sessions, &queued);
-        let power = holds.then(|| self.measure().power).flatten();
+        let power = holds
+            .then(|| facts::power(&facts::Sources::here()))
+            .flatten();
         awake.keep(awake::wanted(holds, power.as_ref()));
     }
 
