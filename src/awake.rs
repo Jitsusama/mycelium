@@ -1,9 +1,8 @@
 //! Keeping a machine awake while it holds work. A laptop lent to the
 //! realm sleeps when its lid shuts or it sits idle, and every session
 //! held there stops with it, though nobody there is using it. So while a
-//! node holds sessions, it keeps its machine awake, and lets it sleep
-//! once it holds none, or once its battery runs low, since a session
-//! held idle for days would otherwise drain it flat.
+//! node holds work, it keeps its machine awake, and lets it sleep once
+//! what it holds is all idle, or once its battery runs low.
 //!
 //! The machine is kept awake by a program of the system's own that holds
 //! it so while it runs: `systemd-inhibit` on Linux, `caffeinate` on macOS.
@@ -11,11 +10,29 @@
 //! with the node, however the node ends.
 
 use crate::facts::Power;
+use crate::hold::Held;
+use crate::record::{Session, State};
+use std::collections::BTreeSet;
 use std::process::Stdio;
 use tokio::process::{Child, Command};
 
 /// The charge, in percent, below which a machine on battery is let sleep.
 pub const LOW_CHARGE: u8 = 20;
+
+/// Whether any of what is `held` here is at work, as `sessions` and the
+/// sessions with work in the machine's queue, `queued`, say. A program
+/// held that is no session, such as a build sent here, is at work while
+/// it runs; a session is while it runs a turn or has work queued, and
+/// not while it waits idle, which could keep a laptop awake for days.
+#[must_use]
+pub fn at_work(held: &[Held], sessions: &[Session], queued: &BTreeSet<String>) -> bool {
+    held.iter().any(|one| {
+        sessions
+            .iter()
+            .find(|session| session.held.as_deref() == Some(one.id.as_str()))
+            .is_none_or(|session| session.state == State::Busy || queued.contains(&session.id))
+    })
+}
 
 /// Whether a machine that holds work or not, as `holds_work` says, with
 /// `power` as it reads, is to be kept awake. A machine whose charge it
@@ -163,6 +180,54 @@ mod tests {
 
     /// How long a test waits for a keeper to do what it says.
     const PATIENCE: Duration = Duration::from_secs(5);
+
+    /// A program held here as `id`.
+    fn held(id: &str) -> Held {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "command": ["pi"], "folder": "/", "holder": 1, "pid": 2,
+            "since": "2026-10-30T20:00:00Z"
+        }))
+        .expect("a held program")
+    }
+
+    /// Session `id`, held as `held`, standing as `state` says.
+    fn session(id: &str, held: &str, state: &str) -> Session {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "address": id, "machine": "penelope", "groups": [],
+            "state": state, "held": held, "at": "2026-10-30T20:00:00Z"
+        }))
+        .expect("a session")
+    }
+
+    #[test]
+    fn only_what_is_held_and_at_work_keeps_a_machine_awake() {
+        let nothing = BTreeSet::new();
+        let idle = [session("idle-one", "a", "idle")];
+        assert!(
+            !at_work(&[held("a")], &idle, &nothing),
+            "a session held but waiting idle isn't at work"
+        );
+        assert!(
+            at_work(
+                &[held("a")],
+                &idle,
+                &BTreeSet::from(["idle-one".to_owned()])
+            ),
+            "one with work in its machine's queue is, though its turn has ended"
+        );
+        assert!(
+            at_work(&[held("a")], &[session("busy-one", "a", "busy")], &nothing),
+            "one running a turn is"
+        );
+        assert!(
+            at_work(&[held("a"), held("b")], &idle, &nothing),
+            "a program held that is no session, such as a build, is"
+        );
+        assert!(
+            !at_work(&[], &idle, &nothing),
+            "nothing held is nothing at work"
+        );
+    }
 
     /// Words that note in `said` when they begin and when their input
     /// ends, as a keeper's would.

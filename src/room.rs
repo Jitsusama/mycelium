@@ -17,6 +17,7 @@
 //! limits it is past by name, never the queue's numbers judged again
 //! here, which would drift from the queue's own rules.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -87,6 +88,49 @@ const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 #[must_use]
 pub fn read(queue: &Path, now: i64) -> Option<Room> {
     said(&fs::read(queue).ok()?, now)
+}
+
+/// The sessions with work in the queue kept at `queue`, waiting its turn
+/// or running, as of `now`, in seconds since the epoch. None, where the
+/// queue isn't kept: a record nobody keeps names work that may be long
+/// gone.
+#[must_use]
+pub fn queued_by(queue: &Path, now: i64) -> BTreeSet<String> {
+    fs::read(queue)
+        .ok()
+        .map(|record| owners(&record, now))
+        .unwrap_or_default()
+}
+
+/// The sessions a queue's record says own work in it.
+fn owners(record: &[u8], now: i64) -> BTreeSet<String> {
+    #[derive(Deserialize)]
+    struct Queue {
+        v: u64,
+        heartbeat: i64,
+        #[serde(default)]
+        jobs: Vec<Job>,
+    }
+    #[derive(Deserialize)]
+    struct Job {
+        owner: Owner,
+    }
+    #[derive(Deserialize)]
+    struct Owner {
+        session: String,
+    }
+
+    let Ok(queue) = serde_json::from_slice::<Queue>(record) else {
+        return BTreeSet::new();
+    };
+    if queue.v != SHAPE || now.saturating_sub(queue.heartbeat) >= UNKEPT_SECONDS {
+        return BTreeSet::new();
+    }
+    queue
+        .jobs
+        .into_iter()
+        .map(|job| job.owner.session)
+        .collect()
 }
 
 /// The room a queue's record says, unless it isn't one this reads or
@@ -172,6 +216,25 @@ mod tests {
             "jobs": [],
             "wasted": {"today": 0, "day": "2026-10-29", "minute": "2026-10-29T04:38"}
         })
+    }
+
+    #[test]
+    fn a_kept_queue_says_whose_work_it_holds() {
+        let mut kept = older(1, KEPT_AT);
+        kept["jobs"] = serde_json::json!([
+            {"id": "a", "state": "running", "owner": {"session": "busy-one", "pid": 1}},
+            {"id": "b", "state": "waiting", "owner": {"session": "waiting-one", "pid": 2}}
+        ]);
+        let kept = kept.to_string().into_bytes();
+        assert_eq!(
+            owners(&kept, KEPT_AT + 30),
+            BTreeSet::from(["busy-one".to_owned(), "waiting-one".to_owned()]),
+            "a job running and one waiting its turn each name their session"
+        );
+        assert!(
+            owners(&kept, KEPT_AT + UNKEPT_SECONDS).is_empty(),
+            "a queue nobody keeps names no work"
+        );
     }
 
     #[test]

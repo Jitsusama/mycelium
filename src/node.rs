@@ -27,6 +27,7 @@ use crate::mesh;
 use crate::place;
 use crate::placement::{self, Placement};
 use crate::record::{Message, Session, State as SessionState};
+use crate::room;
 use crate::share::exchange::Places;
 use crate::state::State;
 use crate::steer::{self, Steer};
@@ -214,7 +215,11 @@ where
             }
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => shared.read_message(&id),
-                Some(Change::Presence) => shared.read_sessions(),
+                Some(Change::Presence) => {
+                    shared.read_sessions();
+                    // A held session going idle, or busy, may let it sleep.
+                    shared.keep_awake(&mut awake);
+                }
                 Some(Change::Rescan) => shared.read_store(),
                 None => break Err(io::Error::other("the store stopped telling its changes")),
             },
@@ -475,10 +480,16 @@ impl<S: Store> Shared<S> {
         facts::measure_in(&self.machine, &self.realm, &facts::Sources::here())
     }
 
-    /// Keeps this machine awake while it holds sessions and has the
-    /// charge, and lets it sleep once it doesn't.
+    /// Keeps this machine awake while what it holds is at work and it has
+    /// the charge, and lets it sleep once it isn't or hasn't.
     fn keep_awake(&self, awake: &mut Awake) {
-        let holds = !hold::held(&self.held).is_empty();
+        let held = hold::held(&self.held);
+        let sessions = self.lock().state.sessions();
+        let now = jiff::Timestamp::now().as_second();
+        let queued = place::queue()
+            .map(|queue| room::queued_by(&queue, now))
+            .unwrap_or_default();
+        let holds = awake::at_work(&held, &sessions, &queued);
         let power = holds.then(|| self.measure().power).flatten();
         awake.keep(awake::wanted(holds, power.as_ref()));
     }
