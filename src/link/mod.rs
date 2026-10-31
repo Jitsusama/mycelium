@@ -276,6 +276,9 @@ pub async fn run(
             _ = keeping.tick() => end.keep(&mut writing).await,
             Some(ask) = next(&mut asked) => end.ask(ask, &mut writing).await,
             Some((ask, reply)) = answered.recv() => {
+                // Work started here has reached this machine, however soon
+                // it ends: a minute's keep may never see it running.
+                end.handover.ran |= matches!(reply, Ok(Response::Started(_)));
                 send(&mut writing, &Frame::Started { ask, reply }).await
             }
             _ = looking.tick() => end.look(&mut writing).await,
