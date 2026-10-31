@@ -1021,20 +1021,28 @@ mod tests {
     const PATIENCE: Duration = Duration::from_secs(5);
 
     /// A holder in `dir` that says it holds at once, writing down in the
-    /// file it answers beside it what it was given to hold.
+    /// file it answers beside it what it was given to hold. A child process
+    /// puts it in place, since another test's fork holding the file open
+    /// for writing would keep it from running.
     fn stand_in_holder(dir: &Path) -> (PathBuf, PathBuf) {
         let given = dir.join("given");
+        let text = dir.join("holder.sh");
         let holder = dir.join("holder");
         fs::write(
-            &holder,
+            &text,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho held\n",
                 given.display()
             ),
         )
         .expect("the stand-in holder is written");
-        fs::set_permissions(&holder, fs::Permissions::from_mode(0o755))
-            .expect("the stand-in holder runs");
+        let put = std::process::Command::new("install")
+            .args(["-m", "755"])
+            .arg(&text)
+            .arg(&holder)
+            .status()
+            .expect("install runs");
+        assert!(put.success(), "the stand-in holder is put in place");
         (holder, given)
     }
 

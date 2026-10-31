@@ -270,7 +270,6 @@ impl Ssh {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -312,20 +311,17 @@ mod tests {
     #[tokio::test]
     async fn a_program_carries_the_link_and_says_when_it_was_turned_away() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let script = dir.path().join("provider");
         let asked = dir.path().join("asked");
-        fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n\
+        let program = provider(
+            dir.path(),
+            &format!(
+                "printf '%s\\n' \"$@\" > '{}'\n\
                  echo 'the gateway turned this machine away: no login' >&2\nexec cat\n",
                 asked.display()
             ),
-        )
-        .expect("the provider is written");
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).expect("the provider runs");
+        );
         let way = Way::Program(Program {
-            program: script.display().to_string(),
+            program,
             place: "sandbox-1".to_owned(),
         });
 
