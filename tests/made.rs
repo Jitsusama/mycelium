@@ -1,7 +1,8 @@
 //! A machine made for a start that may cost money: optimus's node asks a
 //! provider's program what it offers, makes the one machine that would
 //! take the work, links it through the program, starts the work there, and
-//! lets it go at its time, keeping each make and release in its book. Each
+//! lets it go at its time, or once it has handed over after its work,
+//! keeping each make and release in its book. Each
 //! node, and the made machine's end of the link, is a `mycelium` process of
 //! its own, each machine in folders of its own.
 
@@ -16,6 +17,10 @@ use notify::{RecursiveMode, Watcher};
 
 /// How long anything here has to happen: each step takes a second or two.
 const PATIENCE: Duration = Duration::from_secs(60);
+
+/// How long a made machine has to hand over once its work ends: the far
+/// end says so at its keep, a minute after the link opens.
+const HANDS_OVER: Duration = Duration::from_secs(90);
 
 /// How long the made machine lives, from when it is made.
 const LIVES: jiff::SignedDuration = jiff::SignedDuration::from_secs(20);
@@ -62,15 +67,15 @@ fn machine(home: &Path, declared: Option<&str>) {
     }
 }
 
-/// Waits until `holds` says `path` is as wanted, hearing each change under
-/// `root`, and answers what it holds.
-fn heard(root: &Path, path: &Path, holds: impl Fn(&str) -> bool) -> String {
+/// Waits up to `within` until `holds` says `path` is as wanted, hearing
+/// each change under `root`, and answers what it holds.
+fn heard(root: &Path, path: &Path, within: Duration, holds: impl Fn(&str) -> bool) -> String {
     let (telling, told) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(telling).expect("a watcher");
     watcher
         .watch(root, RecursiveMode::Recursive)
         .expect("the folder is watched");
-    let deadline = Instant::now() + PATIENCE;
+    let deadline = Instant::now() + within;
     loop {
         let text = fs::read_to_string(path).unwrap_or_default();
         if path.exists() && holds(&text) {
@@ -100,7 +105,7 @@ fn provider(root: &Path, lent: &Path, until: jiff::Timestamp) -> PathBuf {
          offers) echo '{offer}' ;;\n\
          make) echo \"$@\" > {asked}; echo '{made}' ;;\n\
          link) export HOME={home} XDG_RUNTIME_DIR={r} XDG_CONFIG_HOME={c} \
-         XDG_STATE_HOME={s} XDG_DATA_HOME={d} XDG_CACHE_HOME={k}; \
+         XDG_STATE_HOME={s} XDG_DATA_HOME={d} XDG_CACHE_HOME={k} PATH={bin}:$PATH; \
          exec {mycelium} --realm \"$3\" link --machine lent ;;\n\
          release) echo \"$2\" > {released} ;;\n\
          esac\n",
@@ -112,6 +117,11 @@ fn provider(root: &Path, lent: &Path, until: jiff::Timestamp) -> PathBuf {
         d = at("d"),
         k = at("k"),
         mycelium = env!("CARGO_BIN_EXE_mycelium"),
+        // The far end ends once its search path names another build.
+        bin = Path::new(env!("CARGO_BIN_EXE_mycelium"))
+            .parent()
+            .expect("the build is in a folder")
+            .display(),
         released = root.join("released").display(),
     );
     let text = root.join("provider.sh");
@@ -128,27 +138,16 @@ fn provider(root: &Path, lent: &Path, until: jiff::Timestamp) -> PathBuf {
     program
 }
 
-#[test]
-fn a_start_that_may_cost_has_a_machine_made_for_it_until_its_time() {
-    let dir = tempfile::tempdir().expect("a temporary folder");
-    let root = dir.path();
-    let (home, lent) = (root.join("o"), root.join("l"));
-    machine(&home, None);
-    machine(
-        &lent,
-        Some(r#"{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": []}"#),
-    );
-    let until = jiff::Timestamp::now() + LIVES;
-    let program = provider(root, &lent, until);
-
-    let _lent_node = Running(
-        mycelium(&lent)
+/// Two nodes, optimus's asking `program` and lent's, until dropped.
+fn nodes(home: &Path, lent: &Path, program: &Path) -> (Running, Running) {
+    let lent_node = Running(
+        mycelium(lent)
             .args(["--realm", "work", "node", "--machine", "lent"])
             .spawn()
             .expect("lent's node starts"),
     );
-    let _node = Running(
-        mycelium(&home)
+    let node = Running(
+        mycelium(home)
             .args([
                 "--realm",
                 "work",
@@ -157,17 +156,22 @@ fn a_start_that_may_cost_has_a_machine_made_for_it_until_its_time() {
                 "optimus",
                 "--provider",
             ])
-            .arg(&program)
+            .arg(program)
             .spawn()
             .expect("optimus's node starts"),
     );
-    for at in [&home, &lent] {
+    for at in [home, lent] {
         let socket = at.join("r").join("mycelium").join("work.sock");
-        heard(at, &socket, |_| true);
+        heard(at, &socket, PATIENCE, |_| true);
     }
+    (lent_node, node)
+}
 
+/// Starts work that ends at once, as optimus's may cost and lent alone
+/// reaches, answering where it started.
+fn start(home: &Path) -> serde_json::Value {
     let (answered, answer) = mpsc::channel();
-    let mut starting = mycelium(&home);
+    let mut starting = mycelium(home);
     starting.args([
         "--realm",
         "work",
@@ -183,8 +187,64 @@ fn a_start_that_may_cost_has_a_machine_made_for_it_until_its_time() {
         .recv_timeout(PATIENCE)
         .expect("the start answers in time")
         .expect("the start runs");
-    let said: serde_json::Value =
-        serde_json::from_slice(&started.stdout).expect("the start says what it did");
+    serde_json::from_slice(&started.stdout).expect("the start says what it did")
+}
+
+/// The book at optimus's `home`, once it holds a make and a release.
+fn book(home: &Path, within: Duration) -> Vec<serde_json::Value> {
+    let book = home.join("s").join("mycelium").join("made.jsonl");
+    heard(home, &book, within, |text| {
+        text.lines().count() == 2 && text.ends_with('\n')
+    })
+    .lines()
+    .map(|line| serde_json::from_str(line).expect("a JSON line"))
+    .collect()
+}
+
+#[test]
+fn a_machine_made_is_let_go_once_it_hands_over_after_its_work() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let root = dir.path();
+    let (home, lent) = (root.join("o"), root.join("l"));
+    // It leaves, and is made to end, long after the test.
+    let until = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+    machine(&home, None);
+    machine(
+        &lent,
+        Some(&format!(
+            r#"{{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": [], "leaves_at": "{until}"}}"#
+        )),
+    );
+    let program = provider(root, &lent, until);
+    let _nodes = nodes(&home, &lent, &program);
+
+    let said = start(&home);
+    assert_eq!(
+        said["Ok"]["Started"]["machine"], "lent",
+        "the work starts on the machine made for it: {said}"
+    );
+    let lines = book(&home, HANDS_OVER);
+    assert_eq!(
+        lines[1]["released"]["why"], "its work handed over",
+        "work that ended before a minute was out still ran there, so it is let go: {lines:?}"
+    );
+}
+
+#[test]
+fn a_start_that_may_cost_has_a_machine_made_for_it_until_its_time() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let root = dir.path();
+    let (home, lent) = (root.join("o"), root.join("l"));
+    machine(&home, None);
+    machine(
+        &lent,
+        Some(r#"{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": []}"#),
+    );
+    let until = jiff::Timestamp::now() + LIVES;
+    let program = provider(root, &lent, until);
+    let _nodes = nodes(&home, &lent, &program);
+
+    let said = start(&home);
     assert_eq!(
         said["Ok"]["Started"]["machine"], "lent",
         "the work starts on the machine made for it: {said}"
@@ -195,14 +255,7 @@ fn a_start_that_may_cost_has_a_machine_made_for_it_until_its_time() {
         "made of the one shape that takes the work, to live as long as the offer does"
     );
 
-    let book = home.join("s").join("mycelium").join("made.jsonl");
-    let kept = heard(&home, &book, |text| {
-        text.lines().count() == 2 && text.ends_with('\n')
-    });
-    let lines: Vec<serde_json::Value> = kept
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("a JSON line"))
-        .collect();
+    let lines = book(&home, PATIENCE);
     assert_eq!(
         (
             &lines[0]["made"]["machine"],
@@ -214,7 +267,7 @@ fn a_start_that_may_cost_has_a_machine_made_for_it_until_its_time() {
             &serde_json::json!("0.003"),
             &serde_json::json!("its time was up"),
         ),
-        "what was made and at what rate, and that it was let go at its time: {kept}"
+        "what was made and at what rate, and that it was let go at its time: {lines:?}"
     );
     assert_eq!(
         fs::read_to_string(root.join("released")).expect("it was released"),
