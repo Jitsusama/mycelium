@@ -30,7 +30,8 @@ The harness mesh's messages and presence, carried between machines:
   or a terminal reads, and says on it what its machine is (`mycelium
   machine`), the facts work will be placed by. A client that opens with
   `hello` is answered in the daemon interface every daemon on the machine
-  speaks, and watches the realm's sessions and machines change.
+  speaks, and watches the realm's sessions, machines and messages
+  change.
 
 [PROTOCOL.md](PROTOCOL.md) says how, and what comes next: shared scratch,
 the node's own log, connections of its own and providers for machines

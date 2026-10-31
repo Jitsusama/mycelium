@@ -532,11 +532,14 @@ in milliseconds.
 | `unwatch` | nothing; the watch with that `id` ends |
 | `health` | `state`, and each linked machine and served file as a source |
 
-A record carries `key` (`session:<id>` or `machine:<name>`), `kind`,
-`heard` (milliseconds since the epoch) and the fields `Sessions` and
-`Machines` give it. A session also says whether it runs `here`. The
-`machine` kind holds the realm's other machines only, since this machine's
-own readings are its machine daemon's. A watch sends what changed by
+A record carries `key` (`session:<id>`, `machine:<name>` or
+`message:<id>`), `kind`, `heard` (milliseconds since the epoch) and the
+fields `Sessions`, `Machines` and `Messages` give it. A session also says
+whether it runs `here`. The `machine` kind holds the realm's other
+machines only, since this machine's own readings are its machine
+daemon's. The `message` kind holds each group's latest 100 messages, so
+a quiet group's last words stay beside a busy one's, and a message is
+heard when it was sent and never changes. A watch sends what changed by
 key, with only the fields that differ, a dropped one as null; nothing
 while nothing changes; and no sooner than 250 ms after its last send, so
 a reader too slow for it is sent the latest rather than a backlog. An ask
@@ -570,8 +573,8 @@ file or folder not there, not written yet or removed, holds nothing,
 which is no trouble, and a folder not there is looked for again each
 minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
-still served. A kind
-the node holds itself, `session` or `machine`, can't be served.
+still served. A kind the node holds itself, `session`, `machine` or
+`message`, can't be served.
 
 ## A Held Session
 
