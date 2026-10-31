@@ -7,6 +7,12 @@
 //! machine never pauses or stops a session itself. Once none runs there,
 //! it has handed over ([`handed_over`]), and a link whose way in can
 //! release the machine lets it go, as [`crate::link`] says.
+//!
+//! A machine on its battery below the mark (`awake::low`) leaves for a
+//! while too: it takes no new work and is let sleep. Its node tells each
+//! session there, once while it stays low, to put its work somewhere that
+//! lasts, though not to stop, since a session waits out a sleep
+//! ([`Sleeping`]).
 
 use std::collections::BTreeSet;
 
@@ -49,26 +55,85 @@ impl Told {
         if now < leaves - HANDOVER {
             return Vec::new();
         }
-        let said = json!({
-            "text": said(leaves, now),
-            "at": now.to_string(),
-            "from": FROM,
-        });
-        sessions
-            .iter()
-            .filter(|session| {
-                session.machine == machine
-                    && matches!(session.state, State::Busy | State::Idle)
-                    && !self.addresses.contains(&session.address)
-            })
-            .filter_map(|session| Steer::new(&session.address, &said).ok())
-            .collect()
+        untold(&self.addresses, machine, sessions, &said(leaves, now), now)
     }
 
     /// Counts the session at `address` told, once its steer is delivered.
     pub fn told(&mut self, address: &str) {
         self.addresses.insert(address.to_owned());
     }
+}
+
+/// The sessions told their machine runs low on its battery, so each is
+/// told once while it stays low, and again should it run low once more
+/// after charging.
+#[derive(Debug, Default)]
+pub struct Sleeping {
+    addresses: BTreeSet<String>,
+}
+
+impl Sleeping {
+    /// The steers due at `now` to the sessions running on `machine`, which
+    /// is low on its battery or not as `low` says, that haven't been told
+    /// yet: none while it isn't. Such a machine takes no new work and is
+    /// let sleep, which pauses what runs there until it wakes, so each is
+    /// told to put its work somewhere that lasts, though not to stop.
+    #[must_use]
+    pub fn due(
+        &self,
+        machine: &str,
+        low: bool,
+        now: Timestamp,
+        sessions: &[Session],
+    ) -> Vec<Steer> {
+        if !low {
+            return Vec::new();
+        }
+        let said = format!(
+            "This machine's battery is below {}%, so it takes no new work and \
+             will be let sleep. Commit and push what you have, and put what \
+             can't be pushed and a note of what's next where your work is \
+             shared. While it sleeps this session waits, and it carries on \
+             once the machine wakes.",
+            crate::awake::LOW_CHARGE
+        );
+        untold(&self.addresses, machine, sessions, &said, now)
+    }
+
+    /// Counts the session at `address` told, once its steer is delivered.
+    pub fn told(&mut self, address: &str) {
+        self.addresses.insert(address.to_owned());
+    }
+
+    /// Forgets who was told, once the machine is no longer low.
+    pub fn charged(&mut self) {
+        self.addresses.clear();
+    }
+}
+
+/// A steer from the machine, saying `text` at `now`, to each session
+/// running on `machine` that isn't among `told`.
+fn untold(
+    told: &BTreeSet<String>,
+    machine: &str,
+    sessions: &[Session],
+    text: &str,
+    now: Timestamp,
+) -> Vec<Steer> {
+    let said = json!({
+        "text": text,
+        "at": now.to_string(),
+        "from": FROM,
+    });
+    sessions
+        .iter()
+        .filter(|session| {
+            session.machine == machine
+                && matches!(session.state, State::Busy | State::Idle)
+                && !told.contains(&session.address)
+        })
+        .filter_map(|session| Steer::new(&session.address, &said).ok())
+        .collect()
 }
 
 /// How much work runs on a machine: each session living there, as
@@ -228,6 +293,48 @@ mod tests {
             addresses(&due),
             ["AAAAAA", "BBBBBB"],
             "a session that ended, or runs on another machine, isn't told"
+        );
+    }
+
+    #[test]
+    fn sessions_are_told_once_while_their_machine_runs_low() {
+        let sessions = [
+            session("AAAAAA", "laptop", "busy"),
+            session("BBBBBB", "laptop", "ended"),
+            session("CCCCCC", "home", "busy"),
+        ];
+        let mut sleeping = Sleeping::default();
+        assert!(
+            sleeping
+                .due("laptop", false, leaves(), &sessions)
+                .is_empty(),
+            "nobody is told while the machine isn't low"
+        );
+        let due = sleeping.due("laptop", true, leaves(), &sessions);
+        assert_eq!(
+            addresses(&due),
+            ["AAAAAA"],
+            "the session running on it is told once it is"
+        );
+        let said = due[0]
+            .body
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            said.contains("below 20%") && said.contains("carries on once the machine wakes"),
+            "it says why, and that the session isn't to stop: {said}"
+        );
+        sleeping.told("AAAAAA");
+        assert!(
+            sleeping.due("laptop", true, leaves(), &sessions).is_empty(),
+            "a session told isn't told again while the machine stays low"
+        );
+        sleeping.charged();
+        assert_eq!(
+            addresses(&sleeping.due("laptop", true, leaves(), &sessions)),
+            ["AAAAAA"],
+            "but is once it runs low again after charging"
         );
     }
 

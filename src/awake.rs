@@ -39,10 +39,15 @@ pub fn at_work(held: &[Held], sessions: &[Session], queued: &BTreeSet<String>) -
 /// can't read is kept, as one plugged in is.
 #[must_use]
 pub fn wanted(holds_work: bool, power: Option<&Power>) -> bool {
-    holds_work
-        && !power.is_some_and(|power| {
-            power.on_battery && power.charge.is_some_and(|charge| charge < LOW_CHARGE)
-        })
+    holds_work && !power.is_some_and(low)
+}
+
+/// Whether a machine with `power` runs on its battery below the mark, so
+/// is let sleep and takes no new work. One whose charge it can't read
+/// isn't, as one plugged in isn't.
+#[must_use]
+pub fn low(power: &Power) -> bool {
+    power.on_battery && power.charge.is_some_and(|charge| charge < LOW_CHARGE)
 }
 
 /// The words that keep a machine running `os`, as Rust names it, awake

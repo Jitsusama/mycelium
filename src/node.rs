@@ -19,7 +19,7 @@ use crate::awake::{self, Awake};
 use crate::daemon;
 use crate::facts;
 use crate::group::{Pattern, Routes};
-use crate::handover::Told;
+use crate::handover::{Sleeping, Told};
 use crate::hold::{self, start, start::Starter};
 use crate::link::refused::Refusals;
 use crate::link::starts::{Asks, Starting};
@@ -563,6 +563,8 @@ struct Inner {
     next_present: u64,
     /// The sessions told this machine leaves.
     told: Told,
+    /// The sessions told this machine runs low on its battery.
+    sleeping: Sleeping,
 }
 
 impl<S: Store> Shared<S> {
@@ -704,6 +706,37 @@ impl<S: Store> Shared<S> {
                 Ok(_) => self.lock().told.told(&steer.address),
                 Err(error) => {
                     eprintln!("{} wasn't told this machine leaves: {error}", steer.address);
+                }
+            }
+        }
+        self.tell_sleeping(here);
+    }
+
+    /// Tells each session running here that hasn't been told yet, while
+    /// this machine runs low on its battery and so is let sleep
+    /// (`awake::low`), through its steer inbox.
+    fn tell_sleeping(&self, here: &facts::Machine) {
+        let low = here.power.as_ref().is_some_and(awake::low);
+        let due = {
+            let mut inner = self.lock();
+            if !low {
+                inner.sleeping.charged();
+            }
+            inner.sleeping.due(
+                &self.machine,
+                low,
+                jiff::Timestamp::now(),
+                &inner.state.sessions(),
+            )
+        };
+        for steer in due {
+            match steer.deliver(&self.steers) {
+                Ok(_) => self.lock().sleeping.told(&steer.address),
+                Err(error) => {
+                    eprintln!(
+                        "{} wasn't told this machine runs low: {error}",
+                        steer.address
+                    );
                 }
             }
         }

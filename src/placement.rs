@@ -5,8 +5,9 @@
 //! machine's reasons.
 //!
 //! A machine's taints are those its configuration declares and those its
-//! conditions set while they last: running on its battery, or being past
-//! its queue's memory limit. A taint that refuses never keeps work off a
+//! conditions set while they last: running on its battery, running on it
+//! below the mark at which it is let sleep, which refuses all new work, or
+//! being past its queue's memory limit. A taint that refuses never keeps work off a
 //! machine; one that would rather not only ranks the machine after every
 //! other that qualifies.
 //!
@@ -19,6 +20,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::awake;
 use crate::declared::{Effect, Taint};
 use crate::disk::Band;
 use crate::facts::{AcceleratorKind, Machine, Readiness};
@@ -161,6 +163,10 @@ pub fn said(misses: &[Miss]) -> String {
 /// The key of the taint a machine on its battery carries.
 pub const ON_BATTERY: &str = "on-battery";
 
+/// The key of the taint a machine on its battery below the mark carries
+/// (`awake::LOW_CHARGE`), which takes no new work, as it is let sleep.
+pub const LOW_BATTERY: &str = "low-battery";
+
 /// The key of the taint a machine past its queue's memory limit carries.
 pub const MEMORY_PRESSURE: &str = "memory-pressure";
 
@@ -247,6 +253,16 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
     };
     if machine.power.is_some_and(|power| power.on_battery) {
         taints.push(condition(ON_BATTERY, "it runs on its battery"));
+    }
+    if machine.power.as_ref().is_some_and(awake::low) {
+        taints.push(Taint {
+            key: LOW_BATTERY.to_owned(),
+            effect: Effect::Never,
+            why: format!(
+                "its battery is below {}%, so it is let sleep",
+                awake::LOW_CHARGE
+            ),
+        });
     }
     let pressed = machine
         .room
@@ -477,6 +493,38 @@ mod tests {
             placed(&place(&work, &realm)),
             Some("optimus"),
             "a preference met outranks memory free"
+        );
+    }
+
+    #[test]
+    fn a_machine_on_its_battery_below_the_mark_takes_no_new_work() {
+        let mut equilibrius = machine("equilibrius", "macos", 30, &["home"]);
+        equilibrius.power = Some(Power {
+            on_battery: true,
+            charge: Some(awake::LOW_CHARGE - 1),
+        });
+        let realm = [equilibrius.clone()];
+        let only_it = needing(vec![Need::System("macos".to_owned())]);
+        assert_eq!(
+            placed(&place(&only_it, &realm)),
+            None,
+            "not even what only it can take"
+        );
+        let mut tolerant = needing(Vec::new());
+        tolerant.tolerates = vec![LOW_BATTERY.to_owned(), ON_BATTERY.to_owned()];
+        assert_eq!(
+            placed(&place(&tolerant, &realm)),
+            Some("equilibrius"),
+            "unless the work doesn't mind"
+        );
+        equilibrius.power = Some(Power {
+            on_battery: true,
+            charge: Some(awake::LOW_CHARGE),
+        });
+        assert_eq!(
+            placed(&place(&only_it, &[equilibrius])),
+            Some("equilibrius"),
+            "at the mark it still takes work"
         );
     }
 
