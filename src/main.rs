@@ -14,12 +14,13 @@ use mycelium::group::{Group, Pattern};
 use mycelium::hold::start::Starter;
 use mycelium::link::dial::{Connection, Program, Ssh, Way};
 use mycelium::link::discovery::Listed;
-use mycelium::link::membership::Realm;
+use mycelium::link::membership::{Membership, Proven, Realm};
 use mycelium::link::refused::Refusals;
 use mycelium::placement::{Need, Work};
 use mycelium::record::Intent;
 use mycelium::share::exchange::Places;
 use mycelium::share::ledger::Ledgers;
+use mycelium::ssh::Asked as KeyAsked;
 use mycelium::store::folders::Folders;
 use mycelium::wire::{Draft, Request, Start};
 use mycelium::{hold, install, link, node, place};
@@ -65,6 +66,17 @@ enum Action {
     Link {
         #[command(flatten)]
         here: Here,
+    },
+    /// Runs what another machine's link key asked, as its pinned
+    /// `authorized_keys` line runs this: a link, whose far end must be
+    /// that machine, or an attach; anything else is refused and kept in
+    /// `refused-keys.jsonl` in mycelium's folder.
+    Ssh {
+        #[command(flatten)]
+        here: Here,
+        /// The machine whose key this is.
+        #[arg(long)]
+        from: String,
     },
     /// Shares a quest with every machine this one links with: its record,
     /// kept the same on each, written on any, and the folders of its
@@ -285,7 +297,8 @@ fn run(command: Command) -> io::Result<()> {
                 .chain(programs.into_iter().map(Way::Program));
             run_node(here, realm, &socket, dials.collect())
         }
-        Action::Link { here } => run_link(here, realm, socket),
+        Action::Link { here } => run_link(here, realm, socket, None),
+        Action::Ssh { here, from } => run_asked(here, realm, socket, from),
         Action::Share {
             here,
             quest,
@@ -384,11 +397,38 @@ fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Way>) -> io::Re
 /// output, as SSH carries it, handing the starts the other end asks of
 /// this machine to its node at `socket`, which runs in its person's login
 /// session, and writing the steers it carries into this machine's inboxes.
-fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
-    let running = install::running();
+/// A link let in by a machine's key admits only that machine, `far`.
+fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> io::Result<()> {
     let held = place::held(&realm);
     let steers = here.steer.clone().unwrap_or_else(place::steer);
     let (store, membership, shares) = open(here, realm)?;
+    let starting = link::starts::Starting {
+        node: socket,
+        held,
+        asking: None,
+        steers,
+    };
+    match far {
+        Some(far) => {
+            let proven = Proven {
+                by: membership,
+                far,
+            };
+            serve_link(store, &proven, shares, starting)
+        }
+        None => serve_link(store, &membership, shares, starting),
+    }
+}
+
+/// Serves this end of a link over this process's input and output, as
+/// `membership` admits, until it ends or a newer build is installed.
+fn serve_link(
+    store: Folders,
+    membership: &impl Membership,
+    shares: Places,
+    starting: link::starts::Starting,
+) -> io::Result<()> {
+    let running = install::running();
     runtime()?.block_on(async {
         let connection = Connection {
             reading: Box::new(tokio::io::stdin()),
@@ -397,16 +437,10 @@ fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
             refused: None,
             releases: false,
         };
-        let starting = link::starts::Starting {
-            node: socket,
-            held,
-            asking: None,
-            steers,
-        };
         // A build installed since this end began ends it, for its dialler
         // to start the new one.
         tokio::select! {
-            ended = link::run(store, &membership, connection, Some(shares), Some(starting)) => {
+            ended = link::run(store, membership, connection, Some(shares), Some(starting)) => {
                 ended.map(|_| ())
             }
             newer = install::replaced(running) => {
@@ -415,6 +449,40 @@ fn run_link(here: Here, realm: String, socket: PathBuf) -> io::Result<()> {
             }
         }
     })
+}
+
+/// Runs what `from`'s link key asked, as `SSH_ORIGINAL_COMMAND` says, or
+/// refuses it, keeping the refusal.
+fn run_asked(here: Here, realm: String, socket: PathBuf, from: String) -> io::Result<()> {
+    let original = std::env::var("SSH_ORIGINAL_COMMAND").ok();
+    match mycelium::ssh::asked(original.as_deref(), &realm) {
+        Ok(KeyAsked::Link) => run_link(here, realm, socket, Some(from)),
+        Ok(KeyAsked::Attach(id)) => attach(&place::held(&realm), &id),
+        Err(why) => {
+            let state = here.state.unwrap_or_else(place::state);
+            keep_refused(&state, &from, original.as_deref(), &why);
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, why))
+        }
+    }
+}
+
+/// Keeps, in `state`'s `refused-keys.jsonl`, that `from`'s key asked
+/// `original` and was refused for `why`, a JSON line each.
+fn keep_refused(state: &Path, from: &str, original: Option<&str>, why: &str) {
+    let line = serde_json::json!({
+        "at": jiff::Timestamp::now().to_string(),
+        "from": from,
+        "asked": original,
+        "why": why,
+    });
+    let kept = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(state.join("refused-keys.jsonl"))
+        .and_then(|mut file| writeln!(file, "{line}"));
+    if let Err(error) = kept {
+        eprintln!("mycelium: the refusal wasn't kept: {error}");
+    }
 }
 
 fn open(here: Here, realm: String) -> io::Result<(Folders, Realm, Places)> {

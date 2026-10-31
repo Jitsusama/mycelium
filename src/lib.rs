@@ -42,6 +42,7 @@
 //! - [`place`]: where a node keeps things on its machine
 //! - [`awake`]: keeping its machine awake while it holds sessions
 //! - [`install`]: whether the build a process runs is still installed
+//! - [`ssh`]: what another machine's link key may run on this one
 
 pub mod awake;
 pub mod client;
@@ -62,6 +63,7 @@ pub mod reach;
 pub mod record;
 pub mod room;
 pub mod share;
+pub mod ssh;
 pub mod state;
 pub mod steer;
 pub mod store;

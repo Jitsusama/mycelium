@@ -103,9 +103,62 @@ impl Membership for Realm {
     }
 }
 
+/// A membership whose far end is proven to be one machine, as the key a
+/// link was let in by is that machine's: what `by` admits, and only if it
+/// says it is `far`.
+#[derive(Debug, Clone)]
+pub struct Proven<M> {
+    /// What it otherwise admits by.
+    pub by: M,
+    /// The machine the far end is proven to be.
+    pub far: String,
+}
+
+impl<M: Membership> Membership for Proven<M> {
+    fn hello(&self) -> Hello {
+        self.by.hello()
+    }
+
+    fn admit(&self, other: &Hello) -> Result<(), String> {
+        self.by.admit(other)?;
+        if other.machine == self.far {
+            Ok(())
+        } else {
+            Err(format!(
+                "this link came in by {}'s key, so it can't be {}",
+                self.far, other.machine
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_proven_end_is_admitted_only_as_the_machine_its_key_is() {
+        let proven = Proven {
+            by: realm("work", "optimus"),
+            far: "equilibrius".to_owned(),
+        };
+        assert_eq!(
+            proven.admit(&realm("work", "equilibrius").hello()),
+            Ok(()),
+            "the machine its key is"
+        );
+        assert_eq!(
+            proven.admit(&realm("work", "penelope").hello()),
+            Err("this link came in by equilibrius's key, so it can't be penelope".to_owned()),
+            "another machine saying it is itself"
+        );
+        assert!(
+            proven
+                .admit(&realm("personal", "equilibrius").hello())
+                .is_err(),
+            "and what its realm refuses still is"
+        );
+    }
 
     fn realm(name: &str, machine: &str) -> Realm {
         Realm {

@@ -173,7 +173,15 @@ Three seams shape a link:
 - **Dialling** (`link::dial::Dial`): how a machine reaches another's end,
   and how a terminal here runs a command there. SSH (`--ssh`): the
   other end is `mycelium link` run there, over the SSH session's pipes,
-  and SSH has proved which machine it is. Or a provider's program
+  and SSH has proved which machine it is. A machine's link key may be
+  pinned in the other's `authorized_keys` to `mycelium --realm REALM
+  ssh --from NAME`, which reads what was asked from
+  `SSH_ORIGINAL_COMMAND` and runs only `mycelium link --realm REALM` or
+  `mycelium --realm REALM attach ID`, each in plain words. That link
+  admits only NAME, since the key proved it, and refuses an end saying
+  it is another; anything else asked is refused, said to the asker, and
+  kept as a JSON line in `refused-keys.jsonl` in mycelium's folder. Or a
+  provider's program
   (`--via PROGRAM:PLACE`), for a machine SSH can't reach: run as
   `PROGRAM link --realm REALM PLACE`, it carries the link over its own
   input and output to `mycelium link` on that machine, and run as
