@@ -43,6 +43,7 @@
 //! - [`awake`]: keeping its machine awake while it holds sessions
 //! - [`install`]: whether the build a process runs is still installed
 //! - [`ssh`]: what another machine's link key may run on this one
+//! - [`update`]: its configuration's updater, asked to update it to main
 
 pub mod awake;
 pub mod client;
@@ -67,5 +68,6 @@ pub mod ssh;
 pub mod state;
 pub mod steer;
 pub mod store;
+pub mod update;
 pub mod wire;
 pub mod within;

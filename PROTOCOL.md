@@ -90,14 +90,15 @@ messages, being a union, reach every machine linked by any path.
 same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
-   "steers", "releases"}}`, first, from each end. Each end's membership
-   admits the other or refuses it, and nothing else crosses until it
-   has. `facts` says the end hears and says what a machine is; an end
+   "steers", "releases", "updates"}}`, first, from each end. Each end's
+   membership admits the other or refuses it, and nothing else crosses
+   until it has. `facts` says the end hears and says what a machine is; an end
    older than it says nothing of machines and is sent nothing. `starts`
    says it carries starts, and `steers` steers; an end older than either
    is asked none of it. `releases` says the end's way to the other
    end's machine can release that machine, as a provider's program can;
-   only such an end is told the machine has handed over.
+   only such an end is told the machine has handed over. `updates` says
+   it carries update asks; an end older than it is asked none.
 2. `{"Have": {"messages": [ids], "living": [sessions]}}`: every message
    the end holds within the link's reach, and its machine's living
    sessions. An end older than `living` names none, and every session of
@@ -167,6 +168,13 @@ same code, each line a JSON value:
     other end then waits on no file from it, it holds all of them: its
     link ends, and its node releases the machine and dials it no more.
     An end older than this never hands over, so it is never released.
+14. `{"Update": {"ask"}}`: update the other end's machine to its
+    configuration's main, as an `"Update"` request says it, answered by
+    `Started`. The other end takes it only if its membership proved
+    which machine asked, as a pinned link key does, and hands it to its
+    own node's socket; otherwise it refuses, saying why. No time limits
+    the answer, since an update takes minutes; a switch there restarts
+    the link, which then ends the wait.
 
 Three seams shape a link:
 
@@ -203,9 +211,10 @@ Three seams shape a link:
   retry of ours shows the other machine a failed login.
 - **Discovery** (`link::discovery::Discovery`): which machines to link
   with, as they are found. Today, a list given to the node.
-- **Membership** (`link::membership::Membership`): which machines to admit.
-  Today, a realm: any machine of the same realm speaking the same version,
-  never the machine itself.
+- **Membership** (`link::membership::Membership`): which machines to admit,
+  and whether the far end is proven to be the machine it says. Today, a
+  realm: any machine of the same realm speaking the same version, never
+  the machine itself, proven only when a pinned key let the link in.
 
 ## A Shared Quest
 
@@ -304,6 +313,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"Start": {"work", "folder", "command"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine"}}`, where it was put |
+| `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
@@ -352,7 +362,10 @@ old, and absent otherwise), `accelerators` (each a `kind`, `gpu` or
 `npu`, and its `driver`), and `power`: `on_battery`, true only with a
 battery of its own and nothing plugged in, and `charge`, its own
 batteries' mean in percent, `null` for a machine with none. A fact that
-can't be read is `null`, never a guess.
+can't be read is `null`, never a guess. Its `updated` is how its last
+update to main ended, as its updater keeps it in
+`/run/update-to-main/last.json` (`/var/run/update-to-main.last.json` on
+macOS), and absent where none is kept, as after a reboot.
 
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,
@@ -472,6 +485,19 @@ so a talk reads the same wherever its session runs. It is an error,
 saying why, when no session goes by `address` now, as `no session goes
 by SAK9FZ now`, when its machine is out of reach, when it runs on two
 machines at once, or when the link can't carry it.
+
+`"Update"` asks `machine` to update itself to its configuration's main:
+this one through its updater, and one a link of this node's reaches
+directly through that link, which the far end takes only when its key
+proved this machine asked. Any process of the node's account can ask
+through its socket. The updater listens on `/run/update-to-main/ask.sock`
+(`/var/run/update-to-main.sock` on macOS), is asked the line `update`,
+and answers a JSON line a step, each with its `step`: `fetching`,
+`building` and `switching` while it runs, then one ending, `done`,
+`unchanged`, `failed` or `refused`. The node logs each step and answers
+the ending whole. A switch may restart the node or its link before the
+ending comes back, and then the ask fails, saying so; the machine's
+`updated` fact says how it ended.
 
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`

@@ -51,6 +51,8 @@ pub(super) enum Asked {
     Start(Start),
     /// Put a steer into a session's inbox there.
     Steer(Steer),
+    /// Update that machine to its configuration's main.
+    Update,
 }
 
 /// Something asked of another machine, and where its answer goes.
@@ -85,7 +87,10 @@ impl Asks {
         let there = self
             .there(machine)
             .ok_or_else(|| format!("no link reaches {machine} now"))?;
-        match self.send(machine, Asked::Start(start)).await? {
+        match self
+            .send(machine, Asked::Start(start), Some(ANSWERED_WITHIN))
+            .await?
+        {
             Ok(Response::Started(started)) => Ok(Response::Started(Started {
                 attach: there(&started.attach),
                 ..started
@@ -97,12 +102,28 @@ impl Asks {
     /// Asks `machine` to put `steer` into its session's inbox, through the
     /// link reaching it, answering as that end does, or why no answer came.
     pub async fn steer(&self, machine: &str, steer: Steer) -> Reply {
-        self.send(machine, Asked::Steer(steer)).await?
+        self.send(machine, Asked::Steer(steer), Some(ANSWERED_WITHIN))
+            .await?
+    }
+
+    /// Asks `machine` to update itself to its configuration's main,
+    /// through the link reaching it, answering how that ended. An update
+    /// takes minutes, so the answer is waited on for as long as the link
+    /// stands; a switch there may end the link first, and then the
+    /// machine's `updated` fact says how it ended.
+    pub async fn update(&self, machine: &str) -> Reply {
+        self.send(machine, Asked::Update, None).await?
     }
 
     /// Sends `asked` to `machine` through the link reaching it, and waits
-    /// for its answer, or says why none came.
-    async fn send(&self, machine: &str, asked: Asked) -> Result<Reply, String> {
+    /// for its answer, no longer than `within` if that says how long, or
+    /// says why none came.
+    async fn send(
+        &self,
+        machine: &str,
+        asked: Asked,
+        within: Option<Duration>,
+    ) -> Result<Reply, String> {
         let asks = self
             .lock()
             .by_machine
@@ -112,10 +133,13 @@ impl Asks {
         let (answer, answered) = oneshot::channel();
         asks.send(Ask { asked, answer })
             .map_err(|_| format!("the link to {machine} has just dropped"))?;
-        tokio::time::timeout(ANSWERED_WITHIN, answered)
-            .await
-            .map_err(|_| format!("{machine} didn't answer within {ANSWERED_WITHIN:?}"))?
-            .map_err(|_| format!("the link to {machine} dropped before it answered"))
+        let answered = match within {
+            Some(within) => tokio::time::timeout(within, answered)
+                .await
+                .map_err(|_| format!("{machine} didn't answer within {within:?}"))?,
+            None => answered.await,
+        };
+        answered.map_err(|_| format!("the link to {machine} dropped before it answered"))
     }
 
     /// How a command runs on `machine` from here, while a link reaches it.
@@ -187,5 +211,24 @@ pub(super) async fn answer(node: PathBuf, here: String, mut start: Start) -> Rep
         Ok(Ok(reply)) => reply,
         Ok(Err(error)) => Err(format!("its node didn't answer: {error}")),
         Err(error) => Err(format!("its start stopped: {error}")),
+    }
+}
+
+/// Hands an update the other end asks of `here` to this machine's node at
+/// `node`, which asks its updater, and answers how the update ended. A
+/// switch restarts the node, which then answers nothing; the machine's
+/// `updated` fact says how it ended.
+pub(super) async fn update(node: PathBuf, here: String) -> Reply {
+    let asked = tokio::task::spawn_blocking(move || {
+        Client::connect(&node)?.ask(&Request::Update { machine: here })
+    })
+    .await;
+    match asked {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(error)) => Err(format!(
+            "its node stopped before the update ended, as a switch restarts it, \
+             and its `updated` fact says how it ended: {error}"
+        )),
+        Err(error) => Err(format!("its update stopped: {error}")),
     }
 }
