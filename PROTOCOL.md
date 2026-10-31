@@ -129,7 +129,10 @@ same code, each line a JSON value:
    as it is sent, as a node answers `"Machine"`: after the Have, before
    its sessions, and again each minute. The other end keeps it only if
    it names the sending machine, as ready while the link stands and as
-   unreachable, with what it last said, once the link drops.
+   unreachable, with what it last said, once the link drops. Between
+   two ends that both say `facts`, an end that has heard nothing at all
+   for three minutes by the wall clock ends the link, so one left from
+   before its machine slept gives way to its dialler's new one.
 8. `{"Start": {"ask", "start"}}`: start a session held on the other
    end's machine, as a `"Start"` request says it. The other end hands it
    to its own node's socket, with a need for its own machine added, so
@@ -157,8 +160,9 @@ same code, each line a JSON value:
     nothing written.
 13. `"HandedOver"`: the sending end's machine has handed over, sent at
     each minute's Machine to an end that `releases`, once that machine
-    declares `leaves_at`, no session runs there, and one ran there since
-    the link came or its handover has begun. The sender first says all
+    declares `leaves_at`, no work runs there, and some ran there since
+    the link came or its handover has begun. Work is a session living
+    there or a program held there, such as a build. The sender first says all
     it holds of the quests it shares. Frames cross in order, so if the
     other end then waits on no file from it, it holds all of them: its
     link ends, and its node releases the machine and dials it no more.

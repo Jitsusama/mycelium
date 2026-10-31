@@ -86,6 +86,11 @@ const HELLO_WITHIN: Duration = Duration::from_secs(30);
 /// again what its machine is, whose room changes by the minute.
 const KEEP_EVERY: Duration = Duration::from_secs(60);
 
+/// How long a link waits on an end that says its machine each minute
+/// before taking it as gone: three of its minutes, so a late one or two
+/// don't end it.
+const SILENT_AFTER: Duration = Duration::from_secs(3 * 60);
+
 /// How often this end looks for changes in the quests it shares.
 const LOOK_EVERY: Duration = Duration::from_secs(1);
 
@@ -232,6 +237,10 @@ pub async fn run(
             releases: other.releases,
             ..Handover::default()
         },
+        // Two ends that both take facts each say their machine every
+        // minute, so either hearing nothing for longer knows the other
+        // is gone.
+        hearing: Hearing::from_now(membership.hello().facts && other.facts),
         following: inboxes.clone().map(Following::new),
         inboxes,
         held: starting.as_ref().map(|starting| starting.held.clone()),
@@ -392,6 +401,8 @@ struct End<S> {
     steers: bool,
     /// Where either machine's handover stands.
     handover: Handover,
+    /// When this end last heard the other, and whether it should have.
+    hearing: Hearing,
     /// This machine's sessions' steer inboxes, if this end carries steers.
     inboxes: Option<PathBuf>,
     /// The talks this end carries back to the other.
@@ -424,7 +435,8 @@ struct Handover {
     releases: bool,
     /// When this end's machine leaves, as it last declared.
     leaves: Option<jiff::Timestamp>,
-    /// Whether a session has run on this end's machine since the link came.
+    /// Whether work, a session or a held program, has run on this end's
+    /// machine since the link came.
     ran: bool,
     /// Whether the other end's machine has handed over, with this end
     /// holding all it said.
@@ -437,6 +449,7 @@ impl<S: Store> End<S> {
         frame: Frame,
         writing: &mut (impl AsyncWrite + Unpin),
     ) -> io::Result<()> {
+        self.hearing.heard = now();
         match frame {
             Frame::Hello(_) => return Err(refusal("the other end said hello twice".to_owned())),
             Frame::Have { messages, living } => {
@@ -656,6 +669,12 @@ impl<S: Store> End<S> {
     /// Says again that what this link carried here stands, and what this
     /// end's machine is now, and whether it has handed over.
     async fn keep(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        if self.hearing.gone(now()) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("{} has said nothing for {SILENT_AFTER:?}", self.other),
+            ));
+        }
         self.keep_carried()?;
         self.send_machine(writing).await?;
         self.hand_over(writing).await
@@ -668,7 +687,9 @@ impl<S: Store> End<S> {
         if !self.handover.releases {
             return Ok(());
         }
-        let running = self.living().len();
+        let held_as: Vec<Option<String>> = self.living().into_values().map(|(_, id)| id).collect();
+        let held = self.held.as_deref().map(hold::held).unwrap_or_default();
+        let running = handover::running(&held_as, &held);
         self.handover.ran |= running > 0;
         let Handover { leaves, ran, .. } = self.handover;
         if !handover::handed_over(leaves, jiff::Timestamp::now(), ran, running) {
@@ -854,6 +875,41 @@ fn now() -> i64 {
     jiff::Timestamp::now().as_millisecond()
 }
 
+/// When this end last heard the other end, and whether the other says
+/// its machine each minute, so that hearing nothing for longer means it
+/// is gone.
+struct Hearing {
+    /// Whether the other end says its machine each minute.
+    watched: bool,
+    /// When this end last heard the other say anything, in milliseconds
+    /// of the wall clock.
+    heard: i64,
+}
+
+impl Hearing {
+    /// Hearing from now, `watched` or not.
+    fn from_now(watched: bool) -> Self {
+        Self {
+            watched,
+            heard: now(),
+        }
+    }
+
+    /// Whether the other end is gone by `now`.
+    fn gone(&self, now: i64) -> bool {
+        self.watched && silent(self.heard, now)
+    }
+}
+
+/// Whether an end last heard at `heard` has said nothing too long by
+/// `now`, both in milliseconds of the wall clock. The wall clock, since it
+/// runs on while a machine sleeps: a link thawed after its machine slept
+/// learns at its first keep that the other end is long gone, and ends, so
+/// the machine takes the new link its dialler has been trying.
+fn silent(heard: i64, now: i64) -> bool {
+    now.saturating_sub(heard) >= millis(SILENT_AFTER)
+}
+
 fn millis(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
@@ -872,7 +928,10 @@ mod tests {
     use crate::store::memory::Memory;
 
     /// How long a test waits for a link to carry something before failing.
-    const PATIENCE: Duration = Duration::from_secs(5);
+    /// Each waits on what it waits for, so this only bounds how long a
+    /// failure takes to say so; a narrow pipe's backlog, carried a few
+    /// bytes a write in a debug build, took past 5 s on a loaded machine.
+    const PATIENCE: Duration = Duration::from_secs(30);
 
     fn realm(machine: &str) -> Realm {
         Realm {
@@ -1469,6 +1528,24 @@ mod tests {
         until_file(&theirs, "# Shared\n").await;
         std::fs::write(&theirs, "# Changed there\n").expect("changed on the far end");
         until_file(&ours, "# Changed there\n").await;
+    }
+
+    #[test]
+    fn an_end_silent_three_minutes_is_gone_however_long_its_machine_slept() {
+        let heard = 1_793_250_000_000;
+        let minute = millis(KEEP_EVERY);
+        assert!(
+            !silent(heard, heard + 3 * minute - 1),
+            "a minute or two late isn't gone"
+        );
+        assert!(
+            silent(heard, heard + 3 * minute),
+            "three minutes with nothing said is"
+        );
+        assert!(
+            silent(heard, heard + 45 * minute),
+            "and so is an end last heard before its machine slept"
+        );
     }
 
     #[tokio::test]
