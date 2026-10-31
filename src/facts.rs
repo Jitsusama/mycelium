@@ -13,6 +13,7 @@ use crate::disk::{self, Band};
 use crate::place;
 use crate::reach;
 use crate::room::{self, Room};
+use crate::within;
 
 /// This machine, as measured when asked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +165,20 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
             .or(read.cpu.cores),
         ..read.cpu
     };
+    let room = sources
+        .queue
+        .as_deref()
+        .and_then(|queue| room::read(queue, now.as_second()));
+    // A machine within another has its host's power and room while its
+    // host's word stands, since it reads neither of its own truly.
+    let host = declared
+        .as_ref()
+        .and_then(|declared| declared.within.as_ref())
+        .and_then(|within| within::told(&within.file, now));
+    let (power, room) = match host {
+        Some(host) => (host.power, host.room),
+        None => (read.power, room),
+    };
     Machine {
         name: name.to_owned(),
         measured_at: now.to_string(),
@@ -180,11 +195,8 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
             .as_deref()
             .and_then(|status| disk::band(status, &sources.home, now.as_second())),
         accelerators: read.accelerators,
-        power: read.power,
-        room: sources
-            .queue
-            .as_deref()
-            .and_then(|queue| room::read(queue, now.as_second())),
+        power,
+        room,
         declared,
         reached: reach::read(&sources.reached, now.as_second()),
     }
@@ -693,6 +705,53 @@ mod tests {
             machine.cpu.cores,
             Some(3),
             "the processors it is given, not those it lists"
+        );
+    }
+
+    #[test]
+    fn a_machine_within_another_has_its_hosts_power_while_its_host_says_it() {
+        let home = tempfile::tempdir().expect("a temporary folder");
+        let host_says = home.path().join("methuselah.json");
+        let declared = home.path().join("declared.json");
+        std::fs::write(
+            &declared,
+            serde_json::json!({
+                "reach": [], "outlives": [], "costs_money": false, "taints": [],
+                "within": {"machine": "methuselah", "file": host_says}
+            })
+            .to_string(),
+        )
+        .expect("declared");
+        let sources = Sources {
+            home: home.path().to_owned(),
+            queue: None,
+            disk_guard: None,
+            declared,
+            reached: home.path().join("reached.json"),
+        };
+        // A charge no machine running these tests reads of itself.
+        let draining = Power {
+            on_battery: true,
+            charge: Some(37),
+        };
+        let says = |at| within::Said {
+            at,
+            power: Some(draining),
+            room: None,
+        };
+
+        within::tell(&host_says, &says(jiff::Timestamp::now())).expect("told");
+        assert_eq!(
+            measure("methuselah-linux", &sources).power,
+            Some(draining),
+            "it is on its battery while its host is"
+        );
+        let long_ago = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
+        within::tell(&host_says, &says(long_ago)).expect("told");
+        assert_ne!(
+            measure("methuselah-linux", &sources).power,
+            Some(draining),
+            "and reads its own once its host has long said nothing"
         );
     }
 

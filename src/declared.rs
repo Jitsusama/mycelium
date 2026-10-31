@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +47,24 @@ pub struct Declared {
     /// no longer one of the realm's machines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leaves_at: Option<jiff::Timestamp>,
+    /// The machine it runs within, as a virtual machine runs in its host,
+    /// whose power and room it has as its own (`within`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<Within>,
+    /// The machines that run within it, each told its power and room.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<Within>,
+}
+
+/// One machine within another, as either declares it: the other machine,
+/// and the file, shared between the two, in which the host says its power
+/// and room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Within {
+    /// The other machine's name.
+    pub machine: String,
+    /// The file the host says them in, as this machine reaches it.
+    pub file: PathBuf,
 }
 
 impl Declared {
@@ -166,6 +184,8 @@ mod tests {
                 cores: None,
                 agents: BTreeMap::new(),
                 leaves_at: None,
+                within: None,
+                hosts: Vec::new(),
             }),
             "it reads as declared"
         );
