@@ -10,6 +10,8 @@
 //! - [`link`]: two machines' stores kept as one, with its own seams for
 //!   how a machine is reached ([`link::dial`]), which machines to reach
 //!   ([`link::discovery`]) and which to admit ([`link::membership`])
+//! - [`daemon`]: the same socket in the daemon interface every daemon on
+//!   a machine speaks alike
 //! - [`wire`]: the local socket every client reads, pi, Quickshell or a
 //!   terminal
 //!
@@ -43,6 +45,7 @@
 
 pub mod awake;
 pub mod client;
+pub mod daemon;
 pub mod declared;
 pub mod disk;
 pub mod facts;

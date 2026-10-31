@@ -471,6 +471,35 @@ A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 `quest.4uhc5q`, and a peer's `@4UHC5Q` is `peer.4uhc5q`. A pattern takes
 `*` for any one token and a final `>` for one or more.
 
+### The Daemon Interface
+
+A client that opens with `{"id": 1, "ask": "hello"}` speaks version 1
+of the daemon interface instead, which every daemon on a machine speaks
+alike; any other first line keeps the requests above. Each ask is a JSON
+line with the client's `id`, and every answer to it carries that `id`, so
+several asks share one connection. A direct answer also carries `took`,
+in milliseconds.
+
+| Ask | Answer |
+| --- | --- |
+| `hello` | `version`, `domain` (`node`), `state` and `kinds`, each with its `live` fields |
+| `get` with `keys` | `records`, those held, in the order asked |
+| `list` with `kind`, and `limit` | `records`, every one of the kind |
+| `watch` with `kind`, and `keys` | `records` whole, then `changed` and `gone` |
+| `unwatch` | nothing; the watch with that `id` ends |
+| `health` | `state` and each linked machine as a source |
+
+A record carries `key` (`session:<id>` or `machine:<name>`), `kind`,
+`heard` (milliseconds since the epoch) and the fields `Sessions` and
+`Machines` give it. A session also says whether it runs `here`. The
+`machine` kind holds the realm's other machines only, since this machine's
+own readings are its machine daemon's. A watch sends what changed by
+key, with only the fields that differ, a dropped one as null; nothing
+while nothing changes; and no sooner than 250 ms after its last send, so
+a reader too slow for it is sent the latest rather than a backlog. An ask
+it can't answer gets `{"id", "error": {"code", "message"}}`, the code
+one of `unknown-ask`, `unknown-kind` or `not-an-ask`.
+
 ## A Held Session
 
 `mycelium hold -- <program>` starts a program on a terminal that a
