@@ -140,7 +140,13 @@ pub struct Given {
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 2] = ["session", "machine"];
+pub const HOLDS: [&str; 3] = ["session", "machine", "message"];
+
+/// How many of each group's latest messages the daemon interface holds as
+/// `message` records: a conversation's recent tail, as a person reads it,
+/// rather than every message the node keeps, which a watch would rebuild
+/// and compare at every message heard.
+pub const MESSAGES_EACH: usize = 100;
 
 /// Tells each machine within this one, as its configuration declares
 /// them, this one's power and room as `here` measures them.
@@ -405,6 +411,7 @@ struct Shared<S> {
 struct Said {
     sessions: watch::Sender<u64>,
     machines: watch::Sender<u64>,
+    messages: watch::Sender<u64>,
 }
 
 impl Default for Said {
@@ -412,6 +419,7 @@ impl Default for Said {
         Self {
             sessions: watch::Sender::new(0),
             machines: watch::Sender::new(0),
+            messages: watch::Sender::new(0),
         }
     }
 }
@@ -435,7 +443,8 @@ impl<S: Clone> Clone for Shared<S> {
 }
 
 /// The node in the daemon interface: the realm's sessions, wherever they
-/// run, and its other machines, as `Sessions` and `Machines` answer.
+/// run, and its other machines, as `Sessions` and `Machines` answer, and
+/// each group's latest messages, as `Messages` does.
 impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
     fn kinds(&self) -> BTreeMap<String, Vec<&'static str>> {
         // A served file's fields are its program's, so none is marked live.
@@ -443,7 +452,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             .served
             .kinds()
             .map(|kind| (kind.to_owned(), Vec::new()));
-        let [sessions, machines] = HOLDS.map(str::to_owned);
+        let [sessions, machines, messages] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
                 sessions,
@@ -461,6 +470,8 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     "disk_band",
                 ],
             ),
+            // A message is said once and never changes.
+            (messages, Vec::new()),
         ])
         .into_iter()
         .chain(served)
@@ -499,6 +510,19 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     })
                     .collect(),
             ),
+            "message" => Some(
+                self.lock()
+                    .state
+                    .latest_by_group(MESSAGES_EACH)
+                    .into_iter()
+                    .map(|message| {
+                        let heard = millis_at(&message.at);
+                        let id = message.id.clone();
+                        let record = daemon::record(kind, &id, heard, json_of(&message));
+                        (daemon::key(kind, &id), record)
+                    })
+                    .collect(),
+            ),
             _ => self.served.records(kind),
         }
     }
@@ -507,6 +531,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
         match kind {
             "session" => Some(self.said.sessions.subscribe()),
             "machine" => Some(self.said.machines.subscribe()),
+            "message" => Some(self.said.messages.subscribe()),
             _ => self.served.told(kind),
         }
     }
@@ -596,6 +621,7 @@ impl<S: Store> Shared<S> {
             .filter_map(|id| mesh::message(&self.store.message(id)?))
             .collect();
         self.lock().state.add_messages(messages);
+        self.said.messages.send_modify(|said| *said += 1);
         self.read_sessions();
     }
 
@@ -637,6 +663,7 @@ impl<S: Store> Shared<S> {
         let mut inner = self.lock();
         if let Some(message) = inner.state.add_message(message) {
             inner.send_message(message);
+            self.said.messages.send_modify(|said| *said += 1);
         }
     }
 
@@ -1679,6 +1706,60 @@ mod tests {
             ),
             (&json!(3), &json!("quest:QEST-A"), &json!("a")),
             "the file's record is sent as it arrives: {changed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_watch_of_messages_is_sent_each_message_heard() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let said = |text: &str| {
+            let draft = Draft {
+                from: "joel".to_owned(),
+                groups: vec![Group::new("peer.4uhc5q").expect("a valid group")],
+                intent: None,
+                text: text.to_owned(),
+                re: None,
+            };
+            mesh::written(&draft, 1)
+        };
+        let (first, body) = said("first");
+        store.send_here(&first, body);
+        let mut client = Speaking::to(&socket).await;
+
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert_eq!(
+            hello["kinds"]["message"],
+            json!({"live": []}),
+            "hello names messages, none of whose fields change: {hello}"
+        );
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "message"}))
+            .await;
+        let records = client.next().await["records"].clone();
+        assert_eq!(
+            (&records[0]["key"], &records[0]["text"]),
+            (&json!(format!("message:{first}")), &json!("first")),
+            "the messages already heard come first: {records}"
+        );
+        let (second, body) = said("second");
+        store.send_here(&second, body);
+        let changed = client.next().await;
+        assert_eq!(
+            (
+                &changed["id"],
+                &changed["changed"][0]["key"],
+                &changed["changed"][0]["text"]
+            ),
+            (
+                &json!(2),
+                &json!(format!("message:{second}")),
+                &json!("second")
+            ),
+            "a message heard is sent as it arrives: {changed}"
         );
     }
 

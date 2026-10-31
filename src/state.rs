@@ -2,9 +2,9 @@
 //! and the latest messages, each change returned as the event a watch
 //! sends.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-use crate::group::Pattern;
+use crate::group::{Group, Pattern};
 use crate::record::{Message, Session};
 use crate::wire::Event;
 
@@ -99,6 +99,32 @@ impl State {
         found.reverse();
         found
     }
+
+    /// The latest `each` messages of every group, oldest first: what each
+    /// conversation was saying lately, however quiet the others are. A
+    /// message to several groups is among them while it is among the
+    /// latest of any.
+    #[must_use]
+    pub fn latest_by_group(&self, each: usize) -> Vec<Message> {
+        let mut counted: HashMap<&Group, usize> = HashMap::new();
+        let mut found: Vec<Message> = self
+            .messages
+            .iter()
+            .rev()
+            .filter(|message| {
+                let mut latest = false;
+                for group in &message.groups {
+                    let count = counted.entry(group).or_default();
+                    latest |= *count < each;
+                    *count += 1;
+                }
+                latest
+            })
+            .cloned()
+            .collect();
+        found.reverse();
+        found
+    }
 }
 
 /// Whether `held` was sent before `message`, by time and then by id.
@@ -159,6 +185,27 @@ mod tests {
             "a repeat is dropped"
         );
         assert_eq!(state.recent(&Pattern::everything(), 10).len(), 1);
+    }
+
+    #[test]
+    fn each_groups_latest_are_kept_however_quiet_the_others() {
+        let mut state = State::default();
+        state.add_messages(vec![
+            message("a1", "1", "quest.a"),
+            message("b1", "2", "quest.b"),
+            message("b2", "3", "quest.b"),
+            message("b3", "4", "quest.b"),
+        ]);
+        let ids: Vec<String> = state
+            .latest_by_group(2)
+            .into_iter()
+            .map(|message| message.id)
+            .collect();
+        assert_eq!(
+            ids,
+            ["a1", "b2", "b3"],
+            "a quiet group's last message stays beside a busy one's latest two, oldest first"
+        );
     }
 
     #[test]
