@@ -25,6 +25,7 @@ use crate::link::refused::Refusals;
 use crate::link::starts::{Asks, Starting};
 use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership};
 use crate::mesh;
+use crate::offer;
 use crate::place;
 use crate::placement::{self, Placement};
 use crate::record::{Message, Session, State as SessionState};
@@ -34,7 +35,7 @@ use crate::share::exchange::Places;
 use crate::state::State;
 use crate::steer::{self, Steer};
 use crate::store::{self, Change, Store};
-use crate::wire::{Draft, Event, Reply, Request, Response, Start, Started};
+use crate::wire::{Draft, Event, Offers, Reply, Request, Response, Start, Started};
 use crate::within;
 
 /// How long a link waits before dialling again after it dropped, at first
@@ -136,6 +137,8 @@ pub struct Given {
     pub updater: PathBuf,
     /// The files it serves in the daemon interface, as kinds of their own.
     pub serves: BTreeMap<String, served::Source>,
+    /// The providers' programs asked what machines they could make.
+    pub providers: Vec<String>,
 }
 
 /// The kinds the node holds itself in the daemon interface, which no
@@ -194,9 +197,11 @@ where
         mut awake,
         updater,
         serves,
+        providers,
     } = given;
     let shared = Shared {
         served: Arc::new(Served::start(serves)),
+        providers: providers.into(),
         held: place::held(&hello.realm),
         steers,
         updater,
@@ -404,6 +409,8 @@ struct Shared<S> {
     said: Arc<Said>,
     /// The files it serves as kinds of their own.
     served: Arc<Served>,
+    /// The providers' programs asked what machines they could make.
+    providers: Arc<[String]>,
 }
 
 /// What changes each time the node's sessions or the realm's machines may
@@ -438,6 +445,7 @@ impl<S: Clone> Clone for Shared<S> {
             inner: self.inner.clone(),
             said: self.said.clone(),
             served: self.served.clone(),
+            providers: self.providers.clone(),
         }
     }
 }
@@ -798,6 +806,7 @@ impl<S: Store> Shared<S> {
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
             Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
+            Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
         }
@@ -806,6 +815,29 @@ impl<S: Store> Shared<S> {
     /// Updates `machine` to its configuration's main: this one through its
     /// updater, saying each step in the node's log, and another through
     /// the link reaching it. Answers how the update ended.
+    /// What each provider's program offers, asked now, all at once.
+    async fn offers(&self) -> Reply {
+        let mut asking = JoinSet::new();
+        for (order, program) in self.providers.iter().cloned().enumerate() {
+            asking.spawn(async move {
+                let said = offer::asked(&program).await;
+                (order, program, said)
+            });
+        }
+        let mut asked = asking.join_all().await;
+        asked.sort_by_key(|(order, _, _)| *order);
+        let mut offers = Offers::default();
+        for (_, program, said) in asked {
+            match said {
+                Ok(each) => offers.offers.extend(each),
+                Err(why) => {
+                    offers.unanswered.insert(program, why);
+                }
+            }
+        }
+        Ok(Response::Offers(offers))
+    }
+
     async fn update(&self, machine: &str) -> Reply {
         if machine != self.machine {
             return self.asks.update(machine).await;
@@ -1062,6 +1094,7 @@ async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
             Ok(Request::Start(asked)) => shared.start(asked).await,
             Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await,
             Ok(Request::Update { machine }) => shared.update(&machine).await,
+            Ok(Request::Offers) => shared.offers().await,
             asked => asked.and_then(|request| shared.answer(request)),
         };
         if write(&mut writing, &reply).await.is_err() {
@@ -1234,6 +1267,7 @@ mod tests {
         let steers = inboxes(socket);
         let updater = updater_of(socket);
         let serves = BTreeMap::from([("quest".to_owned(), quests_of(socket))]);
+        let providers = providers_of(socket);
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -1243,6 +1277,7 @@ mod tests {
                 awake: Awake::by(None),
                 updater,
                 serves,
+                providers,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -1383,6 +1418,14 @@ mod tests {
         socket.with_file_name("update.sock")
     }
 
+    /// The providers of a node on `socket`, beside it: one a test may put
+    /// in place, and one never there.
+    fn providers_of(socket: &Path) -> Vec<String> {
+        ["provider", "absent"]
+            .map(|name| socket.with_file_name(name).display().to_string())
+            .into()
+    }
+
     fn piped(pipe: tokio::io::DuplexStream) -> Connection {
         let (reading, writing) = tokio::io::split(pipe);
         Connection {
@@ -1472,6 +1515,60 @@ mod tests {
             .expect("the link is dialled again once its refusal is withdrawn")
             .expect("the link is kept");
         keeping.abort();
+    }
+
+    #[tokio::test]
+    async fn a_node_says_what_its_providers_offer_and_why_one_couldnt() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        // The node makes its socket's folder, open to no one else; its
+        // providers are asked only when offers are.
+        let (_stop, _node) = node(
+            &Memory::default(),
+            "optimus",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+        );
+        let text = socket.with_file_name("provider.sh");
+        fs::write(
+            &text,
+            "#!/bin/sh\necho '{\"shape\": \"scratch\", \"costs\": {\"hourly\": \"0.12\", \"currency\": \"USD\"}}'\n",
+        )
+        .expect("the provider is written");
+        // Put in place by a child, so no test's fork holds it open.
+        let put = std::process::Command::new("install")
+            .args(["-m", "755"])
+            .arg(&text)
+            .arg(socket.with_file_name("provider"))
+            .status()
+            .expect("install runs");
+        assert!(put.success(), "the provider is put in place");
+
+        let Ok(Response::Offers(offers)) = ask(socket.clone(), Request::Offers).await else {
+            panic!("the node says what is offered");
+        };
+        assert_eq!(
+            offers
+                .offers
+                .iter()
+                .map(|offer| (offer.provider.clone(), offer.shape.as_str()))
+                .collect::<Vec<_>>(),
+            [(
+                socket.with_file_name("provider").display().to_string(),
+                "scratch"
+            )],
+            "each shape a provider offers, by the program that offers it"
+        );
+        let absent = socket.with_file_name("absent").display().to_string();
+        assert!(
+            offers
+                .unanswered
+                .get(&absent)
+                .is_some_and(|why| why.contains("couldn't run")),
+            "a program that couldn't say is named with why, not taken as offering nothing: {:?}",
+            offers.unanswered
+        );
     }
 
     #[tokio::test]
@@ -2166,6 +2263,7 @@ mod tests {
                     awake: Awake::by(None),
                     updater: "/nowhere".into(),
                     serves: BTreeMap::new(),
+                    providers: Vec::new(),
                 };
                 run(
                     store,
@@ -2216,9 +2314,8 @@ mod tests {
             let Ok(Response::Sent(sent)) = sent.expect("the node answers") else {
                 panic!("the node sends the message");
             };
-            let heard = watch.next_event().expect("the message comes");
             assert_eq!(
-                heard,
+                watch.next_event().expect("the message comes"),
                 Some(Event::Message {
                     message: sent.clone()
                 })
@@ -2267,6 +2364,7 @@ mod tests {
                 awake: Awake::by(None),
                 updater: "/nowhere".into(),
                 serves: BTreeMap::new(),
+                providers: Vec::new(),
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
