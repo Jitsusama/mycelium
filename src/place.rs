@@ -63,7 +63,7 @@ pub fn updated() -> PathBuf {
 /// temporary folder as the system names it. Not `TMPDIR`, which the
 /// harness moves for a session's quest. None on any other system without
 /// one.
-fn login_runtime() -> Option<PathBuf> {
+pub fn login_runtime() -> Option<PathBuf> {
     static DARWIN: OnceLock<Option<PathBuf>> = OnceLock::new();
     runtime_of(
         env::var_os("XDG_RUNTIME_DIR"),
