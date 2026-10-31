@@ -82,6 +82,9 @@ enum Action {
     Machine,
     /// Prints what every machine of the realm is, this one first.
     Machines,
+    /// Prints the shapes of machine the node's providers could make, and
+    /// why any couldn't say.
+    Offers,
     /// Prints which machine of the realm work should go to, or why none.
     Place(Asked),
     /// Asks a machine to update itself to its configuration's main, this
@@ -192,6 +195,11 @@ struct Node {
     /// for each. PROTOCOL.md says what the program is asked.
     #[arg(long = "via", value_parser = Program::parse)]
     programs: Vec<Program>,
+    /// A provider's program to ask what machines it could make, by its
+    /// path or as found on `PATH`; given again for each. PROTOCOL.md says
+    /// what it is asked.
+    #[arg(long = "provider")]
+    providers: Vec<String>,
     /// A JSON file naming files to serve in the daemon interface, each
     /// as a kind of records; PROTOCOL.md says its shape.
     #[arg(long)]
@@ -341,6 +349,7 @@ fn run(command: Command) -> io::Result<()> {
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Machine => print_reply(&socket, &Request::Machine),
         Action::Machines => print_reply(&socket, &Request::Machines),
+        Action::Offers => print_reply(&socket, &Request::Offers),
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
         Action::Update { machine } => print_reply(&socket, &Request::Update { machine }),
         Action::Start(asked) => start(&socket, asked),
@@ -399,6 +408,7 @@ fn run(command: Command) -> io::Result<()> {
 /// to stop.
 fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let (dials, serves) = (node.dials(), node.serves()?);
+    let providers = node.providers;
     let here = node.here;
     let refused = here
         .state
@@ -420,6 +430,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         awake: Awake::here(),
         updater: place::updater(),
         serves,
+        providers,
     };
     runtime()?.block_on(async {
         let bound = node::bind(socket)?;

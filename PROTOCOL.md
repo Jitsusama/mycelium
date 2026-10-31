@@ -310,6 +310,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Sessions"` | `{"Sessions": [session]}`, this machine's and others' |
 | `"Machine"` | `{"Machine": machine}`, this machine as measured now |
 | `"Machines"` | `{"Machines": [machine]}`, this machine first, then each other |
+| `"Offers"` | `{"Offers": {"offers", "unanswered"}}`, asked of each provider now |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"Start": {"work", "folder", "command"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine"}}`, where it was put |
@@ -430,6 +431,22 @@ network is unknown rather than stale while no node probes.
 
 `"Machines"` gives each other machine as its own end of a link last
 said it, about once a minute.
+
+`"Offers"` asks each program the node was given as `--provider PROGRAM`
+what it could make, all at once, as `PROGRAM offers`. The program writes
+one JSON line a shape and ends within 30 seconds:
+`{"shape", "facts", "costs": {"hourly", "currency"}, "lasts"}`. The
+`shape` is the program's own name for it; `facts` says what such a
+machine would be, in a machine's own words (`system`, `cores`,
+`memory`, `disk` and `declared`), and anything left out is unknown; the
+hourly cost is a decimal written out, such as `"0.12"`, in a
+three-letter currency; `lasts` is the longest one lives, in seconds,
+where its provider fixes it. Each offer comes back with the `provider`
+that offered it, and a program that couldn't say is in `unanswered`
+with why, rather than taken as offering nothing. An offer is the
+provider's promise, never a fact about a machine: it only decides
+whether one is worth making, and once made, the machine's own node says
+what it is.
 
 `"Place"` asks which of those machines work should go to. The work says
 its `needs` and `prefers`, each one of `{"machine": name}`,
@@ -626,13 +643,13 @@ Each lands behind a seam above, or as a seam of its own:
   already start sessions through it; next, a place says what it offers,
   such as evaluating and building for a system, so work that needs it is
   placed there.
-- **Providers:** programs beside a node that offer shapes of machine,
-  make one, start a session on it, reach it and end it with its cost,
-  and say when one is lost, such as Aquifer's, which lives outside this
-  repository. A machine a provider made shows as a place like any other.
-  A machine that can't dial out is dialled in, through its provider's
-  program (`--via`, above), reaching a node that answers links on a port
-  only its own machine can reach, which is next.
+- **Providers:** programs beside a node that offer shapes of machine
+  (`"Offers"`, above), make one, start a session on it, reach it and end
+  it with its cost, and say when one is lost, such as Aquifer's, which
+  lives outside this repository. A machine a provider made shows as a
+  place like any other. A machine that can't dial out is dialled in,
+  through its provider's program (`--via`, above), reaching a node that
+  answers links on a port only its own machine can reach, which is next.
 - **Connections of the node's own:** machines dialled by key, found on the
   network without a cloud, and encrypted always, behind `Dial` and
   `Discovery`; membership then checks the realm's enrolled keys. SSH

@@ -5,12 +5,14 @@
 //! then each change. A `Present` connection is held open by its process
 //! for as long as it runs.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::facts::Machine;
 use crate::group::{Group, Pattern};
+use crate::offer::Offer;
 use crate::placement::{Placement, Work};
 use crate::record::{Intent, Message, Session};
 
@@ -24,6 +26,9 @@ pub enum Request {
     /// What every machine of the realm is: this one measured now, then
     /// each other one as its links last carried it.
     Machines,
+    /// The shapes of machine this node's providers' programs could make,
+    /// each asked now.
+    Offers,
     /// Which machine of the realm `work` should go to.
     Place(Work),
     /// Start a program held where placement chooses.
@@ -133,6 +138,8 @@ pub enum Response {
     Machine(Box<Machine>),
     /// Every machine, this one first.
     Machines(Vec<Machine>),
+    /// What the node's providers offer.
+    Offers(Offers),
     /// Where the work asked about goes.
     Placement(Placement),
     /// The program asked for, started.
@@ -156,6 +163,16 @@ pub enum Response {
     Watching,
     /// The process is counted present until it hangs up.
     Present,
+}
+
+/// What a node's providers' programs offer, and why any couldn't say.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Offers {
+    /// Every shape offered, by each program in the order it was given.
+    pub offers: Vec<Offer>,
+    /// Why a program couldn't say what it offers, by the program, so
+    /// none of them is taken as offering nothing.
+    pub unanswered: BTreeMap<String, String>,
 }
 
 /// A change, as a watch sends it.

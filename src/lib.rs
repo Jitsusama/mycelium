@@ -33,6 +33,7 @@
 //! - [`declared`]: what its configuration says of it
 //! - [`reach`]: whether the networks it reaches only now and then answer
 //! - [`placement`]: which machine work goes to, by what each says it is
+//! - [`offer`]: the shapes of machine a provider's program could make
 //! - [`group`]: groups' names, patterns that hear them, and routes
 //! - [`record`]: messages and sessions, as clients read them
 //! - [`mesh`]: the harness mesh's files read as records
@@ -59,6 +60,7 @@ pub mod install;
 pub mod link;
 pub mod mesh;
 pub mod node;
+pub mod offer;
 pub mod place;
 pub mod placement;
 pub mod reach;
