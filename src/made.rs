@@ -150,7 +150,9 @@ impl Book {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        writeln!(book, "{line}")
+        // One write a line, so nobody reads half of one, and two kept at
+        // once don't interleave.
+        book.write_all(format!("{line}\n").as_bytes())
     }
 }
 
@@ -239,6 +241,35 @@ mod tests {
             (&json!("0.12"), &json!("its work was done")),
             "each make and release is kept, a line each, in order"
         );
+    }
+
+    #[test]
+    fn lines_kept_at_once_are_each_kept_whole() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl"));
+        let made = Made {
+            provider: "lender".to_owned(),
+            shape: "small".to_owned(),
+            place: "p1".to_owned(),
+            machine: "lent".to_owned(),
+            until: jiff::Timestamp::UNIX_EPOCH,
+            costs: offer_of(String::new()).costs,
+        };
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..50 {
+                        book.released(&made, "its time was up").expect("kept");
+                    }
+                });
+            }
+        });
+        let kept = fs::read_to_string(dir.path().join("made.jsonl")).expect("the book");
+        let whole = kept
+            .lines()
+            .filter(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
+            .count();
+        assert_eq!(whole, 400, "every line is whole, none run into another");
     }
 
     #[tokio::test]

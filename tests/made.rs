@@ -196,7 +196,9 @@ fn a_start_that_may_cost_has_a_machine_made_for_it_until_its_time() {
     );
 
     let book = home.join("s").join("mycelium").join("made.jsonl");
-    let kept = heard(&home, &book, |text| text.contains("released"));
+    let kept = heard(&home, &book, |text| {
+        text.lines().count() == 2 && text.ends_with('\n')
+    });
     let lines: Vec<serde_json::Value> = kept
         .lines()
         .map(|line| serde_json::from_str(line).expect("a JSON line"))
