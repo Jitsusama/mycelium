@@ -201,9 +201,10 @@ impl Drop for Reaching {
 }
 
 /// Hands a start the other end asks of `here` to this machine's node at
-/// `node`, pinned to this machine.
+/// `node`, pinned to this machine, so nothing is made for it here.
 pub(super) async fn answer(node: PathBuf, here: String, mut start: Start) -> Reply {
     start.work.needs.push(Need::Machine(here));
+    start.may_cost = false;
     let asked =
         tokio::task::spawn_blocking(move || Client::connect(&node)?.ask(&Request::Start(start)))
             .await;

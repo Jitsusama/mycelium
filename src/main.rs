@@ -247,6 +247,10 @@ struct Starting {
     /// none there, that machine's home.
     #[arg(long)]
     folder: Option<PathBuf>,
+    /// Makes a machine for it from a provider's offer, which may cost
+    /// money, where no machine of the realm takes it.
+    #[arg(long)]
+    may_cost: bool,
     /// The program and its arguments, after `--`.
     #[arg(last = true, required = true)]
     command: Vec<String>,
@@ -410,11 +414,8 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let (dials, serves) = (node.dials(), node.serves()?);
     let providers = node.providers;
     let here = node.here;
-    let refused = here
-        .state
-        .clone()
-        .unwrap_or_else(place::state)
-        .join("refused");
+    let state = here.state.clone().unwrap_or_else(place::state);
+    let (refused, book) = (state.join("refused"), state.join("made.jsonl"));
     let steers = here.steer.clone().unwrap_or_else(place::steer);
     let (store, membership, shares) = open(here, realm)?;
     let given = node::Given {
@@ -431,6 +432,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         updater: place::updater(),
         serves,
         providers,
+        book: mycelium::made::Book::at(book),
     };
     runtime()?.block_on(async {
         let bound = node::bind(socket)?;
@@ -576,8 +578,6 @@ fn share(shares: &Places, quest: &str, scratch: &[String]) -> io::Result<()> {
     Ok(())
 }
 
-/// Holds `command`, started in `folder` or this one, and joins it from
-/// this terminal unless `detached`, when it prints its id instead.
 /// Asks the node to start `command` where placement says `work` should
 /// go, in `folder` as it stands under home there, or in home.
 fn start(socket: &Path, asked: Starting) -> io::Result<()> {
@@ -595,10 +595,13 @@ fn start(socket: &Path, asked: Starting) -> io::Result<()> {
         work: asked.work.into(),
         folder,
         command: asked.command,
+        may_cost: asked.may_cost,
     };
     print_reply(socket, &Request::Start(start))
 }
 
+/// Holds `command`, started in `folder` or this one, and joins it from
+/// this terminal unless `detached`, when it prints its id instead.
 fn hold(
     realm: &str,
     folder: Option<PathBuf>,

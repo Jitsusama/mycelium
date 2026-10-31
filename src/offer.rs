@@ -39,9 +39,12 @@ pub struct Offer {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Shape {
-    /// The system it evaluates and builds for, such as `x86_64-linux`.
+    /// Its kind of system, as Rust names it: `linux` or `macos`.
     #[serde(default)]
     pub system: Option<String>,
+    /// Its architecture, as Rust names it: `x86_64` or `aarch64`.
+    #[serde(default)]
+    pub arch: Option<String>,
     /// How many processors it runs at once.
     #[serde(default)]
     pub cores: Option<u32>,
@@ -65,6 +68,22 @@ pub struct Costs {
     pub hourly: String,
     /// The currency, as its three-letter code, such as `USD`.
     pub currency: String,
+}
+
+impl Costs {
+    /// What orders costs, cheapest first, without rounding: by currency,
+    /// since no rate between two is known here, then by amount.
+    #[must_use]
+    pub fn order(&self) -> (String, usize, String, String) {
+        let (whole, part) = self.hourly.split_once('.').unwrap_or((&self.hourly, ""));
+        let whole = whole.trim_start_matches('0');
+        (
+            self.currency.clone(),
+            whole.len(),
+            whole.to_owned(),
+            part.trim_end_matches('0').to_owned(),
+        )
+    }
 }
 
 /// One line of what a program says it offers, before it is known to be
@@ -168,7 +187,7 @@ mod tests {
 
     use super::*;
 
-    const SCRATCH: &str = r#"{"shape": "scratch", "facts": {"system": "x86_64-linux", "cores": 4, "memory": 8589934592}, "costs": {"hourly": "0.12", "currency": "USD"}, "lasts": 7200}"#;
+    const SCRATCH: &str = r#"{"shape": "scratch", "facts": {"system": "linux", "arch": "x86_64", "cores": 4, "memory": 8589934592}, "costs": {"hourly": "0.12", "currency": "USD"}, "lasts": 7200}"#;
 
     /// A provider program at `dir`/provider running `body`, put in place by
     /// a child process, since another test's fork holding the file open
@@ -196,7 +215,8 @@ mod tests {
                 provider: "aquifer-link".to_owned(),
                 shape: "scratch".to_owned(),
                 facts: Shape {
-                    system: Some("x86_64-linux".to_owned()),
+                    system: Some("linux".to_owned()),
+                    arch: Some("x86_64".to_owned()),
                     cores: Some(4),
                     memory: Some(8_589_934_592),
                     ..Shape::default()
