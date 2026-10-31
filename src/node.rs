@@ -12,10 +12,11 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::awake::{self, Awake};
+use crate::daemon;
 use crate::facts;
 use crate::group::{Pattern, Routes};
 use crate::handover::Told;
@@ -186,6 +187,7 @@ where
         starter: starter.map(Arc::new),
         asks: Asks::default(),
         inner: Arc::default(),
+        said: Arc::default(),
     };
     let mut changes = store.changes()?;
     let (_watching_held, mut held) = match hold::watch(&shared.held) {
@@ -244,7 +246,11 @@ where
                     // A held session going idle, or busy, may let it sleep.
                     shared.keep_awake(&mut awake);
                 }
-                Some(Change::Rescan) => shared.read_store(),
+                Some(Change::Rescan) => {
+                    shared.read_store();
+                    shared.said.machines.send_modify(|said| *said += 1);
+                }
+                Some(Change::Machine(_)) => shared.said.machines.send_modify(|said| *said += 1),
                 None => break Err(io::Error::other("the store stopped telling its changes")),
             },
         }
@@ -373,6 +379,24 @@ struct Shared<S> {
     /// The links this node asks other machines' starts through.
     asks: Asks,
     inner: Arc<Mutex<Inner>>,
+    /// Each time a kind the daemon interface serves may have changed.
+    said: Arc<Said>,
+}
+
+/// What changes each time the node's sessions or the realm's machines may
+/// have, for the daemon interface's watches.
+struct Said {
+    sessions: watch::Sender<u64>,
+    machines: watch::Sender<u64>,
+}
+
+impl Default for Said {
+    fn default() -> Self {
+        Self {
+            sessions: watch::Sender::new(0),
+            machines: watch::Sender::new(0),
+        }
+    }
 }
 
 impl<S: Clone> Clone for Shared<S> {
@@ -386,8 +410,116 @@ impl<S: Clone> Clone for Shared<S> {
             starter: self.starter.clone(),
             asks: self.asks.clone(),
             inner: self.inner.clone(),
+            said: self.said.clone(),
         }
     }
+}
+
+/// The node in the daemon interface: the realm's sessions, wherever they
+/// run, and its other machines, as `Sessions` and `Machines` answer.
+impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
+    fn kinds(&self) -> std::collections::BTreeMap<&'static str, Vec<&'static str>> {
+        std::collections::BTreeMap::from([
+            (
+                "session",
+                // A session's busy, worksOn and paused are its presence's.
+                vec!["state", "step", "title", "wants", "working_on", "presence"],
+            ),
+            (
+                "machine",
+                vec![
+                    "state",
+                    "measured_at",
+                    "power",
+                    "room",
+                    "reached",
+                    "disk_band",
+                ],
+            ),
+        ])
+    }
+
+    fn records(&self, kind: &str) -> Option<std::collections::BTreeMap<String, serde_json::Value>> {
+        match kind {
+            "session" => Some(
+                self.lock()
+                    .state
+                    .sessions()
+                    .into_iter()
+                    .map(|session| {
+                        let heard = millis_at(&session.at);
+                        let id = session.id.clone();
+                        let mut fields = json_of(&session);
+                        if let Some(fields) = fields.as_object_mut() {
+                            let here = session.machine == self.machine;
+                            fields.insert("here".to_owned(), here.into());
+                        }
+                        let record = daemon::record(kind, &id, heard, fields);
+                        (daemon::key(kind, &id), record)
+                    })
+                    .collect(),
+            ),
+            "machine" => Some(
+                self.machines()
+                    .into_iter()
+                    .filter(|machine| machine.name != self.machine)
+                    .map(|machine| {
+                        let heard = millis_at(&machine.measured_at);
+                        let name = machine.name.clone();
+                        let record = daemon::record(kind, &name, heard, json_of(&machine));
+                        (daemon::key(kind, &name), record)
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    fn told(&self, kind: &str) -> Option<watch::Receiver<u64>> {
+        match kind {
+            "session" => Some(self.said.sessions.subscribe()),
+            "machine" => Some(self.said.machines.subscribe()),
+            _ => None,
+        }
+    }
+
+    fn health(&self) -> serde_json::Map<String, serde_json::Value> {
+        let sources: Vec<serde_json::Value> = self
+            .machines()
+            .into_iter()
+            .filter(|machine| machine.name != self.machine)
+            .map(|machine| match machine.state {
+                facts::Readiness::Ready => {
+                    serde_json::json!({"name": machine.name, "state": "answering"})
+                }
+                facts::Readiness::Unreachable => serde_json::json!({
+                    "name": machine.name,
+                    "state": "refused",
+                    "why": format!("no link reaches it; it last said itself at {}", machine.measured_at),
+                }),
+            })
+            .collect();
+        serde_json::Map::from_iter([
+            ("version".to_owned(), daemon::VERSION.into()),
+            ("domain".to_owned(), "node".into()),
+            ("state".to_owned(), "answering".into()),
+            ("sources".to_owned(), sources.into()),
+        ])
+    }
+}
+
+/// `value` as JSON, or null for what can't be, which a node's own records
+/// never are.
+fn json_of(value: &impl serde::Serialize) -> serde_json::Value {
+    serde_json::to_value(value).unwrap_or_default()
+}
+
+/// An RFC 3339 time in milliseconds since the epoch, or now where it
+/// doesn't read as one.
+fn millis_at(time: &str) -> i64 {
+    time.parse::<jiff::Timestamp>()
+        .unwrap_or_else(|_| jiff::Timestamp::now())
+        .as_millisecond()
 }
 
 #[derive(Default)]
@@ -457,7 +589,11 @@ impl<S: Store> Shared<S> {
             })
             .collect();
         let mut inner = self.lock();
-        for event in inner.state.set_sessions(sessions) {
+        let events = inner.state.set_sessions(sessions);
+        if !events.is_empty() {
+            self.said.sessions.send_modify(|said| *said += 1);
+        }
+        for event in events {
             inner.send_all(&event);
         }
     }
@@ -775,6 +911,18 @@ async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
     let (reading, mut writing) = stream.into_split();
     let mut lines = BufReader::new(reading).lines();
     while let Ok(Some(line)) = lines.next_line().await {
+        // A client opening with the daemon interface's hello speaks it
+        // from then on; any other speaks the node's own protocol.
+        if let Ok(
+            hello @ daemon::Ask {
+                what: daemon::What::Hello,
+                ..
+            },
+        ) = daemon::read(&line)
+        {
+            daemon::speak(Arc::new(shared), hello, lines, writing).await;
+            return;
+        }
         let request = serde_json::from_str::<Request>(&line)
             .map_err(|error| format!("not a request: {error}"));
         if let Ok(Request::Present) = request {
@@ -857,7 +1005,7 @@ async fn write(
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::*;
     use crate::client::Client;
@@ -873,20 +1021,28 @@ mod tests {
     const PATIENCE: Duration = Duration::from_secs(5);
 
     /// A holder in `dir` that says it holds at once, writing down in the
-    /// file it answers beside it what it was given to hold.
+    /// file it answers beside it what it was given to hold. A child process
+    /// puts it in place, since another test's fork holding the file open
+    /// for writing would keep it from running.
     fn stand_in_holder(dir: &Path) -> (PathBuf, PathBuf) {
         let given = dir.join("given");
+        let text = dir.join("holder.sh");
         let holder = dir.join("holder");
         fs::write(
-            &holder,
+            &text,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho held\n",
                 given.display()
             ),
         )
         .expect("the stand-in holder is written");
-        fs::set_permissions(&holder, fs::Permissions::from_mode(0o755))
-            .expect("the stand-in holder runs");
+        let put = std::process::Command::new("install")
+            .args(["-m", "755"])
+            .arg(&text)
+            .arg(&holder)
+            .status()
+            .expect("install runs");
+        assert!(put.success(), "the stand-in holder is put in place");
         (holder, given)
     }
 
@@ -1239,6 +1395,160 @@ mod tests {
             names,
             ["optimus", "staying"],
             "a machine past the time it said it leaves is no longer listed"
+        );
+    }
+
+    /// A client of the node at a socket, speaking the daemon interface.
+    struct Speaking {
+        lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        writing: tokio::net::unix::OwnedWriteHalf,
+    }
+
+    impl Speaking {
+        async fn to(socket: &Path) -> Self {
+            let (reading, writing) = UnixStream::connect(socket)
+                .await
+                .expect("the client connects")
+                .into_split();
+            let lines = BufReader::new(reading).lines();
+            Self { lines, writing }
+        }
+
+        async fn ask(&mut self, ask: Value) {
+            let mut line = ask.to_string();
+            line.push('\n');
+            self.writing
+                .write_all(line.as_bytes())
+                .await
+                .expect("the node hears");
+        }
+
+        async fn next(&mut self) -> Value {
+            let line = tokio::time::timeout(PATIENCE, self.lines.next_line())
+                .await
+                .expect("the node answers in time")
+                .expect("the node is read")
+                .expect("the node answers");
+            serde_json::from_str(&line).expect("an answer is JSON")
+        }
+    }
+
+    /// What equilibrius says of itself, as measured at `at`.
+    fn equilibrius_at(at: &str) -> facts::Machine {
+        let nowhere = facts::Sources {
+            home: "/".into(),
+            queue: None,
+            disk_guard: None,
+            declared: "/nowhere".into(),
+            reached: "/nowhere".into(),
+        };
+        facts::Machine {
+            measured_at: at.to_owned(),
+            ..facts::measure("equilibrius", &nowhere)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_opening_with_hello_is_answered_in_the_daemon_interface() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        store
+            .put_machine(&equilibrius_at("2026-10-31T04:00:00Z"))
+            .expect("what it said is kept");
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert_eq!(
+            (&hello["id"], &hello["version"], &hello["domain"]),
+            (&json!(1), &json!(1), &json!("node")),
+            "hello says which version it speaks: {hello}"
+        );
+        assert!(
+            hello["kinds"]["session"]["live"].is_array() && hello["kinds"]["machine"].is_object(),
+            "hello names the kinds it holds: {hello}"
+        );
+
+        client
+            .ask(json!({"id": 2, "ask": "list", "kind": "weather"}))
+            .await;
+        let refused = client.next().await;
+        assert_eq!(
+            (&refused["id"], &refused["error"]["code"]),
+            (&json!(2), &json!("unknown-kind")),
+            "a kind it doesn't hold is refused: {refused}"
+        );
+
+        client
+            .ask(json!({"id": 3, "ask": "watch", "kind": "machine"}))
+            .await;
+        let whole = client.next().await;
+        let keys: Vec<&Value> = whole["records"]
+            .as_array()
+            .expect("the records come whole first")
+            .iter()
+            .map(|record| &record["key"])
+            .collect();
+        assert_eq!(
+            keys,
+            [&json!("machine:equilibrius")],
+            "the other machines, and not this one, whose readings are its own daemon's"
+        );
+        store
+            .put_machine(&equilibrius_at("2026-10-31T04:01:00Z"))
+            .expect("what it said is kept");
+        let changed = client.next().await;
+        assert_eq!(
+            (
+                &changed["id"],
+                &changed["changed"][0]["key"],
+                &changed["changed"][0]["measured_at"]
+            ),
+            (
+                &json!(3),
+                &json!("machine:equilibrius"),
+                &json!("2026-10-31T04:01:00Z")
+            ),
+            "a machine saying itself again is sent as what changed: {changed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_watch_of_sessions_is_sent_each_session_that_arrives() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+
+        client
+            .ask(json!({"id": 4, "ask": "watch", "kind": "session"}))
+            .await;
+        assert_eq!(
+            client.next().await,
+            json!({"id": 4, "records": []}),
+            "no session runs yet"
+        );
+        let presence = json!({
+            "session": "there", "addresses": ["THERE1"], "groups": [],
+            "busy": true, "state": "busy", "at": jiff::Timestamp::now().to_string(),
+        });
+        store
+            .put_presence("there", "equilibrius", &presence)
+            .expect("the presence is kept");
+        let arrived = client.next().await;
+        assert_eq!(
+            (
+                &arrived["id"],
+                &arrived["changed"][0]["key"],
+                &arrived["changed"][0]["here"]
+            ),
+            (&json!(4), &json!("session:there"), &json!(false)),
+            "a session arriving is sent, saying it runs elsewhere: {arrived}"
         );
     }
 
