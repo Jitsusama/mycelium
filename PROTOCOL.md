@@ -189,7 +189,10 @@ Three seams shape a link:
   and run as `PROGRAM release PLACE` once that machine has handed over,
   it lets the machine go, as its provider destroys a machine it lent;
   a release that fails leaves the machine dialled again, so the
-  program keeps its own pace. Its error output is passed on, and a line
+  program keeps its own pace. An end over SSH has 30 seconds to say
+  hello, but a program's is waited on as long as the program runs,
+  since it may first make the machine and put the far end there, and
+  it ends when it can't. Its error output is passed on, and a line
   saying the other end "turned this machine away" is taken as a refused
   SSH key is. Either way, the far `mycelium link` looks each minute at
   the `mycelium` its search path names, and once that is another build

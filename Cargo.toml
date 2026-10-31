@@ -52,6 +52,8 @@ tokio = { version = "1", features = [
 
 [dev-dependencies]
 tempfile = "3"
+# Paused time, so a test of a long wait waits on nothing.
+tokio = { version = "1", features = ["test-util"] }
 
 # How fast the node is, each a program printing what it measured; see
 # benches/README.md.
