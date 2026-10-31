@@ -443,12 +443,12 @@ out of reach; and how long it `lasts`, as an ISO 8601 duration such as
 declares, and while they last, `on-battery`, `memory-pressure` (past
 its queue's memory limit) and `disk-pressure` (its `disk_band` past
 `healthy`), each `prefer_not`, and `low-battery` (on its battery below
-20%, when it is let sleep), which is `never`. A machine qualifies when it is in reach,
-leaves after the work ends (now, for work that doesn't say how long it
-lasts), is what each need asks (a fact it never said meets none), and carries
-no `never` taint the work doesn't tolerate. Of those, one with no
-`prefer_not` taint goes first, then the most preferences met, then the
-most memory free, then by name. The answer is
+20%, when it is let sleep), which is `never`. A machine qualifies when
+it is in reach, leaves after the work ends (now, for work that doesn't
+say how long it lasts), is what each need asks (a fact it never said
+meets none), and carries no `never` taint the work doesn't tolerate. Of
+those, one with no `prefer_not` taint goes first, then the most
+preferences met, then the most memory free, then by name. The answer is
 `{"placed": {"machine", "passed"}}`, `{"pending": {"misses"}}` when
 only a machine out of reach would do and the work may wait, or
 `{"refused": {"misses"}}`; each miss names a `machine` and `because`:
