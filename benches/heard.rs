@@ -29,6 +29,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
+use mycelium::awake::Awake;
 use mycelium::client::Client;
 use mycelium::group::{Group, Pattern};
 use mycelium::link::discovery::Listed;
@@ -169,6 +170,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 starter: None,
                 refusals: Refusals::default(),
                 steers,
+                awake: Awake::by(None),
             },
             bound,
             until_stopped,

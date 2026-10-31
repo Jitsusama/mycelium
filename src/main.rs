@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use mycelium::awake::Awake;
 use mycelium::client::Client;
 use mycelium::group::{Group, Pattern};
 use mycelium::hold::start::Starter;
@@ -369,6 +370,7 @@ fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Way>) -> io::Re
             // every session it started when the unit stops.
             scoped: cfg!(target_os = "linux") && std::env::var_os("INVOCATION_ID").is_some(),
         }),
+        awake: Awake::here(),
     };
     runtime()?.block_on(async {
         let bound = node::bind(socket)?;

@@ -15,6 +15,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use crate::awake::{self, Awake};
 use crate::facts;
 use crate::group::{Pattern, Routes};
 use crate::handover::Told;
@@ -125,6 +126,8 @@ pub struct Given {
     pub refusals: Refusals,
     /// This machine's sessions' steer inboxes.
     pub steers: PathBuf,
+    /// How it keeps its machine awake while it holds sessions.
+    pub awake: Awake,
 }
 
 /// Runs a node serving `socket` until `stop` resolves, then ends its links
@@ -149,6 +152,7 @@ where
         starter,
         refusals,
         steers,
+        mut awake,
     } = given;
     let shared = Shared {
         held: place::held(&hello.realm),
@@ -198,8 +202,16 @@ where
                 let carries = (sharing.clone(), starting, refusals.clone());
                 links.spawn(keep_linked(dial, store.clone(), membership.clone(), carries));
             }
-            Some(()) = held.recv() => shared.read_sessions(),
-            _ = leaving.tick() => shared.hand_over(),
+            Some(()) = held.recv() => {
+                shared.read_sessions();
+                shared.keep_awake(&mut awake);
+            }
+            // A holder that ended without letting its session go says
+            // nothing, so what is held is looked at each minute too.
+            _ = leaving.tick() => {
+                shared.hand_over();
+                shared.keep_awake(&mut awake);
+            }
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => shared.read_message(&id),
                 Some(Change::Presence) => shared.read_sessions(),
@@ -461,6 +473,14 @@ impl<S: Store> Shared<S> {
     /// files read, or one sysctl on a Mac, quick enough to answer in place.
     fn measure(&self) -> facts::Machine {
         facts::measure_in(&self.machine, &self.realm, &facts::Sources::here())
+    }
+
+    /// Keeps this machine awake while it holds sessions and has the
+    /// charge, and lets it sleep once it doesn't.
+    fn keep_awake(&self, awake: &mut Awake) {
+        let holds = !hold::held(&self.held).is_empty();
+        let power = holds.then(|| self.measure().power).flatten();
+        awake.keep(awake::wanted(holds, power.as_ref()));
     }
 
     /// Tells each session running here that hasn't been told yet, once this
@@ -921,6 +941,7 @@ mod tests {
                 starter,
                 refusals: Refusals::default(),
                 steers,
+                awake: Awake::by(None),
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -1437,6 +1458,7 @@ mod tests {
                     starter: None,
                     refusals: Refusals::default(),
                     steers,
+                    awake: Awake::by(None),
                 };
                 run(
                     store,
@@ -1535,6 +1557,7 @@ mod tests {
                 }),
                 refusals: Refusals::default(),
                 steers,
+                awake: Awake::by(None),
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.

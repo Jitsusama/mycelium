@@ -20,7 +20,9 @@ The harness mesh's messages and presence, carried between machines:
   and the same folders of its scratch, those named with `--scratch`.
 - A program started with `mycelium hold` outlives the window it started
   in, and `mycelium attach` takes it up again from any terminal on the
-  machine.
+  machine. While a node's machine holds any, the node keeps it from
+  sleeping when idle, and on Linux with its lid shut too, until its
+  battery drops below 20%.
 - Links run over SSH, so a machine needs nothing but the `mycelium`
   command and an SSH login.
 - Each node serves a local socket in niri's shape, which pi, Quickshell
