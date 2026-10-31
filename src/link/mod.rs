@@ -78,9 +78,6 @@ use steers::{Following, Replies};
 /// so a link never hands back a message the other end has already let go.
 const REACH: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// How long the other end has to say hello before the link gives up.
-const HELLO_WITHIN: Duration = Duration::from_secs(30);
-
 /// How often this end says again that the sessions it carried here still
 /// stand, so a copy nothing keeps saying so can be judged gone, and says
 /// again what its machine is, whose room changes by the minute.
@@ -201,12 +198,20 @@ pub async fn run(
         mut writing,
         keep: _keep,
         releases,
+        hello_within,
         ..
     } = connection;
     let mut changes = store.changes()?;
     let (mut frames, _reader) = read_frames(reading);
 
-    let other = greet(&mut writing, &mut frames, membership, releases).await?;
+    let other = greet(
+        &mut writing,
+        &mut frames,
+        membership,
+        releases,
+        hello_within,
+    )
+    .await?;
     let Some(claim) = store.claim(&other.machine)? else {
         return Err(refusal(format!(
             "a link to {} already carries it here",
@@ -217,13 +222,7 @@ pub async fn run(
     store.mark_linked(&other.machine, now())?;
     let exchange = shares
         .map(|places| Exchange::new(places, membership.hello().machine, other.machine.clone()));
-    let (mut asked, _reaching) = match starting.as_ref().and_then(|s| s.asking.clone()) {
-        Some((asks, there)) => {
-            let (asked, reaching) = asks.reach(&other.machine, there);
-            (Some(asked), Some(reaching))
-        }
-        None => (None, None),
-    };
+    let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
     let (answering, mut answered) = mpsc::unbounded_channel();
     let inboxes = starting.as_ref().map(|starting| starting.steers.clone());
     let mut end = End {
@@ -257,12 +256,7 @@ pub async fn run(
         _claim: claim,
     };
 
-    let messages = end.store.message_ids(end.reach);
-    let living = Some(end.living().into_keys().collect());
-    send(&mut writing, &Frame::Have { messages, living }).await?;
-    end.send_machine(&mut writing).await?;
-    end.send_presence(&mut writing).await?;
-    end.send_follow(&mut writing).await?;
+    end.open(&mut writing).await?;
 
     // The start has just said all of it, so the first keep is a minute on.
     let mut keeping =
@@ -346,34 +340,62 @@ fn read_frames(
     (frames, Reader(task))
 }
 
+/// The starts this machine's node asks of `machine`, taken for this link
+/// until what it answers is dropped, when the link carries the node's
+/// starts; none otherwise.
+fn asked_of(
+    starting: Option<&Starting>,
+    machine: &str,
+) -> (
+    Option<mpsc::UnboundedReceiver<Ask>>,
+    Option<starts::Reaching>,
+) {
+    match starting.and_then(|starting| starting.asking.clone()) {
+        Some((asks, there)) => {
+            let (asked, reaching) = asks.reach(machine, there);
+            (Some(asked), Some(reaching))
+        }
+        None => (None, None),
+    }
+}
+
 /// Says this end's hello, saying whether its way in `releases` the other
-/// end's machine, and hears and admits the other end's.
+/// end's machine, and hears and admits the other end's, waiting on it no
+/// longer than `within`, if that says how long.
 async fn greet(
     writing: &mut (impl AsyncWrite + Unpin),
     frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
     membership: &impl Membership,
     releases: bool,
+    within: Option<Duration>,
 ) -> io::Result<Hello> {
     let ours = Hello {
         releases,
         ..membership.hello()
     };
     send(writing, &Frame::Hello(ours)).await?;
-    let other = hello(frames).await?;
+    let other = hello(frames, within).await?;
     membership.admit(&other).map_err(refusal)?;
     Ok(other)
 }
 
-/// The other end's hello, which must come first and soon.
-async fn hello(frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>) -> io::Result<Hello> {
-    let first = tokio::time::timeout(HELLO_WITHIN, frames.recv())
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!("the other end said nothing within {HELLO_WITHIN:?}"),
-            )
-        })?;
+/// The other end's hello, which must come first, and within `within` if
+/// it says how long.
+async fn hello(
+    frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
+    within: Option<Duration>,
+) -> io::Result<Hello> {
+    let first = match within {
+        Some(within) => tokio::time::timeout(within, frames.recv())
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("the other end said nothing within {within:?}"),
+                )
+            })?,
+        None => frames.recv().await,
+    };
     match first {
         Some(Ok(Frame::Hello(other))) => Ok(other),
         Some(Ok(_)) => Err(refusal("the other end didn't say hello first".to_owned())),
@@ -446,6 +468,17 @@ struct Handover {
 }
 
 impl<S: Store> End<S> {
+    /// Says what opens a link, once the hellos are said: the Have, then
+    /// this end's machine, its sessions and the talks it follows.
+    async fn open(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        let messages = self.store.message_ids(self.reach);
+        let living = Some(self.living().into_keys().collect());
+        send(writing, &Frame::Have { messages, living }).await?;
+        self.send_machine(writing).await?;
+        self.send_presence(writing).await?;
+        self.send_follow(writing).await
+    }
+
     async fn take(
         &mut self,
         frame: Frame,
@@ -949,7 +982,41 @@ mod tests {
             keep: Box::new(()),
             refused: None,
             releases: false,
+            hello_within: Some(dial::HELLO_WITHIN),
         }
+    }
+
+    /// The other end's hello, said `after` this long, as a provider's
+    /// program says it once it has made the machine; the end's sender is
+    /// kept until then, so the wait is never ended by its closing.
+    fn said_after(after: Duration) -> mpsc::UnboundedReceiver<io::Result<Frame>> {
+        let (sender, frames) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            let _ = sender.send(Ok(Frame::Hello(realm("equilibrius").hello())));
+            // Held, so the hello is read before the end seems to close.
+            tokio::time::sleep(after).await;
+        });
+        frames
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hello_is_waited_on_as_long_as_the_way_in_says() {
+        let setting_up = Duration::from_secs(10 * 60);
+        let heard = hello(&mut said_after(setting_up), None).await;
+        assert_eq!(
+            heard.expect("heard").machine,
+            "equilibrius",
+            "a way in that ends itself when it can't is waited on however long"
+        );
+        let given_up = hello(&mut said_after(setting_up), Some(dial::HELLO_WITHIN)).await;
+        assert_eq!(
+            given_up
+                .map(|hello| hello.machine)
+                .map_err(|error| error.kind()),
+            Err(io::ErrorKind::TimedOut),
+            "and one that answers at once only for its while"
+        );
     }
 
     /// Runs `machine`'s end of a link over `pipe`.

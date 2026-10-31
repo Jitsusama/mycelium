@@ -214,6 +214,7 @@ async fn end(store: Folders, machine: &str, stream: tokio::io::DuplexStream) -> 
         keep: Box::new(()),
         refused: None,
         releases: false,
+        hello_within: Some(link::dial::HELLO_WITHIN),
     };
     link::run(store, &realm, connection, None, None)
         .await

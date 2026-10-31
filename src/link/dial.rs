@@ -5,6 +5,7 @@
 
 use std::io;
 use std::process::Stdio;
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::task::JoinHandle;
@@ -25,7 +26,16 @@ pub struct Connection {
     /// Whether the way in can release the machine it reaches once that
     /// machine hands over ([`Dial::release`]).
     pub releases: bool,
+    /// How long the other end has to say hello before the link gives up:
+    /// [`HELLO_WITHIN`] for an end that answers at once, or none for a way
+    /// in that ends itself when it can't reach the other end, however long
+    /// it takes to make it, as a provider's program does.
+    pub hello_within: Option<Duration>,
 }
+
+/// How long an end that answers at once, as `mycelium link` over SSH
+/// does, has to say hello.
+pub const HELLO_WITHIN: Duration = Duration::from_secs(30);
 
 /// A way to reach another machine's end of a link.
 pub trait Dial: Send + Sync + 'static {
@@ -143,9 +153,12 @@ impl Dial for Program {
     fn dial(&self, realm: &str) -> impl Future<Output = io::Result<Connection>> + Send {
         let mut program = tokio::process::Command::new(&self.program);
         program.args(["link", "--realm", realm, self.place.as_str()]);
-        // As with SSH, the link's first line is the wait.
+        // As with SSH, the link's first line is the wait, but as long as
+        // the program runs: it may first make the machine and put the far
+        // end there, which takes minutes, and it ends when it can't.
         std::future::ready(carried(program).map(|connection| Connection {
             releases: true,
+            hello_within: None,
             ..connection
         }))
     }
@@ -238,6 +251,7 @@ fn carried(mut command: tokio::process::Command) -> io::Result<Connection> {
         keep: Box::new(child),
         refused,
         releases: false,
+        hello_within: Some(HELLO_WITHIN),
     })
 }
 
@@ -326,6 +340,10 @@ mod tests {
         });
 
         let mut connection = way.dial("work").await.expect("the program starts");
+        assert_eq!(
+            connection.hello_within, None,
+            "the link waits on the program as long as it runs, setting the machine up"
+        );
         connection
             .writing
             .write_all(b"hello\n")
