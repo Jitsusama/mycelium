@@ -346,6 +346,7 @@ impl Store for Folders {
         let messages = self.messages();
         let presence = self.presence();
         let leases = self.leases();
+        let claims = Arc::clone(&self.claims);
         let ends = Arc::new(Ends::new(sender.clone())?);
         let watching = {
             let folders = self.clone();
@@ -365,8 +366,13 @@ impl Store for Folders {
                     Ok(event) => event
                         .paths
                         .iter()
-                        .filter(|path| is_record(path))
                         .filter_map(|path| {
+                            if path.parent() == Some(claims.as_path()) {
+                                return said(path).map(Change::Machine);
+                            }
+                            if !is_record(path) {
+                                return None;
+                            }
                             if path.parent() == Some(messages.as_path()) {
                                 Some(Change::Message(path.file_stem()?.to_str()?.to_owned()))
                             } else if path.parent() == Some(presence.as_path())
@@ -401,6 +407,9 @@ impl Store for Folders {
             .map_err(io::Error::other)?;
         watcher
             .watch(&self.leases(), RecursiveMode::NonRecursive)
+            .map_err(io::Error::other)?;
+        watcher
+            .watch(&self.claims, RecursiveMode::NonRecursive)
             .map_err(io::Error::other)?;
         Ok(Changes {
             changes,
@@ -531,6 +540,13 @@ fn records(dir: &Path) -> impl Iterator<Item = PathBuf> {
 }
 
 /// Whether `path` names a record, not a read marker or a staged write.
+/// The machine whose facts `path` holds, if it holds a machine's facts.
+fn said(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let machine = name.strip_suffix(SAID)?;
+    (!machine.is_empty() && !machine.starts_with('.')).then(|| machine.to_owned())
+}
+
 fn is_record(path: &Path) -> bool {
     let name = path
         .file_name()
@@ -977,6 +993,32 @@ mod tests {
         })
         .await;
         assert!(told.is_ok(), "the message was told within {PATIENCE:?}");
+    }
+
+    #[tokio::test]
+    async fn a_machine_saying_itself_again_is_told_by_its_name() {
+        let (dir, store) = store();
+        let mut changes = store.changes().expect("the store tells its changes");
+        let claims = dir.path().join("claims");
+        store
+            .mark_linked("equilibrius", 1_793_046_604_647)
+            .expect("the time is kept");
+        fs::write(claims.join("equilibrius.machine"), b"{}").expect("a link writes");
+        let told = tokio::time::timeout(PATIENCE, async {
+            loop {
+                match changes.changes.recv().await {
+                    Some(Change::Machine(name)) => return name,
+                    Some(_) => {}
+                    None => panic!("the store stopped telling"),
+                }
+            }
+        })
+        .await
+        .expect("a machine was told");
+        assert_eq!(
+            told, "equilibrius",
+            "by its name, and not for when it was linked"
+        );
     }
 
     #[tokio::test]

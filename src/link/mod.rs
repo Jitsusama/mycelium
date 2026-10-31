@@ -285,6 +285,8 @@ pub async fn run(
                 Some(Change::Message(id)) => end.send_messages(vec![id], &mut writing).await,
                 Some(Change::Presence) => end.send_presence(&mut writing).await,
                 Some(Change::Rescan) => end.catch_up(&mut writing).await,
+                // A machine's facts cross only from that machine itself.
+                Some(Change::Machine(_)) => Ok(()),
                 None => break Ok(Ending::Left),
             },
         };

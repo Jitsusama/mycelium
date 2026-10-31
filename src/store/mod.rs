@@ -50,6 +50,8 @@ pub enum Change {
     Message(String),
     /// Some presence changed, or the leases a session holds.
     Presence,
+    /// What a linked machine says of itself was said again, by its name.
+    Machine(String),
     /// Changes may have been missed, so everything should be read again.
     Rescan,
 }

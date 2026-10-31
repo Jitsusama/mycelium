@@ -289,9 +289,9 @@ impl Store for Memory {
     }
 
     fn put_machine(&self, machine: &Machine) -> io::Result<()> {
-        self.held()
-            .machines
-            .insert(machine.name.clone(), machine.clone());
+        let mut held = self.held();
+        held.machines.insert(machine.name.clone(), machine.clone());
+        held.tell(&Change::Machine(machine.name.clone()));
         Ok(())
     }
 
