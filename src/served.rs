@@ -149,6 +149,7 @@ fn read(kind: &str, source: &Source) -> Read {
 fn read_folder(kind: &str, source: &Source, folder: &Path) -> Read {
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Read::default(),
         Err(error) => {
             return Read {
                 records: BTreeMap::new(),
@@ -190,7 +191,12 @@ fn is_record_file(path: &Path) -> bool {
 /// when the file was last written.
 fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String, Value>, String> {
     let named = |why: String| format!("{}: {why}", file.display());
-    let bytes = fs::read(file).map_err(|error| named(error.to_string()))?;
+    let bytes = match fs::read(file) {
+        Ok(bytes) => bytes,
+        // Not written yet, or removed: it holds nothing, which is no trouble.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => return Err(named(error.to_string())),
+    };
     let heard = fs::metadata(file)
         .and_then(|metadata| metadata.modified())
         .ok()
@@ -372,12 +378,14 @@ async fn keep(
         let (watcher, mut changed) = match watching(&source) {
             Ok(watching) => watching,
             Err(error) => {
+                // A folder not made yet holds nothing, which is no trouble.
+                let refused = source
+                    .watched()
+                    .exists()
+                    .then(|| format!("{} can't be watched: {error}", source.watched().display()));
                 keep(Read {
                     records: BTreeMap::new(),
-                    refused: Some(format!(
-                        "{} can't be watched: {error}",
-                        source.watched().display()
-                    )),
+                    refused,
                 });
                 tokio::time::sleep(AGAIN_AFTER).await;
                 continue;
@@ -649,11 +657,46 @@ mod tests {
             "its records go",
         )
         .await;
-        assert!(
-            served.health()[0]["why"]
-                .as_str()
-                .is_some_and(|why| why.contains("quests.json")),
-            "and it says why: {:?}",
+        assert_eq!(
+            served.health()[0]["state"],
+            "answering",
+            "a file gone holds nothing, which is no trouble: {:?}",
+            served.health()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_source_not_made_yet_holds_nothing_and_is_no_trouble() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let file = dir.path().join("quests.json");
+        assert_eq!(
+            read("quest", &quests(&file)),
+            Read::default(),
+            "a file not written yet"
+        );
+        let waiting = Source {
+            file: None,
+            folder: Some(dir.path().join("mission/waiting")),
+            records: "items".to_owned(),
+            key: Some("id".to_owned()),
+            by: Some("quest".to_owned()),
+        };
+        assert_eq!(
+            read("waiting", &waiting),
+            Read::default(),
+            "a folder not made yet"
+        );
+
+        let served = Served::start(BTreeMap::from([("waiting".to_owned(), waiting)]));
+        let mut told = served.told("waiting").expect("waiting is served");
+        tokio::time::timeout(PATIENCE, told.changed())
+            .await
+            .expect("its first look is kept")
+            .expect("still served");
+        assert_eq!(
+            served.health()[0]["state"],
+            "answering",
+            "a folder it can't watch, as it isn't there, is no trouble: {:?}",
             served.health()
         );
     }

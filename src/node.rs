@@ -1621,8 +1621,8 @@ mod tests {
         assert!(
             health["sources"].as_array().is_some_and(|sources| sources
                 .iter()
-                .any(|source| { source["name"] == "quest" && source["state"] == "refused" })),
-            "a file not there yet is a source refused: {health}"
+                .any(|source| { source["name"] == "quest" && source["state"] == "answering" })),
+            "a file not written yet holds nothing, which is no trouble: {health}"
         );
 
         client
