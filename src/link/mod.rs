@@ -875,7 +875,10 @@ mod tests {
     use crate::store::memory::Memory;
 
     /// How long a test waits for a link to carry something before failing.
-    const PATIENCE: Duration = Duration::from_secs(5);
+    /// Each waits on what it waits for, so this only bounds how long a
+    /// failure takes to say so; a narrow pipe's backlog, carried a few
+    /// bytes a write in a debug build, took past 5 s on a loaded machine.
+    const PATIENCE: Duration = Duration::from_secs(30);
 
     fn realm(machine: &str) -> Realm {
         Realm {
