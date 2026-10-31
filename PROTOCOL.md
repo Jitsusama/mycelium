@@ -157,8 +157,9 @@ same code, each line a JSON value:
     nothing written.
 13. `"HandedOver"`: the sending end's machine has handed over, sent at
     each minute's Machine to an end that `releases`, once that machine
-    declares `leaves_at`, no session runs there, and one ran there since
-    the link came or its handover has begun. The sender first says all
+    declares `leaves_at`, no work runs there, and some ran there since
+    the link came or its handover has begun. Work is a session living
+    there or a program held there, such as a build. The sender first says all
     it holds of the quests it shares. Frames cross in order, so if the
     other end then waits on no file from it, it holds all of them: its
     link ends, and its node releases the machine and dials it no more.

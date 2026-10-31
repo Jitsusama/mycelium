@@ -424,7 +424,8 @@ struct Handover {
     releases: bool,
     /// When this end's machine leaves, as it last declared.
     leaves: Option<jiff::Timestamp>,
-    /// Whether a session has run on this end's machine since the link came.
+    /// Whether work, a session or a held program, has run on this end's
+    /// machine since the link came.
     ran: bool,
     /// Whether the other end's machine has handed over, with this end
     /// holding all it said.
@@ -668,7 +669,9 @@ impl<S: Store> End<S> {
         if !self.handover.releases {
             return Ok(());
         }
-        let running = self.living().len();
+        let held_as: Vec<Option<String>> = self.living().into_values().map(|(_, id)| id).collect();
+        let held = self.held.as_deref().map(hold::held).unwrap_or_default();
+        let running = handover::running(&held_as, &held);
         self.handover.ran |= running > 0;
         let Handover { leaves, ran, .. } = self.handover;
         if !handover::handed_over(leaves, jiff::Timestamp::now(), ran, running) {

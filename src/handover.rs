@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use jiff::{SignedDuration, Timestamp};
 use serde_json::json;
 
+use crate::hold::Held;
 use crate::record::{Session, State};
 use crate::steer::Steer;
 
@@ -70,6 +71,20 @@ impl Told {
     }
 }
 
+/// How much work runs on a machine: each session living there, as
+/// `held_as` names the held program each is (if any), and each program
+/// `held` there that no living session is, such as a build sent to it,
+/// which is work as much as a session is.
+#[must_use]
+pub fn running(held_as: &[Option<String>], held: &[Held]) -> usize {
+    let sessions: BTreeSet<&str> = held_as.iter().flatten().map(String::as_str).collect();
+    held_as.len()
+        + held
+            .iter()
+            .filter(|one| !sessions.contains(one.id.as_str()))
+            .count()
+}
+
 /// Whether a machine that leaves at `leaves` has handed over at `now`,
 /// with `running` sessions there now and, as `ran` says, whether any ran
 /// there since it linked: it says when it leaves, and none runs there now
@@ -121,6 +136,34 @@ mod tests {
 
     fn addresses(steers: &[Steer]) -> Vec<&str> {
         steers.iter().map(|steer| steer.address.as_str()).collect()
+    }
+
+    /// A program held as `id`.
+    fn held(id: &str) -> Held {
+        serde_json::from_value(json!({
+            "id": id, "command": ["sh"], "folder": "/", "holder": 1, "pid": 2,
+            "since": "2026-10-30T18:00:00Z"
+        }))
+        .expect("a held program")
+    }
+
+    #[test]
+    fn a_program_held_with_no_session_is_running_work() {
+        assert_eq!(
+            running(&[], &[held("build")]),
+            1,
+            "a build held there runs, though no session does"
+        );
+        assert_eq!(
+            running(&[Some("pi".to_owned())], &[held("pi"), held("build")]),
+            2,
+            "a session held there counts once, beside the build"
+        );
+        assert_eq!(
+            running(&[None], &[]),
+            1,
+            "a session nobody holds there still runs"
+        );
     }
 
     #[test]
