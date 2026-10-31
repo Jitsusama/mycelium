@@ -2,8 +2,9 @@
 //! asks the node for what another program keeps in a file, and hears each
 //! change, without the node learning that file's shape. The files stay
 //! their own record: the node's configuration names each kind's file or
-//! folder, the field holding its records and the field keying each, and
-//! the node passes every record's fields on as they are.
+//! folder, the field holding its records and the field keying each, or a
+//! file to hold whole as one record, and the node passes every record's
+//! fields on as they are.
 //!
 //! A source is read whole when a change reaches its folder, as the
 //! program keeping it writes it whole and renames it into place, and its
@@ -12,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -31,27 +32,66 @@ const AGAIN_AFTER: Duration = Duration::from_secs(60);
 /// burst of writes is read once.
 const SETTLED_AFTER: Duration = Duration::from_millis(20);
 
-/// Where one kind's records are kept, as the configuration names it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Where one kind's records are kept, as the node serves them.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
     /// The one file holding them, by its full path, or
-    #[serde(default)]
     pub file: Option<PathBuf>,
     /// a folder of `.json` files, each holding some, by its full path.
-    #[serde(default)]
     pub folder: Option<PathBuf>,
     /// The field of each file holding its records: an array of objects,
-    /// or an object of them by their keys.
-    pub records: String,
+    /// or an object of them by their keys; or
+    pub records: Option<String>,
+    /// the id of the one record a file is, held whole, as one that says
+    /// how something stands rather than listing things.
+    pub whole: Option<String>,
     /// The field keying each record in an array. An object's records are
     /// keyed by their own keys.
-    #[serde(default)]
     pub key: Option<String>,
     /// For a folder, the field of each file put in front of its records'
     /// keys, so two files' records never share one.
-    #[serde(default)]
     pub by: Option<String>,
+}
+
+/// The machine a configuration is read on, for what differs from one
+/// machine to the next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Here {
+    /// Its name, the id of a file it holds whole, as it says how this
+    /// machine stands.
+    pub machine: String,
+    /// Its login's runtime folder, if it has one, which a path `within` it
+    /// starts from.
+    pub runtime: Option<PathBuf>,
+}
+
+/// One kind's source as the configuration says it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Said {
+    #[serde(default)]
+    file: Option<PathBuf>,
+    #[serde(default)]
+    folder: Option<PathBuf>,
+    #[serde(default)]
+    within: Option<Within>,
+    #[serde(default)]
+    records: Option<String>,
+    #[serde(default)]
+    whole: bool,
+    #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
+    by: Option<String>,
+}
+
+/// A folder of this machine's that a source's path starts from, for a file
+/// kept somewhere that differs from one machine to the next.
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Within {
+    /// The login's runtime folder.
+    Runtime,
 }
 
 impl Source {
@@ -87,35 +127,82 @@ impl Source {
 }
 
 /// The kinds a configuration file names, as a JSON object of sources by
-/// kind, refusing one named like a kind the node holds itself, in `held`.
+/// kind, read on the machine `here` is, refusing one named like a kind
+/// the node holds itself, in `held`.
 ///
 /// # Errors
 ///
 /// When the file can't be read, isn't sources by kind, or names one
 /// whose kind or path can't be served.
-pub fn configured(file: &Path, held: &[&str]) -> Result<BTreeMap<String, Source>, String> {
+pub fn configured(
+    file: &Path,
+    held: &[&str],
+    here: &Here,
+) -> Result<BTreeMap<String, Source>, String> {
     let read = fs::read(file).map_err(|error| format!("{}: {error}", file.display()))?;
-    let sources: BTreeMap<String, Source> = serde_json::from_slice(&read)
+    let said: BTreeMap<String, Said> = serde_json::from_slice(&read)
         .map_err(|error| format!("{} isn't sources by kind: {error}", file.display()))?;
-    for (kind, source) in &sources {
-        let refused = |why: &str| Err(format!("{} can't serve {kind:?}: {why}", file.display()));
-        if kind.is_empty() || kind.contains(':') {
-            return refused("a kind is a name with no `:`");
-        }
-        if held.contains(&kind.as_str()) {
-            return refused("the node holds that kind itself");
-        }
-        if source.file.is_some() == source.folder.is_some() {
-            return refused("it names a `file` or a `folder`, and only one");
-        }
-        if !source.path().is_absolute() {
-            return refused("its path is a full one, as no folder is the node's to start from");
-        }
-        if source.by.is_some() && source.folder.is_none() {
-            return refused("only a folder's files have a `by`");
-        }
+    said.into_iter()
+        .map(|(kind, said)| {
+            let source = source_of(&kind, said, held, here)
+                .map_err(|why| format!("{} can't serve {kind:?}: {why}", file.display()))?;
+            Ok((kind, source))
+        })
+        .collect()
+}
+
+/// The source `said` is for `kind`, its path placed on the machine `here`
+/// is, or why it can't be served.
+fn source_of(kind: &str, said: Said, held: &[&str], here: &Here) -> Result<Source, &'static str> {
+    if kind.is_empty() || kind.contains(':') {
+        return Err("a kind is a name with no `:`");
     }
-    Ok(sources)
+    if held.contains(&kind) {
+        return Err("the node holds that kind itself");
+    }
+    if said.file.is_some() == said.folder.is_some() {
+        return Err("it names a `file` or a `folder`, and only one");
+    }
+    if said.by.is_some() && said.folder.is_none() {
+        return Err("only a folder's files have a `by`");
+    }
+    if said.records.is_some() == said.whole {
+        return Err("it names its `records`, or is held `whole`, and only one");
+    }
+    if said.whole && (said.folder.is_some() || said.key.is_some()) {
+        return Err("a file held whole is one record, so it names no folder or `key`");
+    }
+    let start = match said.within {
+        None => None,
+        Some(Within::Runtime) => Some(
+            here.runtime
+                .as_deref()
+                .ok_or("this machine has no runtime folder for it to be within")?,
+        ),
+    };
+    let placed = |path: Option<PathBuf>| {
+        path.map(|path| match start {
+            None if path.is_absolute() => Ok(path),
+            None => Err("its path is a full one, unless it is `within` a folder of this machine's"),
+            Some(start)
+                if path
+                    .components()
+                    .all(|part| matches!(part, Component::Normal(_))) =>
+            {
+                Ok(start.join(path))
+            }
+            Some(_) => Err("a path within a folder goes down from it, never up or from the root"),
+        })
+        .transpose()
+    };
+    Ok(Source {
+        file: placed(said.file)?,
+        folder: placed(said.folder)?,
+        records: said.records,
+        whole: said.whole.then(|| here.machine.clone()),
+        key: said.key,
+        by: said.by,
+    })
 }
 
 /// What a source held when last read: its records by key, and why any of
@@ -203,12 +290,11 @@ fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .and_then(|since| i64::try_from(since.as_millis()).ok())
         .unwrap_or_default();
-    let whole: Value =
+    let kept: Value =
         serde_json::from_slice(&bytes).map_err(|error| named(format!("not JSON: {error}")))?;
     let front = match &source.by {
         Some(by) => Some(
-            whole
-                .get(by)
+            kept.get(by)
                 .and_then(id_of)
                 .ok_or_else(|| named(format!("no `{by}` to key its records by")))?,
         ),
@@ -218,14 +304,16 @@ fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String
         Some(front) => format!("{front}:{id}"),
         None => id,
     };
-    let records = match whole.get(&source.records) {
+    let Some(field) = &source.records else {
+        let records = source.whole.iter().map(|id| (id.clone(), kept.clone()));
+        return Ok(serve(kind, heard, records));
+    };
+    let records = match kept.get(field) {
         Some(Value::Array(records)) => {
-            let key = source.key.as_deref().ok_or_else(|| {
-                named(format!(
-                    "`{}` is a list, so it needs a `key`",
-                    source.records
-                ))
-            })?;
+            let key = source
+                .key
+                .as_deref()
+                .ok_or_else(|| named(format!("`{field}` is a list, so it needs a `key`")))?;
             records
                 .iter()
                 .map(|record| {
@@ -241,15 +329,25 @@ fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String
             .iter()
             .map(|(id, record)| (keyed(id.clone()), record.clone()))
             .collect(),
-        _ => return Err(named(format!("no `{}` of records", source.records))),
+        _ => return Err(named(format!("no `{field}` of records"))),
     };
-    Ok(records
+    Ok(serve(kind, heard, records))
+}
+
+/// `records`, each an id and its fields, as `kind`'s records of the
+/// daemon interface, heard at `heard`.
+fn serve(
+    kind: &str,
+    heard: i64,
+    records: impl IntoIterator<Item = (String, Value)>,
+) -> BTreeMap<String, Value> {
+    records
         .into_iter()
         .map(|(id, fields)| {
             let record = daemon::record(kind, &id, heard, fields);
             (daemon::key(kind, &id), record)
         })
-        .collect())
+        .collect()
 }
 
 /// A field's value as an id: a string as it is, a number written out.
@@ -468,7 +566,8 @@ mod tests {
         Source {
             file: Some(file.to_owned()),
             folder: None,
-            records: "quests".to_owned(),
+            records: Some("quests".to_owned()),
+            whole: None,
             key: Some("id".to_owned()),
             by: None,
         }
@@ -488,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_is_served_as_records_keyed_by_a_field_or_by_their_own_keys() {
+    fn a_file_is_served_as_records_keyed_by_a_field_by_their_own_keys_or_whole() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let file = dir.path().join("quests.json");
         write(
@@ -516,7 +615,7 @@ mod tests {
         write(&verdicts, &json!({"items": {"QEST-A:1": {"said": "yes"}}}));
         let source = Source {
             file: Some(verdicts),
-            records: "items".to_owned(),
+            records: Some("items".to_owned()),
             key: None,
             ..quests(&file)
         };
@@ -528,6 +627,24 @@ mod tests {
             )]),
             "an object's records are keyed by their own keys"
         );
+
+        let queue = dir.path().join("queue.json");
+        write(&queue, &json!({"heartbeat": 7, "jobs": []}));
+        let source = Source {
+            file: Some(queue),
+            records: None,
+            whole: Some("optimus".to_owned()),
+            key: None,
+            ..quests(&file)
+        };
+        assert_eq!(
+            unheard(&read("queue", &source).records),
+            BTreeMap::from([(
+                "queue:optimus".to_owned(),
+                json!({"key": "queue:optimus", "kind": "queue", "heartbeat": 7, "jobs": []})
+            )]),
+            "a file held whole is one record of all its fields"
+        );
     }
 
     #[test]
@@ -536,7 +653,8 @@ mod tests {
         let waiting = Source {
             file: None,
             folder: Some(dir.path().to_owned()),
-            records: "items".to_owned(),
+            records: Some("items".to_owned()),
+            whole: None,
             key: Some("id".to_owned()),
             by: Some("quest".to_owned()),
         };
@@ -568,10 +686,15 @@ mod tests {
     fn a_configuration_serves_only_what_it_can() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let config = dir.path().join("serves.json");
-        let refuses = |sources: Value| {
-            fs::write(&config, sources.to_string()).expect("written");
-            configured(&config, &["session", "machine"]).expect_err("refused")
+        let here = Here {
+            machine: "optimus".to_owned(),
+            runtime: Some(PathBuf::from("/run/user/1000")),
         };
+        let refuses_on = |sources: Value, here: &Here| {
+            fs::write(&config, sources.to_string()).expect("written");
+            configured(&config, &["session", "machine"], here).expect_err("refused")
+        };
+        let refuses = |sources: Value| refuses_on(sources, &here);
         assert!(
             refuses(json!({"session": {"file": "/a.json", "records": "r"}}))
                 .contains("holds that kind itself"),
@@ -586,18 +709,76 @@ mod tests {
                 .contains("only one"),
             "a file or a folder"
         );
+        for (sources, why) in [
+            (json!({"file": "/a"}), "neither records nor whole"),
+            (json!({"file": "/a", "records": "r", "whole": true}), "both"),
+        ] {
+            assert!(
+                refuses(json!({"queue": sources})).contains("and only one"),
+                "its records or whole: {why}"
+            );
+        }
+        for sources in [
+            json!({"folder": "/a", "whole": true}),
+            json!({"file": "/a", "whole": true, "key": "id"}),
+        ] {
+            assert!(
+                refuses(json!({"queue": sources.clone()})).contains("one record"),
+                "a file held whole is one record: {sources}"
+            );
+        }
+        for (file, why) in [
+            ("/jobs/queue.json", "a full path"),
+            ("../jobs/queue.json", "a path going up"),
+        ] {
+            assert!(
+                refuses(json!({"queue": {"file": file, "within": "runtime", "whole": true}}))
+                    .contains("goes down from it"),
+                "a path within a folder stays in it: {why}"
+            );
+        }
+        assert!(
+            refuses(json!({"queue": {"file": "q.json", "within": "home", "whole": true}}))
+                .contains("isn't sources by kind"),
+            "only the runtime folder is a folder a path is within"
+        );
+        assert!(
+            refuses_on(
+                json!({"queue": {"file": "q.json", "within": "runtime", "whole": true}}),
+                &Here {
+                    runtime: None,
+                    ..here.clone()
+                }
+            )
+            .contains("no runtime folder"),
+            "a machine with no runtime folder has nothing to be within"
+        );
         fs::write(
             &config,
-            json!({"quest": {"file": "/q.json", "records": "quests", "key": "id"}}).to_string(),
+            json!({
+                "quest": {"file": "/q.json", "records": "quests", "key": "id"},
+                "queue": {"file": "jobs/queue.json", "within": "runtime", "whole": true},
+            })
+            .to_string(),
         )
         .expect("written");
         assert_eq!(
-            configured(&config, &["session"]),
-            Ok(BTreeMap::from([(
-                "quest".to_owned(),
-                quests(Path::new("/q.json"))
-            )])),
-            "what it can serve is served"
+            configured(&config, &["session"], &here),
+            Ok(BTreeMap::from([
+                ("quest".to_owned(), quests(Path::new("/q.json"))),
+                (
+                    "queue".to_owned(),
+                    Source {
+                        file: Some(PathBuf::from("/run/user/1000/jobs/queue.json")),
+                        records: None,
+                        whole: Some("optimus".to_owned()),
+                        key: None,
+                        ..quests(Path::new("/q.json"))
+                    }
+                ),
+            ])),
+            "what it can serve is served, a path within the runtime folder placed in it \
+             and a file held whole named for the machine"
         );
     }
 
@@ -677,7 +858,8 @@ mod tests {
         let waiting = Source {
             file: None,
             folder: Some(dir.path().join("mission/waiting")),
-            records: "items".to_owned(),
+            records: Some("items".to_owned()),
+            whole: None,
             key: Some("id".to_owned()),
             by: Some("quest".to_owned()),
         };

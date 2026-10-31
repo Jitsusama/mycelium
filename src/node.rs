@@ -1650,7 +1650,8 @@ mod tests {
         served::Source {
             file: Some(socket.with_file_name("quests.json")),
             folder: None,
-            records: "quests".to_owned(),
+            records: Some("quests".to_owned()),
+            whole: None,
             key: Some("id".to_owned()),
             by: None,
         }

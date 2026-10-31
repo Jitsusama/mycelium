@@ -555,16 +555,22 @@ object of sources by kind:
 {
   "quest": {"file": "/full/path/quests.json", "records": "quests", "key": "id"},
   "waiting": {"folder": "/full/path/waiting", "records": "items",
-              "key": "id", "by": "quest"}
+              "key": "id", "by": "quest"},
+  "queue": {"file": "jobs/queue.json", "within": "runtime", "whole": true}
 }
 ```
 
 A source is a `file`, or a `folder` whose `.json` files each hold some,
-by its full path. `records` names the field holding them: an array of
+by its full path, or for one kept where it differs from one machine to
+the next, by its path `within` the login's `runtime` folder, going down
+from it. `records` names the field holding them: an array of
 objects, each keyed by its `key` field, or an object of them, each keyed
 by its own key. A folder's file puts its `by` field in front, so
 `waiting:QEST-A:login` is record `login` of the file whose `quest` is
-`QEST-A`. Each record's fields pass as they are, beside the interface's
+`QEST-A`. A file that says how something stands, rather than listing
+things, is held `whole` instead of naming its `records`: one record, its
+id the machine's name, holding every field of the file. Each record's
+fields pass as they are, beside the interface's
 own, `heard` being when its file was last written, and none is marked
 live. The node reads a source whole whenever a change reaches its
 folder, as its program writes each file whole and renames it into

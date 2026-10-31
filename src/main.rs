@@ -215,8 +215,15 @@ impl Node {
     /// The kinds it serves from files, as its `--serves` file names them.
     fn serves(&self) -> io::Result<BTreeMap<String, served::Source>> {
         match &self.serves {
-            Some(file) => served::configured(file, &node::HOLDS)
-                .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why)),
+            Some(file) => served::configured(
+                file,
+                &node::HOLDS,
+                &served::Here {
+                    machine: place::machine(),
+                    runtime: place::login_runtime(),
+                },
+            )
+            .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why)),
             None => Ok(BTreeMap::new()),
         }
     }
