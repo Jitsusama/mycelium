@@ -1,8 +1,10 @@
 //! Keeping a machine awake while it holds work. A laptop lent to the
-//! realm sleeps when its lid shuts or it sits idle, and every session
-//! held there stops with it, though nobody there is using it. So while a
-//! node holds work, it keeps its machine awake, and lets it sleep once
-//! what it holds is all idle, or once its battery runs low.
+//! realm sleeps when it sits idle, and every session held there stops
+//! with it, though nobody there is using it. So while a node holds work,
+//! it keeps its machine from sleeping when idle, and lets it once what
+//! it holds is all idle, or once its battery runs low. A person shutting
+//! the lid or asking it to sleep always wins: a laptop kept awake with
+//! its lid shut would run hot in a bag.
 //!
 //! The machine is kept awake by a program of the system's own that holds
 //! it so while it runs: `systemd-inhibit` on Linux, `caffeinate` on macOS.
@@ -58,7 +60,7 @@ pub fn keeping(os: &str) -> Option<Vec<String>> {
     let words: &[&str] = match os {
         "linux" => &[
             "systemd-inhibit",
-            "--what=sleep:handle-lid-switch",
+            "--what=idle",
             "--mode=block",
             "--who=mycelium",
             "--why=It holds sessions for the realm",
@@ -255,6 +257,30 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    #[test]
+    fn a_machine_is_kept_from_sleeping_when_idle_and_never_when_told_to() {
+        let linux = keeping("linux").expect("Linux keeps a machine awake");
+        let what: Vec<&String> = linux
+            .iter()
+            .filter(|word| word.starts_with("--what="))
+            .collect();
+        assert_eq!(
+            what,
+            ["--what=idle"],
+            "only idle sleep waits, never the lid or a person's suspend: {linux:?}"
+        );
+        let macos = keeping("macos").expect("macOS keeps a machine awake");
+        assert_eq!(
+            macos[1], "-i",
+            "a Mac is kept from idle sleep alone: {macos:?}"
+        );
+        assert_eq!(
+            keeping("plan9"),
+            None,
+            "nothing is kept where none knows how"
+        );
     }
 
     #[test]

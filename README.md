@@ -22,8 +22,8 @@ The harness mesh's messages and presence, carried between machines:
   in, and `mycelium attach` takes it up again from any terminal on the
   machine. While one held there is at work (a turn, queued work, or a
   program that is no session), the node keeps it from sleeping when
-  idle, and on Linux with its lid shut too, until its battery drops
-  below 20%.
+  idle, until its battery drops below 20%. Shutting its lid or asking
+  it to sleep always sleeps it.
 - Links run over SSH, so a machine needs nothing but the `mycelium`
   command and an SSH login.
 - Each node serves a local socket in niri's shape, which pi, Quickshell
