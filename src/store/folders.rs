@@ -105,28 +105,27 @@ impl Folders {
         self.dir.join("leases")
     }
 
-    /// Watches the process of each living session of this machine's, so
-    /// its end is told.
-    fn watch_ends(&self, ends: &Ends) {
-        let boot = boot_id();
-        let presence = self.presence();
-        let owners = records(&presence)
-            .filter_map(|path| read::<Facts>(&path))
-            .filter(|facts| facts.machine.is_none())
-            .filter_map(|facts| facts.owner);
-        for owner in owners {
-            if owner.lives(boot.as_deref()) {
-                ends.watch(owner.pid, || owner.lives(boot.as_deref()));
-            }
-        }
-    }
-
     /// The presence file of `session`, if `machine` carries it here.
     fn carried(&self, session: &str, machine: &str) -> io::Result<Option<PathBuf>> {
         let path = self.presence().join(format!("{}.json", safe(session)?));
         let carried =
             read::<Facts>(&path).is_some_and(|facts| facts.machine.as_deref() == Some(machine));
         Ok(carried.then_some(path))
+    }
+}
+
+/// Watches the process of each living session of this machine's whose
+/// presence is at `paths`, so its end is told.
+fn watch_ends(ends: &Ends, paths: impl Iterator<Item = PathBuf>) {
+    let boot = boot_id();
+    let owners = paths
+        .filter_map(|path| read::<Facts>(&path))
+        .filter(|facts| facts.machine.is_none())
+        .filter_map(|facts| facts.owner);
+    for owner in owners {
+        if owner.lives(boot.as_deref()) {
+            ends.watch(owner.pid, || owner.lives(boot.as_deref()));
+        }
     }
 }
 
@@ -349,13 +348,23 @@ impl Store for Folders {
         let claims = Arc::clone(&self.claims);
         let ends = Arc::new(Ends::new(sender.clone())?);
         let watching = {
-            let folders = self.clone();
+            let every = presence.clone();
             let ends = Arc::clone(&ends);
-            move || folders.watch_ends(&ends)
+            move |only: Option<Vec<PathBuf>>| match only {
+                Some(paths) => watch_ends(&ends, paths.into_iter()),
+                None => watch_ends(&ends, records(&every)),
+            }
         };
-        watching();
+        watching(None);
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                let written: Vec<PathBuf> = event.as_ref().map_or_else(
+                    |_| Vec::new(),
+                    |event| {
+                        let here = |path: &&PathBuf| path.parent() == Some(presence.as_path());
+                        event.paths.iter().filter(here).cloned().collect()
+                    },
+                );
                 let seen: Vec<Change> = match event {
                     // A failed or overflowing watch may have missed something.
                     Err(_) => vec![Change::Rescan],
@@ -385,12 +394,12 @@ impl Store for Folders {
                         })
                         .collect(),
                 };
-                // A presence written or read again may name a new process.
-                if seen
-                    .iter()
-                    .any(|change| matches!(change, Change::Presence | Change::Rescan))
-                {
-                    watching();
+                // Only a presence written may name a new process; a watch
+                // that missed something has every one read again.
+                if seen.contains(&Change::Rescan) {
+                    watching(None);
+                } else if seen.contains(&Change::Presence) && !written.is_empty() {
+                    watching(Some(written));
                 }
                 for change in seen {
                     // Nobody receives once the store's reader has gone; the
@@ -704,6 +713,44 @@ mod tests {
             told,
             Ok(true),
             "the session's end wasn't told within {PATIENCE:?}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_session_present_once_changes_are_told_is_told_when_its_process_exits() {
+        let (_dir, store) = store();
+        let mut changes = store.changes().expect("the store tells its changes");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("a child starts");
+        let pid = child.id().cast_signed();
+        let presence = json!({
+            "session": "later",
+            "owner": {"pid": pid, "bootId": boot_id(), "startTicks": start_ticks(pid)},
+        });
+        write_whole(&store.presence(), "later.json", &presence).expect("its presence written");
+        let lives = |store: &Folders| store.presences().iter().any(|one| one.lives);
+        let heard = tokio::time::timeout(PATIENCE, changes.changes.recv()).await;
+        assert_eq!(heard, Ok(Some(Change::Presence)), "its presence is told");
+        assert!(lives(&store), "the session lives while its process runs");
+
+        child.kill().expect("the child is killed");
+        let told = tokio::time::timeout(PATIENCE, async {
+            while let Some(change) = changes.changes.recv().await {
+                if change == Change::Presence && !lives(&store) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        let _ = child.wait();
+        assert_eq!(
+            told,
+            Ok(true),
+            "the end of a process named once the watch began wasn't told within {PATIENCE:?}"
         );
     }
 
