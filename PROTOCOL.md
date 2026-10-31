@@ -524,7 +524,7 @@ in milliseconds.
 | `list` with `kind`, and `limit` | `records`, every one of the kind |
 | `watch` with `kind`, and `keys` | `records` whole, then `changed` and `gone` |
 | `unwatch` | nothing; the watch with that `id` ends |
-| `health` | `state` and each linked machine as a source |
+| `health` | `state`, and each linked machine and served file as a source |
 
 A record carries `key` (`session:<id>` or `machine:<name>`), `kind`,
 `heard` (milliseconds since the epoch) and the fields `Sessions` and
@@ -536,6 +536,34 @@ while nothing changes; and no sooner than 250 ms after its last send, so
 a reader too slow for it is sent the latest rather than a backlog. An ask
 it can't answer gets `{"id", "error": {"code", "message"}}`, the code
 one of `unknown-ask`, `unknown-kind` or `not-an-ask`.
+
+The node also serves files another program keeps, each as a kind of its
+own, so a reader asks the node and hears each change rather than reading
+the files itself. `mycelium node --serves FILE` names them, in a JSON
+object of sources by kind:
+
+```json
+{
+  "quest": {"file": "/full/path/quests.json", "records": "quests", "key": "id"},
+  "waiting": {"folder": "/full/path/waiting", "records": "items",
+              "key": "id", "by": "quest"}
+}
+```
+
+A source is a `file`, or a `folder` whose `.json` files each hold some,
+by its full path. `records` names the field holding them: an array of
+objects, each keyed by its `key` field, or an object of them, each keyed
+by its own key. A folder's file puts its `by` field in front, so
+`waiting:QEST-A:login` is record `login` of the file whose `quest` is
+`QEST-A`. Each record's fields pass as they are, beside the interface's
+own, `heard` being when its file was last written, and none is marked
+live. The node reads a source whole whenever a change reaches its
+folder, as its program writes each file whole and renames it into
+place; a file it removes takes its records with it, sent as `gone`. A
+source it can't read, or one of a folder's files, is a source `refused`
+in `health`, with why, while the records it could read are still
+served. A folder not there yet is looked for again each minute. A kind
+the node holds itself, `session` or `machine`, can't be served.
 
 ## A Held Session
 

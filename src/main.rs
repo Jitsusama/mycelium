@@ -3,6 +3,7 @@
 //! Quickshell read the socket themselves; nothing here is how a person uses
 //! the network.
 
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -23,7 +24,7 @@ use mycelium::share::ledger::Ledgers;
 use mycelium::ssh::Asked as KeyAsked;
 use mycelium::store::folders::Folders;
 use mycelium::wire::{Draft, Request, Start};
-use mycelium::{hold, install, link, node, place};
+use mycelium::{hold, install, link, node, place, served};
 
 #[derive(Parser)]
 #[command(version, about = "A nimble core for agent networks")]
@@ -42,25 +43,7 @@ struct Command {
 #[derive(Subcommand)]
 enum Action {
     /// Runs this machine's node.
-    Node {
-        #[command(flatten)]
-        here: Here,
-        /// A machine to keep linked with over SSH, such as
-        /// `joel.gerber@192.168.4.32`; given again for each.
-        #[arg(long = "ssh")]
-        destinations: Vec<String>,
-        /// An SSH option for every link, as `-o` takes it.
-        #[arg(long = "ssh-option")]
-        options: Vec<String>,
-        /// The `mycelium` command on the other machines.
-        #[arg(long, default_value = "mycelium")]
-        remote_command: String,
-        /// A machine to keep linked with through a provider's program, as
-        /// `PROGRAM:PLACE`, such as `aquifer-link:sandbox-1`; given again
-        /// for each. PROTOCOL.md says what the program is asked.
-        #[arg(long = "via", value_parser = Program::parse)]
-        programs: Vec<Program>,
-    },
+    Node(Node),
     /// Runs this machine's end of a link over standard input and output, as
     /// another machine's node starts it over SSH.
     Link {
@@ -189,6 +172,56 @@ enum Action {
 
 /// What a node or a link's end needs of this machine.
 /// A program to start, as its flags say it.
+/// How this machine's node runs: what it links with, and what it serves.
+#[derive(clap::Args)]
+struct Node {
+    #[command(flatten)]
+    here: Here,
+    /// A machine to keep linked with over SSH, such as
+    /// `joel.gerber@192.168.4.32`; given again for each.
+    #[arg(long = "ssh")]
+    destinations: Vec<String>,
+    /// An SSH option for every link, as `-o` takes it.
+    #[arg(long = "ssh-option")]
+    options: Vec<String>,
+    /// The `mycelium` command on the other machines.
+    #[arg(long, default_value = "mycelium")]
+    remote_command: String,
+    /// A machine to keep linked with through a provider's program, as
+    /// `PROGRAM:PLACE`, such as `aquifer-link:sandbox-1`; given again
+    /// for each. PROTOCOL.md says what the program is asked.
+    #[arg(long = "via", value_parser = Program::parse)]
+    programs: Vec<Program>,
+    /// A JSON file naming files to serve in the daemon interface, each
+    /// as a kind of records; PROTOCOL.md says its shape.
+    #[arg(long)]
+    serves: Option<PathBuf>,
+}
+
+impl Node {
+    /// The ways its links are dialled: over SSH, then through programs.
+    fn dials(&self) -> Vec<Way> {
+        let over_ssh = self.destinations.iter().map(|destination| Ssh {
+            destination: destination.clone(),
+            options: self.options.clone(),
+            command: self.remote_command.clone(),
+        });
+        over_ssh
+            .map(Way::Ssh)
+            .chain(self.programs.iter().cloned().map(Way::Program))
+            .collect()
+    }
+
+    /// The kinds it serves from files, as its `--serves` file names them.
+    fn serves(&self) -> io::Result<BTreeMap<String, served::Source>> {
+        match &self.serves {
+            Some(file) => served::configured(file, &node::HOLDS)
+                .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why)),
+            None => Ok(BTreeMap::new()),
+        }
+    }
+}
+
 #[derive(clap::Args)]
 struct Starting {
     /// What the machine must be, as for `place`.
@@ -287,23 +320,7 @@ fn run(command: Command) -> io::Result<()> {
     }
     let socket = command.socket.unwrap_or_else(|| place::socket(&realm));
     match command.action {
-        Action::Node {
-            here,
-            destinations,
-            options,
-            remote_command,
-            programs,
-        } => {
-            let over_ssh = destinations.into_iter().map(|destination| Ssh {
-                destination,
-                options: options.clone(),
-                command: remote_command.clone(),
-            });
-            let dials = over_ssh
-                .map(Way::Ssh)
-                .chain(programs.into_iter().map(Way::Program));
-            run_node(here, realm, &socket, dials.collect())
-        }
+        Action::Node(node) => run_node(node, realm, &socket),
         Action::Link { here } => run_link(here, realm, socket, None),
         Action::Ssh { here, from } => run_asked(here, realm, socket, from),
         Action::Share {
@@ -371,9 +388,11 @@ fn run(command: Command) -> io::Result<()> {
     }
 }
 
-/// Runs this machine's node on `socket`, keeping linked over `dials`,
-/// until it is asked to stop.
-fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Way>) -> io::Result<()> {
+/// Runs this machine's node on `socket`, as `node` says, until it is asked
+/// to stop.
+fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
+    let (dials, serves) = (node.dials(), node.serves()?);
+    let here = node.here;
     let refused = here
         .state
         .clone()
@@ -393,6 +412,7 @@ fn run_node(here: Here, realm: String, socket: &Path, dials: Vec<Way>) -> io::Re
         }),
         awake: Awake::here(),
         updater: place::updater(),
+        serves,
     };
     runtime()?.block_on(async {
         let bound = node::bind(socket)?;

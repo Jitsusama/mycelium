@@ -38,6 +38,7 @@
 //! - [`mesh`]: the harness mesh's files read as records
 //! - [`state`]: what one node holds in memory
 //! - [`node`]: the node itself
+//! - [`served`]: files another program keeps, served as kinds of records
 //! - [`client`]: a client of the socket
 //! - [`place`]: where a node keeps things on its machine
 //! - [`awake`]: keeping its machine awake while it holds sessions
@@ -63,6 +64,7 @@ pub mod placement;
 pub mod reach;
 pub mod record;
 pub mod room;
+pub mod served;
 pub mod share;
 pub mod ssh;
 pub mod state;
