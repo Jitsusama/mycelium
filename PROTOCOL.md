@@ -404,6 +404,11 @@ ten minutes before then, its node puts a steer into the inbox of each
 session running there, once, saying when it leaves and to commit and
 push, to put what can't be pushed and a note of what's next where its
 work is shared, and to stop, with `from` `"machine"` and no `act`.
+A machine on its battery below 20% is let sleep, so its node puts the
+same kind of steer, once while it stays below, saying to commit and push
+and put the rest where its work is shared, though not to stop, since a
+session waits out a sleep; once it charges, the next time it runs low
+says so again.
 Where given, `within` names the machine it runs within, as a virtual
 machine does its host, and a file the two share, `{"machine": "...",
 "file": "..."}`; its `power` and `room` are then its host's, as the host
@@ -437,12 +442,13 @@ out of reach; and how long it `lasts`, as an ISO 8601 duration such as
 `PT2H` (`2h` reads too). A machine carries the taints its configuration
 declares, and while they last, `on-battery`, `memory-pressure` (past
 its queue's memory limit) and `disk-pressure` (its `disk_band` past
-`healthy`), each `prefer_not`. A machine qualifies when it is in reach,
-leaves after the work ends (now, for work that doesn't say how long it
-lasts), is what each need asks (a fact it never said meets none), and carries
-no `never` taint the work doesn't tolerate. Of those, one with no
-`prefer_not` taint goes first, then the most preferences met, then the
-most memory free, then by name. The answer is
+`healthy`), each `prefer_not`, and `low-battery` (on its battery below
+20%, when it is let sleep), which is `never`. A machine qualifies when
+it is in reach, leaves after the work ends (now, for work that doesn't
+say how long it lasts), is what each need asks (a fact it never said
+meets none), and carries no `never` taint the work doesn't tolerate. Of
+those, one with no `prefer_not` taint goes first, then the most
+preferences met, then the most memory free, then by name. The answer is
 `{"placed": {"machine", "passed"}}`, `{"pending": {"misses"}}` when
 only a machine out of reach would do and the work may wait, or
 `{"refused": {"misses"}}`; each miss names a `machine` and `because`:
