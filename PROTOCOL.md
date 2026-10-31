@@ -129,7 +129,10 @@ same code, each line a JSON value:
    as it is sent, as a node answers `"Machine"`: after the Have, before
    its sessions, and again each minute. The other end keeps it only if
    it names the sending machine, as ready while the link stands and as
-   unreachable, with what it last said, once the link drops.
+   unreachable, with what it last said, once the link drops. Between
+   two ends that both say `facts`, an end that has heard nothing at all
+   for three minutes by the wall clock ends the link, so one left from
+   before its machine slept gives way to its dialler's new one.
 8. `{"Start": {"ask", "start"}}`: start a session held on the other
    end's machine, as a `"Start"` request says it. The other end hands it
    to its own node's socket, with a need for its own machine added, so
