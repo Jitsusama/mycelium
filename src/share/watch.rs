@@ -1,9 +1,10 @@
-//! The scratch folders a link shares, watched for changes, so a look walks
-//! only the folders that changed rather than every file in every one.
+//! The quests' records and the scratch folders a link shares, watched for
+//! changes, so a look walks only what changed rather than every file of
+//! every quest.
 //!
-//! A folder that can't be watched, one newly named, and every folder after
-//! the watch fails or overflows, is walked anyway, so a watch that misses
-//! something costs a walk, never a change.
+//! A record or folder that can't be watched, one newly named, and every one
+//! after the watch fails or overflows, is walked anyway, so a watch that
+//! misses something costs a walk, never a change.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -20,25 +21,62 @@ use super::tree::{Place, Shared, crosses};
 /// A quest's scratch folder, by the quest's id and the folder's name.
 pub type Folder = (String, String);
 
-/// The shared scratch folders being watched.
+/// The quests' records and shared scratch folders being watched.
 pub struct Watch {
     /// The quests' scratch folders, one a quest, by its id.
-    scratch: PathBuf,
-    /// `scratch` with every link in it resolved, once it is there. macOS's
-    /// watcher names a change by this path, so a scratch reached through a
-    /// link, as `/var` is `/private/var` on a Mac, is matched by it.
-    resolved: Option<PathBuf>,
-    /// The watcher, unless one couldn't be made, when every folder is
-    /// walked at every look.
+    scratch: Root,
+    /// The quests' records, one a quest, by its id.
+    records: Root,
+    /// The watcher, unless one couldn't be made, when every record and
+    /// folder is walked at every look.
     watcher: Option<RecommendedWatcher>,
     /// The folders watched.
     watched: BTreeSet<Folder>,
+    /// The records watched, by their quests' ids.
+    records_watched: BTreeSet<String>,
     /// What the watcher heard, not yet taken.
     heard: mpsc::Receiver<Heard>,
     /// What was taken from `heard` early, by a wait, to be taken again.
     early: Vec<Heard>,
     /// The folders heard to change, not yet walked.
     changed: BTreeSet<Folder>,
+    /// The records heard to change, not yet walked, by their quests' ids.
+    records_changed: BTreeSet<String>,
+}
+
+/// A folder holding one folder a quest, as a watch names changes in it.
+struct Root {
+    /// The folder.
+    path: PathBuf,
+    /// `path` with every link in it resolved, once it is there. macOS's
+    /// watcher names a change by this path, so a folder reached through a
+    /// link, as `/var` is `/private/var` on a Mac, is matched by it.
+    resolved: Option<PathBuf>,
+}
+
+impl Root {
+    const fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            resolved: None,
+        }
+    }
+
+    /// Resolves its links, once it is there.
+    fn resolve(&mut self) {
+        if self.resolved.is_none() {
+            self.resolved = fs::canonicalize(&self.path).ok();
+        }
+    }
+
+    /// The names of `path` below it, by the path as given or as resolved.
+    fn names_of<'a>(&self, path: &'a Path) -> Option<Vec<&'a str>> {
+        let within = path
+            .strip_prefix(&self.path)
+            .ok()
+            .or_else(|| path.strip_prefix(self.resolved.as_deref()?).ok())?;
+        within.iter().map(|name| name.to_str()).collect()
+    }
 }
 
 /// What the watcher heard.
@@ -50,10 +88,10 @@ enum Heard {
 }
 
 impl Watch {
-    /// A watch of the quests' scratch folders in `scratch`, watching none
-    /// until [`Self::follow`] names them.
+    /// A watch of the quests' scratch folders in `scratch` and their
+    /// records in `records`, watching none until a look names them.
     #[must_use]
-    pub fn new(scratch: PathBuf) -> Self {
+    pub fn new(scratch: PathBuf, records: PathBuf) -> Self {
         let (sender, heard) = mpsc::channel();
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             let heard = match event {
@@ -75,14 +113,37 @@ impl Watch {
         })
         .ok();
         Self {
-            scratch,
-            resolved: None,
+            scratch: Root::new(scratch),
+            records: Root::new(records),
             watcher,
             watched: BTreeSet::new(),
+            records_watched: BTreeSet::new(),
             heard,
             early: Vec::new(),
             changed: BTreeSet::new(),
+            records_changed: BTreeSet::new(),
         }
+    }
+
+    /// Whether quest `id`'s record is to be walked at this look: when it
+    /// changed since the last, or isn't watched yet, which it is from now
+    /// on where it can be.
+    pub fn record_to_walk(&mut self, id: &str) -> bool {
+        self.take_heard();
+        let changed = self.records_changed.remove(id);
+        if self.records_watched.contains(id) {
+            return changed;
+        }
+        self.records.resolve();
+        let at = self.records.path.join(id);
+        let watched = self
+            .watcher
+            .as_mut()
+            .is_some_and(|watcher| watcher.watch(&at, RecursiveMode::Recursive).is_ok());
+        if watched {
+            self.records_watched.insert(id.to_owned());
+        }
+        true
     }
 
     /// The folders among `folders`, those of quest `id` it shares, to walk
@@ -117,11 +178,26 @@ impl Watch {
         for folder in gone {
             if let Some(watcher) = self.watcher.as_mut() {
                 // A folder already gone is no longer watched anyway.
-                let _ = watcher.unwatch(&self.scratch.join(&folder.0).join(&folder.1));
+                let _ = watcher.unwatch(&self.scratch.path.join(&folder.0).join(&folder.1));
             }
             self.watched.remove(&folder);
         }
         self.changed.retain(|(quest, _)| quest != id);
+        if self.records_watched.remove(id)
+            && let Some(watcher) = self.watcher.as_mut()
+        {
+            // A record already gone is no longer watched anyway.
+            let _ = watcher.unwatch(&self.records.path.join(id));
+        }
+        self.records_changed.remove(id);
+    }
+
+    /// Takes it that anything may have changed, as when the watch
+    /// overflows, so the next look walks every record and folder watched,
+    /// for a test asking what crosses rather than when a look walks.
+    #[cfg(test)]
+    pub fn hear_anything(&mut self) {
+        self.early.push(Heard::Anything);
     }
 
     /// Waits up to `within` for the watcher to hear a change, for a test
@@ -162,16 +238,14 @@ impl Watch {
 
     /// Starts watching `folder`, answering whether it is watched.
     fn start(&mut self, (id, folder): &Folder) -> bool {
-        let at = self.scratch.join(id).join(folder);
+        let at = self.scratch.path.join(id).join(folder);
         // A folder that is a git clone crosses as its remote, and walking it
         // only finds its `.git`, where watching it whole could spend the
         // watches a machine has on a large clone's every folder.
         if at.join(".git").exists() {
             return false;
         }
-        if self.resolved.is_none() {
-            self.resolved = fs::canonicalize(&self.scratch).ok();
-        }
+        self.scratch.resolve();
         self.watcher.as_mut().is_some_and(|watcher| {
             // A folder not there yet is walked until it is, then watched.
             watcher.watch(&at, RecursiveMode::Recursive).is_ok()
@@ -188,17 +262,30 @@ impl Watch {
             .chain(std::iter::from_fn(|| self.heard.try_recv().ok()))
         {
             match heard {
-                Heard::Anything => self.changed.extend(self.watched.iter().cloned()),
+                Heard::Anything => {
+                    self.changed.extend(self.watched.iter().cloned());
+                    self.records_changed
+                        .extend(self.records_watched.iter().cloned());
+                }
                 Heard::At(path) => {
-                    let found = folder_of(&self.scratch, &path).or_else(|| {
-                        let resolved = self.resolved.as_deref()?;
-                        folder_of(resolved, &path)
-                    });
-                    if let Some((folder, whole)) = found {
+                    if let Some((folder, whole)) = self
+                        .scratch
+                        .names_of(&path)
+                        .and_then(|names| folder_of(&names))
+                    {
                         if whole {
                             self.watched.remove(&folder);
                         }
                         self.changed.insert(folder);
+                    } else if let Some((id, whole)) = self
+                        .records
+                        .names_of(&path)
+                        .and_then(|names| record_of(&names))
+                    {
+                        if whole {
+                            self.records_watched.remove(&id);
+                        }
+                        self.records_changed.insert(id);
                     }
                 }
             }
@@ -210,13 +297,11 @@ impl Watch {
 #[cfg(test)]
 pub const HEARD_WITHIN: Duration = Duration::from_secs(5);
 
-/// The scratch folder a change at `path` is in, if it is one whose files
-/// cross, and whether it was the folder itself that changed.
-fn folder_of(scratch: &Path, path: &Path) -> Option<(Folder, bool)> {
-    let within = path.strip_prefix(scratch).ok()?;
-    let names: Option<Vec<&str>> = within.iter().map(|name| name.to_str()).collect();
-    let names = names?;
-    let [id, folder, rest @ ..] = names.as_slice() else {
+/// The scratch folder a change at the path `names` gives below the scratch
+/// is in, if it is one whose files cross, and whether it was the folder
+/// itself that changed.
+fn folder_of(names: &[&str]) -> Option<(Folder, bool)> {
+    let [id, folder, rest @ ..] = names else {
         return None;
     };
     let whole = rest.is_empty();
@@ -231,6 +316,17 @@ fn folder_of(scratch: &Path, path: &Path) -> Option<(Folder, bool)> {
         return None;
     }
     Some((((*id).to_owned(), (*folder).to_owned()), whole))
+}
+
+/// The quest whose record a change at the path `names` gives below the
+/// records is in, and whether it was the record itself that changed. Any
+/// change counts, as a record changes seldom and a folder made in it may
+/// hold files written before the watch reaches it.
+fn record_of(names: &[&str]) -> Option<(String, bool)> {
+    let [id, rest @ ..] = names else {
+        return None;
+    };
+    Some(((*id).to_owned(), rest.is_empty()))
 }
 
 /// Whether a watch's event may have changed what a file holds: made,
@@ -278,7 +374,7 @@ mod tests {
         for folder in ["notes", "bench"] {
             fs::create_dir_all(dir.path().join(QUEST).join(folder)).expect("made");
         }
-        let mut watch = Watch::new(dir.path().to_owned());
+        let mut watch = Watch::new(dir.path().to_owned(), dir.path().join("records"));
         let both = shared(&["notes", "bench"]);
         assert_eq!(
             watch.to_walk(QUEST, &both),
@@ -305,13 +401,47 @@ mod tests {
     }
 
     #[test]
+    fn a_record_is_walked_when_first_looked_at_and_then_only_once_it_changes() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let records = dir.path().join("records");
+        fs::create_dir_all(records.join(QUEST)).expect("made");
+        let mut watch = Watch::new(dir.path().join("scratch"), records.clone());
+        assert!(
+            watch.record_to_walk(QUEST),
+            "a record is walked when first looked at"
+        );
+        // One change of one event, so nothing is heard after it.
+        let mark = records.join(QUEST).join("settled");
+        fs::create_dir(&mark).expect("the mark is made");
+        assert!(
+            watch.wait_for(&mark, HEARD_WITHIN),
+            "the watcher hears the mark"
+        );
+        assert!(
+            watch.record_to_walk(QUEST),
+            "a record that changed is walked"
+        );
+        assert!(
+            !watch.record_to_walk(QUEST),
+            "and not again while nothing changes"
+        );
+
+        fs::write(records.join(QUEST).join("README.md"), "# Shared\n").expect("written");
+        assert!(watch.wait(HEARD_WITHIN), "the watcher hears the write");
+        assert!(
+            watch.record_to_walk(QUEST),
+            "a change anywhere in the record has it walked"
+        );
+    }
+
+    #[test]
     fn a_change_is_matched_to_its_folder_through_a_linked_scratch() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let real = dir.path().join("real");
         fs::create_dir_all(real.join(QUEST).join("notes")).expect("made");
         let linked = dir.path().join("linked");
         std::os::unix::fs::symlink(&real, &linked).expect("linked");
-        let mut watch = Watch::new(linked.clone());
+        let mut watch = Watch::new(linked.clone(), dir.path().join("records"));
         let notes = shared(&["notes"]);
         watch.to_walk(QUEST, &notes);
 
@@ -328,7 +458,7 @@ mod tests {
     fn a_change_to_what_never_crosses_needs_no_walk() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         fs::create_dir_all(dir.path().join(QUEST).join("notes/target")).expect("made");
-        let mut watch = Watch::new(dir.path().to_owned());
+        let mut watch = Watch::new(dir.path().to_owned(), dir.path().join("records"));
         let notes = shared(&["notes"]);
         watch.to_walk(QUEST, &notes);
         settle(
@@ -348,7 +478,7 @@ mod tests {
     #[test]
     fn a_folder_not_there_yet_is_walked_until_it_can_be_watched() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let mut watch = Watch::new(dir.path().to_owned());
+        let mut watch = Watch::new(dir.path().to_owned(), dir.path().join("records"));
         let notes = shared(&["notes"]);
         for look in 0..2 {
             assert_eq!(
