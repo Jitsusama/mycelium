@@ -21,7 +21,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
 use super::clones::{Clone, Cloning};
-use super::ledger::{Entry, Ledger, Ledgers, clock, is_quest, lasting, shared_of};
+use super::ledger::{Entry, Ledger, Ledgers, Sight, clock, is_quest, lasting, shared_of};
 use super::pieces::{PIECE, Pieces, Staged};
 use super::settle::{Merge, Settled, State, beside, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
@@ -413,13 +413,12 @@ impl Exchange {
             let mut held = ledgers.hold(&id)?;
             let walk = self.watch.to_walk(&id, &held.ledger.scratch);
             let quest = self.places.quest(&id, &held.ledger).walking(&walk);
-            let mut changed: BTreeSet<String> = held
-                .ledger
-                .scan(&quest, &self.machine)?
-                .into_iter()
-                .collect();
+            let scan = held.ledger.scan(&quest, &self.machine)?;
+            let mut changed: BTreeSet<String> = scan.changed.into_iter().collect();
             let clones_changed = found_clones(&mut held.ledger, &quest, &walk)?;
-            if !changed.is_empty() || clones_changed {
+            // A file read and found as it was is kept as seen too, or every
+            // look would read it again.
+            if scan.is_new || clones_changed {
                 held.keep()?;
             }
             changed.extend(self.unsaid.remove(&id).unwrap_or_default());
@@ -633,8 +632,11 @@ impl Exchange {
             let Some(shared) = shared_of(&key).filter(|shared| quest.carries(shared)) else {
                 continue;
             };
-            if held.ledger.scan_one(&quest, &shared, &self.machine)? {
+            let sight = held.ledger.scan_one(&quest, &shared, &self.machine)?;
+            if sight.is_new() {
                 held.keep()?;
+            }
+            if sight == Sight::Changed {
                 self.unsay(id, &key);
             }
             // Asked again below if it still should be.
@@ -684,8 +686,11 @@ impl Exchange {
         let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
             return Ok(Vec::new());
         };
-        if held.ledger.scan_one(&quest, &shared, &self.machine)? {
+        let sight = held.ledger.scan_one(&quest, &shared, &self.machine)?;
+        if sight.is_new() {
             held.keep()?;
+        }
+        if sight == Sight::Changed {
             self.unsay(id, key);
         }
         let Some(entry) = held.ledger.files.get(key) else {
@@ -794,8 +799,8 @@ impl Exchange {
         let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
             return Ok(Vec::new());
         };
-        let scanned = held.ledger.scan_one(&quest, &shared, &self.machine)?;
-        if scanned {
+        let sight = held.ledger.scan_one(&quest, &shared, &self.machine)?;
+        if sight == Sight::Changed {
             self.unsay(id, key);
         }
         let ours = held
@@ -869,7 +874,7 @@ impl Exchange {
                     files: BTreeMap::from([(key.to_owned(), state)]),
                 });
             }
-        } else if scanned {
+        } else if sight.is_new() {
             held.keep()?;
         }
         Ok(says)
@@ -1038,6 +1043,49 @@ mod tests {
             optimus.read("README.md").as_deref(),
             Some("# Changed there\n"),
             "a change comes back"
+        );
+    }
+
+    #[test]
+    fn a_file_found_as_it_was_is_not_read_again() {
+        let optimus = Machine::new("optimus");
+        let equilibrius = Machine::new("equilibrius");
+        optimus.write("README.md", "# Shared\n");
+        optimus
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("held")
+            .keep()
+            .expect("shared");
+        let seen = || {
+            optimus
+                .places
+                .ledgers()
+                .hold(QUEST)
+                .expect("held")
+                .ledger
+                .files["record/README.md"]
+                .seen
+        };
+        let mut near = optimus.exchange(&equilibrius);
+        near.look().expect("optimus looks");
+        assert_eq!(
+            seen(),
+            None,
+            "a file written just now may still change in its time's grain, so it is read again"
+        );
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(optimus.places.quests.join(QUEST).join("README.md"))
+            .and_then(|file| file.set_modified(long_ago))
+            .expect("its time set");
+        near.look().expect("optimus looks again");
+        assert!(
+            seen().is_some(),
+            "found as it was once its size and time stand, it is kept as seen, so no later \
+             look reads it"
         );
     }
 
