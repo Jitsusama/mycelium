@@ -32,6 +32,7 @@ use crate::state::State;
 use crate::steer::{self, Steer};
 use crate::store::{self, Change, Store};
 use crate::wire::{Draft, Event, Reply, Request, Response, Start, Started};
+use crate::within;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -130,6 +131,27 @@ pub struct Given {
     pub awake: Awake,
 }
 
+/// Tells each machine within this one, as its configuration declares
+/// them, this one's power and room as `here` measures them.
+fn tell_hosted(here: &facts::Machine) {
+    let Some(hosts) = here.declared.as_ref().map(|declared| &declared.hosts) else {
+        return;
+    };
+    let said = within::Said {
+        at: jiff::Timestamp::now(),
+        power: here.power,
+        room: here.room.clone(),
+    };
+    for hosted in hosts {
+        if let Err(error) = within::tell(&hosted.file, &said) {
+            eprintln!(
+                "{} wasn't told this machine's power and room: {error}",
+                hosted.machine
+            );
+        }
+    }
+}
+
 /// Runs a node serving `socket` until `stop` resolves, then ends its links
 /// and lets go of the sessions they carried.
 pub async fn run<S, M, D>(
@@ -209,7 +231,9 @@ where
             // A holder that ended without letting its session go says
             // nothing, so what is held is looked at each minute too.
             _ = leaving.tick() => {
-                shared.hand_over();
+                let here = shared.measure();
+                tell_hosted(&here);
+                shared.hand_over(&here);
                 shared.keep_awake(&mut awake);
             }
             change = changes.changes.recv() => match change {
@@ -485,10 +509,10 @@ impl<S: Store> Shared<S> {
 
     /// Tells each session running here that hasn't been told yet, once this
     /// machine leaves soon (`handover`), through its steer inbox.
-    fn hand_over(&self) {
-        let leaves = self
-            .measure()
+    fn hand_over(&self, here: &facts::Machine) {
+        let leaves = here
             .declared
+            .as_ref()
             .and_then(|declared| declared.leaves_at);
         let due = {
             let inner = self.lock();
@@ -1177,6 +1201,8 @@ mod tests {
                 cores: None,
                 agents: std::collections::BTreeMap::new(),
                 leaves_at: Some(leaves),
+                within: None,
+                hosts: Vec::new(),
             }),
             ..facts::measure(name, &nowhere)
         };

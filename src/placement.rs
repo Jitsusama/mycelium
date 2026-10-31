@@ -407,6 +407,8 @@ mod tests {
                 cores: None,
                 agents: BTreeMap::new(),
                 leaves_at: None,
+                within: None,
+                hosts: Vec::new(),
             }),
             ..facts::measure(name, &nowhere)
         }

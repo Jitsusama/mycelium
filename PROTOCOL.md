@@ -375,7 +375,14 @@ does, in RFC 3339, after which it is no longer one of `"Machines"`; from
 ten minutes before then, its node puts a steer into the inbox of each
 session running there, once, saying when it leaves and to commit and
 push, to put what can't be pushed and a note of what's next where its
-work is shared, and to stop, with `from` `"machine"` and no `act`. Only
+work is shared, and to stop, with `from` `"machine"` and no `act`.
+Where given, `within` names the machine it runs within, as a virtual
+machine does its host, and a file the two share, `{"machine": "...",
+"file": "..."}`; its `power` and `room` are then its host's, as the host
+last said them there, while that is under two minutes old, since it
+reads neither of its own truly. A host declares each machine within it
+in `hosts`, in the same shape, and its node writes its `power` and
+`room` to each file each minute, whole. Only
 the machine's own built configuration writes it, as
 `~/.config/mycelium/declared.json` (or under `XDG_CONFIG_HOME`), and
 the machine enforces its own taints. It is `null` where nothing is
