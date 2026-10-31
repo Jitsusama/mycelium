@@ -3,6 +3,7 @@
 //! in memory, and serves the local socket every client reads.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
@@ -12,22 +13,24 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::awake::{self, Awake};
 use crate::daemon;
-use crate::facts;
+use crate::facts::{self, Readiness};
 use crate::group::{Pattern, Routes};
-use crate::handover::{Sleeping, Told};
+use crate::handover::{self, Sleeping, Told};
 use crate::hold::{self, start, start::Starter};
+use crate::link::dial::{Dial, Program};
 use crate::link::refused::Refusals;
 use crate::link::starts::{Asks, Starting};
-use crate::link::{self, dial::Dial, discovery::Discovery, membership::Membership};
+use crate::link::{self, discovery::Discovery, membership::Membership};
+use crate::made::{self, Book, Made};
 use crate::mesh;
-use crate::offer;
+use crate::offer::{self, Offer};
 use crate::place;
-use crate::placement::{self, Placement};
+use crate::placement::{self, Miss, Need, Placement, Work};
 use crate::record::{Message, Session, State as SessionState};
 use crate::room;
 use crate::served::{self, Served};
@@ -139,7 +142,13 @@ pub struct Given {
     pub serves: BTreeMap<String, served::Source>,
     /// The providers' programs asked what machines they could make.
     pub providers: Vec<String>,
+    /// Where it keeps each machine it makes and lets go.
+    pub book: Book,
 }
+
+/// How long a machine made has to link: a provider's machine is ready in
+/// seconds, and its node in a few more.
+const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
@@ -198,10 +207,14 @@ where
         updater,
         serves,
         providers,
+        book,
     } = given;
+    let (to_dial, mut made) = mpsc::unbounded_channel();
     let shared = Shared {
         served: Arc::new(Served::start(serves)),
         providers: providers.into(),
+        book,
+        to_dial,
         held: place::held(&hello.realm),
         steers,
         updater,
@@ -239,17 +252,17 @@ where
             },
             Some(dial) = found.recv() => {
                 let dial = Arc::new(dial);
-                let starting = Starting {
-                    node: socket.path.clone(),
-                    held: shared.held.clone(),
-                    asking: Some((shared.asks.clone(), {
-                        let dial = dial.clone();
-                        Arc::new(move |words: &[String]| dial.there(words))
-                    })),
-                    steers: shared.steers.clone(),
-                };
-                let carries = (sharing.clone(), starting, refusals.clone());
+                let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
                 links.spawn(keep_linked(dial, store.clone(), membership.clone(), carries));
+            }
+            Some((made, unwanted)) = made.recv() => {
+                let dial = Arc::new(Program {
+                    program: made.provider.clone(),
+                    place: made.place.clone(),
+                });
+                let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
+                let linked = keep_linked(dial.clone(), store.clone(), membership.clone(), carries);
+                links.spawn(keep_made(dial, made, shared.book.clone(), unwanted, linked));
             }
             Some(()) = held.recv() => {
                 shared.read_sessions();
@@ -372,6 +385,92 @@ async fn keep_linked(
     }
 }
 
+/// Keeps a machine made from an offer `linked` until it is done with:
+/// until its work has handed over and it was released, it isn't wanted
+/// once made, or its time is up, when it is released. Keeps in the book
+/// that it was let go, and why.
+async fn keep_made(
+    dial: Arc<Program>,
+    made: Made,
+    book: Book,
+    unwanted: Arc<Notify>,
+    linked: impl Future<Output = ()>,
+) {
+    let left = jiff::Timestamp::now().duration_until(made.until);
+    // A link lets its machine go itself once its work has handed over.
+    let release = tokio::select! {
+        () = linked => None,
+        () = unwanted.notified() => Some("nothing started on it once it was made"),
+        () = tokio::time::sleep(Duration::try_from(left).unwrap_or_default()) => {
+            Some("its time was up")
+        }
+    };
+    let why = match release {
+        None => "its work handed over".to_owned(),
+        Some(why) => match dial.release().await {
+            Some(Ok(())) => why.to_owned(),
+            Some(Err(error)) => {
+                format!("{why}, but it wasn't released, so it ends at its time: {error}")
+            }
+            None => format!("{why}, but nothing releases it, so it ends at its time"),
+        },
+    };
+    eprintln!("{} was let go: {why}", made.machine);
+    if let Err(error) = book.released(&made, &why) {
+        eprintln!(
+            "{} was let go, but the book doesn't say so: {error}",
+            made.machine
+        );
+    }
+}
+
+/// How long a machine made of `offer` for `work` is to live: past the
+/// work's end by the time its sessions are given to hand over, though no
+/// longer than the offer lives; or as long as the offer lives, where the
+/// work doesn't say.
+///
+/// # Errors
+///
+/// When neither says, since no machine is made without an end.
+fn lasting(work: &Work, offer: &Offer) -> Result<Duration, String> {
+    let wanted = work
+        .lasts
+        .and_then(|lasts| Duration::try_from(lasts + handover::HANDOVER).ok());
+    let offered = offer.lasts.map(Duration::from_secs);
+    match (wanted, offered) {
+        (Some(wanted), Some(offered)) => Ok(wanted.min(offered)),
+        (Some(one), None) | (None, Some(one)) => Ok(one),
+        (None, None) => Err(format!(
+            "{} from {} would be made with no end, as neither it nor the work says how long \
+             it lives; say how long the work lasts",
+            offer.shape, offer.provider
+        )),
+    }
+}
+
+/// Why nothing was made for work no machine of the realm takes, as
+/// `misses` say: each offer's reasons, as `offered` says, and each
+/// provider that couldn't say what it offers.
+fn nothing_offered(
+    misses: &[Miss],
+    offered: &[Miss],
+    unanswered: &BTreeMap<String, String>,
+) -> String {
+    let mut why = format!("nowhere: {}", placement::said(misses));
+    if offered.is_empty() && unanswered.is_empty() {
+        why.push_str("; and no provider offers a machine");
+    }
+    if !offered.is_empty() {
+        why.push_str("; and no offer would do: ");
+        why.push_str(&placement::said(offered));
+    }
+    for (program, unsaid) in unanswered {
+        // Writing to a string can't fail.
+        let _ = write!(why, "; {program} couldn't say what it offers: {unsaid}");
+    }
+    why
+}
+
 /// Why a way in that has ended turned this machine away, if it did.
 async fn said_why(refused: Option<tokio::task::JoinHandle<Option<String>>>) -> Option<String> {
     // The link is over and its process gone, so what it said is all but
@@ -411,6 +510,11 @@ struct Shared<S> {
     served: Arc<Served>,
     /// The providers' programs asked what machines they could make.
     providers: Arc<[String]>,
+    /// Where it keeps each machine it makes and lets go.
+    book: Book,
+    /// The node's loop, which links each machine made, and lets it go
+    /// when told it isn't wanted.
+    to_dial: mpsc::UnboundedSender<(Made, Arc<Notify>)>,
 }
 
 /// What changes each time the node's sessions or the realm's machines may
@@ -446,6 +550,8 @@ impl<S: Clone> Clone for Shared<S> {
             said: self.said.clone(),
             served: self.served.clone(),
             providers: self.providers.clone(),
+            book: self.book.clone(),
+            to_dial: self.to_dial.clone(),
         }
     }
 }
@@ -550,10 +656,10 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             .into_iter()
             .filter(|machine| machine.name != self.machine)
             .map(|machine| match machine.state {
-                facts::Readiness::Ready => {
+                Readiness::Ready => {
                     serde_json::json!({"name": machine.name, "state": "answering"})
                 }
-                facts::Readiness::Unreachable => serde_json::json!({
+                Readiness::Unreachable => serde_json::json!({
                     "name": machine.name,
                     "state": "refused",
                     "why": format!("no link reaches it; it last said itself at {}", machine.measured_at),
@@ -814,11 +920,23 @@ impl<S: Store> Shared<S> {
         }
     }
 
-    /// Updates `machine` to its configuration's main: this one through its
-    /// updater, saying each step in the node's log, and another through
-    /// the link reaching it. Answers how the update ended.
+    /// What a link over `dial` carries starts with: this node's `node`
+    /// socket, its held sessions and steer inboxes, and the way to ask its
+    /// machine's node to start one there.
+    fn starting<D: Dial + 'static>(&self, dial: &Arc<D>, node: &Path) -> Starting {
+        Starting {
+            node: node.to_owned(),
+            held: self.held.clone(),
+            asking: Some((self.asks.clone(), {
+                let dial = dial.clone();
+                Arc::new(move |words: &[String]| dial.there(words))
+            })),
+            steers: self.steers.clone(),
+        }
+    }
+
     /// What each provider's program offers, asked now, all at once.
-    async fn offers(&self) -> Reply {
+    async fn offers(&self) -> Offers {
         let mut asking = JoinSet::new();
         for (order, program) in self.providers.iter().cloned().enumerate() {
             asking.spawn(async move {
@@ -837,9 +955,12 @@ impl<S: Store> Shared<S> {
                 }
             }
         }
-        Ok(Response::Offers(offers))
+        offers
     }
 
+    /// Updates `machine` to its configuration's main: this one through its
+    /// updater, saying each step in the node's log, and another through
+    /// the link reaching it. Answers how the update ended.
     async fn update(&self, machine: &str) -> Reply {
         if machine != self.machine {
             return self.asks.update(machine).await;
@@ -937,23 +1058,102 @@ impl<S: Store> Shared<S> {
     }
 
     /// Starts a program held on the machine placement chooses, answering
-    /// where and how to join it, or why it didn't start.
+    /// where and how to join it, or why it didn't start. Where none of the
+    /// realm's machines takes it and it may cost money, on a machine made
+    /// for it.
     async fn start(&self, asked: Start) -> Reply {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let machine = match placement::place(&asked.work, &self.machines()) {
-            Placement::Placed { machine, .. } => machine,
-            Placement::Pending { misses } => {
-                return Err(format!(
-                    "nowhere now, though a machine out of reach would do: {}",
-                    placement::said(&misses)
-                ));
+        match placement::place(&asked.work, &self.machines()) {
+            Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
+            Placement::Pending { misses } | Placement::Refused { misses } if asked.may_cost => {
+                self.start_on_made(asked, &misses).await
             }
-            Placement::Refused { misses } => {
-                return Err(format!("nowhere: {}", placement::said(&misses)));
+            Placement::Pending { misses } => Err(format!(
+                "nowhere now, though a machine out of reach would do: {}",
+                placement::said(&misses)
+            )),
+            Placement::Refused { misses } => Err(format!("nowhere: {}", placement::said(&misses))),
+        }
+    }
+
+    /// Makes a machine for `asked`, which `misses` say no machine of the
+    /// realm takes, from the cheapest offer that would, and starts it there
+    /// once it links. A machine made that nothing starts on is let go.
+    async fn start_on_made(&self, asked: Start, misses: &[Miss]) -> Reply {
+        let offers = self.offers().await;
+        let offer = placement::to_make(&asked.work, &offers.offers)
+            .map_err(|offered| nothing_offered(misses, &offered, &offers.unanswered))?;
+        let made = made::make(offer, lasting(&asked.work, offer)?).await?;
+        if let Err(error) = self.book.made(&made) {
+            eprintln!(
+                "{} was made, but the book doesn't say so: {error}",
+                made.machine
+            );
+        }
+        let unwanted = Arc::new(Notify::new());
+        // The loop runs for as long as the node answers anything.
+        let _ = self.to_dial.send((made.clone(), unwanted.clone()));
+        let started = self.start_once_linked(asked, &made).await;
+        let used = || {
+            let inner = self.lock();
+            inner
+                .state
+                .sessions()
+                .iter()
+                .any(|one| one.machine == made.machine)
+        };
+        if started.is_err() && !used() {
+            unwanted.notify_one();
+        }
+        started
+    }
+
+    /// Starts `asked` on `made` once it has linked and its own facts, not
+    /// the offer's, say it takes the work.
+    async fn start_once_linked(&self, asked: Start, made: &Made) -> Reply {
+        let mut changed = self.said.machines.subscribe();
+        let ready = |all: &[facts::Machine]| {
+            all.iter()
+                .any(|one| one.name == made.machine && one.state == Readiness::Ready)
+        };
+        let linked = async {
+            while !ready(&self.machines()) {
+                // The node holds the sender for as long as it answers.
+                let _ = changed.changed().await;
             }
         };
+        tokio::time::timeout(LINKED_WITHIN, linked)
+            .await
+            .map_err(|_| {
+                format!(
+                    "{} was made, but didn't link within {}s, so it is let go",
+                    made.machine,
+                    LINKED_WITHIN.as_secs()
+                )
+            })?;
+        let mut there = asked.work.clone();
+        there.needs.push(Need::Machine(made.machine.clone()));
+        match placement::place(&there, &self.machines()) {
+            Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
+            Placement::Pending { misses } | Placement::Refused { misses } => {
+                let its: Vec<Miss> = misses
+                    .into_iter()
+                    .filter(|miss| miss.machine == made.machine)
+                    .collect();
+                Err(format!(
+                    "{} was made, but isn't what was offered, so it is let go: {}",
+                    made.machine,
+                    placement::said(&its)
+                ))
+            }
+        }
+    }
+
+    /// Starts `asked` on `machine`: this one by its own starter, another
+    /// through the link reaching it.
+    async fn start_on(&self, machine: String, asked: Start) -> Reply {
         if machine != self.machine {
             return self.asks.ask(&machine, asked).await;
         }
@@ -1096,7 +1296,7 @@ async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
             Ok(Request::Start(asked)) => shared.start(asked).await,
             Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await,
             Ok(Request::Update { machine }) => shared.update(&machine).await,
-            Ok(Request::Offers) => shared.offers().await,
+            Ok(Request::Offers) => Ok(Response::Offers(shared.offers().await)),
             asked => asked.and_then(|request| shared.answer(request)),
         };
         if write(&mut writing, &reply).await.is_err() {
@@ -1236,8 +1436,24 @@ mod tests {
             .expect("the client asks")
     }
 
-    fn work(needs: Vec<placement::Need>) -> placement::Work {
-        placement::Work {
+    /// What a node given only its sessions' `steers` and its `starter` runs
+    /// with: nothing shared or served, no updater and no providers.
+    fn bare(steers: PathBuf, starter: Option<Starter>) -> Given {
+        Given {
+            sharing: None,
+            starter,
+            refusals: Refusals::default(),
+            steers,
+            awake: Awake::by(None),
+            updater: "/nowhere".into(),
+            serves: BTreeMap::new(),
+            providers: Vec::new(),
+            book: Book::at("/nowhere/made.jsonl".into()),
+        }
+    }
+
+    fn work(needs: Vec<Need>) -> Work {
+        Work {
             needs,
             prefers: Vec::new(),
             tolerates: Vec::new(),
@@ -1270,6 +1486,7 @@ mod tests {
         let updater = updater_of(socket);
         let serves = BTreeMap::from([("quest".to_owned(), quests_of(socket))]);
         let providers = providers_of(socket);
+        let book = Book::at(socket.with_file_name("made.jsonl"));
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -1280,6 +1497,7 @@ mod tests {
                 updater,
                 serves,
                 providers,
+                book,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -1517,6 +1735,42 @@ mod tests {
             .expect("the link is dialled again once its refusal is withdrawn")
             .expect("the link is kept");
         keeping.abort();
+    }
+
+    #[test]
+    fn a_machine_is_made_to_outlive_its_work_and_never_without_an_end() {
+        let offer = |lasts| Offer {
+            provider: "lender".to_owned(),
+            shape: "small".to_owned(),
+            facts: offer::Shape::default(),
+            costs: offer::Costs {
+                hourly: "0.003".to_owned(),
+                currency: "USD".to_owned(),
+            },
+            lasts,
+        };
+        let mut work = work(Vec::new());
+        work.lasts = Some(jiff::SignedDuration::from_mins(30));
+        assert_eq!(
+            lasting(&work, &offer(Some(7200))),
+            Ok(Duration::from_secs(40 * 60)),
+            "past the work's end by the time its sessions have to hand over"
+        );
+        assert_eq!(
+            lasting(&work, &offer(Some(2100))),
+            Ok(Duration::from_secs(2100)),
+            "but no longer than the offer lives"
+        );
+        work.lasts = None;
+        assert_eq!(
+            lasting(&work, &offer(Some(7200))),
+            Ok(Duration::from_secs(7200)),
+            "as long as the offer lives, where the work doesn't say"
+        );
+        assert!(
+            lasting(&work, &offer(None)).is_err(),
+            "and never with no end, where neither says"
+        );
     }
 
     #[tokio::test]
@@ -1956,11 +2210,12 @@ mod tests {
             "a session held elsewhere is joined through the dial that reaches it"
         );
 
-        let there = placement::Need::Machine("equilibrius".to_owned());
+        let there = Need::Machine("equilibrius".to_owned());
         let asked = Request::Start(Start {
             work: work(vec![there]),
             folder: Some(dir.path().to_owned()),
             command: vec!["pi".to_owned()],
+            may_cost: false,
         });
         let started = ask(near_socket.clone(), asked).await;
         let Ok(Response::Started(started)) = started else {
@@ -2257,16 +2512,7 @@ mod tests {
                     // A dropped sender stops the node as surely as a sent stop.
                     let _ = stopped.await;
                 };
-                let given = Given {
-                    sharing: None,
-                    starter: None,
-                    refusals: Refusals::default(),
-                    steers,
-                    awake: Awake::by(None),
-                    updater: "/nowhere".into(),
-                    serves: BTreeMap::new(),
-                    providers: Vec::new(),
-                };
+                let given = bare(steers, None);
                 run(
                     store,
                     membership,
@@ -2355,19 +2601,11 @@ mod tests {
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let steers = dir.path().join("steer");
         let node = tokio::spawn(async move {
-            let given = Given {
-                sharing: None,
-                starter: Some(Starter {
-                    program: holder,
-                    scoped: false,
-                }),
-                refusals: Refusals::default(),
-                steers,
-                awake: Awake::by(None),
-                updater: "/nowhere".into(),
-                serves: BTreeMap::new(),
-                providers: Vec::new(),
+            let starter = Starter {
+                program: holder,
+                scoped: false,
             };
+            let given = bare(steers, Some(starter));
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
                 let _ = stopped.await;
@@ -2385,10 +2623,11 @@ mod tests {
                     work: work(needs),
                     folder,
                     command,
+                    may_cost: false,
                 });
                 client.ask(&asked).expect("the node answers")
             };
-            let elsewhere = placement::Need::Machine("equilibrius".to_owned());
+            let elsewhere = Need::Machine("equilibrius".to_owned());
             (
                 start(vec![elsewhere], Some(folder)),
                 start(Vec::new(), None),

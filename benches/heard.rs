@@ -174,6 +174,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 updater: "/nowhere".into(),
                 serves: std::collections::BTreeMap::new(),
                 providers: Vec::new(),
+                book: mycelium::made::Book::at("/nowhere/made.jsonl".into()),
             },
             bound,
             until_stopped,

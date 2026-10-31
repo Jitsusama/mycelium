@@ -11,19 +11,26 @@
 //! machine; one that would rather not only ranks the machine after every
 //! other that qualifies.
 //!
+//! Where no machine of the realm takes work, an offer may
+//! ([`to_make`]): each is judged by the facts its provider promises, the
+//! same way, and what isn't promised meets no need.
+//!
 //! Placement only chooses. Whether work starts is the machine's to say
 //! when it is asked, by its own queue and its own taints, so nothing here
 //! fits work against the room a machine has: its room only ranks it.
 
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
 use crate::awake;
+use crate::declared::Declared;
 use crate::declared::{Effect, Taint};
 use crate::disk::Band;
 use crate::facts::{AcceleratorKind, Machine, Readiness};
+use crate::offer::Offer;
 use crate::room::Limit;
 
 /// Work to be placed.
@@ -113,6 +120,8 @@ pub enum Because {
     Unreachable,
     /// It leaves at this time, before the work would end.
     LeavesFirst(jiff::Timestamp),
+    /// One made would live only this long, ending before the work would.
+    LivesOnly(jiff::SignedDuration),
 }
 
 impl fmt::Display for Need {
@@ -139,6 +148,9 @@ impl fmt::Display for Because {
             Because::Ranked => write!(f, "ranked lower"),
             Because::Unreachable => write!(f, "is out of reach"),
             Because::LeavesFirst(at) => write!(f, "leaves at {at}, before the work ends"),
+            Because::LivesOnly(lives) => {
+                write!(f, "would live only {lives:#}, ending before the work")
+            }
         }
     }
 }
@@ -234,6 +246,91 @@ fn place_at(work: &Work, machines: &[Machine], now: jiff::Timestamp) -> Placemen
         Placement::Pending { misses }
     } else {
         Placement::Refused { misses }
+    }
+}
+
+/// The offer to make a machine of for `work`, where no machine of the
+/// realm takes it, judged by the facts each promises: of those that would
+/// take it, the one no taint would rather not have, then that meets the
+/// most preferences, earliest most, then the cheapest an hour, then by
+/// name, so one ask answers the same as the next. Otherwise each offer
+/// with why not, named as its shape from its provider.
+///
+/// # Errors
+///
+/// When no offer would take the work, saying each one's reasons.
+pub fn to_make<'a>(work: &Work, offers: &'a [Offer]) -> Result<&'a Offer, Vec<Miss>> {
+    let judged: Vec<(Judged, &Offer)> = offers
+        .iter()
+        .map(|offer| (judge_offer(work, offer), offer))
+        .collect();
+    let chosen = judged
+        .iter()
+        .filter(|(one, _)| one.hard.is_empty())
+        .min_by_key(|(one, offer)| {
+            (
+                !one.rather_not.is_empty(),
+                Reverse(one.preferred.clone()),
+                offer.costs.order(),
+                one.name.clone(),
+            )
+        });
+    if let Some((_, offer)) = chosen {
+        return Ok(offer);
+    }
+    Err(judged
+        .into_iter()
+        .map(|(one, _)| Miss {
+            machine: one.name,
+            because: one.hard,
+        })
+        .collect())
+}
+
+fn judge_offer(work: &Work, offer: &Offer) -> Judged {
+    let mut hard = Vec::new();
+    if let Some(lives) = offer
+        .lasts
+        .and_then(|lasts| i64::try_from(lasts).ok())
+        .map(jiff::SignedDuration::from_secs)
+        && work.lasts.is_some_and(|lasts| lives <= lasts)
+    {
+        hard.push(Because::LivesOnly(lives));
+    }
+    let shape = &offer.facts;
+    let promised = |need: &Need| match need {
+        // A machine not yet made has no name of its own to need.
+        Need::Machine(_) => Some(false),
+        Need::System(system) => shape.system.as_ref().map(|its| its == system),
+        Need::Arch(arch) => shape.arch.as_ref().map(|its| its == arch),
+        Need::Reach(network) => reaches(shape.declared.as_ref(), &BTreeMap::new(), network),
+        Need::Accelerator(_) => None,
+    };
+    for need in &work.needs {
+        match promised(need) {
+            Some(true) => {}
+            Some(false) => hard.push(Because::Lacks(need.clone())),
+            None => hard.push(Because::Unknown(need.clone())),
+        }
+    }
+    let mut rather_not = Vec::new();
+    let taints = shape.declared.iter().flat_map(|declared| &declared.taints);
+    for taint in taints.filter(|taint| !work.tolerates.contains(&taint.key)) {
+        match taint.effect {
+            Effect::Never => hard.push(Because::Refuses(taint.clone())),
+            Effect::PreferNot => rather_not.push(taint.clone()),
+        }
+    }
+    Judged {
+        name: format!("{} from {}", offer.shape, offer.provider),
+        hard,
+        rather_not,
+        preferred: work
+            .prefers
+            .iter()
+            .map(|need| promised(need) == Some(true))
+            .collect(),
+        free: 0,
     }
 }
 
@@ -351,7 +448,7 @@ fn is(machine: &Machine, need: &Need) -> Option<bool> {
         Need::Machine(name) => Some(&machine.name == name),
         Need::System(system) => machine.system.as_ref().map(|its| its == system),
         Need::Arch(arch) => Some(&machine.arch == arch),
-        Need::Reach(network) => reaches(machine, network),
+        Need::Reach(network) => reaches(machine.declared.as_ref(), &machine.reached, network),
         Need::Accelerator(kind) => machine
             .accelerators
             .as_ref()
@@ -359,16 +456,21 @@ fn is(machine: &Machine, need: &Need) -> Option<bool> {
     }
 }
 
-/// Whether `machine` reaches `network`: always, as its configuration
-/// declares; now, as the probe its configuration names last answered; or
-/// unknown, while that probe hasn't been heard or nothing is declared.
-fn reaches(machine: &Machine, network: &str) -> Option<bool> {
-    let declared = machine.declared.as_ref()?;
+/// Whether a machine `declared` so reaches `network`: always, as its
+/// configuration declares; now, as the probe its configuration names last
+/// answered by `reached`; or unknown, while that probe hasn't been heard or
+/// nothing is declared.
+fn reaches(
+    declared: Option<&Declared>,
+    reached: &BTreeMap<String, bool>,
+    network: &str,
+) -> Option<bool> {
+    let declared = declared?;
     if declared.reach.iter().any(|always| always == network) {
         return Some(true);
     }
     if declared.probes.contains_key(network) {
-        return machine.reached.get(network).copied();
+        return reached.get(network).copied();
     }
     Some(false)
 }
@@ -682,6 +784,61 @@ mod tests {
         assert!(
             matches!(place_at(&work, &realm, leaves), Placement::Refused { .. }),
             "once it has left, nothing goes there, and nothing waits for it"
+        );
+    }
+
+    /// An offer of `shape` on `linux` and `x86_64`, reaching `reach`, at `hourly`
+    /// US dollars and living `lasts` seconds.
+    fn offer(shape: &str, hourly: &str, lasts: Option<u64>, reach: &[&str]) -> Offer {
+        let declared = machine(shape, "linux", 0, reach).declared;
+        Offer {
+            provider: "lender".to_owned(),
+            shape: shape.to_owned(),
+            facts: crate::offer::Shape {
+                system: Some("linux".to_owned()),
+                arch: Some("x86_64".to_owned()),
+                declared,
+                ..crate::offer::Shape::default()
+            },
+            costs: crate::offer::Costs {
+                hourly: hourly.to_owned(),
+                currency: "USD".to_owned(),
+            },
+            lasts,
+        }
+    }
+
+    #[test]
+    fn the_cheapest_offer_that_would_take_the_work_is_made() {
+        let offers = [
+            offer("large", "10.0", Some(7200), &["shopify"]),
+            offer("small", "9.50", Some(3600), &["shopify"]),
+            offer("open", "0.001", None, &[]),
+        ];
+        let mut work = needing(vec![Need::Reach("shopify".to_owned())]);
+        assert_eq!(
+            to_make(&work, &offers).map(|chosen| chosen.shape.as_str()),
+            Ok("small"),
+            "of the two that reach what it needs, the cheaper, by amount and not by how it is written"
+        );
+
+        work.lasts = Some(jiff::SignedDuration::from_hours(1));
+        assert_eq!(
+            to_make(&work, &offers).map(|chosen| chosen.shape.as_str()),
+            Ok("large"),
+            "not one that would end before the work does"
+        );
+
+        work.needs.push(Need::Accelerator(AcceleratorKind::Gpu));
+        work.needs.push(Need::Machine("optimus".to_owned()));
+        let Err(misses) = to_make(&work, &offers) else {
+            panic!("no offer promises a gpu, and none is a machine already named");
+        };
+        assert_eq!(
+            said(&misses[..2]),
+            "large from lender hasn't said a gpu, isn't optimus; small from lender \
+             would live only 1h, ending before the work, hasn't said a gpu, isn't optimus",
+            "each offer says why not, a fact it doesn't promise meeting no need"
         );
     }
 

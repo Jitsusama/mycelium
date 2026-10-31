@@ -312,7 +312,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Machines"` | `{"Machines": [machine]}`, this machine first, then each other |
 | `"Offers"` | `{"Offers": {"offers", "unanswered"}}`, asked of each provider now |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
-| `{"Start": {"work", "folder", "command"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
+| `{"Start": {"work", "folder", "command", "may_cost"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine"}}`, where it was put |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
@@ -437,8 +437,9 @@ what it could make, all at once, as `PROGRAM offers`. The program writes
 one JSON line a shape and ends within 30 seconds:
 `{"shape", "facts", "costs": {"hourly", "currency"}, "lasts"}`. The
 `shape` is the program's own name for it; `facts` says what such a
-machine would be, in a machine's own words (`system`, `cores`,
-`memory`, `disk` and `declared`), and anything left out is unknown; the
+machine would be, in a machine's own words (`system` such as `linux`,
+`arch` such as `x86_64`, `cores`, `memory`, `disk` and `declared`),
+and anything left out is unknown; the
 hourly cost is a decimal written out, such as `"0.12"`, in a
 three-letter currency; `lasts` is the longest one lives, in seconds,
 where its provider fixes it. Each offer comes back with the `provider`
@@ -470,8 +471,9 @@ preferences met, then the most memory free, then by name. The answer is
 only a machine out of reach would do and the work may wait, or
 `{"refused": {"misses"}}`; each miss names a `machine` and `because`:
 `{"lacks": need}`, `{"unknown": need}`, `{"refuses": taint}`,
-`{"rather_not": taint}`, `"ranked"`, `"unreachable"` or
-`{"leaves_first": time}`. Placement only
+`{"rather_not": taint}`, `"ranked"`, `"unreachable"`,
+`{"leaves_first": time}` or, for an offer, `{"lives_only": duration}`.
+Placement only
 chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only
 ranks it.
@@ -495,6 +497,30 @@ over the dial, such as `ssh -t equilibrius mycelium --realm work attach
 <held>`. It fails with a reason when no link reaches the machine, its
 mycelium is too old to start sessions, or it doesn't answer within 30
 seconds.
+
+A start that no machine of the realm takes, and that says it
+`may_cost` (`mycelium start --may-cost`), has a machine made for it.
+The node asks its providers what they offer and judges each offer as
+it would a machine, by the facts it promises: a fact it doesn't promise
+meets no need, and none is a machine already named. Of those that would
+take the work, it makes one of the cheapest an hour, after taints and
+preferences, as `PROGRAM make SHAPE --lasting SECONDS`: the work's
+`lasts` and ten minutes to hand over, though no longer than the offer
+lives, or as long as the offer lives where the work doesn't say. It
+makes none where neither says, since no machine is made without an
+end. The program writes one JSON line, `{"place", "machine", "until"}`:
+where it is, as `--via` names it, the name its node will say for
+itself, and when its provider ends it whatever else happens. The node
+dials it as it would `--via PROGRAM:PLACE`, waits up to five minutes
+for it to link, places the work again by the machine's own facts, and
+starts it there. It lets the machine go, with `PROGRAM release PLACE`,
+once its work has handed over, at `until`, or at once when nothing
+started on it. Each make and release is kept as a JSON line in
+`made.jsonl` in mycelium's folder, `{"at", "made"}` with the machine,
+its place, shape, provider, `until` and hourly cost, and `{"at",
+"released"}` with why, so what was made and for how long can be summed.
+A start whose providers make nothing says why: each machine's and each
+offer's reasons, and each program that couldn't say what it offers.
 
 `"Steer"` puts `steer`, in the harness's own shape (`text`, an `act` of
 `pause`, `resume` or `stop`, `at`, `from` and a talk's `id`), into the
@@ -644,12 +670,13 @@ Each lands behind a seam above, or as a seam of its own:
   such as evaluating and building for a system, so work that needs it is
   placed there.
 - **Providers:** programs beside a node that offer shapes of machine
-  (`"Offers"`, above), make one, start a session on it, reach it and end
-  it with its cost, and say when one is lost, such as Aquifer's, which
-  lives outside this repository. A machine a provider made shows as a
-  place like any other. A machine that can't dial out is dialled in,
-  through its provider's program (`--via`, above), reaching a node that
-  answers links on a port only its own machine can reach, which is next.
+  and make one for a start that may cost (`"Offers"` and `"Start"`,
+  above), reach it and let it go, such as Aquifer's, which lives
+  outside this repository; next, each says when one is lost and what it
+  cost. A machine a provider made shows as a place like any other. A
+  machine that can't dial out is dialled in, through its provider's
+  program (`--via`, above), reaching a node that answers links on a port
+  only its own machine can reach, which is next.
 - **Connections of the node's own:** machines dialled by key, found on the
   network without a cloud, and encrypted always, behind `Dial` and
   `Discovery`; membership then checks the realm's enrolled keys. SSH

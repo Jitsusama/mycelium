@@ -34,6 +34,7 @@
 //! - [`reach`]: whether the networks it reaches only now and then answer
 //! - [`placement`]: which machine work goes to, by what each says it is
 //! - [`offer`]: the shapes of machine a provider's program could make
+//! - [`made`]: machines made from offers, and the book of each
 //! - [`group`]: groups' names, patterns that hear them, and routes
 //! - [`record`]: messages and sessions, as clients read them
 //! - [`mesh`]: the harness mesh's files read as records
@@ -58,6 +59,7 @@ pub mod handover;
 pub mod hold;
 pub mod install;
 pub mod link;
+pub mod made;
 pub mod mesh;
 pub mod node;
 pub mod offer;

@@ -92,6 +92,10 @@ pub struct Start {
     pub folder: Option<PathBuf>,
     /// The program and its arguments, run through the login shell there.
     pub command: Vec<String>,
+    /// Whether a machine may be made for it from a provider's offer, which
+    /// may cost money, where no machine of the realm takes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub may_cost: bool,
 }
 
 /// A program started held.
