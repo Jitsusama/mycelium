@@ -137,6 +137,29 @@ impl Watch {
         }
     }
 
+    /// Waits up to `within` for the watcher to hear of `path` itself,
+    /// keeping what it hears before for the next look. What it hears comes
+    /// in order, so once it has heard of `path`, everything it was to hear
+    /// of earlier, such as macOS telling late of folders made just before
+    /// the watch, has come too.
+    #[cfg(test)]
+    pub fn wait_for(&mut self, path: &Path, within: Duration) -> bool {
+        let resolved = fs::canonicalize(path).ok();
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let Ok(heard) = self.heard.recv_timeout(left) else {
+                return false;
+            };
+            let found =
+                matches!(&heard, Heard::At(at) if at == path || resolved.as_ref() == Some(at));
+            self.early.push(heard);
+            if found {
+                return true;
+            }
+        }
+    }
+
     /// Starts watching `folder`, answering whether it is watched.
     fn start(&mut self, (id, folder): &Folder) -> bool {
         let at = self.scratch.join(id).join(folder);
@@ -236,6 +259,19 @@ mod tests {
         folder.to_owned()
     }
 
+    /// Takes what the watcher has yet to tell of before the test, such as
+    /// macOS telling late of the folders made just before it watched:
+    /// it makes the folder `mark`, one change of one event, waits to hear
+    /// of it, and so of all before it, and takes every folder changed.
+    fn settle(watch: &mut Watch, mark: &Path, folders: &BTreeSet<String>) {
+        fs::create_dir(mark).expect("the mark is made");
+        assert!(
+            watch.wait_for(mark, HEARD_WITHIN),
+            "the watcher hears the mark"
+        );
+        watch.to_walk(QUEST, folders);
+    }
+
     #[test]
     fn a_folder_is_walked_when_named_and_then_only_once_it_changes() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -248,6 +284,11 @@ mod tests {
             watch.to_walk(QUEST, &both),
             BTreeSet::from([named("bench"), named("notes")]),
             "each folder is walked once when first named"
+        );
+        settle(
+            &mut watch,
+            &dir.path().join(QUEST).join("notes/settled"),
+            &both,
         );
         assert!(
             watch.to_walk(QUEST, &both).is_empty(),
@@ -290,15 +331,11 @@ mod tests {
         let mut watch = Watch::new(dir.path().to_owned());
         let notes = shared(&["notes"]);
         watch.to_walk(QUEST, &notes);
-        // FSEvents can tell of the folders made just before it watched;
-        // what it heard comes in order, so once it hears a first build,
-        // all it had of those has come too and is taken here.
-        fs::write(dir.path().join(QUEST).join("notes/target/first"), "built").expect("written");
-        assert!(
-            watch.wait(HEARD_WITHIN),
-            "the watcher hears the first build"
+        settle(
+            &mut watch,
+            &dir.path().join(QUEST).join("notes/target/settled"),
+            &notes,
         );
-        watch.to_walk(QUEST, &notes);
 
         fs::write(dir.path().join(QUEST).join("notes/target/big"), "built").expect("written");
         assert!(watch.wait(HEARD_WITHIN), "the watcher hears the build");
