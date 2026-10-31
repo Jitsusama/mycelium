@@ -2,8 +2,9 @@
 //! asks the node for what another program keeps in a file, and hears each
 //! change, without the node learning that file's shape. The files stay
 //! their own record: the node's configuration names each kind's file or
-//! folder, the field holding its records and the field keying each, and
-//! the node passes every record's fields on as they are.
+//! folder, the field holding its records and the field keying each, or a
+//! file to hold whole as one record, and the node passes every record's
+//! fields on as they are.
 //!
 //! A source is read whole when a change reaches its folder, as the
 //! program keeping it writes it whole and renames it into place, and its
@@ -42,8 +43,13 @@ pub struct Source {
     #[serde(default)]
     pub folder: Option<PathBuf>,
     /// The field of each file holding its records: an array of objects,
-    /// or an object of them by their keys.
-    pub records: String,
+    /// or an object of them by their keys; or
+    #[serde(default)]
+    pub records: Option<String>,
+    /// the id of the one record a file is, held whole, as one that says
+    /// how something stands rather than listing things.
+    #[serde(default)]
+    pub whole: Option<String>,
     /// The field keying each record in an array. An object's records are
     /// keyed by their own keys.
     #[serde(default)]
@@ -113,6 +119,12 @@ pub fn configured(file: &Path, held: &[&str]) -> Result<BTreeMap<String, Source>
         }
         if source.by.is_some() && source.folder.is_none() {
             return refused("only a folder's files have a `by`");
+        }
+        if source.records.is_some() == source.whole.is_some() {
+            return refused("it names its `records`, or the record it is `whole`, and only one");
+        }
+        if source.whole.is_some() && (source.folder.is_some() || source.key.is_some()) {
+            return refused("a file held whole is one record, so it names no folder or `key`");
         }
     }
     Ok(sources)
@@ -203,12 +215,11 @@ fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .and_then(|since| i64::try_from(since.as_millis()).ok())
         .unwrap_or_default();
-    let whole: Value =
+    let kept: Value =
         serde_json::from_slice(&bytes).map_err(|error| named(format!("not JSON: {error}")))?;
     let front = match &source.by {
         Some(by) => Some(
-            whole
-                .get(by)
+            kept.get(by)
                 .and_then(id_of)
                 .ok_or_else(|| named(format!("no `{by}` to key its records by")))?,
         ),
@@ -218,14 +229,16 @@ fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String
         Some(front) => format!("{front}:{id}"),
         None => id,
     };
-    let records = match whole.get(&source.records) {
+    let Some(field) = &source.records else {
+        let records = source.whole.iter().map(|id| (id.clone(), kept.clone()));
+        return Ok(serve(kind, heard, records));
+    };
+    let records = match kept.get(field) {
         Some(Value::Array(records)) => {
-            let key = source.key.as_deref().ok_or_else(|| {
-                named(format!(
-                    "`{}` is a list, so it needs a `key`",
-                    source.records
-                ))
-            })?;
+            let key = source
+                .key
+                .as_deref()
+                .ok_or_else(|| named(format!("`{field}` is a list, so it needs a `key`")))?;
             records
                 .iter()
                 .map(|record| {
@@ -241,15 +254,25 @@ fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String
             .iter()
             .map(|(id, record)| (keyed(id.clone()), record.clone()))
             .collect(),
-        _ => return Err(named(format!("no `{}` of records", source.records))),
+        _ => return Err(named(format!("no `{field}` of records"))),
     };
-    Ok(records
+    Ok(serve(kind, heard, records))
+}
+
+/// `records`, each an id and its fields, as `kind`'s records of the
+/// daemon interface, heard at `heard`.
+fn serve(
+    kind: &str,
+    heard: i64,
+    records: impl IntoIterator<Item = (String, Value)>,
+) -> BTreeMap<String, Value> {
+    records
         .into_iter()
         .map(|(id, fields)| {
             let record = daemon::record(kind, &id, heard, fields);
             (daemon::key(kind, &id), record)
         })
-        .collect())
+        .collect()
 }
 
 /// A field's value as an id: a string as it is, a number written out.
@@ -468,7 +491,8 @@ mod tests {
         Source {
             file: Some(file.to_owned()),
             folder: None,
-            records: "quests".to_owned(),
+            records: Some("quests".to_owned()),
+            whole: None,
             key: Some("id".to_owned()),
             by: None,
         }
@@ -488,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_is_served_as_records_keyed_by_a_field_or_by_their_own_keys() {
+    fn a_file_is_served_as_records_keyed_by_a_field_by_their_own_keys_or_whole() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let file = dir.path().join("quests.json");
         write(
@@ -516,7 +540,7 @@ mod tests {
         write(&verdicts, &json!({"items": {"QEST-A:1": {"said": "yes"}}}));
         let source = Source {
             file: Some(verdicts),
-            records: "items".to_owned(),
+            records: Some("items".to_owned()),
             key: None,
             ..quests(&file)
         };
@@ -528,6 +552,24 @@ mod tests {
             )]),
             "an object's records are keyed by their own keys"
         );
+
+        let queue = dir.path().join("queue.json");
+        write(&queue, &json!({"heartbeat": 7, "jobs": []}));
+        let source = Source {
+            file: Some(queue),
+            records: None,
+            whole: Some("optimus".to_owned()),
+            key: None,
+            ..quests(&file)
+        };
+        assert_eq!(
+            unheard(&read("queue", &source).records),
+            BTreeMap::from([(
+                "queue:optimus".to_owned(),
+                json!({"key": "queue:optimus", "kind": "queue", "heartbeat": 7, "jobs": []})
+            )]),
+            "a file held whole is one record of all its fields"
+        );
     }
 
     #[test]
@@ -536,7 +578,8 @@ mod tests {
         let waiting = Source {
             file: None,
             folder: Some(dir.path().to_owned()),
-            records: "items".to_owned(),
+            records: Some("items".to_owned()),
+            whole: None,
             key: Some("id".to_owned()),
             by: Some("quest".to_owned()),
         };
@@ -586,6 +629,24 @@ mod tests {
                 .contains("only one"),
             "a file or a folder"
         );
+        for (sources, why) in [
+            (json!({"file": "/a"}), "neither records nor whole"),
+            (json!({"file": "/a", "records": "r", "whole": "w"}), "both"),
+        ] {
+            assert!(
+                refuses(json!({"queue": sources})).contains("and only one"),
+                "its records or whole: {why}"
+            );
+        }
+        for sources in [
+            json!({"folder": "/a", "whole": "w"}),
+            json!({"file": "/a", "whole": "w", "key": "id"}),
+        ] {
+            assert!(
+                refuses(json!({"queue": sources.clone()})).contains("one record"),
+                "a file held whole is one record: {sources}"
+            );
+        }
         fs::write(
             &config,
             json!({"quest": {"file": "/q.json", "records": "quests", "key": "id"}}).to_string(),
@@ -677,7 +738,8 @@ mod tests {
         let waiting = Source {
             file: None,
             folder: Some(dir.path().join("mission/waiting")),
-            records: "items".to_owned(),
+            records: Some("items".to_owned()),
+            whole: None,
             key: Some("id".to_owned()),
             by: Some("quest".to_owned()),
         };

@@ -564,7 +564,10 @@ by its full path. `records` names the field holding them: an array of
 objects, each keyed by its `key` field, or an object of them, each keyed
 by its own key. A folder's file puts its `by` field in front, so
 `waiting:QEST-A:login` is record `login` of the file whose `quest` is
-`QEST-A`. Each record's fields pass as they are, beside the interface's
+`QEST-A`. A file that says how something stands, rather than listing
+things, is held `whole` instead of naming its `records`: one record, its
+id the one `whole` names, holding every field of the file. Each record's
+fields pass as they are, beside the interface's
 own, `heard` being when its file was last written, and none is marked
 live. The node reads a source whole whenever a change reaches its
 folder, as its program writes each file whole and renames it into
