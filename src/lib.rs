@@ -37,8 +37,10 @@
 //! - [`node`]: the node itself
 //! - [`client`]: a client of the socket
 //! - [`place`]: where a node keeps things on its machine
+//! - [`awake`]: keeping its machine awake while it holds sessions
 //! - [`install`]: whether the build a process runs is still installed
 
+pub mod awake;
 pub mod client;
 pub mod declared;
 pub mod disk;
