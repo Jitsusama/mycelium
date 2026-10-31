@@ -135,22 +135,52 @@ pub fn seen(path: &Path) -> io::Result<Option<Seen>> {
     }
 }
 
+/// What a look at a shared file found, against what this machine last saw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sight {
+    /// As it was.
+    Same,
+    /// The same content, its size and time now standing, which the ledger
+    /// keeps so the file isn't read again until they change.
+    Settled,
+    /// Its content changed, or it came or went.
+    Changed,
+}
+
+impl Sight {
+    /// Whether the ledger holds something new of the file, to be kept.
+    #[must_use]
+    pub fn is_new(self) -> bool {
+        self != Self::Same
+    }
+}
+
+/// What a look at every file of a quest found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scan {
+    /// The key of each file whose content changed, or that came or went.
+    pub changed: Vec<String>,
+    /// Whether the ledger holds something new of any file, to be kept.
+    pub is_new: bool,
+}
+
 impl Ledger {
     /// Looks at every file of `quest` against what this machine last saw,
     /// adding one to `machine`'s count for each whose content changed,
-    /// came or went, and returns the key of each. Only a file `quest`
-    /// carries is found gone, so a quest walking some of its folders finds
-    /// nothing gone from the rest.
-    pub fn scan(&mut self, quest: &Quest, machine: &str) -> io::Result<Vec<String>> {
-        let mut changed = Vec::new();
+    /// came or went. Only a file `quest` carries is found gone, so a quest
+    /// walking some of its folders finds nothing gone from the rest.
+    pub fn scan(&mut self, quest: &Quest, machine: &str) -> io::Result<Scan> {
+        let mut scan = Scan::default();
         let mut present = HashSet::new();
         quest.each_file(&mut |shared| {
             let key = key_of(&shared);
             present.insert(key.clone());
-            if let Some(now) = seen(&quest.path_of(&shared)?)?
-                && self.saw(quest, &shared, &key, now, machine)?
-            {
-                changed.push(key);
+            if let Some(now) = seen(&quest.path_of(&shared)?)? {
+                let sight = self.saw(quest, &shared, &key, now, machine)?;
+                scan.is_new |= sight.is_new();
+                if sight == Sight::Changed {
+                    scan.changed.push(key);
+                }
             }
             Ok(())
         })?;
@@ -160,31 +190,37 @@ impl Ledger {
                     .is_some_and(|shared| quest.carries(&shared) && quest.may_be_removed(&shared))
                 && gone(entry, machine)
             {
-                changed.push(key.clone());
+                scan.changed.push(key.clone());
+                scan.is_new = true;
             }
         }
-        Ok(changed)
+        Ok(scan)
     }
 
     /// Looks at one file of `quest` against what this machine last saw, as
-    /// [`Self::scan`] does, answering whether it changed, came or went.
-    pub fn scan_one(&mut self, quest: &Quest, shared: &Shared, machine: &str) -> io::Result<bool> {
+    /// [`Self::scan`] does.
+    pub fn scan_one(&mut self, quest: &Quest, shared: &Shared, machine: &str) -> io::Result<Sight> {
         if !quest.carries(shared) {
-            return Ok(false);
+            return Ok(Sight::Same);
         }
         let key = key_of(shared);
         match seen(&quest.path_of(shared)?)? {
             Some(now) => self.saw(quest, shared, &key, now, machine),
-            None => Ok(quest.may_be_removed(shared)
+            None if quest.may_be_removed(shared)
                 && self
                     .files
                     .get_mut(&key)
-                    .is_some_and(|entry| gone(entry, machine))),
+                    .is_some_and(|entry| gone(entry, machine)) =>
+            {
+                Ok(Sight::Changed)
+            }
+            None => Ok(Sight::Same),
         }
     }
 
     /// Enters file `key`, seen on disk as `now`, hashing it only if it may
-    /// have changed, and answering whether it did.
+    /// have changed. A size and time that stand are entered beside its
+    /// hash, so a file read once isn't read again until they change.
     fn saw(
         &mut self,
         quest: &Quest,
@@ -192,10 +228,10 @@ impl Ledger {
         key: &str,
         now: Seen,
         machine: &str,
-    ) -> io::Result<bool> {
+    ) -> io::Result<Sight> {
         let entry = self.files.entry(key.to_owned()).or_default();
         if entry.seen == Some(now) && entry.hash.is_some() {
-            return Ok(false);
+            return Ok(Sight::Same);
         }
         let read_at = clock();
         let hash = quest.content_of(shared)?.hash;
@@ -204,8 +240,16 @@ impl Ledger {
             entry.hash = Some(hash);
             entry.version = entry.version.changed_on(machine);
         }
-        entry.seen = lasting(now, read_at);
-        Ok(changed)
+        let seen = lasting(now, read_at);
+        let settled = entry.seen != seen;
+        entry.seen = seen;
+        Ok(if changed {
+            Sight::Changed
+        } else if settled {
+            Sight::Settled
+        } else {
+            Sight::Same
+        })
     }
 
     /// Every file's state, as the other end is told it.
@@ -373,7 +417,7 @@ mod tests {
         ledger.scan(&quest, "optimus").expect("scanned");
         written("two");
         assert_eq!(
-            ledger.scan(&quest, "optimus").expect("scanned"),
+            ledger.scan(&quest, "optimus").expect("scanned").changed,
             ["record/README.md"],
             "the same size and time just after a hash are hashed again"
         );
@@ -404,12 +448,16 @@ mod tests {
         let mut ledger = Ledger::default();
         write(&quest, "README.md", "one");
         assert_eq!(
-            ledger.scan(&quest, "optimus").expect("scanned"),
+            ledger.scan(&quest, "optimus").expect("scanned").changed,
             ["record/README.md"],
             "a new file is a change"
         );
         assert!(
-            ledger.scan(&quest, "optimus").expect("scanned").is_empty(),
+            ledger
+                .scan(&quest, "optimus")
+                .expect("scanned")
+                .changed
+                .is_empty(),
             "an unchanged file is none"
         );
         write(&quest, "README.md", "two");
