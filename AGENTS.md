@@ -13,6 +13,7 @@ says what crosses between machines and how clients speak to a node.
   dialling, discovery and membership
 - `benches/`: how fast the node is, each bench a program printing what
   it measured
+- `tests/`: the `mycelium` command tested as its own process
 - `nix/`: the package, the checks and the tree's own rules
 
 ## Rules
@@ -51,5 +52,5 @@ How this repository keeps Joel's repository standard:
   `nix/tree.sh` fails on any file no linter reads, and lists the files
   that need none.
 - **Tests:** unit tests beside the code they prove, with the fakes in
-  `src/store/memory.rs`; tests of the node across processes go in
-  `tests/` when there are some.
+  `src/store/memory.rs`; tests of the command as its own process go in
+  `tests/`.

@@ -16,6 +16,7 @@ rustPlatform.buildRustPackage {
       ../src
       # Cargo.toml names the benches, so they must be there to build.
       ../benches
+      ../tests
     ];
   };
   cargoLock.lockFile = ../Cargo.lock;
