@@ -23,7 +23,7 @@ const WAITING_ANSWERS: usize = 16;
 /// What a daemon holds, by kind, which the interface serves.
 pub trait Holds: Send + Sync + 'static {
     /// Each kind it holds, with the fields of its records that are live.
-    fn kinds(&self) -> BTreeMap<&'static str, Vec<&'static str>>;
+    fn kinds(&self) -> BTreeMap<String, Vec<&'static str>>;
     /// Every record of `kind` it holds now, by key, or none for a kind it
     /// doesn't hold.
     fn records(&self, kind: &str) -> Option<BTreeMap<String, Value>>;
@@ -295,7 +295,7 @@ fn hello(holds: &impl Holds, id: &Value) -> Value {
     let kinds: Map<String, Value> = holds
         .kinds()
         .into_iter()
-        .map(|(kind, live)| (kind.to_owned(), json!({"live": live})))
+        .map(|(kind, live)| (kind, json!({"live": live})))
         .collect();
     json!({"id": id, "version": VERSION, "domain": "node", "state": "answering", "kinds": kinds})
 }

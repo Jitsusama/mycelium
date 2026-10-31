@@ -2,7 +2,7 @@
 //! stores of the machines discovery finds, holds the sessions and messages
 //! in memory, and serves the local socket every client reads.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
@@ -29,6 +29,7 @@ use crate::place;
 use crate::placement::{self, Placement};
 use crate::record::{Message, Session, State as SessionState};
 use crate::room;
+use crate::served::{self, Served};
 use crate::share::exchange::Places;
 use crate::state::State;
 use crate::steer::{self, Steer};
@@ -133,7 +134,13 @@ pub struct Given {
     pub awake: Awake,
     /// The socket its machine's updater takes asks on.
     pub updater: PathBuf,
+    /// The files it serves in the daemon interface, as kinds of their own.
+    pub serves: BTreeMap<String, served::Source>,
 }
+
+/// The kinds the node holds itself in the daemon interface, which no
+/// served file may take.
+pub const HOLDS: [&str; 2] = ["session", "machine"];
 
 /// Tells each machine within this one, as its configuration declares
 /// them, this one's power and room as `here` measures them.
@@ -180,8 +187,10 @@ where
         steers,
         mut awake,
         updater,
+        serves,
     } = given;
     let shared = Shared {
+        served: Arc::new(Served::start(serves)),
         held: place::held(&hello.realm),
         steers,
         updater,
@@ -387,6 +396,8 @@ struct Shared<S> {
     inner: Arc<Mutex<Inner>>,
     /// Each time a kind the daemon interface serves may have changed.
     said: Arc<Said>,
+    /// The files it serves as kinds of their own.
+    served: Arc<Served>,
 }
 
 /// What changes each time the node's sessions or the realm's machines may
@@ -418,6 +429,7 @@ impl<S: Clone> Clone for Shared<S> {
             asks: self.asks.clone(),
             inner: self.inner.clone(),
             said: self.said.clone(),
+            served: self.served.clone(),
         }
     }
 }
@@ -425,15 +437,21 @@ impl<S: Clone> Clone for Shared<S> {
 /// The node in the daemon interface: the realm's sessions, wherever they
 /// run, and its other machines, as `Sessions` and `Machines` answer.
 impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
-    fn kinds(&self) -> std::collections::BTreeMap<&'static str, Vec<&'static str>> {
-        std::collections::BTreeMap::from([
+    fn kinds(&self) -> BTreeMap<String, Vec<&'static str>> {
+        // A served file's fields are its program's, so none is marked live.
+        let served = self
+            .served
+            .kinds()
+            .map(|kind| (kind.to_owned(), Vec::new()));
+        let [sessions, machines] = HOLDS.map(str::to_owned);
+        BTreeMap::from([
             (
-                "session",
+                sessions,
                 // A session's busy, worksOn and paused are its presence's.
                 vec!["state", "step", "title", "wants", "working_on", "presence"],
             ),
             (
-                "machine",
+                machines,
                 vec![
                     "state",
                     "measured_at",
@@ -444,9 +462,12 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                 ],
             ),
         ])
+        .into_iter()
+        .chain(served)
+        .collect()
     }
 
-    fn records(&self, kind: &str) -> Option<std::collections::BTreeMap<String, serde_json::Value>> {
+    fn records(&self, kind: &str) -> Option<BTreeMap<String, serde_json::Value>> {
         match kind {
             "session" => Some(
                 self.lock()
@@ -478,7 +499,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     })
                     .collect(),
             ),
-            _ => None,
+            _ => self.served.records(kind),
         }
     }
 
@@ -486,7 +507,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
         match kind {
             "session" => Some(self.said.sessions.subscribe()),
             "machine" => Some(self.said.machines.subscribe()),
-            _ => None,
+            _ => self.served.told(kind),
         }
     }
 
@@ -505,6 +526,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     "why": format!("no link reaches it; it last said itself at {}", machine.measured_at),
                 }),
             })
+            .chain(self.served.health())
             .collect();
         serde_json::Map::from_iter([
             ("version".to_owned(), daemon::VERSION.into()),
@@ -1151,6 +1173,7 @@ mod tests {
         let store = store.clone();
         let steers = inboxes(socket);
         let updater = updater_of(socket);
+        let serves = BTreeMap::from([("quest".to_owned(), quests_of(socket))]);
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -1159,6 +1182,7 @@ mod tests {
                 steers,
                 awake: Awake::by(None),
                 updater,
+                serves,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -1406,12 +1430,12 @@ mod tests {
         let lent = |name: &str, leaves: jiff::Timestamp| facts::Machine {
             declared: Some(crate::declared::Declared {
                 reach: Vec::new(),
-                probes: std::collections::BTreeMap::new(),
+                probes: BTreeMap::new(),
                 outlives: Vec::new(),
                 costs_money: true,
                 taints: Vec::new(),
                 cores: None,
-                agents: std::collections::BTreeMap::new(),
+                agents: BTreeMap::new(),
                 leaves_at: Some(leaves),
                 within: None,
                 hosts: Vec::new(),
@@ -1558,6 +1582,70 @@ mod tests {
                 &json!("2026-10-31T04:01:00Z")
             ),
             "a machine saying itself again is sent as what changed: {changed}"
+        );
+    }
+
+    /// The quests a node on `socket` serves, from a file beside it.
+    fn quests_of(socket: &Path) -> served::Source {
+        served::Source {
+            file: Some(socket.with_file_name("quests.json")),
+            folder: None,
+            records: "quests".to_owned(),
+            key: Some("id".to_owned()),
+            by: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_the_node_serves_is_a_kind_its_clients_watch() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let (_stop, _node) = node(
+            &Memory::default(),
+            "optimus",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+        );
+        let mut client = Speaking::to(&socket).await;
+
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert_eq!(
+            hello["kinds"]["quest"],
+            json!({"live": []}),
+            "hello names the kind served, with no field its own to call live: {hello}"
+        );
+        client.ask(json!({"id": 2, "ask": "health"})).await;
+        let health = client.next().await;
+        assert!(
+            health["sources"].as_array().is_some_and(|sources| sources
+                .iter()
+                .any(|source| { source["name"] == "quest" && source["state"] == "refused" })),
+            "a file not there yet is a source refused: {health}"
+        );
+
+        client
+            .ask(json!({"id": 3, "ask": "watch", "kind": "quest"}))
+            .await;
+        assert_eq!(client.next().await["records"], json!([]), "none yet");
+        let file = socket.with_file_name("quests.json");
+        let beside = socket.with_file_name(".quests.json.new");
+        fs::write(
+            &beside,
+            json!({"quests": [{"id": "QEST-A", "title": "a"}]}).to_string(),
+        )
+        .expect("written");
+        fs::rename(&beside, &file).expect("renamed into place");
+        let changed = client.next().await;
+        assert_eq!(
+            (
+                &changed["id"],
+                &changed["changed"][0]["key"],
+                &changed["changed"][0]["title"]
+            ),
+            (&json!(3), &json!("quest:QEST-A"), &json!("a")),
+            "the file's record is sent as it arrives: {changed}"
         );
     }
 
@@ -1962,6 +2050,7 @@ mod tests {
                     steers,
                     awake: Awake::by(None),
                     updater: "/nowhere".into(),
+                    serves: BTreeMap::new(),
                 };
                 run(
                     store,
@@ -2062,6 +2151,7 @@ mod tests {
                 steers,
                 awake: Awake::by(None),
                 updater: "/nowhere".into(),
+                serves: BTreeMap::new(),
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
