@@ -21,7 +21,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
 use super::clones::{Clone, Cloning};
-use super::ledger::{Entry, Ledger, Ledgers, Sight, clock, is_quest, lasting, shared_of};
+use super::ledger::{Entry, Ledger, Ledgers, Scan, Sight, clock, is_quest, lasting, shared_of};
 use super::pieces::{PIECE, Pieces, Staged};
 use super::settle::{Merge, Settled, State, beside, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
@@ -317,7 +317,7 @@ impl Exchange {
             eprintln!("couldn't clear what an earlier link to {other} left staged: {error}");
         }
         Self {
-            watch: Watch::new(places.scratch.clone()),
+            watch: Watch::new(places.scratch.clone(), places.quests.clone()),
             places,
             machine,
             other,
@@ -412,8 +412,15 @@ impl Exchange {
             }
             let mut held = ledgers.hold(&id)?;
             let walk = self.watch.to_walk(&id, &held.ledger.scratch);
+            let record = self.watch.record_to_walk(&id);
             let quest = self.places.quest(&id, &held.ledger).walking(&walk);
-            let scan = held.ledger.scan(&quest, &self.machine)?;
+            // A quest nothing was heard to change in isn't walked, so an
+            // idle look reads no file's size and time.
+            let scan = if record || !walk.is_empty() {
+                held.ledger.scan(&quest, &self.machine)?
+            } else {
+                Scan::default()
+            };
             let mut changed: BTreeSet<String> = scan.changed.into_iter().collect();
             let clones_changed = found_clones(&mut held.ledger, &quest, &walk)?;
             // A file read and found as it was is kept as seen too, or every
@@ -1081,6 +1088,14 @@ mod tests {
             .open(optimus.places.quests.join(QUEST).join("README.md"))
             .and_then(|file| file.set_modified(long_ago))
             .expect("its time set");
+        // A time set is no change to what a file holds, so the record is
+        // walked again once another file in it changes.
+        let notes = optimus.places.quests.join(QUEST).join("notes.md");
+        fs::write(&notes, "notes\n").expect("written");
+        assert!(
+            near.watch.wait_for(&notes, HEARD_WITHIN),
+            "the watcher hears the record change"
+        );
         near.look().expect("optimus looks again");
         assert!(
             seen().is_some(),

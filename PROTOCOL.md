@@ -243,11 +243,11 @@ a transport such as `ext::` runs a command. A clone with no such
 `origin` is refused when named and stays home within a named folder.
 
 Once a second, each end looks at its shared quests and says what changed,
-as `Share` frames. A look reads over each record, a few dozen files, but
-walks a named scratch folder only when a watch heard it change, when it
-is newly named, or when it can't be watched; a watch that fails or
-overflows has every folder walked. A change found while hearing the
-other end is said at the next look:
+as `Share` frames. A look walks a quest's record, or a named scratch
+folder, only when a watch heard it change, when it is first looked at or
+newly named, or when it can't be watched; a watch that fails or
+overflows has every record and folder walked. A change found while
+hearing the other end is said at the next look:
 
 - `{"Shares": {"quests", "scratch", "clones", "ended"}}`: every quest it
   shares, the scratch folders named of each, by quest, the clones in
