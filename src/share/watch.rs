@@ -192,6 +192,14 @@ impl Watch {
         self.records_changed.remove(id);
     }
 
+    /// Takes it that anything may have changed, as when the watch
+    /// overflows, so the next look walks every record and folder watched,
+    /// for a test asking what crosses rather than when a look walks.
+    #[cfg(test)]
+    pub fn hear_anything(&mut self) {
+        self.early.push(Heard::Anything);
+    }
+
     /// Waits up to `within` for the watcher to hear a change, for a test
     /// that must see one heard before it looks.
     #[cfg(test)]

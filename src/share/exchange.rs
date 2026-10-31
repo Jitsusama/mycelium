@@ -979,8 +979,12 @@ mod tests {
     }
 
     /// Passes what each end says to the other until neither has more to
-    /// say, after each has looked for changes once.
+    /// say, after each has looked for changes once. Each look walks every
+    /// record, as after a watch overflows, so what a test wrote just before
+    /// is found whether or not the watcher has told of it yet.
     fn talk(one: &mut Exchange, two: &mut Exchange) {
+        one.watch.hear_anything();
+        two.watch.hear_anything();
         let mut to_two = one.look().expect("one looks");
         let mut to_one = two.look().expect("two looks");
         for _ in 0..20 {
