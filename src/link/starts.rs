@@ -1,6 +1,6 @@
 //! Starts and steers across a link. A start this machine's node places on
-//! another machine is asked of it through the link the node keeps to it;
-//! one the other end asks of this machine is handed to this machine's own
+//! another machine is asked of it through the link that reaches it, which
+//! the node keeps or which that machine dialled; one the other end asks of this machine is handed to this machine's own
 //! node, pinned to this machine, so that node admits or refuses it on its
 //! own facts as they are then. The far end can't start it itself: a
 //! process SSH started sits outside its person's login session, where a
@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::client::Client;
+use crate::link::dial::{Dial, Ssh};
 use crate::placement::Need;
 use crate::steer::Steer;
 use crate::wire::{Reply, Request, Response, Start, Started};
@@ -36,13 +37,25 @@ pub struct Starting {
     /// The realm's folder of held sessions on this machine, whose ids its
     /// sessions' presences carry, so the other end can join them.
     pub held: PathBuf,
-    /// For a link this machine's node keeps: where the node asks its
-    /// starts of the other machine, and how a command runs there.
-    pub asking: Option<(Asks, There)>,
+    /// How the link carries what this machine's node asks of the other
+    /// machine, if it does.
+    pub asking: Option<Asking>,
     /// This machine's sessions' steer inboxes, which a steer the other
     /// end carries is written into, and whose talks' replies are carried
     /// back.
     pub steers: PathBuf,
+}
+
+/// How a link carries what this machine's node asks of the other machine.
+#[derive(Clone)]
+pub enum Asking {
+    /// A link the node keeps, in its own process: where the node asks its
+    /// starts of the other machine, and how a command runs there.
+    Kept(Asks, There),
+    /// A link the other machine dialled, which runs in a process SSH
+    /// started rather than in the node, so it asks the node over its
+    /// socket for what the node asks of that machine.
+    Dialled,
 }
 
 /// What is asked of another machine.
@@ -70,6 +83,9 @@ pub struct Asks(Arc<Mutex<Links>>);
 struct Links {
     next: u64,
     by_machine: HashMap<String, Reaches>,
+    /// How a command runs on each machine the node has dialled, kept even
+    /// when a link that machine dialled carries what it is asked instead.
+    ways: HashMap<String, There>,
 }
 
 struct Reaches {
@@ -147,6 +163,26 @@ impl Asks {
     pub fn there(&self, machine: &str) -> Option<There> {
         let links = self.lock();
         Some(links.by_machine.get(machine)?.there.clone())
+    }
+
+    /// Keeps `there` as how a command runs on `machine`, as a dial that
+    /// reached it says, whether or not its link goes on to carry starts.
+    pub(super) fn know(&self, machine: &str, there: There) {
+        self.lock().ways.insert(machine.to_owned(), there);
+    }
+
+    /// How a command runs on `machine` from here: as a dial of the node's
+    /// that reached it says, or else over SSH to the machine by its name.
+    pub(super) fn way(&self, machine: &str) -> There {
+        if let Some(there) = self.lock().ways.get(machine) {
+            return there.clone();
+        }
+        let ssh = Ssh {
+            destination: machine.to_owned(),
+            options: Vec::new(),
+            command: "mycelium".to_owned(),
+        };
+        Arc::new(move |words: &[String]| ssh.there(words))
     }
 
     /// Takes the starts asked of `machine` for the link reaching it, until

@@ -24,7 +24,7 @@ use crate::handover::{self, Sleeping, Told};
 use crate::hold::{self, start, start::Starter};
 use crate::link::dial::{Dial, Program};
 use crate::link::refused::Refusals;
-use crate::link::starts::{Asks, Starting};
+use crate::link::starts::{Asking, Asks, Starting};
 use crate::link::{self, discovery::Discovery, membership::Membership};
 use crate::made::{self, Book, Made};
 use crate::mesh;
@@ -925,6 +925,7 @@ impl<S: Store> Shared<S> {
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
+            Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
         }
     }
 
@@ -935,7 +936,7 @@ impl<S: Store> Shared<S> {
         Starting {
             node: node.to_owned(),
             held: self.held.clone(),
-            asking: Some((self.asks.clone(), {
+            asking: Some(Asking::Kept(self.asks.clone(), {
                 let dial = dial.clone();
                 Arc::new(move |words: &[String]| dial.there(words))
             })),
@@ -1276,6 +1277,10 @@ async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
             be_present(&shared, process, lines, writing).await;
             return;
         }
+        if let Ok(Request::Carry { machine }) = request {
+            link::carried::to_link(&shared.asks, &machine, lines, writing).await;
+            return;
+        }
         if let Ok(Request::Watch { groups, recent }) = request {
             if write(&mut writing, &Reply::Ok(Response::Watching))
                 .await
@@ -1526,6 +1531,9 @@ mod tests {
         /// Whether equilibrius's end knows the far end is optimus, as a
         /// pinned key proves it.
         proven: bool,
+        /// Whether equilibrius's end carries what its node asks of
+        /// optimus, as the end of a link the other machine dialled does.
+        asks_back: bool,
     }
 
     impl Dial for Piped {
@@ -1540,6 +1548,7 @@ mod tests {
             let held_here = self.held.clone();
             let steers = inboxes(&self.socket);
             let proven = self.proven;
+            let asking = self.asks_back.then_some(Asking::Dialled);
             tokio::spawn(async move {
                 let realm = Realm {
                     name: "work".to_owned(),
@@ -1548,7 +1557,7 @@ mod tests {
                 let starting = Starting {
                     node,
                     held: held_here,
-                    asking: None,
+                    asking,
                     steers,
                 };
                 // The test judges the link by what crosses it.
@@ -2184,6 +2193,7 @@ mod tests {
             socket: far_socket,
             held,
             proven: false,
+            asks_back: false,
         };
         let near = node(&near_store, "optimus", vec![dial], None, &near_socket);
         // Nothing tells the test when the link has said what equilibrius
@@ -2257,6 +2267,90 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_machine_starts_work_on_the_one_that_dialled_it_through_that_link() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (holder, given) = stand_in_holder(dir.path());
+        let far_socket = dir.path().join("equilibrius").join("work.sock");
+        let near_socket = dir.path().join("optimus").join("work.sock");
+        let far_store = Memory::default();
+        let far = node(
+            &far_store,
+            "equilibrius",
+            Vec::<Piped>::new(),
+            None,
+            &far_socket,
+        );
+        let holds = Starter {
+            program: holder,
+            scoped: false,
+        };
+        let dial = Piped {
+            store: far_store.clone(),
+            socket: far_socket.clone(),
+            held: dir.path().join("held"),
+            proven: false,
+            asks_back: true,
+        };
+        let near_store = Memory::default();
+        let near = node(
+            &near_store,
+            "optimus",
+            vec![dial],
+            Some(holds),
+            &near_socket,
+        );
+        // Nothing tells the test when equilibrius's node has heard of
+        // optimus, or when its link has taken up what the node asks of it,
+        // so it asks again every few milliseconds until a start goes
+        // through.
+        let there = Need::Machine("optimus".to_owned());
+        let asked = Request::Start(Start {
+            work: work(vec![there]),
+            folder: Some(dir.path().to_owned()),
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+        });
+        let started = tokio::time::timeout(PATIENCE, async {
+            loop {
+                if let Ok(Response::Started(started)) = ask(far_socket.clone(), asked.clone()).await
+                {
+                    break started;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("equilibrius starts work on optimus over the link optimus dialled");
+        assert_eq!(started.machine, "optimus");
+        assert_eq!(
+            started.attach,
+            [
+                "ssh",
+                "-t",
+                "--",
+                "optimus",
+                "mycelium",
+                "--realm",
+                "work",
+                "attach",
+                &started.held
+            ],
+            "equilibrius never dialled optimus, so its words join it over SSH by name"
+        );
+        let given = fs::read_to_string(&given).expect("optimus's holder was started");
+        assert!(
+            given.lines().any(|word| word == started.held),
+            "under the id optimus's node answered: {given}"
+        );
+
+        for (stop, node) in [near, far] {
+            drop(stop);
+            let stopped = node.await.expect("the node runs to its end");
+            assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+        }
+    }
+
     /// A node running in a test: what stops it, and what it ends with.
     type Running = (
         tokio::sync::oneshot::Sender<()>,
@@ -2298,6 +2392,7 @@ mod tests {
             socket: far_socket,
             held: dir.join("held"),
             proven,
+            asks_back: false,
         };
         let near = node(&near_store, "optimus", vec![dial], None, &near_socket);
         // Nothing tells the test when the link has said what equilibrius

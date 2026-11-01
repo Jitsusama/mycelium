@@ -178,6 +178,15 @@ same code, each line a JSON value:
     the answer, since an update takes minutes; a switch there restarts
     the link, which then ends the wait.
 
+Only one link joins two machines, and whichever dialled first holds it,
+so each end carries what its own node asks of the other machine: starts,
+steers and updates. The dialling end runs in its node and takes them
+there. The dialled end runs in a process SSH started, outside its node,
+so it holds a `Carry` connection to its node's socket (see The Socket),
+asked again every five seconds while the node can't be reached. Its node
+joins a session there, or one it started, over the way its own dial to
+that machine reaches it, or else over SSH by the machine's name.
+
 Three seams shape a link:
 
 - **Dialling** (`link::dial::Dial`): how a machine reaches another's end,
@@ -321,6 +330,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
+| `{"Carry": {"machine"}}` | `"Carrying"`, then what it asks of `machine` |
 
 A `Present` connection counts the process at its other end, as the
 kernel names it, present until the connection closes; then every session
@@ -329,6 +339,14 @@ that process owns is ended at once. It says nothing more, and a later
 close ends nothing. A process no longer there, or one that is present
 again, is let go of. A node that can't tell which process connected
 refuses.
+
+A `Carry` connection is how the end of a link another machine dialled
+carries what its node asks of that machine. The node writes each ask as
+`{"ask", "asked"}`, where `asked` is `{"Start": start}`, `{"Steer":
+{"address", "steer"}}` or `"Update"`, and the link writes back
+`{"ask", "reply"}` with the other end's reply. It lasts until either
+hangs up, or until another link reaching the machine takes its place;
+an ask still waiting then hears that the link dropped.
 
 A session's `state` is `busy`, `idle`, `ended`, or `unreachable` while no
 link reaches its machine. Beside its `id`, `address`, `machine` and

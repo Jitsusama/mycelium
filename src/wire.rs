@@ -66,6 +66,13 @@ pub enum Request {
     /// ends. The process is the one the kernel says is at the other end, so
     /// no process can speak for another. It says nothing more.
     Present,
+    /// What this node asks of `machine`, handed to the connection one ask
+    /// a line for as long as it stays, each answered on a line of its own:
+    /// a link `machine` dialled, which runs outside the node, carries them.
+    Carry {
+        /// The machine the link reaches.
+        machine: String,
+    },
     /// The whole state, then each change, for as long as the client stays.
     Watch {
         /// Which groups' messages to send, or none when not given; sessions
@@ -167,6 +174,8 @@ pub enum Response {
     Watching,
     /// The process is counted present until it hangs up.
     Present,
+    /// Asks follow, one per line, each to be answered on a line back.
+    Carrying,
 }
 
 /// What a node's providers' programs offer, and why any couldn't say.

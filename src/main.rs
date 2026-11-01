@@ -446,7 +446,9 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
 /// output, as SSH carries it, handing the starts the other end asks of
 /// this machine to its node at `socket`, which runs in its person's login
 /// session, and writing the steers it carries into this machine's inboxes.
-/// A link let in by a machine's key admits only that machine, `far`.
+/// It carries what that node asks of the other machine too, asked of the
+/// node over its socket. A link let in by a machine's key admits only that
+/// machine, `far`.
 fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> io::Result<()> {
     let held = place::held(&realm);
     let steers = here.steer.clone().unwrap_or_else(place::steer);
@@ -454,7 +456,7 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
     let starting = link::starts::Starting {
         node: socket,
         held,
-        asking: None,
+        asking: Some(link::starts::Asking::Dialled),
         steers,
     };
     match far {
