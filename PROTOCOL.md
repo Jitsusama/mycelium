@@ -334,7 +334,10 @@ A session's `state` is `busy`, `idle`, `ended`, or `unreachable` while no
 link reaches its machine. Beside its `id`, `address`, `machine` and
 `groups`, it carries what its presence says of it: its `quest` by id (or,
 from an older presence, the quest among what it owns), what it `wants` of
-its person (`kind`, `since`, `said`) while it waits, and the `window` it
+its person (`kind`, `since`, `said`) while it waits, the `landings` it
+says it made lately, newest first (each `at`, `ref`, a one-line `what`
+and, when it means something to its person, `person`; any it can't read is
+left out), and the `window` it
 runs in (`terminal`, `id`, `within`, such as a kitty window's id and
 kitty's socket). Only a session of this machine's has a `window`, since a
 window is gone to on its own machine. A session a holder keeps, as one
