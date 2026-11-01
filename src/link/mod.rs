@@ -43,6 +43,7 @@
 //! How an end is reached is [`dial`]'s, and which ends to reach is
 //! [`discovery`]'s.
 
+pub mod carried;
 pub mod dial;
 pub mod discovery;
 pub mod membership;
@@ -71,7 +72,7 @@ use crate::store::{self, Change, Claim, Store};
 use crate::wire::{Reply, Response, Start};
 use dial::Connection;
 use membership::{Hello, Membership};
-use starts::{Ask, Asked, Starting};
+use starts::{Ask, Asked, Asking, Starting};
 use steers::{Following, Replies};
 
 /// How far back a link reaches for messages at most: the mesh's own week,
@@ -217,6 +218,11 @@ pub async fn run(
         hello_within,
     )
     .await?;
+    // A dial that reached the machine says how a command runs there, even
+    // when a link that machine dialled holds it and carries the starts.
+    if let Some(Asking::Kept(asks, there)) = starting.as_ref().and_then(|s| s.asking.as_ref()) {
+        asks.know(&other.machine, there.clone());
+    }
     let Some(claim) = store.claim(&other.machine)? else {
         return Err(refusal(format!(
             "a link to {} already carries it here",
@@ -349,18 +355,23 @@ fn read_frames(
 
 /// The starts this machine's node asks of `machine`, taken for this link
 /// until what it answers is dropped, when the link carries the node's
-/// starts; none otherwise.
+/// starts: in the node's own process for a link it keeps, and over its
+/// socket for one `machine` dialled. None otherwise.
 fn asked_of(
     starting: Option<&Starting>,
     machine: &str,
-) -> (
-    Option<mpsc::UnboundedReceiver<Ask>>,
-    Option<starts::Reaching>,
-) {
-    match starting.and_then(|starting| starting.asking.clone()) {
-        Some((asks, there)) => {
-            let (asked, reaching) = asks.reach(machine, there);
-            (Some(asked), Some(reaching))
+) -> (Option<mpsc::UnboundedReceiver<Ask>>, Option<Box<dyn Send>>) {
+    let Some(starting) = starting else {
+        return (None, None);
+    };
+    match &starting.asking {
+        Some(Asking::Kept(asks, there)) => {
+            let (asked, reaching) = asks.reach(machine, there.clone());
+            (Some(asked), Some(Box::new(reaching)))
+        }
+        Some(Asking::Dialled) => {
+            let (asked, carrying) = carried::from_node(starting.node.clone(), machine);
+            (Some(asked), Some(Box::new(carrying)))
         }
         None => (None, None),
     }
