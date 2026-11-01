@@ -165,6 +165,7 @@ mod tests {
             orchestrated_by: None,
             quest: None,
             wants: None,
+            landings: Vec::new(),
             window: None,
             held: None,
             attach: None,

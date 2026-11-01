@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::group::Group;
 use crate::hold::Held;
-use crate::record::{Intent, Message, Session, State, Want, Window};
+use crate::record::{Intent, Landing, Message, Session, State, Want, Window};
 use crate::store::Presence;
 use crate::wire::Draft;
 
@@ -169,6 +169,7 @@ pub fn session(presence: &Presence, here: &str) -> Option<Session> {
             .quest
             .or_else(|| said.owns.into_iter().find(|owned| owned.starts_with(QUEST))),
         wants: said.wants,
+        landings: landings(&said.landings),
         window: said
             .terminal
             .filter(|_| presence.elsewhere.is_none())
@@ -240,8 +241,20 @@ struct Said {
     #[serde(default)]
     owns: Vec<String>,
     wants: Option<Want>,
+    // Read one by one, so a landing it can't read costs only itself.
+    #[serde(default)]
+    landings: Value,
     terminal: Option<Terminal>,
     at: String,
+}
+
+/// The landings a presence says, leaving out any it can't read.
+fn landings(said: &Value) -> Vec<Landing> {
+    said.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|landing| Landing::deserialize(landing).ok())
+        .collect()
 }
 
 /// A session's window, as the harness's terminal driver names it.
@@ -493,6 +506,48 @@ mod tests {
                 .as_deref(),
             Some("QEST-20261013-4UHC5Q"),
             "an older presence's quest is the one it owns"
+        );
+    }
+
+    #[test]
+    fn a_session_says_what_it_landed_leaving_out_what_cant_be_read() {
+        let presence = |landings: Value| Presence {
+            session: "01a1".to_owned(),
+            body: json!({
+                "session": "01a1", "addresses": ["4UHC5Q"], "at": "2026-11-01T14:00:00Z",
+                "landings": landings,
+            }),
+            elsewhere: Some("equilibrius".to_owned()),
+            lives: true,
+            unreachable_since: None,
+        };
+        let landed = json!({"at": "2026-11-01T13:58:00Z", "ref": "mycelium#82",
+            "what": "Sessions say what they landed", "person": "less to read"});
+        let read = session(
+            &presence(
+                json!([landed, {"ref": "no time or line"}, {"at": "2026-11-01T12:00:00Z",
+                "ref": "PLAN-20261026-IZH11J#3", "what": "an item done"}]),
+            ),
+            "optimus",
+        )
+        .expect("a presence reads");
+        assert_eq!(
+            read.landings
+                .iter()
+                .map(|landing| landing.reference.as_str())
+                .collect::<Vec<_>>(),
+            ["mycelium#82", "PLAN-20261026-IZH11J#3"],
+            "each landing it can read, in the order said, and none it can't"
+        );
+        assert_eq!(
+            read.landings[0].person.as_deref(),
+            Some("less to read"),
+            "a landing says what it means to the person"
+        );
+        let unread = session(&presence(json!("not a list")), "optimus");
+        assert!(
+            unread.is_some_and(|session| session.landings.is_empty()),
+            "landings it can't read never cost the session itself"
         );
     }
 

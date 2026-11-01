@@ -571,7 +571,15 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (
                 sessions,
                 // A session's busy, worksOn and paused are its presence's.
-                vec!["state", "step", "title", "wants", "working_on", "presence"],
+                vec![
+                    "state",
+                    "step",
+                    "title",
+                    "wants",
+                    "landings",
+                    "working_on",
+                    "presence",
+                ],
             ),
             (
                 machines,

@@ -84,6 +84,10 @@ pub struct Session {
     /// What it waits on its person for, while it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wants: Option<Want>,
+    /// What it landed lately, newest first, as its presence says: what its
+    /// orchestrator would otherwise be told in a message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub landings: Vec<Landing>,
     /// The window it runs in, for going to it. Only a session of this
     /// machine's has one, since a window is reached on its own machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +119,22 @@ pub struct Want {
     pub since: String,
     /// What it asked or said, in one short line.
     pub said: String,
+}
+
+/// Something a session landed: a change merged, or an item of its plan done.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Landing {
+    /// When, as an RFC 3339 instant.
+    pub at: String,
+    /// What landed, by the name its own place gives it, such as
+    /// `mycelium#81` or a plan's item.
+    #[serde(rename = "ref")]
+    pub reference: String,
+    /// What it is, in one plain line.
+    pub what: String,
+    /// What it means to the person, when it means something to them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
 }
 
 /// A terminal's window, as the terminal names it: for kitty, the window's

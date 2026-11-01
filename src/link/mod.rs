@@ -1458,6 +1458,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn what_a_session_landed_crosses_with_its_presence() {
+        let optimus = Memory::default();
+        let equilibrius = Memory::default();
+        let landings = json!([{"at": "2026-11-01T13:58:00Z", "ref": "shop/world#2351158",
+            "what": "a provider makes machines", "person": "the swarm borrows a machine"}]);
+        equilibrius.start_here(
+            "walgit",
+            json!({"session": "walgit", "addresses": ["NTQHL6"],
+                   "at": "2026-11-01T14:00:00Z", "landings": landings}),
+            true,
+        );
+
+        let _link = linked(&optimus, &equilibrius, 1 << 16);
+        until(&optimus, |store| !store.presences().is_empty()).await;
+        let carried =
+            mesh::session(&optimus.presences()[0], "optimus").expect("the Mac session reads here");
+        assert_eq!(
+            serde_json::to_value(&carried.landings).expect("landings write"),
+            landings,
+            "the Mac session's landings read here as it said them"
+        );
+    }
+
+    #[tokio::test]
     async fn a_link_coming_back_says_which_sessions_out_of_reach_still_run() {
         let optimus = Memory::default();
         let equilibrius = Memory::default();
