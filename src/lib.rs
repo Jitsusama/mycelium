@@ -27,6 +27,7 @@
 //! Around them:
 //!
 //! - [`facts`]: what this machine is, as its node measures it
+//! - [`flow`]: the one-way roads a realm's text may take into another
 //! - [`room`]: the room it has for more work, as its queue says
 //! - [`within`]: the power and room a machine within another has from it
 //! - [`disk`]: how full its home's disk is, as its disk guard says
@@ -54,6 +55,7 @@ pub mod daemon;
 pub mod declared;
 pub mod disk;
 pub mod facts;
+pub mod flow;
 pub mod group;
 pub mod handover;
 pub mod hold;

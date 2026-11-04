@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::facts::Machine;
+use crate::flow::{Crossing, Refusal};
 use crate::group::{Group, Pattern};
 use crate::offer::Offer;
 use crate::placement::{Placement, Work};
@@ -49,8 +50,15 @@ pub enum Request {
         /// At most this many.
         limit: usize,
     },
-    /// Send a message on the mesh, as a session would.
+    /// Send a message on the mesh, as a session would, or into another
+    /// realm by a flow, when it names one. A crossing is answered in
+    /// [`Answer`]'s shape, since it may be refused.
     Send(Draft),
+    /// The realms this realm's messages may go to, by its flows.
+    Flows,
+    /// Take a message another realm's node on this machine hands across
+    /// by a flow, answered in [`Answer`]'s shape.
+    Cross(Crossing),
     /// Update `machine` to its configuration's main, through its updater,
     /// and say how that ended. Nothing in it says what to build: the
     /// machine's configuration does. Another machine is asked only
@@ -135,10 +143,41 @@ pub struct Draft {
     /// The message it answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub re: Option<String>,
+    /// The realm it is for, by a flow, if not this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realm: Option<String>,
 }
 
 /// The node's answer to one request.
 pub type Reply = Result<Response, String>;
+
+/// The node's answer to a request that may be refused by a flow: a
+/// [`Reply`]'s `Ok` or `Err`, or `Refused`, with a code a sender tells
+/// apart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Answer {
+    /// Done, as a reply's `Ok` says it.
+    Ok(Response),
+    /// Failed, as a reply's `Err` says it.
+    Err(String),
+    /// Refused by a flow, and why.
+    Refused(Refusal),
+}
+
+impl From<Reply> for Answer {
+    fn from(reply: Reply) -> Self {
+        match reply {
+            Ok(response) => Self::Ok(response),
+            Err(why) => Self::Err(why),
+        }
+    }
+}
+
+impl From<Refusal> for Answer {
+    fn from(refusal: Refusal) -> Self {
+        Self::Refused(refusal)
+    }
+}
 
 /// What a request is answered with when it succeeds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -166,6 +205,11 @@ pub enum Response {
     Messages(Vec<Message>),
     /// The message as sent.
     Sent(Message),
+    /// The realms this realm's messages may go to.
+    Flows {
+        /// Each realm, by name.
+        to: Vec<String>,
+    },
     /// How the update asked for ended, as the machine's updater said it:
     /// one JSON object naming its `step`, such as `done` or `refused`, and
     /// the commit the machine runs after it.

@@ -10,7 +10,8 @@ implementation today and room for the next.
   a cloud. Every machine runs the same node.
 - **Node:** mycelium's program, one per machine and realm.
 - **Realm:** a set of machines that link, such as work or personal.
-  Nothing crosses between realms, not even presence.
+  Nothing crosses between realms, not even presence, but the text a
+  flow lets through one way (Realm Flows, below).
 - **Link:** two machines' nodes joined, carrying what each holds to the
   other.
 - **Session, peer, group, address:** as the harness mesh means them. A
@@ -38,7 +39,8 @@ a hold before optimus reboots means nothing to the Mac's sessions.
 
 A machine has one mesh, so it belongs to one realm, recorded in
 `~/.local/state/mycelium/realm` the first time a node or link runs there;
-another realm is refused, so nothing of one realm reaches another.
+another realm is refused, so nothing of one realm reaches another but the
+text a flow lets across (see Realm Flows).
 
 ## The Store
 
@@ -306,6 +308,54 @@ marked, so a path under `/home/jitsusama` reads `/Users/joel.gerber` on a
 Mac. Each write takes the quest's lock as the harness does and lands by
 rename, so a session never reads half a file.
 
+## Realm Flows
+
+Realms are kept apart, but a machine's configuration may open a flow: a
+one-way road for text from one realm into another, such as personal
+into work, which never opens its reverse. A realm's node is given the
+realms its messages may go to (`--flow-to`) and those it takes from
+(`--flow-from`); a crossing happens on a machine running a node of
+each, between those two nodes, and nowhere else.
+
+Only a message whose sender names the other realm crosses, sent to the
+node's socket as a `Send` with a `realm`; nothing crosses by a guess
+from an address no session here has. It crosses as text alone: its
+`from`, `groups`, `intent`, `text` and `re`, under the id it was sent
+with, and only as a `fyi`, `finding` or `question` to peers by address
+(`peer.16v6f4`), since a hold or a pivot changes what other sessions do
+and a group such as a quest's or `#machine` belongs to its realm. No
+share, start, steer, presence, lease, machine or file ever crosses.
+
+Both ends judge it. The sending realm's node hands a message across only
+under its flow to the other realm, to that realm's node at
+`<runtime>/mycelium/<realm>.sock` as `{"Cross": {"message",
+"from_realm"}}`; the receiving realm's node takes it only under its flow
+from the first, and only when a session of its realm, on any machine,
+goes by an address it names. It writes the message into its realm's mesh
+with `"fromRealm"`, so its sender can't pass for a local peer, and its
+links carry it on as any message. A message it already holds, as one a
+second machine of both realms crossed first, is answered as sent and
+not written twice. A crossing made on one machine leaves nothing in the
+realm it left.
+
+A machine with a flow but no node of the other realm, as methuselah has
+none of work's, keeps the message in its own realm's mesh marked
+`"forRealm"`, which no session there hears and the node lists to no
+client. Links carry it as any message; a node with the flow on a machine
+that runs the other realm's node hands it across as it arrives, and
+every minute again while that node doesn't answer. One the other realm
+refuses is said to its sender in its own realm, as a `finding` from
+`mycelium@<machine>` answering it. A message waits at most the mesh's
+week.
+
+Nothing crosses back, an answer included: a crossed message can't be
+answered on the mesh, since an answer is still its realm's text. Each
+node keeps every crossing it judged, taken or refused, as a line of
+`crossings.jsonl` in its own folder: `at`, `from_realm`, `to_realm`,
+`from`, `to`, `intent`, `id`, `taken`, and `refused` (`code`, `why`)
+for one that wasn't. A message judged for good there isn't handed across
+again when the node restarts.
+
 ## The Socket
 
 Each node serves one unix socket, `<runtime>/mycelium/<realm>.sock`,
@@ -328,9 +378,21 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
+| `{"Send": {"from", "groups", "intent", "text", "re", "realm"}}` | `{"Sent": message}`, or refused |
+| `"Flows"` | `{"Flows": {"to"}}`, the realms a `Send` may name |
+| `{"Cross": {"message", "from_realm"}}` | `{"Sent": message}`, or refused |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
 | `{"Carry": {"machine"}}` | `"Carrying"`, then what it asks of `machine` |
+
+A `Send` naming another realm, and a `Cross`, may be refused by a flow,
+answered `{"Refused": {"code", "why"}}` beside `Ok` and `Err`: `why` is
+one line for the sender, and `code` one of `no_flow` (no flow that way),
+`not_text` (not a `fyi`, `finding` or `question` to peers by address),
+`unheard` (no session of the other realm goes by an address it names)
+and `unreached` (the other realm's node here doesn't answer). A message
+sent across carries `fromRealm`, and one left waiting for a link to
+carry it `forRealm`. A `Send` naming its own realm is a plain send.
 
 A `Present` connection counts the process at its other end, as the
 kernel names it, present until the connection closes; then every session

@@ -112,7 +112,8 @@ pub fn reached() -> PathBuf {
     runtime().join("reached.json")
 }
 
-fn runtime() -> PathBuf {
+/// The folder every realm's node on this machine serves its socket in.
+pub fn runtime() -> PathBuf {
     login_runtime()
         .unwrap_or_else(env::temp_dir)
         .join("mycelium")

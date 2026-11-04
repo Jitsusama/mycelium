@@ -3,7 +3,7 @@
 //! Quickshell read the socket themselves; nothing here is how a person uses
 //! the network.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use mycelium::awake::Awake;
 use mycelium::client::Client;
+use mycelium::flow::Flows;
 use mycelium::group::{Group, Pattern};
 use mycelium::hold::start::Starter;
 use mycelium::link::dial::{Connection, Program, Ssh, Way};
@@ -118,7 +119,12 @@ enum Action {
         /// What is said.
         #[arg(long)]
         text: String,
+        /// The realm it is for, by a flow, if not this one.
+        #[arg(long = "to-realm")]
+        to_realm: Option<String>,
     },
+    /// Prints the realms this realm's text may cross into.
+    Flows,
     /// Asks the node to start a program held, on the machine of the realm
     /// placement chooses, through that person's login shell; prints the
     /// machine, its id and the words that attach to it.
@@ -204,6 +210,13 @@ struct Node {
     /// as a kind of records; PROTOCOL.md says its shape.
     #[arg(long)]
     serves: Option<PathBuf>,
+    /// A realm this realm's text may cross into, one way, where a session
+    /// names it; given again for each. PROTOCOL.md says what crosses.
+    #[arg(long = "flow-to")]
+    flows_to: Vec<String>,
+    /// A realm whose text this realm takes, one way; given again for each.
+    #[arg(long = "flow-from")]
+    flows_from: Vec<String>,
 }
 
 impl Node {
@@ -325,18 +338,7 @@ fn run(command: Command) -> io::Result<()> {
             "say which realm, with --realm or MYCELIUM_REALM",
         )
     })?;
-    // A realm names a socket and goes into the command run over SSH, so it
-    // is held to letters, digits, `-` and `_`.
-    if realm.is_empty()
-        || !realm
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{realm:?} is not a realm: use letters, digits, - and _"),
-        ));
-    }
+    let realm = realm_named(realm)?;
     let socket = command.socket.unwrap_or_else(|| place::socket(&realm));
     match command.action {
         Action::Node(node) => run_node(node, realm, &socket),
@@ -370,7 +372,8 @@ fn run(command: Command) -> io::Result<()> {
             intent,
             groups,
             text,
-        } => print_reply(
+            to_realm,
+        } => print_answer(
             &socket,
             &Request::Send(Draft {
                 from,
@@ -378,8 +381,10 @@ fn run(command: Command) -> io::Result<()> {
                 intent,
                 text,
                 re: None,
+                realm: to_realm,
             }),
         ),
+        Action::Flows => print_reply(&socket, &Request::Flows),
         Action::Hold {
             folder,
             detached,
@@ -408,6 +413,27 @@ fn run(command: Command) -> io::Result<()> {
     }
 }
 
+/// `realm`, once it reads as one. A realm names a socket and goes into the
+/// command run over SSH, so it is held to letters, digits, `-` and `_`.
+fn realm_named(realm: String) -> io::Result<String> {
+    if realm.is_empty()
+        || !realm
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{realm:?} is not a realm: use letters, digits, - and _"),
+        ));
+    }
+    Ok(realm)
+}
+
+/// The realms a flow names, each held to a realm's name.
+fn checked(realms: Vec<String>) -> io::Result<BTreeSet<String>> {
+    realms.into_iter().map(realm_named).collect()
+}
+
 /// Runs this machine's node on `socket`, as `node` says, until it is asked
 /// to stop.
 fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
@@ -417,6 +443,12 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let state = here.state.clone().unwrap_or_else(place::state);
     let (refused, book) = (state.join("refused"), state.join("made.jsonl"));
     let steers = here.steer.clone().unwrap_or_else(place::steer);
+    let flows = Flows {
+        to: checked(node.flows_to)?,
+        from: checked(node.flows_from)?,
+        sockets: place::runtime(),
+        log: state.join("crossings.jsonl"),
+    };
     let (store, membership, shares) = open(here, realm)?;
     let given = node::Given {
         sharing: Some(shares),
@@ -433,6 +465,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         serves,
         providers,
         book: mycelium::made::Book::at(book),
+        flows,
     };
     runtime()?.block_on(async {
         let bound = node::bind(socket)?;
@@ -698,6 +731,11 @@ async fn stopped() {
 
 fn print_reply(socket: &Path, request: &Request) -> io::Result<()> {
     print_line(&Client::connect(socket)?.ask(request)?)
+}
+
+/// Prints the node's answer to a request a flow may refuse.
+fn print_answer(socket: &Path, request: &Request) -> io::Result<()> {
+    print_line(&Client::connect(socket)?.answer(request)?)
 }
 
 fn print_line(value: &impl serde::Serialize) -> io::Result<()> {

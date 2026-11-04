@@ -175,6 +175,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 serves: std::collections::BTreeMap::new(),
                 providers: Vec::new(),
                 book: mycelium::made::Book::at("/nowhere/made.jsonl".into()),
+                flows: mycelium::flow::Flows::default(),
             },
             bound,
             until_stopped,
@@ -285,6 +286,7 @@ fn post(
             }
             .text(),
             re: None,
+            realm: None,
         };
         let (id, body) = mesh::written(&draft, std::process::id());
         let writing = Instant::now();

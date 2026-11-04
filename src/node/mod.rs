@@ -2,7 +2,7 @@
 //! stores of the machines discovery finds, holds the sessions and messages
 //! in memory, and serves the local socket every client reads.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -19,6 +19,7 @@ use tokio::task::JoinSet;
 use crate::awake::{self, Awake};
 use crate::daemon;
 use crate::facts::{self, Readiness};
+use crate::flow::{self, Flows};
 use crate::group::{Pattern, Routes};
 use crate::handover::{self, Sleeping, Told};
 use crate::hold::{self, start, start::Starter};
@@ -38,8 +39,10 @@ use crate::share::exchange::Places;
 use crate::state::State;
 use crate::steer::{self, Steer};
 use crate::store::{self, Change, Store};
-use crate::wire::{Draft, Event, Offers, Reply, Request, Response, Start, Started};
+use crate::wire::{Answer, Draft, Event, Offers, Reply, Request, Response, Start, Started};
 use crate::within;
+
+mod crossing;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -144,6 +147,9 @@ pub struct Given {
     pub providers: Vec<String>,
     /// Where it keeps each machine it makes and lets go.
     pub book: Book,
+    /// The realms its messages may go to and come from, and where it
+    /// keeps each crossing.
+    pub flows: Flows,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -208,6 +214,7 @@ where
         serves,
         providers,
         book,
+        flows,
     } = given;
     let (to_dial, mut made) = mpsc::unbounded_channel();
     let shared = Shared {
@@ -219,21 +226,16 @@ where
         steers,
         updater,
         store: store.clone(),
+        inner: Arc::new(Mutex::new(Inner::after(&flows, &hello.realm))),
         machine: hello.machine,
         realm: hello.realm,
         starter: starter.map(Arc::new),
         asks: Asks::default(),
-        inner: Arc::default(),
         said: Arc::default(),
+        flows: Arc::new(flows),
     };
     let mut changes = store.changes()?;
-    let (_watching_held, mut held) = match hold::watch(&shared.held) {
-        Ok((watcher, held)) => (Some(watcher), held),
-        Err(error) => {
-            eprintln!("what is held isn't watched, so is read only with presence: {error}");
-            (None, mpsc::unbounded_channel().1)
-        }
-    };
+    let (_watching_held, mut held) = watch_held(&shared.held);
     shared.read_store();
 
     let mut links = JoinSet::new();
@@ -275,6 +277,7 @@ where
                 tell_hosted(&here);
                 shared.hand_over(&here);
                 shared.keep_awake(&mut awake);
+                shared.cross_waiting();
             }
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => shared.read_message(&id),
@@ -515,6 +518,8 @@ struct Shared<S> {
     /// The node's loop, which links each machine made, and lets it go
     /// when told it isn't wanted.
     to_dial: mpsc::UnboundedSender<(Made, Arc<Notify>)>,
+    /// The realms its messages may go to and come from.
+    flows: Arc<Flows>,
 }
 
 /// What changes each time the node's sessions or the realm's machines may
@@ -552,6 +557,7 @@ impl<S: Clone> Clone for Shared<S> {
             providers: self.providers.clone(),
             book: self.book.clone(),
             to_dial: self.to_dial.clone(),
+            flows: self.flows.clone(),
         }
     }
 }
@@ -712,6 +718,41 @@ struct Inner {
     told: Told,
     /// The sessions told this machine runs low on its battery.
     sleeping: Sleeping,
+    /// The messages waiting to cross into another realm by a flow of this
+    /// one's, by id, which no one here hears.
+    waiting: BTreeMap<String, Message>,
+    /// The ids of the messages handed across, or being handed, or refused
+    /// for good, which aren't handed across again.
+    crossed: HashSet<String>,
+}
+
+/// Watches the folder of what is held, or, when it can't be watched, says
+/// so and leaves it read only with presence.
+fn watch_held(
+    held: &Path,
+) -> (
+    Option<notify::RecommendedWatcher>,
+    mpsc::UnboundedReceiver<()>,
+) {
+    match hold::watch(held) {
+        Ok((watcher, held)) => (Some(watcher), held),
+        Err(error) => {
+            eprintln!("what is held isn't watched, so is read only with presence: {error}");
+            (None, mpsc::unbounded_channel().1)
+        }
+    }
+}
+
+impl Inner {
+    /// What a node of `realm` holds as it starts: nothing, but the crossings
+    /// its log says were judged before it restarted, which aren't handed
+    /// across again.
+    fn after(flows: &Flows, realm: &str) -> Self {
+        Self {
+            crossed: flow::settled(&flows.log, realm),
+            ..Self::default()
+        }
+    }
 }
 
 impl<S: Store> Shared<S> {
@@ -738,11 +779,12 @@ impl<S: Store> Shared<S> {
                 .filter(|id| !inner.state.holds_message(id))
                 .collect()
         };
-        let messages = unread
+        let (waiting, messages): (Vec<Message>, Vec<Message>) = unread
             .iter()
             .filter_map(|id| mesh::message(&self.store.message(id)?))
-            .collect();
+            .partition(|message| message.for_realm.is_some());
         self.lock().state.add_messages(messages);
+        self.wait_to_cross(waiting);
         self.said.messages.send_modify(|said| *said += 1);
         self.read_sessions();
     }
@@ -782,6 +824,10 @@ impl<S: Store> Shared<S> {
         let Some(message) = self.store.message(id).as_ref().and_then(mesh::message) else {
             return;
         };
+        if message.for_realm.is_some() {
+            self.wait_to_cross(vec![message]);
+            return;
+        }
         let mut inner = self.lock();
         if let Some(message) = inner.state.add_message(message) {
             inner.send_message(message);
@@ -792,6 +838,13 @@ impl<S: Store> Shared<S> {
     /// Sends a message on the mesh; the store's change brings it back to
     /// every watch, as any session's message comes.
     fn send(&self, draft: &Draft) -> Result<Message, String> {
+        if draft
+            .realm
+            .as_ref()
+            .is_some_and(|realm| *realm != self.realm)
+        {
+            return Err("a message for another realm is sent across by a flow".to_owned());
+        }
         if draft.groups.is_empty() {
             return Err("a message needs at least one group".to_owned());
         }
@@ -919,6 +972,10 @@ impl<S: Store> Shared<S> {
                 Ok(Response::Messages(self.lock().state.recent(&groups, limit)))
             }
             Request::Send(draft) => self.send(&draft).map(Response::Sent),
+            Request::Flows => Ok(Response::Flows {
+                to: self.flows.to.iter().cloned().collect(),
+            }),
+            Request::Cross(_) => Err("a crossing is answered by `take`".to_owned()),
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
             Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
@@ -1305,12 +1362,21 @@ async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
             }
             return;
         }
-        let reply = match request {
-            Ok(Request::Start(asked)) => shared.start(asked).await,
-            Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await,
-            Ok(Request::Update { machine }) => shared.update(&machine).await,
-            Ok(Request::Offers) => Ok(Response::Offers(shared.offers().await)),
-            asked => asked.and_then(|request| shared.answer(request)),
+        let reply: Answer = match request {
+            Ok(Request::Start(asked)) => shared.start(asked).await.into(),
+            Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
+            Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
+            Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
+            Ok(Request::Send(draft))
+                if draft
+                    .realm
+                    .as_ref()
+                    .is_some_and(|realm| *realm != shared.realm) =>
+            {
+                shared.send_across(draft).await
+            }
+            Ok(Request::Cross(crossing)) => shared.take(crossing),
+            asked => asked.and_then(|request| shared.answer(request)).into(),
         };
         if write(&mut writing, &reply).await.is_err() {
             return;
@@ -1462,6 +1528,7 @@ mod tests {
             serves: BTreeMap::new(),
             providers: Vec::new(),
             book: Book::at("/nowhere/made.jsonl".into()),
+            flows: Flows::default(),
         }
     }
 
@@ -1511,6 +1578,7 @@ mod tests {
                 serves,
                 providers,
                 book,
+                flows: Flows::default(),
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -2093,6 +2161,7 @@ mod tests {
                 intent: None,
                 text: text.to_owned(),
                 re: None,
+                realm: None,
             };
             mesh::written(&draft, 1)
         };
@@ -2473,6 +2542,7 @@ mod tests {
                 intent: None,
                 text: text.to_owned(),
                 re: None,
+                realm: None,
             };
             mesh::written(&draft, pid)
         };
@@ -2660,6 +2730,7 @@ mod tests {
                 intent: Some(Intent::Question),
                 text: "how far along?".to_owned(),
                 re: None,
+                realm: None,
             };
             let sent = sender.ask(&Request::Send(draft));
             let Ok(Response::Sent(sent)) = sent.expect("the node answers") else {
