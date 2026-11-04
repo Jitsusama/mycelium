@@ -31,6 +31,14 @@ pub struct Message {
     /// The message this one replaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
+    /// The realm it crossed from, by a flow, for one that did.
+    #[serde(default, rename = "fromRealm", skip_serializing_if = "Option::is_none")]
+    pub from_realm: Option<String>,
+    /// The realm it waits to cross into, for one a link carries to a
+    /// machine whose node hands it across; no one in its own realm hears
+    /// it.
+    #[serde(default, rename = "forRealm", skip_serializing_if = "Option::is_none")]
+    pub for_realm: Option<String>,
 }
 
 /// What a message asks of those who hear it, in the mesh's words.

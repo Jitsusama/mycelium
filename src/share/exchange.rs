@@ -363,6 +363,7 @@ impl Exchange {
                 intent: Some(Intent::Finding),
                 text,
                 re: None,
+                realm: None,
             }),
             None => eprintln!("{text} (its sessions' group couldn't be read, so none was told)"),
         }

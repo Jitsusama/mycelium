@@ -135,7 +135,32 @@ pub fn message(body: &Value) -> Option<Message> {
         text: sent.text,
         re: sent.re,
         supersedes: sent.supersedes,
+        from_realm: sent.from_realm,
+        for_realm: sent.for_realm,
     })
+}
+
+/// The mesh file of a message that crossed from `from_realm` by a flow,
+/// written by process `pid`: its text alone, under the id it was sent
+/// with, marked with the realm it came from.
+pub fn crossed(message: &Message, from_realm: &str, pid: u32) -> Value {
+    let mut body = json!({
+        "v": 1,
+        "id": message.id,
+        "at": message.at,
+        "from": message.from,
+        "to": message.groups.iter().map(target_for).collect::<Vec<_>>(),
+        "text": message.text,
+        "pid": pid,
+        "fromRealm": from_realm,
+    });
+    if let Some(intent) = message.intent {
+        body["intent"] = json!(intent);
+    }
+    if let Some(re) = &message.re {
+        body["re"] = json!(re);
+    }
+    body
 }
 
 /// The session a presence describes, on `here` unless it runs elsewhere.
@@ -220,6 +245,10 @@ struct Sent {
     text: String,
     re: Option<String>,
     supersedes: Option<String>,
+    #[serde(rename = "fromRealm")]
+    from_realm: Option<String>,
+    #[serde(rename = "forRealm")]
+    for_realm: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -366,6 +395,7 @@ mod tests {
             intent: Some(Intent::Question),
             text: "how far along?".to_owned(),
             re: None,
+            realm: None,
         };
         let (id, body) = written(&draft, 42);
         assert!(id.contains("-joel-42-"), "the id is the mesh's shape: {id}");
@@ -399,6 +429,7 @@ mod tests {
             intent: Some(Intent::Finding),
             text: "kept beside".to_owned(),
             re: None,
+            realm: None,
         };
         let (id, body) = written(&draft, 4242);
         crate::store::folders::safe(&id).expect("its id is a name the store keeps");

@@ -148,6 +148,8 @@ mod tests {
             text: format!("message {id}"),
             re: None,
             supersedes: None,
+            from_realm: None,
+            for_realm: None,
         }
     }
 

@@ -5,7 +5,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-use crate::wire::{Event, Reply, Request};
+use crate::wire::{Answer, Event, Reply, Request};
 
 /// A connection to a node.
 pub struct Client {
@@ -28,10 +28,20 @@ impl Client {
 
     /// Sends `request` and reads the node's reply.
     pub fn ask(&mut self, request: &Request) -> io::Result<Reply> {
+        self.write(request)?;
+        self.read()
+    }
+
+    /// Sends `request`, one a flow may refuse, and reads the node's answer.
+    pub fn answer(&mut self, request: &Request) -> io::Result<Answer> {
+        self.write(request)?;
+        self.read()
+    }
+
+    fn write(&mut self, request: &Request) -> io::Result<()> {
         let mut line = serde_json::to_vec(request).map_err(io::Error::other)?;
         line.push(b'\n');
-        self.writing.write_all(&line)?;
-        self.read()
+        self.writing.write_all(&line)
     }
 
     /// The next event of a watch, or nothing once the node has gone.
