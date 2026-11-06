@@ -139,14 +139,14 @@ fn untold(
 /// How much work runs on a machine: each session living there, as
 /// `held_as` names the held program each is (if any), and each program
 /// `held` there that no living session is, such as a build sent to it,
-/// which is work as much as a session is.
+/// which is work as much as a session is. A parked program is no work.
 #[must_use]
 pub fn running(held_as: &[Option<String>], held: &[Held]) -> usize {
     let sessions: BTreeSet<&str> = held_as.iter().flatten().map(String::as_str).collect();
     held_as.len()
         + held
             .iter()
-            .filter(|one| !sessions.contains(one.id.as_str()))
+            .filter(|one| !one.parked && !sessions.contains(one.id.as_str()))
             .count()
 }
 
@@ -228,6 +228,16 @@ mod tests {
             running(&[None], &[]),
             1,
             "a session nobody holds there still runs"
+        );
+        let parked = Held {
+            parked: true,
+            pid: 0,
+            ..held("parked")
+        };
+        assert_eq!(
+            running(&[], &[parked]),
+            0,
+            "a parked session runs nothing, though its holder keeps its window"
         );
     }
 

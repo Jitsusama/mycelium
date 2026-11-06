@@ -1477,6 +1477,7 @@ mod tests {
             folder: dir.to_owned(),
             holder: std::process::id(),
             pid: 4242,
+            parked: false,
             since: "2026-10-29T06:00:00Z".to_owned(),
             windows: Vec::new(),
         };

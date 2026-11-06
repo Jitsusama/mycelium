@@ -26,9 +26,10 @@ pub const LOW_CHARGE: u8 = 20;
 /// held that is no session, such as a build sent here, is at work while
 /// it runs; a session is while it runs a turn or has work queued, and
 /// not while it waits idle, which could keep a laptop awake for days.
+/// A parked program is waiting too, with no process at all.
 #[must_use]
 pub fn at_work(held: &[Held], sessions: &[Session], queued: &BTreeSet<String>) -> bool {
-    held.iter().any(|one| {
+    held.iter().filter(|one| !one.parked).any(|one| {
         sessions
             .iter()
             .find(|session| session.held.as_deref() == Some(one.id.as_str()))
@@ -233,6 +234,15 @@ mod tests {
         assert!(
             !at_work(&[], &idle, &nothing),
             "nothing held is nothing at work"
+        );
+        let parked = Held {
+            parked: true,
+            pid: 0,
+            ..held("c")
+        };
+        assert!(
+            !at_work(&[parked], &[], &nothing),
+            "a parked program, whose session has no process, isn't at work"
         );
     }
 

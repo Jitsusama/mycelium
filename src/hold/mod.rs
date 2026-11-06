@@ -9,6 +9,14 @@
 //! beside a record, `<id>.json`, saying what it holds; both go when the
 //! program ends.
 //!
+//! A program that exits with [`holder::PARKED`] is parked, not ended: it
+//! has let its memory go while it waits. Its holder keeps its terminal
+//! and every window joined to it, and starts it again on the same
+//! terminal when a key is typed in one of them or when its wake file,
+//! `<id>.wake`, appears. The program is told that file in
+//! `MYCELIUM_WAKE`, so whatever wakes it needs to know nothing of this
+//! folder.
+//!
 //! - [`holder`]: the holder, keeping the program's terminal
 //! - [`attach`]: a terminal joining a holder
 //! - [`start`]: starting a holder in a process of its own
@@ -46,8 +54,11 @@ pub struct Held {
     pub folder: PathBuf,
     /// The holder's process.
     pub holder: u32,
-    /// The program's process.
+    /// The program's process, or 0 while it is parked.
     pub pid: u32,
+    /// Whether the program is parked, waiting to be started again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parked: bool,
     /// When it was started, as an RFC 3339 time.
     pub since: String,
     /// The windows joined to it that said which they are, the latest
@@ -157,6 +168,13 @@ pub fn new_id() -> String {
 #[must_use]
 pub fn socket(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.sock"))
+}
+
+/// The file whose appearing wakes the session held as `id` in `dir`
+/// while it is parked.
+#[must_use]
+pub fn wake(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.wake"))
 }
 
 /// Every session held in `dir` whose holder still runs, oldest first.
