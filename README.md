@@ -20,7 +20,8 @@ The harness mesh's messages and presence, carried between machines:
   and the same folders of its scratch, those named with `--scratch`.
 - A program started with `mycelium hold` outlives the window it started
   in, and `mycelium attach` takes it up again from any terminal on the
-  machine. While one held there is at work (a turn, queued work, or a
+  machine. One that exits 75 is parked: its window stays, and a key or
+  its wake file starts it again. While one held there is at work (a turn, queued work, or a
   program that is no session), the node keeps it from sleeping when
   idle, until its battery drops below 20%. Shutting its lid or asking
   it to sleep always sleeps it.

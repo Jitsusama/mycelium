@@ -14,11 +14,11 @@ use std::time::Duration;
 use pty_process::{OwnedReadPty, OwnedWritePty};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio::task::JoinSet;
 
 use super::modes::Modes;
-use super::{Held, Said, Size, socket};
+use super::{Held, Said, Size, socket, wake};
 use crate::node;
 use crate::record::Window;
 
@@ -32,6 +32,17 @@ const LAST_WORDS: Duration = Duration::from_millis(500);
 
 /// The size a program starts at, before any terminal has joined.
 const FIRST_SIZE: Size = Size { rows: 24, cols: 80 };
+
+/// The exit code a held program parks with, rather than ending: sysexits'
+/// `EX_TEMPFAIL`, as it stops only until it is woken.
+pub const PARKED: i32 = 75;
+
+/// How often a parked holder looks for its wake file. A stat a second
+/// costs nothing, and a message waking a session waits a second at most.
+const WAKE_LOOK: Duration = Duration::from_secs(1);
+
+/// What every joined window shows while its program is parked.
+const PARKED_LINE: &[u8] = b"\r\nParked, its memory given back. A key or a message wakes it.\r\n";
 
 /// Variables a program's first terminal set that would name the wrong
 /// window once it is held, since it outlives that window.
@@ -56,7 +67,9 @@ pub struct Holding<'a> {
 
 /// Holds the program until it ends, answering its exit code, if it gave
 /// one. `ready` is told what is held once a terminal can join it. The
-/// program is told its id in `MYCELIUM_HELD`.
+/// program is told its id in `MYCELIUM_HELD`, and the file that wakes it
+/// once parked in `MYCELIUM_WAKE`. A program exiting with [`PARKED`] is
+/// started again on the same terminal when woken.
 pub async fn hold(
     holding: &Holding<'_>,
     ready: impl FnOnce(&Held) -> io::Result<()>,
@@ -68,22 +81,32 @@ pub async fn hold(
         ));
     };
     let socket = node::bind(&socket(holding.dir, holding.id))?;
+    let waking = wake(holding.dir, holding.id);
+    // A wake left from before this program ran says nothing to it.
+    let _ = fs::remove_file(&waking);
     let (pty, pts) = pty_process::open().map_err(io::Error::other)?;
     pty.resize(size_of(FIRST_SIZE)).map_err(io::Error::other)?;
-    let mut command = pty_process::Command::new(program)
-        .args(arguments)
-        .current_dir(holding.folder)
-        .env("MYCELIUM_HELD", holding.id);
-    for variable in WINDOW_VARIABLES {
-        command = command.env_remove(variable);
-    }
-    let mut child = command.spawn(pts).map_err(io::Error::other)?;
+    // The holder keeps the terminal's other end, so a parked program's
+    // terminal outlives it and the program starts again on the same one.
+    let start = || {
+        let mut command = pty_process::Command::new(program)
+            .args(arguments)
+            .current_dir(holding.folder)
+            .env("MYCELIUM_HELD", holding.id)
+            .env("MYCELIUM_WAKE", &waking);
+        for variable in WINDOW_VARIABLES {
+            command = command.env_remove(variable);
+        }
+        command.spawn_borrowed(&pts).map_err(io::Error::other)
+    };
+    let mut child = start()?;
     let held = Held {
         id: holding.id.to_owned(),
         command: holding.command.to_vec(),
         folder: holding.folder.to_owned(),
         holder: std::process::id(),
         pid: child.id().unwrap_or_default(),
+        parked: false,
         since: jiff::Timestamp::now().to_string(),
         windows: Vec::new(),
     };
@@ -96,6 +119,7 @@ pub async fn hold(
         writing: tokio::sync::Mutex::new(writing),
         size: Mutex::new(FIRST_SIZE),
         drawn: output.clone(),
+        parked: watch::Sender::new(false),
     });
     let shown = Arc::new(Shown {
         modes: Mutex::new(Modes::default()),
@@ -103,24 +127,22 @@ pub async fn hold(
     });
     let mut reader = tokio::spawn(read_output(reading, shown.clone()));
     let mut joined = JoinSet::new();
+    // A terminal may join whether the program runs or is parked.
+    let serving = |stream| serve(stream, terminal.clone(), shown.join(), record.clone());
     let status = loop {
-        tokio::select! {
-            status = child.wait() => break status?,
-            accepted = socket.accept() => {
-                if let Ok(stream) = accepted {
-                    joined.spawn(serve(
-                        stream,
-                        terminal.clone(),
-                        shown.join(),
-                        record.clone(),
-                    ));
-                }
-            }
-            Some(_) = joined.join_next(), if !joined.is_empty() => {}
+        let status = joining_until(child.wait(), &socket, &mut joined, &serving).await?;
+        if status.code() != Some(PARKED) {
+            break status;
         }
+        record.parks();
+        shown.show(PARKED_LINE);
+        joining_until(woken(&terminal, &waking), &socket, &mut joined, &serving).await;
+        child = start()?;
+        record.runs(child.id().unwrap_or_default());
     };
-    // The program's last output still reaches whoever is joined, and then
-    // each is let go as the output ends.
+    // The terminal's other end goes with the program, so its last output
+    // ends as it did, then whoever is joined is let go.
+    drop(pts);
     drop(socket);
     record.end();
     if tokio::time::timeout(LAST_WORDS, &mut reader).await.is_err() {
@@ -132,6 +154,46 @@ pub async fn hold(
     })
     .await;
     Ok(status.code())
+}
+
+/// Serves each terminal that joins on `socket` until `until` ends,
+/// answering what it ended with.
+async fn joining_until<T, Serving: Future<Output = ()> + Send + 'static>(
+    until: impl Future<Output = T>,
+    socket: &node::Socket,
+    joined: &mut JoinSet<()>,
+    serving: &impl Fn(UnixStream) -> Serving,
+) -> T {
+    tokio::pin!(until);
+    loop {
+        tokio::select! {
+            ended = &mut until => return ended,
+            accepted = socket.accept() => {
+                if let Ok(stream) = accepted {
+                    joined.spawn(serving(stream));
+                }
+            }
+            Some(_) = joined.join_next(), if !joined.is_empty() => {}
+        }
+    }
+}
+
+/// Waits while the program is parked, until a key is typed in a joined
+/// terminal or the file `waking` appears, then spends the wake.
+async fn woken(terminal: &Terminal, waking: &Path) {
+    let mut parked = terminal.parked.subscribe();
+    terminal.parked.send_replace(true);
+    let mut look = tokio::time::interval(WAKE_LOOK);
+    loop {
+        tokio::select! {
+            _ = parked.wait_for(|parked| !*parked) => break,
+            _ = look.tick() => if waking.exists() { break },
+        }
+    }
+    terminal.parked.send_replace(false);
+    // The wake is spent once it has woken the program. One that can't be
+    // taken away would only wake it again at its next park.
+    let _ = fs::remove_file(waking);
 }
 
 /// The longest a program joined at the size it has is kept one column
@@ -148,9 +210,17 @@ struct Terminal {
     size: Mutex<Size>,
     /// What the program draws, to know it has drawn since a nudge.
     drawn: broadcast::Sender<Arc<[u8]>>,
+    /// Whether the program is parked, so a key typed wakes it.
+    parked: watch::Sender<bool>,
 }
 
 impl Terminal {
+    /// Wakes a parked program, answering whether it was parked: the key
+    /// that woke it is then not the program's to read.
+    fn wakes(&self) -> bool {
+        self.parked.send_if_modified(std::mem::take)
+    }
+
     /// Gives the program `size`. A terminal joining at the size the program
     /// already has nudges it one column narrower first, so the program is
     /// told of a change and draws itself again, as dtach's redraw does.
@@ -229,6 +299,7 @@ async fn serve(
         };
         while let Ok(Some(said)) = Said::read(&mut reading).await {
             let done = match said {
+                Said::Typed(_) if terminal.wakes() => Ok(()),
                 Said::Typed(bytes) => terminal.writing.lock().await.write_all(&bytes).await,
                 Said::Size(size) => terminal.resize(size, std::mem::take(&mut joining)).await,
                 Said::Window(said) => {
@@ -353,6 +424,24 @@ impl Record {
     fn left(&self, key: u64) {
         let mut kept = self.kept();
         kept.windows.retain(|(each, _)| *each != key);
+        // As in `joined`, the next change writes it whole again.
+        let _ = self.save(&kept);
+    }
+
+    /// Says the program is parked, with no process of its own.
+    fn parks(&self) {
+        let mut kept = self.kept();
+        kept.held.pid = 0;
+        kept.held.parked = true;
+        // As in `joined`, the next change writes it whole again.
+        let _ = self.save(&kept);
+    }
+
+    /// Says the program runs again, as `pid`.
+    fn runs(&self, pid: u32) {
+        let mut kept = self.kept();
+        kept.held.pid = pid;
+        kept.held.parked = false;
         // As in `joined`, the next change writes it whole again.
         let _ = self.save(&kept);
     }
@@ -655,6 +744,83 @@ mod tests {
             listed(&dir).is_empty(),
             "a window leaving after can't bring it back"
         );
+    }
+
+    /// Waits until what is listed in `dir` says it is `parked` or not.
+    async fn listed_parked(
+        dir: &Path,
+        changes: &mut mpsc::UnboundedReceiver<()>,
+        parked: bool,
+    ) -> Held {
+        let found = tokio::time::timeout(PATIENCE, async {
+            loop {
+                if let Some(one) = listed(dir).into_iter().find(|one| one.parked == parked) {
+                    return one;
+                }
+                changes.recv().await;
+            }
+        })
+        .await;
+        found.unwrap_or_else(|_| panic!("what is held never listed as parked: {parked}"))
+    }
+
+    #[tokio::test]
+    async fn a_parked_program_starts_again_on_its_terminal_when_a_key_is_typed() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window.types("echo first $((40 + 2)); exit 75\r").await;
+        window.sees("first 42").await;
+        window.sees("Parked").await;
+        let parked = listed_parked(&dir, &mut changes, true).await;
+        assert_eq!(parked.pid, 0, "a parked program has no process");
+
+        // The key that wakes it is not the program's: only what is typed
+        // after reaches the shell, whose line would fail with an x before it.
+        window.types("x").await;
+        let again = listed_parked(&dir, &mut changes, false).await;
+        assert!(
+            again.pid != 0 && again.pid != held.pid,
+            "it runs as a new process"
+        );
+        window.types("stty size; echo again $((6 * 7))\r").await;
+        window.sees("30 100").await;
+        window.sees("again 42").await;
+    }
+
+    #[tokio::test]
+    async fn a_parked_program_starts_again_when_its_wake_file_appears() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window.types("echo \"[$MYCELIUM_WAKE]\"; exit 75\r").await;
+        let waking = wake(&dir, &held.id);
+        window.sees(&format!("[{}]", waking.display())).await;
+        listed_parked(&dir, &mut changes, true).await;
+
+        fs::write(&waking, b"{}").expect("the wake is written");
+        listed_parked(&dir, &mut changes, false).await;
+        assert!(
+            !waking.exists(),
+            "the wake is spent once it woke the program"
+        );
+        window.types("echo woken $((6 * 7)); exit 4\r").await;
+        window.sees("woken 42").await;
+        let ended = tokio::time::timeout(PATIENCE, holder)
+            .await
+            .expect("the holder ends with its program")
+            .expect("the holder's task ran");
+        assert_eq!(ended.expect("it held"), Some(4), "any other exit ends it");
     }
 
     #[tokio::test]

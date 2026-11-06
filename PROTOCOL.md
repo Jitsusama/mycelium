@@ -722,12 +722,22 @@ started, and a closing window hangs up on its own session only.
 Each holder serves `<id>.sock` in `<runtime>/mycelium/<realm>.held`,
 reachable only by its account, beside
 `<id>.json`, which says what it holds: `id`, `command`, `folder`, the
-`holder`'s and the program's `pid`, `since`, and the `windows` joined to
-it that said which they are, the latest last. A window leaves the record
-the moment its terminal leaves, and both go when the program ends.
-`mycelium held` lists every record whose holder still runs. The program
-is told its id in `MYCELIUM_HELD`, and loses the variables naming
-the window it started in.
+`holder`'s and the program's `pid`, `since`, `parked` while it is, and
+the `windows` joined to it that said which they are, the latest last. A
+window leaves the record the moment its terminal leaves, and both go
+when the program ends. `mycelium held` lists every record whose holder
+still runs. The program is told its id in `MYCELIUM_HELD`, and loses
+the variables naming the window it started in.
+
+A program that exits with 75 (sysexits' `EX_TEMPFAIL`) is parked, not
+ended, so a session waiting idle can give its memory back. Its holder
+keeps its socket, its terminal and every window joined, says `parked`
+with a `pid` of 0, and starts the same command again on the same
+terminal when a key is typed in a joined window, the key itself going
+nowhere, or when `<id>.wake` appears beside its record. The program is
+told that file's path in `MYCELIUM_WAKE`, and the holder takes it away
+once it has woken the program. A parked program is no work: it keeps no
+machine awake and holds up no handover.
 
 A joined terminal sends frames of a tag byte, a two-byte big-endian
 length and what it carries: tag 0 is bytes typed, and tag 1 is its size,

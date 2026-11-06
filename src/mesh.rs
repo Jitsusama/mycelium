@@ -597,6 +597,7 @@ mod tests {
             folder: "/home/jitsusama".into(),
             holder: 1,
             pid,
+            parked: false,
             since: "2026-10-28T23:00:00Z".to_owned(),
             windows: Vec::new(),
         };
