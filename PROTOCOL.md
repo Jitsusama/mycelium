@@ -732,12 +732,17 @@ the variables naming the window it started in.
 A program that exits with 75 (sysexits' `EX_TEMPFAIL`) is parked, not
 ended, so a session waiting idle can give its memory back. Its holder
 keeps its socket, its terminal and every window joined, says `parked`
-with a `pid` of 0, and starts the same command again on the same
-terminal when a key is typed in a joined window, the key itself going
-nowhere, or when `<id>.wake` appears beside its record. The program is
-told that file's path in `MYCELIUM_WAKE`, and the holder takes it away
-once it has woken the program. A parked program is no work: it keeps no
-machine awake and holds up no handover.
+with a `pid` of 0, and starts it again on the same terminal when a key
+is typed in a joined window, the key itself going nowhere, or when
+`<id>.wake` appears beside its record. The program is told that file's
+path in `MYCELIUM_WAKE`, and the holder takes it away once it has woken
+the program. It starts the same command again, unless the program wrote
+`<id>.again` as it parked, a JSON list of a program and its arguments,
+which it is told the path of in `MYCELIUM_AGAIN`: so a session started
+as a bare `pi` comes back to its own conversation. That command is the
+one started, and the one the record says, from then on, and the file is
+taken away once read. A parked program is no work: it keeps no machine
+awake and holds up no handover.
 
 A joined terminal sends frames of a tag byte, a two-byte big-endian
 length and what it carries: tag 0 is bytes typed, and tag 1 is its size,
