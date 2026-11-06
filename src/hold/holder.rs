@@ -18,7 +18,7 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::JoinSet;
 
 use super::modes::Modes;
-use super::{Held, Said, Size, socket, wake};
+use super::{Held, Said, Size, again, socket, wake};
 use crate::node;
 use crate::record::Window;
 
@@ -67,39 +67,49 @@ pub struct Holding<'a> {
 
 /// Holds the program until it ends, answering its exit code, if it gave
 /// one. `ready` is told what is held once a terminal can join it. The
-/// program is told its id in `MYCELIUM_HELD`, and the file that wakes it
-/// once parked in `MYCELIUM_WAKE`. A program exiting with [`PARKED`] is
-/// started again on the same terminal when woken.
+/// program is told its id in `MYCELIUM_HELD`, the file that wakes it once
+/// parked in `MYCELIUM_WAKE`, and the file it may name its next command in
+/// as it parks in `MYCELIUM_AGAIN`. A program exiting with [`PARKED`] is
+/// started again on the same terminal when woken, with that command if it
+/// named one.
 pub async fn hold(
     holding: &Holding<'_>,
     ready: impl FnOnce(&Held) -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
-    let Some((program, arguments)) = holding.command.split_first() else {
+    if holding.command.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "there is nothing to hold: name a program",
         ));
-    };
+    }
     let socket = node::bind(&socket(holding.dir, holding.id))?;
     let waking = wake(holding.dir, holding.id);
-    // A wake left from before this program ran says nothing to it.
+    let naming = again(holding.dir, holding.id);
+    // A wake or a command left from before this program ran says nothing
+    // to it.
     let _ = fs::remove_file(&waking);
+    let _ = fs::remove_file(&naming);
     let (pty, pts) = pty_process::open().map_err(io::Error::other)?;
     pty.resize(size_of(FIRST_SIZE)).map_err(io::Error::other)?;
     // The holder keeps the terminal's other end, so a parked program's
     // terminal outlives it and the program starts again on the same one.
-    let start = || {
+    let start = |command: &[String]| {
+        let Some((program, arguments)) = command.split_first() else {
+            return Err(io::Error::other("there is nothing to start"));
+        };
         let mut command = pty_process::Command::new(program)
             .args(arguments)
             .current_dir(holding.folder)
             .env("MYCELIUM_HELD", holding.id)
-            .env("MYCELIUM_WAKE", &waking);
+            .env("MYCELIUM_WAKE", &waking)
+            .env("MYCELIUM_AGAIN", &naming);
         for variable in WINDOW_VARIABLES {
             command = command.env_remove(variable);
         }
         command.spawn_borrowed(&pts).map_err(io::Error::other)
     };
-    let mut child = start()?;
+    let mut command = holding.command.to_vec();
+    let mut child = start(&command)?;
     let held = Held {
         id: holding.id.to_owned(),
         command: holding.command.to_vec(),
@@ -137,8 +147,9 @@ pub async fn hold(
         record.parks();
         shown.show(PARKED_LINE);
         joining_until(woken(&terminal, &waking), &socket, &mut joined, &serving).await;
-        child = start()?;
-        record.runs(child.id().unwrap_or_default());
+        command = named(&naming).unwrap_or(command);
+        child = start(&command)?;
+        record.runs(child.id().unwrap_or_default(), &command);
     };
     // The terminal's other end goes with the program, so its last output
     // ends as it did, then whoever is joined is let go.
@@ -154,6 +165,19 @@ pub async fn hold(
     })
     .await;
     Ok(status.code())
+}
+
+/// The command a parking program named in `naming`, a JSON list of its
+/// program and arguments, taken away once read. One that names nothing a
+/// program could be started as is no command, and the last one is kept.
+fn named(naming: &Path) -> Option<Vec<String>> {
+    let body = fs::read(naming).ok()?;
+    let _ = fs::remove_file(naming);
+    let command: Vec<String> = serde_json::from_slice(&body).ok()?;
+    command
+        .first()
+        .is_some_and(|program| !program.is_empty())
+        .then_some(command)
 }
 
 /// Serves each terminal that joins on `socket` until `until` ends,
@@ -437,10 +461,11 @@ impl Record {
         let _ = self.save(&kept);
     }
 
-    /// Says the program runs again, as `pid`.
-    fn runs(&self, pid: u32) {
+    /// Says the program runs again, as `pid`, started with `command`.
+    fn runs(&self, pid: u32, command: &[String]) {
         let mut kept = self.kept();
         kept.held.pid = pid;
+        command.clone_into(&mut kept.held.command);
         kept.held.parked = false;
         // As in `joined`, the next change writes it whole again.
         let _ = self.save(&kept);
@@ -821,6 +846,43 @@ mod tests {
             .expect("the holder ends with its program")
             .expect("the holder's task ran");
         assert_eq!(ended.expect("it held"), Some(4), "any other exit ends it");
+    }
+
+    #[tokio::test]
+    async fn a_parked_program_starts_again_with_the_command_it_named() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window
+            .types(concat!(
+                r#"printf '%s' '["sh","-c","echo resumed $((6 * 7)); exit 3"]'"#,
+                " > \"$MYCELIUM_AGAIN\"; exit 75\r",
+            ))
+            .await;
+        listed_parked(&dir, &mut changes, true).await;
+
+        fs::write(wake(&dir, &held.id), b"{}").expect("the wake is written");
+        let woken = listed_parked(&dir, &mut changes, false).await;
+        window.sees("resumed 42").await;
+        assert_eq!(
+            woken.command[..2],
+            ["sh", "-c"],
+            "the record says what it runs now"
+        );
+        assert!(
+            !again(&dir, &held.id).exists(),
+            "the command named is taken once read"
+        );
+        let ended = tokio::time::timeout(PATIENCE, holder)
+            .await
+            .expect("the holder ends with its program")
+            .expect("the holder's task ran");
+        assert_eq!(ended.expect("it held"), Some(3), "the named command ran");
     }
 
     #[tokio::test]

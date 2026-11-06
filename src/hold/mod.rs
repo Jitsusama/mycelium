@@ -177,6 +177,13 @@ pub fn wake(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.wake"))
 }
 
+/// The file a program held as `id` in `dir` may write, as it parks, with
+/// the command that takes it up again where it left off.
+#[must_use]
+pub fn again(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.again"))
+}
+
 /// Every session held in `dir` whose holder still runs, oldest first.
 #[must_use]
 pub fn held(dir: &Path) -> Vec<Held> {
