@@ -35,6 +35,19 @@ pub trait Holds: Send + Sync + 'static {
     fn health(&self) -> Map<String, Value>;
 }
 
+/// What a daemon does for its clients beyond reading: what the person says
+/// put to one of its sessions.
+pub trait Steers: Send + Sync + 'static {
+    /// Puts `said` into the inbox of the session going by `address`, on
+    /// whichever machine runs it, answering which machine that is, or why
+    /// it can't be told.
+    fn steer(
+        &self,
+        address: &str,
+        said: &Value,
+    ) -> impl Future<Output = Result<String, String>> + Send;
+}
+
 /// The version of the interface this node speaks.
 pub const VERSION: u64 = 1;
 
@@ -75,6 +88,13 @@ pub enum What {
     },
     /// The end of the watch asked with this id.
     Unwatch,
+    /// What the person says, put to the session going by `address`.
+    Steer {
+        /// The session's address.
+        address: String,
+        /// What is said, in the harness's own shape.
+        said: Value,
+    },
     /// How the daemon and each of its sources stand.
     Health,
 }
@@ -88,6 +108,8 @@ pub enum Refusal {
     UnknownKind(String),
     /// A line that isn't an ask at all.
     NotAnAsk(String),
+    /// An ask understood, which the daemon couldn't do, and why.
+    Refused(String),
 }
 
 impl Refusal {
@@ -98,6 +120,7 @@ impl Refusal {
             Self::UnknownAsk(_) => "unknown-ask",
             Self::UnknownKind(_) => "unknown-kind",
             Self::NotAnAsk(_) => "not-an-ask",
+            Self::Refused(_) => "refused",
         }
     }
 
@@ -108,6 +131,7 @@ impl Refusal {
             Self::UnknownAsk(ask) => format!("this node doesn't answer {ask:?}"),
             Self::UnknownKind(kind) => format!("this node holds no {kind:?}"),
             Self::NotAnAsk(why) => format!("not an ask: {why}"),
+            Self::Refused(why) => why.clone(),
         }
     }
 }
@@ -158,6 +182,21 @@ pub fn read(line: &str) -> Result<Ask, (Value, Refusal)> {
         },
         "unwatch" => What::Unwatch,
         "health" => What::Health,
+        "steer" => What::Steer {
+            address: value
+                .get("address")
+                .and_then(Value::as_str)
+                .filter(|address| !address.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    refused(Refusal::NotAnAsk("a steer names no `address`".to_owned()))
+                })?,
+            said: value
+                .get("steer")
+                .filter(|said| said.is_object())
+                .cloned()
+                .ok_or_else(|| refused(Refusal::NotAnAsk("a steer says nothing".to_owned())))?,
+        },
         other => return Err(refused(Refusal::UnknownAsk(other.to_owned()))),
     };
     Ok(Ask { id, what })
@@ -189,7 +228,7 @@ pub fn record(kind: &str, id: &str, heard: i64, fields: Value) -> Value {
 /// ask after it on `lines`, writing to `writing`, until it hangs up.
 pub async fn speak<H, R, W>(holds: Arc<H>, first: Ask, mut lines: Lines<R>, mut writing: W)
 where
-    H: Holds,
+    H: Holds + Steers,
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
 {
@@ -230,9 +269,10 @@ async fn say(writing: &mut (impl AsyncWrite + Unpin), answer: &Value) -> std::io
 }
 
 /// The answer to `ask`, now, or none for a watch, which answers through
-/// `answering` for as long as it lasts, or an unwatch, which answers not
-/// at all.
-fn answer<H: Holds>(
+/// `answering` for as long as it lasts, a steer, which answers through it
+/// once its session's machine has it, or an unwatch, which answers not at
+/// all.
+fn answer<H: Holds + Steers>(
     holds: &Arc<H>,
     ask: Ask,
     answering: &mpsc::Sender<Value>,
@@ -279,6 +319,23 @@ fn answer<H: Holds>(
             if let Some(watch) = watches.remove(&id.to_string()) {
                 watch.abort();
             }
+            return None;
+        }
+        What::Steer { address, said } => {
+            // A session on another machine is told over the link, which
+            // may take a while, so the connection's other asks go on.
+            let holds = Arc::clone(holds);
+            let answering = answering.clone();
+            tokio::spawn(async move {
+                let mut answer = match holds.steer(&address, &said).await {
+                    Ok(machine) => json!({"id": id, "steered": {"machine": machine}}),
+                    Err(why) => refused(&id, &Refusal::Refused(why)),
+                };
+                if let Some(fields) = answer.as_object_mut() {
+                    fields.insert("took".to_owned(), took(begun));
+                }
+                let _ = answering.send(answer).await;
+            });
             return None;
         }
     };
@@ -448,6 +505,33 @@ mod tests {
             Err("not-an-ask"),
             "a list names its kind"
         );
+    }
+
+    #[test]
+    fn a_steer_is_read_with_whom_it_is_for_and_what_it_says() {
+        assert_eq!(
+            read(r#"{"id":6,"ask":"steer","address":"AB12CD","steer":{"act":"pause"}}"#),
+            Ok(Ask {
+                id: json!(6),
+                what: What::Steer {
+                    address: "AB12CD".to_owned(),
+                    said: json!({"act": "pause"}),
+                },
+            }),
+            "a steer names its session's address and what is said"
+        );
+        for nothing in [
+            r#"{"id":7,"ask":"steer","steer":{"act":"pause"}}"#,
+            r#"{"id":7,"ask":"steer","address":"","steer":{"act":"pause"}}"#,
+            r#"{"id":7,"ask":"steer","address":"AB12CD"}"#,
+            r#"{"id":7,"ask":"steer","address":"AB12CD","steer":"pause"}"#,
+        ] {
+            assert_eq!(
+                read(nothing).map_err(|(id, refusal)| (id, refusal.code())),
+                Err((json!(7), "not-an-ask")),
+                "a steer for nobody, or saying nothing, isn't one: {nothing}"
+            );
+        }
     }
 
     #[test]
