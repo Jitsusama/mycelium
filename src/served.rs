@@ -6,6 +6,11 @@
 //! file to hold whole as one record, and the node passes every record's
 //! fields on as they are.
 //!
+//! The talks in the steer inboxes are the one shape the node knows, as it
+//! carries them itself (`steer`): each `<ADDRESS>/replies/<id>.jsonl` is
+//! one record of its whole lines, so a reader hears a talk's every stage
+//! without listing folders or reading files itself.
+//!
 //! A source is read whole when a change reaches its folder, as the
 //! program keeping it writes it whole and renames it into place, and its
 //! records change on the wire only by what differs.
@@ -32,13 +37,20 @@ const AGAIN_AFTER: Duration = Duration::from_secs(60);
 /// burst of writes is read once.
 const SETTLED_AFTER: Duration = Duration::from_millis(20);
 
+/// How many of each inbox's talks are served, the newest, as a launcher
+/// shows a session's latest talks rather than every one it was ever told.
+pub const TALKS_EACH: usize = 20;
+
 /// Where one kind's records are kept, as the node serves them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
     /// The one file holding them, by its full path, or
     pub file: Option<PathBuf>,
-    /// a folder of `.json` files, each holding some, by its full path.
+    /// a folder of `.json` files, each holding some, by its full path, or
     pub folder: Option<PathBuf>,
+    /// the steer inboxes, by their full path, whose talks are each one
+    /// record of its lines, and need nothing else said.
+    pub talks: Option<PathBuf>,
     /// The field of each file holding its records: an array of objects,
     /// or an object of them by their keys; or
     pub records: Option<String>,
@@ -74,6 +86,8 @@ struct Said {
     #[serde(default)]
     folder: Option<PathBuf>,
     #[serde(default)]
+    talks: Option<PathBuf>,
+    #[serde(default)]
     within: Option<Within>,
     #[serde(default)]
     records: Option<String>,
@@ -100,25 +114,33 @@ impl Source {
         self.file
             .as_deref()
             .or(self.folder.as_deref())
+            .or(self.talks.as_deref())
             .unwrap_or(Path::new(""))
     }
 
     /// The folder whose changes may change it: the file's own folder, as
     /// a file renamed into place is a new file there, or the folder.
     fn watched(&self) -> &Path {
-        match (&self.file, &self.folder) {
-            (Some(file), _) => file.parent().unwrap_or(Path::new("/")),
-            (None, Some(folder)) => folder,
-            (None, None) => Path::new(""),
+        match (&self.file, &self.folder, &self.talks) {
+            (Some(file), _, _) => file.parent().unwrap_or(Path::new("/")),
+            (None, Some(folder), _) => folder,
+            (None, None, Some(talks)) => talks,
+            (None, None, None) => Path::new(""),
         }
     }
 
-    /// Whether a change to `path` may change its records: its file, or for
-    /// a folder, one of its record files or the folder itself going.
+    /// Whether a change to `path` may change its records: its file, for a
+    /// folder one of its record files or the folder itself going, and for
+    /// the talks a talk's file or a folder made or gone, never a steer.
     fn touched_by(&self, path: &Path) -> bool {
         // A Mac names paths as the system resolves them, which may not be
         // how they were given, so only names are compared.
         let name = path.file_name();
+        if self.talks.is_some() {
+            return path
+                .extension()
+                .is_none_or(|extension| extension == "jsonl");
+        }
         match &self.file {
             Some(file) => name.is_some() && name == file.file_name(),
             None => is_record_file(path) || (name.is_some() && name == self.watched().file_name()),
@@ -160,13 +182,23 @@ fn source_of(kind: &str, said: Said, held: &[&str], here: &Here) -> Result<Sourc
     if held.contains(&kind) {
         return Err("the node holds that kind itself");
     }
-    if said.file.is_some() == said.folder.is_some() {
-        return Err("it names a `file` or a `folder`, and only one");
+    let named = [
+        said.file.is_some(),
+        said.folder.is_some(),
+        said.talks.is_some(),
+    ];
+    if named.into_iter().filter(|named| *named).count() != 1 {
+        return Err("it names a `file`, a `folder` or `talks`, and only one");
+    }
+    if said.talks.is_some()
+        && (said.records.is_some() || said.whole || said.key.is_some() || said.by.is_some())
+    {
+        return Err("a talk is one record of its lines, so talks name nothing else");
     }
     if said.by.is_some() && said.folder.is_none() {
         return Err("only a folder's files have a `by`");
     }
-    if said.records.is_some() == said.whole {
+    if said.talks.is_none() && said.records.is_some() == said.whole {
         return Err("it names its `records`, or is held `whole`, and only one");
     }
     if said.whole && (said.folder.is_some() || said.key.is_some()) {
@@ -198,6 +230,7 @@ fn source_of(kind: &str, said: Said, held: &[&str], here: &Here) -> Result<Sourc
     Ok(Source {
         file: placed(said.file)?,
         folder: placed(said.folder)?,
+        talks: placed(said.talks)?,
         records: said.records,
         whole: said.whole.then(|| here.machine.clone()),
         key: said.key,
@@ -227,8 +260,79 @@ fn read(kind: &str, source: &Source) -> Read {
             },
         },
         (None, Some(folder)) => read_folder(kind, source, folder),
-        (None, None) => Read::default(),
+        (None, None) => source
+            .talks
+            .as_deref()
+            .map_or_else(Read::default, |talks| read_talks(kind, talks)),
     }
+}
+
+/// Reads the newest [`TALKS_EACH`] talks of each inbox in `inboxes`, each
+/// one record keyed `<ADDRESS>/<id>` of its address, its id and its whole
+/// lines, in the order they were written; a line still being written is
+/// left for the next read, and one that isn't JSON is passed over.
+fn read_talks(kind: &str, inboxes: &Path) -> Read {
+    let addresses = match fs::read_dir(inboxes) {
+        Ok(addresses) => addresses,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Read::default(),
+        Err(error) => {
+            return Read {
+                records: BTreeMap::new(),
+                refused: Some(format!("{}: {error}", inboxes.display())),
+            };
+        }
+    };
+    let mut read = Read::default();
+    for address in addresses.filter_map(Result::ok) {
+        let Some(address_name) = address.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Ok(files) = fs::read_dir(address.path().join("replies")) else {
+            continue;
+        };
+        let mut talks: Vec<(i64, String, PathBuf)> = files
+            .filter_map(Result::ok)
+            .map(|file| file.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
+            .filter_map(|path| {
+                let id = path.file_stem()?.to_str()?.to_owned();
+                Some((written(&path), id, path))
+            })
+            .collect();
+        talks.sort_by(|one, other| other.0.cmp(&one.0).then_with(|| other.1.cmp(&one.1)));
+        for (heard, id, path) in talks.into_iter().take(TALKS_EACH) {
+            // One removed since it was listed is no longer a talk.
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let whole = text.rfind('\n').map_or("", |end| &text[..end]);
+            let lines: Vec<Value> = whole
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            let talk = format!("{address_name}/{id}");
+            let fields = json!({"address": address_name, "id": id, "lines": lines});
+            read.records.insert(
+                daemon::key(kind, &talk),
+                daemon::record(kind, &talk, heard, fields),
+            );
+        }
+    }
+    read
+}
+
+/// When `path` was last written, in milliseconds since the epoch, or 0
+/// when that can't be told.
+fn written(path: &Path) -> i64 {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|since| i64::try_from(since.as_millis()).ok())
+        .unwrap_or_default()
 }
 
 /// Reads every record file in `folder`, keeping those that read and saying
@@ -284,12 +388,7 @@ fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(error) => return Err(named(error.to_string())),
     };
-    let heard = fs::metadata(file)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .and_then(|since| i64::try_from(since.as_millis()).ok())
-        .unwrap_or_default();
+    let heard = written(file);
     let kept: Value =
         serde_json::from_slice(&bytes).map_err(|error| named(format!("not JSON: {error}")))?;
     let front = match &source.by {
@@ -517,8 +616,15 @@ fn watching(
         }
     })
     .map_err(io::Error::other)?;
+    // The talks are a folder down in each inbox, which a watch of the
+    // inboxes alone wouldn't hear.
+    let mode = if source.talks.is_some() {
+        notify::RecursiveMode::Recursive
+    } else {
+        notify::RecursiveMode::NonRecursive
+    };
     watcher
-        .watch(source.watched(), notify::RecursiveMode::NonRecursive)
+        .watch(source.watched(), mode)
         .map_err(io::Error::other)?;
     Ok((watcher, told))
 }
@@ -566,6 +672,7 @@ mod tests {
         Source {
             file: Some(file.to_owned()),
             folder: None,
+            talks: None,
             records: Some("quests".to_owned()),
             whole: None,
             key: Some("id".to_owned()),
@@ -653,6 +760,7 @@ mod tests {
         let waiting = Source {
             file: None,
             folder: Some(dir.path().to_owned()),
+            talks: None,
             records: Some("items".to_owned()),
             whole: None,
             key: Some("id".to_owned()),
@@ -679,6 +787,155 @@ mod tests {
                 .is_some_and(|why| why.contains("C.json") && why.contains("not JSON")),
             "the file that won't read is named: {:?}",
             held.refused
+        );
+    }
+
+    /// The talks of the steer inboxes in `inboxes`.
+    fn talks(inboxes: &Path) -> Source {
+        Source {
+            file: None,
+            folder: None,
+            talks: Some(inboxes.to_owned()),
+            records: None,
+            whole: None,
+            key: None,
+            by: None,
+        }
+    }
+
+    /// Writes a talk's file in `inboxes`, as its session appends to it.
+    fn talk(inboxes: &Path, address: &str, id: &str, lines: &str) {
+        let replies = inboxes.join(address).join("replies");
+        fs::create_dir_all(&replies).expect("its replies folder");
+        fs::write(replies.join(format!("{id}.jsonl")), lines).expect("written");
+    }
+
+    #[test]
+    fn each_inboxs_newest_talks_are_served_each_a_record_of_its_whole_lines() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        talk(
+            dir.path(),
+            "HERE12",
+            "talk-1",
+            "{\"stage\":\"delivered\"}\nnot a line of JSON\n{\"stage\":\"replied\",\"text\":\"hi\"}\n{\"stage\"",
+        );
+        fs::write(dir.path().join("HERE12/1-a.json"), "{}").expect("a steer");
+        for at in 0..=TALKS_EACH {
+            talk(dir.path(), "BUSY34", &format!("talk-{at:02}"), "");
+        }
+        let held = read("talk", &talks(dir.path()));
+        assert_eq!(held.refused, None, "it reads");
+        assert_eq!(
+            unheard(&held.records).get("talk:HERE12/talk-1"),
+            Some(&json!({
+                "key": "talk:HERE12/talk-1", "kind": "talk", "address": "HERE12",
+                "id": "talk-1",
+                "lines": [{"stage": "delivered"}, {"stage": "replied", "text": "hi"}],
+            })),
+            "a talk is its whole lines of JSON, one being written left for later"
+        );
+        let busy: Vec<_> = held
+            .records
+            .keys()
+            .filter(|key| key.starts_with("talk:BUSY34/"))
+            .collect();
+        assert_eq!(
+            busy.len(),
+            TALKS_EACH,
+            "an inbox's newest talks alone: {busy:?}"
+        );
+        assert!(
+            !held.records.contains_key("talk:BUSY34/talk-00"),
+            "the oldest goes: {busy:?}"
+        );
+        assert_eq!(
+            held.records.len(),
+            TALKS_EACH + 1,
+            "a steer is no talk: {:?}",
+            held.records.keys()
+        );
+        assert_eq!(
+            read("talk", &talks(&dir.path().join("gone"))),
+            Read::default(),
+            "no inboxes yet hold no talks"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_talk_is_heard_as_its_session_writes_it_in_an_inbox_made_since() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let served = Served::start(BTreeMap::from([("talk".to_owned(), talks(dir.path()))]));
+        let mut told = served.told("talk").expect("talk is served");
+        tokio::time::timeout(PATIENCE, told.changed())
+            .await
+            .expect("its first look is kept")
+            .expect("still served");
+        let stages = |records: &BTreeMap<String, Value>| {
+            records
+                .get("talk:NEW567/talk-9")
+                .map(|record| record["lines"].as_array().map_or(0, Vec::len))
+        };
+        talk(
+            dir.path(),
+            "NEW567",
+            "talk-9",
+            "{\"stage\":\"delivered\"}\n",
+        );
+        until(
+            &served,
+            &mut told,
+            "talk",
+            |r| stages(r) == Some(1),
+            "a talk in an inbox made since is heard",
+        )
+        .await;
+        talk(
+            dir.path(),
+            "NEW567",
+            "talk-9",
+            "{\"stage\":\"delivered\"}\n{\"stage\":\"reading\"}\n",
+        );
+        until(
+            &served,
+            &mut told,
+            "talk",
+            |r| stages(r) == Some(2),
+            "each line it writes is heard",
+        )
+        .await;
+    }
+
+    #[test]
+    fn a_configuration_serves_talks_that_name_nothing_else() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let config = dir.path().join("serves.json");
+        let here = Here {
+            machine: "optimus".to_owned(),
+            runtime: None,
+        };
+        let configure = |sources: Value| {
+            fs::write(&config, sources.to_string()).expect("written");
+            configured(&config, &["session"], &here)
+        };
+        assert!(
+            configure(json!({"talk": {"folder": "/a", "talks": "/b", "records": "r"}}))
+                .expect_err("refused")
+                .contains("only one"),
+            "a folder or talks"
+        );
+        assert!(
+            configure(json!({"talk": {"talks": "/a", "key": "id"}}))
+                .expect_err("refused")
+                .contains("nothing else"),
+            "talks name nothing else"
+        );
+        assert_eq!(
+            configure(json!({"talk": {"talks": "/steer"}})),
+            Ok(BTreeMap::from([(
+                "talk".to_owned(),
+                talks(Path::new("/steer"))
+            )])),
+            "the talks of the inboxes named are served"
         );
     }
 
@@ -858,6 +1115,7 @@ mod tests {
         let waiting = Source {
             file: None,
             folder: Some(dir.path().join("mission/waiting")),
+            talks: None,
             records: Some("items".to_owned()),
             whole: None,
             key: Some("id".to_owned()),

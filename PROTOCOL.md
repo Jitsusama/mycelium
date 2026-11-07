@@ -695,7 +695,8 @@ object of sources by kind:
   "quest": {"file": "/full/path/quests.json", "records": "quests", "key": "id"},
   "waiting": {"folder": "/full/path/waiting", "records": "items",
               "key": "id", "by": "quest"},
-  "queue": {"file": "jobs/queue.json", "within": "runtime", "whole": true}
+  "queue": {"file": "jobs/queue.json", "within": "runtime", "whole": true},
+  "talk": {"talks": "/full/path/steer"}
 }
 ```
 
@@ -720,6 +721,15 @@ minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine` or
 `message`, can't be served.
+
+The talks of the steer inboxes are the one shape the node knows, as it
+carries them itself. A source naming `talks`, the inboxes' folder and
+nothing else, serves each `<ADDRESS>/replies/<id>.jsonl` as one record,
+its id `<ADDRESS>/<id>`, holding its `address`, its `id` and its
+`lines`: each whole line of JSON in the order written, a line still
+being written left for the next read. Only each inbox's newest 20 talks
+are served. The inboxes are watched to any depth, so a talk is heard as
+its session writes each line, in an inbox made since.
 
 ## A Held Session
 
