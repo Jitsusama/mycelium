@@ -659,6 +659,7 @@ in milliseconds.
 | `watch` with `kind`, and `keys` | `records` whole, then `changed` and `gone` |
 | `unwatch` | nothing; the watch with that `id` ends |
 | `health` | `state`, and each linked machine and served file as a source |
+| `steer` with `address` and `steer` | `steered` with the `machine` whose session's inbox has it |
 
 A record carries `key` (`session:<id>`, `machine:<name>` or
 `message:<id>`), `kind`, `heard` (milliseconds since the epoch) and the
@@ -672,7 +673,15 @@ key, with only the fields that differ, a dropped one as null; nothing
 while nothing changes; and no sooner than 250 ms after its last send, so
 a reader too slow for it is sent the latest rather than a backlog. An ask
 it can't answer gets `{"id", "error": {"code", "message"}}`, the code
-one of `unknown-ask`, `unknown-kind` or `not-an-ask`.
+one of `unknown-ask`, `unknown-kind` or `not-an-ask`, or `refused` for an
+ask understood that it couldn't do, its message saying why.
+
+A `steer` puts what the person says, in the shape `Steer` takes, into
+the inbox of the session going by `address`, on the one machine running
+it, as `Steer` does: here, or over the link reaching that machine. It is
+answered once that machine has it, and the connection's other asks are
+answered meanwhile, so a steer to a far machine holds up no watch. A
+session no machine runs, or one two do, is `refused`, saying which.
 
 The node also serves files another program keeps, each as a kind of its
 own, so a reader asks the node and hears each change rather than reading

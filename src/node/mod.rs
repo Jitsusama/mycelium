@@ -690,6 +690,19 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
     }
 }
 
+/// The node steering a session for a client of the daemon interface, as
+/// it does for `Steer`, here or through the link reaching its machine.
+impl<S: Store + Clone + Send + Sync + 'static> daemon::Steers for Shared<S> {
+    async fn steer(&self, address: &str, said: &serde_json::Value) -> Result<String, String> {
+        match Shared::steer(self, address, said).await? {
+            Response::Steered { machine } => Ok(machine),
+            other => Err(format!(
+                "its machine answered {other:?}, not that it was steered"
+            )),
+        }
+    }
+}
+
 /// `value` as JSON, or null for what can't be, which a node's own records
 /// never are.
 fn json_of(value: &impl serde::Serialize) -> serde_json::Value {
@@ -1041,8 +1054,11 @@ impl<S: Store> Shared<S> {
 
     /// Puts what the person says into the inbox of the session going by
     /// `address`, on the one machine it runs on: here, or through the link
-    /// reaching that machine. A talk's file is opened here first, so the
-    /// replies carried back land where the person's launcher reads them.
+    /// reaching that machine. A parked session counts as running there,
+    /// since it reads its inbox as it wakes, and the person's words are
+    /// left for it before it is woken. A talk's file is opened here first,
+    /// so the replies carried back land where the person's launcher reads
+    /// them.
     async fn steer(&self, address: &str, said: &serde_json::Value) -> Reply {
         let steer = Steer::new(address, said)?;
         let address = steer.address.clone();
@@ -1055,7 +1071,15 @@ impl<S: Store> Shared<S> {
             .collect();
         let mut running: Vec<String> = sessions
             .iter()
-            .filter(|session| matches!(session.state, SessionState::Busy | SessionState::Idle))
+            .filter(|session| {
+                matches!(session.state, SessionState::Busy | SessionState::Idle)
+                    || (session.state == SessionState::Ended
+                        && session
+                            .presence
+                            .get("state")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("parked"))
+            })
             .map(|session| session.machine.clone())
             .collect();
         running.sort();
@@ -2201,6 +2225,69 @@ mod tests {
                 &json!("second")
             ),
             "a message heard is sent as it arrives: {changed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_steer_asked_in_the_daemon_interface_reaches_its_sessions_inbox() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let presence = json!({
+            "session": "here", "addresses": ["HERE12"], "groups": [],
+            "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
+        });
+        store.start_here("here", presence, true);
+        // One parked has no process, and reads its inbox as it wakes.
+        let parked = json!({
+            "session": "napper", "addresses": ["NAPPER"], "groups": [],
+            "busy": false, "state": "parked", "at": jiff::Timestamp::now().to_string(),
+        });
+        store.start_here("napper", parked, false);
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+
+        let said = json!({"act": "pause", "from": "joel", "at": "2026-11-07T18:00:00Z"});
+        client
+            .ask(json!({"id": 2, "ask": "steer", "address": "here12", "steer": said}))
+            .await;
+        let steered = client.next().await;
+        assert_eq!(
+            (&steered["id"], &steered["steered"]["machine"]),
+            (&json!(2), &json!("optimus")),
+            "a session here is steered here: {steered}"
+        );
+        let inbox: Vec<Value> = fs::read_dir(inboxes(&socket).join("HERE12"))
+            .expect("its inbox is made")
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|it| it == "json"))
+            .map(|entry| {
+                serde_json::from_str(&fs::read_to_string(entry.path()).expect("it reads"))
+                    .expect("it is JSON")
+            })
+            .collect();
+        assert_eq!(inbox, [said], "what was said is in its inbox, once");
+
+        let talk = json!({"text": "what now?", "id": "talk-1", "from": "joel"});
+        client
+            .ask(json!({"id": 4, "ask": "steer", "address": "NAPPER", "steer": talk}))
+            .await;
+        let left = client.next().await;
+        assert_eq!(
+            (&left["id"], &left["steered"]["machine"]),
+            (&json!(4), &json!("optimus")),
+            "a session parked here is left what is said, to read as it wakes: {left}"
+        );
+
+        client
+            .ask(json!({"id": 3, "ask": "steer", "address": "NOPE", "steer": {"act": "stop"}}))
+            .await;
+        assert_eq!(
+            client.next().await["error"],
+            json!({"code": "refused", "message": "no session goes by NOPE now"}),
+            "a steer for nobody is refused, saying why"
         );
     }
 
