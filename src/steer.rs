@@ -23,8 +23,9 @@ use serde_json::{Map, Value};
 /// The fields of a steer the harness reads, which are all that is written.
 const FIELDS: [&str; 5] = ["text", "act", "at", "from", "id"];
 
-/// What the person may do besides talk.
-const ACTS: [&str; 3] = ["pause", "resume", "stop"];
+/// What the person may do besides talk, as the harness's `STEER_ACTS`
+/// says: close ends a session for good, where stop only interrupts it.
+const ACTS: [&str; 4] = ["pause", "resume", "stop", "close"];
 
 /// The stages that end a talk; after one, nothing more is followed.
 const ENDED: [&str; 2] = ["replied", "failed"];
@@ -315,6 +316,12 @@ mod tests {
             assert!(
                 Steer::new(address, &said).is_err(),
                 "{address:?} {said} is refused"
+            );
+        }
+        for act in ["pause", "resume", "stop", "close"] {
+            assert!(
+                Steer::new("AB12", &json!({"act": act})).is_ok(),
+                "{act} is an act the harness reads"
             );
         }
         let talking = Steer::new("AB12", &json!({"text": "hi", "id": "talk-1"})).expect("a steer");
