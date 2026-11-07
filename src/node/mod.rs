@@ -2113,6 +2113,7 @@ mod tests {
         served::Source {
             file: Some(socket.with_file_name("quests.json")),
             folder: None,
+            talks: None,
             records: Some("quests".to_owned()),
             whole: None,
             key: Some("id".to_owned()),
