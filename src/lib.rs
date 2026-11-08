@@ -22,7 +22,8 @@
 //! [`steer`], on whichever machine it runs. A machine that says when it
 //! leaves tells its own sessions the same way, before it does, and once
 //! they are done and the machines it links with hold all it shares, a
-//! machine that can release it does, in [`handover`].
+//! machine that can release it does, in [`handover`]. A quest the person
+//! takes to another machine goes there with its sessions, in [`carry`].
 //!
 //! Around them:
 //!
@@ -50,6 +51,7 @@
 //! - [`update`]: its configuration's updater, asked to update it to main
 
 pub mod awake;
+pub mod carry;
 pub mod client;
 pub mod daemon;
 pub mod declared;
