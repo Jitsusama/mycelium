@@ -46,11 +46,12 @@ const PARKED_LINE: &[u8] = b"\r\nParked, its memory given back. A key or a messa
 
 /// Variables a program's first terminal set that would name the wrong
 /// window once it is held, since it outlives that window.
-const WINDOW_VARIABLES: [&str; 4] = [
+const WINDOW_VARIABLES: [&str; 5] = [
     "KITTY_WINDOW_ID",
     "KITTY_LISTEN_ON",
     "KITTY_PID",
     "WINDOWID",
+    "MYCELIUM_APP_ID",
 ];
 
 /// What to hold.
@@ -851,6 +852,7 @@ mod tests {
                 terminal: "kitty".to_owned(),
                 id: id.to_owned(),
                 within: Some("unix:@kitty-6753".to_owned()),
+                app_id: None,
             })
         };
         let size = Size {

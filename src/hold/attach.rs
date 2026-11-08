@@ -41,14 +41,16 @@ pub async fn join_here(socket: &Path) -> io::Result<()> {
 }
 
 /// The window a terminal is, from the variables `named` gives, as the
-/// harness names it: a kitty window by its id within kitty's socket.
-/// Other terminals don't say yet.
+/// harness names it: a kitty window by its id within kitty's socket, and
+/// the app id it was opened with where its opener said, in
+/// `MYCELIUM_APP_ID`. Other terminals don't say yet.
 pub fn window_of(named: impl Fn(&str) -> Option<String>) -> Option<Window> {
     let id = named("KITTY_WINDOW_ID").filter(|id| !id.is_empty())?;
     Some(Window {
         terminal: "kitty".to_owned(),
         id,
         within: named("KITTY_LISTEN_ON").filter(|within| !within.is_empty()),
+        app_id: named("MYCELIUM_APP_ID").filter(|app_id| !app_id.is_empty()),
     })
 }
 
@@ -163,8 +165,20 @@ mod tests {
                 terminal: "kitty".to_owned(),
                 id: "13".to_owned(),
                 within: Some("unix:@kitty-6753".to_owned()),
+                app_id: None,
             }),
             "its id within kitty's socket, as the harness names it"
+        );
+        let opened = |name: &str| match name {
+            "MYCELIUM_APP_ID" => Some("pi-session.4".to_owned()),
+            _ => kitty(name),
+        };
+        assert_eq!(
+            window_of(opened)
+                .and_then(|window| window.app_id)
+                .as_deref(),
+            Some("pi-session.4"),
+            "the app id its opener gave its window, so the compositor's list names it"
         );
         assert_eq!(window_of(|_| None), None, "another terminal says nothing");
     }
