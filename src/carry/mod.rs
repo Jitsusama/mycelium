@@ -288,7 +288,9 @@ impl<F: FnMut(&Value)> Saying<'_, F> {
 }
 
 /// Starts each session `done` names again on `to`, by the address it went
-/// by here, or its id where no session here named it.
+/// by here, or its id where no session here named it. The quest's own
+/// done file, holding the trees no session held, arrives there too, but
+/// no session starts for it, so it isn't among those answered.
 fn start_each(
     hands: &mut impl Hands,
     quest: &str,
@@ -306,12 +308,13 @@ fn start_each(
             let started = hands
                 .start(arriving(quest, here, to, one))
                 .map_err(|why| format!("{address} didn't start on {to}: {why}"))?;
-            Ok(Arrived {
+            Ok((one.session != quest).then_some(Arrived {
                 address,
                 held: started.held,
                 attach: started.attach,
-            })
+            }))
         })
+        .filter_map(Result::transpose)
         .collect()
 }
 
@@ -410,16 +413,25 @@ fn closed(hands: &mut impl Hands, here: &str, sessions: &[Session]) -> Result<()
 
 /// The start of `one` again on `to`: in its home there, where `pi-carry
 /// arrive` waits for its handover, fetches its trees and puts its file
-/// in place, and only then pi takes it up in its own folder. Its words go
-/// to the shell apart from the script, so none is read as the shell's.
+/// in place, and only then pi takes it up in its own folder. The quest's
+/// own done file names no session, so its arrival ends with its trees in
+/// place. Its words go to the shell apart from the script, so none is
+/// read as the shell's.
 fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
+    let arrive = r#"pi-carry arrive "$1" --from "$2" --session "$3""#;
     // A folder within home (`~` or `~/...`) is found under home there,
-    // and any other as it is.
-    let script = concat!(
-        r#"pi-carry arrive "$1" --from "$2" --session "$3" || exit; "#,
-        r#"case "$4" in "~"*) folder="$HOME${4#"~"}" ;; *) folder="$4" ;; esac; "#,
-        r#"cd "$folder" && exec pi --session "$3""#
-    );
+    // and any other as it is, as `pi-carry arrive` places the session's
+    // file there.
+    let script = if one.session == quest {
+        arrive.to_owned()
+    } else {
+        [
+            arrive,
+            r#" || exit; case "$4" in "~") folder="$HOME" ;; "~/"*) folder="$HOME/${4#"~/"}" ;; "#,
+            r#"*) folder="$4" ;; esac; cd "$folder" && exec pi --session "$3""#,
+        ]
+        .concat()
+    };
     Start {
         work: Work {
             needs: vec![Need::Machine(to.to_owned())],
@@ -432,7 +444,7 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
         command: [
             "sh",
             "-c",
-            script,
+            &script,
             PI_CARRY,
             quest,
             from,
@@ -550,6 +562,11 @@ mod tests {
                 done.push(Done {
                     session: "s-gone".to_owned(),
                     cwd: "~/src/gone".to_owned(),
+                });
+                // The trees no session held, as `pi-carry` names them.
+                done.push(Done {
+                    session: QUEST.to_owned(),
+                    cwd: "~".to_owned(),
                 });
             }
             Ok(done)
@@ -693,7 +710,22 @@ mod tests {
             "pi-carry takes what no session carried"
         );
         assert_eq!(realm.shared, [QUEST], "shared once, after the push");
-        assert_eq!(realm.started.len(), 3, "each carried session starts there");
+        assert_eq!(
+            realm.started.len(),
+            4,
+            "each carried session starts there, and the quest's trees arrive"
+        );
+        let trees = &realm.started[3];
+        assert_eq!(
+            &trees.command[3..7],
+            [PI_CARRY, QUEST, "optimus", QUEST],
+            "the quest's own trees arrive by its done file"
+        );
+        assert!(
+            !trees.command[2].contains("exec pi"),
+            "and no session starts for them: {}",
+            trees.command[2]
+        );
         let first = &realm.started[0];
         assert!(
             matches!(first.work.needs.as_slice(), [Need::Machine(on)] if on == "penelope"),
@@ -718,7 +750,7 @@ mod tests {
         assert_eq!(
             addresses,
             ["BUSY01", "NAPS02", "s-gone"],
-            "each by its address here"
+            "each session by its address here, and not the quest's trees"
         );
         assert_eq!(
             done.sessions[0].attach,
@@ -851,6 +883,10 @@ mod tests {
             said.contains("BUSY01"),
             "naming the one still running: {said}"
         );
-        assert_eq!(realm.started.len(), 3, "what started there stays started");
+        assert_eq!(
+            realm.started.len(),
+            4,
+            "what started there, the quest's own trees' arrival too, stays started"
+        );
     }
 }

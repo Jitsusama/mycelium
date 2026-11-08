@@ -320,7 +320,8 @@ in order and says each step:
    or this one, is refused.
 2. `push`: each is steered `{"act": "carry", "to": <machine>}`; the
    harness puts every tree it holds and the session's file into the
-   quest's scratch, under `handover/<this machine's hostname>/`, writes
+   quest's scratch, under `handover/<this machine's short hostname>/`
+   (up to its first dot), writes
    `<session>.done.json` there saying what it put (at least `session` and
    `cwd`, within its home), and ends. Once each has, `pi-carry QEST-...
    --to <machine>` carries what no session held.
@@ -330,7 +331,10 @@ in order and says each step:
    `mycelium start` starts one, running `pi-carry arrive QEST-... --from
    <this machine> --session <id>`, which waits for the handover, fetches
    or clones each tree at its path and places the session's file, and
-   then `pi --session <id>` in its folder there.
+   then `pi --session <id>` in its folder there. The quest's own done
+   file, `<quest>.done.json`, holds the trees no session held; it
+   arrives the same way, but no pi starts for it and it isn't among the
+   sessions said.
 5. `close`: the sessions here are seen to end.
 
 Each step prints `{"step", "state", "said"}` on a line as it begins

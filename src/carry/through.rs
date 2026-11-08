@@ -31,7 +31,8 @@ pub struct Through {
     shares: Places,
     quest: String,
     /// Where this machine's carries are put: the quest's scratch's
-    /// `handover/<this machine's hostname>/`, as the harness puts them.
+    /// `handover/<this machine's short hostname>/`, as the harness puts
+    /// them.
     handover: PathBuf,
     until: Instant,
 }
@@ -45,7 +46,11 @@ impl Through {
             .nodename()
             .to_string_lossy()
             .into_owned();
-        let handover = shares.scratch.join(quest).join("handover").join(host);
+        let handover = shares
+            .scratch
+            .join(quest)
+            .join("handover")
+            .join(short_host(&host));
         Self {
             socket,
             shares,
@@ -127,8 +132,10 @@ impl Hands for Through {
         if ran.status.success() {
             Ok(())
         } else {
-            let said = String::from_utf8_lossy(&ran.stderr);
-            Err(format!("{PI_CARRY} failed: {}", said.trim()))
+            Err(format!(
+                "{PI_CARRY} failed: {}",
+                failed_why(&ran.stdout, &ran.stderr)
+            ))
         }
     }
 
@@ -153,5 +160,63 @@ impl Hands for Through {
         }
         thread::sleep(LOOK_EVERY);
         true
+    }
+}
+
+/// A hostname up to its first dot, as the harness names a machine's
+/// handover: a Mac calls itself `lantern.local`, and its handover goes in
+/// `lantern`.
+fn short_host(host: &str) -> &str {
+    host.split('.')
+        .next()
+        .filter(|short| !short.is_empty())
+        .unwrap_or(host)
+}
+
+/// Why `pi-carry` failed: what its `{"kind": "failed", "why"}` lines said
+/// on its output, since it says everything there, else what it wrote to
+/// its errors.
+fn failed_why(output: &[u8], errors: &[u8]) -> String {
+    let output = String::from_utf8_lossy(output);
+    let said: Vec<String> = output
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line["kind"] == "failed")
+        .filter_map(|line| line["why"].as_str().map(str::to_owned))
+        .collect();
+    if said.is_empty() {
+        String::from_utf8_lossy(errors).trim().to_owned()
+    } else {
+        said.join("; ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{failed_why, short_host};
+
+    #[test]
+    fn a_handover_goes_by_the_short_hostname() {
+        assert_eq!(short_host("lantern.local"), "lantern", "a Mac's");
+        assert_eq!(short_host("skiff"), "skiff", "one with no dot");
+        assert_eq!(short_host(".odd"), ".odd", "never an empty name");
+    }
+
+    #[test]
+    fn pi_carry_failing_says_why_from_its_own_lines() {
+        let output = concat!(
+            "{\"kind\":\"tree\",\"path\":\"~/src/harbour\"}\n",
+            "{\"kind\":\"failed\",\"why\":\"~/src/harbour has changes no commit holds\"}\n"
+        );
+        assert_eq!(
+            failed_why(output.as_bytes(), b"node: warning"),
+            "~/src/harbour has changes no commit holds",
+            "its failed line, not its errors"
+        );
+        assert_eq!(
+            failed_why(b"not a line\n", b"node: not found\n"),
+            "node: not found",
+            "its errors where it said nothing of its own"
+        );
     }
 }
