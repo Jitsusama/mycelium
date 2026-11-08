@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use mycelium::awake::Awake;
+use mycelium::carry::through::Through;
 use mycelium::client::Client;
 use mycelium::flow::Flows;
 use mycelium::group::{Group, Pattern};
@@ -21,11 +22,10 @@ use mycelium::link::refused::Refusals;
 use mycelium::placement::{Need, Work};
 use mycelium::record::Intent;
 use mycelium::share::exchange::Places;
-use mycelium::share::ledger::Ledgers;
 use mycelium::ssh::Asked as KeyAsked;
 use mycelium::store::folders::Folders;
 use mycelium::wire::{Draft, Request, Start};
-use mycelium::{hold, install, link, node, place, served};
+use mycelium::{carry, hold, install, link, node, place, served};
 
 #[derive(Parser)]
 #[command(version, about = "A nimble core for agent networks")]
@@ -76,6 +76,21 @@ enum Action {
         /// files or 1 GiB is refused.
         #[arg(long)]
         scratch: Vec<String>,
+    },
+    /// Carries a quest to another machine of the realm, its sessions with
+    /// it: each of its sessions here carries its work into the quest's
+    /// handover and ends, `pi-carry` takes the rest, the quest is shared
+    /// with its handover, and each session starts again there, held, once
+    /// `pi-carry arrive` has its trees. Prints a JSON line for each step,
+    /// `{"step", "state", "said"}`, and last where each session went.
+    Carry {
+        #[command(flatten)]
+        here: Here,
+        /// The quest's id, such as `QEST-20261013-4UHC5Q`.
+        quest: String,
+        /// The machine it goes to, by name.
+        #[arg(long)]
+        to: String,
     },
     /// Prints every session the node knows of, a JSON line each.
     Sessions,
@@ -351,7 +366,12 @@ fn run(command: Command) -> io::Result<()> {
             scratch,
         } => {
             let (_, _, shares) = open(here, realm)?;
-            share(&shares, &quest, &scratch)
+            println!("{}", shares.offer(&quest, &scratch)?);
+            Ok(())
+        }
+        Action::Carry { here, quest, to } => {
+            let (_, _, shares) = open(here, realm)?;
+            carry(&socket, shares, &quest, &to)
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Machine => print_reply(&socket, &Request::Machine),
@@ -585,33 +605,26 @@ fn open(here: Here, realm: String) -> io::Result<(Folders, Realm, Places)> {
     Ok((store, membership, place::shares(&state)))
 }
 
-/// Shares `quest`, which must be here to share, with each of the folders
-/// of its scratch named in `scratch`.
-fn share(shares: &Places, quest: &str, scratch: &[String]) -> io::Result<()> {
-    let record = shares.record(quest);
-    if !record.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "{quest} isn't on this machine: {} holds nothing",
-                record.display()
-            ),
-        ));
+/// Carries `quest` to the machine `to`, a JSON line on standard output
+/// for each step as it goes and the last saying where each session went.
+fn carry(socket: &Path, shares: Places, quest: &str, to: &str) -> io::Result<()> {
+    let mut hands = Through::new(socket.to_owned(), shares, quest, carry::through::PATIENCE);
+    let mut failed = None;
+    let carried = carry::carry(&mut hands, quest, &place::machine(), to, &mut |line| {
+        if let Err(error) = print_line(line) {
+            failed.get_or_insert(error);
+        }
+    });
+    if let Some(error) = failed {
+        return Err(error);
     }
-    let ledgers: Ledgers = shares.ledgers();
-    ledgers.hold(quest)?.keep()?;
-    for folder in scratch {
-        shares.name_scratch(quest, folder)?;
+    match carried {
+        Ok(carried) => print_line(&carried),
+        Err(failed) => Err(io::Error::other(format!(
+            "{quest} wasn't carried to {to}: its {:?} failed, as it said",
+            failed.step
+        ))),
     }
-    let folders = ledgers.hold(quest)?.ledger.scratch;
-    let with = if folders.is_empty() {
-        "none of its scratch".to_owned()
-    } else {
-        let names: Vec<String> = folders.into_iter().collect();
-        format!("its scratch's {}", names.join(", "))
-    };
-    println!("{quest} is shared, with {with}; each link carries it from its next look");
-    Ok(())
 }
 
 /// Asks the node to start `command` where placement says `work` should

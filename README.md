@@ -18,6 +18,9 @@ The harness mesh's messages and presence, carried between machines:
 - A quest shared with `mycelium share` keeps the same record on every
   linked machine, with a journal written on both keeping both entries,
   and the same folders of its scratch, those named with `--scratch`.
+- A quest carried with `mycelium carry --to` goes to another machine with
+  its sessions: each carries its work into the quest's handover and ends
+  here, and starts again there once its trees have arrived.
 - A program started with `mycelium hold` outlives the window it started
   in, and `mycelium attach` takes it up again from any terminal on the
   machine. One that exits 75 is parked: its window stays, and a key or

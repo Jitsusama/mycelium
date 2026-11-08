@@ -17,6 +17,8 @@
 //! What it does to the world goes through [`Hands`], whose one
 //! implementation is the command's, so the order is proved over a fake.
 
+pub mod through;
+
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
@@ -411,9 +413,12 @@ fn closed(hands: &mut impl Hands, here: &str, sessions: &[Session]) -> Result<()
 /// in place, and only then pi takes it up in its own folder. Its words go
 /// to the shell apart from the script, so none is read as the shell's.
 fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
+    // A folder within home (`~` or `~/...`) is found under home there,
+    // and any other as it is.
     let script = concat!(
-        r#"pi-carry arrive "$1" --from "$2" --session "$3" && "#,
-        r#"cd "$HOME/${4#\~/}" && exec pi --session "$3""#
+        r#"pi-carry arrive "$1" --from "$2" --session "$3" || exit; "#,
+        r#"case "$4" in "~"*) folder="$HOME${4#"~"}" ;; *) folder="$4" ;; esac; "#,
+        r#"cd "$folder" && exec pi --session "$3""#
     );
     Start {
         work: Work {
@@ -719,6 +724,72 @@ mod tests {
             done.sessions[0].attach,
             ["mycelium", "attach", "h0"],
             "with words to join it"
+        );
+    }
+
+    /// Runs a carried session's arrival as the shell there would, with
+    /// `pi-carry` and `pi` stood in for under `home`: `pi-carry` exiting
+    /// as `arrives` says, `pi` writing its folder and words to `ran`.
+    fn arrive(home: &std::path::Path, cwd: &str, arrives: bool) -> Option<String> {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let ran = home.join("ran");
+        let stand_in = |name: &str, body: &str| {
+            let path = bin.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("a stand-in");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("runnable");
+        };
+        stand_in(PI_CARRY, if arrives { "exit 0" } else { "exit 3" });
+        stand_in("pi", &format!("echo \"$(pwd) $*\" > {}", ran.display()));
+        let one = Done {
+            session: "s-busy01".to_owned(),
+            cwd: cwd.to_owned(),
+        };
+        let start = super::arriving(QUEST, "optimus", "penelope", &one);
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        std::process::Command::new(&start.command[0])
+            .args(&start.command[1..])
+            .env("HOME", home)
+            .env("PATH", path)
+            .status()
+            .expect("the shell runs");
+        std::fs::read_to_string(ran)
+            .ok()
+            .map(|said| said.trim().to_owned())
+    }
+
+    #[test]
+    fn a_carried_session_starts_in_its_own_folder_once_it_has_arrived() {
+        let home = tempfile::tempdir().expect("a home");
+        let home = home.path().canonicalize().expect("its path");
+        std::fs::create_dir_all(home.join("src/harbour")).expect("a tree");
+        assert_eq!(
+            arrive(&home, "~/src/harbour", true),
+            Some(format!("{}/src/harbour --session s-busy01", home.display())),
+            "in its folder under home there"
+        );
+        assert_eq!(
+            arrive(&home, "~", true),
+            Some(format!("{} --session s-busy01", home.display())),
+            "or in home itself"
+        );
+        let elsewhere = home.join("src").display().to_string();
+        assert_eq!(
+            arrive(&home, &elsewhere, true),
+            Some(format!("{elsewhere} --session s-busy01")),
+            "or where a folder outside home says"
+        );
+        std::fs::remove_file(home.join("ran")).expect("forgotten");
+        assert_eq!(
+            arrive(&home, "~", false),
+            None,
+            "never once its arrival failed"
         );
     }
 

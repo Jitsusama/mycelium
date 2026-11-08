@@ -308,6 +308,39 @@ marked, so a path under `/home/jitsusama` reads `/Users/joel.gerber` on a
 Mac. Each write takes the quest's lock as the harness does and lands by
 rename, so a session never reads half a file.
 
+## Carrying a Quest
+
+`mycelium carry QEST-... --to <machine>` takes a quest's work and its
+sessions to another machine of the realm, as the person moves from one
+laptop to another. The harness does what only it knows; the node puts it
+in order and says each step:
+
+1. `find`: the quest's sessions on this machine that can carry their own
+   work, those running and those parked this boot. A machine not in reach,
+   or this one, is refused.
+2. `push`: each is steered `{"act": "carry", "to": <machine>}`; the
+   harness puts every tree it holds and the session's file into the
+   quest's scratch, under `handover/<this machine's hostname>/`, writes
+   `<session>.done.json` there saying what it put (at least `session` and
+   `cwd`, within its home), and ends. Once each has, `pi-carry QEST-...
+   --to <machine>` carries what no session held.
+3. `share`: the quest is shared with `handover`, as `mycelium share
+   --scratch handover` does.
+4. `start`: each carried session starts again on the machine, held, as
+   `mycelium start` starts one, running `pi-carry arrive QEST-... --from
+   <this machine> --session <id>`, which waits for the handover, fetches
+   or clones each tree at its path and places the session's file, and
+   then `pi --session <id>` in its folder there.
+5. `close`: the sessions here are seen to end.
+
+Each step prints `{"step", "state", "said"}` on a line as it begins
+(`doing`) and ends (`done`, `skipped` or `failed`), and the last line is
+`{"step": "carried", "state": "done", "machine", "sessions"}`, each
+session `{"address", "held", "attach"}`. A step that fails says why, the
+command exits non-zero, and nothing after it runs; what was done stays
+done, since each step can be taken again. It waits 15 minutes in all for
+the sessions to carry and then to end.
+
 ## Realm Flows
 
 Realms are kept apart, but a machine's configuration may open a flow: a
