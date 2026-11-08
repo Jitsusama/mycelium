@@ -656,10 +656,14 @@ steer inbox of the session going by `address` on the machine it runs on:
 `--steer` names, under a temporary name renamed to end in `.json`. A
 session on another machine is steered through the link reaching it. A
 parked session counts as running on its machine, since it reads its
-inbox as it wakes, so what is said is there before it is woken. A
-talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened on the asking
-machine first, and the lines its session writes are carried back to it,
-so a talk reads the same wherever its session runs. It is an error,
+inbox as it wakes, so what is said is there before it is woken. The node
+there then wakes it, when it parked this boot, by writing its holder's
+`<id>.wake`: the holder's it knows, else the one the session's presence
+names as `wake`, taken only as a holder's in a realm's `.held` folder
+beside its own. A talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened
+on the asking machine first, and the lines its session writes are
+carried back to it, so a talk reads the same wherever its session runs.
+It is an error,
 saying why, when no session goes by `address` now, as `no session goes
 by SAK9FZ now`, when its machine is out of reach, when it runs on two
 machines at once, or when the link can't carry it.
