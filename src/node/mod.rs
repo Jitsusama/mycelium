@@ -242,6 +242,11 @@ where
     let mut found = discovery.found();
     let mut leaving = tokio::time::interval(LEAVING_EVERY);
     leaving.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // What the machine runs on, read with each minute's measure rather
+    // than as each session changes: a battery's charge is read from its
+    // embedded controller, which blocks the node's one thread on every
+    // read, and a charge moves too slowly for a minute to matter.
+    let mut power = facts::power(&facts::Sources::here());
     tokio::pin!(stop);
     let result = loop {
         tokio::select! {
@@ -268,15 +273,16 @@ where
             }
             Some(()) = held.recv() => {
                 shared.read_sessions();
-                shared.keep_awake(&mut awake);
+                shared.keep_awake(&mut awake, power.as_ref());
             }
             // A holder that ended without letting its session go says
             // nothing, so what is held is looked at each minute too.
             _ = leaving.tick() => {
                 let here = shared.measure();
+                power.clone_from(&here.power);
                 tell_hosted(&here);
                 shared.hand_over(&here);
-                shared.keep_awake(&mut awake);
+                shared.keep_awake(&mut awake, power.as_ref());
                 shared.cross_waiting();
             }
             change = changes.changes.recv() => match change {
@@ -284,7 +290,7 @@ where
                 Some(Change::Presence) => {
                     shared.read_sessions();
                     // A held session going idle, or busy, may let it sleep.
-                    shared.keep_awake(&mut awake);
+                    shared.keep_awake(&mut awake, power.as_ref());
                 }
                 Some(Change::Rescan) => {
                     shared.read_store();
@@ -887,8 +893,9 @@ impl<S: Store> Shared<S> {
     }
 
     /// Keeps this machine awake while what it holds is at work and it has
-    /// the charge, and lets it sleep once it isn't or hasn't.
-    fn keep_awake(&self, awake: &mut Awake) {
+    /// the charge, as `power` last read, and lets it sleep once it isn't
+    /// or hasn't.
+    fn keep_awake(&self, awake: &mut Awake, power: Option<&facts::Power>) {
         let held = hold::held(&self.held);
         let sessions = self.lock().state.sessions();
         let now = jiff::Timestamp::now().as_second();
@@ -896,10 +903,7 @@ impl<S: Store> Shared<S> {
             .map(|queue| room::queued_by(&queue, now))
             .unwrap_or_default();
         let holds = awake::at_work(&held, &sessions, &queued);
-        let power = holds
-            .then(|| facts::power(&facts::Sources::here()))
-            .flatten();
-        awake.keep(awake::wanted(holds, power.as_ref()));
+        awake.keep(awake::wanted(holds, power));
     }
 
     /// Tells each session running here that hasn't been told yet, once this
