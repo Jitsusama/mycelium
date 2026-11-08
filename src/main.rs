@@ -132,7 +132,8 @@ enum Action {
     /// Puts what is said into the steer inbox of the session going by
     /// ADDRESS, on whichever machine it runs; reads the steer from input,
     /// as the harness writes one: `{"text": "..."}`, with `act` and `id` if
-    /// it pauses, resumes, stops or opens a talk.
+    /// it pauses, resumes, stops, closes or opens a talk, and `to` for a
+    /// carry.
     Steer {
         /// The session's address.
         address: String,
