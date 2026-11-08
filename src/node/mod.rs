@@ -1103,7 +1103,7 @@ impl<S: Store> Shared<S> {
     /// `address`, on the one machine it runs on: here, or through the link
     /// reaching that machine. A parked session counts as running there,
     /// since it reads its inbox as it wakes, and the person's words are
-    /// left for it before it is woken. A talk's file is opened here first,
+    /// left for it before the node there wakes it. A talk's file is opened here first,
     /// so the replies carried back land where the person's launcher reads
     /// them.
     async fn steer(&self, address: &str, said: &serde_json::Value) -> Reply {
@@ -1164,6 +1164,18 @@ impl<S: Store> Shared<S> {
         steer
             .deliver(&self.steers)
             .map_err(|error| format!("its inbox refused it: {error}"))?;
+        let boot = store::folders::boot_id();
+        let waking = sessions
+            .iter()
+            .filter(|session| session.machine == self.machine)
+            .find_map(|session| steer::wake_for(session, boot.as_deref(), &self.held));
+        if let Some(file) = waking
+            && let Err(error) = steer::wake(&file, &address)
+        {
+            // Told is what was asked; the session reads it at its next
+            // wake, whatever wakes it.
+            eprintln!("{address} was told, but not woken: {error}");
+        }
         Ok(Response::Steered { machine })
     }
 

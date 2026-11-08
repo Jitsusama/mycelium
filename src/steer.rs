@@ -20,6 +20,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
+use crate::hold;
+use crate::record::{Session, State};
+
 /// The fields of a steer the harness reads, which are all that is written.
 const FIELDS: [&str; 6] = ["text", "act", "to", "at", "from", "id"];
 
@@ -103,6 +106,49 @@ impl Steer {
         fs::rename(&writing, folder.join(&name))?;
         Ok(name)
     }
+}
+
+/// The file whose appearing wakes `session`, where it is parked this
+/// `boot`: a steer left in a parked session's inbox is read only as it
+/// wakes, and nothing else may wake it soon. Its holder's own wake file
+/// where this node knows its holder in `held`, else the one its presence
+/// names, taken only as a holder's wake file beside `held`, since a
+/// presence's path is written into. A park of an earlier boot has no
+/// holder left to wake it; where the machine names no boot, any park is
+/// taken as this one's.
+#[must_use]
+pub fn wake_for(session: &Session, boot: Option<&str>, held: &Path) -> Option<PathBuf> {
+    let presence = &session.presence;
+    let parked = session.state == State::Ended
+        && presence.get("state").and_then(Value::as_str) == Some("parked");
+    let began = presence.pointer("/owner/bootId").and_then(Value::as_str);
+    let this_boot = match (boot, began) {
+        (Some(boot), Some(began)) => boot == began,
+        _ => true,
+    };
+    if !parked || !this_boot {
+        return None;
+    }
+    if let Some(id) = &session.held {
+        return Some(hold::wake(held, id));
+    }
+    let named = PathBuf::from(presence.get("wake")?.as_str()?);
+    let folder = named.parent()?;
+    let a_holders = named.extension().is_some_and(|it| it == "wake")
+        && folder.extension().is_some_and(|it| it == "held")
+        && folder.parent() == held.parent();
+    a_holders.then_some(named)
+}
+
+/// Wakes the session whose wake file is `file`, for the steer left for
+/// `address`: its holder reads the file once it appears and removes it.
+///
+/// # Errors
+///
+/// When the file can't be written.
+pub fn wake(file: &Path, address: &str) -> io::Result<()> {
+    let said = serde_json::json!({ "steered": address, "at": named_now() });
+    fs::write(file, format!("{said}\n"))
 }
 
 /// Whether `name` can be a machine's, as a hostname is: letters, digits,
@@ -422,5 +468,89 @@ mod tests {
             }],
             "only the talk not answered is open"
         );
+    }
+
+    /// A session standing as `state` says, with what `presence` adds to
+    /// its presence, held as `held` where that says.
+    fn session(state: &str, presence: &Value, held: Option<&str>) -> Session {
+        let mut session: Session = serde_json::from_value(json!({
+            "id": "r-naps", "address": "NAPS02", "machine": "skiff", "groups": [],
+            "state": state, "at": "2026-11-08T08:00:00Z", "presence": presence,
+        }))
+        .expect("a session");
+        session.held = held.map(str::to_owned);
+        session
+    }
+
+    #[test]
+    fn a_session_parked_this_boot_is_woken_by_its_holders_file() {
+        let held = Path::new("/run/user/1000/mycelium/personal.held");
+        let parked = |boot: &str, wake: &str| json!({"state": "parked", "owner": {"bootId": boot}, "wake": wake});
+        let beside = "/run/user/1000/mycelium/work.held/5e551011.wake";
+        let woken = |one: &Session| wake_for(one, Some("this-boot"), held);
+        assert_eq!(
+            woken(&session(
+                "ended",
+                &parked("this-boot", beside),
+                Some("dd881110")
+            )),
+            Some(held.join("dd881110.wake")),
+            "by the holder this node knows, first"
+        );
+        assert_eq!(
+            woken(&session("ended", &parked("this-boot", beside), None)),
+            Some(PathBuf::from(beside)),
+            "else by the file its presence names, a holder's beside this one's"
+        );
+        for (elsewhere, what) in [
+            ("/home/joel/.zshrc", "a file no holder reads"),
+            (
+                "/run/user/1000/mycelium/work.held/5e551011.json",
+                "a holder's record",
+            ),
+            (
+                "/tmp/work.held/5e551011.wake",
+                "a holder's name outside the realms' folder",
+            ),
+        ] {
+            assert_eq!(
+                woken(&session("ended", &parked("this-boot", elsewhere), None)),
+                None,
+                "never {what}"
+            );
+        }
+        assert_eq!(
+            woken(&session(
+                "ended",
+                &parked("a-boot-before", beside),
+                Some("dd881110")
+            )),
+            None,
+            "nor a park of a boot before, whose holder is gone"
+        );
+        assert_eq!(
+            woken(&session("idle", &json!({"wake": beside}), Some("dd881110"))),
+            None,
+            "nor one that runs"
+        );
+        assert_eq!(
+            wake_for(
+                &session("ended", &parked("a-boot-before", beside), None),
+                None,
+                held
+            ),
+            Some(PathBuf::from(beside)),
+            "where the machine names no boot, any park is this one's"
+        );
+    }
+
+    #[test]
+    fn a_wake_is_written_where_its_holder_looks() {
+        let dir = inboxes();
+        let file = dir.path().join("dd881110.wake");
+        wake(&file, "NAPS02").expect("woken");
+        let said: Value =
+            serde_json::from_str(&fs::read_to_string(&file).expect("written")).expect("JSON");
+        assert_eq!(said["steered"], "NAPS02", "saying for whom");
     }
 }

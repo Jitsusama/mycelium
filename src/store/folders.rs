@@ -612,7 +612,8 @@ fn is_record(path: &Path) -> bool {
 }
 
 /// This boot's id, where the system has one (Linux).
-fn boot_id() -> Option<String> {
+#[must_use]
+pub fn boot_id() -> Option<String> {
     Some(
         fs::read_to_string("/proc/sys/kernel/random/boot_id")
             .ok()?
