@@ -860,7 +860,7 @@ mod tests {
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window
             .types(concat!(
-                r#"printf '%s' '["sh","-c","echo resumed $((6 * 7)); exit 3"]'"#,
+                r#"printf '%s' '["sh","-c","echo resumed $((6 * 7)); read -r _; exit 3"]'"#,
                 " > \"$MYCELIUM_AGAIN\"; exit 75\r",
             ))
             .await;
@@ -878,6 +878,10 @@ mod tests {
             !again(&dir, &held.id).exists(),
             "the command named is taken once read"
         );
+        // The command waits for a line, so it's still listed as running
+        // when looked for: one that ended at once left its listing gone
+        // before a busy builder looked (twice in three runs, 2026-11-08).
+        window.types("\r").await;
         let ended = tokio::time::timeout(PATIENCE, holder)
             .await
             .expect("the holder ends with its program")

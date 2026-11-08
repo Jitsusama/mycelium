@@ -233,11 +233,11 @@ where
         asks: Asks::default(),
         said: Arc::default(),
         flows: Arc::new(flows),
+        measured: Arc::default(),
     };
     let mut changes = store.changes()?;
     let (_watching_held, mut held) = watch_held(&shared.held);
     shared.read_store();
-
     let mut links = JoinSet::new();
     let mut found = discovery.found();
     let mut leaving = tokio::time::interval(LEAVING_EVERY);
@@ -245,8 +245,10 @@ where
     // What the machine runs on, read with each minute's measure rather
     // than as each session changes: a battery's charge is read from its
     // embedded controller, which blocks the node's one thread on every
-    // read, and a charge moves too slowly for a minute to matter.
-    let mut power = facts::power(&facts::Sources::here());
+    // read, and a charge moves too slowly for a minute to matter. Measured
+    // before anything can ask, so the first reader of the machines finds
+    // this one among them.
+    let mut power = shared.keep_measured(&shared.measure());
     tokio::pin!(stop);
     let result = loop {
         tokio::select! {
@@ -279,7 +281,7 @@ where
             // nothing, so what is held is looked at each minute too.
             _ = leaving.tick() => {
                 let here = shared.measure();
-                power.clone_from(&here.power);
+                power = shared.keep_measured(&here);
                 tell_hosted(&here);
                 shared.hand_over(&here);
                 shared.keep_awake(&mut awake, power.as_ref());
@@ -526,6 +528,10 @@ struct Shared<S> {
     to_dial: mpsc::UnboundedSender<(Made, Arc<Notify>)>,
     /// The realms its messages may go to and come from.
     flows: Arc<Flows>,
+    /// This machine as its last minute's measure found it, which the
+    /// daemon interface says beside the others rather than measuring it
+    /// again for each reader, since a measure reads every part.
+    measured: Arc<Mutex<Option<facts::Machine>>>,
 }
 
 /// What changes each time the node's sessions or the realm's machines may
@@ -564,6 +570,7 @@ impl<S: Clone> Clone for Shared<S> {
             book: self.book.clone(),
             to_dial: self.to_dial.clone(),
             flows: self.flows.clone(),
+            measured: self.measured.clone(),
         }
     }
 }
@@ -633,13 +640,16 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     .collect(),
             ),
             "machine" => Some(
-                self.machines()
+                self.known_machines()
                     .into_iter()
-                    .filter(|machine| machine.name != self.machine)
                     .map(|machine| {
                         let heard = millis_at(&machine.measured_at);
                         let name = machine.name.clone();
-                        let record = daemon::record(kind, &name, heard, json_of(&machine));
+                        let mut fields = json_of(&machine);
+                        if let Some(fields) = fields.as_object_mut() {
+                            fields.insert("here".to_owned(), (name == self.machine).into());
+                        }
+                        let record = daemon::record(kind, &name, heard, fields);
                         (daemon::key(kind, &name), record)
                     })
                     .collect(),
@@ -963,16 +973,49 @@ impl<S: Store> Shared<S> {
         }
     }
 
+    /// Keeps `here`, this machine's measure, for the daemon interface,
+    /// tells its readers the machines changed, and answers what it runs on.
+    fn keep_measured(&self, here: &facts::Machine) -> Option<facts::Power> {
+        *self
+            .measured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(here.clone());
+        self.said.machines.send_modify(|said| *said += 1);
+        here.power
+    }
+
+    /// Every machine of the realm as last known: this one as its minute's
+    /// measure found it, once there has been one, then each other one as
+    /// its links last carried it.
+    fn known_machines(&self) -> Vec<facts::Machine> {
+        let here = self
+            .measured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        here.into_iter().chain(self.others()).collect()
+    }
+
+    /// Each other machine of the realm that hasn't left, as its links last
+    /// carried it.
+    fn others(&self) -> Vec<facts::Machine> {
+        let now = jiff::Timestamp::now();
+        self.store
+            .machines()
+            .into_iter()
+            .filter(|one| {
+                one.name != self.machine
+                    && !one.declared.as_ref().is_some_and(|said| said.has_left(now))
+            })
+            .collect()
+    }
+
     /// Every machine of the realm: this one measured now, then each other
     /// as its links last carried it, but for those that said they would
     /// leave and have.
     fn machines(&self) -> Vec<facts::Machine> {
-        let now = jiff::Timestamp::now();
         let mut all = vec![self.measure()];
-        all.extend(self.store.machines().into_iter().filter(|one| {
-            one.name != self.machine
-                && !one.declared.as_ref().is_some_and(|said| said.has_left(now))
-        }));
+        all.extend(self.others());
         all
     }
 
@@ -2090,13 +2133,28 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            [&json!("machine:equilibrius")],
-            "the other machines, and not this one, whose readings are its own daemon's"
+            [&json!("machine:equilibrius"), &json!("machine:optimus")],
+            "this machine among the others, by key"
+        );
+        let here: Vec<&Value> = whole["records"]
+            .as_array()
+            .expect("the records")
+            .iter()
+            .map(|record| &record["here"])
+            .collect();
+        assert_eq!(
+            here,
+            [&json!(false), &json!(true)],
+            "each saying whether it is this one"
         );
         store
             .put_machine(&equilibrius_at("2026-10-31T04:01:00Z"))
             .expect("what it said is kept");
-        let changed = client.next().await;
+        // This machine's own minute's measure may be told first.
+        let mut changed = client.next().await;
+        while changed["changed"][0]["key"] == json!("machine:optimus") {
+            changed = client.next().await;
+        }
         assert_eq!(
             (
                 &changed["id"],

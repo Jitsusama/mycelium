@@ -34,8 +34,14 @@ pub struct Machine {
     pub system: Option<String>,
     /// Its architecture, as Rust names it: `x86_64` or `aarch64`.
     pub arch: String,
-    /// Its maker's name for it, such as "Dell Inc. XPS 14 DA14260".
+    /// Its maker's name for it, such as "Dell Inc. XPS 14 DA14260", or
+    /// the identifier a Mac goes by, such as "Mac14,2".
     pub model: Option<String>,
+    /// What its maker calls its kind, in words, such as `MacBook Air` or
+    /// `XPS 14 DA14260`, where `model` may be only an identifier; unknown
+    /// from a node too old to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
     /// Its processor.
     pub cpu: Cpu,
     /// Its memory, in bytes.
@@ -197,6 +203,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         system: Some(std::env::consts::OS.to_owned()),
         arch: std::env::consts::ARCH.to_owned(),
         model: read.model,
+        model_name: read.model_name,
         cpu,
         memory: read.memory,
         disk: disk_of(&sources.home),
@@ -234,6 +241,7 @@ pub fn power(sources: &Sources) -> Option<Power> {
 struct Read {
     os: Option<String>,
     model: Option<String>,
+    model_name: Option<String>,
     cpu: Cpu,
     memory: Option<u64>,
     accelerators: Option<Vec<Accelerator>>,
@@ -265,6 +273,12 @@ mod here {
                 fs::read_to_string("/sys/class/dmi/id/sys_vendor")
                     .ok()
                     .as_deref(),
+                fs::read_to_string("/sys/class/dmi/id/product_name")
+                    .ok()
+                    .as_deref(),
+            ),
+            model_name: linux::model(
+                None,
                 fs::read_to_string("/sys/class/dmi/id/product_name")
                     .ok()
                     .as_deref(),
@@ -347,8 +361,24 @@ mod here {
     //! macOS says what it is through `sysctl` and `sw_vers`.
 
     use std::process::Command;
+    use std::sync::OnceLock;
 
     use super::{Cpu, Power, Read, macos};
+
+    /// What Apple calls this Mac's kind, as `system_profiler` says it.
+    /// It is asked once, since it never changes and the asking takes a
+    /// good part of a second.
+    fn model_name() -> Option<String> {
+        static NAME: OnceLock<Option<String>> = OnceLock::new();
+        NAME.get_or_init(|| {
+            said(
+                "/usr/sbin/system_profiler",
+                &["-json", "SPHardwareDataType"],
+            )
+            .and_then(|said| macos::model_name(&said))
+        })
+        .clone()
+    }
 
     /// What `program` says, asked with `args`, or nothing where it fails.
     fn said(program: &str, args: &[&str]) -> Option<String> {
@@ -381,6 +411,7 @@ mod here {
             os: said("/usr/bin/sw_vers", &["-productVersion"])
                 .map(|version| format!("macOS {}", version.trim())),
             model: value("hw.model"),
+            model_name: model_name(),
             cpu: Cpu {
                 model: value("machdep.cpu.brand_string"),
                 cores: value("hw.ncpu").and_then(|n| n.parse().ok()),
@@ -409,6 +440,7 @@ mod here {
         Read {
             os: None,
             model: None,
+            model_name: None,
             cpu: Cpu {
                 model: None,
                 cores: None,
@@ -541,6 +573,16 @@ mod macos {
         })
     }
 
+    /// What Apple calls the Mac's kind, such as `MacBook Air`, from what
+    /// `system_profiler -json SPHardwareDataType` says.
+    pub(super) fn model_name(said: &str) -> Option<String> {
+        let said: serde_json::Value = serde_json::from_str(said).ok()?;
+        let name = said["SPHardwareDataType"][0]["machine_name"]
+            .as_str()?
+            .trim();
+        (!name.is_empty()).then(|| name.to_owned())
+    }
+
     /// What the machine runs on, as `pmset -g batt` says it: what it
     /// draws from first, then a line for its battery, if it has one.
     pub(super) fn power(said: &str) -> Option<super::Power> {
@@ -651,6 +693,23 @@ mod tests {
             "a Mac with no battery"
         );
         assert_eq!(macos::power(""), None, "nothing said is unknown");
+    }
+
+    #[test]
+    fn a_mac_is_named_in_words_as_system_profiler_says() {
+        let said = r#"{"SPHardwareDataType": [{"machine_model": "Mac14,2",
+            "machine_name": "MacBook Air", "chip_type": "Apple M2"}]}"#;
+        assert_eq!(
+            macos::model_name(said).as_deref(),
+            Some("MacBook Air"),
+            "its kind in words, not its identifier"
+        );
+        assert_eq!(
+            macos::model_name(r#"{"SPHardwareDataType": []}"#),
+            None,
+            "no hardware said is unknown"
+        );
+        assert_eq!(macos::model_name(""), None, "nothing said is unknown");
     }
 
     #[test]

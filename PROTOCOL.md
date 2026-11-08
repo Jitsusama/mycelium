@@ -472,7 +472,9 @@ A machine is what its node measures of it when asked, the facts work is
 placed by: its `name`, `measured_at`, `state` (`ready` for a node answering
 for itself or a machine a link carries, `unreachable` for one no link
 reaches now, as of when one last did), `os`, `system` (`linux` or
-`macos`, `null` from a node too old to say it), `arch`, `model`, `cpu`
+`macos`, `null` from a node too old to say it), `arch`, `model` (a
+Mac's is its identifier, such as `Mac14,2`), `model_name`, its kind in
+words (`MacBook Air`, absent from a node too old to say it), `cpu`
 (`model`, `cores`), `memory` and `disk` in bytes (the disk holding its
 account's home), `disk_band`, how full that disk is as the machine's
 disk guard bands it (`healthy`, `pressure`, `urgent` or `critical`,
@@ -700,12 +702,12 @@ in milliseconds.
 A record carries `key` (`session:<id>`, `machine:<name>` or
 `message:<id>`), `kind`, `heard` (milliseconds since the epoch) and the
 fields `Sessions`, `Machines` and `Messages` give it. A session also says
-whether it runs `here`. The `machine` kind holds the realm's other
-machines only, since this machine's own readings are its machine
-daemon's. The `message` kind holds each group's latest 100 messages, so
-a quiet group's last words stay beside a busy one's, and a message is
-heard when it was sent and never changes. A watch sends what changed by
-key, with only the fields that differ, a dropped one as null; nothing
+whether it runs `here`. The `machine` kind holds every machine of the
+realm, this one as its last minute's measure found it, each saying
+whether it is `here`. The `message` kind holds each group's latest 100
+messages, so a quiet group's last words stay beside a busy one's, and a
+message is heard when it was sent and never changes. A watch sends what
+changed by key, with only the fields that differ, a dropped one as null; nothing
 while nothing changes; and no sooner than 250 ms after its last send, so
 a reader too slow for it is sent the latest rather than a backlog. An ask
 it can't answer gets `{"id", "error": {"code", "message"}}`, the code
