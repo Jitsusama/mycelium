@@ -310,6 +310,7 @@ mod tests {
                 terminal: "kitty".to_owned(),
                 id: "13".to_owned(),
                 within: Some("unix:@kitty-6753".to_owned()),
+                app_id: Some("pi-session.4".to_owned()),
             }),
         ];
         let sent: Vec<u8> = said.iter().flat_map(Said::encode).collect();

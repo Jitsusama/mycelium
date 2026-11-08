@@ -202,6 +202,7 @@ pub fn session(presence: &Presence, here: &str) -> Option<Session> {
                 terminal: terminal.driver_id,
                 id: terminal.value,
                 within: terminal.scope,
+                app_id: None,
             }),
         // Its own machine's holders are read where they run; a link writes
         // the id one keeps a session elsewhere by into its presence.
@@ -512,6 +513,7 @@ mod tests {
                 terminal: "kitty".to_owned(),
                 id: "13".to_owned(),
                 within: Some("unix:@kitty-6753".to_owned()),
+                app_id: None,
             }),
             "a session here says the window it runs in"
         );

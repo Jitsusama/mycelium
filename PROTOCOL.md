@@ -456,17 +456,19 @@ says it made lately, newest first (each `at`, `ref`, a one-line `what`
 and, when it means something to its person, `person`; any it can't read is
 left out), and the `window` it
 runs in (`terminal`, `id`, `within`, such as a kitty window's id and
-kitty's socket). Only a session of this machine's has a `window`, since a
-window is gone to on its own machine. A session a holder keeps, as one
-started with `mycelium hold -- pi` is, says `held`: the id `mycelium
-attach` takes it up by on its machine. It is known by the holder's
-program being the session's own process, which only its own machine
-sees, so a link carries it with the presence. A held session of this
-machine's has as its `window` the latest window joined to its holder
-that is still joined, or none. A held session says `attach` too, the
-words that join it from a terminal on this machine, to be run as given:
-`mycelium` here, or the dial's words for a machine a link of this node's
-reaches, and none while no link does. Its
+kitty's socket, and `app_id`, the app id its window was opened with,
+where its opener said so in `MYCELIUM_APP_ID`, which names the same
+window in the compositor's list). Only a session of this machine's has a
+`window`, since a window is gone to on its own machine. A session a
+holder keeps, as one started with `mycelium hold -- pi` is, says
+`held`: the id `mycelium attach` takes it up by on its machine. It is
+known by the holder's program being the session's own process, which
+only its own machine sees, so a link carries it with the presence. A
+held session of this machine's has as its `window` the latest window
+joined to its holder that is still joined, or none. A held session says
+`attach` too, the words that join it from a terminal on this machine, to
+be run as given: `mycelium` here, or the dial's words for a machine a
+link of this node's reaches, and none while no link does. Its
 `presence` goes along whole, as its session wrote it, for a reader that
 shows more of it, such as the launcher; a session elsewhere's has its
 process taken out. Whether a session lives is its `state`, never

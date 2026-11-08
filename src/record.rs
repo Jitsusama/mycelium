@@ -156,6 +156,12 @@ pub struct Window {
     /// What the id is unique within, such as kitty's socket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub within: Option<String>,
+    /// The app id the terminal's window was opened with, where whoever
+    /// opened it said so, unique to it: the name a compositor lists that
+    /// window by (niri's `app_id`), since one terminal process can draw
+    /// several windows and its own ids mean nothing to the compositor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
 }
 
 /// How a session stands.
