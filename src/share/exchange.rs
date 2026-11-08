@@ -141,6 +141,40 @@ impl Places {
         Ledgers::in_state(&self.state)
     }
 
+    /// Shares `quest`, which must be here to share, with each of the
+    /// folders of its scratch named in `scratch`, and says what is shared.
+    ///
+    /// # Errors
+    ///
+    /// When the quest isn't here, or a folder can't be shared.
+    pub fn offer(&self, quest: &str, scratch: &[String]) -> io::Result<String> {
+        let record = self.record(quest);
+        if !record.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "{quest} isn't on this machine: {} holds nothing",
+                    record.display()
+                ),
+            ));
+        }
+        let ledgers = self.ledgers();
+        ledgers.hold(quest)?.keep()?;
+        for folder in scratch {
+            self.name_scratch(quest, folder)?;
+        }
+        let folders = ledgers.hold(quest)?.ledger.scratch;
+        let with = if folders.is_empty() {
+            "none of its scratch".to_owned()
+        } else {
+            let names: Vec<String> = folders.into_iter().collect();
+            format!("its scratch's {}", names.join(", "))
+        };
+        Ok(format!(
+            "{quest} is shared, with {with}; each link carries it from its next look"
+        ))
+    }
+
     /// The group the sessions on quest `id` hear, named by the short ids of
     /// the quests above it, outermost first, as the mesh names it: a group
     /// is heard by its own and its parents' names, never a part of one.

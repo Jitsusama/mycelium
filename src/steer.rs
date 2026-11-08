@@ -21,11 +21,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{Map, Value};
 
 /// The fields of a steer the harness reads, which are all that is written.
-const FIELDS: [&str; 5] = ["text", "act", "at", "from", "id"];
+const FIELDS: [&str; 6] = ["text", "act", "to", "at", "from", "id"];
 
 /// What the person may do besides talk, as the harness's `STEER_ACTS`
-/// says: close ends a session for good, where stop only interrupts it.
-const ACTS: [&str; 4] = ["pause", "resume", "stop", "close"];
+/// says: close ends a session for good, where stop only interrupts it,
+/// and carry ends it here once its work is carried for the machine `to`
+/// names.
+const ACTS: [&str; 5] = ["pause", "resume", "stop", "close", "carry"];
 
 /// The stages that end a talk; after one, nothing more is followed.
 const ENDED: [&str; 2] = ["replied", "failed"];
@@ -67,6 +69,15 @@ impl Steer {
         if text.trim().is_empty() && act.is_none() {
             return Err("a steer says something or does something".to_owned());
         }
+        // A carry names where to, as a machine names itself, and nothing
+        // else names a machine.
+        let to = body.get("to");
+        if act == Some("carry") && !to.and_then(Value::as_str).is_some_and(is_machine) {
+            return Err("a carry names the machine it goes to".to_owned());
+        }
+        if act != Some("carry") && to.is_some() {
+            return Err("only a carry names a machine to go to".to_owned());
+        }
         if let Some(id) = body.get("id")
             && !id.as_str().is_some_and(is_talk)
         {
@@ -92,6 +103,16 @@ impl Steer {
         fs::rename(&writing, folder.join(&name))?;
         Ok(name)
     }
+}
+
+/// Whether `name` can be a machine's, as a hostname is: letters, digits,
+/// dots and dashes, never starting with a dash.
+fn is_machine(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-')
 }
 
 /// Whether `id` can name a talk's file, as the harness's `isTalkId` holds.
@@ -312,6 +333,10 @@ mod tests {
             ("AB12", json!({"text": " "})),
             ("AB12", json!({"act": "explode"})),
             ("AB12", json!({"text": "hi", "id": "../talk"})),
+            ("AB12", json!({"act": "carry"})),
+            ("AB12", json!({"act": "carry", "to": "../penelope"})),
+            ("AB12", json!({"act": "carry", "to": "-o"})),
+            ("AB12", json!({"act": "close", "to": "penelope"})),
         ] {
             assert!(
                 Steer::new(address, &said).is_err(),
@@ -324,6 +349,13 @@ mod tests {
                 "{act} is an act the harness reads"
             );
         }
+        let carrying = Steer::new("AB12", &json!({"act": "carry", "to": "penelope"}))
+            .expect("a carry naming its machine");
+        assert_eq!(
+            carrying.body.get("to"),
+            Some(&json!("penelope")),
+            "a carry's machine is written for the harness"
+        );
         let talking = Steer::new("AB12", &json!({"text": "hi", "id": "talk-1"})).expect("a steer");
         assert_eq!(talking.talk(), Some("talk-1"), "its talk");
     }
