@@ -353,7 +353,15 @@ impl Ledgers {
             ));
         }
         fs::create_dir_all(&self.folder)?;
-        let lock = fs::File::create(self.folder.join(format!("{quest}.lock")))?;
+        // Opened only to read, and made only when it isn't there: a lock
+        // holds nothing, and opening it to write on each hold, as each
+        // link's look does once a second for every shared quest, wrote the
+        // folder 44 times a second with nothing changed.
+        let at = self.folder.join(format!("{quest}.lock"));
+        let lock = match fs::File::open(&at) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => fs::File::create(&at)?,
+            opened => opened?,
+        };
         rustix::fs::flock(&lock, FlockOperation::LockExclusive)?;
         let path = self.folder.join(format!("{quest}.json"));
         let ledger = match fs::read(&path) {

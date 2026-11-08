@@ -17,7 +17,7 @@
 //! hold across every mycelium process on the machine and go when the
 //! process holding one does, however it ends.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -60,6 +60,22 @@ pub struct Folders {
     ended: Arc<Mutex<BTreeSet<i32>>>,
     /// Each reader of this store's changes, told of an end said here.
     told: Arc<Mutex<Vec<mpsc::UnboundedSender<Change>>>>,
+    /// Each presence as last read, by its path, kept until its file is
+    /// another: each session rewrites its own every 30 seconds, and the
+    /// node reads them all as any one changes, so reading only those that
+    /// changed keeps an idle node from reading 150 files a second.
+    kept: Arc<Mutex<BTreeMap<PathBuf, Kept>>>,
+}
+
+/// A presence as it was read, and the file it was read from, by what
+/// changes whenever it is written: written whole by rename, a file is a
+/// new inode, and written in place, its length or time moves.
+#[derive(Debug)]
+struct Kept {
+    inode: u64,
+    len: u64,
+    modified: Option<SystemTime>,
+    body: Option<Value>,
 }
 
 impl Folders {
@@ -77,7 +93,35 @@ impl Folders {
             claims: Arc::new(claims.canonicalize()?),
             ended: Arc::default(),
             told: Arc::default(),
+            kept: Arc::default(),
         })
+    }
+
+    /// Each presence in the folder, read again only where its file changed
+    /// since it was last read, and none kept of one gone.
+    fn presence_bodies(&self) -> Vec<Value> {
+        use std::os::unix::fs::MetadataExt;
+        let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut seen = BTreeMap::new();
+        for path in records(&self.presence()) {
+            let Ok(meta) = fs::metadata(&path) else {
+                continue;
+            };
+            let same = kept.remove(&path).filter(|one| {
+                one.inode == meta.ino()
+                    && one.len == meta.len()
+                    && one.modified == meta.modified().ok()
+            });
+            let one = same.unwrap_or_else(|| Kept {
+                inode: meta.ino(),
+                len: meta.len(),
+                modified: meta.modified().ok(),
+                body: read::<Value>(&path),
+            });
+            seen.insert(path, one);
+        }
+        *kept = seen;
+        kept.values().filter_map(|one| one.body.clone()).collect()
     }
 
     fn ended_processes(&self) -> MutexGuard<'_, BTreeSet<i32>> {
@@ -152,8 +196,8 @@ impl Store for Folders {
     fn presences(&self) -> Vec<Presence> {
         let boot = boot_id();
         let ended = self.ended_processes().clone();
-        records(&self.presence())
-            .filter_map(|path| read::<Value>(&path))
+        self.presence_bodies()
+            .into_iter()
             .filter_map(|body| {
                 let facts = Facts::deserialize(&body).ok()?;
                 let lives = facts.machine.is_some()
@@ -629,6 +673,57 @@ mod tests {
             boot_id: boot_id(),
             start_ticks: start_ticks(pid),
         }
+    }
+
+    #[test]
+    fn a_presence_is_read_again_only_once_its_file_changes_and_forgotten_once_gone() {
+        let (dir, folders) = store();
+        let presence = dir.path().join("mesh/presence");
+        let write = |name: &str, body: &Value| {
+            let staged = presence.join(format!(".{name}.tmp"));
+            fs::write(&staged, body.to_string()).expect("written");
+            fs::rename(&staged, presence.join(name)).expect("renamed into place");
+        };
+        let titles = |folders: &Folders| -> Vec<String> {
+            let mut titles: Vec<String> = folders
+                .presence_bodies()
+                .iter()
+                .filter_map(|body| body["title"].as_str().map(str::to_owned))
+                .collect();
+            titles.sort();
+            titles
+        };
+        write("s-one.json", &json!({"session": "s-one", "title": "one"}));
+        write("s-two.json", &json!({"session": "s-two", "title": "two"}));
+        assert_eq!(titles(&folders), ["one", "two"], "each read");
+        // Written whole again, as a session rewrites its own.
+        write(
+            "s-one.json",
+            &json!({"session": "s-one", "title": "one again"}),
+        );
+        assert_eq!(
+            titles(&folders),
+            ["one again", "two"],
+            "the changed one read again"
+        );
+        // Written in place, its length changing.
+        fs::write(
+            presence.join("s-two.json"),
+            json!({"session": "s-two", "title": "two, longer"}).to_string(),
+        )
+        .expect("written in place");
+        assert_eq!(
+            titles(&folders),
+            ["one again", "two, longer"],
+            "one written in place too"
+        );
+        fs::remove_file(presence.join("s-one.json")).expect("gone");
+        assert_eq!(titles(&folders), ["two, longer"], "one gone, forgotten");
+        assert_eq!(
+            folders.kept.lock().map_or(0, |kept| kept.len()),
+            1,
+            "only what stands is kept"
+        );
     }
 
     #[test]

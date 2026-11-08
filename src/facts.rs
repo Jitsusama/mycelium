@@ -215,8 +215,9 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
 
 /// What this machine runs on now, read alone and as [`measure`] reads it:
 /// a machine within another has its host's power while its host's word
-/// stands. Cheap enough to read each time a session changes, as measuring
-/// everything isn't.
+/// stands. Not cheap: a laptop's battery is read from its embedded
+/// controller, and each read blocks until it answers, so the node reads it
+/// once a minute, never as each session changes.
 #[must_use]
 pub fn power(sources: &Sources) -> Option<Power> {
     let host = declared::read(&sources.declared)
