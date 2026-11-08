@@ -91,9 +91,11 @@ pub async fn hold(
     let _ = fs::remove_file(&naming);
     let (pty, pts) = pty_process::open().map_err(io::Error::other)?;
     pty.resize(size_of(FIRST_SIZE)).map_err(io::Error::other)?;
+    let starts = Arc::new(Starts::default());
+    let end = ChildEnd::of(pts, starts.clone())?;
     // The holder keeps the terminal's other end, so a parked program's
     // terminal outlives it and the program starts again on the same one.
-    let start = |command: &[String]| {
+    let start = |command: &[String], size: Size| {
         let Some((program, arguments)) = command.split_first() else {
             return Err(io::Error::other("there is nothing to start"));
         };
@@ -106,10 +108,10 @@ pub async fn hold(
         for variable in WINDOW_VARIABLES {
             command = command.env_remove(variable);
         }
-        command.spawn_borrowed(&pts).map_err(io::Error::other)
+        end.start(command, size)
     };
     let mut command = holding.command.to_vec();
-    let mut child = start(&command)?;
+    let mut child = start(&command, FIRST_SIZE)?;
     let held = Held {
         id: holding.id.to_owned(),
         command: holding.command.to_vec(),
@@ -135,7 +137,7 @@ pub async fn hold(
         modes: Mutex::new(Modes::default()),
         output,
     });
-    let mut reader = tokio::spawn(read_output(reading, shown.clone()));
+    let mut reader = tokio::spawn(read_output(reading, shown.clone(), starts));
     let mut joined = JoinSet::new();
     // A terminal may join whether the program runs or is parked.
     let serving = |stream| serve(stream, terminal.clone(), shown.join(), record.clone());
@@ -148,12 +150,12 @@ pub async fn hold(
         shown.show(PARKED_LINE);
         joining_until(woken(&terminal, &waking), &socket, &mut joined, &serving).await;
         command = named(&naming).unwrap_or(command);
-        child = start(&command)?;
+        child = start(&command, terminal.size())?;
         record.runs(child.id().unwrap_or_default(), &command);
     };
     // The terminal's other end goes with the program, so its last output
     // ends as it did, then whoever is joined is let go.
-    drop(pts);
+    drop(end);
     drop(socket);
     record.end();
     if tokio::time::timeout(LAST_WORDS, &mut reader).await.is_err() {
@@ -243,6 +245,11 @@ impl Terminal {
     /// that woke it is then not the program's to read.
     fn wakes(&self) -> bool {
         self.parked.send_if_modified(std::mem::take)
+    }
+
+    /// The size the program was last given.
+    fn size(&self) -> Size {
+        *self.size.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Gives the program `size`. A terminal joining at the size the program
@@ -359,15 +366,121 @@ async fn serve(
 }
 
 /// Passes the program's output to every joined terminal until it ends.
-async fn read_output(mut reading: OwnedReadPty, shown: Arc<Shown>) {
+async fn read_output(mut reading: OwnedReadPty, shown: Arc<Shown>, starts: Arc<Starts>) {
     let mut buffer = vec![0u8; 8192];
     // A terminal whose program has gone reads as an error on Linux and as
-    // its end elsewhere; either way there is no more.
-    while let Ok(read) = reading.read(&mut buffer).await {
-        if read == 0 {
-            return;
+    // its end elsewhere; there is no more unless a start opens it again.
+    loop {
+        match reading.read(&mut buffer).await {
+            Ok(read) if read > 0 => shown.show(&buffer[..read]),
+            _ => {
+                if !starts.again().await {
+                    return;
+                }
+            }
         }
-        shown.show(&buffer[..read]);
+    }
+}
+
+/// The terminal's child end, which each start of the program is given.
+/// Linux starts a program on the same end again and again, and the holder
+/// keeping it open is what keeps a parked program's terminal. macOS takes
+/// a terminal away from whatever holds it once its session's leader ends,
+/// and pty-process starts on a borrowed end only elsewhere, so there each
+/// start opens the end again by its name, as `pty_process::open` opens it.
+struct ChildEnd {
+    #[cfg(not(target_os = "macos"))]
+    pts: pty_process::Pts,
+    #[cfg(target_os = "macos")]
+    named: std::ffi::CString,
+    #[cfg(target_os = "macos")]
+    starts: Arc<Starts>,
+}
+
+impl ChildEnd {
+    #[cfg(not(target_os = "macos"))]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "macOS's names the end, which can fail"
+    )]
+    fn of(pts: pty_process::Pts, _starts: Arc<Starts>) -> io::Result<Self> {
+        Ok(Self { pts })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn of(pts: pty_process::Pts, starts: Arc<Starts>) -> io::Result<Self> {
+        let named = rustix::termios::ttyname(&pts, Vec::new())?;
+        Ok(Self { named, starts })
+    }
+
+    /// Starts `command` on the end at `size`, which Linux's end, never
+    /// closed, keeps from the last start.
+    #[cfg(not(target_os = "macos"))]
+    fn start(
+        &self,
+        mut command: pty_process::Command,
+        _size: Size,
+    ) -> io::Result<tokio::process::Child> {
+        command.spawn_borrowed(&self.pts).map_err(io::Error::other)
+    }
+
+    /// Starts `command` on the end opened anew at `size`, since macOS
+    /// forgets a terminal's size once nothing holds its child end.
+    #[cfg(target_os = "macos")]
+    fn start(
+        &self,
+        command: pty_process::Command,
+        size: Size,
+    ) -> io::Result<tokio::process::Child> {
+        use rustix::fs::{Mode, OFlags};
+        let flags = OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC;
+        let opened = rustix::fs::open(self.named.as_c_str(), flags, Mode::empty())?;
+        rustix::termios::tcsetwinsize(
+            &opened,
+            rustix::termios::Winsize {
+                ws_row: size.rows,
+                ws_col: size.cols,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            },
+        )?;
+        // SAFETY: `opened` was just opened by this terminal's child end's own
+        // name, so it is valid, open and the child end of a pty, as
+        // `from_fd` asks.
+        #[expect(
+            unsafe_code,
+            reason = "pty-process makes a Pts of an end opened again only by from_fd"
+        )]
+        let pts = unsafe { pty_process::Pts::from_fd(opened) };
+        let child = command.spawn(pts).map_err(io::Error::other)?;
+        self.starts.started.notify_one();
+        Ok(child)
+    }
+}
+
+/// Each start of the program, as the reader of its output is told of it.
+#[derive(Default)]
+struct Starts {
+    #[cfg(target_os = "macos")]
+    started: tokio::sync::Notify,
+}
+
+impl Starts {
+    /// Whether output may come once the terminal has read as ended: never
+    /// on Linux, where the holder keeps the child end open until the
+    /// program is done.
+    #[cfg(not(target_os = "macos"))]
+    #[expect(clippy::unused_self, reason = "macOS's waits on its own starts")]
+    fn again(&self) -> impl Future<Output = bool> {
+        std::future::ready(false)
+    }
+
+    /// Whether output may come once the terminal has read as ended: on
+    /// macOS once the program starts again, on its end opened anew.
+    #[cfg(target_os = "macos")]
+    async fn again(&self) -> bool {
+        self.started.notified().await;
+        true
     }
 }
 
