@@ -483,9 +483,11 @@ Mac's is its identifier, such as `Mac14,2`), `model_name`, its kind in
 words (`MacBook Air`, absent from a node too old to say it), `cpu`
 (`model`, `cores`), `memory` and `disk` in bytes (the disk holding its
 account's home), `disk_band`, how full that disk is as the machine's
-disk guard bands it (`healthy`, `pressure`, `urgent` or `critical`,
-from the guard's `status.json` while its heartbeat is under two minutes
-old, and absent otherwise), `accelerators` (each a `kind`, `gpu` or
+disk guard bands it (`healthy`, `filling`, `nearly-full` or
+`critically-full`, from the guard's `status.json` while its heartbeat is
+under two minutes old, and absent otherwise; the guard's earlier
+`pressure`, `urgent` and `critical` are read as those three, and a band a
+node doesn't know is read as absent), `accelerators` (each a `kind`, `gpu` or
 `npu`, and its `driver`), and `power`: `on_battery`, true only with a
 battery of its own and nothing plugged in, and `charge`, its own
 batteries' mean in percent, `null` for a machine with none. A fact that

@@ -7,20 +7,42 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::de::IntoDeserializer;
+use serde::{Deserialize, Deserializer, Serialize};
 
-/// How full a disk is, as its guard bands it, least full first.
+/// How full a disk is, as its guard bands it, least full first, in the
+/// glossary's words. The guard's words before them are read too, from a
+/// guard or a node that still says them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum Band {
     /// It has room.
     Healthy,
     /// It is filling, and its guard clears what has waited a while.
-    Pressure,
+    #[serde(alias = "pressure")]
+    Filling,
     /// It is nearly full, and its guard clears what it can.
-    Urgent,
+    #[serde(alias = "urgent")]
+    NearlyFull,
     /// It is full or about to be.
-    Critical,
+    #[serde(alias = "critical")]
+    CriticallyFull,
+}
+
+/// A band as another machine's node said it, or none where it names one
+/// this build doesn't know, so that a newer node's word costs its record
+/// only the band, never the whole machine.
+///
+/// # Errors
+///
+/// Fails only where the band isn't a word at all.
+pub fn band_or_none<'de, D: Deserializer<'de>>(said: D) -> Result<Option<Band>, D::Error> {
+    Ok(Option::<String>::deserialize(said)?.and_then(|word| {
+        Band::deserialize(
+            IntoDeserializer::<serde::de::value::Error>::into_deserializer(word.as_str()),
+        )
+        .ok()
+    }))
 }
 
 /// How long the guard's status goes unwritten before nobody keeps it: the
@@ -114,12 +136,15 @@ mod tests {
             "the root disk holds a home with none of its own"
         );
         assert_eq!(
-            says(&status(NOW, &[("/", "healthy"), ("/home", "urgent")]), home),
-            Some(Band::Urgent),
+            says(
+                &status(NOW, &[("/", "healthy"), ("/home", "nearly-full")]),
+                home
+            ),
+            Some(Band::NearlyFull),
             "a disk mounted deeper above home holds it"
         );
         assert_eq!(
-            says(&status(NOW, &[("/srv", "critical")]), home),
+            says(&status(NOW, &[("/srv", "critically-full")]), home),
             None,
             "a disk not holding home says nothing of it"
         );
@@ -135,11 +160,11 @@ mod tests {
         std::os::unix::fs::symlink(&mounted, &linked).expect("home links to it");
         let path = real.join("status.json");
         let disk = mounted.to_str().expect("a path in text");
-        fs::write(&path, status(NOW, &[("/", "healthy"), (disk, "pressure")]))
+        fs::write(&path, status(NOW, &[("/", "healthy"), (disk, "filling")]))
             .expect("the status is written");
         assert_eq!(
             band(&path, &linked, NOW),
-            Some(Band::Pressure),
+            Some(Band::Filling),
             "the disk the link leads to holds home"
         );
     }
@@ -148,11 +173,11 @@ mod tests {
     fn a_guard_that_stopped_or_speaks_otherwise_says_nothing() {
         let home = Path::new("/home/joel");
         assert_eq!(
-            says(&status(NOW - 120, &[("/", "pressure")]), home),
+            says(&status(NOW - 120, &[("/", "filling")]), home),
             None,
             "a guard silent two minutes keeps nothing"
         );
-        let other = String::from_utf8(status(NOW, &[("/", "pressure")]))
+        let other = String::from_utf8(status(NOW, &[("/", "filling")]))
             .expect("text")
             .replace("\"version\":2", "\"version\":3");
         assert_eq!(
@@ -170,6 +195,27 @@ mod tests {
             band(&folder.path().join("status.json"), home, NOW),
             None,
             "no guard keeps no band"
+        );
+    }
+
+    #[test]
+    fn a_guard_still_saying_the_old_words_is_banded_in_the_new() {
+        let home = Path::new("/home/joel");
+        for (old, new) in [
+            ("pressure", Band::Filling),
+            ("urgent", Band::NearlyFull),
+            ("critical", Band::CriticallyFull),
+        ] {
+            assert_eq!(
+                says(&status(NOW, &[("/", old)]), home),
+                Some(new),
+                "{old} is read as {new:?}"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(Band::NearlyFull).expect("a band says itself"),
+            "nearly-full",
+            "a band is said in the glossary's words"
         );
     }
 }

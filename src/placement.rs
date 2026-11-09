@@ -697,7 +697,7 @@ mod tests {
     fn a_machine_whose_disk_is_filling_goes_after_one_with_room() {
         let mut optimus = machine("optimus", "linux", 30, &[]);
         let mut penelope = machine("penelope", "linux", 2, &[]);
-        optimus.disk_band = Some(Band::Pressure);
+        optimus.disk_band = Some(Band::Filling);
         penelope.disk_band = Some(Band::Healthy);
         let realm = [optimus.clone(), penelope.clone()];
         assert_eq!(

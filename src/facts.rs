@@ -49,8 +49,13 @@ pub struct Machine {
     /// The size of the disk holding its account's home, in bytes.
     pub disk: Option<u64>,
     /// How full that disk is, as the machine's disk guard bands it, or
-    /// unknown where no guard keeps one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// unknown where no guard keeps one, or where another machine's node
+    /// names a band this build doesn't know.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "disk::band_or_none"
+    )]
     pub disk_band: Option<Band>,
     /// Its graphics and neural processors, by the driver that runs each;
     /// unknown where they can't be listed.
@@ -603,6 +608,28 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_machine_naming_a_band_this_build_doesnt_know_keeps_the_rest() {
+        let nowhere = Sources {
+            home: "/".into(),
+            queue: None,
+            disk_guard: None,
+            declared: "/nowhere".into(),
+            reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
+        };
+        let mut said = serde_json::to_value(Machine {
+            disk_band: Some(Band::Filling),
+            ..measure("methuselah", &nowhere)
+        })
+        .expect("a machine says itself");
+        assert_eq!(said["disk_band"], "filling", "its band is said");
+        said["disk_band"] = "overflowing".into();
+        let heard: Machine = serde_json::from_value(said).expect("the machine is still heard");
+        assert_eq!(heard.name, "methuselah", "the rest of the machine stays");
+        assert_eq!(heard.disk_band, None, "only the band it can't read goes");
+    }
 
     #[test]
     fn linux_says_what_it_is_in_its_own_words() {
