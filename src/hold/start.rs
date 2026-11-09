@@ -123,13 +123,19 @@ pub fn begins_in(folder: Option<&Path>, home: &Path) -> PathBuf {
 /// below the person's programs already.
 const YIELDING_ON_A_MAC: [&str; 3] = ["/usr/sbin/taskpolicy", "-c", "utility"];
 
-/// The words that run a program through the person's login shell, as a
-/// terminal would run it, so it has their environment rather than a
-/// service's: a pi started without it has no model token and ends at
-/// once, and a bare `pi` isn't found on a service's path. On a Mac it
-/// runs yielding to the person's own programs.
+/// What the login shell runs once the person's profile has: it says the
+/// realm the program is held in, after it, since a profile says the
+/// machine's own realm and would put a session started in another into
+/// the wrong one, then runs the program.
+const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; shift; exec "$@""#;
+
+/// The words that run a program held in `realm` through the person's
+/// login shell, as a terminal would run it, so it has their environment
+/// rather than a service's: a pi started without it has no model token
+/// and ends at once, and a bare `pi` isn't found on a service's path. On
+/// a Mac it runs yielding to the person's own programs.
 #[must_use]
-pub fn login_shell() -> Vec<String> {
+pub fn login_shell(realm: &str) -> Vec<String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| {
         if cfg!(target_os = "macos") {
             "/bin/zsh".to_owned()
@@ -145,8 +151,9 @@ pub fn login_shell() -> Vec<String> {
     through.extend([
         shell,
         "-lic".to_owned(),
-        r#"exec "$@""#.to_owned(),
+        IN_ITS_REALM.to_owned(),
         "mycelium".to_owned(),
+        realm.to_owned(),
     ]);
     through
 }
@@ -167,7 +174,7 @@ mod tests {
 
     #[test]
     fn a_program_runs_through_the_login_shell_with_its_words_kept_apart() {
-        let mut words = login_shell();
+        let mut words = login_shell("harbour");
         words.extend(["pi".to_owned(), "say \"hi\" $HOME".to_owned()]);
         let yielding = if cfg!(target_os = "macos") {
             YIELDING_ON_A_MAC.len()
@@ -181,8 +188,38 @@ mod tests {
         );
         assert_eq!(
             words[yielding + 1..],
-            ["-lic", r#"exec "$@""#, "mycelium", "pi", "say \"hi\" $HOME"],
+            [
+                "-lic",
+                IN_ITS_REALM,
+                "mycelium",
+                "harbour",
+                "pi",
+                "say \"hi\" $HOME"
+            ],
             "the shell execs the words as given, never reading them as its own"
+        );
+    }
+
+    #[test]
+    fn a_program_is_in_the_realm_it_is_held_in_whatever_the_profile_says() {
+        let words = login_shell("harbour");
+        let script = words
+            .iter()
+            .position(|word| word == "-lic")
+            .expect("the words run a login shell");
+        // `sh` stands for the person's shell, and the realm it is given
+        // for the profile's, which a profile says before the script runs.
+        let said = Command::new("sh")
+            .arg("-c")
+            .args(&words[script + 1..])
+            .args(["sh", "-c", r#"printf %s "$MYCELIUM_REALM""#])
+            .env("MYCELIUM_REALM", "lighthouse")
+            .output()
+            .expect("the stand-in shell runs");
+        assert_eq!(
+            String::from_utf8_lossy(&said.stdout),
+            "harbour",
+            "the program is in the realm it is held in"
         );
     }
 

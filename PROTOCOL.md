@@ -798,7 +798,11 @@ the `windows` joined to it that said which they are, the latest last. A
 window leaves the record the moment its terminal leaves, and both go
 when the program ends. `mycelium held` lists every record whose holder
 still runs. The program is told its id in `MYCELIUM_HELD`, and loses
-the variables naming the window it started in.
+the variables naming the window it started in. It is in the realm it
+is held in, told in `MYCELIUM_REALM` after the login shell's profile
+runs, since a profile says the machine's own realm: a session started
+in another realm of a machine in two would otherwise join the wrong
+mesh.
 
 A program that exits with 75 (sysexits' `EX_TEMPFAIL`) is parked, not
 ended, so a session waiting idle can give its memory back. Its holder
