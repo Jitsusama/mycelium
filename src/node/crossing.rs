@@ -306,8 +306,10 @@ mod tests {
     use crate::store::memory::Memory;
     use crate::wire::{Answer, Draft, Event, Request, Response};
 
-    /// How long a test waits on a node before failing.
-    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+    /// How long a test waits on a node before failing. Each wait ends the
+    /// moment what it waits for happens, so this only bounds a hang, as
+    /// long as the node's other tests give it for a machine under load.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// A realm's node on optimus, its socket among every realm's.
     struct Node {

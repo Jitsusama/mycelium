@@ -1520,8 +1520,11 @@ mod tests {
     use crate::record::Intent;
     use crate::store::memory::Memory;
 
-    /// How long the test waits on the node before failing.
-    const PATIENCE: Duration = Duration::from_secs(5);
+    /// How long the test waits on the node before failing. Each wait ends
+    /// the moment what it waits for happens, so this only bounds a hang:
+    /// five seconds failed a dial and a start on a Mac building its system
+    /// beside the tests, so it's the link tests' thirty.
+    const PATIENCE: Duration = Duration::from_secs(30);
 
     /// A holder in `dir` that says it holds at once, writing down in the
     /// file it answers beside it what it was given to hold. A child process
