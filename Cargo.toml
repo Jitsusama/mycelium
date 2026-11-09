@@ -20,8 +20,10 @@ clap = { version = "4", features = ["derive", "env"] }
 # The time, for the ids and times of messages the node sends, and when a
 # machine says it leaves.
 jiff = { version = "0.2", features = ["serde"] }
-# Folder changes, from inotify on Linux and FSEvents on macOS.
-notify = "8"
+# Folder changes, from inotify on Linux and FSEvents on macOS. The 9
+# release candidate, for its watch of only the kinds of change asked for
+# (`watching`), which 8 has no way to say.
+notify = "9.0.0-rc.7"
 # A held session's terminal, with the program's controlling terminal set as
 # it starts, which needs code the crate's own rules forbid here.
 pty-process = { version = "0.5", features = ["async"] }

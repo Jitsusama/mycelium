@@ -93,7 +93,7 @@ impl Watch {
     #[must_use]
     pub fn new(scratch: PathBuf, records: PathBuf) -> Self {
         let (sender, heard) = mpsc::channel();
-        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let watcher = crate::watching::watcher(move |event: notify::Result<notify::Event>| {
             let heard = match event {
                 Err(_) => vec![Heard::Anything],
                 Ok(event) if event.need_rescan() => vec![Heard::Anything],

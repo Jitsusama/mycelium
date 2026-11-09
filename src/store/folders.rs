@@ -400,58 +400,57 @@ impl Store for Folders {
             }
         };
         watching(None);
-        let mut watcher =
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                let written: Vec<PathBuf> = event.as_ref().map_or_else(
-                    |_| Vec::new(),
-                    |event| {
-                        let here = |path: &&PathBuf| path.parent() == Some(presence.as_path());
-                        event.paths.iter().filter(here).cloned().collect()
-                    },
-                );
-                let seen: Vec<Change> = match event {
-                    // A failed or overflowing watch may have missed something.
-                    Err(_) => vec![Change::Rescan],
-                    Ok(event) if event.need_rescan() => vec![Change::Rescan],
-                    // A file opened or read holds nothing new; taken as a
-                    // change, every read would bring another.
-                    Ok(event) if !alters(event.kind) => Vec::new(),
-                    Ok(event) => event
-                        .paths
-                        .iter()
-                        .filter_map(|path| {
-                            if path.parent() == Some(claims.as_path()) {
-                                return said(path).map(Change::Machine);
-                            }
-                            if !is_record(path) {
-                                return None;
-                            }
-                            if path.parent() == Some(messages.as_path()) {
-                                Some(Change::Message(path.file_stem()?.to_str()?.to_owned()))
-                            } else if path.parent() == Some(presence.as_path())
-                                || path.parent() == Some(leases.as_path())
-                            {
-                                Some(Change::Presence)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                };
-                // Only a presence written may name a new process; a watch
-                // that missed something has every one read again.
-                if seen.contains(&Change::Rescan) {
-                    watching(None);
-                } else if seen.contains(&Change::Presence) && !written.is_empty() {
-                    watching(Some(written));
-                }
-                for change in seen {
-                    // Nobody receives once the store's reader has gone; the
-                    // watcher goes with it.
-                    let _ = sender.send(change);
-                }
-            })
-            .map_err(io::Error::other)?;
+        let mut watcher = crate::watching::watcher(move |event: notify::Result<notify::Event>| {
+            let written: Vec<PathBuf> = event.as_ref().map_or_else(
+                |_| Vec::new(),
+                |event| {
+                    let here = |path: &&PathBuf| path.parent() == Some(presence.as_path());
+                    event.paths.iter().filter(here).cloned().collect()
+                },
+            );
+            let seen: Vec<Change> = match event {
+                // A failed or overflowing watch may have missed something.
+                Err(_) => vec![Change::Rescan],
+                Ok(event) if event.need_rescan() => vec![Change::Rescan],
+                // A file opened or read holds nothing new; taken as a
+                // change, every read would bring another.
+                Ok(event) if !alters(event.kind) => Vec::new(),
+                Ok(event) => event
+                    .paths
+                    .iter()
+                    .filter_map(|path| {
+                        if path.parent() == Some(claims.as_path()) {
+                            return said(path).map(Change::Machine);
+                        }
+                        if !is_record(path) {
+                            return None;
+                        }
+                        if path.parent() == Some(messages.as_path()) {
+                            Some(Change::Message(path.file_stem()?.to_str()?.to_owned()))
+                        } else if path.parent() == Some(presence.as_path())
+                            || path.parent() == Some(leases.as_path())
+                        {
+                            Some(Change::Presence)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+            };
+            // Only a presence written may name a new process; a watch
+            // that missed something has every one read again.
+            if seen.contains(&Change::Rescan) {
+                watching(None);
+            } else if seen.contains(&Change::Presence) && !written.is_empty() {
+                watching(Some(written));
+            }
+            for change in seen {
+                // Nobody receives once the store's reader has gone; the
+                // watcher goes with it.
+                let _ = sender.send(change);
+            }
+        })
+        .map_err(io::Error::other)?;
         watcher
             .watch(&self.messages(), RecursiveMode::NonRecursive)
             .map_err(io::Error::other)?;

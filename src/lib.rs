@@ -43,6 +43,7 @@
 //! - [`state`]: what one node holds in memory
 //! - [`node`]: the node itself
 //! - [`served`]: files another program keeps, served as kinds of records
+//! - [`watching`]: watches of folders that hear only what changes them
 //! - [`client`]: a client of the socket
 //! - [`place`]: where a node keeps things on its machine
 //! - [`awake`]: keeping its machine awake while it holds sessions
@@ -79,5 +80,6 @@ pub mod state;
 pub mod steer;
 pub mod store;
 pub mod update;
+pub mod watching;
 pub mod wire;
 pub mod within;
