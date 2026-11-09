@@ -61,6 +61,8 @@ const WINDOW_VARIABLES: [&str; 5] = [
 pub struct Holding<'a> {
     /// The realm's folder of held sessions.
     pub dir: &'a Path,
+    /// The realm it is held in, which the program is in too.
+    pub realm: &'a str,
     /// Its id.
     pub id: &'a str,
     /// The program and its arguments.
@@ -76,7 +78,8 @@ pub struct Holding<'a> {
 
 /// Holds the program until it ends, answering its exit code, if it gave
 /// one. `ready` is told what is held once a terminal can join it. The
-/// program is told its id in `MYCELIUM_HELD`, the file that wakes it once
+/// program is told its realm in `MYCELIUM_REALM`, whatever realm the
+/// environment it was held from said, its id in `MYCELIUM_HELD`, the file that wakes it once
 /// parked in `MYCELIUM_WAKE`, and the file it may name its next command in
 /// as it parks in `MYCELIUM_AGAIN`. A program exiting with [`PARKED`] is
 /// started again on the same terminal when woken, with that command if it
@@ -112,6 +115,7 @@ pub async fn hold(
         let mut command = pty_process::Command::new(program)
             .args(arguments)
             .current_dir(holding.folder)
+            .env("MYCELIUM_REALM", holding.realm)
             .env("MYCELIUM_HELD", holding.id)
             .env("MYCELIUM_WAKE", &waking)
             .env("MYCELIUM_AGAIN", &naming);
@@ -735,6 +739,7 @@ mod tests {
                 let command = vec!["sh".to_owned()];
                 let holding = Holding {
                     dir: &dir,
+                    realm: "harbour",
                     id: "trial1",
                     command: &command,
                     through: &through,
@@ -762,8 +767,10 @@ mod tests {
             cols: 100,
         };
         let mut first = Joined::join(socket(&dir, &held.id), size, None);
-        first.types("echo \"[$MYCELIUM_HELD] $((40 + 2))\"\r").await;
-        first.sees("[trial1] 42").await;
+        first
+            .types("echo \"[$MYCELIUM_HELD in $MYCELIUM_REALM] $((40 + 2))\"\r")
+            .await;
+        first.sees("[trial1 in harbour] 42").await;
         first.task.abort();
         let _ = first.task.await;
 
@@ -1133,6 +1140,7 @@ mod tests {
         let root = tempfile::tempdir().expect("a temporary folder");
         let holding = Holding {
             dir: &root.path().join("held"),
+            realm: "harbour",
             id: "none",
             command: &[],
             through: &[],

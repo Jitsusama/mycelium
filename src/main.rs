@@ -425,8 +425,19 @@ fn run(command: Command) -> io::Result<()> {
             command,
         } => {
             // A hold from a terminal has the person's environment already.
-            let through = if login { login_shell() } else { Vec::new() };
-            be_holder(&place::held(&realm), &id, &folder, &command, &through)
+            let through = if login {
+                login_shell(&realm)
+            } else {
+                Vec::new()
+            };
+            be_holder(&hold::holder::Holding {
+                dir: &place::held(&realm),
+                realm: &realm,
+                id: &id,
+                command: &command,
+                through: &through,
+                folder: &folder,
+            })
         }
         Action::Watch { groups, recent } => {
             let mut client = Client::connect(&socket)?;
@@ -685,22 +696,9 @@ fn hold(
 /// Is the holder `hold` starts: in a session of its own, so the window it
 /// was started from never hangs up on it, saying `held` once a terminal
 /// can join, or why it can't.
-fn be_holder(
-    dir: &Path,
-    id: &str,
-    folder: &Path,
-    command: &[String],
-    through: &[String],
-) -> io::Result<()> {
+fn be_holder(holding: &hold::holder::Holding<'_>) -> io::Result<()> {
     rustix::process::setsid()?;
-    let holding = hold::holder::Holding {
-        dir,
-        id,
-        command,
-        through,
-        folder,
-    };
-    let held = runtime()?.block_on(hold::holder::hold(&holding, |_| {
+    let held = runtime()?.block_on(hold::holder::hold(holding, |_| {
         let mut out = io::stdout();
         writeln!(out, "held")?;
         out.flush()?;
