@@ -48,6 +48,10 @@ pub struct Machine {
     pub memory: Option<u64>,
     /// The size of the disk holding its account's home, in bytes.
     pub disk: Option<u64>,
+    /// How much of that disk its account may still write, in bytes;
+    /// unknown from a node too old to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_free: Option<u64>,
     /// How full that disk is, as the machine's disk guard bands it, or
     /// unknown where no guard keeps one, or where another machine's node
     /// names a band this build doesn't know.
@@ -200,6 +204,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         Some(host) => (host.power, host.room),
         None => (read.power, room),
     };
+    let disk = disk_of(&sources.home);
     Machine {
         name: name.to_owned(),
         measured_at: now.to_string(),
@@ -211,7 +216,8 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         model_name: read.model_name,
         cpu,
         memory: read.memory,
-        disk: disk_of(&sources.home),
+        disk: disk.map(|(size, _)| size),
+        disk_free: disk.map(|(_, free)| free),
         disk_band: sources
             .disk_guard
             .as_deref()
@@ -253,9 +259,14 @@ struct Read {
     power: Option<Power>,
 }
 
-fn disk_of(home: &Path) -> Option<u64> {
+/// The size of the disk holding `home` and how much of it is free to its
+/// account, which leaves out what only root may write.
+fn disk_of(home: &Path) -> Option<(u64, u64)> {
     let stat = rustix::fs::statvfs(home).ok()?;
-    stat.f_blocks.checked_mul(stat.f_frsize)
+    Some((
+        stat.f_blocks.checked_mul(stat.f_frsize)?,
+        stat.f_bavail.checked_mul(stat.f_frsize)?,
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -782,6 +793,13 @@ mod tests {
         assert!(
             machine.disk.is_some_and(|bytes| bytes > 0),
             "a home's disk has a size"
+        );
+        assert!(
+            machine
+                .disk_free
+                .zip(machine.disk)
+                .is_some_and(|(free, size)| free <= size),
+            "what's free of a home's disk is said, and no more than its size"
         );
         if cfg!(target_os = "linux") {
             assert!(
