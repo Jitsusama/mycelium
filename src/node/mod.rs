@@ -1314,12 +1314,15 @@ impl<S: Store> Shared<S> {
         };
         let folder = start::begins_in(asked.folder.as_deref(), &home);
         let realm = self.realm.clone();
-        let command = start::through_login_shell(&asked.command);
+        let command = asked.command;
         let begins = folder.clone();
-        let held = tokio::task::spawn_blocking(move || starter.start(&realm, &begins, &command))
-            .await
-            .map_err(|error| format!("its start stopped: {error}"))?
-            .map_err(|error| format!("it didn't start: {error}"))?;
+        // Through the login shell, each start of it: the holder has only
+        // the node's environment, where a woken `pi` wouldn't be found.
+        let held =
+            tokio::task::spawn_blocking(move || starter.start(&realm, &begins, &command, true))
+                .await
+                .map_err(|error| format!("its start stopped: {error}"))?
+                .map_err(|error| format!("it didn't start: {error}"))?;
         Ok(Response::Started(Started {
             folder,
             attach: start::attach_here(&self.realm, &held),
@@ -3006,15 +3009,11 @@ mod tests {
             "a start naming no folder begins in its machine's home"
         );
         // Which words a login shell takes, and a Mac's yielding before
-        // them, is start's own test; here, only that the node uses them.
-        let through = start::through_login_shell(&["pi".to_owned(), "--continue".to_owned()]);
+        // them, is start's own test; here, only that the node asks for them.
         assert_eq!(
             given[7..],
-            ["--"]
-                .into_iter()
-                .chain(through.iter().map(String::as_str))
-                .collect::<Vec<_>>(),
-            "the program starts through the login shell"
+            ["--login", "--", "pi", "--continue"],
+            "each start of the program runs through the login shell"
         );
 
         drop(stop);

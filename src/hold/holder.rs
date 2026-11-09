@@ -44,6 +44,9 @@ const WAKE_LOOK: Duration = Duration::from_secs(1);
 /// What every joined window shows while its program is parked.
 const PARKED_LINE: &[u8] = b"\r\nParked, its memory given back. A key or a message wakes it.\r\n";
 
+/// What wakes a parked program, said again after a start that failed.
+const PARKED_WAKES: &str = "A key or a message tries again.";
+
 /// Variables a program's first terminal set that would name the wrong
 /// window once it is held, since it outlives that window.
 const WINDOW_VARIABLES: [&str; 5] = [
@@ -62,6 +65,11 @@ pub struct Holding<'a> {
     pub id: &'a str,
     /// The program and its arguments.
     pub command: &'a [String],
+    /// The words each start of the program runs inside, the first and
+    /// every one after a park: the login shell a node's start needs
+    /// (`start::login_shell`), or none for a hold from a terminal, which
+    /// has the person's environment already.
+    pub through: &'a [String],
     /// The folder the program starts in.
     pub folder: &'a Path,
 }
@@ -97,7 +105,8 @@ pub async fn hold(
     // The holder keeps the terminal's other end, so a parked program's
     // terminal outlives it and the program starts again on the same one.
     let start = |command: &[String], size: Size| {
-        let Some((program, arguments)) = command.split_first() else {
+        let words: Vec<&String> = holding.through.iter().chain(command).collect();
+        let Some((program, arguments)) = words.split_first() else {
             return Err(io::Error::other("there is nothing to start"));
         };
         let mut command = pty_process::Command::new(program)
@@ -149,9 +158,19 @@ pub async fn hold(
         }
         record.parks();
         shown.show(PARKED_LINE);
-        joining_until(woken(&terminal, &waking), &socket, &mut joined, &serving).await;
-        command = named(&naming).unwrap_or(command);
-        child = start(&command, terminal.size())?;
+        // One that can't start again stays parked, saying why, rather than
+        // ending: its session, its window and its next wake are all still
+        // here, and a command named again may start.
+        child = loop {
+            joining_until(woken(&terminal, &waking), &socket, &mut joined, &serving).await;
+            command = named(&naming).unwrap_or(command);
+            match start(&command, terminal.size()) {
+                Ok(child) => break child,
+                Err(error) => shown.show(
+                    format!("\r\nIt couldn't start again: {error}. {PARKED_WAKES}\r\n").as_bytes(),
+                ),
+            }
+        };
         record.runs(child.id().unwrap_or_default(), &command);
     };
     // The terminal's other end goes with the program, so its last output
@@ -699,6 +718,14 @@ mod tests {
     /// Holds `sh` in a new folder of held sessions, answering the folder,
     /// the record once it can be joined, and the holder's end.
     async fn holding_sh(root: &Path) -> (PathBuf, Held, JoinHandle<io::Result<Option<i32>>>) {
+        holding_sh_through(root, Vec::new()).await
+    }
+
+    /// Holds `sh` as [`holding_sh`] does, each start run inside `through`.
+    async fn holding_sh_through(
+        root: &Path,
+        through: Vec<String>,
+    ) -> (PathBuf, Held, JoinHandle<io::Result<Option<i32>>>) {
         let dir = root.join("held");
         let folder = root.to_owned();
         let (told, ready) = oneshot::channel();
@@ -710,6 +737,7 @@ mod tests {
                     dir: &dir,
                     id: "trial1",
                     command: &command,
+                    through: &through,
                     folder: &folder,
                 };
                 hold(&holding, |held| {
@@ -1005,12 +1033,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_start_of_a_parked_program_runs_inside_the_words_it_was_held_through() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        // Words a login shell would stand for: they say so, then run what
+        // follows them, as `exec "$@"` does.
+        let through = ["sh", "-c", r#"echo through $((6 * 7)); exec "$@""#, "held"]
+            .map(str::to_owned)
+            .to_vec();
+        let (dir, held, holder) = holding_sh_through(root.path(), through).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        assert_eq!(
+            held.command,
+            ["sh"],
+            "the record says the program, not its shell"
+        );
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window.sees("through 42").await;
+        window
+            .types(concat!(
+                r#"printf '%s' '["sh","-c","echo resumed $((6 * 7)); read -r _; exit 3"]'"#,
+                " > \"$MYCELIUM_AGAIN\"; exit 75\r",
+            ))
+            .await;
+        listed_parked(&dir, &mut changes, true).await;
+        window.seen.clear();
+
+        fs::write(wake(&dir, &held.id), b"{}").expect("the wake is written");
+        listed_parked(&dir, &mut changes, false).await;
+        window.sees("through 42").await;
+        window.sees("resumed 42").await;
+        window.types("\r").await;
+        let ended = tokio::time::timeout(PATIENCE, holder)
+            .await
+            .expect("the holder ends with its program")
+            .expect("the holder's task ran");
+        assert_eq!(ended.expect("it held"), Some(3), "the named command ran");
+    }
+
+    #[tokio::test]
+    async fn a_parked_program_that_cant_start_again_stays_parked_and_says_why() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window
+            .types(concat!(
+                r#"printf '%s' '["no-such-program-anywhere"]'"#,
+                " > \"$MYCELIUM_AGAIN\"; exit 75\r",
+            ))
+            .await;
+        listed_parked(&dir, &mut changes, true).await;
+
+        let waking = wake(&dir, &held.id);
+        fs::write(&waking, b"{}").expect("the wake is written");
+        window.sees("couldn't start again").await;
+        assert!(!waking.exists(), "the wake is spent though nothing started");
+        assert!(!holder.is_finished(), "the holder keeps the session");
+        assert!(
+            listed(&dir).first().is_some_and(|one| one.parked),
+            "it is still listed as parked"
+        );
+
+        // A command named again starts at the next wake.
+        fs::write(
+            again(&dir, &held.id),
+            br#"["sh","-c","echo mended $((6 * 7)); read -r _; exit 5"]"#,
+        )
+        .expect("a command is named again");
+        fs::write(&waking, b"{}").expect("the wake is written again");
+        listed_parked(&dir, &mut changes, false).await;
+        window.sees("mended 42").await;
+        window.types("\r").await;
+        let ended = tokio::time::timeout(PATIENCE, holder)
+            .await
+            .expect("the holder ends with its program")
+            .expect("the holder's task ran");
+        assert_eq!(ended.expect("it held"), Some(5), "the mended command ran");
+    }
+
+    #[tokio::test]
     async fn nothing_is_held_without_a_program() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let holding = Holding {
             dir: &root.path().join("held"),
             id: "none",
             command: &[],
+            through: &[],
             folder: root.path(),
         };
         let refused = hold(&holding, |_| Ok(())).await;

@@ -808,7 +808,12 @@ the program. It starts the same command again, unless the program wrote
 which it is told the path of in `MYCELIUM_AGAIN`: so a session started
 as a bare `pi` comes back to its own conversation. That command is the
 one started, and the one the record says, from then on, and the file is
-taken away once read. A parked program is no work: it keeps no machine
+taken away once read. A program a node started runs through the login
+shell at every start, not only its first, since its holder has only the
+node's environment, where a bare `pi` isn't found; the record says the
+program, not the shell. One that can't start again stays parked and
+says why on its terminal, and the next wake tries again, with any
+command named since. A parked program is no work: it keeps no machine
 awake and holds up no handover.
 
 A joined terminal sends frames of a tag byte, a two-byte big-endian
