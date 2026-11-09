@@ -212,6 +212,8 @@ pub fn session(presence: &Presence, here: &str) -> Option<Session> {
             .and_then(|_| presence.body.get(HELD_AS)?.as_str())
             .map(str::to_owned),
         attach: None,
+        host: said.hosted["host"].as_str().map(str::to_owned),
+        conversation: said.hosted["conversation"].as_str().map(str::to_owned),
         at: said.at,
         presence: presence.body.clone(),
     })
@@ -223,9 +225,11 @@ pub const HELD_AS: &str = "heldAs";
 
 /// What is held here that holds this machine's session: the holder whose
 /// program is the session's own process, as a session started with
-/// `mycelium hold -- pi` is.
+/// `mycelium hold -- pi` is. A hosted session's process is its host's,
+/// which many share, so the host's holder is none of theirs: attaching
+/// would join the host's terminal, not the session.
 pub fn held_by<'a>(presence: &Presence, held: &'a [Held]) -> Option<&'a Held> {
-    if presence.elsewhere.is_some() {
+    if presence.elsewhere.is_some() || presence.body.get("hosted").is_some_and(Value::is_object) {
         return None;
     }
     let pid = presence.body.get("owner")?.get("pid")?.as_u64()?;
@@ -275,6 +279,10 @@ struct Said {
     #[serde(default)]
     landings: Value,
     terminal: Option<Terminal>,
+    // The pi host it runs in among others, and its conversation there,
+    // read field by field, so a part it can't read costs only that part.
+    #[serde(default)]
+    hosted: Value,
     at: String,
 }
 
@@ -618,6 +626,60 @@ mod tests {
             held_by(&presence(4242, Some("equilibrius")), &here),
             None,
             "a process elsewhere is never one held here"
+        );
+        let hosted = Presence {
+            body: json!({
+                "session": "01a1", "owner": {"pid": 4242},
+                "hosted": {"host": "lantern", "conversation": "c-01a1"},
+            }),
+            ..presence(4242, None)
+        };
+        assert_eq!(
+            held_by(&hosted, &here),
+            None,
+            "a hosted session's process is its host's, whose holder is none of its own"
+        );
+    }
+
+    #[test]
+    fn a_hosted_session_says_its_host_and_conversation() {
+        let presence = |hosted: Value| Presence {
+            session: "01a1".to_owned(),
+            body: json!({
+                "session": "01a1", "addresses": ["4UHC5Q"], "state": "idle",
+                "owner": {"pid": 4242}, "hosted": hosted, "at": "2026-11-09T19:00:00Z",
+            }),
+            elsewhere: None,
+            lives: true,
+            unreachable_since: None,
+        };
+        let hosted = session(
+            &presence(json!({"host": "lantern", "conversation": "c-01a1"})),
+            "optimus",
+        )
+        .expect("a hosted presence reads");
+        assert_eq!(
+            (
+                hosted.host.as_deref(),
+                hosted.conversation.as_deref(),
+                hosted.held.as_deref(),
+                hosted.state,
+            ),
+            (Some("lantern"), Some("c-01a1"), None, State::Idle),
+            "it lives while its host does, held by nothing of its own"
+        );
+        let unread = session(&presence(json!({"host": 7})), "optimus")
+            .expect("a presence with a hosted part it can't read still reads");
+        assert_eq!(
+            (unread.host, unread.conversation),
+            (None, None),
+            "what it can't read of its host it leaves out"
+        );
+        let own = session(&presence(Value::Null), "optimus").expect("a presence reads");
+        assert_eq!(
+            (own.host, own.conversation),
+            (None, None),
+            "a session in a process of its own has no host"
         );
     }
 }

@@ -545,6 +545,50 @@ mod tests {
     }
 
     #[test]
+    fn a_steer_reaches_each_conversation_a_host_holds_by_its_address() {
+        let held = Path::new("/run/user/1000/mycelium/personal.held");
+        let hosted = |conversation: &str| {
+            json!({
+                "state": "parked", "owner": {"pid": 4242, "bootId": "this-boot"},
+                "hosted": {"host": "lantern", "conversation": conversation},
+            })
+        };
+        // A conversation its host parked lives while the host does, so it
+        // reads idle, and the host's own waker loads it again.
+        assert_eq!(
+            wake_for(
+                &session("idle", &hosted("c-1"), None),
+                Some("this-boot"),
+                held
+            ),
+            None,
+            "no holder's file wakes a conversation within a host"
+        );
+        let inboxes = inboxes();
+        for (address, text) in [("LANT01", "to the first"), ("LANT02", "to the second")] {
+            Steer::new(address, &json!({"text": text}))
+                .expect("a steer")
+                .deliver(inboxes.path())
+                .expect("delivered");
+        }
+        for (address, text) in [("LANT01", "to the first"), ("LANT02", "to the second")] {
+            let said: Vec<Value> = fs::read_dir(inboxes.path().join(address))
+                .expect("its inbox")
+                .flatten()
+                .map(|entry| {
+                    serde_json::from_str(&fs::read_to_string(entry.path()).expect("read"))
+                        .expect("JSON")
+                })
+                .collect();
+            assert_eq!(
+                said,
+                [json!({ "text": text })],
+                "{address} hears its own steer alone, though one process holds both"
+            );
+        }
+    }
+
+    #[test]
     fn a_wake_is_written_where_its_holder_looks() {
         let dir = inboxes();
         let file = dir.path().join("dd881110.wake");

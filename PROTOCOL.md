@@ -468,7 +468,13 @@ held session of this machine's has as its `window` the latest window
 joined to its holder that is still joined, or none. A held session says
 `attach` too, the words that join it from a terminal on this machine, to
 be run as given: `mycelium` here, or the dial's words for a machine a
-link of this node's reaches, and none while no link does. Its
+link of this node's reaches, and none while no link does. A session
+that runs among others in one pi host, whose presence says `hosted`
+(`host`, the host's own key, and `conversation`, the id that outlives
+the host's restarts), says its `host` and `conversation` too, and is
+never `held`: its process is the host's, which many share, so the
+host's holder is none of its own. A part of `hosted` it can't read is
+left out. Its
 `presence` goes along whole, as its session wrote it, for a reader that
 shows more of it, such as the launcher; a session elsewhere's has its
 process taken out. Whether a session lives is its `state`, never

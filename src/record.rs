@@ -108,6 +108,17 @@ pub struct Session {
     /// as given, when it is held and its machine is in reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attach: Option<Vec<String>>,
+    /// The pi host it runs in, by the host's own key, when it is one of
+    /// many sessions sharing that one process rather than a process of
+    /// its own. Its presence's owner is then the host's process, so no
+    /// holder is its own, and a viewer joins it through the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// The conversation it is within its host, by the id that outlives
+    /// the host's restarts, which a viewer joining it through the host
+    /// names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
     /// When its machine last wrote its presence.
     pub at: String,
     /// Its presence whole, as its session wrote it, for a reader that
