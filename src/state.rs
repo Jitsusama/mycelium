@@ -171,6 +171,8 @@ mod tests {
             window: None,
             held: None,
             attach: None,
+            host: None,
+            conversation: None,
             at: "2026-10-26T20:00:00Z".to_owned(),
             presence: serde_json::Value::Null,
         }
