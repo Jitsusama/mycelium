@@ -1036,10 +1036,17 @@ mod tests {
     async fn every_start_of_a_parked_program_runs_inside_the_words_it_was_held_through() {
         let root = tempfile::tempdir().expect("a temporary folder");
         // Words a login shell would stand for: they say so, then run what
-        // follows them, as `exec "$@"` does.
-        let through = ["sh", "-c", r#"echo through $((6 * 7)); exec "$@""#, "held"]
-            .map(str::to_owned)
-            .to_vec();
+        // follows them, as `exec "$@"` does. They wait for a line first, so
+        // what they say comes once a window has joined to see it: a window
+        // sees only what is shown after it joins.
+        let through = [
+            "sh",
+            "-c",
+            r#"read -r _; echo through $((6 * 7)); exec "$@""#,
+            "held",
+        ]
+        .map(str::to_owned)
+        .to_vec();
         let (dir, held, holder) = holding_sh_through(root.path(), through).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
         assert_eq!(
@@ -1052,6 +1059,7 @@ mod tests {
             cols: 100,
         };
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window.types("\r").await;
         window.sees("through 42").await;
         window
             .types(concat!(
@@ -1064,6 +1072,7 @@ mod tests {
 
         fs::write(wake(&dir, &held.id), b"{}").expect("the wake is written");
         listed_parked(&dir, &mut changes, false).await;
+        window.types("\r").await;
         window.sees("through 42").await;
         window.sees("resumed 42").await;
         window.types("\r").await;
