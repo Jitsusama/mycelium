@@ -64,11 +64,30 @@ pub async fn ask(socket: &Path, mut hear: impl FnMut(&Value)) -> Result<Value, S
 }
 
 /// The last update's ending, as the updater keeps it in `file`, or none
-/// when it keeps none there or what is there is no ending.
+/// when it keeps none there or what is there is no ending. It carries
+/// `at`, when it ended, so a person reads "failed yesterday at 23:40"
+/// rather than a bare "failed": the updater's own when one gives it,
+/// else when the file was last written, since the updater writes each
+/// ending whole, beside it then in its place, and writes nothing else
+/// there.
 #[must_use]
 pub fn last(file: &Path) -> Option<Value> {
-    let said: Value = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
-    ends(&said).then_some(said)
+    let mut said: Value = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+    if !ends(&said) {
+        return None;
+    }
+    if said.get("at").is_none() {
+        let written = std::fs::metadata(file)
+            .and_then(|kept| kept.modified())
+            .ok()
+            .and_then(|modified| jiff::Timestamp::try_from(modified).ok())
+            // To the second, as every other time a machine says.
+            .and_then(|written| jiff::Timestamp::from_second(written.as_second()).ok());
+        if let (Some(written), Some(ending)) = (written, said.as_object_mut()) {
+            ending.insert("at".to_owned(), Value::String(written.to_string()));
+        }
+    }
+    Some(said)
 }
 
 #[cfg(test)]
@@ -151,11 +170,40 @@ mod tests {
         let file = dir.path().join("last.json");
         assert_eq!(last(&file), None, "none before any update");
         let unchanged = json!({"step": "unchanged", "commit": "c0ffee"});
-        std::fs::write(&file, unchanged.to_string()).expect("written");
-        assert_eq!(last(&file), Some(unchanged), "the ending kept");
+        write_at(&file, &unchanged, "2026-11-08T23:40:00Z");
+        assert_eq!(
+            last(&file),
+            Some(json!({"step": "unchanged", "commit": "c0ffee",
+                "at": "2026-11-08T23:40:00Z"})),
+            "the ending kept, said when it was written"
+        );
         std::fs::write(&file, json!({"step": "building"}).to_string()).expect("written");
         assert_eq!(last(&file), None, "a step on the way is no ending");
         std::fs::write(&file, "not json").expect("written");
         assert_eq!(last(&file), None, "nor is anything else");
+    }
+
+    #[test]
+    fn an_ending_that_says_when_it_ended_is_kept_as_it_said() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let file = dir.path().join("last.json");
+        let failed = json!({"step": "failed", "at": "2026-11-08T23:39:12Z"});
+        write_at(&file, &failed, "2026-11-08T23:40:00Z");
+        assert_eq!(
+            last(&file),
+            Some(failed),
+            "the updater's own when, not the file's"
+        );
+    }
+
+    /// Keeps `ending` in `file` as the updater does, written at `when`.
+    fn write_at(file: &Path, ending: &Value, when: &str) {
+        std::fs::write(file, ending.to_string()).expect("written");
+        let when: jiff::Timestamp = when.parse().expect("a time");
+        std::fs::File::options()
+            .write(true)
+            .open(file)
+            .and_then(|kept| kept.set_modified(when.into()))
+            .expect("dated");
     }
 }

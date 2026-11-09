@@ -492,7 +492,9 @@ batteries' mean in percent, `null` for a machine with none. A fact that
 can't be read is `null`, never a guess. Its `updated` is how its last
 update to main ended, as its updater keeps it in
 `/run/update-to-main/last.json` (`/var/run/update-to-main.last.json` on
-macOS), and absent where none is kept, as after a reboot.
+macOS), and absent where none is kept, as after a reboot. It carries `at`,
+when the update ended: the updater's own where it says one, else when it
+last wrote that file, to the second.
 
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,

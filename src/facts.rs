@@ -883,8 +883,10 @@ mod tests {
             None,
             "unknown before its updater keeps an ending"
         );
+        // Its updater says when it ended, so the file's time isn't asked.
         let done = serde_json::json!({"step": "done", "commit": "c0ffee",
-            "applied": "next-boot", "restart": "a new kernel", "restarted": []});
+            "applied": "next-boot", "restart": "a new kernel", "restarted": [],
+            "at": "2026-11-08T23:40:00Z"});
         std::fs::write(&sources.updated, done.to_string()).expect("kept");
         assert_eq!(
             measure("penelope", &sources).updated,
