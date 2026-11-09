@@ -23,13 +23,22 @@ pub struct Starter {
 
 impl Starter {
     /// Starts holding `command` in `folder` for `realm`, answering its id
-    /// once a terminal can join it.
+    /// once a terminal can join it. With `login`, each start of it, the
+    /// first and every one after a park, runs through the person's login
+    /// shell ([`login_shell`]), as a node's must, since the holder has only
+    /// the node's environment.
     ///
     /// # Errors
     ///
     /// When the holder can't be started, ends without holding, or says
     /// nothing within ten seconds, saying why where it can.
-    pub fn start(&self, realm: &str, folder: &Path, command: &[String]) -> io::Result<String> {
+    pub fn start(
+        &self,
+        realm: &str,
+        folder: &Path,
+        command: &[String],
+        login: bool,
+    ) -> io::Result<String> {
         let id = super::new_id();
         let mut holder = if self.scoped {
             let mut scoped = Command::new("systemd-run");
@@ -43,9 +52,13 @@ impl Starter {
         } else {
             Command::new(&self.program)
         };
-        let mut holder = holder
+        holder
             .args(["--realm", realm, "holder", "--id", &id, "--folder"])
-            .arg(folder)
+            .arg(folder);
+        if login {
+            holder.arg("--login");
+        }
+        let mut holder = holder
             .arg("--")
             .args(command)
             .stdin(Stdio::null())
@@ -110,12 +123,13 @@ pub fn begins_in(folder: Option<&Path>, home: &Path) -> PathBuf {
 /// below the person's programs already.
 const YIELDING_ON_A_MAC: [&str; 3] = ["/usr/sbin/taskpolicy", "-c", "utility"];
 
-/// `command` run through the person's login shell, as a terminal would
-/// run it, so it has their environment rather than a service's: a pi
-/// started without it has no model token and ends at once. On a Mac it
+/// The words that run a program through the person's login shell, as a
+/// terminal would run it, so it has their environment rather than a
+/// service's: a pi started without it has no model token and ends at
+/// once, and a bare `pi` isn't found on a service's path. On a Mac it
 /// runs yielding to the person's own programs.
 #[must_use]
-pub fn through_login_shell(command: &[String]) -> Vec<String> {
+pub fn login_shell() -> Vec<String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| {
         if cfg!(target_os = "macos") {
             "/bin/zsh".to_owned()
@@ -134,7 +148,6 @@ pub fn through_login_shell(command: &[String]) -> Vec<String> {
         r#"exec "$@""#.to_owned(),
         "mycelium".to_owned(),
     ]);
-    through.extend_from_slice(command);
     through
 }
 
@@ -154,7 +167,8 @@ mod tests {
 
     #[test]
     fn a_program_runs_through_the_login_shell_with_its_words_kept_apart() {
-        let words = through_login_shell(&["pi".to_owned(), "say \"hi\" $HOME".to_owned()]);
+        let mut words = login_shell();
+        words.extend(["pi".to_owned(), "say \"hi\" $HOME".to_owned()]);
         let yielding = if cfg!(target_os = "macos") {
             YIELDING_ON_A_MAC.len()
         } else {

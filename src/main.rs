@@ -14,7 +14,7 @@ use mycelium::carry::through::Through;
 use mycelium::client::Client;
 use mycelium::flow::Flows;
 use mycelium::group::{Group, Pattern};
-use mycelium::hold::start::Starter;
+use mycelium::hold::start::{Starter, login_shell};
 use mycelium::link::dial::{Connection, Program, Ssh, Way};
 use mycelium::link::discovery::Listed;
 use mycelium::link::membership::{Membership, Proven, Realm};
@@ -181,6 +181,9 @@ enum Action {
         id: String,
         #[arg(long)]
         folder: PathBuf,
+        /// Runs each start of it through the person's login shell.
+        #[arg(long)]
+        login: bool,
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
@@ -418,8 +421,13 @@ fn run(command: Command) -> io::Result<()> {
         Action::Holder {
             id,
             folder,
+            login,
             command,
-        } => be_holder(&place::held(&realm), &id, &folder, &command),
+        } => {
+            // A hold from a terminal has the person's environment already.
+            let through = if login { login_shell() } else { Vec::new() };
+            be_holder(&place::held(&realm), &id, &folder, &command, &through)
+        }
         Action::Watch { groups, recent } => {
             let mut client = Client::connect(&socket)?;
             print_line(&client.ask(&Request::Watch {
@@ -665,7 +673,7 @@ fn hold(
         program: std::env::current_exe()?,
         scoped: false,
     };
-    let id = starter.start(realm, &folder, command)?;
+    let id = starter.start(realm, &folder, command, false)?;
     if detached {
         println!("{id}");
         Ok(())
@@ -677,12 +685,19 @@ fn hold(
 /// Is the holder `hold` starts: in a session of its own, so the window it
 /// was started from never hangs up on it, saying `held` once a terminal
 /// can join, or why it can't.
-fn be_holder(dir: &Path, id: &str, folder: &Path, command: &[String]) -> io::Result<()> {
+fn be_holder(
+    dir: &Path,
+    id: &str,
+    folder: &Path,
+    command: &[String],
+    through: &[String],
+) -> io::Result<()> {
     rustix::process::setsid()?;
     let holding = hold::holder::Holding {
         dir,
         id,
         command,
+        through,
         folder,
     };
     let held = runtime()?.block_on(hold::holder::hold(&holding, |_| {
