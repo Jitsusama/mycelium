@@ -609,7 +609,7 @@ fn watching(
 ) -> io::Result<(notify::RecommendedWatcher, mpsc::UnboundedReceiver<()>)> {
     let (tell, told) = mpsc::unbounded_channel();
     let touched = source.clone();
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+    let mut watcher = crate::watching::watcher(move |event: notify::Result<notify::Event>| {
         if changes(&touched, &event) {
             // Nothing hears this once the source is no longer served.
             let _ = tell.send(());
@@ -631,8 +631,9 @@ fn watching(
 
 /// Whether `event` may change `source`'s records: one of its files
 /// written, renamed or removed, or events missed. Reading one changes
-/// nothing, and a Linux watch hears the node's own reads too, which would
-/// otherwise have it read again without end.
+/// nothing, and answering the node's own reads would have it read again
+/// without end: the watch asks for none (`watching`), and this keeps out
+/// any a backend says anyway.
 fn changes(source: &Source, event: &notify::Result<notify::Event>) -> bool {
     let Ok(event) = event else {
         return true;

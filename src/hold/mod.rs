@@ -209,7 +209,7 @@ pub fn watch(dir: &Path) -> io::Result<(notify::RecommendedWatcher, mpsc::Unboun
         .mode(0o700)
         .create(dir)?;
     let (tell, told) = mpsc::unbounded_channel();
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+    let mut watcher = crate::watching::watcher(move |event: notify::Result<notify::Event>| {
         if changes_a_record(&event) {
             // The node has stopped hearing once nothing receives this.
             let _ = tell.send(());
@@ -224,9 +224,9 @@ pub fn watch(dir: &Path) -> io::Result<(notify::RecommendedWatcher, mpsc::Unboun
 
 /// Whether `event` may change what is held: a record written, renamed or
 /// removed, or events missed. Opening or reading one changes nothing, and
-/// a Linux watch hears those too, the node's own reads of the records
-/// among them, so answering them would have the node read the records
-/// again without end.
+/// answering one would have the node read the records again without end:
+/// the watch asks for none (`watching`), and this keeps out any a backend
+/// says anyway.
 fn changes_a_record(event: &notify::Result<notify::Event>) -> bool {
     let Ok(event) = event else {
         return true;
