@@ -478,7 +478,8 @@ host's holder is none of its own. A part of `hosted` it can't read is
 left out. Its `attach` is `mycelium --realm REALM attach --host HOST
 --session CONVERSATION`, or the dial's words for it elsewhere, which
 joins it through its host's socket in the login's runtime folder,
-`pi-host/HOST.sock`; closing that terminal only leaves. Its
+`pi-host/HOST.sock`; closing that terminal only leaves, and a frame of
+a kind it doesn't know is passed over rather than ending the join. Its
 `presence` goes along whole, as its session wrote it, for a reader that
 shows more of it, such as the launcher; a session elsewhere's has its
 process taken out. Whether a session lives is its `state`, never

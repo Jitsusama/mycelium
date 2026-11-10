@@ -158,7 +158,8 @@ pub async fn join(
 }
 
 /// Writes each output frame the host sends to `output`, until it lets
-/// this terminal go.
+/// this terminal go. A frame of a kind it doesn't know is passed over, so
+/// a later host can say more without leaving behind the viewers it has.
 async fn show(
     from: &mut (impl tokio::io::AsyncBufRead + Unpin),
     output: &mut (impl AsyncWrite + Unpin),
@@ -178,7 +179,7 @@ async fn show(
                 let why = said["message"].as_str().unwrap_or("the host failed");
                 return Err(io::Error::other(why.to_owned()));
             }
-            _ => return Err(broken("a frame of no kind a viewer is sent")),
+            _ => {}
         }
     }
     Ok(Left::Gone)
@@ -405,6 +406,34 @@ mod tests {
                 json!({"type": "input", "data": "\x1b[13u"}),
             ],
             "the attach at its size, then the keys as typed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_host_that_goes_away_mid_join_lets_the_viewer_go() {
+        let (_dir, path, serving) = host(
+            json!({"v": 1, "id": "attach", "ok": true, "result": {"sessionId": "s-1"}}),
+            vec![
+                json!({"type": "title", "data": "a kind a later host might add"}),
+                json!({"type": "output", "data": "bye"}),
+            ],
+        );
+        // The terminal still has a size to say, so only the host ends it.
+        let (_tell, sizes) = mpsc::unbounded_channel();
+        let mut shown = Vec::new();
+        let left = join(&path, "s-1", SIZE, &b"x"[..], &mut shown, sizes)
+            .await
+            .expect("joined");
+        serving.await.expect("the host ran");
+        assert_eq!(
+            left,
+            Left::Gone,
+            "an unknown frame is passed over, and a closed connection says the host has gone"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&shown),
+            "bye",
+            "what it showed before it went"
         );
     }
 
