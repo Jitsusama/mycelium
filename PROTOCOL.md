@@ -273,9 +273,15 @@ hearing the other end is said at the next look:
   An ended quest's record still crosses, so the README saying it ended
   reaches the other end, but its scratch is let be. Once a quest has
   ended at an end and the other says it ended there too, or no longer
-  names it, that end stops sharing it and isn't taken up again, its
-  files left as they are. An end older than `ended` names none, so a
-  quest stays shared with it.
+  names it, that end takes its own scratch away, as concluding did
+  where the quest ended, then stops sharing it and isn't taken up
+  again, its record left as it is. A scratch where a process has its
+  working folder or an open file is let be, with the quest still
+  shared, and tried again a minute on; one that can't be removed is
+  left and said. Linux's `/proc` says what works where, and `lsof`
+  does on a Mac; where neither answers, the scratch counts as in use.
+  An end older than `ended` names none, so a quest stays shared with
+  it.
 - `{"Holds": {"quest", "files"}}`: each changed file's state.
 - `{"Want": {"quest", "file", "at"}}`: a file whose state is newer
   there, from offset `at`. An end older than `at` names none and is

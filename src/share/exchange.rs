@@ -15,12 +15,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 
 use super::clones::{Clone, Cloning};
+use super::ended::{Processes, Removal, Users, take_away};
 use super::ledger::{Entry, Ledger, Ledgers, Scan, Sight, clock, is_quest, lasting, shared_of};
 use super::pieces::{PIECE, Pieces, Staged};
 use super::settle::{Merge, Settled, State, beside, settle};
@@ -318,7 +320,16 @@ pub struct Exchange {
     /// The files asked of the other end and not yet taken, by quest and
     /// file.
     wanted: BTreeSet<(String, String)>,
+    /// What on this machine works inside an ended quest's scratch.
+    users: Box<dyn Users>,
+    /// When each ended quest's scratch, found in use, is tried again.
+    sweep_again: BTreeMap<String, Instant>,
 }
+
+/// How long an ended quest's scratch found in use is let be before it is
+/// tried again: reading every process's open files once a second, for as
+/// long as a session sits in it, would wake the node for nothing.
+const SWEEP_AGAIN: Duration = Duration::from_secs(60);
 
 /// The quests the other end said it shares.
 #[derive(Debug, Default)]
@@ -362,6 +373,8 @@ impl Exchange {
             cloning: Cloning::default(),
             theirs: None,
             wanted: BTreeSet::new(),
+            users: Box::new(Processes),
+            sweep_again: BTreeMap::new(),
         }
     }
 
@@ -420,6 +433,41 @@ impl Exchange {
             .is_some_and(|theirs| theirs.ended.contains(id) || !theirs.quests.contains(id))
     }
 
+    /// Takes ended quest `id`'s scratch away on this machine, as
+    /// concluding it did where it ended, saying whether it is gone. One a
+    /// process works inside is let be, and tried again a minute on, with
+    /// the quest still shared meanwhile; one that can't be removed is left
+    /// and said, since trying again won't help.
+    fn swept(&mut self, id: &str) -> bool {
+        if self
+            .sweep_again
+            .get(id)
+            .is_some_and(|again| Instant::now() < *again)
+        {
+            return false;
+        }
+        let scratch = self.places.scratch.join(id);
+        match take_away(&scratch, self.users.as_ref()) {
+            Removal::Removed => {
+                eprintln!("{id} has ended, so its scratch here is taken away");
+            }
+            Removal::Absent => {}
+            Removal::InUse => {
+                self.sweep_again
+                    .insert(id.to_owned(), Instant::now() + SWEEP_AGAIN);
+                return false;
+            }
+            Removal::Stuck(error) => {
+                eprintln!(
+                    "{id} has ended, but its scratch at {} couldn't be taken away: {error}",
+                    scratch.display()
+                );
+            }
+        }
+        self.sweep_again.remove(id);
+        true
+    }
+
     /// Whether this end settles files written apart.
     fn settles(&self) -> bool {
         self.machine < self.other
@@ -435,7 +483,7 @@ impl Exchange {
         let mut holds = Vec::new();
         for id in ledgers.quests()? {
             let ended = self.places.ended(&id);
-            if ended && self.has_ended_there(&id) {
+            if ended && self.has_ended_there(&id) && self.swept(&id) {
                 ledgers.stop(&id)?;
                 self.unsaid.remove(&id);
                 self.watch.forget(&id);
@@ -1004,12 +1052,18 @@ mod tests {
             fs::read_to_string(self.places.quests.join(QUEST).join(path)).ok()
         }
 
+        /// This machine's end of a talk with `other`, finding nothing at
+        /// work in any folder unless a test says, so a test runs alike on
+        /// a builder with no `lsof`.
         fn exchange(&self, other: &Machine) -> Exchange {
-            Exchange::new(
+            let mut exchange = Exchange::new(
                 self.places.clone(),
                 self.name.to_owned(),
                 other.name.to_owned(),
-            )
+            );
+            let free = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            exchange.users = Box::new(Working(free));
+            exchange
         }
     }
 
@@ -1121,7 +1175,7 @@ mod tests {
             None,
             "a file written just now may still change in its time's grain, so it is read again"
         );
-        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs(60);
         fs::File::options()
             .write(true)
             .open(optimus.places.quests.join(QUEST).join("README.md"))
@@ -1622,10 +1676,11 @@ mod tests {
             "and then neither end shares it"
         );
         assert!(
-            scratch(&equilibrius, "notes/plan.md").exists(),
-            "while the Mac keeps its notes"
+            !equilibrius.places.scratch.join(QUEST).exists(),
+            "and the Mac takes its own scratch away, as concluding did on optimus"
         );
 
+        fs::create_dir_all(scratch(&equilibrius, "notes")).expect("made");
         fs::write(scratch(&equilibrius, "notes/plan.md"), "later\n").expect("written");
         for _ in 0..3 {
             talk(&mut near, &mut far);
@@ -1637,6 +1692,68 @@ mod tests {
         assert!(
             !shares(&optimus) && !shares(&equilibrius),
             "nor is the quest taken up again"
+        );
+    }
+
+    /// What works inside a folder, as a test says.
+    struct Working(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    impl Users for Working {
+        fn inside(&self, _: &std::path::Path) -> bool {
+            self.0.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn an_ended_quests_scratch_in_use_is_kept_shared_until_nothing_works_there() {
+        let optimus = Machine::new("optimus");
+        let equilibrius = Machine::new("equilibrius");
+        let readme = |status: &str| format!("---\nid: {QUEST}\nstatus: {status}\n---\n# Shared\n");
+        let shares = |machine: &Machine| machine.places.ledgers().shares(QUEST);
+        let notes = equilibrius.places.scratch.join(QUEST).join("notes/plan.md");
+        optimus.write("README.md", &readme("active"));
+        optimus
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("held")
+            .keep()
+            .expect("shared");
+        let (mut near, mut far) = (
+            optimus.exchange(&equilibrius),
+            equilibrius.exchange(&optimus),
+        );
+        let working = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        far.users = Box::new(Working(working.clone()));
+        talk(&mut near, &mut far);
+        fs::create_dir_all(notes.parent().expect("a file has a folder")).expect("made");
+        fs::write(&notes, "notes\n").expect("written");
+
+        optimus.write("README.md", &readme("concluded"));
+        for _ in 0..3 {
+            talk(&mut near, &mut far);
+        }
+        assert!(notes.exists(), "a scratch something works in is let be");
+        assert!(
+            shares(&equilibrius),
+            "and the Mac shares the quest meanwhile"
+        );
+
+        working.store(false, std::sync::atomic::Ordering::SeqCst);
+        talk(&mut near, &mut far);
+        assert!(notes.exists(), "it isn't tried again within the minute");
+
+        far.sweep_again.clear();
+        for _ in 0..2 {
+            talk(&mut near, &mut far);
+        }
+        assert!(
+            !equilibrius.places.scratch.join(QUEST).exists(),
+            "once nothing works there it is taken away"
+        );
+        assert!(
+            !shares(&optimus) && !shares(&equilibrius),
+            "and neither end shares the quest"
         );
     }
 
