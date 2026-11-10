@@ -17,6 +17,7 @@ use tokio::net::UnixStream;
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinSet;
 
+use super::environment::Environment;
 use super::modes::Modes;
 use super::{Held, Said, Size, again, socket, wake};
 use crate::node;
@@ -74,11 +75,15 @@ pub struct Holding<'a> {
     pub through: &'a [String],
     /// The folder the program starts in.
     pub folder: &'a Path,
+    /// The person's environment as it is now, which each start of the
+    /// program is given over the holder's own.
+    pub environment: &'a dyn Environment,
 }
 
 /// Holds the program until it ends, answering its exit code, if it gave
-/// one. `ready` is told what is held once a terminal can join it. The
-/// program is told its realm in `MYCELIUM_REALM`, whatever realm the
+/// one. `ready` is told what is held once a terminal can join it. Each
+/// start of the program has the person's environment as it is then, over
+/// the one the holder was started with. The program is told its realm in `MYCELIUM_REALM`, whatever realm the
 /// environment it was held from said, its id in `MYCELIUM_HELD`, the file that wakes it once
 /// parked in `MYCELIUM_WAKE`, and the file it may name its next command in
 /// as it parks in `MYCELIUM_AGAIN`. A program exiting with [`PARKED`] is
@@ -112,9 +117,12 @@ pub async fn hold(
         let Some((program, arguments)) = words.split_first() else {
             return Err(io::Error::other("there is nothing to start"));
         };
+        // The person's environment goes first, so what the holder says
+        // and takes away below is its own whatever that environment holds.
         let mut command = pty_process::Command::new(program)
             .args(arguments)
             .current_dir(holding.folder)
+            .envs(holding.environment.now())
             .env("MYCELIUM_REALM", holding.realm)
             .env("MYCELIUM_HELD", holding.id)
             .env("MYCELIUM_WAKE", &waking)
@@ -656,6 +664,9 @@ mod tests {
     use tokio::sync::{mpsc, oneshot};
     use tokio::task::JoinHandle;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::super::environment::Given;
     use super::super::{attach, held as listed};
     use super::*;
 
@@ -730,6 +741,28 @@ mod tests {
         root: &Path,
         through: Vec<String>,
     ) -> (PathBuf, Held, JoinHandle<io::Result<Option<i32>>>) {
+        holding_sh_in(root, through, Given(Vec::new())).await
+    }
+
+    /// An environment that has changed at every start, telling which
+    /// start it is in `TRIAL_START`.
+    #[derive(Default)]
+    struct Changing(AtomicUsize);
+
+    impl Environment for Changing {
+        fn now(&self) -> Vec<(String, String)> {
+            let start = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+            vec![("TRIAL_START".to_owned(), start.to_string())]
+        }
+    }
+
+    /// Holds `sh` as [`holding_sh_through`] does, each start given
+    /// `environment` as the person's.
+    async fn holding_sh_in(
+        root: &Path,
+        through: Vec<String>,
+        environment: impl Environment + 'static,
+    ) -> (PathBuf, Held, JoinHandle<io::Result<Option<i32>>>) {
         let dir = root.join("held");
         let folder = root.to_owned();
         let (told, ready) = oneshot::channel();
@@ -744,6 +777,7 @@ mod tests {
                     command: &command,
                     through: &through,
                     folder: &folder,
+                    environment: &environment,
                 };
                 hold(&holding, |held| {
                     let _ = told.send(held.clone());
@@ -1136,6 +1170,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_held_program_has_the_persons_environment_under_the_holders_own_words() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let person = Given(vec![
+            ("TRIAL_MODEL", "newest"),
+            ("MYCELIUM_REALM", "elsewhere"),
+            ("KITTY_PID", "1"),
+        ]);
+        let (dir, held, _holder) = holding_sh_in(root.path(), Vec::new(), person).await;
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window
+            .types("echo \"[$TRIAL_MODEL in $MYCELIUM_REALM, ${KITTY_PID:-no} window]\"\r")
+            .await;
+        window.sees("[newest in harbour, no window]").await;
+    }
+
+    #[tokio::test]
+    async fn a_woken_program_has_the_persons_environment_as_it_is_then() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) =
+            holding_sh_in(root.path(), Vec::new(), Changing::default()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window
+            .types("echo \"[start $TRIAL_START]\"; exit 75\r")
+            .await;
+        window.sees("[start 1]").await;
+        listed_parked(&dir, &mut changes, true).await;
+
+        fs::write(wake(&dir, &held.id), b"{}").expect("the wake is written");
+        listed_parked(&dir, &mut changes, false).await;
+        window.types("echo \"[start $TRIAL_START]\"\r").await;
+        window.sees("[start 2]").await;
+    }
+
+    #[tokio::test]
     async fn nothing_is_held_without_a_program() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let holding = Holding {
@@ -1145,6 +1222,7 @@ mod tests {
             command: &[],
             through: &[],
             folder: root.path(),
+            environment: &Given(Vec::new()),
         };
         let refused = hold(&holding, |_| Ok(())).await;
         assert!(refused.is_err(), "holding nothing is refused");

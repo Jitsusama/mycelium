@@ -21,12 +21,15 @@
 //! - [`attach`]: a terminal joining a holder
 //! - [`start`]: starting a holder in a process of its own
 //! - [`modes`]: what the program asked of its terminal, for one joining
+//! - [`environment`]: the person's environment as it is now, which each
+//!   start of a held program is given
 //!
 //! What a joined terminal sends its holder is framed, as [`Said`]; what
 //! the holder sends back is the modes the program asked for so far, then
 //! the program's output as it came.
 
 pub mod attach;
+pub mod environment;
 pub mod holder;
 pub mod modes;
 pub mod start;

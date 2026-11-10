@@ -14,6 +14,7 @@ use mycelium::carry::through::Through;
 use mycelium::client::Client;
 use mycelium::flow::Flows;
 use mycelium::group::{Group, Pattern};
+use mycelium::hold::environment::ServiceManager;
 use mycelium::hold::start::{Starter, login_shell};
 use mycelium::link::dial::{Connection, Program, Ssh, Way};
 use mycelium::link::discovery::Listed;
@@ -437,6 +438,7 @@ fn run(command: Command) -> io::Result<()> {
                 command: &command,
                 through: &through,
                 folder: &folder,
+                environment: &ServiceManager,
             })
         }
         Action::Watch { groups, recent } => {
