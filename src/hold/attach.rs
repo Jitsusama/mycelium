@@ -112,12 +112,22 @@ pub async fn join(
         to.write_all(&Said::Window(window).encode()).await?;
     }
     let showing = async {
-        tokio::io::copy(&mut from, &mut output).await?;
+        match tokio::io::copy(&mut from, &mut output).await {
+            // A holder that ends before reading all the terminal said, as
+            // a program ending at once leaves it, resets the connection
+            // after all it showed, so it has let go all the same.
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {}
+            Err(error) => return Err(error),
+        }
         output.flush().await
     };
+    tokio::pin!(showing);
     tokio::select! {
-        shown = showing => shown,
-        typed = type_into(&mut to, input, sizes) => typed,
+        shown = &mut showing => shown,
+        // Typing fails only once the holder has gone, and what it showed
+        // last may not all be shown yet, so that comes first.
+        Err(_) = type_into(&mut to, input, sizes) => showing.await,
     }
 }
 
@@ -181,5 +191,37 @@ mod tests {
             "the app id its opener gave its window, so the compositor's list names it"
         );
         assert_eq!(window_of(|_| None), None, "another terminal says nothing");
+    }
+
+    #[tokio::test]
+    async fn a_holder_ending_before_it_reads_what_was_said_lets_go_all_the_same() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let socket = dir.path().join("held");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("listening");
+        let holding = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("joined");
+            // Waits for the size the terminal says first, unread, so the
+            // connection closes with it unread, as a program ending just
+            // as a key is pressed leaves it.
+            stream.readable().await.expect("said");
+            stream.write_all(b"bye").await.expect("shown");
+        });
+        let (_tell, sizes) = mpsc::unbounded_channel();
+        let mut shown = Vec::new();
+        let joined = join(
+            &socket,
+            SIZE_UNSAID,
+            None,
+            tokio::io::empty(),
+            &mut shown,
+            sizes,
+        )
+        .await;
+        holding.await.expect("the holder ran");
+        assert!(
+            joined.is_ok(),
+            "a holder gone is one that let go, not a failure: {joined:?}"
+        );
+        assert_eq!(shown, b"bye", "what it showed before it went");
     }
 }
