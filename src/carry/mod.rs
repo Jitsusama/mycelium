@@ -421,14 +421,18 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
     let arrive = r#"pi-carry arrive "$1" --from "$2" --session "$3""#;
     // A folder within home (`~` or `~/...`) is found under home there,
     // and any other as it is, as `pi-carry arrive` places the session's
-    // file there.
+    // file there. Only trees travel, so a folder that held none, such as
+    // a quest's scratch, is made rather than found. A session taken up
+    // again loads its quest only when told, as the shell's starts tell
+    // it, so pi is told which.
     let script = if one.session == quest {
         arrive.to_owned()
     } else {
         [
             arrive,
             r#" || exit; case "$4" in "~") folder="$HOME" ;; "~/"*) folder="$HOME/${4#"~/"}" ;; "#,
-            r#"*) folder="$4" ;; esac; cd "$folder" && exec pi --session "$3""#,
+            r#"*) folder="$4" ;; esac; mkdir -p "$folder" && cd "$folder" && "#,
+            r#"QUEST_WORKFLOW_AUTOLOAD_ID="$1" exec pi --session "$3""#,
         ]
         .concat()
     };
@@ -761,7 +765,8 @@ mod tests {
 
     /// Runs a carried session's arrival as the shell there would, with
     /// `pi-carry` and `pi` stood in for under `home`: `pi-carry` exiting
-    /// as `arrives` says, `pi` writing its folder and words to `ran`.
+    /// as `arrives` says, `pi` writing its folder, its words and the quest
+    /// it's told to load to `ran`.
     fn arrive(home: &std::path::Path, cwd: &str, arrives: bool) -> Option<String> {
         use std::os::unix::fs::PermissionsExt;
         let bin = home.join("bin");
@@ -774,7 +779,13 @@ mod tests {
                 .expect("runnable");
         };
         stand_in(PI_CARRY, if arrives { "exit 0" } else { "exit 3" });
-        stand_in("pi", &format!("echo \"$(pwd) $*\" > {}", ran.display()));
+        stand_in(
+            "pi",
+            &format!(
+                "echo \"$(pwd) $* for $QUEST_WORKFLOW_AUTOLOAD_ID\" > {}",
+                ran.display()
+            ),
+        );
         let one = Done {
             session: "s-busy01".to_owned(),
             cwd: cwd.to_owned(),
@@ -803,18 +814,29 @@ mod tests {
         std::fs::create_dir_all(home.join("src/harbour")).expect("a tree");
         assert_eq!(
             arrive(&home, "~/src/harbour", true),
-            Some(format!("{}/src/harbour --session s-busy01", home.display())),
-            "in its folder under home there"
+            Some(format!(
+                "{}/src/harbour --session s-busy01 for {QUEST}",
+                home.display()
+            )),
+            "in its folder under home there, its quest loaded"
         );
         assert_eq!(
             arrive(&home, "~", true),
-            Some(format!("{} --session s-busy01", home.display())),
+            Some(format!("{} --session s-busy01 for {QUEST}", home.display())),
             "or in home itself"
+        );
+        assert_eq!(
+            arrive(&home, "~/scratch/notes", true),
+            Some(format!(
+                "{}/scratch/notes --session s-busy01 for {QUEST}",
+                home.display()
+            )),
+            "or in a folder no tree brought, made there"
         );
         let elsewhere = home.join("src").display().to_string();
         assert_eq!(
             arrive(&home, &elsewhere, true),
-            Some(format!("{elsewhere} --session s-busy01")),
+            Some(format!("{elsewhere} --session s-busy01 for {QUEST}")),
             "or where a folder outside home says"
         );
         std::fs::remove_file(home.join("ran")).expect("forgotten");
