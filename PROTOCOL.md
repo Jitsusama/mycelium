@@ -197,8 +197,9 @@ Three seams shape a link:
   and SSH has proved which machine it is. A machine's link key may be
   pinned in the other's `authorized_keys` to `mycelium --realm REALM
   ssh --from NAME`, which reads what was asked from
-  `SSH_ORIGINAL_COMMAND` and runs only `mycelium link --realm REALM` or
-  `mycelium --realm REALM attach ID`, each in plain words. That link
+  `SSH_ORIGINAL_COMMAND` and runs only `mycelium link --realm REALM`,
+  `mycelium --realm REALM attach ID` or `mycelium --realm REALM attach
+  --host HOST --session ID`, each in plain words. That link
   admits only NAME, since the key proved it, and refuses an end saying
   it is another; anything else asked is refused, said to the asker, and
   kept as a JSON line in `refused-keys.jsonl` in mycelium's folder. Or a
@@ -474,7 +475,10 @@ that runs among others in one pi host, whose presence says `hosted`
 the host's restarts), says its `host` and `conversation` too, and is
 never `held`: its process is the host's, which many share, so the
 host's holder is none of its own. A part of `hosted` it can't read is
-left out. Its
+left out. Its `attach` is `mycelium --realm REALM attach --host HOST
+--session CONVERSATION`, or the dial's words for it elsewhere, which
+joins it through its host's socket in the login's runtime folder,
+`pi-host/HOST.sock`; closing that terminal only leaves. Its
 `presence` goes along whole, as its session wrote it, for a reader that
 shows more of it, such as the launcher; a session elsewhere's has its
 process taken out. Whether a session lives is its `state`, never
