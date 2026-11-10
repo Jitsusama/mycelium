@@ -208,16 +208,28 @@ pub fn refused(id: &Value, refusal: &Refusal) -> Value {
     json!({"id": id, "error": {"code": refusal.code(), "message": refusal.message()}})
 }
 
+/// The interface's own fields of every record, which a record's fields
+/// of the same names give way to.
+const INTERFACE_FIELDS: [&str; 3] = ["key", "kind", "heard"];
+
 /// A record of `kind`, keyed by `id` within it, last heard at `heard`
 /// (milliseconds since the epoch), carrying `fields` as they are, beside
 /// the interface's own. A value that isn't an object is carried whole as
-/// `value`.
+/// `value`. A field its source named as the interface names one, such as
+/// a job's own `kind`, is kept under `source` rather than lost.
 #[must_use]
 pub fn record(kind: &str, id: &str, heard: i64, fields: Value) -> Value {
     let mut record = match fields {
         Value::Object(fields) => fields,
         other => Map::from_iter([("value".to_owned(), other)]),
     };
+    let sourced: Map<String, Value> = INTERFACE_FIELDS
+        .iter()
+        .filter_map(|name| record.remove(*name).map(|own| ((*name).to_owned(), own)))
+        .collect();
+    if !sourced.is_empty() {
+        record.insert("source".to_owned(), Value::Object(sourced));
+    }
     record.insert("key".to_owned(), Value::String(key(kind, id)));
     record.insert("kind".to_owned(), Value::String(kind.to_owned()));
     record.insert("heard".to_owned(), Value::from(heard));
@@ -537,9 +549,26 @@ mod tests {
     #[test]
     fn a_record_carries_its_fields_beside_its_key_kind_and_when_heard() {
         assert_eq!(
-            record("session", "abc", 7, json!({"title": "work", "kind": "pi"})),
+            record("session", "abc", 7, json!({"title": "work"})),
             json!({"key": "session:abc", "kind": "session", "heard": 7, "title": "work"}),
-            "the interface's fields are its own"
+            "a record's fields sit beside the interface's"
+        );
+    }
+
+    #[test]
+    fn a_field_named_as_the_interface_names_one_is_kept_under_its_source() {
+        assert_eq!(
+            record(
+                "job",
+                "j1",
+                7,
+                json!({"kind": "vm-test", "heard": 3, "what": "looks"})
+            ),
+            json!({
+                "key": "job:j1", "kind": "job", "heard": 7, "what": "looks",
+                "source": {"kind": "vm-test", "heard": 3}
+            }),
+            "a job's own kind isn't lost under the interface's"
         );
     }
 
