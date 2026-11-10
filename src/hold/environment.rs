@@ -82,6 +82,13 @@ fn listed(answer: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The person's variables (`person`, as [`Environment::now`] gives them)
+/// with the holder's own PATH (`own`) kept first, and only the folders of
+/// the person's it lacks after it.
+pub fn keeping_path(person: Vec<(String, String)>, _own: Option<&str>) -> Vec<(String, String)> {
+    person
+}
+
 /// An environment that answers what it was given, for a holder's tests.
 #[cfg(test)]
 pub struct Given(pub Vec<(&'static str, &'static str)>);
@@ -119,6 +126,44 @@ mod tests {
             listed(answer),
             vec![("EDITOR".to_owned(), "vi".to_owned())],
             "the manager's folder, shell depth and terminal are left to the holder's own"
+        );
+    }
+
+    fn variables(given: &[(&str, &str)]) -> Vec<(String, String)> {
+        given
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn the_holders_own_path_comes_first_and_gains_the_persons_new_folders() {
+        let person = variables(&[("PATH", "/profile/bin:/run/bin"), ("EDITOR", "vi")]);
+        assert_eq!(
+            keeping_path(person, Some("/dev/bin:/run/bin")),
+            variables(&[("PATH", "/dev/bin:/run/bin:/profile/bin"), ("EDITOR", "vi")]),
+            "the folders the holder's shell put on its PATH stay, first, and the person's it \
+             lacks come after them, each once"
+        );
+    }
+
+    #[test]
+    fn a_holder_without_a_path_takes_the_persons() {
+        let person = variables(&[("PATH", "/profile/bin")]);
+        assert_eq!(
+            keeping_path(person.clone(), None),
+            person,
+            "with no PATH of its own, the holder's program has the person's"
+        );
+    }
+
+    #[test]
+    fn a_person_without_a_path_leaves_the_holders() {
+        let person = variables(&[("EDITOR", "vi")]);
+        assert_eq!(
+            keeping_path(person.clone(), Some("/dev/bin")),
+            person,
+            "nothing is said of PATH, so the program keeps the holder's own"
         );
     }
 
