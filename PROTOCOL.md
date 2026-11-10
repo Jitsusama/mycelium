@@ -805,7 +805,16 @@ reachable only by its account, beside
 the `windows` joined to it that said which they are, the latest last. A
 window leaves the record the moment its terminal leaves, and both go
 when the program ends. `mycelium held` lists every record whose holder
-still runs. The program is told its id in `MYCELIUM_HELD`, and loses
+still runs. Each start of the program, the first and every one after a
+park, has the person's environment as their service manager has it
+then (systemd's user manager's `Environment`, read with `busctl`), over
+the one its holder was started with, keeping only the holder's `PWD`,
+`OLDPWD`, `SHLVL`, `_` and `TERM`. A holder can be started hours before
+its program, by a node at login or by a hold from a window whose opener
+began long ago, and a variable the person's configuration gained since
+would otherwise never reach it. A manager that doesn't answer within two
+seconds, or a Mac, which has none that lists it, leaves the holder's
+own. The program is told its id in `MYCELIUM_HELD`, and loses
 the variables naming the window it started in. It is in the realm it
 is held in, told in `MYCELIUM_REALM` after the login shell's profile
 runs, since a profile says the machine's own realm: a session started
