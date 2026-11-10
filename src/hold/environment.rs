@@ -8,7 +8,9 @@
 //! configuration gained since, such as a new default model, would never
 //! reach a program it starts. On Linux the person's service manager keeps
 //! the environment as their session has it now, and it is read afresh at
-//! each start, the first and every one after a park.
+//! each start, the first and every one after a park. PATH is the one the
+//! holder's own keeps first ([`keeping_path`]), since the shell it was
+//! started from adds folders the manager never hears of.
 
 use std::process::Command;
 
@@ -84,9 +86,28 @@ fn listed(answer: &[u8]) -> Vec<(String, String)> {
 
 /// The person's variables (`person`, as [`Environment::now`] gives them)
 /// with the holder's own PATH (`own`) kept first, and only the folders of
-/// the person's it lacks after it.
-pub fn keeping_path(person: Vec<(String, String)>, _own: Option<&str>) -> Vec<(String, String)> {
+/// the person's it lacks after it. The shell or terminal a holder starts
+/// from puts on PATH what the service manager never hears of, such as a
+/// developer's own tools, which a program's start may run; a folder the
+/// person's configuration gained since still arrives, after them.
+pub fn keeping_path(person: Vec<(String, String)>, own: Option<&str>) -> Vec<(String, String)> {
+    let Some(own) = own.filter(|own| !own.is_empty()) else {
+        return person;
+    };
+    let kept: Vec<&str> = own.split(':').collect();
     person
+        .into_iter()
+        .map(|(name, value)| {
+            if name != "PATH" {
+                return (name, value);
+            }
+            let gained = value
+                .split(':')
+                .filter(|folder| !folder.is_empty() && !kept.contains(folder));
+            let joined = kept.iter().copied().chain(gained).collect::<Vec<_>>();
+            (name, joined.join(":"))
+        })
+        .collect()
 }
 
 /// An environment that answers what it was given, for a holder's tests.

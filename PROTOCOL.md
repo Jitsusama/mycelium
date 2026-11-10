@@ -823,7 +823,10 @@ still runs. Each start of the program, the first and every one after a
 park, has the person's environment as their service manager has it
 then (systemd's user manager's `Environment`, read with `busctl`), over
 the one its holder was started with, keeping only the holder's `PWD`,
-`OLDPWD`, `SHLVL`, `_` and `TERM`. A holder can be started hours before
+`OLDPWD`, `SHLVL`, `_` and `TERM`, and its own `PATH` first, with only
+the manager's folders it lacks after it, since the shell it was started
+from puts there what the manager never hears of, such as a developer's
+own tools a program runs as it starts. A holder can be started hours before
 its program, by a node at login or by a hold from a window whose opener
 began long ago, and a variable the person's configuration gained since
 would otherwise never reach it. A manager that doesn't answer within two

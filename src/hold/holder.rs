@@ -17,7 +17,7 @@ use tokio::net::UnixStream;
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinSet;
 
-use super::environment::Environment;
+use super::environment::{Environment, keeping_path};
 use super::modes::Modes;
 use super::{Held, Said, Size, again, socket, wake};
 use crate::node;
@@ -122,7 +122,10 @@ pub async fn hold(
         let mut command = pty_process::Command::new(program)
             .args(arguments)
             .current_dir(holding.folder)
-            .envs(holding.environment.now())
+            .envs(keeping_path(
+                holding.environment.now(),
+                std::env::var("PATH").ok().as_deref(),
+            ))
             .env("MYCELIUM_REALM", holding.realm)
             .env("MYCELIUM_HELD", holding.id)
             .env("MYCELIUM_WAKE", &waking)
@@ -1276,6 +1279,23 @@ mod tests {
         listed_parked(&dir, &mut changes, false).await;
         window.types("echo \"[start $TRIAL_START]\"\r").await;
         window.sees("[start 2]").await;
+    }
+
+    #[tokio::test]
+    async fn a_program_on_the_holders_path_starts_though_the_persons_lacks_it() {
+        // The person's PATH names none of the folders this test's own does,
+        // as a service manager's lacks those a developer's shell adds, so
+        // `sh` is found only on the holder's own.
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) =
+            holding_sh_in(root.path(), Vec::new(), Given(vec![("PATH", "/nowhere")])).await;
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window.types("echo \"[last ${PATH##*:}]\"\r").await;
+        window.sees("[last /nowhere]").await;
     }
 
     #[tokio::test]
