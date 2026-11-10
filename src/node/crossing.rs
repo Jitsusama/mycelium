@@ -351,6 +351,7 @@ mod tests {
                 sockets,
                 log: log.clone(),
             },
+            parked: "/nowhere/parked".into(),
         };
         let membership = Realm {
             name: realm.to_owned(),

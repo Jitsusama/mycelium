@@ -27,7 +27,7 @@ use crate::hosted_attach;
 use crate::link::dial::{Dial, Program};
 use crate::link::refused::Refusals;
 use crate::link::starts::{Asking, Asks, Starting};
-use crate::link::{self, discovery::Discovery, membership::Membership};
+use crate::link::{self, discovery::Discovery, membership::Hello, membership::Membership};
 use crate::made::{self, Book, Made};
 use crate::mesh;
 use crate::offer::{self, Offer};
@@ -44,6 +44,7 @@ use crate::wire::{Answer, Draft, Event, Offers, Reply, Request, Response, Start,
 use crate::within;
 
 mod crossing;
+mod standing;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -151,6 +152,8 @@ pub struct Given {
     /// The realms its messages may go to and come from, and where it
     /// keeps each crossing.
     pub flows: Flows,
+    /// Where the harness marks each session it parks here.
+    pub parked: PathBuf,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -204,40 +207,16 @@ where
     D: Discovery,
 {
     store::out_of_reach_of_unclaimed(&store)?;
-    let hello = membership.hello();
-    let Given {
-        sharing,
-        starter,
-        refusals,
-        steers,
-        mut awake,
-        updater,
-        serves,
-        providers,
-        book,
-        flows,
-    } = given;
     let (to_dial, mut made) = mpsc::unbounded_channel();
-    let shared = Shared {
-        served: Arc::new(Served::start(serves)),
-        providers: providers.into(),
-        book,
-        to_dial,
-        held: place::held(&hello.realm),
-        steers,
-        updater,
-        store: store.clone(),
-        inner: Arc::new(Mutex::new(Inner::after(&flows, &hello.realm))),
-        machine: hello.machine,
-        realm: hello.realm,
-        starter: starter.map(Arc::new),
-        asks: Asks::default(),
-        said: Arc::default(),
-        flows: Arc::new(flows),
-        measured: Arc::default(),
-    };
+    let (shared, kept) = Shared::of(store.clone(), membership.hello(), given, to_dial);
+    let Kept {
+        sharing,
+        refusals,
+        mut awake,
+    } = kept;
     let mut changes = store.changes()?;
-    let (_watching_held, mut held) = watch_held(&shared.held);
+    let (_watching_held, mut held) = watch(&shared.held, "what is held");
+    let (_watching_parks, mut parks) = watch(&shared.parked, "what is parked");
     shared.read_store();
     let mut links = JoinSet::new();
     let mut found = discovery.found();
@@ -278,6 +257,9 @@ where
                 shared.read_sessions();
                 shared.keep_awake(&mut awake, power.as_ref());
             }
+            // A park's marker says nothing of the session itself, so only
+            // how it stands, which records read from the markers, moves.
+            Some(()) = parks.recv() => shared.said.sessions.send_modify(|said| *said += 1),
             // A holder that ended without letting its session go says
             // nothing, so what is held is looked at each minute too.
             _ = leaving.tick() => {
@@ -501,6 +483,14 @@ fn until_withdrawn(refusals: &Refusals, words: &[String]) -> String {
     )
 }
 
+/// What the node's loop keeps of what it was given, apart from what it
+/// shares with every client.
+struct Kept {
+    sharing: Option<Places>,
+    refusals: Refusals,
+    awake: Awake,
+}
+
 /// What the node's loop and every client share.
 struct Shared<S> {
     store: S,
@@ -508,6 +498,11 @@ struct Shared<S> {
     realm: String,
     /// The realm's folder of held sessions on this machine.
     held: PathBuf,
+    /// Where the harness marks each session it parks here.
+    parked: PathBuf,
+    /// The boot this machine runs in, which says which sessions ended
+    /// this boot.
+    boot: Arc<standing::Boot>,
     /// This machine's sessions' steer inboxes.
     steers: PathBuf,
     /// The socket its machine's updater takes asks on.
@@ -560,6 +555,8 @@ impl<S: Clone> Clone for Shared<S> {
             machine: self.machine.clone(),
             realm: self.realm.clone(),
             held: self.held.clone(),
+            parked: self.parked.clone(),
+            boot: self.boot.clone(),
             steers: self.steers.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
@@ -599,6 +596,8 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     "landings",
                     "working_on",
                     "presence",
+                    "standing",
+                    "told",
                 ],
             ),
             (
@@ -622,24 +621,16 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
 
     fn records(&self, kind: &str) -> Option<BTreeMap<String, serde_json::Value>> {
         match kind {
-            "session" => Some(
-                self.lock()
-                    .state
-                    .sessions()
-                    .into_iter()
-                    .map(|session| {
-                        let heard = millis_at(&session.at);
-                        let id = session.id.clone();
-                        let mut fields = json_of(&session);
-                        if let Some(fields) = fields.as_object_mut() {
-                            let here = session.machine == self.machine;
-                            fields.insert("here".to_owned(), here.into());
-                        }
-                        let record = daemon::record(kind, &id, heard, fields);
-                        (daemon::key(kind, &id), record)
-                    })
-                    .collect(),
-            ),
+            "session" => {
+                let parked = standing::parked(&self.parked);
+                let sessions = self.lock().state.sessions();
+                Some(
+                    sessions
+                        .into_iter()
+                        .map(|session| self.session_record(kind, &session, &parked))
+                        .collect(),
+                )
+            }
             "machine" => Some(
                 self.known_machines()
                     .into_iter()
@@ -756,18 +747,20 @@ struct Inner {
     crossed: HashSet<String>,
 }
 
-/// Watches the folder of what is held, or, when it can't be watched, says
-/// so and leaves it read only with presence.
-fn watch_held(
-    held: &Path,
+/// Watches a folder of records, of what is held or what is parked, or,
+/// when it can't be watched, says so and leaves `what` it holds read only
+/// with presence.
+fn watch(
+    folder: &Path,
+    what: &str,
 ) -> (
     Option<notify::RecommendedWatcher>,
     mpsc::UnboundedReceiver<()>,
 ) {
-    match hold::watch(held) {
-        Ok((watcher, held)) => (Some(watcher), held),
+    match hold::watch(folder) {
+        Ok((watcher, changed)) => (Some(watcher), changed),
         Err(error) => {
-            eprintln!("what is held isn't watched, so is read only with presence: {error}");
+            eprintln!("{what} isn't watched, so is read only with presence: {error}");
             (None, mpsc::unbounded_channel().1)
         }
     }
@@ -786,6 +779,56 @@ impl Inner {
 }
 
 impl<S: Store> Shared<S> {
+    /// What a node of `hello`'s machine and realm shares, from what it was
+    /// `given`, telling `to_dial` of each machine it makes, with what its
+    /// loop keeps apart.
+    fn of(
+        store: S,
+        hello: Hello,
+        given: Given,
+        to_dial: mpsc::UnboundedSender<(Made, Arc<Notify>)>,
+    ) -> (Self, Kept) {
+        let Given {
+            sharing,
+            starter,
+            refusals,
+            steers,
+            awake,
+            updater,
+            serves,
+            providers,
+            book,
+            flows,
+            parked,
+        } = given;
+        let shared = Self {
+            served: Arc::new(Served::start(serves)),
+            providers: providers.into(),
+            book,
+            to_dial,
+            held: place::held(&hello.realm),
+            parked,
+            boot: Arc::new(standing::Boot::this()),
+            steers,
+            updater,
+            store,
+            inner: Arc::new(Mutex::new(Inner::after(&flows, &hello.realm))),
+            machine: hello.machine,
+            realm: hello.realm,
+            starter: starter.map(Arc::new),
+            asks: Asks::default(),
+            said: Arc::default(),
+            flows: Arc::new(flows),
+            measured: Arc::default(),
+        };
+        let kept = Kept {
+            sharing,
+            refusals,
+            awake,
+        };
+        (shared, kept)
+    }
+
     fn lock(&self) -> MutexGuard<'_, Inner> {
         // A panic while holding the lock leaves the state as it was before
         // the change that panicked, so carrying on with it is sound.
@@ -847,6 +890,33 @@ impl<S: Store> Shared<S> {
         for event in events {
             inner.send_all(&event);
         }
+    }
+
+    /// A session as the daemon interface holds it: its fields, whether it
+    /// runs here, how it stands (`standing`) where it's shown at all, and
+    /// the digest of what a shut launcher reads of it (`told`), given the
+    /// sessions `parked` here.
+    fn session_record(
+        &self,
+        kind: &str,
+        session: &Session,
+        parked: &HashSet<String>,
+    ) -> (String, serde_json::Value) {
+        let heard = millis_at(&session.at);
+        let mut fields = json_of(session);
+        if let Some(fields) = fields.as_object_mut() {
+            let here = session.machine == self.machine;
+            fields.insert("here".to_owned(), here.into());
+            if let Some(stands) = standing::standing(session, here, parked, &self.boot) {
+                fields.insert("standing".to_owned(), stands.into());
+            }
+        }
+        let told = standing::told(&fields);
+        if let Some(fields) = fields.as_object_mut() {
+            fields.insert("told".to_owned(), told.into());
+        }
+        let record = daemon::record(kind, &session.id, heard, fields);
+        (daemon::key(kind, &session.id), record)
     }
 
     /// Reads a message that landed and sends it to those who hear it.
@@ -1627,6 +1697,7 @@ mod tests {
             providers: Vec::new(),
             book: Book::at("/nowhere/made.jsonl".into()),
             flows: Flows::default(),
+            parked: "/nowhere/parked".into(),
         }
     }
 
@@ -1665,6 +1736,7 @@ mod tests {
         let serves = BTreeMap::from([("quest".to_owned(), quests_of(socket))]);
         let providers = providers_of(socket);
         let book = Book::at(socket.with_file_name("made.jsonl"));
+        let parked = parks_of(socket);
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -1677,6 +1749,7 @@ mod tests {
                 providers,
                 book,
                 flows: Flows::default(),
+                parked,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -1814,6 +1887,12 @@ mod tests {
     /// `socket`.
     fn inboxes(socket: &Path) -> PathBuf {
         socket.with_file_name("steer")
+    }
+
+    /// Where the harness marks the sessions it parks for a node on
+    /// `socket`, beside it.
+    fn parks_of(socket: &Path) -> PathBuf {
+        socket.with_file_name("parked")
     }
 
     /// Where the updater of a node on `socket` is asked, beside it.
@@ -2414,6 +2493,66 @@ mod tests {
             ),
             (&json!(4), &json!("session:there"), &json!(false)),
             "a session arriving is sent, saying it runs elsewhere: {arrived}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_watch_of_sessions_says_how_each_stands_and_hears_a_park_marked() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let now = jiff::Timestamp::now().to_string();
+        let boot = store::folders::boot_id();
+        let presence = |session: &str, state: &str| {
+            json!({
+                "session": session, "addresses": [session.to_uppercase()], "groups": [],
+                "busy": false, "state": state, "at": now, "owner": {"bootId": boot},
+            })
+        };
+        store.start_here("runner", presence("runner", "listening"), true);
+        // Parked, its process ended, though the harness hasn't marked it.
+        store.start_here("napper", presence("napper", "parked"), false);
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "session"}))
+            .await;
+        let records = client.next().await;
+        let stands: Vec<(&Value, &Value)> = records["records"]
+            .as_array()
+            .expect("its records")
+            .iter()
+            .map(|record| (&record["key"], &record["standing"]))
+            .collect();
+        assert_eq!(
+            stands,
+            [
+                (&json!("session:napper"), &json!("closed")),
+                (&json!("session:runner"), &json!("running")),
+            ],
+            "one running here runs, and one ended this boot unmarked closed: {records}"
+        );
+        assert!(
+            records["records"][0]["told"].as_str().is_some(),
+            "each with the digest of what a shut launcher reads: {records}"
+        );
+
+        fs::write(parks_of(&socket).join("napper.json"), "{}").expect("a marker");
+        let parked = client.next().await;
+        assert_eq!(
+            (
+                &parked["changed"][0]["key"],
+                &parked["changed"][0]["standing"]
+            ),
+            (&json!("session:napper"), &json!("parked")),
+            "its park marked, it's parked: {parked}"
+        );
+        assert!(
+            parked["changed"][0]["told"].as_str().is_some(),
+            "which a shut launcher reads: {parked}"
         );
     }
 
