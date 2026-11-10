@@ -3,9 +3,9 @@
 //! --from NAME`, so whatever its SSH client asks, this runs, and reads
 //! what was asked from `SSH_ORIGINAL_COMMAND`. Only the two things a node
 //! asks of another machine are let through: its end of a link, and
-//! joining a session held here or a conversation a pi host here holds. A link run so knows the machine at its
-//! far end is NAME, proven by its key, and refuses an end saying it is
-//! another.
+//! joining a session held here or a conversation a pi host here holds.
+//! A link run so knows the machine at its far end is NAME, proven by its
+//! key, and refuses an end saying it is another.
 
 /// What a pinned key asked, of what it may.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,9 +29,9 @@ pub enum Asked {
 ///
 /// A node asks `mycelium link --realm REALM` for a link and `mycelium
 /// --realm REALM attach ID` to join a session, or `attach --host KEY
-/// --session ID` for a conversation within a pi host, each word plain, since
-/// either is all that a node dials with; any other words are refused,
-/// whatever program the first names.
+/// --session ID` for a conversation within a pi host, each word plain,
+/// since those are all that a node dials with; any other words are
+/// refused, whatever program the first names.
 ///
 /// # Errors
 ///
