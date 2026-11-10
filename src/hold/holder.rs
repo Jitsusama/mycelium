@@ -24,7 +24,7 @@ use crate::node;
 use crate::record::Window;
 
 /// How many pieces of output a joined terminal may fall behind by before
-/// it misses some; it is caught up by the program's next redraw.
+/// it misses some; one that does is drawn whole again (`serve`).
 const OUTPUT_BACKLOG: usize = 1024;
 
 /// How long the program's last output may take to reach whoever is joined
@@ -162,7 +162,7 @@ pub async fn hold(
     let mut reader = tokio::spawn(read_output(reading, shown.clone(), starts));
     let mut joined = JoinSet::new();
     // A terminal may join whether the program runs or is parked.
-    let serving = |stream| serve(stream, terminal.clone(), shown.join(), record.clone());
+    let serving = |stream| serve(stream, terminal.clone(), shown.clone(), record.clone());
     let status = loop {
         let status = joining_until(child.wait(), &socket, &mut joined, &serving).await?;
         if status.code() != Some(PARKED) {
@@ -345,13 +345,18 @@ impl Shown {
 
 /// One joined terminal: it is given the program's modes, what it types
 /// goes to the program, and the program's output comes back, until
-/// either side ends.
+/// either side ends. A terminal that falls so far behind that it misses
+/// output is caught up as one joining is: given the modes again, and the
+/// program nudged to draw itself whole, since what it missed would
+/// otherwise leave a gap on its screen that nothing fills, such as a
+/// typed letter the program had and the window never showed.
 async fn serve(
     stream: UnixStream,
     terminal: Arc<Terminal>,
-    (modes, mut output): (Vec<u8>, broadcast::Receiver<Arc<[u8]>>),
+    shown: Arc<Shown>,
     record: Arc<Record>,
 ) {
+    let (modes, mut output) = shown.join();
     let (mut reading, mut writing) = stream.into_split();
     let typing = async {
         let mut joining = true;
@@ -386,7 +391,24 @@ async fn serve(
                         return;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Lagged(missed)) => {
+                    // Said on the node's log, as a window that fell behind
+                    // is a stall worth finding, never a silent gap.
+                    eprintln!(
+                        "mycelium: a window of {} fell {missed} pieces of output behind, \
+                         so its program draws it whole again",
+                        record.kept().held.id
+                    );
+                    // What is still waiting is older than the redraw to
+                    // come, so it is let go with what was missed.
+                    let (modes, caught) = shown.join();
+                    output = caught;
+                    if writing.write_all(&modes).await.is_err()
+                        || terminal.resize(terminal.size(), true).await.is_err()
+                    {
+                        return;
+                    }
+                }
                 Err(broadcast::error::RecvError::Closed) => return,
             }
         }
@@ -722,12 +744,26 @@ mod tests {
                 true
             })
             .await;
+            // Only the end of what it showed, which a flood makes long.
+            let shown = self.seen.chars().rev().take(2000).collect::<String>();
             assert!(
                 matches!(found, Ok(true)),
-                "the terminal never showed {wanted:?}; it showed {:?}",
-                self.seen
+                "the terminal never showed {wanted:?}; it showed, ending, {:?}",
+                shown.chars().rev().collect::<String>()
             );
         }
+    }
+
+    /// Waits until `path` exists, failing past the test's patience.
+    async fn appears(path: &Path) {
+        let mut look = tokio::time::interval(Duration::from_millis(20));
+        let found = tokio::time::timeout(PATIENCE, async {
+            while !path.exists() {
+                look.tick().await;
+            }
+        })
+        .await;
+        assert!(found.is_ok(), "{} never appeared", path.display());
     }
 
     /// Holds `sh` in a new folder of held sessions, answering the folder,
@@ -871,6 +907,36 @@ mod tests {
         // reads its size at all is the word reaching it.
         let mut again = Joined::join(socket(&dir, &held.id), size, None);
         again.sees("30 100").await;
+    }
+
+    #[tokio::test]
+    async fn a_window_that_falls_behind_a_flood_is_drawn_whole_again() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        // It draws itself whole whenever it's told its size changed, as pi
+        // does, and floods far past what a window may fall behind by, as a
+        // build's output can while the window can't keep up.
+        let script = root.path().join("floods");
+        fs::write(
+            &script,
+            "trap 'printf \"drawn %s\\n\" whole' WINCH\n\
+             echo \"$((6 * 7)) set\"\n\
+             head -c 16000000 /dev/zero | tr '\\0' x\n\
+             : > flooded\n\
+             while :; do sleep 0.05; done\n",
+        )
+        .expect("the script is written");
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window.types("sh floods\r").await;
+        window.sees("42 set").await;
+        // The window reads nothing while the program floods, as one whose
+        // terminal has stalled, so it falls behind and misses output.
+        appears(&root.path().join("flooded")).await;
+        window.sees("drawn whole").await;
     }
 
     #[tokio::test]

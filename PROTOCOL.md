@@ -861,7 +861,10 @@ window says its id and kitty's socket.
 The holder sends back the program's output as it comes. Any number may
 join at once; the program takes the latest size it was told. One joining
 at the size the program already has makes it one column narrower first,
-so the program draws itself again. Leaving is closing the connection;
+so the program draws itself again. One that falls so far behind that it
+misses output is caught up the same way, given the modes again and the
+program nudged to draw itself whole, and the holder says so on its log,
+so a window never shows a gap. Leaving is closing the connection;
 the holder closes it once the program has ended.
 
 ## Coming Next
