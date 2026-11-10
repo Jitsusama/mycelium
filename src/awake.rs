@@ -4,7 +4,8 @@
 //! it keeps its machine from sleeping when idle, and lets it once what
 //! it holds is all idle, or once its battery runs low. A person shutting
 //! the lid or asking it to sleep always wins: a laptop kept awake with
-//! its lid shut would run hot in a bag.
+//! its lid shut would run hot in a bag. It still goes idle and locks as it
+//! would without the work: only sleeping waits.
 //!
 //! The machine is kept awake by a program of the system's own that holds
 //! it so while it runs: `systemd-inhibit` on Linux, `caffeinate` on macOS.
@@ -59,9 +60,13 @@ pub fn low(power: &Power) -> bool {
 #[must_use]
 pub fn keeping(os: &str) -> Option<Vec<String>> {
     let words: &[&str] = match os {
+        // Sleep, not idling: logind and swayidle read a hold against
+        // idling as someone at the machine, so it would never lock or turn
+        // its screens off. A hold against sleep refuses only logind's idle
+        // action, since the lid and a person's own suspend pass it.
         "linux" => &[
             "systemd-inhibit",
-            "--what=idle",
+            "--what=sleep",
             "--mode=block",
             "--who=mycelium",
             "--why=It holds sessions for the realm",
@@ -270,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn a_machine_is_kept_from_sleeping_when_idle_and_never_when_told_to() {
+    fn a_machine_is_kept_from_sleeping_when_idle_and_never_from_locking() {
         let linux = keeping("linux").expect("Linux keeps a machine awake");
         let what: Vec<&String> = linux
             .iter()
@@ -278,8 +283,8 @@ mod tests {
             .collect();
         assert_eq!(
             what,
-            ["--what=idle"],
-            "only idle sleep waits, never the lid or a person's suspend: {linux:?}"
+            ["--what=sleep"],
+            "only sleep is held, never idling, which would stop the lock: {linux:?}"
         );
         let macos = keeping("macos").expect("macOS keeps a machine awake");
         assert_eq!(
