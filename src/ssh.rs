@@ -3,9 +3,9 @@
 //! --from NAME`, so whatever its SSH client asks, this runs, and reads
 //! what was asked from `SSH_ORIGINAL_COMMAND`. Only the two things a node
 //! asks of another machine are let through: its end of a link, and
-//! joining a session held here. A link run so knows the machine at its
-//! far end is NAME, proven by its key, and refuses an end saying it is
-//! another.
+//! joining a session held here or a conversation a pi host here holds.
+//! A link run so knows the machine at its far end is NAME, proven by its
+//! key, and refuses an end saying it is another.
 
 /// What a pinned key asked, of what it may.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,15 +14,24 @@ pub enum Asked {
     Link,
     /// Joining the session held here by this id.
     Attach(String),
+    /// Joining a conversation a pi host here holds, by the host's key and
+    /// the conversation's session id.
+    AttachHosted {
+        /// The pi host's key, such as `work-attended`.
+        host: String,
+        /// The conversation's pi session id.
+        session: String,
+    },
 }
 
 /// What `original`, the command a pinned key's client asked for, asks of
 /// those it may in `realm`, or why it is refused.
 ///
 /// A node asks `mycelium link --realm REALM` for a link and `mycelium
-/// --realm REALM attach ID` to join a session, each word plain, since
-/// either is all that a node dials with; any other words are refused,
-/// whatever program the first names.
+/// --realm REALM attach ID` to join a session, or `attach --host KEY
+/// --session ID` for a conversation within a pi host, each word plain,
+/// since those are all that a node dials with; any other words are
+/// refused, whatever program the first names.
 ///
 /// # Errors
 ///
@@ -57,6 +66,19 @@ pub fn asked(original: Option<&str>, realm: &str) -> Result<Asked, String> {
         [program, "--realm", asked, "attach", id] if is_mycelium(program) => {
             realm_is(asked).map(|()| Asked::Attach((*id).to_owned()))
         }
+        [
+            program,
+            "--realm",
+            asked,
+            "attach",
+            "--host",
+            host,
+            "--session",
+            session,
+        ] if is_mycelium(program) => realm_is(asked).map(|()| Asked::AttachHosted {
+            host: (*host).to_owned(),
+            session: (*session).to_owned(),
+        }),
         _ => Err(format!(
             "{original:?} isn't a link or an attach, all a link key may ask"
         )),
@@ -93,6 +115,17 @@ mod tests {
             asked(Some("mycelium --realm work attach 7bf12940"), "work"),
             Ok(Asked::Attach("7bf12940".to_owned())),
             "joining a held session"
+        );
+        assert_eq!(
+            asked(
+                Some("mycelium --realm work attach --host work-attended --session 0193-ab"),
+                "work"
+            ),
+            Ok(Asked::AttachHosted {
+                host: "work-attended".to_owned(),
+                session: "0193-ab".to_owned(),
+            }),
+            "joining a conversation a pi host holds"
         );
     }
 

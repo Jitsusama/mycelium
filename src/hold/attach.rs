@@ -14,7 +14,7 @@ use super::{Said, Size};
 use crate::record::Window;
 
 /// The size a terminal that won't say its own is taken to have.
-const SIZE_UNSAID: Size = Size { rows: 24, cols: 80 };
+pub(crate) const SIZE_UNSAID: Size = Size { rows: 24, cols: 80 };
 
 /// Joins the holder serving `socket` from this process's own terminal,
 /// raw while joined, telling the holder the window it is and each size it
@@ -55,7 +55,7 @@ pub fn window_of(named: impl Fn(&str) -> Option<String>) -> Option<Window> {
 }
 
 /// This process's terminal's size, if it has one that says.
-fn size_here() -> Option<Size> {
+pub(crate) fn size_here() -> Option<Size> {
     let size = termios::tcgetwinsize(io::stdout()).ok()?;
     (size.ws_row > 0 && size.ws_col > 0).then_some(Size {
         rows: size.ws_row,
@@ -66,10 +66,10 @@ fn size_here() -> Option<Size> {
 /// This process's terminal in raw mode, so every key goes to the program
 /// as typed, back as it was when dropped. Input that isn't a terminal is
 /// left as it is.
-struct Raw(Option<Termios>);
+pub(crate) struct Raw(Option<Termios>);
 
 impl Raw {
-    fn enter() -> io::Result<Self> {
+    pub(crate) fn enter() -> io::Result<Self> {
         let input = io::stdin();
         if !termios::isatty(&input) {
             return Ok(Self(None));

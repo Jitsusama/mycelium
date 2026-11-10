@@ -26,7 +26,7 @@ use mycelium::share::exchange::Places;
 use mycelium::ssh::Asked as KeyAsked;
 use mycelium::store::folders::Folders;
 use mycelium::wire::{Draft, Request, Start};
-use mycelium::{carry, hold, install, link, node, place, served};
+use mycelium::{carry, hold, hosted_attach, install, link, node, place, served};
 
 #[derive(Parser)]
 #[command(version, about = "A nimble core for agent networks")]
@@ -168,10 +168,19 @@ enum Action {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
-    /// Joins a held session from this terminal; closing it only leaves.
+    /// Joins a held session from this terminal, or a conversation a pi
+    /// host holds with `--host` and `--session`; closing it only leaves.
     Attach {
         /// Its id, as `held` lists it.
-        id: String,
+        #[arg(required_unless_present = "host", conflicts_with = "host")]
+        id: Option<String>,
+        /// The pi host holding the conversation, by its key, such as
+        /// `work-attended`.
+        #[arg(long, requires = "session")]
+        host: Option<String>,
+        /// The conversation's pi session id within that host.
+        #[arg(long, requires = "host")]
+        session: Option<String>,
     },
     /// Prints every session held on this machine, a JSON line each.
     Held,
@@ -415,7 +424,7 @@ fn run(command: Command) -> io::Result<()> {
             detached,
             command,
         } => hold(&realm, folder, detached, &command),
-        Action::Attach { id } => attach(&place::held(&realm), &id),
+        Action::Attach { id, host, session } => join(&realm, id, host, session),
         Action::Held => hold::held(&place::held(&realm))
             .iter()
             .try_for_each(print_line),
@@ -585,6 +594,7 @@ fn run_asked(here: Here, realm: String, socket: PathBuf, from: String) -> io::Re
     match mycelium::ssh::asked(original.as_deref(), &realm) {
         Ok(KeyAsked::Link) => run_link(here, realm, socket, Some(from)),
         Ok(KeyAsked::Attach(id)) => attach(&place::held(&realm), &id),
+        Ok(KeyAsked::AttachHosted { host, session }) => attach_hosted(&realm, &host, &session),
         Err(why) => {
             let state = here.state.unwrap_or_else(place::state);
             keep_refused(&state, &from, original.as_deref(), &why);
@@ -733,6 +743,47 @@ fn attach(dir: &Path, id: &str) -> io::Result<()> {
     runtime.shutdown_background();
     joined?;
     eprintln!("mycelium: the session held as {id} has ended");
+    Ok(())
+}
+
+/// Joins the session held by `id`, or the conversation `session` within
+/// the pi host `host`, as clap let one or the other through.
+fn join(
+    realm: &str,
+    id: Option<String>,
+    host: Option<String>,
+    session: Option<String>,
+) -> io::Result<()> {
+    match (id, host, session) {
+        (_, Some(host), Some(session)) => attach_hosted(realm, &host, &session),
+        (Some(id), _, _) => attach(&place::held(realm), &id),
+        _ => unreachable!("clap asks for an id or a host and session"),
+    }
+}
+
+/// Joins `session` through the pi host `host` of `realm` on this machine
+/// until the host lets it go.
+fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<()> {
+    let runtime_dir = place::login_runtime().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "this login has no runtime folder")
+    })?;
+    let socket = hosted_attach::socket(&runtime_dir, realm, host)
+        .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
+    if !socket.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no pi host {host} is running here"),
+        ));
+    }
+    let runtime = runtime()?;
+    let left = runtime.block_on(hosted_attach::join_here(&socket, session));
+    // Typing is read on a thread of its own, waiting on a key nobody will
+    // press now.
+    runtime.shutdown_background();
+    match left? {
+        hosted_attach::Left::Detached(why) => eprintln!("mycelium: {why}"),
+        hosted_attach::Left::Gone => eprintln!("mycelium: the pi host {host} has gone"),
+    }
     Ok(())
 }
 

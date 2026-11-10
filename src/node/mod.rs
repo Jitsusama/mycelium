@@ -23,6 +23,7 @@ use crate::flow::{self, Flows};
 use crate::group::{Pattern, Routes};
 use crate::handover::{self, Sleeping, Told};
 use crate::hold::{self, start, start::Starter};
+use crate::hosted_attach;
 use crate::link::dial::{Dial, Program};
 use crate::link::refused::Refusals;
 use crate::link::starts::{Asking, Asks, Starting};
@@ -885,10 +886,17 @@ impl<S: Store> Shared<S> {
         mesh::message(&body).ok_or_else(|| "the message didn't read back".to_owned())
     }
 
-    /// The words that join `session` from a terminal here, when it is held
-    /// here or on a machine a link of this node's reaches.
+    /// The words that join `session` from a terminal here, when it is held,
+    /// or within a pi host, here or on a machine a link of this node's
+    /// reaches.
     fn attach(&self, session: &Session) -> Option<Vec<String>> {
-        let words = start::attach_here(&self.realm, session.held.as_ref()?);
+        let words = match (&session.held, &session.host, &session.conversation) {
+            (Some(held), _, _) => start::attach_here(&self.realm, held),
+            (None, Some(host), Some(conversation)) => {
+                hosted_attach::attach_here(&self.realm, host, conversation)
+            }
+            _ => return None,
+        };
         if session.machine == self.machine {
             return Some(words);
         }
@@ -2503,6 +2511,44 @@ mod tests {
             let stopped = node.await.expect("the node runs to its end");
             assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_conversation_a_pi_host_holds_is_joined_through_its_host() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let presence = json!({
+            "session": "01a1",
+            "addresses": ["4UHC5Q"],
+            "at": "2026-11-09T19:00:00Z",
+            "owner": {"pid": 4242},
+            "hosted": {"host": "work-attended", "conversation": "c-01a1"},
+        });
+        store.start_here("01a1", presence, true);
+        let (stop, node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let hosted = listed(socket.clone(), "01a1").await;
+        assert_eq!(
+            hosted.attach,
+            Some(
+                [
+                    "mycelium",
+                    "--realm",
+                    "work",
+                    "attach",
+                    "--host",
+                    "work-attended",
+                    "--session",
+                    "c-01a1"
+                ]
+                .map(str::to_owned)
+                .to_vec()
+            ),
+            "a hosted conversation is joined through its host, by its conversation"
+        );
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
     }
 
     #[tokio::test]
