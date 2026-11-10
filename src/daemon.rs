@@ -216,18 +216,22 @@ const INTERFACE_FIELDS: [&str; 3] = ["key", "kind", "heard"];
 /// (milliseconds since the epoch), carrying `fields` as they are, beside
 /// the interface's own. A value that isn't an object is carried whole as
 /// `value`. A field its source named as the interface names one, such as
-/// a job's own `kind`, is kept under `source` rather than lost.
+/// a job's own `kind`, is kept under `source` rather than lost, beside the
+/// record's own `source` where it has one.
 #[must_use]
 pub fn record(kind: &str, id: &str, heard: i64, fields: Value) -> Value {
     let mut record = match fields {
         Value::Object(fields) => fields,
         other => Map::from_iter([("value".to_owned(), other)]),
     };
-    let sourced: Map<String, Value> = INTERFACE_FIELDS
+    let mut sourced: Map<String, Value> = INTERFACE_FIELDS
         .iter()
         .filter_map(|name| record.remove(*name).map(|own| ((*name).to_owned(), own)))
         .collect();
     if !sourced.is_empty() {
+        if let Some(own) = record.remove("source") {
+            sourced.insert("source".to_owned(), own);
+        }
         record.insert("source".to_owned(), Value::Object(sourced));
     }
     record.insert("key".to_owned(), Value::String(key(kind, id)));
@@ -569,6 +573,23 @@ mod tests {
                 "source": {"kind": "vm-test", "heard": 3}
             }),
             "a job's own kind isn't lost under the interface's"
+        );
+    }
+
+    #[test]
+    fn a_records_own_source_is_kept_beside_what_is_moved_under_it() {
+        assert_eq!(
+            record(
+                "waiting",
+                "w1",
+                7,
+                json!({"kind": "try", "source": "sessions"})
+            ),
+            json!({
+                "key": "waiting:w1", "kind": "waiting", "heard": 7,
+                "source": {"kind": "try", "source": "sessions"}
+            }),
+            "a record's own source isn't lost to the fields moved under it"
         );
     }
 
