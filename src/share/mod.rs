@@ -12,6 +12,7 @@
 
 pub mod clones;
 pub mod disk;
+pub mod ended;
 pub mod exchange;
 pub mod journey;
 pub mod ledger;
