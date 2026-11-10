@@ -734,7 +734,9 @@ in milliseconds.
 
 A record carries `key` (`session:<id>`, `machine:<name>` or
 `message:<id>`), `kind`, `heard` (milliseconds since the epoch) and the
-fields `Sessions`, `Machines` and `Messages` give it. A session also says
+fields `Sessions`, `Machines` and `Messages` give it. A field its source
+named `key`, `kind` or `heard`, such as a job's own `kind`, is kept under
+`source` rather than lost beneath the interface's. A session also says
 whether it runs `here`. The `machine` kind holds every machine of the
 realm, this one as its last minute's measure found it, each saying
 whether it is `here`. The `message` kind holds each group's latest 100
