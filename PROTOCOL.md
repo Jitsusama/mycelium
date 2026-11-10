@@ -738,7 +738,14 @@ fields `Sessions`, `Machines` and `Messages` give it. A field its source
 named `key`, `kind` or `heard`, such as a job's own `kind`, is kept under
 `source` rather than lost beneath the interface's, beside the record's own
 `source` where it has one. A session also says
-whether it runs `here`. The `machine` kind holds every machine of the
+whether it runs `here`, and how it stands, as `standing`: `running` while
+its process runs, here or on a machine heard of this boot; `parked` here,
+ended for its holder to start again, its park marked this boot; `closed`
+here, ended this boot unparked; and no `standing` for one passed over.
+Its `told` is a digest of the record without what only an open launcher
+shows (its step, usage, times, and working against listening), so a
+change whose records carry no new `told` tells a shut one nothing it
+reads. The `machine` kind holds every machine of the
 realm, this one as its last minute's measure found it, each saying
 whether it is `here`. The `message` kind holds each group's latest 100
 messages, so a quiet group's last words stay beside a busy one's, and a

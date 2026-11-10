@@ -143,6 +143,16 @@ pub fn steer() -> PathBuf {
         .join("steer")
 }
 
+/// Where the harness marks each session it parks on this machine, a file
+/// named by the session's id.
+pub fn parked() -> PathBuf {
+    state_home()
+        .join("pi")
+        .join("agentic-harness.pi")
+        .join("park-workflow")
+        .join("parked")
+}
+
 /// Where this machine keeps shared quests, as the harness keeps them: the
 /// quest store, the quests' scratch folders and the account's home, with
 /// mycelium's own folder `state` for its ledgers.

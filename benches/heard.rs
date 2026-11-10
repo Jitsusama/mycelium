@@ -176,6 +176,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 providers: Vec::new(),
                 book: mycelium::made::Book::at("/nowhere/made.jsonl".into()),
                 flows: mycelium::flow::Flows::default(),
+                parked: "/nowhere/parked".into(),
             },
             bound,
             until_stopped,

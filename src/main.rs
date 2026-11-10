@@ -517,6 +517,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         providers,
         book: mycelium::made::Book::at(book),
         flows,
+        parked: place::parked(),
     };
     runtime()?.block_on(async {
         let bound = node::bind(socket)?;
