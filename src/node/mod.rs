@@ -2523,18 +2523,19 @@ mod tests {
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
         let at = jiff::Timestamp::now().to_string();
-        let presence = |busy: bool, title: &str| {
+        let presence = |session: &str, busy: bool, title: &str| {
             json!({
-                "session": "there", "addresses": ["THERE1"], "groups": [],
+                "session": session, "addresses": [session.to_uppercase()], "groups": [],
                 "busy": busy, "state": if busy { "busy" } else { "idle" },
                 "at": at, "title": title,
             })
         };
-        let put = |busy, title| {
+        let put_as = |session, busy, title| {
             store
-                .put_presence("there", "equilibrius", &presence(busy, title))
+                .put_presence(session, "equilibrius", &presence(session, busy, title))
                 .expect("the presence is kept");
         };
+        let put = |busy, title| put_as("there", busy, title);
 
         // A shut launcher's watch, as the shell asks for one.
         let shut = json!({"id": 4, "ask": "watch", "kind": "session", "when": ["told"]});
@@ -2551,17 +2552,22 @@ mod tests {
             json!("session:there"),
             "a session coming is sent: {came}"
         );
+        put_as("beside", true, "other");
+        client.next().await;
 
         put(false, "one");
+        put_as("beside", false, "other");
         put(false, "two");
         let retitled = client.next().await;
         assert_eq!(
             (
+                retitled["changed"].as_array().map(Vec::len),
                 &retitled["changed"][0]["presence"]["busy"],
                 &retitled["changed"][0]["presence"]["title"]
             ),
-            (&json!(false), &json!("two")),
-            "its working ending wasn't sent alone, but with its retitling: {retitled}"
+            (Some(1), &json!(false), &json!("two")),
+            "its working ending wasn't sent alone, but with its retitling, \
+             and the other's step stayed held back: {retitled}"
         );
 
         put(true, "two");
@@ -2570,13 +2576,20 @@ mod tests {
             .ask(json!({"id": 4, "ask": "watch", "kind": "session"}))
             .await;
         let opened = client.next().await;
+        let busy = |key: &str| {
+            opened["changed"]
+                .as_array()
+                .and_then(|changed| changed.iter().find(|record| record["key"] == key))
+                .map(|record| record["presence"]["busy"].clone())
+        };
         assert_eq!(
             (
                 opened.get("records"),
-                &opened["changed"][0]["presence"]["busy"]
+                busy("session:there"),
+                busy("session:beside")
             ),
-            (None, &json!(true)),
-            "asked again, it sends what it held back at once, not everything whole: {opened}"
+            (None, Some(json!(true)), Some(json!(false))),
+            "asked again, it sends all it held back at once, not everything whole: {opened}"
         );
     }
 
