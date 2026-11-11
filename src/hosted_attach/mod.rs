@@ -636,8 +636,8 @@ mod tests {
 
         // Taken only once polled, as the terminal's own are, so a branch
         // made but never polled loses no keys.
-        fn keys(&mut self) -> impl Future<Output = Option<Vec<u8>>> {
-            async { self.keys.pop_front() }
+        async fn keys(&mut self) -> Option<Vec<u8>> {
+            self.keys.pop_front()
         }
 
         fn edit(&mut self, text: &str) -> impl Future<Output = Option<String>> {
