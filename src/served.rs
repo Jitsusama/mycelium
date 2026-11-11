@@ -563,6 +563,7 @@ async fn keep(
 ) {
     let keep = |read: Read| {
         let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
+        let read = steady(held.get(&kind), read);
         if held.get(&kind) != Some(&read) {
             if let Some(why) = &read.refused {
                 eprintln!("serving {kind}: {why}");
@@ -598,6 +599,39 @@ async fn keep(
             }
         }
         drop(watcher);
+    }
+}
+
+/// `read`, keeping each record `held` had that differs from its new read
+/// only in `heard`, so a file written whole changes only the records that
+/// changed in it. Each of a file's records is heard when the file was
+/// written, and the harness writes all its landings in one: one landing
+/// sent all 1,598 again, 152 KB, to every watch, the launcher's shut too
+/// (RO9YDD, 2026-11-11).
+fn steady(held: Option<&Read>, mut read: Read) -> Read {
+    let Some(held) = held else {
+        return read;
+    };
+    for (key, record) in &mut read.records {
+        if let Some(kept) = held.records.get(key)
+            && alike_but_heard(kept, record)
+        {
+            record.clone_from(kept);
+        }
+    }
+    read
+}
+
+/// Whether two records differ in nothing but when they were heard.
+fn alike_but_heard(one: &Value, other: &Value) -> bool {
+    match (one.as_object(), other.as_object()) {
+        (Some(one), Some(other)) => {
+            one.len() == other.len()
+                && one
+                    .iter()
+                    .all(|(field, value)| field == "heard" || other.get(field) == Some(value))
+        }
+        _ => one == other,
     }
 }
 
@@ -666,6 +700,19 @@ mod tests {
                 .unwrap_or("file")
         ));
         fs::write(&beside, value.to_string()).expect("written beside");
+        fs::rename(&beside, file).expect("renamed into place");
+    }
+
+    /// Writes `value` to `file` whole, as `write` does, saying it was
+    /// written at `at`.
+    fn write_at(file: &Path, value: &Value, at: std::time::SystemTime) {
+        let beside = file.with_file_name(".at.new");
+        fs::write(&beside, value.to_string()).expect("written beside");
+        fs::File::options()
+            .write(true)
+            .open(&beside)
+            .and_then(|written| written.set_modified(at))
+            .expect("its time set");
         fs::rename(&beside, file).expect("renamed into place");
     }
 
@@ -1101,6 +1148,67 @@ mod tests {
             "answering",
             "a file gone holds nothing, which is no trouble: {:?}",
             served.health()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_written_whole_changes_only_the_records_that_changed_in_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let file = dir.path().join("quests.json");
+        let first = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let then = first + Duration::from_secs(60);
+        let titled =
+            |b: &str| json!({"quests": [{"id": "A", "title": "a"}, {"id": "B", "title": b}]});
+        write_at(&file, &titled("one"), first);
+        let served = Served::start(BTreeMap::from([("quest".to_owned(), quests(&file))]));
+        let mut told = served.told("quest").expect("quest is served");
+        let title = |records: &BTreeMap<String, Value>| {
+            records.get("quest:B").map(|record| record["title"].clone())
+        };
+        until(
+            &served,
+            &mut told,
+            "quest",
+            |r| title(r) == Some(json!("one")),
+            "it is read",
+        )
+        .await;
+        let before = served.records("quest").unwrap_or_default();
+
+        write_at(&file, &titled("two"), then);
+        until(
+            &served,
+            &mut told,
+            "quest",
+            |r| title(r) == Some(json!("two")),
+            "read again",
+        )
+        .await;
+        let after = served.records("quest").unwrap_or_default();
+        let heard = |records: &BTreeMap<String, Value>, key: &str| records[key]["heard"].clone();
+        assert_eq!(
+            heard(&after, "quest:B"),
+            json!(1_800_000_060_000_i64),
+            "the one that changed is heard as the file was written: {after:?}"
+        );
+        assert_eq!(
+            after["quest:A"], before["quest:A"],
+            "the one that didn't is as it was, heard when it was"
+        );
+
+        // Written again the same, it reads as what was held, so nothing
+        // is told.
+        write_at(&file, &titled("two"), then + Duration::from_secs(60));
+        let held = Read {
+            records: after.clone(),
+            refused: None,
+        };
+        let again = read("quest", &quests(&file));
+        assert_ne!(again, held, "read alone, each record is heard anew");
+        assert_eq!(
+            steady(Some(&held), again),
+            held,
+            "a file written the same holds what it held"
         );
     }
 
