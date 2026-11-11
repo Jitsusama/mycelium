@@ -170,6 +170,8 @@ enum Action {
     },
     /// Joins a held session from this terminal, or a conversation a pi
     /// host holds with `--host` and `--session`; closing it only leaves.
+    /// Joined to a host, it exits 3 when the host lets the conversation go
+    /// back to plain pi, as a release does, and 0 on any other leaving.
     Attach {
         /// Its id, as `held` lists it.
         #[arg(required_unless_present = "host", conflicts_with = "host")]
@@ -352,7 +354,7 @@ struct Here {
 fn main() -> ExitCode {
     let command = Command::parse();
     match run(command) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             eprintln!("mycelium: {error}");
             ExitCode::FAILURE
@@ -360,7 +362,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(command: Command) -> io::Result<()> {
+fn run(command: Command) -> io::Result<ExitCode> {
     let realm = command.realm.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -369,10 +371,10 @@ fn run(command: Command) -> io::Result<()> {
     })?;
     let realm = realm_named(realm)?;
     let socket = command.socket.unwrap_or_else(|| place::socket(&realm));
-    match command.action {
+    let ran = match command.action {
         Action::Node(node) => run_node(node, realm, &socket),
         Action::Link { here } => run_link(here, realm, socket, None),
-        Action::Ssh { here, from } => run_asked(here, realm, socket, from),
+        Action::Ssh { here, from } => return run_asked(here, realm, socket, from),
         Action::Share {
             here,
             quest,
@@ -424,7 +426,7 @@ fn run(command: Command) -> io::Result<()> {
             detached,
             command,
         } => hold(&realm, folder, detached, &command),
-        Action::Attach { id, host, session } => join(&realm, id, host, session),
+        Action::Attach { id, host, session } => return join(&realm, id, host, session),
         Action::Held => hold::held(&place::held(&realm))
             .iter()
             .try_for_each(print_line),
@@ -450,18 +452,23 @@ fn run(command: Command) -> io::Result<()> {
                 environment: &ServiceManager,
             })
         }
-        Action::Watch { groups, recent } => {
-            let mut client = Client::connect(&socket)?;
-            print_line(&client.ask(&Request::Watch {
-                groups: Some(groups),
-                recent,
-            })?)?;
-            while let Some(event) = client.next_event()? {
-                print_line(&event)?;
-            }
-            Ok(())
-        }
+        Action::Watch { groups, recent } => watch(&socket, groups, recent),
+    };
+    ran.map(|()| ExitCode::SUCCESS)
+}
+
+/// Prints what the node says of `groups` as it says it, after the
+/// `recent` it already holds, until the node goes.
+fn watch(socket: &Path, groups: Pattern, recent: usize) -> io::Result<()> {
+    let mut client = Client::connect(socket)?;
+    print_line(&client.ask(&Request::Watch {
+        groups: Some(groups),
+        recent,
+    })?)?;
+    while let Some(event) = client.next_event()? {
+        print_line(&event)?;
     }
+    Ok(())
 }
 
 /// `realm`, once it reads as one. A realm names a socket and goes into the
@@ -590,11 +597,11 @@ fn serve_link(
 
 /// Runs what `from`'s link key asked, as `SSH_ORIGINAL_COMMAND` says, or
 /// refuses it, keeping the refusal.
-fn run_asked(here: Here, realm: String, socket: PathBuf, from: String) -> io::Result<()> {
+fn run_asked(here: Here, realm: String, socket: PathBuf, from: String) -> io::Result<ExitCode> {
     let original = std::env::var("SSH_ORIGINAL_COMMAND").ok();
     match mycelium::ssh::asked(original.as_deref(), &realm) {
-        Ok(KeyAsked::Link) => run_link(here, realm, socket, Some(from)),
-        Ok(KeyAsked::Attach(id)) => attach(&place::held(&realm), &id),
+        Ok(KeyAsked::Link) => run_link(here, realm, socket, Some(from)).map(|()| ExitCode::SUCCESS),
+        Ok(KeyAsked::Attach(id)) => attach(&place::held(&realm), &id).map(|()| ExitCode::SUCCESS),
         Ok(KeyAsked::AttachHosted { host, session }) => attach_hosted(&realm, &host, &session),
         Err(why) => {
             let state = here.state.unwrap_or_else(place::state);
@@ -754,17 +761,18 @@ fn join(
     id: Option<String>,
     host: Option<String>,
     session: Option<String>,
-) -> io::Result<()> {
+) -> io::Result<ExitCode> {
     match (id, host, session) {
         (_, Some(host), Some(session)) => attach_hosted(realm, &host, &session),
-        (Some(id), _, _) => attach(&place::held(realm), &id),
+        (Some(id), _, _) => attach(&place::held(realm), &id).map(|()| ExitCode::SUCCESS),
         _ => unreachable!("clap asks for an id or a host and session"),
     }
 }
 
 /// Joins `session` through the pi host `host` of `realm` on this machine
-/// until the host lets it go.
-fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<()> {
+/// until the host lets it go, exiting [`hold::holder::RELEASED`] when it
+/// lets the conversation go back to plain pi.
+fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode> {
     let runtime_dir = place::login_runtime().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "this login has no runtime folder")
     })?;
@@ -783,11 +791,15 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<()> {
     runtime.shutdown_background();
     match left? {
         hosted_attach::Left::Detached(why) => eprintln!("mycelium: {why}"),
+        hosted_attach::Left::Released => {
+            eprintln!("mycelium: the pi host {host} let the conversation go back to plain pi");
+            return Ok(ExitCode::from(hold::holder::RELEASED));
+        }
         hosted_attach::Left::Gone => eprintln!("mycelium: the pi host {host} has gone"),
         // Joining here comes back from a suspend or a restart by itself.
         hosted_attach::Left::Suspended | hosted_attach::Left::Restarting => {}
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn runtime() -> io::Result<tokio::runtime::Runtime> {
