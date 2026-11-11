@@ -183,11 +183,7 @@ pub async fn hold(
             command = named(&naming).unwrap_or(command);
             match start(&command, terminal.size()) {
                 Ok(child) => break child,
-                Err(error) => parks(
-                    &record,
-                    &shown,
-                    format!("\r\nIt couldn't start again: {error}. {PARKED_WAKES}\r\n").as_bytes(),
-                ),
+                Err(error) => parks(&record, &shown, &unstarted(&error)),
             }
         };
         record.runs(child.id().unwrap_or_default(), &command);
@@ -219,6 +215,11 @@ fn restarting(waking: &Path, record: &Record, shown: &Shown) -> bool {
         parks(record, shown, PARKED_LINE);
     }
     restarting
+}
+
+/// What a parked program's windows say when it couldn't start again.
+fn unstarted(error: &io::Error) -> Vec<u8> {
+    format!("\r\nIt couldn't start again: {error}. {PARKED_WAKES}\r\n").into_bytes()
 }
 
 /// Says the program is parked, in its record and with `line` in every
