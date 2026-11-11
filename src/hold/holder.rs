@@ -172,16 +172,7 @@ pub async fn hold(
         if status.code() != Some(PARKED) {
             break status;
         }
-        // One that wrote its own wake before it went is restarting, not
-        // parked, as a pi handing its window to a pi host does: it starts
-        // again at once, with no parked line drawn over its last frame,
-        // and a key typed meanwhile reaches what starts rather than being
-        // spent as a wake.
-        let mut restarting = fs::remove_file(&waking).is_ok();
-        if !restarting {
-            record.parks();
-            shown.show(PARKED_LINE);
-        }
+        let mut restarting = restarting(&waking, &record, &shown);
         // One that can't start again stays parked, saying why, rather than
         // ending: its session, its window and its next wake are all still
         // here, and a command named again may start.
@@ -192,13 +183,11 @@ pub async fn hold(
             command = named(&naming).unwrap_or(command);
             match start(&command, terminal.size()) {
                 Ok(child) => break child,
-                Err(error) => {
-                    record.parks();
-                    shown.show(
-                        format!("\r\nIt couldn't start again: {error}. {PARKED_WAKES}\r\n")
-                            .as_bytes(),
-                    );
-                }
+                Err(error) => parks(
+                    &record,
+                    &shown,
+                    format!("\r\nIt couldn't start again: {error}. {PARKED_WAKES}\r\n").as_bytes(),
+                ),
             }
         };
         record.runs(child.id().unwrap_or_default(), &command);
@@ -217,6 +206,26 @@ pub async fn hold(
     })
     .await;
     Ok(status.code())
+}
+
+/// Whether a program that exited as parked is restarting: one that wrote
+/// its own wake before it went, as a pi handing its window to a pi host
+/// does. It starts again at once, with no parked line drawn over its last
+/// frame, and a key typed meanwhile reaches what starts rather than being
+/// spent as a wake. Any other is parked, and its windows say so.
+fn restarting(waking: &Path, record: &Record, shown: &Shown) -> bool {
+    let restarting = fs::remove_file(waking).is_ok();
+    if !restarting {
+        parks(record, shown, PARKED_LINE);
+    }
+    restarting
+}
+
+/// Says the program is parked, in its record and with `line` in every
+/// joined window.
+fn parks(record: &Record, shown: &Shown, line: &[u8]) {
+    record.parks();
+    shown.show(line);
 }
 
 /// The command a parking program named in `naming`, a JSON list of its
