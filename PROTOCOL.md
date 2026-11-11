@@ -672,8 +672,9 @@ A start whose providers make nothing says why: each machine's and each
 offer's reasons, and each program that couldn't say what it offers.
 
 `"Steer"` puts `steer`, in the harness's own shape (`text`, an `act` of
-`pause`, `resume`, `stop`, `close` or `carry`, a carry's `to`, the machine it
-goes to, `at`, `from` and a talk's `id`), into the
+`pause`, `resume`, `fill`, `stop`, `close`, `carry` or `move`, a carry's
+`to`, the machine it goes to, or a move's, `attended`, `background` or
+`pi`, `at`, `from` and a talk's `id`), into the
 steer inbox of the session going by `address` on the machine it runs on:
 `~/.local/state/pi/agentic-harness.pi/steer/<ADDRESS>/`, or the folder
 `--steer` names, under a temporary name renamed to end in `.json`. A

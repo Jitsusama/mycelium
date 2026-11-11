@@ -29,8 +29,13 @@ const FIELDS: [&str; 6] = ["text", "act", "to", "at", "from", "id"];
 /// What the person may do besides talk, as the harness's `STEER_ACTS`
 /// says: close ends a session for good, where stop only interrupts it,
 /// and carry ends it here once its work is carried for the machine `to`
-/// names.
-const ACTS: [&str; 5] = ["pause", "resume", "stop", "close", "carry"];
+/// names; fill puts its words in the session's prompt for the person to
+/// send, and move takes it into a host or back out of one, as `to` says.
+const ACTS: [&str; 7] = ["pause", "resume", "fill", "stop", "close", "carry", "move"];
+
+/// Where a move goes, as the harness's `MOVE_TARGETS` says: a host of
+/// its realm, by kind, or plain pi.
+const MOVES: [&str; 3] = ["attended", "background", "pi"];
 
 /// The act that only wakes a parked session, as the launcher's Wake
 /// does: nothing goes in its inbox, since the harness has no such act,
@@ -80,14 +85,23 @@ impl Steer {
         if text.trim().is_empty() && act.is_none() {
             return Err("a steer says something or does something".to_owned());
         }
-        // A carry names where to, as a machine names itself, and nothing
-        // else names a machine.
-        let to = body.get("to");
-        if act == Some("carry") && !to.and_then(Value::as_str).is_some_and(is_machine) {
-            return Err("a carry names the machine it goes to".to_owned());
+        if act == Some("fill") && text.trim().is_empty() {
+            return Err("a fill has words to put in the prompt".to_owned());
         }
-        if act != Some("carry") && to.is_some() {
-            return Err("only a carry names a machine to go to".to_owned());
+        // A carry names where to, as a machine names itself, a move one of
+        // the places a session moves to, and nothing else names a place.
+        let to = body.get("to").map(|to| to.as_str());
+        match (act, to) {
+            (Some("carry"), to) if !to.flatten().is_some_and(is_machine) => {
+                return Err("a carry names the machine it goes to".to_owned());
+            }
+            (Some("move"), to) if !to.flatten().is_some_and(|to| MOVES.contains(&to)) => {
+                return Err(format!("a move goes to one of {}", MOVES.join(", ")));
+            }
+            (Some("carry" | "move"), _) | (_, None) => {}
+            (_, Some(_)) => {
+                return Err("only a carry or a move names where it goes".to_owned());
+            }
         }
         if let Some(id) = body.get("id")
             && !id.as_str().is_some_and(is_talk)
