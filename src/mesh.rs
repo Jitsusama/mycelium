@@ -267,7 +267,10 @@ pub fn joined_by<'a>(presence: &Presence, held: &'a [Held]) -> Option<&'a Held> 
     if presence.elsewhere.is_some() {
         return None;
     }
-    let hosted = presence.body.get("hosted").filter(|hosted| hosted.is_object())?;
+    let hosted = presence
+        .body
+        .get("hosted")
+        .filter(|hosted| hosted.is_object())?;
     let conversation = hosted.get("conversation").and_then(Value::as_str);
     let names = |id: &str| id == presence.session || Some(id) == conversation;
     held.iter().find(|one| {
@@ -732,14 +735,24 @@ mod tests {
             since: "2026-11-11T02:00:00Z".to_owned(),
             windows: Vec::new(),
         };
-        let attach = ["mycelium", "--realm", "work", "attach", "--host", "work-attended"];
+        let attach = [
+            "mycelium",
+            "--realm",
+            "work",
+            "attach",
+            "--host",
+            "work-attended",
+        ];
         let by_conversation = [&attach[..], &["--session", "c-01a1"]].concat();
         let by_id = [&attach[..], &["--session", "01a1"]].concat();
         let fell_back = ["pi", "--session", "/home/jitsusama/.pi/01a1.jsonl"];
         let other = [&attach[..], &["--session", "c-0e50"]].concat();
         assert_eq!(
-            joined_by(&hosted(None), &[held("5b99", &other), held("0d1e", &by_conversation)])
-                .map(|one| one.id.as_str()),
+            joined_by(
+                &hosted(None),
+                &[held("5b99", &other), held("0d1e", &by_conversation)]
+            )
+            .map(|one| one.id.as_str()),
             Some("0d1e"),
             "the holder whose command joins its conversation"
         );
@@ -749,12 +762,18 @@ mod tests {
             "or names the session by its own id"
         );
         assert_eq!(
-            joined_by(&hosted(None), &[held("0d1e", &fell_back), held("5b99", &other)]),
+            joined_by(
+                &hosted(None),
+                &[held("0d1e", &fell_back), held("5b99", &other)]
+            ),
             None,
             "a join fallen back to plain pi, or one of another session, joins it to nothing"
         );
         assert_eq!(
-            joined_by(&hosted(Some("equilibrius")), &[held("0d1e", &by_conversation)]),
+            joined_by(
+                &hosted(Some("equilibrius")),
+                &[held("0d1e", &by_conversation)]
+            ),
             None,
             "a session elsewhere is never in a window here"
         );
