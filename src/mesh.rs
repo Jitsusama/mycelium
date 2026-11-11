@@ -2,7 +2,9 @@
 //! [`Message`], a presence as a [`Session`]. The mesh's own fields are
 //! read as they are, so sessions keep writing them unchanged.
 
+use std::ffi::OsStr;
 use std::hash::{BuildHasher, RandomState};
+use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -228,12 +230,30 @@ pub const HELD_AS: &str = "heldAs";
 /// `mycelium hold -- pi` is. A hosted session's process is its host's,
 /// which many share, so the host's holder is none of theirs: attaching
 /// would join the host's terminal, not the session.
+///
+/// A parked session's process has gone, and its holder's pid is 0 till
+/// it wakes, so it's known by the wake file its holder gave it
+/// (`hold::wake`), which the presence names as `wake`: its holder still
+/// keeps the session's window, which the launcher keeps the place of
+/// before it moves the session.
 pub fn held_by<'a>(presence: &Presence, held: &'a [Held]) -> Option<&'a Held> {
     if presence.elsewhere.is_some() || presence.body.get("hosted").is_some_and(Value::is_object) {
         return None;
     }
-    let pid = presence.body.get("owner")?.get("pid")?.as_u64()?;
-    held.iter().find(|one| u64::from(one.pid) == pid)
+    let pid = presence
+        .body
+        .get("owner")
+        .and_then(|owner| owner.get("pid"))
+        .and_then(Value::as_u64);
+    let woken_by = presence
+        .body
+        .get("wake")
+        .and_then(Value::as_str)
+        .and_then(|wake| Path::new(wake).file_stem())
+        .and_then(OsStr::to_str);
+    held.iter()
+        .find(|one| one.pid != 0 && pid == Some(u64::from(one.pid)))
+        .or_else(|| held.iter().find(|one| woken_by == Some(one.id.as_str())))
 }
 
 /// How a quest's id begins, which an older presence names among what it
@@ -638,6 +658,34 @@ mod tests {
             held_by(&hosted, &here),
             None,
             "a hosted session's process is its host's, whose holder is none of its own"
+        );
+        let parked = Held {
+            parked: true,
+            windows: vec![Window {
+                terminal: "kitty".to_owned(),
+                id: "4".to_owned(),
+                within: None,
+                app_id: Some("pi-spawned.9".to_owned()),
+            }],
+            ..held("685a586d", 0)
+        };
+        let napping = Presence {
+            body: json!({
+                "session": "01a1", "owner": {"pid": 4244},
+                "wake": "/run/user/1000/mycelium/work.held/685a586d.wake",
+            }),
+            ..presence(4244, None)
+        };
+        let here = [held("5b992038", 4242), parked];
+        assert_eq!(
+            held_by(&napping, &here).map(|one| one.id.as_str()),
+            Some("685a586d"),
+            "a parked session is held by the holder its wake file names"
+        );
+        assert_eq!(
+            held_by(&presence(0, None), &here),
+            None,
+            "a parked holder's pid of 0 holds no session that names none"
         );
     }
 
