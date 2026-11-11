@@ -48,6 +48,12 @@ pub const PARKED: i32 = 75;
 /// `ExitCode::from`, which takes no other.
 pub const RELEASED: u8 = 3;
 
+/// The exit code `mycelium attach --host` ends with when its host stayed
+/// gone past its patience for a restart: sysexits' `EX_UNAVAILABLE`, so
+/// whatever runs in the window next waits for the host to come back,
+/// rather than closing the window as it does for a person leaving.
+pub const GONE: u8 = 69;
+
 /// How often a parked holder looks for its wake file. A stat a second
 /// costs nothing, and a message waking a session waits a second at most.
 const WAKE_LOOK: Duration = Duration::from_secs(1);
