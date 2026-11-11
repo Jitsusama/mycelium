@@ -16,7 +16,7 @@ use crate::store;
 
 /// The boot this machine runs in: its id, where the system names one
 /// (Linux), and when it began, in milliseconds since the epoch, where the
-/// system says (Linux).
+/// system says (Linux and macOS).
 #[derive(Debug, Clone, Default)]
 pub struct Boot {
     pub id: Option<String>,
@@ -37,15 +37,51 @@ impl Boot {
 /// When this boot began, from the kernel's `btime` in `/proc/stat`, in
 /// whole seconds, so a session heard in its first second counts as this
 /// boot's.
+#[cfg(target_os = "linux")]
 fn began() -> Option<i64> {
-    let stat = fs::read_to_string("/proc/stat").ok()?;
-    let seconds: i64 = stat
-        .lines()
+    btime(&fs::read_to_string("/proc/stat").ok()?)?.checked_mul(1000)
+}
+
+/// When this boot began, from the kernel's `kern.boottime` as `sysctl`
+/// says it, in whole seconds as on Linux. Without it a Mac counted no
+/// ended session as this boot's, so none read as closed.
+#[cfg(target_os = "macos")]
+fn began() -> Option<i64> {
+    let said = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "kern.boottime"])
+        .output()
+        .ok()?;
+    boottime(&String::from_utf8_lossy(&said.stdout))?.checked_mul(1000)
+}
+
+/// Elsewhere the system says nothing this crate reads of when it booted.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn began() -> Option<i64> {
+    None
+}
+
+/// The seconds since the epoch `/proc/stat`'s `btime` line gives.
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(dead_code, reason = "read on Linux only, tested everywhere")
+)]
+fn btime(stat: &str) -> Option<i64> {
+    stat.lines()
         .find_map(|line| line.strip_prefix("btime "))?
         .trim()
         .parse()
-        .ok()?;
-    seconds.checked_mul(1000)
+        .ok()
+}
+
+/// The seconds since the epoch `sysctl -n kern.boottime` gives, as
+/// `{ sec = 1794333600, usec = 52016 } Tue Nov 10 18:00:00 2026`.
+#[cfg_attr(
+    not(any(target_os = "macos", test)),
+    expect(dead_code, reason = "read on macOS only, tested everywhere")
+)]
+fn boottime(said: &str) -> Option<i64> {
+    let (_, after) = said.split_once("sec =")?;
+    after.split(',').next()?.trim().parse().ok()
 }
 
 /// The ids of the sessions parked here, by the markers the harness leaves
@@ -167,7 +203,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{Boot, standing, told};
+    use super::{Boot, boottime, btime, standing, told};
     use crate::record::{Session, State};
 
     /// The boot the cases run in, begun at 18:00 on 2026-11-10.
@@ -202,6 +238,27 @@ mod tests {
             at: at.to_owned(),
             presence,
         }
+    }
+
+    #[test]
+    fn a_boot_begins_when_linux_or_a_mac_says_it_did() {
+        let stat = "cpu  10 0 5 100\nbtime 1794333600\nprocesses 42\n";
+        assert_eq!(
+            btime(stat),
+            Some(1_794_333_600),
+            "Linux says it in /proc/stat"
+        );
+        let said = "{ sec = 1794333600, usec = 52016 } Tue Nov 10 18:00:00 2026\n";
+        assert_eq!(
+            boottime(said),
+            Some(1_794_333_600),
+            "a Mac says it as sysctl's kern.boottime"
+        );
+        assert_eq!(
+            (btime(""), boottime(""), boottime("{ sec = soon }")),
+            (None, None, None),
+            "a boot no system said the start of has none"
+        );
     }
 
     const BEFORE: &str = "2026-11-10T17:00:00Z";
