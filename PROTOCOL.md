@@ -686,7 +686,11 @@ names as `wake`, taken only as a holder's in a realm's `.held` folder
 beside its own. A talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened
 on the asking machine first, and the lines its session writes are
 carried back to it, so a talk reads the same wherever its session runs.
-It is an error,
+An `act` of `wake`, alone, as the launcher's Wake asks, puts nothing in
+the inbox, since the harness has no such act, and only wakes the session
+there, so the launcher wakes one without starting a program to write its
+file. A wake for a session on another machine, or where no holder's
+file can be written, is refused, saying so. It is an error,
 saying why, when no session goes by `address` now, as `no session goes
 by SAK9FZ now`, when its machine is out of reach, when it runs on two
 machines at once, or when the link can't carry it.

@@ -1254,24 +1254,49 @@ impl<S: Store> Shared<S> {
                 .map_err(|error| format!("its talk didn't open here: {error}"))?;
         }
         if machine != self.machine {
+            // The far end of a link puts a steer in the inbox there but
+            // wakes nothing, so a wake carried would only be left unread.
+            if steer.only_wakes() {
+                return Err(format!(
+                    "{address} runs on {machine}, and a wake reaches only here"
+                ));
+            }
             return self.asks.steer(&machine, steer).await;
         }
-        steer
-            .deliver(&self.steers)
-            .map_err(|error| format!("its inbox refused it: {error}"))?;
+        self.steer_here(&steer, &sessions)?;
+        Ok(Response::Steered { machine })
+    }
+
+    /// Puts `steer` in its session's inbox here, unless it only wakes,
+    /// then wakes the session where it is parked this boot: a wake that
+    /// can't is refused, but a steer told and not woken is read at the
+    /// session's next wake, whatever wakes it.
+    fn steer_here(&self, steer: &Steer, sessions: &[Session]) -> Result<(), String> {
+        let address = &steer.address;
+        if !steer.only_wakes() {
+            steer
+                .deliver(&self.steers)
+                .map_err(|error| format!("its inbox refused it: {error}"))?;
+        }
         let boot = store::folders::boot_id();
         let waking = sessions
             .iter()
             .filter(|session| session.machine == self.machine)
             .find_map(|session| steer::wake_for(session, boot.as_deref(), &self.held));
-        if let Some(file) = waking
-            && let Err(error) = steer::wake(&file, &address)
-        {
-            // Told is what was asked; the session reads it at its next
-            // wake, whatever wakes it.
-            eprintln!("{address} was told, but not woken: {error}");
+        match (waking, steer.only_wakes()) {
+            (Some(file), true) => steer::wake(&file, address)
+                .map_err(|error| format!("{address} didn't wake: {error}")),
+            (None, true) => Err(format!(
+                "{address} isn't parked with a holder to wake it this boot"
+            )),
+            (Some(file), false) => {
+                if let Err(error) = steer::wake(&file, address) {
+                    eprintln!("{address} was told, but not woken: {error}");
+                }
+                Ok(())
+            }
+            (None, false) => Ok(()),
         }
-        Ok(Response::Steered { machine })
     }
 
     /// Counts `pid` present through a new connection, which replaces any
@@ -2464,6 +2489,26 @@ mod tests {
             (&left["id"], &left["steered"]["machine"]),
             (&json!(4), &json!("optimus")),
             "a session parked here is left what is said, to read as it wakes: {left}"
+        );
+
+        client
+            .ask(json!({"id": 5, "ask": "steer", "address": "NAPPER", "steer": {"act": "wake"}}))
+            .await;
+        assert_eq!(
+            client.next().await["error"]["message"],
+            json!("NAPPER isn't parked with a holder to wake it this boot"),
+            "a wake with no holder's file to write is refused, saying why"
+        );
+        let talked: Vec<PathBuf> = fs::read_dir(inboxes(&socket).join("NAPPER"))
+            .expect("its inbox is made")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|it| it == "json"))
+            .collect();
+        assert_eq!(
+            talked.len(),
+            1,
+            "a wake leaves nothing in its inbox: {talked:?}"
         );
 
         client
