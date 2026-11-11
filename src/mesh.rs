@@ -280,6 +280,21 @@ pub fn joined_by<'a>(presence: &Presence, held: &'a [Held]) -> Option<&'a Held> 
     })
 }
 
+/// The words a window runs to view a hosted session, as its presence says
+/// them: the harness's join, which attaches through the host while it
+/// holds the conversation and carries on as plain pi on its log once the
+/// host releases it, so a release keeps the window. None when it says no
+/// words, or any that aren't, as an older harness's presence doesn't.
+#[must_use]
+pub fn viewed_by(presence: &Value) -> Option<Vec<String>> {
+    let words = presence.get("hosted")?.get("view")?.as_array()?;
+    let view: Option<Vec<String>> = words
+        .iter()
+        .map(|word| word.as_str().map(str::to_owned))
+        .collect();
+    view.filter(|view| !view.is_empty())
+}
+
 /// How a quest's id begins, which an older presence names among what it
 /// owns, before presences said their quest.
 const QUEST: &str = "QEST-";
@@ -786,6 +801,33 @@ mod tests {
             None,
             "a session of its own is held by its process, never joined"
         );
+    }
+
+    #[test]
+    fn a_hosted_session_is_viewed_by_the_words_its_presence_says() {
+        let view = [
+            "node",
+            "host-join.ts",
+            "--view",
+            "--session",
+            "01a1",
+            "--",
+            "pi",
+        ];
+        assert_eq!(
+            viewed_by(&json!({"hosted": {"host": "work-attended", "view": view}})),
+            Some(view.map(str::to_owned).to_vec()),
+            "the join its presence names"
+        );
+        for said in [
+            json!({"hosted": {"host": "work-attended"}}),
+            json!({"hosted": {"host": "work-attended", "view": []}}),
+            json!({"hosted": {"host": "work-attended", "view": ["node", 7]}}),
+            json!({"hosted": {"host": "work-attended", "view": "node host-join.ts"}}),
+            json!({"session": "01a1"}),
+        ] {
+            assert_eq!(viewed_by(&said), None, "no words of {said}");
+        }
     }
 
     #[test]
