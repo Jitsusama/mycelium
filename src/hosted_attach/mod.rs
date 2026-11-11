@@ -211,9 +211,8 @@ pub async fn join_again(
     loop {
         match connect(socket, session, size, &*here).await {
             Ok(Some(joined)) => return show(joined, here, output, sizes).await,
-            Ok(None) => {}
             Err(error) if !starting(&error) => return Err(error),
-            Err(_) => {}
+            Ok(None) | Err(_) => {}
         }
         if tokio::time::Instant::now() >= until {
             return Ok(Left::Gone);
@@ -847,6 +846,8 @@ mod tests {
                 Step::Say(closed()),
             ];
             serve(&path, accepted(), steps)
+                .await
+                .expect("the restarted host ran")
         };
         let joining = join_again(
             &path, "s-1", SIZE, &mut here, &mut shown, &mut sizes, PATIENT,
@@ -862,7 +863,7 @@ mod tests {
             "the restarted host's screen"
         );
         assert_eq!(
-            second.await.expect("the restarted host ran"),
+            second,
             vec![
                 json!({"v": 1, "id": "attach", "op": "attach", "sessionId": "s-1",
                        "rows": 40, "columns": 120, "features": ["edit", "suspend"]}),
