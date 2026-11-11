@@ -779,7 +779,8 @@ fn join(
 
 /// Joins `session` through the pi host `host` of `realm` on this machine
 /// until the host lets it go, exiting [`hold::holder::RELEASED`] when it
-/// lets the conversation go back to plain pi.
+/// lets the conversation go back to plain pi, and [`hold::holder::GONE`]
+/// when it stayed gone past its patience for a restart.
 fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode> {
     let runtime_dir = place::login_runtime().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "this login has no runtime folder")
@@ -797,17 +798,17 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
     // Typing is read on a thread of its own, waiting on a key nobody will
     // press now.
     runtime.shutdown_background();
-    match left? {
+    let left = left?;
+    match &left {
         hosted_attach::Left::Detached(why) => eprintln!("mycelium: {why}"),
         hosted_attach::Left::Released => {
             eprintln!("mycelium: the pi host {host} let the conversation go back to plain pi");
-            return Ok(ExitCode::from(hold::holder::RELEASED));
         }
         hosted_attach::Left::Gone => eprintln!("mycelium: the pi host {host} has gone"),
         // Joining here comes back from a suspend or a restart by itself.
         hosted_attach::Left::Suspended | hosted_attach::Left::Restarting => {}
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(ExitCode::from(left.exit_code()))
 }
 
 fn runtime() -> io::Result<tokio::runtime::Runtime> {

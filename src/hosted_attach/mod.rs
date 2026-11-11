@@ -95,6 +95,22 @@ pub enum Left {
     Restarting,
 }
 
+impl Left {
+    /// The code `mycelium attach --host` exits with, having left so:
+    /// [`RELEASED`](crate::hold::holder::RELEASED) for a release, so the
+    /// window carries on as plain pi, [`GONE`](crate::hold::holder::GONE)
+    /// for a host gone past its patience, so the window waits for it as
+    /// for a refused attach, and 0 for any other leaving, which closes it.
+    #[must_use]
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Self::Released => crate::hold::holder::RELEASED,
+            Self::Gone => crate::hold::holder::GONE,
+            Self::Detached(_) | Self::Suspended | Self::Restarting => 0,
+        }
+    }
+}
+
 /// The socket of the host `key` names in `realm`, in the runtime folder
 /// `runtime`, refusing a key of another realm or of no kind a host is.
 ///
@@ -528,6 +544,28 @@ mod tests {
         rows: 40,
         cols: 120,
     };
+
+    #[test]
+    fn a_host_gone_ends_apart_from_a_leaving() {
+        use crate::hold::holder::{GONE, RELEASED};
+        assert_eq!(
+            Left::Released.exit_code(),
+            RELEASED,
+            "a release, so the window carries on as plain pi"
+        );
+        assert_eq!(
+            Left::Gone.exit_code(),
+            GONE,
+            "a host gone past its patience, so the window waits for it"
+        );
+        for left in [
+            Left::Detached("Conversation closed".to_owned()),
+            Left::Suspended,
+            Left::Restarting,
+        ] {
+            assert_eq!(left.exit_code(), 0, "{left:?} leaves as asked");
+        }
+    }
 
     #[test]
     fn a_hosts_socket_is_its_realms_and_kinds() {

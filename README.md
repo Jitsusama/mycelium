@@ -31,7 +31,9 @@ The harness mesh's messages and presence, carried between machines:
 - `mycelium attach --host` shows a conversation a pi host holds until
   the host lets it go. It exits 3 when the host let the conversation go
   back to plain pi, as a release does, so whatever runs in the window
-  next can carry on as that pi; any other leaving exits 0.
+  next can carry on as that pi, and 69 when the host stayed gone past
+  its two minutes for a restart, so it can wait for the host to come
+  back; any other leaving exits 0.
 - Links run over SSH, so a machine needs nothing but the `mycelium`
   command and an SSH login.
 - Each node serves a local socket in niri's shape, which pi, Quickshell
