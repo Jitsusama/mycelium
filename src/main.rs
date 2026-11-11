@@ -15,6 +15,7 @@ use mycelium::client::Client;
 use mycelium::flow::Flows;
 use mycelium::group::{Group, Pattern};
 use mycelium::hold::environment::ServiceManager;
+use mycelium::hold::journal::SystemJournal;
 use mycelium::hold::start::{Starter, login_shell};
 use mycelium::link::dial::{Connection, Program, Ssh, Way};
 use mycelium::link::discovery::Listed;
@@ -436,12 +437,7 @@ fn run(command: Command) -> io::Result<ExitCode> {
             login,
             command,
         } => {
-            // A hold from a terminal has the person's environment already.
-            let through = if login {
-                login_shell(&realm)
-            } else {
-                Vec::new()
-            };
+            let through = held_through(login, &realm);
             be_holder(&hold::holder::Holding {
                 dir: &place::held(&realm),
                 realm: &realm,
@@ -450,6 +446,7 @@ fn run(command: Command) -> io::Result<ExitCode> {
                 through: &through,
                 folder: &folder,
                 environment: &ServiceManager,
+                journal: &SystemJournal::here(),
             })
         }
         Action::Watch { groups, recent } => watch(&socket, groups, recent),
@@ -710,6 +707,17 @@ fn hold(
         Ok(())
     } else {
         attach(&place::held(realm), &id)
+    }
+}
+
+/// The words a held program starts inside: a login shell, for a hold a
+/// node starts, or none for a hold from a terminal, which has the
+/// person's environment already.
+fn held_through(login: bool, realm: &str) -> Vec<String> {
+    if login {
+        login_shell(realm)
+    } else {
+        Vec::new()
     }
 }
 

@@ -18,6 +18,7 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::JoinSet;
 
 use super::environment::{Environment, keeping_path};
+use super::journal::{Ended, How, Journal};
 use super::modes::Modes;
 use super::{Held, Said, Size, again, socket, wake};
 use crate::node;
@@ -85,6 +86,8 @@ pub struct Holding<'a> {
     /// The person's environment as it is now, which each start of the
     /// program is given over the holder's own.
     pub environment: &'a dyn Environment,
+    /// Where each run's end is said.
+    pub journal: &'a dyn Journal,
 }
 
 /// Holds the program until it ends, answering its exit code, if it gave
@@ -96,7 +99,8 @@ pub struct Holding<'a> {
 /// as it parks in `MYCELIUM_AGAIN`. A program exiting with [`PARKED`] is
 /// started again on the same terminal when woken, with that command if it
 /// named one; one that wrote its wake file before it went is restarting,
-/// and starts again at once, never shown as parked.
+/// and starts again at once, never shown as parked. How each run ended,
+/// parked or not, is said to the holding's journal.
 pub async fn hold(
     holding: &Holding<'_>,
     ready: impl FnOnce(&Held) -> io::Result<()>,
@@ -175,7 +179,9 @@ pub async fn hold(
     // A terminal may join whether the program runs or is parked.
     let serving = |stream| serve(stream, terminal.clone(), shown.clone(), record.clone());
     let status = loop {
+        let pid = child.id().unwrap_or_default();
         let status = joining_until(child.wait(), &socket, &mut joined, &serving).await?;
+        ended(holding, pid, &command, status);
         if status.code() != Some(PARKED) {
             break status;
         }
@@ -209,6 +215,18 @@ pub async fn hold(
     })
     .await;
     Ok(status.code())
+}
+
+/// Says to the holding's journal that the run of `command` as `pid` ended
+/// as `status`.
+fn ended(holding: &Holding<'_>, pid: u32, command: &[String], status: std::process::ExitStatus) {
+    holding.journal.ended(&Ended {
+        id: holding.id.to_owned(),
+        realm: holding.realm.to_owned(),
+        pid,
+        program: command.join(" "),
+        how: How::of(status),
+    });
 }
 
 /// Whether a program that exited as parked is restarting: one that wrote
@@ -724,6 +742,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::super::environment::Given;
+    use super::super::journal::SystemJournal;
     use super::super::{attach, held as listed};
     use super::*;
 
@@ -836,6 +855,8 @@ mod tests {
     ) -> (PathBuf, Held, JoinHandle<io::Result<Option<i32>>>) {
         let dir = root.join("held");
         let folder = root.to_owned();
+        // Nothing listens here, so each end is said on standard error.
+        let root_journal = root.join("journal");
         let (told, ready) = oneshot::channel();
         let holder = {
             let dir = dir.clone();
@@ -849,6 +870,7 @@ mod tests {
                     through: &through,
                     folder: &folder,
                     environment: &environment,
+                    journal: &SystemJournal::at(&root_journal),
                 };
                 hold(&holding, |held| {
                     let _ = told.send(held.clone());
@@ -1378,8 +1400,53 @@ mod tests {
             through: &[],
             folder: root.path(),
             environment: &Given(Vec::new()),
+            journal: &SystemJournal::at(&root.path().join("journal")),
         };
         let refused = hold(&holding, |_| Ok(())).await;
         assert!(refused.is_err(), "holding nothing is refused");
+    }
+
+    /// Holds `command` until it ends, with a journal listening, and
+    /// answers what the holder said and the entry the journal took.
+    async fn ended_by(command: &str) -> (io::Result<Option<i32>>, String) {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let socket = root.path().join("journal");
+        let journal = std::os::unix::net::UnixDatagram::bind(&socket).expect("a journal");
+        let command = vec!["sh".to_owned(), "-c".to_owned(), command.to_owned()];
+        let holding = Holding {
+            dir: &root.path().join("held"),
+            realm: "harbour",
+            id: "ends1",
+            command: &command,
+            through: &[],
+            folder: root.path(),
+            environment: &Given(Vec::new()),
+            journal: &SystemJournal::at(&socket),
+        };
+        let said = tokio::time::timeout(PATIENCE, hold(&holding, |_| Ok(())))
+            .await
+            .expect("the program ends");
+        let mut entry = vec![0; 4096];
+        let read = journal.recv(&mut entry).expect("its end is said");
+        (said, String::from_utf8_lossy(&entry[..read]).into_owned())
+    }
+
+    #[tokio::test]
+    async fn a_held_programs_end_is_said_in_the_journal() {
+        let (said, entry) = ended_by("exit 3").await;
+        assert_eq!(said.ok().flatten(), Some(3), "the holder answers its code");
+        assert!(
+            entry.contains("MYCELIUM_HELD=ends1\n")
+                && entry.contains("EXIT_CODE=exited\nEXIT_STATUS=3\n"),
+            "an exit is said with its code: {entry:?}"
+        );
+
+        let (said, entry) = ended_by("kill -9 $$").await;
+        assert_eq!(said.ok().flatten(), None, "a killed program gives no code");
+        assert!(
+            entry.contains("EXIT_CODE=killed\nEXIT_STATUS=KILL\n")
+                && entry.contains("was killed by signal 9 (KILL)"),
+            "a kill is said with its signal: {entry:?}"
+        );
     }
 }

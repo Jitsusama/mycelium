@@ -23,6 +23,7 @@
 //! - [`modes`]: what the program asked of its terminal, for one joining
 //! - [`environment`]: the person's environment as it is now, which each
 //!   start of a held program is given
+//! - [`journal`]: where a holder says how each run of its program ended
 //!
 //! What a joined terminal sends its holder is framed, as [`Said`]; what
 //! the holder sends back is the modes the program asked for so far, then
@@ -31,6 +32,7 @@
 pub mod attach;
 pub mod environment;
 pub mod holder;
+pub mod journal;
 pub mod modes;
 pub mod start;
 
