@@ -686,7 +686,11 @@ names as `wake`, taken only as a holder's in a realm's `.held` folder
 beside its own. A talk's file, `<ADDRESS>/replies/<id>.jsonl`, is opened
 on the asking machine first, and the lines its session writes are
 carried back to it, so a talk reads the same wherever its session runs.
-It is an error,
+An `act` of `wake`, alone, as the launcher's Wake asks, puts nothing in
+the inbox, since the harness has no such act, and only wakes the session
+there, so the launcher wakes one without starting a program to write its
+file. A wake for a session on another machine, or where no holder's
+file can be written, is refused, saying so. It is an error,
 saying why, when no session goes by `address` now, as `no session goes
 by SAK9FZ now`, when its machine is out of reach, when it runs on two
 machines at once, or when the link can't carry it.
@@ -754,10 +758,12 @@ changed by key, with only the fields that differ, a dropped one as null; nothing
 while nothing changes; and no sooner than 250 ms after its last send, so
 a reader too slow for it is sent the latest rather than a backlog. A
 watch asked `when` some fields move, as a shut launcher asks for a
-session's `told`, sends only a change that moves one of them or brings
-or takes a record, with all that moved since its last send; Joel's 103
-sessions changed 56 times in a minute on 2026-11-11, and none of them
-moved a `told`. Asked again under its `id` for the same kind and keys,
+session's `told`, sends only the records whose change moves one of
+them, and those brought or taken, each with all that moved in it since
+it was last sent; the rest wait for their own. Joel's 103 sessions
+changed 56 times in a minute on 2026-11-11, and none of them moved a
+`told`; once one did, every session's held step went with it, about
+30 KB a line. Asked again under its `id` for the same kind and keys,
 a watch keeps on, sending at once what it held back, and from then on
 as `when` now says, rather than everything whole again. An ask
 it can't answer gets `{"id", "error": {"code", "message"}}`, the code

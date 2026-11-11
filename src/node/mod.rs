@@ -1254,24 +1254,49 @@ impl<S: Store> Shared<S> {
                 .map_err(|error| format!("its talk didn't open here: {error}"))?;
         }
         if machine != self.machine {
+            // The far end of a link puts a steer in the inbox there but
+            // wakes nothing, so a wake carried would only be left unread.
+            if steer.only_wakes() {
+                return Err(format!(
+                    "{address} runs on {machine}, and a wake reaches only here"
+                ));
+            }
             return self.asks.steer(&machine, steer).await;
         }
-        steer
-            .deliver(&self.steers)
-            .map_err(|error| format!("its inbox refused it: {error}"))?;
+        self.steer_here(&steer, &sessions)?;
+        Ok(Response::Steered { machine })
+    }
+
+    /// Puts `steer` in its session's inbox here, unless it only wakes,
+    /// then wakes the session where it is parked this boot: a wake that
+    /// can't is refused, but a steer told and not woken is read at the
+    /// session's next wake, whatever wakes it.
+    fn steer_here(&self, steer: &Steer, sessions: &[Session]) -> Result<(), String> {
+        let address = &steer.address;
+        if !steer.only_wakes() {
+            steer
+                .deliver(&self.steers)
+                .map_err(|error| format!("its inbox refused it: {error}"))?;
+        }
         let boot = store::folders::boot_id();
         let waking = sessions
             .iter()
             .filter(|session| session.machine == self.machine)
             .find_map(|session| steer::wake_for(session, boot.as_deref(), &self.held));
-        if let Some(file) = waking
-            && let Err(error) = steer::wake(&file, &address)
-        {
-            // Told is what was asked; the session reads it at its next
-            // wake, whatever wakes it.
-            eprintln!("{address} was told, but not woken: {error}");
+        match (waking, steer.only_wakes()) {
+            (Some(file), true) => steer::wake(&file, address)
+                .map_err(|error| format!("{address} didn't wake: {error}")),
+            (None, true) => Err(format!(
+                "{address} isn't parked with a holder to wake it this boot"
+            )),
+            (Some(file), false) => {
+                if let Err(error) = steer::wake(&file, address) {
+                    eprintln!("{address} was told, but not woken: {error}");
+                }
+                Ok(())
+            }
+            (None, false) => Ok(()),
         }
-        Ok(Response::Steered { machine })
     }
 
     /// Counts `pid` present through a new connection, which replaces any
@@ -2467,6 +2492,26 @@ mod tests {
         );
 
         client
+            .ask(json!({"id": 5, "ask": "steer", "address": "NAPPER", "steer": {"act": "wake"}}))
+            .await;
+        assert_eq!(
+            client.next().await["error"]["message"],
+            json!("NAPPER isn't parked with a holder to wake it this boot"),
+            "a wake with no holder's file to write is refused, saying why"
+        );
+        let talked: Vec<PathBuf> = fs::read_dir(inboxes(&socket).join("NAPPER"))
+            .expect("its inbox is made")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|it| it == "json"))
+            .collect();
+        assert_eq!(
+            talked.len(),
+            1,
+            "a wake leaves nothing in its inbox: {talked:?}"
+        );
+
+        client
             .ask(json!({"id": 3, "ask": "steer", "address": "NOPE", "steer": {"act": "stop"}}))
             .await;
         assert_eq!(
@@ -2523,18 +2568,19 @@ mod tests {
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
         let at = jiff::Timestamp::now().to_string();
-        let presence = |busy: bool, title: &str| {
+        let presence = |session: &str, busy: bool, title: &str| {
             json!({
-                "session": "there", "addresses": ["THERE1"], "groups": [],
+                "session": session, "addresses": [session.to_uppercase()], "groups": [],
                 "busy": busy, "state": if busy { "busy" } else { "idle" },
                 "at": at, "title": title,
             })
         };
-        let put = |busy, title| {
+        let put_as = |session, busy, title| {
             store
-                .put_presence("there", "equilibrius", &presence(busy, title))
+                .put_presence(session, "equilibrius", &presence(session, busy, title))
                 .expect("the presence is kept");
         };
+        let put = |busy, title| put_as("there", busy, title);
 
         // A shut launcher's watch, as the shell asks for one.
         let shut = json!({"id": 4, "ask": "watch", "kind": "session", "when": ["told"]});
@@ -2551,17 +2597,22 @@ mod tests {
             json!("session:there"),
             "a session coming is sent: {came}"
         );
+        put_as("beside", true, "other");
+        client.next().await;
 
         put(false, "one");
+        put_as("beside", false, "other");
         put(false, "two");
         let retitled = client.next().await;
         assert_eq!(
             (
+                retitled["changed"].as_array().map(Vec::len),
                 &retitled["changed"][0]["presence"]["busy"],
                 &retitled["changed"][0]["presence"]["title"]
             ),
-            (&json!(false), &json!("two")),
-            "its working ending wasn't sent alone, but with its retitling: {retitled}"
+            (Some(1), &json!(false), &json!("two")),
+            "its working ending wasn't sent alone, but with its retitling, \
+             and the other's step stayed held back: {retitled}"
         );
 
         put(true, "two");
@@ -2570,13 +2621,20 @@ mod tests {
             .ask(json!({"id": 4, "ask": "watch", "kind": "session"}))
             .await;
         let opened = client.next().await;
+        let busy = |key: &str| {
+            opened["changed"]
+                .as_array()
+                .and_then(|changed| changed.iter().find(|record| record["key"] == key))
+                .map(|record| record["presence"]["busy"].clone())
+        };
         assert_eq!(
             (
                 opened.get("records"),
-                &opened["changed"][0]["presence"]["busy"]
+                busy("session:there"),
+                busy("session:beside")
             ),
-            (None, &json!(true)),
-            "asked again, it sends what it held back at once, not everything whole: {opened}"
+            (None, Some(json!(true)), Some(json!(false))),
+            "asked again, it sends all it held back at once, not everything whole: {opened}"
         );
     }
 

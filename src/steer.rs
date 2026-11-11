@@ -32,6 +32,11 @@ const FIELDS: [&str; 6] = ["text", "act", "to", "at", "from", "id"];
 /// names.
 const ACTS: [&str; 5] = ["pause", "resume", "stop", "close", "carry"];
 
+/// The act that only wakes a parked session, as the launcher's Wake
+/// does: nothing goes in its inbox, since the harness has no such act,
+/// and its holder's wake file is written on the machine it is parked on.
+const WAKE: &str = "wake";
+
 /// The stages that end a talk; after one, nothing more is followed.
 const ENDED: [&str; 2] = ["replied", "failed"];
 
@@ -66,8 +71,11 @@ impl Steer {
             .collect();
         let text = body.get("text").and_then(Value::as_str).unwrap_or("");
         let act = body.get("act").and_then(Value::as_str);
-        if act.is_some_and(|act| !ACTS.contains(&act)) {
-            return Err(format!("an act is one of {}", ACTS.join(", ")));
+        if act.is_some_and(|act| act != WAKE && !ACTS.contains(&act)) {
+            return Err(format!("an act is one of {}, or {WAKE}", ACTS.join(", ")));
+        }
+        if act == Some(WAKE) && (!text.trim().is_empty() || body.contains_key("id")) {
+            return Err("a wake says nothing; it only wakes a parked session".to_owned());
         }
         if text.trim().is_empty() && act.is_none() {
             return Err("a steer says something or does something".to_owned());
@@ -87,6 +95,12 @@ impl Steer {
             return Err(format!("{id} can't name a talk"));
         }
         Ok(Self { address, body })
+    }
+
+    /// Whether it only wakes a parked session, so nothing is delivered.
+    #[must_use]
+    pub fn only_wakes(&self) -> bool {
+        self.body.get("act").and_then(Value::as_str) == Some(WAKE)
     }
 
     /// The talk it opens, if it opens one.
@@ -383,6 +397,8 @@ mod tests {
             ("AB12", json!({"act": "carry", "to": "../penelope"})),
             ("AB12", json!({"act": "carry", "to": "-o"})),
             ("AB12", json!({"act": "close", "to": "penelope"})),
+            ("AB12", json!({"act": "wake", "text": "hi"})),
+            ("AB12", json!({"act": "wake", "id": "talk-1"})),
         ] {
             assert!(
                 Steer::new(address, &said).is_err(),
@@ -395,6 +411,12 @@ mod tests {
                 "{act} is an act the harness reads"
             );
         }
+        let waking = Steer::new("AB12", &json!({"act": "wake"})).expect("a wake alone");
+        assert!(
+            waking.only_wakes()
+                && !Steer::new("AB12", &json!({"act": "pause"})).is_ok_and(|it| it.only_wakes()),
+            "a wake only wakes, and only a wake"
+        );
         let carrying = Steer::new("AB12", &json!({"act": "carry", "to": "penelope"}))
             .expect("a carry naming its machine");
         assert_eq!(

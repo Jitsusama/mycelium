@@ -428,9 +428,9 @@ fn got(holds: &impl Holds, keys: &[String]) -> Vec<Value> {
 /// Sends `kind`'s records, or those of `keys`, whole, then what changes
 /// each time `told` says they may have, no sooner than [`BETWEEN_SENDS`]
 /// after the last, and nothing while nothing changes. While `when` names
-/// fields, a change moving none of them, and bringing and taking no
-/// record, is held back, and sent with the next that does, or at once
-/// when `when` is changed to let it through.
+/// fields, a record's change moving none of them is held back, and sent
+/// with that record's next that does, or at once when `when` is changed
+/// to let it through.
 async fn keep_watching<H: Holds>(
     holds: Arc<H>,
     id: Value,
@@ -473,14 +473,22 @@ async fn keep_watching<H: Holds>(
         }
         let now = held(&holds);
         let (changed, gone) = changes(&sent, &now);
+        let changed = sends(when.borrow().as_deref(), &sent, changed);
         if changed.is_empty() && gone.is_empty() {
             continue;
         }
-        let moved = moves(when.borrow().as_deref(), &sent, &changed, &gone);
-        if !moved {
-            continue;
+        for record in &changed {
+            if let Some((key, record)) = record
+                .get("key")
+                .and_then(Value::as_str)
+                .and_then(|key| now.get_key_value(key))
+            {
+                sent.insert(key.clone(), record.clone());
+            }
         }
-        sent = now;
+        for key in &gone {
+            sent.remove(key);
+        }
         if answering
             .send(json!({"id": id, "changed": changed, "gone": gone}))
             .await
@@ -491,27 +499,29 @@ async fn keep_watching<H: Holds>(
     }
 }
 
-/// Whether a change is one a watch sends: every change while `when` names
-/// nothing; else one bringing or taking a record, or moving a field `when`
+/// Of a change's records, those a watch sends: every one while `when`
+/// names nothing; else each record come, and each moving a field `when`
 /// names, such as a session's `told`, which moves only with what a shut
-/// launcher reads.
-fn moves(
+/// launcher reads. The rest are held back, so one session's `told`
+/// moving sends that session alone, not every other's step beside it.
+fn sends(
     when: Option<&[String]>,
     sent: &BTreeMap<String, Value>,
-    changed: &[Value],
-    gone: &[String],
-) -> bool {
+    changed: Vec<Value>,
+) -> Vec<Value> {
     let Some(when) = when else {
-        return true;
+        return changed;
     };
-    !gone.is_empty()
-        || changed.iter().any(|record| {
+    changed
+        .into_iter()
+        .filter(|record| {
             record
                 .get("key")
                 .and_then(Value::as_str)
                 .is_none_or(|key| !sent.contains_key(key))
                 || when.iter().any(|field| record.get(field).is_some())
         })
+        .collect()
 }
 
 /// How long since `begun`, in milliseconds, as an answer's `took`.
@@ -708,40 +718,38 @@ mod tests {
     }
 
     #[test]
-    fn a_watch_asked_when_a_field_moves_sends_only_a_change_moving_it() {
-        let sent: BTreeMap<String, Value> =
-            BTreeMap::from([("session:a".to_owned(), json!({"key": "session:a"}))]);
+    fn a_watch_asked_when_a_field_moves_sends_only_the_records_moving_it() {
+        let sent: BTreeMap<String, Value> = BTreeMap::from([
+            ("session:a".to_owned(), json!({"key": "session:a"})),
+            ("session:c".to_owned(), json!({"key": "session:c"})),
+        ]);
         let told = ["told".to_owned()];
-        let stepped = [json!({"key": "session:a", "step": "y"})];
-        assert!(
-            moves(None, &sent, &stepped, &[]),
+        let stepped = || vec![json!({"key": "session:a", "step": "y"})];
+        assert_eq!(
+            sends(None, &sent, stepped()),
+            stepped(),
             "asked when nothing in particular, every change is sent"
         );
-        assert!(
-            !moves(Some(&told), &sent, &stepped, &[]),
+        assert_eq!(
+            sends(Some(&told), &sent, stepped()),
+            Vec::<Value>::new(),
             "a step alone moves nothing a shut launcher reads"
         );
-        assert!(
-            moves(
+        assert_eq!(
+            sends(
                 Some(&told),
                 &sent,
-                &[json!({"key": "session:a", "step": "y", "told": "2"})],
-                &[]
+                vec![
+                    json!({"key": "session:a", "step": "y", "told": "2"}),
+                    json!({"key": "session:b", "step": "y"}),
+                    json!({"key": "session:c", "step": "z"}),
+                ]
             ),
-            "one moving its digest is sent"
-        );
-        assert!(
-            moves(
-                Some(&told),
-                &sent,
-                &[json!({"key": "session:b", "step": "y"})],
-                &[]
-            ),
-            "a record come is sent"
-        );
-        assert!(
-            moves(Some(&told), &sent, &[], &["session:a".to_owned()]),
-            "and one gone"
+            vec![
+                json!({"key": "session:a", "step": "y", "told": "2"}),
+                json!({"key": "session:b", "step": "y"}),
+            ],
+            "one moving its digest is sent, and one come, but not another's step"
         );
     }
 }
