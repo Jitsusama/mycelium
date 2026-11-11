@@ -2522,6 +2522,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_update_asked_in_the_daemon_interface_answers_how_it_ended() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let done = json!({"step": "done", "commit": "c0ffee", "applied": "now",
+            "restart": null, "restarted": []});
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        // The node has made its folder by now, as only it may.
+        stand_in_updater(&updater_of(&socket), done.clone());
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+
+        client
+            .ask(json!({"id": 2, "ask": "update", "machine": "optimus"}))
+            .await;
+        let updated = client.next().await;
+        assert_eq!(
+            (&updated["id"], &updated["updated"]),
+            (&json!(2), &done),
+            "its updater's ending comes back, as `Update` answers it: {updated}"
+        );
+
+        client.ask(json!({"id": 3, "ask": "update"})).await;
+        assert_eq!(
+            client.next().await["error"]["code"],
+            json!("not-an-ask"),
+            "an update for no machine isn't an ask"
+        );
+        client
+            .ask(json!({"id": 4, "ask": "update", "machine": "nowhere"}))
+            .await;
+        assert_eq!(
+            client.next().await["error"]["code"],
+            json!("refused"),
+            "an update for a machine no link reaches is refused"
+        );
+    }
+
+    #[tokio::test]
     async fn a_watch_of_sessions_is_sent_each_session_that_arrives() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("optimus").join("work.sock");
