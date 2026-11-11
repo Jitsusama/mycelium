@@ -452,19 +452,23 @@ fn run(command: Command) -> io::Result<ExitCode> {
                 environment: &ServiceManager,
             })
         }
-        Action::Watch { groups, recent } => {
-            let mut client = Client::connect(&socket)?;
-            print_line(&client.ask(&Request::Watch {
-                groups: Some(groups),
-                recent,
-            })?)?;
-            while let Some(event) = client.next_event()? {
-                print_line(&event)?;
-            }
-            Ok(())
-        }
+        Action::Watch { groups, recent } => watch(&socket, groups, recent),
     };
     ran.map(|()| ExitCode::SUCCESS)
+}
+
+/// Prints what the node says of `groups` as it says it, after the
+/// `recent` it already holds, until the node goes.
+fn watch(socket: &Path, groups: Pattern, recent: usize) -> io::Result<()> {
+    let mut client = Client::connect(socket)?;
+    print_line(&client.ask(&Request::Watch {
+        groups: Some(groups),
+        recent,
+    })?)?;
+    while let Some(event) = client.next_event()? {
+        print_line(&event)?;
+    }
+    Ok(())
 }
 
 /// `realm`, once it reads as one. A realm names a socket and goes into the
