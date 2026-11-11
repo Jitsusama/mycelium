@@ -990,7 +990,7 @@ impl<S: Store> Shared<S> {
         let queued = place::queue()
             .map(|queue| room::queued_by(&queue, now))
             .unwrap_or_default();
-        let holds = awake::at_work(&held, &sessions, &queued);
+        let holds = awake::at_work(&self.machine, &held, &sessions, &queued);
         awake.keep(awake::wanted(holds, power));
     }
 

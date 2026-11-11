@@ -22,20 +22,32 @@ use tokio::process::{Child, Command};
 /// The charge, in percent, below which a machine on battery is let sleep.
 pub const LOW_CHARGE: u8 = 20;
 
-/// Whether any of what is `held` here is at work, as `sessions` and the
-/// sessions with work in the machine's queue, `queued`, say. A program
-/// held that is no session, such as a build sent here, is at work while
-/// it runs; a session is while it runs a turn or has work queued, and
-/// not while it waits idle, which could keep a laptop awake for days.
-/// A parked program is waiting too, with no process at all.
+/// Whether any of what is `held` here, or any session a pi host on this
+/// machine, `here`, runs, is at work, as `sessions` and the sessions with
+/// work in the machine's queue, `queued`, say. A program held that is no
+/// session, such as a build sent here, is at work while it runs; a
+/// session is while it runs a turn or has work queued, and not while it
+/// waits idle, which could keep a laptop awake for days. A parked program
+/// is waiting too, with no process at all.
+///
+/// A pi host's sessions share its one process, which no holder holds, so
+/// they count by their own records. Before 11 November only held
+/// programs counted, so a machine could sleep in a hosted session's turn,
+/// as the hosted liveness audit found (its gap 24). A session elsewhere in
+/// the realm keeps its own machine.
 #[must_use]
-pub fn at_work(held: &[Held], sessions: &[Session], queued: &BTreeSet<String>) -> bool {
-    held.iter().filter(|one| !one.parked).any(|one| {
-        sessions
-            .iter()
-            .find(|session| session.held.as_deref() == Some(one.id.as_str()))
-            .is_none_or(|session| session.state == State::Busy || queued.contains(&session.id))
-    })
+pub fn at_work(here: &str, held: &[Held], sessions: &[Session], queued: &BTreeSet<String>) -> bool {
+    let working = |session: &Session| session.state == State::Busy || queued.contains(&session.id);
+    let hosted = sessions
+        .iter()
+        .any(|session| session.host.is_some() && session.machine == here && working(session));
+    hosted
+        || held.iter().filter(|one| !one.parked).any(|one| {
+            sessions
+                .iter()
+                .find(|session| session.held.as_deref() == Some(one.id.as_str()))
+                .is_none_or(working)
+        })
 }
 
 /// Whether a machine that holds work or not, as `holds_work` says, with
@@ -203,13 +215,63 @@ mod tests {
         .expect("a held program")
     }
 
+    /// The machine the tests' sessions run on.
+    const HERE: &str = "penelope";
+
     /// Session `id`, held as `held`, standing as `state` says.
     fn session(id: &str, held: &str, state: &str) -> Session {
         serde_json::from_value(serde_json::json!({
-            "id": id, "address": id, "machine": "penelope", "groups": [],
+            "id": id, "address": id, "machine": HERE, "groups": [],
             "state": state, "held": held, "at": "2026-10-30T20:00:00Z"
         }))
         .expect("a session")
+    }
+
+    /// Session `id`, run by the pi host `host` on `machine`, standing as
+    /// `state` says.
+    fn hosted(id: &str, host: &str, machine: &str, state: &str) -> Session {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "address": id, "machine": machine, "groups": [],
+            "state": state, "host": host, "conversation": id,
+            "at": "2026-10-30T20:00:00Z"
+        }))
+        .expect("a hosted session")
+    }
+
+    #[test]
+    fn a_hosted_session_at_work_keeps_its_machine_awake() {
+        let nothing = BTreeSet::new();
+        assert!(
+            at_work(
+                HERE,
+                &[],
+                &[hosted("busy-one", "work-background", HERE, "busy")],
+                &nothing
+            ),
+            "a session a host here runs is at work while it runs a turn, with nothing held"
+        );
+        let idle = [hosted("idle-one", "work-attended", HERE, "idle")];
+        assert!(
+            !at_work(HERE, &[], &idle, &nothing),
+            "one waiting idle isn't"
+        );
+        assert!(
+            at_work(HERE, &[], &idle, &BTreeSet::from(["idle-one".to_owned()])),
+            "one with work in the machine's queue is"
+        );
+        assert!(
+            !at_work(
+                HERE,
+                &[],
+                &[hosted("there", "work-background", "optimus", "busy")],
+                &nothing
+            ),
+            "a session a host on another machine runs keeps that machine, not this"
+        );
+        assert!(
+            !at_work(HERE, &[], &[session("plain", "a", "busy")], &nothing),
+            "a busy session neither held nor hosted here keeps nothing awake"
+        );
     }
 
     #[test]
@@ -217,11 +279,12 @@ mod tests {
         let nothing = BTreeSet::new();
         let idle = [session("idle-one", "a", "idle")];
         assert!(
-            !at_work(&[held("a")], &idle, &nothing),
+            !at_work(HERE, &[held("a")], &idle, &nothing),
             "a session held but waiting idle isn't at work"
         );
         assert!(
             at_work(
+                HERE,
                 &[held("a")],
                 &idle,
                 &BTreeSet::from(["idle-one".to_owned()])
@@ -229,15 +292,20 @@ mod tests {
             "one with work in its machine's queue is, though its turn has ended"
         );
         assert!(
-            at_work(&[held("a")], &[session("busy-one", "a", "busy")], &nothing),
+            at_work(
+                HERE,
+                &[held("a")],
+                &[session("busy-one", "a", "busy")],
+                &nothing
+            ),
             "one running a turn is"
         );
         assert!(
-            at_work(&[held("a"), held("b")], &idle, &nothing),
+            at_work(HERE, &[held("a"), held("b")], &idle, &nothing),
             "a program held that is no session, such as a build, is"
         );
         assert!(
-            !at_work(&[], &idle, &nothing),
+            !at_work(HERE, &[], &idle, &nothing),
             "nothing held is nothing at work"
         );
         let parked = Held {
@@ -246,7 +314,7 @@ mod tests {
             ..held("c")
         };
         assert!(
-            !at_work(&[parked], &[], &nothing),
+            !at_work(HERE, &[parked], &[], &nothing),
             "a parked program, whose session has no process, isn't at work"
         );
     }
