@@ -151,15 +151,17 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
     };
     tokio::pin!(watching);
     let mut output = tokio::io::stdout();
-    // Joining after a suspend or a restart waits for a host that may be
-    // starting; the first join finds it running, or says it isn't.
-    let mut again = false;
+    // Joining after a restart waits for a host that may be starting, with
+    // its last row saying so. Any other join, the first or one after a
+    // suspend, with the shell's screen showing, finds the host running or
+    // says at once it has gone.
+    let mut restarted = false;
     loop {
         // A size from before a suspend is older than the one joined at.
         while sizes.try_recv().is_ok() {}
         let size = size_here().unwrap_or(SIZE_UNSAID);
         let joining = async {
-            if again {
+            if restarted {
                 let patience = RESTART_PATIENCE;
                 join_again(
                     socket,
@@ -179,8 +181,8 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
             left = joining => left,
             () = &mut watching => Ok(Left::Gone),
         };
-        again = true;
-        if left.as_ref().is_ok_and(|left| *left == Left::Restarting) {
+        restarted = left.as_ref().is_ok_and(|left| *left == Left::Restarting);
+        if restarted {
             output.write_all(RESTARTING.as_bytes()).await?;
             output.flush().await?;
             continue;
@@ -197,8 +199,9 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
 /// Joins `session` as [`join`] does, through a host that may be starting:
 /// while its socket is missing or refuses the connection, or it closes
 /// before answering, it tries again every `patience.every`, and once
-/// `patience.within` has passed it answers [`Left::Gone`]. A host that is
-/// back and refuses the session ends the wait at once.
+/// `patience.within` has passed, a try still waiting on its answer
+/// included, it answers [`Left::Gone`]. A host that is back and refuses
+/// the session ends the wait at once.
 ///
 /// # Errors
 ///
@@ -214,10 +217,12 @@ pub async fn join_again(
 ) -> io::Result<Left> {
     let until = tokio::time::Instant::now() + patience.within;
     loop {
-        match connect(socket, session, size, &*here).await {
-            Ok(Some(joined)) => return show(joined, here, output, sizes, patience.hold).await,
-            Err(error) if !starting(&error) => return Err(error),
-            Ok(None) | Err(_) => {}
+        let tried = tokio::time::timeout_at(until, connect(socket, session, size, &*here)).await;
+        match tried {
+            Err(_elapsed) => return Ok(Left::Gone),
+            Ok(Ok(Some(joined))) => return show(joined, here, output, sizes, patience.hold).await,
+            Ok(Err(error)) if !starting(&error) => return Err(error),
+            Ok(Ok(None) | Err(_)) => {}
         }
         if tokio::time::Instant::now() >= until {
             return Ok(Left::Gone);
@@ -930,6 +935,37 @@ mod tests {
             .await
             .expect("waited");
         assert_eq!(left, Left::Gone, "no socket within its patience");
+    }
+
+    #[tokio::test]
+    async fn a_host_that_accepts_and_never_answers_has_gone_within_its_patience() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let path = dir.path().join("work-attended.sock");
+        // A socket held for a host that never starts, as systemd holds one:
+        // the connection is taken and nothing is ever said on it.
+        let listener = tokio::net::UnixListener::bind(&path).expect("a socket");
+        let holding = tokio::spawn(async move {
+            let (_held, _) = listener.accept().await.expect("a connection");
+            std::future::pending::<()>().await;
+        });
+        let (_tell, mut sizes) = mpsc::unbounded_channel();
+        let mut here = Script::typing(b"");
+        let brief = Patience {
+            every: Duration::from_millis(5),
+            within: Duration::from_millis(50),
+            hold: Duration::from_secs(30),
+        };
+        // Bounded far past its patience, so a try that waits for ever fails
+        // here rather than holding up the whole run.
+        let left = tokio::time::timeout(
+            Duration::from_secs(10),
+            join_again(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes, brief),
+        )
+        .await
+        .expect("ended with its patience, not waiting for ever on the answer")
+        .expect("waited");
+        assert_eq!(left, Left::Gone, "an unanswered try ends with its patience");
+        holding.abort();
     }
 
     /// Reads what `seen` is shown until it has shown `what`.
