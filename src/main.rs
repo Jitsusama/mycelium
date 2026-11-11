@@ -779,7 +779,8 @@ fn join(
 
 /// Joins `session` through the pi host `host` of `realm` on this machine
 /// until the host lets it go, exiting [`hold::holder::RELEASED`] when it
-/// lets the conversation go back to plain pi.
+/// lets the conversation go back to plain pi, and [`hold::holder::GONE`]
+/// when it stayed gone past its patience for a restart.
 fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode> {
     let runtime_dir = place::login_runtime().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "this login has no runtime folder")

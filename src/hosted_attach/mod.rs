@@ -98,12 +98,15 @@ pub enum Left {
 impl Left {
     /// The code `mycelium attach --host` exits with, having left so:
     /// [`RELEASED`](crate::hold::holder::RELEASED) for a release, so the
-    /// window carries on as plain pi, and 0 for any other leaving.
+    /// window carries on as plain pi, [`GONE`](crate::hold::holder::GONE)
+    /// for a host gone past its patience, so the window waits for it as
+    /// for a refused attach, and 0 for any other leaving, which closes it.
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::Released => crate::hold::holder::RELEASED,
-            Self::Detached(_) | Self::Gone | Self::Suspended | Self::Restarting => 0,
+            Self::Gone => crate::hold::holder::GONE,
+            Self::Detached(_) | Self::Suspended | Self::Restarting => 0,
         }
     }
 }
