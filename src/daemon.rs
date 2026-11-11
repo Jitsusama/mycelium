@@ -85,6 +85,10 @@ pub enum What {
         kind: String,
         /// Only these keys, or all of the kind.
         keys: Option<Vec<String>>,
+        /// Only a change moving one of these fields, or bringing or taking
+        /// a record, is sent, with all that moved since the last send; or
+        /// every change.
+        when: Option<Vec<String>>,
     },
     /// The end of the watch asked with this id.
     Unwatch,
@@ -179,6 +183,7 @@ pub fn read(line: &str) -> Result<Ask, (Value, Refusal)> {
         "watch" => What::Watch {
             kind: kind()?,
             keys: keys("keys"),
+            when: keys("when"),
         },
         "unwatch" => What::Unwatch,
         "health" => What::Health,
@@ -249,7 +254,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let (answering, mut answers) = mpsc::channel::<Value>(WAITING_ANSWERS);
-    let mut watches: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    let mut watches: HashMap<String, Watching> = HashMap::new();
     let mut asked = Some(Ok(first));
     loop {
         let now = match asked.take() {
@@ -273,8 +278,21 @@ where
         }
     }
     for (_, watch) in watches {
-        watch.abort();
+        watch.task.abort();
     }
+}
+
+/// A watch a client asked for, running, with what it watches, so asking
+/// again under its id for the same records changes only `when` it sends.
+struct Watching {
+    /// The kind it watches.
+    kind: String,
+    /// The keys it watches, or all of the kind.
+    keys: Option<Vec<String>>,
+    /// The fields whose moving it sends for, told to it as they change.
+    when: watch::Sender<Option<Vec<String>>>,
+    /// What sends it.
+    task: tokio::task::JoinHandle<()>,
 }
 
 /// Writes `answer` as a line.
@@ -292,7 +310,7 @@ fn answer<H: Holds + Steers>(
     holds: &Arc<H>,
     ask: Ask,
     answering: &mpsc::Sender<Value>,
-    watches: &mut HashMap<String, tokio::task::JoinHandle<()>>,
+    watches: &mut HashMap<String, Watching>,
 ) -> Option<Value> {
     let begun = std::time::Instant::now();
     let Ask { id, what } = ask;
@@ -314,26 +332,46 @@ fn answer<H: Holds + Steers>(
                 json!({"id": id, "records": records})
             })
             .ok_or(Refusal::UnknownKind(kind)),
-        What::Watch { kind, keys } => match holds.told(&kind) {
-            Some(told) => {
-                let watch = tokio::spawn(keep_watching(
-                    Arc::clone(holds),
-                    id.clone(),
-                    kind,
-                    keys,
-                    told,
-                    answering.clone(),
-                ));
-                if let Some(earlier) = watches.insert(id.to_string(), watch) {
-                    earlier.abort();
-                }
+        What::Watch { kind, keys, when } => {
+            // Asked again for the same records, as a launcher opening asks
+            // for every change where shut it asked for fewer, it sends what
+            // it held back at once rather than everything whole.
+            if let Some(running) = watches.get(&id.to_string())
+                && running.kind == kind
+                && running.keys == keys
+                && !running.task.is_finished()
+            {
+                running.when.send_replace(when);
                 return None;
             }
-            None => Err(Refusal::UnknownKind(kind)),
-        },
+            match holds.told(&kind) {
+                Some(told) => {
+                    let (sends, sent) = watch::channel(when);
+                    let task = tokio::spawn(keep_watching(
+                        Arc::clone(holds),
+                        id.clone(),
+                        (kind.clone(), keys.clone()),
+                        told,
+                        sent,
+                        answering.clone(),
+                    ));
+                    let running = Watching {
+                        kind,
+                        keys,
+                        when: sends,
+                        task,
+                    };
+                    if let Some(earlier) = watches.insert(id.to_string(), running) {
+                        earlier.task.abort();
+                    }
+                    return None;
+                }
+                None => Err(Refusal::UnknownKind(kind)),
+            }
+        }
         What::Unwatch => {
             if let Some(watch) = watches.remove(&id.to_string()) {
-                watch.abort();
+                watch.task.abort();
             }
             return None;
         }
@@ -389,13 +427,16 @@ fn got(holds: &impl Holds, keys: &[String]) -> Vec<Value> {
 
 /// Sends `kind`'s records, or those of `keys`, whole, then what changes
 /// each time `told` says they may have, no sooner than [`BETWEEN_SENDS`]
-/// after the last, and nothing while nothing changes.
+/// after the last, and nothing while nothing changes. While `when` names
+/// fields, a change moving none of them, and bringing and taking no
+/// record, is held back, and sent with the next that does, or at once
+/// when `when` is changed to let it through.
 async fn keep_watching<H: Holds>(
     holds: Arc<H>,
     id: Value,
-    kind: String,
-    keys: Option<Vec<String>>,
+    (kind, keys): (String, Option<Vec<String>>),
     mut told: watch::Receiver<u64>,
+    mut when: watch::Receiver<Option<Vec<String>>>,
     answering: mpsc::Sender<Value>,
 ) {
     let held = |holds: &H| {
@@ -415,15 +456,31 @@ async fn keep_watching<H: Holds>(
     {
         return;
     }
-    while told.changed().await.is_ok() {
-        tokio::time::sleep(BETWEEN_SENDS).await;
-        told.mark_unchanged();
+    loop {
+        tokio::select! {
+            heard = told.changed() => {
+                if heard.is_err() {
+                    return;
+                }
+                tokio::time::sleep(BETWEEN_SENDS).await;
+                told.mark_unchanged();
+            }
+            asked = when.changed() => {
+                if asked.is_err() {
+                    return;
+                }
+            }
+        }
         let now = held(&holds);
         let (changed, gone) = changes(&sent, &now);
-        sent = now;
         if changed.is_empty() && gone.is_empty() {
             continue;
         }
+        let moved = moves(when.borrow().as_deref(), &sent, &changed, &gone);
+        if !moved {
+            continue;
+        }
+        sent = now;
         if answering
             .send(json!({"id": id, "changed": changed, "gone": gone}))
             .await
@@ -432,6 +489,29 @@ async fn keep_watching<H: Holds>(
             return;
         }
     }
+}
+
+/// Whether a change is one a watch sends: every change while `when` names
+/// nothing; else one bringing or taking a record, or moving a field `when`
+/// names, such as a session's `told`, which moves only with what a shut
+/// launcher reads.
+fn moves(
+    when: Option<&[String]>,
+    sent: &BTreeMap<String, Value>,
+    changed: &[Value],
+    gone: &[String],
+) -> bool {
+    let Some(when) = when else {
+        return true;
+    };
+    !gone.is_empty()
+        || changed.iter().any(|record| {
+            record
+                .get("key")
+                .and_then(Value::as_str)
+                .is_none_or(|key| !sent.contains_key(key))
+                || when.iter().any(|field| record.get(field).is_some())
+        })
 }
 
 /// How long since `begun`, in milliseconds, as an answer's `took`.
@@ -501,6 +581,7 @@ mod tests {
                 what: What::Watch {
                     kind: "session".to_owned(),
                     keys: Some(vec!["session:a".to_owned()]),
+                    when: None,
                 },
             }),
             "a watch names its kind and keys"
@@ -623,6 +704,44 @@ mod tests {
             changes(&after, &after),
             (Vec::new(), Vec::new()),
             "nothing is said while nothing changes"
+        );
+    }
+
+    #[test]
+    fn a_watch_asked_when_a_field_moves_sends_only_a_change_moving_it() {
+        let sent: BTreeMap<String, Value> =
+            BTreeMap::from([("session:a".to_owned(), json!({"key": "session:a"}))]);
+        let told = ["told".to_owned()];
+        let stepped = [json!({"key": "session:a", "step": "y"})];
+        assert!(
+            moves(None, &sent, &stepped, &[]),
+            "asked when nothing in particular, every change is sent"
+        );
+        assert!(
+            !moves(Some(&told), &sent, &stepped, &[]),
+            "a step alone moves nothing a shut launcher reads"
+        );
+        assert!(
+            moves(
+                Some(&told),
+                &sent,
+                &[json!({"key": "session:a", "step": "y", "told": "2"})],
+                &[]
+            ),
+            "one moving its digest is sent"
+        );
+        assert!(
+            moves(
+                Some(&told),
+                &sent,
+                &[json!({"key": "session:b", "step": "y"})],
+                &[]
+            ),
+            "a record come is sent"
+        );
+        assert!(
+            moves(Some(&told), &sent, &[], &["session:a".to_owned()]),
+            "and one gone"
         );
     }
 }

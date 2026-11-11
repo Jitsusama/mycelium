@@ -2497,6 +2497,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_watch_asked_when_told_moves_holds_back_what_only_an_open_launcher_shows() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        let at = jiff::Timestamp::now().to_string();
+        let presence = |busy: bool, title: &str| {
+            json!({
+                "session": "there", "addresses": ["THERE1"], "groups": [],
+                "busy": busy, "state": if busy { "busy" } else { "idle" },
+                "at": at, "title": title,
+            })
+        };
+        let put = |busy, title| {
+            store
+                .put_presence("there", "equilibrius", &presence(busy, title))
+                .expect("the presence is kept");
+        };
+
+        // A shut launcher's watch, as the shell asks for one.
+        let shut = json!({"id": 4, "ask": "watch", "kind": "session", "when": ["told"]});
+        client.ask(shut).await;
+        assert_eq!(
+            client.next().await["records"],
+            json!([]),
+            "no session runs yet"
+        );
+        put(true, "one");
+        let came = client.next().await;
+        assert_eq!(
+            came["changed"][0]["key"],
+            json!("session:there"),
+            "a session coming is sent: {came}"
+        );
+
+        put(false, "one");
+        put(false, "two");
+        let retitled = client.next().await;
+        assert_eq!(
+            (
+                &retitled["changed"][0]["presence"]["busy"],
+                &retitled["changed"][0]["presence"]["title"]
+            ),
+            (&json!(false), &json!("two")),
+            "its working ending wasn't sent alone, but with its retitling: {retitled}"
+        );
+
+        put(true, "two");
+        // The launcher opening asks for every change, under the same id.
+        client
+            .ask(json!({"id": 4, "ask": "watch", "kind": "session"}))
+            .await;
+        let opened = client.next().await;
+        assert_eq!(
+            (
+                opened.get("records"),
+                &opened["changed"][0]["presence"]["busy"]
+            ),
+            (None, &json!(true)),
+            "asked again, it sends what it held back at once, not everything whole: {opened}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_watch_of_sessions_says_how_each_stands_and_hears_a_park_marked() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("optimus").join("work.sock");
