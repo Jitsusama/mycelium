@@ -57,6 +57,10 @@ pub struct Patience {
     pub every: Duration,
     /// How long it goes on trying.
     pub within: Duration,
+    /// How long a terminal told of a restart keeps what is typed and each
+    /// size it takes for the next host, before it takes the host as
+    /// staying after all and sends them to it.
+    pub hold: Duration,
 }
 
 /// How long a host takes to restart with room to spare: it stops once
@@ -64,6 +68,7 @@ pub struct Patience {
 pub const RESTART_PATIENCE: Patience = Patience {
     every: Duration::from_millis(500),
     within: Duration::from_secs(120),
+    hold: Duration::from_secs(30),
 };
 
 /// How a joined terminal stopped showing the conversation.
@@ -210,7 +215,7 @@ pub async fn join_again(
     let until = tokio::time::Instant::now() + patience.within;
     loop {
         match connect(socket, session, size, &*here).await {
-            Ok(Some(joined)) => return show(joined, here, output, sizes).await,
+            Ok(Some(joined)) => return show(joined, here, output, sizes, patience.hold).await,
             Err(error) if !starting(&error) => return Err(error),
             Ok(None) | Err(_) => {}
         }
@@ -253,7 +258,7 @@ pub async fn join(
     let Some(joined) = connect(socket, session, size, &*here).await? else {
         return Ok(Left::Gone);
     };
-    show(joined, here, output, sizes).await
+    show(joined, here, output, sizes, RESTART_PATIENCE.hold).await
 }
 
 /// A connection the host accepted a terminal on.
@@ -298,22 +303,26 @@ async fn connect(
 /// Shows the conversation `joined` holds until the host lets this
 /// terminal go, suspends it, restarts or goes: what is typed `here` goes
 /// to its screen, each size from `sizes` is the terminal's new one, and
-/// the screen's output goes to `output`.
+/// the screen's output goes to `output`. Told the host is restarting, it
+/// keeps both for the next host for as long as `hold`.
 async fn show(
     joined: Joined,
     here: &mut impl Here,
     mut output: impl AsyncWrite + Unpin,
     sizes: &mut mpsc::UnboundedReceiver<Size>,
+    hold: Duration,
 ) -> io::Result<Left> {
     let Joined { mut from, mut to } = joined;
     let mut typing = Typing::default();
     let mut typed = true;
     let mut resized = true;
     // Once the host has said it is restarting, its end closing is that
-    // restart, a write it can no longer read included.
-    let mut restarting = false;
-    let ended = |restarting: bool, error: io::Error| {
-        if restarting {
+    // restart. Until then, what is typed and each size wait for the next
+    // host, since a host stopping would read none of them; a host still
+    // here once `hold` has passed stayed after all, and is sent them.
+    let mut restarting: Option<tokio::time::Instant> = None;
+    let ended = |restarting: Option<tokio::time::Instant>, error: io::Error| {
+        if restarting.is_some() {
             Ok(Left::Restarting)
         } else {
             Err(error)
@@ -324,17 +333,19 @@ async fn show(
             said = from.next() => {
                 let said = match said {
                     Ok(Some(said)) => said,
-                    Ok(None) if restarting => return Ok(Left::Restarting),
+                    Ok(None) if restarting.is_some() => return Ok(Left::Restarting),
                     Ok(None) => return Ok(Left::Gone),
                     Err(error) => return ended(restarting, error),
                 };
                 if said["type"] == "restarting" {
-                    restarting = true;
+                    restarting = Some(tokio::time::Instant::now() + hold);
                 } else if let Some(left) = heed(&said, here, &mut output, &mut to).await? {
                     return Ok(left);
                 }
             },
-            keys = here.keys(), if typed => match keys {
+            () = tokio::time::sleep_until(restarting.unwrap_or_else(tokio::time::Instant::now)),
+                if restarting.is_some() => restarting = None,
+            keys = here.keys(), if typed && restarting.is_none() => match keys {
                 None => typed = false,
                 Some(keys) => {
                     let text = typing.text(&keys);
@@ -346,7 +357,7 @@ async fn show(
                     }
                 }
             },
-            size = sizes.recv(), if resized => match size {
+            size = sizes.recv(), if resized && restarting.is_none() => match size {
                 Some(size) => {
                     let (rows, columns) = sides(size);
                     let resize = json!({"type": "resize", "rows": rows, "columns": columns});
@@ -549,6 +560,8 @@ mod tests {
         Hear,
         /// Sends the viewer this frame.
         Say(Value),
+        /// Waits until the test says to go on.
+        Until(tokio::sync::oneshot::Receiver<()>),
     }
 
     const ACCEPTED: &str =
@@ -591,6 +604,7 @@ mod tests {
                 match step {
                     Step::Hear => heard.push(from.next().await.expect("a frame").expect("one")),
                     Step::Say(said) => send(&mut to, &said).await.expect("sent"),
+                    Step::Until(go) => go.await.expect("told to go on"),
                 }
             }
             heard
@@ -620,8 +634,10 @@ mod tests {
             &FEATURES
         }
 
+        // Taken only once polled, as the terminal's own are, so a branch
+        // made but never polled loses no keys.
         fn keys(&mut self) -> impl Future<Output = Option<Vec<u8>>> {
-            std::future::ready(self.keys.pop_front())
+            async { self.keys.pop_front() }
         }
 
         fn edit(&mut self, text: &str) -> impl Future<Output = Option<String>> {
@@ -783,6 +799,7 @@ mod tests {
     const PATIENT: Patience = Patience {
         every: Duration::from_millis(5),
         within: Duration::from_secs(30),
+        hold: Duration::from_secs(30),
     };
 
     fn restarting() -> Value {
@@ -905,10 +922,109 @@ mod tests {
         let brief = Patience {
             every: Duration::from_millis(5),
             within: Duration::from_millis(20),
+            hold: Duration::from_secs(30),
         };
         let left = join_again(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes, brief)
             .await
             .expect("waited");
         assert_eq!(left, Left::Gone, "no socket within its patience");
+    }
+
+    /// Reads what `seen` is shown until it has shown `what`.
+    async fn until_shown(seen: &mut tokio::io::DuplexStream, what: &str) {
+        use tokio::io::AsyncReadExt;
+        let mut shown = Vec::new();
+        let mut chunk = [0; 256];
+        while !String::from_utf8_lossy(&shown).contains(what) {
+            let read = seen.read(&mut chunk).await.expect("shown");
+            assert_ne!(read, 0, "the viewer stopped showing before {what}");
+            shown.extend_from_slice(&chunk[..read]);
+        }
+    }
+
+    const RESIZED: Size = Size {
+        rows: 30,
+        cols: 100,
+    };
+
+    #[tokio::test]
+    async fn a_viewer_told_of_a_restart_keeps_what_it_would_send_for_the_next_host() {
+        let (go, going) = tokio::sync::oneshot::channel();
+        let (_dir, path, first) = host(
+            accepted(),
+            vec![
+                Step::Say(restarting()),
+                Step::Say(json!({"type": "output", "data": "told"})),
+                Step::Until(going),
+            ],
+        );
+        let (tell, mut sizes) = mpsc::unbounded_channel();
+        let (shown, mut seen) = tokio::io::duplex(1024);
+        let mut here = Script::typing(b"");
+        let resizing = async {
+            until_shown(&mut seen, "told").await;
+            tell.send(RESIZED).expect("a size");
+            go.send(()).expect("the host waits");
+        };
+        let joining = join_again(&path, "s-1", SIZE, &mut here, shown, &mut sizes, PATIENT);
+        let (left, ()) = tokio::join!(joining, resizing);
+        assert_eq!(left.expect("joined"), Left::Restarting);
+        first.await.expect("the first host ran");
+
+        std::fs::remove_file(&path).expect("the stopped host's socket");
+        let second = serve(&path, accepted(), vec![Step::Hear, Step::Say(closed())]);
+        let left = join_again(
+            &path,
+            "s-1",
+            SIZE,
+            &mut here,
+            Vec::new(),
+            &mut sizes,
+            PATIENT,
+        )
+        .await
+        .expect("joined again");
+        assert_eq!(left, Left::Detached("Conversation closed".to_owned()));
+        let heard = second.await.expect("the restarted host ran");
+        assert_eq!(
+            heard.get(1),
+            Some(&json!({"type": "resize", "rows": 30, "columns": 100})),
+            "the size taken while the host stopped goes to the next one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_host_that_stays_after_saying_it_restarts_is_sent_what_waited() {
+        let (_dir, path, serving) = host(
+            accepted(),
+            vec![
+                Step::Say(restarting()),
+                Step::Say(json!({"type": "output", "data": "told"})),
+                Step::Hear,
+                Step::Say(closed()),
+            ],
+        );
+        let (tell, mut sizes) = mpsc::unbounded_channel();
+        let (shown, mut seen) = tokio::io::duplex(1024);
+        let mut here = Script::typing(b"");
+        let brief = Patience {
+            hold: Duration::from_millis(20),
+            ..PATIENT
+        };
+        let resizing = async {
+            until_shown(&mut seen, "told").await;
+            tell.send(RESIZED).expect("a size");
+        };
+        let joining = join_again(&path, "s-1", SIZE, &mut here, shown, &mut sizes, brief);
+        let (left, ()) = tokio::join!(joining, resizing);
+        assert_eq!(
+            left.expect("joined"),
+            Left::Detached("Conversation closed".to_owned())
+        );
+        assert_eq!(
+            serving.await.expect("the host ran").get(1),
+            Some(&json!({"type": "resize", "rows": 30, "columns": 100})),
+            "once the hold has passed, the size waiting goes to the host that stayed"
+        );
     }
 }
