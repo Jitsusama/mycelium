@@ -635,7 +635,7 @@ mod tests {
         }
 
         #[expect(
-            clippy::unused_async,
+            clippy::unused_async_trait_impl,
             reason = "taken only once polled, as the terminal's own are, so a branch made but never polled loses no keys"
         )]
         async fn keys(&mut self) -> Option<Vec<u8>> {
