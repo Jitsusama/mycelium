@@ -727,7 +727,7 @@ in milliseconds.
 | `hello` | `version`, `domain` (`node`), `state` and `kinds`, each with its `live` fields |
 | `get` with `keys` | `records`, those held, in the order asked |
 | `list` with `kind`, and `limit` | `records`, every one of the kind |
-| `watch` with `kind`, and `keys` | `records` whole, then `changed` and `gone` |
+| `watch` with `kind`, and `keys` and `when` | `records` whole, then `changed` and `gone` |
 | `unwatch` | nothing; the watch with that `id` ends |
 | `health` | `state`, and each linked machine and served file as a source |
 | `steer` with `address` and `steer` | `steered` with the `machine` whose session's inbox has it |
@@ -752,7 +752,14 @@ messages, so a quiet group's last words stay beside a busy one's, and a
 message is heard when it was sent and never changes. A watch sends what
 changed by key, with only the fields that differ, a dropped one as null; nothing
 while nothing changes; and no sooner than 250 ms after its last send, so
-a reader too slow for it is sent the latest rather than a backlog. An ask
+a reader too slow for it is sent the latest rather than a backlog. A
+watch asked `when` some fields move, as a shut launcher asks for a
+session's `told`, sends only a change that moves one of them or brings
+or takes a record, with all that moved since its last send; Joel's 103
+sessions changed 56 times in a minute on 2026-11-11, and none of them
+moved a `told`. Asked again under its `id` for the same kind and keys,
+a watch keeps on, sending at once what it held back, and from then on
+as `when` now says, rather than everything whole again. An ask
 it can't answer gets `{"id", "error": {"code", "message"}}`, the code
 one of `unknown-ask`, `unknown-kind` or `not-an-ask`, or `refused` for an
 ask understood that it couldn't do, its message saying why.
