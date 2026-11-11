@@ -754,10 +754,12 @@ changed by key, with only the fields that differ, a dropped one as null; nothing
 while nothing changes; and no sooner than 250 ms after its last send, so
 a reader too slow for it is sent the latest rather than a backlog. A
 watch asked `when` some fields move, as a shut launcher asks for a
-session's `told`, sends only a change that moves one of them or brings
-or takes a record, with all that moved since its last send; Joel's 103
-sessions changed 56 times in a minute on 2026-11-11, and none of them
-moved a `told`. Asked again under its `id` for the same kind and keys,
+session's `told`, sends only the records whose change moves one of
+them, and those brought or taken, each with all that moved in it since
+it was last sent; the rest wait for their own. Joel's 103 sessions
+changed 56 times in a minute on 2026-11-11, and none of them moved a
+`told`; once one did, every session's held step went with it, about
+30 KB a line. Asked again under its `id` for the same kind and keys,
 a watch keeps on, sending at once what it held back, and from then on
 as `when` now says, rather than everything whole again. An ask
 it can't answer gets `{"id", "error": {"code", "message"}}`, the code
