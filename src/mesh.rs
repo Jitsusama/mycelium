@@ -256,6 +256,30 @@ pub fn held_by<'a>(presence: &Presence, held: &'a [Held]) -> Option<&'a Held> {
         .or_else(|| held.iter().find(|one| woken_by == Some(one.id.as_str())))
 }
 
+/// What is held here that joins this machine's hosted session to a window:
+/// the holder whose command names the session after `--session`, by its
+/// id or its host's id for it, as `mycelium attach --host` does and as the
+/// harness's join does once a pi has handed its window to a pi host. The
+/// window stays where Joel had it, and this is how the session is known to
+/// be in it. A join that fell back to plain pi names a log, not the id, so
+/// it joins nothing: that pi is a session of its own.
+pub fn joined_by<'a>(presence: &Presence, held: &'a [Held]) -> Option<&'a Held> {
+    if presence.elsewhere.is_some() {
+        return None;
+    }
+    let hosted = presence
+        .body
+        .get("hosted")
+        .filter(|hosted| hosted.is_object())?;
+    let conversation = hosted.get("conversation").and_then(Value::as_str);
+    let names = |id: &str| id == presence.session || Some(id) == conversation;
+    held.iter().find(|one| {
+        one.command
+            .windows(2)
+            .any(|words| words[0] == "--session" && names(&words[1]))
+    })
+}
+
 /// How a quest's id begins, which an older presence names among what it
 /// owns, before presences said their quest.
 const QUEST: &str = "QEST-";
@@ -686,6 +710,81 @@ mod tests {
             held_by(&presence(0, None), &here),
             None,
             "a parked holder's pid of 0 holds no session that names none"
+        );
+    }
+
+    #[test]
+    fn a_hosted_session_is_in_the_window_whose_holder_joins_it() {
+        let hosted = |elsewhere: Option<&str>| Presence {
+            session: "01a1".to_owned(),
+            body: json!({
+                "session": "01a1", "owner": {"pid": 4242},
+                "hosted": {"host": "work-attended", "conversation": "c-01a1"},
+            }),
+            elsewhere: elsewhere.map(str::to_owned),
+            lives: true,
+            unreachable_since: None,
+        };
+        let held = |id: &str, command: &[&str]| Held {
+            id: id.to_owned(),
+            command: command.iter().map(|word| (*word).to_owned()).collect(),
+            folder: "/home/jitsusama".into(),
+            holder: 1,
+            pid: 77,
+            parked: false,
+            since: "2026-11-11T02:00:00Z".to_owned(),
+            windows: Vec::new(),
+        };
+        let attach = [
+            "mycelium",
+            "--realm",
+            "work",
+            "attach",
+            "--host",
+            "work-attended",
+        ];
+        let by_conversation = [&attach[..], &["--session", "c-01a1"]].concat();
+        let by_id = [&attach[..], &["--session", "01a1"]].concat();
+        let fell_back = ["pi", "--session", "/home/jitsusama/.pi/01a1.jsonl"];
+        let other = [&attach[..], &["--session", "c-0e50"]].concat();
+        assert_eq!(
+            joined_by(
+                &hosted(None),
+                &[held("5b99", &other), held("0d1e", &by_conversation)]
+            )
+            .map(|one| one.id.as_str()),
+            Some("0d1e"),
+            "the holder whose command joins its conversation"
+        );
+        assert_eq!(
+            joined_by(&hosted(None), &[held("0d1e", &by_id)]).map(|one| one.id.as_str()),
+            Some("0d1e"),
+            "or names the session by its own id"
+        );
+        assert_eq!(
+            joined_by(
+                &hosted(None),
+                &[held("0d1e", &fell_back), held("5b99", &other)]
+            ),
+            None,
+            "a join fallen back to plain pi, or one of another session, joins it to nothing"
+        );
+        assert_eq!(
+            joined_by(
+                &hosted(Some("equilibrius")),
+                &[held("0d1e", &by_conversation)]
+            ),
+            None,
+            "a session elsewhere is never in a window here"
+        );
+        let plain = Presence {
+            body: json!({"session": "01a1", "owner": {"pid": 77}}),
+            ..hosted(None)
+        };
+        assert_eq!(
+            joined_by(&plain, &[held("0d1e", &by_id)]),
+            None,
+            "a session of its own is held by its process, never joined"
         );
     }
 

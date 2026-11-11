@@ -170,6 +170,21 @@ pub const HOLDS: [&str; 3] = ["session", "machine", "message"];
 /// and compare at every message heard.
 pub const MESSAGES_EACH: usize = 100;
 
+/// A presence as a session, with what holds it here and the window it is
+/// in. A hosted session is held too when a holder here joins it, as
+/// Joel's own window does once its pi handed it to a host.
+fn session_held(presence: &store::Presence, machine: &str, held: &[hold::Held]) -> Option<Session> {
+    let mut session = mesh::session(presence, machine)?;
+    let holding = mesh::held_by(presence, held).or_else(|| mesh::joined_by(presence, held));
+    if let Some(one) = holding {
+        session.held = Some(one.id.clone());
+        // A held session is in whichever window joined it last and is
+        // still joined, or in none.
+        session.window = one.windows.last().cloned();
+    }
+    Some(session)
+}
+
 /// Tells each machine within this one, as its configuration declares
 /// them, this one's power and room as `here` measures them.
 fn tell_hosted(here: &facts::Machine) {
@@ -871,13 +886,7 @@ impl<S: Store> Shared<S> {
             .presences()
             .iter()
             .filter_map(|presence| {
-                let mut session = mesh::session(presence, &self.machine)?;
-                if let Some(one) = mesh::held_by(presence, &held) {
-                    session.held = Some(one.id.clone());
-                    // A held session is in whichever window joined it
-                    // last and is still joined, or in none.
-                    session.window = one.windows.last().cloned();
-                }
+                let mut session = session_held(presence, &self.machine, &held)?;
                 session.attach = self.attach(&session);
                 Some(session)
             })
@@ -2717,6 +2726,60 @@ mod tests {
             let stopped = node.await.expect("the node runs to its end");
             assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
         }
+    }
+
+    #[test]
+    fn a_hosted_session_is_in_the_window_its_join_holds() {
+        let presence = store::Presence {
+            session: "01a1".to_owned(),
+            body: json!({
+                "session": "01a1",
+                "addresses": ["4UHC5Q"],
+                "at": "2026-11-11T02:00:00Z",
+                "owner": {"pid": 4242},
+                "hosted": {"host": "work-attended", "conversation": "01a1"},
+            }),
+            elsewhere: None,
+            lives: true,
+            unreachable_since: None,
+        };
+        let window = record::Window {
+            terminal: "kitty".to_owned(),
+            id: "7".to_owned(),
+            within: None,
+            app_id: Some("pi-session.7".to_owned()),
+        };
+        let hold = |id: &str, command: &[&str]| hold::Held {
+            id: id.to_owned(),
+            command: command.iter().map(|word| (*word).to_owned()).collect(),
+            folder: "/home/jitsusama".into(),
+            holder: 1,
+            pid: 77,
+            parked: false,
+            since: "2026-11-11T02:00:00Z".to_owned(),
+            windows: vec![window.clone()],
+        };
+        let join = ["node", "host-join.ts", "--session", "01a1", "--", "pi"];
+        let joined =
+            session_held(&presence, "optimus", &[hold("0d1e", &join)]).expect("a session here");
+        assert_eq!(
+            joined.held.as_deref(),
+            Some("0d1e"),
+            "held by its join's holder"
+        );
+        assert_eq!(
+            joined.window.and_then(|one| one.app_id).as_deref(),
+            Some("pi-session.7"),
+            "in the window its join holds"
+        );
+        let fell_back = ["pi", "--session", "/home/jitsusama/.pi/01a1.jsonl"];
+        let alone = session_held(&presence, "optimus", &[hold("0d1e", &fell_back)])
+            .expect("a session here");
+        assert_eq!(
+            (alone.held, alone.window),
+            (None, None),
+            "a join fallen back to plain pi on its log holds a session of its own, not this"
+        );
     }
 
     #[tokio::test]
