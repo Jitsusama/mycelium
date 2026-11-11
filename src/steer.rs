@@ -399,6 +399,10 @@ mod tests {
             ("AB12", json!({"act": "close", "to": "penelope"})),
             ("AB12", json!({"act": "wake", "text": "hi"})),
             ("AB12", json!({"act": "wake", "id": "talk-1"})),
+            ("AB12", json!({"act": "fill"})),
+            ("AB12", json!({"act": "fill", "text": " "})),
+            ("AB12", json!({"act": "move"})),
+            ("AB12", json!({"act": "move", "to": "penelope"})),
         ] {
             assert!(
                 Steer::new(address, &said).is_err(),
@@ -424,6 +428,24 @@ mod tests {
             Some(&json!("penelope")),
             "a carry's machine is written for the harness"
         );
+        // For You's deal fills a session's prompt with words for Joel to
+        // send, and a session moves into a host or back out of one.
+        let filling = Steer::new("AB12", &json!({"act": "fill", "text": "ready to deal"}))
+            .expect("a fill with its words");
+        assert_eq!(
+            filling.body.get("text"),
+            Some(&json!("ready to deal")),
+            "a fill's words are written for the harness"
+        );
+        for to in ["attended", "background", "pi"] {
+            let moving = Steer::new("AB12", &json!({"act": "move", "to": to}))
+                .expect("a move naming where it goes");
+            assert_eq!(
+                moving.body.get("to"),
+                Some(&json!(to)),
+                "a move's {to} is written for the harness"
+            );
+        }
         let talking = Steer::new("AB12", &json!({"text": "hi", "id": "talk-1"})).expect("a steer");
         assert_eq!(talking.talk(), Some("talk-1"), "its talk");
     }
