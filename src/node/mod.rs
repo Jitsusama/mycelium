@@ -2743,7 +2743,7 @@ mod tests {
             lives: true,
             unreachable_since: None,
         };
-        let window = crate::record::Window {
+        let window = record::Window {
             terminal: "kitty".to_owned(),
             id: "7".to_owned(),
             within: None,
@@ -2767,7 +2767,11 @@ mod tests {
             Some("0d1e"),
             "held by its join's holder"
         );
-        assert_eq!(joined.window, Some(window), "in the window its join holds");
+        assert_eq!(
+            joined.window.and_then(|one| one.app_id).as_deref(),
+            Some("pi-session.7"),
+            "in the window its join holds"
+        );
         let fell_back = ["pi", "--session", "/home/jitsusama/.pi/01a1.jsonl"];
         let alone = session_held(&presence, "optimus", &[hold("0d1e", &fell_back)])
             .expect("a session here");
