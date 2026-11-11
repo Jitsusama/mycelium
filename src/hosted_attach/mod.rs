@@ -71,12 +71,20 @@ pub const RESTART_PATIENCE: Patience = Patience {
     hold: Duration::from_secs(30),
 };
 
+/// What the host says as it lets a viewer go because the conversation went
+/// back to plain pi, as a release sends it: its words exactly, as the
+/// harness's viewer terminal says them, since nothing else marks a release.
+const RELEASED_SAYS: &str = "Conversation released";
+
 /// How a joined terminal stopped showing the conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Left {
     /// The host let it go, saying why: the conversation closed, or this
     /// terminal fell too far behind.
     Detached(String),
+    /// The host let the conversation go back to plain pi, as a release
+    /// does, so this window may carry on as that pi.
+    Released,
     /// The host's end of the connection closed without saying.
     Gone,
     /// The host let it go to suspend, as pi's Ctrl+Z asks, to join again
@@ -405,7 +413,11 @@ async fn heed(
         Some("suspend") => return Ok(Some(Left::Suspended)),
         Some("detached") => {
             let why = said["reason"].as_str().unwrap_or("detached");
-            return Ok(Some(Left::Detached(why.to_owned())));
+            return Ok(Some(if why == RELEASED_SAYS {
+                Left::Released
+            } else {
+                Left::Detached(why.to_owned())
+            }));
         }
         Some("error") => {
             let why = said["message"].as_str().unwrap_or("the host failed");
@@ -685,6 +697,23 @@ mod tests {
             ],
             "the attach at its size with what it can do, then the keys as typed"
         );
+    }
+
+    #[tokio::test]
+    async fn a_viewer_whose_conversation_is_released_says_so_apart() {
+        let (_dir, path, _serving) = host(
+            accepted(),
+            vec![
+                Step::Hear,
+                Step::Say(json!({"type": "detached", "reason": "Conversation released"})),
+            ],
+        );
+        let (_tell, mut sizes) = mpsc::unbounded_channel();
+        let mut here = Script::typing(b"\x1b[13u");
+        let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
+            .await
+            .expect("joined");
+        assert_eq!(left, Left::Released, "a release, apart from a close");
     }
 
     #[tokio::test]

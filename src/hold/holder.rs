@@ -38,6 +38,13 @@ const FIRST_SIZE: Size = Size { rows: 24, cols: 80 };
 /// `EX_TEMPFAIL`, as it stops only until it is woken.
 pub const PARKED: i32 = 75;
 
+/// The exit code `mycelium attach --host` ends with when its host let the
+/// conversation go back to plain pi, as a release does, rather than 0 for
+/// any other leaving. Whatever runs in the window next starts plain pi on
+/// the conversation's log on this code alone, so the window it was viewed
+/// in carries on as that pi.
+pub const RELEASED: u8 = 3;
+
 /// How often a parked holder looks for its wake file. A stat a second
 /// costs nothing, and a message waking a session waits a second at most.
 const WAKE_LOOK: Duration = Duration::from_secs(1);
