@@ -170,8 +170,6 @@ pub const HOLDS: [&str; 3] = ["session", "machine", "message"];
 /// and compare at every message heard.
 pub const MESSAGES_EACH: usize = 100;
 
-/// Tells each machine within this one, as its configuration declares
-/// them, this one's power and room as `here` measures them.
 /// A presence as a session, with what holds it here and the window it is
 /// in. A hosted session is held too when a holder here joins it, as
 /// Joel's own window does once its pi handed it to a host.
@@ -187,6 +185,8 @@ fn session_held(presence: &store::Presence, machine: &str, held: &[hold::Held]) 
     Some(session)
 }
 
+/// Tells each machine within this one, as its configuration declares
+/// them, this one's power and room as `here` measures them.
 fn tell_hosted(here: &facts::Machine) {
     let Some(hosts) = here.declared.as_ref().map(|declared| &declared.hosts) else {
         return;
