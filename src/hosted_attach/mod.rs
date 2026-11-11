@@ -943,7 +943,7 @@ mod tests {
         let path = dir.path().join("work-attended.sock");
         // A socket held for a host that never starts, as systemd holds one:
         // the connection is taken and nothing is ever said on it.
-        let listener = tokio::net::UnixListener::bind(&path).expect("a socket");
+        let listener = UnixListener::bind(&path).expect("a socket");
         let holding = tokio::spawn(async move {
             let (_held, _) = listener.accept().await.expect("a connection");
             std::future::pending::<()>().await;
