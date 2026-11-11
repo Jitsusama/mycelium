@@ -46,6 +46,11 @@ pub trait Steers: Send + Sync + 'static {
         address: &str,
         said: &Value,
     ) -> impl Future<Output = Result<String, String>> + Send;
+
+    /// Updates `machine` to its configuration's main, here or through the
+    /// link reaching it, answering how its updater said it ended, or why
+    /// it couldn't be asked.
+    fn update(&self, machine: &str) -> impl Future<Output = Result<Value, String>> + Send;
 }
 
 /// The version of the interface this node speaks.
@@ -101,6 +106,11 @@ pub enum What {
     },
     /// How the daemon and each of its sources stand.
     Health,
+    /// An update of `machine` to its configuration's main.
+    Update {
+        /// The machine's name.
+        machine: String,
+    },
 }
 
 /// Why an ask can't be answered, by the interface's codes.
@@ -201,6 +211,16 @@ pub fn read(line: &str) -> Result<Ask, (Value, Refusal)> {
                 .filter(|said| said.is_object())
                 .cloned()
                 .ok_or_else(|| refused(Refusal::NotAnAsk("a steer says nothing".to_owned())))?,
+        },
+        "update" => What::Update {
+            machine: value
+                .get("machine")
+                .and_then(Value::as_str)
+                .filter(|machine| !machine.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    refused(Refusal::NotAnAsk("an update names no `machine`".to_owned()))
+                })?,
         },
         other => return Err(refused(Refusal::UnknownAsk(other.to_owned()))),
     };
@@ -379,16 +399,17 @@ fn answer<H: Holds + Steers>(
             // A session on another machine is told over the link, which
             // may take a while, so the connection's other asks go on.
             let holds = Arc::clone(holds);
-            let answering = answering.clone();
-            tokio::spawn(async move {
-                let mut answer = match holds.steer(&address, &said).await {
-                    Ok(machine) => json!({"id": id, "steered": {"machine": machine}}),
-                    Err(why) => refused(&id, &Refusal::Refused(why)),
-                };
-                if let Some(fields) = answer.as_object_mut() {
-                    fields.insert("took".to_owned(), took(begun));
-                }
-                let _ = answering.send(answer).await;
+            later(answering, id, begun, async move {
+                let machine = holds.steer(&address, &said).await?;
+                Ok(("steered", json!({"machine": machine})))
+            });
+            return None;
+        }
+        What::Update { machine } => {
+            // An update takes minutes, so the connection's other asks go on.
+            let holds = Arc::clone(holds);
+            later(answering, id, begun, async move {
+                Ok(("updated", holds.update(&machine).await?))
             });
             return None;
         }
@@ -398,6 +419,28 @@ fn answer<H: Holds + Steers>(
         fields.insert("took".to_owned(), took(begun));
     }
     Some(answer)
+}
+
+/// Answers `id` through `answering` once `answered` ends, under the field
+/// it names or as refused, so an ask that waits on another machine or a
+/// program holds up none of the connection's others.
+fn later(
+    answering: &mpsc::Sender<Value>,
+    id: Value,
+    begun: std::time::Instant,
+    answered: impl Future<Output = Result<(&'static str, Value), String>> + Send + 'static,
+) {
+    let answering = answering.clone();
+    tokio::spawn(async move {
+        let mut answer = match answered.await {
+            Ok((field, said)) => json!({"id": id, field: said}),
+            Err(why) => refused(&id, &Refusal::Refused(why)),
+        };
+        if let Some(fields) = answer.as_object_mut() {
+            fields.insert("took".to_owned(), took(begun));
+        }
+        let _ = answering.send(answer).await;
+    });
 }
 
 /// The answer to `hello`: this node's version, and the kinds it holds with

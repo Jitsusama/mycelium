@@ -724,6 +724,15 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Steers for Shared<S> {
             )),
         }
     }
+
+    async fn update(&self, machine: &str) -> Result<serde_json::Value, String> {
+        match Shared::update(self, machine).await? {
+            Response::Updated(ending) => Ok(ending),
+            other => Err(format!(
+                "its machine answered {other:?}, not how its update ended"
+            )),
+        }
+    }
 }
 
 /// `value` as JSON, or null for what can't be, which a node's own records

@@ -736,6 +736,7 @@ in milliseconds.
 | `unwatch` | nothing; the watch with that `id` ends |
 | `health` | `state`, and each linked machine and served file as a source |
 | `steer` with `address` and `steer` | `steered` with the `machine` whose session's inbox has it |
+| `update` with `machine` | `updated`, the ending its updater said, as `Updated` gives it |
 
 A record carries `key` (`session:<id>`, `machine:<name>` or
 `message:<id>`), `kind`, `heard` (milliseconds since the epoch) and the
@@ -777,6 +778,9 @@ it, as `Steer` does: here, or over the link reaching that machine. It is
 answered once that machine has it, and the connection's other asks are
 answered meanwhile, so a steer to a far machine holds up no watch. A
 session no machine runs, or one two do, is `refused`, saying which.
+An `update` asks `machine` to update itself, as `"Update"` does, and
+is answered once its updater says how it ended, the connection's other
+asks answered meanwhile; one no updater or link answers is `refused`.
 
 The node also serves files another program keeps, each as a kind of its
 own, so a reader asks the node and hears each change rather than reading
