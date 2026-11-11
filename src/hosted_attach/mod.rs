@@ -634,8 +634,10 @@ mod tests {
             &FEATURES
         }
 
-        // Taken only once polled, as the terminal's own are, so a branch
-        // made but never polled loses no keys.
+        #[expect(
+            clippy::unused_async,
+            reason = "taken only once polled, as the terminal's own are, so a branch made but never polled loses no keys"
+        )]
         async fn keys(&mut self) -> Option<Vec<u8>> {
             self.keys.pop_front()
         }
