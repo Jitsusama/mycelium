@@ -200,6 +200,13 @@ mod tests {
         );
 
         drop(held);
+        // A child another test forks while the file is open keeps a copy of
+        // it until that child execs, since close-on-exec closes it only
+        // then, so this waits out such a copy rather than asking once.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while Processes.inside(dir.path()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         assert!(!Processes.inside(dir.path()), "and once closed, nothing is");
     }
 }
