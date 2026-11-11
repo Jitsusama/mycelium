@@ -967,11 +967,19 @@ impl<S: Store> Shared<S> {
 
     /// The words that join `session` from a terminal here, when it is held,
     /// or within a pi host, here or on a machine a link of this node's
-    /// reaches.
+    /// reaches. A hosted session here is viewed by the words its presence
+    /// says, when it says any, so a window opened on it carries on as plain
+    /// pi once its host releases it; one elsewhere by its host's attach,
+    /// since those words name this machine's paths.
     fn attach(&self, session: &Session) -> Option<Vec<String>> {
         let words = match (&session.held, &session.host, &session.conversation) {
             (Some(held), _, _) => start::attach_here(&self.realm, held),
             (None, Some(host), Some(conversation)) => {
+                let view =
+                    mesh::viewed_by(&session.presence).filter(|_| session.machine == self.machine);
+                if view.is_some() {
+                    return view;
+                }
                 hosted_attach::attach_here(&self.realm, host, conversation)
             }
             _ => return None,
@@ -2814,6 +2822,31 @@ mod tests {
                 .to_vec()
             ),
             "a hosted conversation is joined through its host, by its conversation"
+        );
+        let view = [
+            "node",
+            "host-join.ts",
+            "--view",
+            "--session",
+            "0e50",
+            "--",
+            "pi",
+        ];
+        store.start_here(
+            "0e50",
+            json!({
+                "session": "0e50",
+                "addresses": ["7M6JKG"],
+                "at": "2026-11-09T19:00:00Z",
+                "owner": {"pid": 4242},
+                "hosted": {"host": "work-attended", "conversation": "0e50", "view": view},
+            }),
+            true,
+        );
+        assert_eq!(
+            listed(socket.clone(), "0e50").await.attach,
+            Some(view.map(str::to_owned).to_vec()),
+            "one whose presence names its view is joined by those words"
         );
         drop(stop);
         let stopped = node.await.expect("the node runs to its end");

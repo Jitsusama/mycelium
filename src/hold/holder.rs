@@ -36,14 +36,16 @@ const LAST_WORDS: Duration = Duration::from_millis(500);
 const FIRST_SIZE: Size = Size { rows: 24, cols: 80 };
 
 /// The exit code a held program parks with, rather than ending: sysexits'
-/// `EX_TEMPFAIL`, as it stops only until it is woken.
+/// `EX_TEMPFAIL`, as it stops only until it is woken. An `i32`, as the
+/// holder reads it from a child's `ExitStatus::code`.
 pub const PARKED: i32 = 75;
 
 /// The exit code `mycelium attach --host` ends with when its host let the
 /// conversation go back to plain pi, as a release does, rather than 0 for
 /// any other leaving. Whatever runs in the window next starts plain pi on
 /// the conversation's log on this code alone, so the window it was viewed
-/// in carries on as that pi.
+/// in carries on as that pi. A `u8`, as attach ends with it through
+/// `ExitCode::from`, which takes no other.
 pub const RELEASED: u8 = 3;
 
 /// How often a parked holder looks for its wake file. A stat a second
