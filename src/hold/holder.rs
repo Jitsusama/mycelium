@@ -88,7 +88,8 @@ pub struct Holding<'a> {
 /// parked in `MYCELIUM_WAKE`, and the file it may name its next command in
 /// as it parks in `MYCELIUM_AGAIN`. A program exiting with [`PARKED`] is
 /// started again on the same terminal when woken, with that command if it
-/// named one.
+/// named one; one that wrote its wake file before it went is restarting,
+/// and starts again at once, never shown as parked.
 pub async fn hold(
     holding: &Holding<'_>,
     ready: impl FnOnce(&Held) -> io::Result<()>,
@@ -171,19 +172,33 @@ pub async fn hold(
         if status.code() != Some(PARKED) {
             break status;
         }
-        record.parks();
-        shown.show(PARKED_LINE);
+        // One that wrote its own wake before it went is restarting, not
+        // parked, as a pi handing its window to a pi host does: it starts
+        // again at once, with no parked line drawn over its last frame,
+        // and a key typed meanwhile reaches what starts rather than being
+        // spent as a wake.
+        let mut restarting = fs::remove_file(&waking).is_ok();
+        if !restarting {
+            record.parks();
+            shown.show(PARKED_LINE);
+        }
         // One that can't start again stays parked, saying why, rather than
         // ending: its session, its window and its next wake are all still
         // here, and a command named again may start.
         child = loop {
-            joining_until(woken(&terminal, &waking), &socket, &mut joined, &serving).await;
+            if !std::mem::take(&mut restarting) {
+                joining_until(woken(&terminal, &waking), &socket, &mut joined, &serving).await;
+            }
             command = named(&naming).unwrap_or(command);
             match start(&command, terminal.size()) {
                 Ok(child) => break child,
-                Err(error) => shown.show(
-                    format!("\r\nIt couldn't start again: {error}. {PARKED_WAKES}\r\n").as_bytes(),
-                ),
+                Err(error) => {
+                    record.parks();
+                    shown.show(
+                        format!("\r\nIt couldn't start again: {error}. {PARKED_WAKES}\r\n")
+                            .as_bytes(),
+                    );
+                }
             }
         };
         record.runs(child.id().unwrap_or_default(), &command);
@@ -1099,6 +1114,43 @@ mod tests {
             .expect("the holder ends with its program")
             .expect("the holder's task ran");
         assert_eq!(ended.expect("it held"), Some(4), "any other exit ends it");
+    }
+
+    #[tokio::test]
+    async fn a_program_that_wakes_itself_as_it_parks_restarts_at_once_with_no_parked_line() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window
+            .types(concat!(
+                r#"printf '%s' '["sh","-c","echo restarted $((6 * 7)); read -r line; exit 3"]'"#,
+                " > \"$MYCELIUM_AGAIN\"; printf '{}' > \"$MYCELIUM_WAKE\"; exit 75\r",
+            ))
+            .await;
+        window.sees("restarted 42").await;
+        assert!(
+            !window.seen.contains("Parked"),
+            "a restart draws no parked line over the program's last frame"
+        );
+        assert!(
+            !wake(&dir, &held.id).exists(),
+            "the wake it wrote is spent by its restart"
+        );
+        // The first key typed after it went is the program's, never a wake.
+        window.types("\r").await;
+        let ended = tokio::time::timeout(PATIENCE, holder)
+            .await
+            .expect("the holder ends with its program")
+            .expect("the holder's task ran");
+        assert_eq!(
+            ended.expect("it held"),
+            Some(3),
+            "the key reached the restarted command"
+        );
     }
 
     #[tokio::test]
