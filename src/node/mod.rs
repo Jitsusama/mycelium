@@ -872,7 +872,11 @@ impl<S: Store> Shared<S> {
             .iter()
             .filter_map(|presence| {
                 let mut session = mesh::session(presence, &self.machine)?;
-                if let Some(one) = mesh::held_by(presence, &held) {
+                // A hosted session is held too when a holder here joins it,
+                // as Joel's own window does once its pi handed it to a host.
+                let holding =
+                    mesh::held_by(presence, &held).or_else(|| mesh::joined_by(presence, &held));
+                if let Some(one) = holding {
                     session.held = Some(one.id.clone());
                     // A held session is in whichever window joined it
                     // last and is still joined, or in none.
