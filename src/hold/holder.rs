@@ -523,6 +523,10 @@ impl ChildEnd {
     }
 
     #[cfg(target_os = "macos")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the child end is closed once named, since macOS opens it anew at each start"
+    )]
     fn of(pts: pty_process::Pts, starts: Arc<Starts>) -> io::Result<Self> {
         let named = rustix::termios::ttyname(&pts, Vec::new())?;
         Ok(Self { named, starts })
