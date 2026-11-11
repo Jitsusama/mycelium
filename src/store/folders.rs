@@ -141,6 +141,13 @@ impl Folders {
         self.dir.join("messages")
     }
 
+    /// The folder the mesh moves the message `id` into once it is six
+    /// hours old: `messages/<YYYY-MM-DD>/`, by the UTC day its id says it
+    /// was sent on. Holds stay at the top until they end.
+    fn moved(&self, id: &str) -> Option<PathBuf> {
+        Some(self.messages().join(day_of(sent_at(id)?)?))
+    }
+
     fn presence(&self) -> PathBuf {
         self.dir.join("presence")
     }
@@ -175,19 +182,31 @@ fn watch_ends(ends: &Ends, paths: impl Iterator<Item = PathBuf>) {
 
 impl Store for Folders {
     fn message_ids(&self, since: i64) -> Vec<String> {
-        records(&self.messages())
+        // A day folder holds only messages sent that day, so one before
+        // `since`'s day holds none that new.
+        let earliest = day_of(since).unwrap_or_default();
+        let messages = self.messages();
+        let days: Vec<PathBuf> = days(&messages)
+            .filter(|day| *day >= earliest)
+            .map(|day| messages.join(day))
+            .collect();
+        let ids: BTreeSet<String> = records(&messages)
+            .chain(days.iter().flat_map(|day| records(day)))
             .filter_map(|path| Some(path.file_stem()?.to_str()?.to_owned()))
             .filter(|id| sent_at(id).is_some_and(|at| at >= since))
-            .collect()
+            .collect();
+        ids.into_iter().collect()
     }
 
     fn message(&self, id: &str) -> Option<Value> {
-        read(&self.messages().join(format!("{}.json", safe(id).ok()?)))
+        let file = format!("{}.json", safe(id).ok()?);
+        read(&self.messages().join(&file)).or_else(|| read(&self.moved(id)?.join(&file)))
     }
 
     fn put_message(&self, id: &str, body: &Value) -> io::Result<()> {
         let file = format!("{}.json", safe(id)?);
-        if self.messages().join(&file).exists() {
+        let moved = self.moved(id).is_some_and(|day| day.join(&file).exists());
+        if moved || self.messages().join(&file).exists() {
             return Ok(());
         }
         write_whole(&self.messages(), &file, body)
@@ -582,6 +601,23 @@ fn sent_at(id: &str) -> Option<i64> {
     id.split('-').next()?.parse().ok()
 }
 
+/// The UTC day `at`, in milliseconds, falls on, as a day folder is named.
+fn day_of(at: i64) -> Option<String> {
+    let at = jiff::Timestamp::from_millisecond(at).ok()?;
+    Some(at.strftime("%Y-%m-%d").to_string())
+}
+
+/// The day folders in `dir`, by name.
+fn days(dir: &Path) -> impl Iterator<Item = String> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.parse::<jiff::civil::Date>().is_ok())
+}
+
 fn records(dir: &Path) -> impl Iterator<Item = PathBuf> {
     fs::read_dir(dir)
         .into_iter()
@@ -895,6 +931,45 @@ mod tests {
         assert!(
             store.message_ids(1_793_046_604_648).is_empty(),
             "nothing is that new"
+        );
+    }
+
+    #[test]
+    fn a_message_the_mesh_moved_into_its_day_is_still_found_and_kept_once() {
+        let (_dir, store) = store();
+        // Sent at 2026-10-26 20:30:04.647 UTC.
+        let id = "1793046604647-0FX11G-875563-952d5879";
+        let day = store.messages().join("2026-10-26");
+        fs::create_dir(&day).expect("a day folder");
+        fs::write(day.join(format!("{id}.json")), br#"{"text": "first"}"#)
+            .expect("the mesh moves it");
+        // Sent at 2026-10-25 12:00 UTC.
+        let older = "1792929600000-0FX11G-875563-00000001";
+        let earlier = store.messages().join("2026-10-25");
+        fs::create_dir(&earlier).expect("an earlier day folder");
+        fs::write(earlier.join(format!("{older}.json")), b"{}").expect("an older one");
+
+        assert_eq!(
+            store.message(id),
+            Some(json!({"text": "first"})),
+            "a moved message is read from its day"
+        );
+        store
+            .put_message(id, &json!({"text": "again"}))
+            .expect("a repeat is taken quietly");
+        assert!(
+            !store.messages().join(format!("{id}.json")).exists(),
+            "a moved message isn't written again at the top"
+        );
+        assert_eq!(
+            store.message_ids(1_793_046_604_647),
+            [id],
+            "a moved message is listed, and an older day isn't"
+        );
+        assert_eq!(
+            store.message_ids(0),
+            [older, id],
+            "every day is listed from the start"
         );
     }
 
