@@ -1125,3 +1125,60 @@ fn intent(name: &str) -> Result<Intent, String> {
     serde_json::from_value(serde_json::Value::String(name.to_owned()))
         .map_err(|_| format!("{name:?} is not hold, question, finding, fyi or pivot"))
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory as _, Parser as _};
+
+    use super::{Action, Command, SwarmAct};
+
+    fn swarm(words: &[&str]) -> (Option<SwarmAct>, Option<String>, bool) {
+        let asked = Command::try_parse_from(["mycelium", "swarm"].iter().chain(words))
+            .unwrap_or_else(|error| panic!("{words:?} parses: {error}"));
+        match asked.action {
+            Action::Swarm { act, team, json } => (act, team, json),
+            _ => panic!("{words:?} is the swarm"),
+        }
+    }
+
+    // A team's name sits where an act's would, so each must still be told
+    // apart from the other.
+    #[test]
+    fn the_swarm_takes_a_team_or_an_act() {
+        Command::command().debug_assert();
+        assert!(
+            matches!(swarm(&[]), (None, None, false)),
+            "alone, it's the overview"
+        );
+        assert!(
+            matches!(swarm(&["harbour", "--json"]), (None, Some(team), true) if team == "harbour"),
+            "a name is one team"
+        );
+        assert!(
+            matches!(
+                swarm(&["say", "harbour", "ship", "it"]),
+                (Some(SwarmAct::Say { name, words }), None, false)
+                    if name == "harbour" && words == ["ship", "it"]
+            ),
+            "say takes a name and its words"
+        );
+        assert!(
+            matches!(
+                swarm(&["pause", "reef"]),
+                (Some(SwarmAct::Pause { name }), ..) if name == "reef"
+            ),
+            "pause takes a name"
+        );
+        assert!(
+            matches!(
+                swarm(&["resume", "reef"]),
+                (Some(SwarmAct::Resume { name }), ..) if name == "reef"
+            ),
+            "resume takes a name"
+        );
+        assert!(
+            Command::try_parse_from(["mycelium", "swarm", "say", "harbour"]).is_err(),
+            "say without words is refused"
+        );
+    }
+}
