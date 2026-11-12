@@ -101,8 +101,13 @@ enum Action {
     /// Shows the swarm: every team, nested as they are, with how many of
     /// its sessions need you, are stuck, move or wait, those needing you
     /// first; or, named by its address or a part of its name, one team's
-    /// sessions and where it meets the others.
+    /// sessions and where it meets the others. Its acts steer the swarm as
+    /// its person: words to a team go to its lead, and a pause or resume
+    /// to each of its sessions.
     Swarm {
+        /// What to do to it, rather than show it.
+        #[command(subcommand)]
+        act: Option<SwarmAct>,
         /// The team, such as `harbour`.
         team: Option<String>,
         /// Prints each team's record as a JSON line instead.
@@ -377,6 +382,31 @@ struct WebAsked {
 }
 
 #[derive(Subcommand)]
+enum SwarmAct {
+    /// Says something to a team, which its lead hears, or to one session,
+    /// as the person.
+    Say {
+        /// The team or session, such as `harbour`.
+        name: String,
+        /// The words.
+        #[arg(required = true)]
+        words: Vec<String>,
+    },
+    /// Pauses every session of a team and the teams within it, or one
+    /// session, so each finishes its turn and waits.
+    Pause {
+        /// The team or session.
+        name: String,
+    },
+    /// Resumes the paused sessions of a team and the teams within it, or
+    /// one session.
+    Resume {
+        /// The team or session.
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum WebAct {
     /// Says a murmur, a line of intent for whoever heeds it, and prints
     /// the event, whose id ties and settles it.
@@ -481,7 +511,12 @@ fn run(command: Command) -> io::Result<ExitCode> {
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Health { here } => health(&socket, here, realm),
-        Action::Swarm { team, json } => swarm(&socket, &realm, team.as_deref(), json),
+        Action::Swarm { act: Some(act), .. } => steer_swarm(&socket, &realm, act),
+        Action::Swarm {
+            act: None,
+            team,
+            json,
+        } => swarm(&socket, &realm, team.as_deref(), json),
         Action::Web(asked) => web(asked),
         Action::Machine => print_reply(&socket, &Request::Machine),
         Action::Machines => print_reply(&socket, &Request::Machines),
@@ -784,6 +819,10 @@ fn health(socket: &Path, here: Here, realm: String) -> io::Result<()> {
 /// How long `swarm` waits on each of the node's answers, as `health` does.
 const SWARM_WITHIN: std::time::Duration = std::time::Duration::from_secs(4);
 
+/// How long a steer of the swarm waits on the node's answer: past the 30
+/// seconds a link gives another machine to say it was told.
+const STEER_WITHIN: std::time::Duration = std::time::Duration::from_secs(35);
+
 /// How wide the swarm is drawn where its output isn't a terminal that says.
 const SWARM_WIDTH: usize = 100;
 
@@ -812,6 +851,23 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
         None => mycelium::swarm::overview(&swarm, &look),
     };
     writeln!(stdout.lock(), "{shown}")
+}
+
+/// Does `act` to the swarm as its person, saying back who was told.
+fn steer_swarm(socket: &Path, realm: &str, act: SwarmAct) -> io::Result<()> {
+    use mycelium::swarm::steers::{self, Act};
+    let (act, name) = match act {
+        SwarmAct::Say { name, words } => (Act::Say(words.join(" ")), name),
+        SwarmAct::Pause { name } => (Act::Pause, name),
+        SwarmAct::Resume { name } => (Act::Resume, name),
+    };
+    let swarm = mycelium::swarm::read(socket, realm, SWARM_WITHIN)?;
+    let aim = steers::aim(&swarm, act, &name)
+        .map_err(|why| io::Error::new(io::ErrorKind::NotFound, why))?;
+    let at = jiff::Timestamp::now().to_string();
+    let answers = steers::send(socket, STEER_WITHIN, &aim, &at)?;
+    let said = steers::told(&aim, &answers).map_err(io::Error::other)?;
+    writeln!(io::stdout().lock(), "{said}")
 }
 
 /// Carries `quest` to the machine `to`, a JSON line on standard output

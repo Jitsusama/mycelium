@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+pub mod steers;
+
 /// The swarm as the node holds it.
 #[derive(Debug, Default)]
 pub struct Swarm {
@@ -552,34 +554,14 @@ fn listed(names: &[&str]) -> String {
 /// When no node answers, or it answers in a way it shouldn't, or holds no
 /// teams, as a node too old for them doesn't.
 pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Swarm> {
-    let mut writing = UnixStream::connect(socket).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("no node answers at {}: {error}", socket.display()),
-        )
-    })?;
-    writing.set_read_timeout(Some(within))?;
-    writing.set_write_timeout(Some(within))?;
-    let mut reading = BufReader::new(writing.try_clone()?);
-    for ask in [
-        json!({"id": 0, "ask": "hello"}),
-        json!({"id": 1, "ask": "list", "kind": "team"}),
-        json!({"id": 2, "ask": "list", "kind": "session"}),
-    ] {
-        writeln!(writing, "{ask}")?;
-    }
-    let mut answers: BTreeMap<u64, Value> = BTreeMap::new();
-    let mut line = String::new();
-    while !(answers.contains_key(&1) && answers.contains_key(&2)) {
-        line.clear();
-        if reading.read_line(&mut line)? == 0 {
-            return Err(io::Error::other("the node hung up before it answered"));
-        }
-        let answer: Value = serde_json::from_str(&line).map_err(io::Error::other)?;
-        if let Some(id) = answer["id"].as_u64() {
-            answers.insert(id, answer);
-        }
-    }
+    let mut answers = asked(
+        socket,
+        within,
+        &[
+            json!({"ask": "list", "kind": "team"}),
+            json!({"ask": "list", "kind": "session"}),
+        ],
+    )?;
     let mut records = |id: u64| -> io::Result<Vec<Value>> {
         let answer = answers.remove(&id).unwrap_or_default();
         if let Some(why) = answer["error"]["message"].as_str() {
@@ -594,6 +576,44 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Swarm> {
         teams: records(1)?,
         sessions: records(2)?,
     })
+}
+
+/// Asks the node at `socket` each of `asks` in the daemon interface,
+/// after its hello, and gives its answers by their place in `asks`,
+/// counting from one.
+fn asked(socket: &Path, within: Duration, asks: &[Value]) -> io::Result<BTreeMap<u64, Value>> {
+    let mut writing = UnixStream::connect(socket).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("no node answers at {}: {error}", socket.display()),
+        )
+    })?;
+    writing.set_read_timeout(Some(within))?;
+    writing.set_write_timeout(Some(within))?;
+    let mut reading = BufReader::new(writing.try_clone()?);
+    writeln!(writing, "{}", json!({"id": 0, "ask": "hello"}))?;
+    for (id, ask) in (1_u64..).zip(asks) {
+        let mut ask = ask.clone();
+        ask["id"] = id.into();
+        writeln!(writing, "{ask}")?;
+    }
+    let wanted = (1_u64..)
+        .zip(asks)
+        .map(|(id, _)| id)
+        .collect::<BTreeSet<u64>>();
+    let mut answers: BTreeMap<u64, Value> = BTreeMap::new();
+    let mut line = String::new();
+    while !wanted.iter().all(|id| answers.contains_key(id)) {
+        line.clear();
+        if reading.read_line(&mut line)? == 0 {
+            return Err(io::Error::other("the node hung up before it answered"));
+        }
+        let answer: Value = serde_json::from_str(&line).map_err(io::Error::other)?;
+        if let Some(id) = answer["id"].as_u64().filter(|id| wanted.contains(id)) {
+            answers.insert(id, answer);
+        }
+    }
+    Ok(answers)
 }
 
 #[cfg(test)]
@@ -633,14 +653,17 @@ mod tests {
         team
     }
 
-    /// A session record `id`, titled `title`, standing as `state`.
+    /// A session record `id`, titled `title`, standing as `state`, its
+    /// address its id's upper case without the `s-`.
     fn session(id: &str, title: &str, state: &str) -> Value {
-        json!({"key": format!("session:{id}"), "id": id, "title": title, "state": state})
+        let address = id.trim_start_matches("s-").to_uppercase();
+        json!({"key": format!("session:{id}"), "id": id, "address": address,
+               "title": title, "state": state})
     }
 
     /// The harbour's swarm: Harbour with Kelp within it, Reef beside, and
     /// one session on its own.
-    fn swarm() -> Swarm {
+    pub(super) fn swarm() -> Swarm {
         let mut asking = session("s-ask", "Kelp's question", "idle");
         asking["wants"] = json!({"kind": "question", "said": "Which tide?"});
         let mut paused = session("s-pause", "Paused one", "idle");
