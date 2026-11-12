@@ -544,6 +544,9 @@ struct Shared<S> {
     /// daemon interface says beside the others rather than measuring it
     /// again for each reader, since a measure reads every part.
     measured: Arc<Mutex<Option<facts::Machine>>>,
+    /// The records its watches read, built once for each change and shared
+    /// by every connection's.
+    built: Arc<daemon::Built>,
 }
 
 /// What changes each time the node's sessions or the realm's machines may
@@ -585,6 +588,7 @@ impl<S: Clone> Clone for Shared<S> {
             to_dial: self.to_dial.clone(),
             flows: self.flows.clone(),
             measured: self.measured.clone(),
+            built: self.built.clone(),
         }
     }
 }
@@ -690,6 +694,10 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             "message" => Some(self.said.messages.subscribe()),
             _ => self.served.told(kind),
         }
+    }
+
+    fn built(&self) -> Option<&daemon::Built> {
+        Some(&self.built)
     }
 
     fn health(&self) -> serde_json::Map<String, serde_json::Value> {
@@ -854,6 +862,7 @@ impl<S: Store> Shared<S> {
             said: Arc::default(),
             flows: Arc::new(flows),
             measured: Arc::default(),
+            built: Arc::default(),
         };
         let kept = Kept {
             sharing,

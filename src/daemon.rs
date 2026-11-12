@@ -10,7 +10,7 @@
 //! node's own protocol in `wire`, so its clients keep working unchanged.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, Lines};
@@ -63,8 +63,17 @@ impl Built {
         kind: &str,
         told: u64,
     ) -> Option<Arc<BTreeMap<String, Value>>> {
-        let _ = (holds, kind, told);
-        None
+        // Held while building, so watches woken by one change wait for the
+        // first's build rather than each making their own.
+        let mut builds = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((at, records)) = builds.get(kind)
+            && *at == told
+        {
+            return Some(Arc::clone(records));
+        }
+        let records = Arc::new(holds.records(kind)?);
+        builds.insert(kind.to_owned(), (told, Arc::clone(&records)));
+        Some(records)
     }
 }
 
@@ -515,15 +524,24 @@ async fn keep_watching<H: Holds>(
     mut when: watch::Receiver<Option<Vec<String>>>,
     answering: mpsc::Sender<Value>,
 ) {
-    let held = |holds: &H| {
-        let mut records = holds.records(&kind).unwrap_or_default();
-        if let Some(keys) = &keys {
-            records.retain(|key, _| keys.contains(key));
+    let held = |holds: &H, told: u64| {
+        let records = match holds.built() {
+            Some(built) => built.records(holds, &kind, told),
+            None => holds.records(&kind).map(Arc::new),
         }
-        records
+        .unwrap_or_default();
+        match &keys {
+            Some(keys) => Arc::new(
+                records
+                    .iter()
+                    .filter(|(key, _)| keys.contains(*key))
+                    .map(|(key, record)| (key.clone(), record.clone()))
+                    .collect(),
+            ),
+            None => records,
+        }
     };
-    told.mark_unchanged();
-    let mut sent = held(&holds);
+    let mut sent = BTreeMap::clone(&held(&holds, *told.borrow_and_update()));
     let whole: Vec<Value> = sent.values().cloned().collect();
     if answering
         .send(json!({"id": id, "records": whole}))
@@ -539,7 +557,6 @@ async fn keep_watching<H: Holds>(
                     return;
                 }
                 tokio::time::sleep(BETWEEN_SENDS).await;
-                told.mark_unchanged();
             }
             asked = when.changed() => {
                 if asked.is_err() {
@@ -547,7 +564,7 @@ async fn keep_watching<H: Holds>(
                 }
             }
         }
-        let now = held(&holds);
+        let now = held(&holds, *told.borrow_and_update());
         let (changed, gone) = changes(&sent, &now);
         let changed = sends(when.borrow().as_deref(), &sent, changed);
         if changed.is_empty() && gone.is_empty() {
