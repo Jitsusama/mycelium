@@ -45,6 +45,7 @@ use crate::within;
 
 mod crossing;
 mod standing;
+mod team;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -162,7 +163,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 3] = ["session", "machine", "message"];
+pub const HOLDS: [&str; 4] = ["session", "machine", "message", team::KIND];
 
 /// How many of each group's latest messages the daemon interface holds as
 /// `message` records: a conversation's recent tail, as a person reads it,
@@ -598,7 +599,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             .served
             .kinds()
             .map(|kind| (kind.to_owned(), Vec::new()));
-        let [sessions, machines, messages] = HOLDS.map(str::to_owned);
+        let [sessions, machines, messages, teams] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
                 sessions,
@@ -628,6 +629,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             ),
             // A message is said once and never changes.
             (messages, Vec::new()),
+            (teams, vec!["title", "worst", "counts", "members", "landed"]),
         ])
         .into_iter()
         .chain(served)
@@ -674,13 +676,16 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     })
                     .collect(),
             ),
+            team::KIND => Some(self.team_records()),
             _ => self.served.records(kind),
         }
     }
 
     fn told(&self, kind: &str) -> Option<watch::Receiver<u64>> {
         match kind {
-            "session" => Some(self.said.sessions.subscribe()),
+            // A team changes only as its sessions do; a quest's new title
+            // shows with the next change to any.
+            "session" | team::KIND => Some(self.said.sessions.subscribe()),
             "machine" => Some(self.said.machines.subscribe()),
             "message" => Some(self.said.messages.subscribe()),
             _ => self.served.told(kind),
@@ -913,6 +918,31 @@ impl<S: Store> Shared<S> {
         for event in events {
             inner.send_all(&event);
         }
+    }
+
+    /// The swarm's teams as the daemon interface holds them, titled by the
+    /// quests it serves, where it serves them.
+    fn team_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let titles: BTreeMap<String, String> = self
+            .served
+            .records("quest")
+            .unwrap_or_default()
+            .into_values()
+            .filter_map(|quest| {
+                let address = quest.get("address")?.as_str()?.to_owned();
+                let title = quest.get("title")?.as_str()?.to_owned();
+                Some((address, title))
+            })
+            .collect();
+        let parked = standing::parked(&self.parked);
+        let sessions = self.lock().state.sessions();
+        team::teams(&sessions, &titles, &parked, millis_at)
+            .into_iter()
+            .map(|(id, heard, fields)| {
+                let record = daemon::record(team::KIND, &id, heard, fields);
+                (daemon::key(team::KIND, &id), record)
+            })
+            .collect()
     }
 
     /// A session as the daemon interface holds it: its fields, whether it
@@ -2268,7 +2298,9 @@ mod tests {
             "hello says which version it speaks: {hello}"
         );
         assert!(
-            hello["kinds"]["session"]["live"].is_array() && hello["kinds"]["machine"].is_object(),
+            hello["kinds"]["session"]["live"].is_array()
+                && hello["kinds"]["machine"].is_object()
+                && hello["kinds"]["team"]["live"].is_array(),
             "hello names the kinds it holds: {hello}"
         );
 
