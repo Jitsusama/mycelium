@@ -743,8 +743,8 @@ in milliseconds.
 | `steer` with `address` and `steer` | `steered` with the `machine` whose session's inbox has it |
 | `update` with `machine` | `updated`, the ending its updater said, as `Updated` gives it |
 
-A record carries `key` (`session:<id>`, `machine:<name>` or
-`message:<id>`), `kind`, `heard` (milliseconds since the epoch) and the
+A record carries `key` (`session:<id>`, `machine:<name>`,
+`message:<id>` or `team:<address>`), `kind`, `heard` (milliseconds since the epoch) and the
 fields `Sessions`, `Machines` and `Messages` give it. A field its source
 named `key`, `kind` or `heard`, such as a job's own `kind`, is kept under
 `source` rather than lost beneath the interface's, beside the record's own
@@ -760,7 +760,17 @@ reads. The `machine` kind holds every machine of the
 realm, this one as its last minute's measure found it, each saying
 whether it is `here`. The `message` kind holds each group's latest 100
 messages, so a quiet group's last words stay beside a busy one's, and a
-message is heard when it was sent and never changes. A watch sends what
+message is heard when it was sent and never changes. The `team` kind
+holds each orchestrator's team, keyed by its address: the living
+sessions answering to it as `members`, its `lead` working on its quest,
+its `title` as a served `quest` names it (else its lead's), the team it
+sits `within` by its lead's orchestrator, and `counts` of its members
+as `needs-you` (wanting their person), `stuck` (paused or parked),
+`moving` and `quiet`. Its `worst` is the worst of its own and of every
+team within it. Its `bridges` are repositories another team's sessions
+work in too, its `liaisons` its sessions hearing another team's
+`orchestration.<address>` group, and `landed` its newest landing. A
+session answering to nobody and leading nothing is in no team. A watch sends what
 changed by key, with only the fields that differ, a dropped one as null; nothing
 while nothing changes; and no sooner than 250 ms after its last send, so
 a reader too slow for it is sent the latest rather than a backlog. A
@@ -821,8 +831,8 @@ file or folder not there, not written yet or removed, holds nothing,
 which is no trouble, and a folder not there is looked for again each
 minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
-still served. A kind the node holds itself, `session`, `machine` or
-`message`, can't be served.
+still served. A kind the node holds itself, `session`, `machine`,
+`message` or `team`, can't be served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and

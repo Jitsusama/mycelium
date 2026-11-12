@@ -107,8 +107,48 @@ pub fn teams(
     parked: &HashSet<String>,
     heard: impl Fn(&str) -> i64,
 ) -> Vec<(String, i64, Value)> {
-    let _ = (sessions, titles, parked, heard);
-    Vec::new()
+    let living: Vec<&Session> = sessions
+        .iter()
+        .filter(|session| Attention::of(session, parked).is_some())
+        .collect();
+    let mut teams: BTreeMap<&str, Team> = BTreeMap::new();
+    for session in &living {
+        if let Some(team) = session.orchestrated_by.as_deref() {
+            teams.entry(team).or_default().members.push(session);
+        }
+    }
+    for session in &living {
+        let Some(quest) = session.quest.as_deref() else {
+            continue;
+        };
+        if let Some(team) = teams.get_mut(address_of(quest)) {
+            team.lead.get_or_insert(session);
+            if session.orchestrated_by.is_none() {
+                team.members.push(session);
+            }
+        }
+    }
+    let within: BTreeMap<&str, &str> = teams
+        .iter()
+        .filter_map(|(id, team)| {
+            let above = team.lead?.orchestrated_by.as_deref()?;
+            (above != *id && teams.contains_key(above)).then_some((*id, above))
+        })
+        .collect();
+    let worst = rolled_up(&teams, &within, parked);
+    teams
+        .iter()
+        .map(|(id, team)| {
+            let fields = fields(id, team, &teams, (titles, parked), (&within, &worst));
+            let last = team
+                .members
+                .iter()
+                .map(|member| heard(&member.at))
+                .max()
+                .unwrap_or_default();
+            ((*id).to_owned(), last, fields)
+        })
+        .collect()
 }
 
 /// The worst of each team's own sessions and of every team within it.
@@ -185,7 +225,11 @@ fn fields(
 /// Each repository team `id`'s sessions work in that another team's do
 /// too, with those teams.
 fn bridges(id: &str, team: &Team, teams: &BTreeMap<&str, Team>) -> Vec<Value> {
-    let here: BTreeSet<&str> = team.members.iter().flat_map(|member| repos(member)).collect();
+    let here: BTreeSet<&str> = team
+        .members
+        .iter()
+        .flat_map(|member| repos(member))
+        .collect();
     here.into_iter()
         .filter_map(|repo| {
             let also: Vec<&str> = teams
@@ -334,7 +378,11 @@ mod tests {
             json!({"needs-you": 0, "stuck": 0, "moving": 1, "quiet": 2}),
             "its lead and its two living sessions counted, the ended one not"
         );
-        assert_eq!(team["members"], json!(["one", "two", "lead"]), "its members");
+        assert_eq!(
+            team["members"],
+            json!(["one", "two", "lead"]),
+            "its members"
+        );
         assert_eq!(team["worst"], json!("moving"), "the worst of them");
     }
 
@@ -422,7 +470,11 @@ mod tests {
             json!([{"repo": "reef", "teams": ["KELP01"]}]),
             "reef bridges the two; skiff is Harbour's alone"
         );
-        assert_eq!(teams["HARBOR"]["liaisons"], json!([]), "none of Harbour's hears Kelp");
+        assert_eq!(
+            teams["HARBOR"]["liaisons"],
+            json!([]),
+            "none of Harbour's hears Kelp"
+        );
         assert_eq!(
             teams["KELP01"]["liaisons"],
             json!([{"session": "two", "teams": ["HARBOR"]}]),
