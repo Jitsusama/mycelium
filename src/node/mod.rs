@@ -683,12 +683,11 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
 
     fn told(&self, kind: &str) -> Option<watch::Receiver<u64>> {
         match kind {
-            "session" => Some(self.said.sessions.subscribe()),
-            "machine" => Some(self.said.machines.subscribe()),
-            "message" => Some(self.said.messages.subscribe()),
             // A team changes only as its sessions do; a quest's new title
             // shows with the next change to any.
-            team::KIND => Some(self.said.sessions.subscribe()),
+            "session" | team::KIND => Some(self.said.sessions.subscribe()),
+            "machine" => Some(self.said.machines.subscribe()),
+            "message" => Some(self.said.messages.subscribe()),
             _ => self.served.told(kind),
         }
     }

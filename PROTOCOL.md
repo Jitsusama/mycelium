@@ -744,8 +744,8 @@ in milliseconds.
 | `update` with `machine` | `updated`, the ending its updater said, as `Updated` gives it |
 
 A record carries `key` (`session:<id>`, `machine:<name>`,
-`message:<id>` or `team:<address>`), `kind`, `heard` (milliseconds since the epoch) and the
-fields `Sessions`, `Machines` and `Messages` give it. A field its source
+`message:<id>` or `team:<address>`), `kind`, `heard` (milliseconds
+since the epoch) and the fields `Sessions`, `Machines` and `Messages` give it. A field its source
 named `key`, `kind` or `heard`, such as a job's own `kind`, is kept under
 `source` rather than lost beneath the interface's, beside the record's own
 `source` where it has one. A session also says
