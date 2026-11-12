@@ -24,6 +24,8 @@ struct Held {
     holdings: BTreeMap<String, Value>,
     claimed: BTreeSet<String>,
     linked: BTreeMap<String, i64>,
+    /// When each machine's links ended, every one kept.
+    links_ended: BTreeMap<String, Vec<i64>>,
     machines: BTreeMap<String, Machine>,
     /// Processes said to have ended, whose sessions are ended whatever
     /// the test said of them.
@@ -201,6 +203,22 @@ impl Store for Memory {
     fn mark_linked(&self, machine: &str, at: i64) -> io::Result<()> {
         self.held().linked.insert(machine.to_owned(), at);
         Ok(())
+    }
+
+    fn mark_ended(&self, machine: &str, at: i64) -> io::Result<()> {
+        self.held()
+            .links_ended
+            .entry(machine.to_owned())
+            .or_default()
+            .push(at);
+        Ok(())
+    }
+
+    fn endings(&self, machine: &str, since: i64) -> usize {
+        self.held()
+            .links_ended
+            .get(machine)
+            .map_or(0, |ended| ended.iter().filter(|at| **at >= since).count())
     }
 
     fn put_presence(&self, session: &str, machine: &str, body: &Value) -> io::Result<()> {

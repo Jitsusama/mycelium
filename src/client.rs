@@ -26,6 +26,16 @@ impl Client {
         Ok(Self { reading, writing })
     }
 
+    /// Connects to the node serving `socket`, giving up on any one read
+    /// or write that takes longer than `within`, as a reader that must end
+    /// in time does.
+    pub fn connect_within(socket: &Path, within: std::time::Duration) -> io::Result<Self> {
+        let client = Self::connect(socket)?;
+        client.writing.set_read_timeout(Some(within))?;
+        client.writing.set_write_timeout(Some(within))?;
+        Ok(client)
+    }
+
     /// Sends `request` and reads the node's reply.
     pub fn ask(&mut self, request: &Request) -> io::Result<Reply> {
         self.write(request)?;
