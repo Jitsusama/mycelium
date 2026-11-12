@@ -95,9 +95,17 @@ impl Membership for Realm {
 
     fn admit(&self, other: &Hello) -> Result<(), String> {
         if other.version != VERSION {
+            // Said so whoever reads it knows which machine to update, as
+            // neither can link to update the other.
+            let (older, newer) = if other.version < VERSION {
+                (&other.machine, &self.machine)
+            } else {
+                (&self.machine, &other.machine)
+            };
             return Err(format!(
-                "{} speaks link version {}, not {VERSION}",
-                other.machine, other.version
+                "{} speaks link version {} and {} {VERSION}, so they link again once {older}'s \
+                 mycelium is as new as {newer}'s",
+                other.machine, other.version, self.machine
             ));
         }
         if other.realm != self.name {

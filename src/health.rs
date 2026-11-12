@@ -35,18 +35,29 @@ pub struct Read<'a> {
 pub fn line(
     read: &Read<'_>,
     ended: impl Fn(&str) -> usize,
-    _refused: impl Fn(&str) -> Option<String>,
+    refused: impl Fn(&str) -> Option<String>,
 ) -> Value {
     let mut links: Vec<Value> = read
         .machines
         .iter()
         .filter(|machine| machine.name != read.here)
         .map(|machine| {
-            let state = match machine.state {
-                Readiness::Ready => "up",
-                Readiness::Unreachable => "unreachable",
-            };
-            json!({"machine": machine.name, "state": state, "ended24h": ended(&machine.name)})
+            let ended = ended(&machine.name);
+            match machine.state {
+                Readiness::Ready => {
+                    json!({"machine": machine.name, "state": "up", "ended24h": ended})
+                }
+                // A machine refused, as for speaking another version, says
+                // why, so it isn't read as one that is only asleep.
+                Readiness::Unreachable => match refused(&machine.name) {
+                    Some(why) => json!({
+                        "machine": machine.name, "state": "refused", "why": why, "ended24h": ended,
+                    }),
+                    None => {
+                        json!({"machine": machine.name, "state": "unreachable", "ended24h": ended})
+                    }
+                },
+            }
         })
         .collect();
     links.sort_by(|a, b| a["machine"].as_str().cmp(&b["machine"].as_str()));

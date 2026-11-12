@@ -213,7 +213,7 @@ pub async fn run(
     let other = greet(
         &mut writing,
         &mut frames,
-        membership,
+        (&store, membership),
         releases,
         hello_within,
     )
@@ -231,6 +231,12 @@ pub async fn run(
     };
     let reach = reach_start(&store, &other.machine);
     store.mark_linked(&other.machine, now())?;
+    if let Err(error) = store.link_admitted(&other.machine) {
+        eprintln!(
+            "{} linked, but its last refusal stands: {error}",
+            other.machine
+        );
+    }
     let exchange = shares
         .map(|places| Exchange::new(places, membership.hello().machine, other.machine.clone()));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
@@ -376,11 +382,12 @@ fn asked_of(
 
 /// Says this end's hello, saying whether its way in `releases` the other
 /// end's machine, and hears and admits the other end's, waiting on it no
-/// longer than `within`, if that says how long.
+/// longer than `within`, if that says how long. Why one is refused is kept
+/// in `store`, for health to say while no link reaches its machine.
 async fn greet(
     writing: &mut (impl AsyncWrite + Unpin),
     frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
-    membership: &impl Membership,
+    (store, membership): (&impl Store, &impl Membership),
     releases: bool,
     within: Option<Duration>,
 ) -> io::Result<Hello> {
@@ -390,7 +397,12 @@ async fn greet(
     };
     send(writing, &Frame::Hello(ours)).await?;
     let other = hello(frames, within).await?;
-    membership.admit(&other).map_err(refusal)?;
+    if let Err(why) = membership.admit(&other) {
+        if let Err(error) = store.refuse_link(&other.machine, &why) {
+            eprintln!("why {} was refused isn't kept: {error}", other.machine);
+        }
+        return Err(refusal(why));
+    }
     Ok(other)
 }
 

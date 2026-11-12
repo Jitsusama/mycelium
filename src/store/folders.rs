@@ -283,16 +283,21 @@ impl Store for Folders {
             .count()
     }
 
-    fn refuse_link(&self, _machine: &str, _why: &str) -> io::Result<()> {
-        Ok(())
+    fn refuse_link(&self, machine: &str, why: &str) -> io::Result<()> {
+        let file = format!("{}.refused", safe(machine)?);
+        write_whole(&self.claims, &file, &Value::from(why))
     }
 
-    fn link_refused(&self, _machine: &str) -> Option<String> {
-        None
+    fn link_refused(&self, machine: &str) -> Option<String> {
+        read(&self.claims.join(format!("{}.refused", safe(machine).ok()?)))
     }
 
-    fn link_admitted(&self, _machine: &str) -> io::Result<()> {
-        Ok(())
+    fn link_admitted(&self, machine: &str) -> io::Result<()> {
+        let file = self.claims.join(format!("{}.refused", safe(machine)?));
+        match fs::remove_file(file) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
     }
 
     fn put_presence(&self, session: &str, machine: &str, body: &Value) -> io::Result<()> {

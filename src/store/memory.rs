@@ -26,6 +26,8 @@ struct Held {
     linked: BTreeMap<String, i64>,
     /// When each machine's links ended, every one kept.
     links_ended: BTreeMap<String, Vec<i64>>,
+    /// Why each machine's last link was refused, until one was admitted.
+    links_refused: BTreeMap<String, String>,
     machines: BTreeMap<String, Machine>,
     /// Processes said to have ended, whose sessions are ended whatever
     /// the test said of them.
@@ -221,15 +223,19 @@ impl Store for Memory {
             .map_or(0, |ended| ended.iter().filter(|at| **at >= since).count())
     }
 
-    fn refuse_link(&self, _machine: &str, _why: &str) -> io::Result<()> {
+    fn refuse_link(&self, machine: &str, why: &str) -> io::Result<()> {
+        self.held()
+            .links_refused
+            .insert(machine.to_owned(), why.to_owned());
         Ok(())
     }
 
-    fn link_refused(&self, _machine: &str) -> Option<String> {
-        None
+    fn link_refused(&self, machine: &str) -> Option<String> {
+        self.held().links_refused.get(machine).cloned()
     }
 
-    fn link_admitted(&self, _machine: &str) -> io::Result<()> {
+    fn link_admitted(&self, machine: &str) -> io::Result<()> {
+        self.held().links_refused.remove(machine);
         Ok(())
     }
 
