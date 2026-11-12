@@ -304,14 +304,7 @@ pub async fn run(
             break Ok(Ending::HandedOver);
         }
     };
-    // Had the link died outright, the last minute's mark would stand.
-    let left = now();
-    let _ = end.store.mark_linked(&end.other, left);
-    // A handover is the link's work done, so only a drop counts as one.
-    if !matches!(result, Ok(Ending::HandedOver)) {
-        let _ = end.store.mark_ended(&end.other, left);
-    }
-    store::out_of_reach(&end.store, &end.other, left);
+    end.leave(&result);
     result
 }
 
@@ -490,6 +483,19 @@ struct Handover {
 }
 
 impl<S: Store> End<S> {
+    /// Marks the link left as it ends, however it ended, and its machine
+    /// out of reach.
+    fn leave(&self, result: &io::Result<Ending>) {
+        // Had the link died outright, the last minute's mark would stand.
+        let left = now();
+        let _ = self.store.mark_linked(&self.other, left);
+        // A handover is the link's work done, so only a drop counts as one.
+        if !matches!(result, Ok(Ending::HandedOver)) {
+            let _ = self.store.mark_ended(&self.other, left);
+        }
+        store::out_of_reach(&self.store, &self.other, left);
+    }
+
     /// Says what opens a link, once the hellos are said: the Have, then
     /// this end's machine, its sessions and the talks it follows.
     async fn open(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {

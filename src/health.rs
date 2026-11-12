@@ -106,7 +106,7 @@ mod tests {
         .expect("a machine reads")
     }
 
-    fn session(id: &str, machine: &str, state: &str, presence: Value) -> Session {
+    fn session(id: &str, machine: &str, state: &str, presence: &Value) -> Session {
         serde_json::from_value(json!({
             "id": id,
             "address": id.to_uppercase(),
@@ -126,28 +126,16 @@ mod tests {
             machine("penelope", Readiness::Ready),
             machine("methuselah", Readiness::Unreachable),
         ];
+        let busy = json!({"state": "busy", "busy": true});
+        let listening = json!({"state": "listening"});
+        let parked = json!({"state": "parked"});
         let sessions = [
-            session(
-                "a",
-                "optimus",
-                "busy",
-                json!({"state": "busy", "busy": true}),
-            ),
-            session("b", "optimus", "idle", json!({"state": "listening"})),
-            session("c", "optimus", "ended", json!({"state": "parked"})),
-            session("d", "optimus", "ended", json!({"state": "listening"})),
-            session(
-                "e",
-                "optimus",
-                "ended",
-                json!({"state": "busy", "busy": true}),
-            ),
-            session(
-                "f",
-                "methuselah",
-                "unreachable",
-                json!({"state": "listening"}),
-            ),
+            session("a", "optimus", "busy", &busy),
+            session("b", "optimus", "idle", &listening),
+            session("c", "optimus", "ended", &parked),
+            session("d", "optimus", "ended", &listening),
+            session("e", "optimus", "ended", &busy),
+            session("f", "methuselah", "unreachable", &listening),
         ];
         let read = Read {
             realm: "personal",
