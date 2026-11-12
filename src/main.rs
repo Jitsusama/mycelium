@@ -447,6 +447,7 @@ fn run(command: Command) -> io::Result<ExitCode> {
                 folder: &folder,
                 environment: &ServiceManager,
                 journal: &SystemJournal::here(),
+                ending: hold::holder::Ending::Signalled,
             })
         }
         Action::Watch { groups, recent } => watch(&socket, groups, recent),
