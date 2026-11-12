@@ -17,13 +17,13 @@
 //! hold across every mycelium process on the machine and go when the
 //! process holding one does, however it ends.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -51,6 +51,10 @@ const UNREACHABLE: &str = "unreachableSince";
 /// day, which is as far back as anything asks.
 const ENDINGS_KEPT: i64 = 24 * 60 * 60 * 1000;
 
+/// How long a verdict on a session's process is kept while no end is told,
+/// so a process whose end no watch tells is still judged again this often.
+const JUDGED_FOR: Duration = Duration::from_secs(60);
+
 /// Numbers each staged write of this process, so no two share a file.
 static STAGED: AtomicU64 = AtomicU64::new(0);
 
@@ -69,6 +73,30 @@ pub struct Folders {
     /// node reads them all as any one changes, so reading only those that
     /// changed keeps an idle node from reading 150 files a second.
     kept: Arc<Mutex<BTreeMap<PathBuf, Kept>>>,
+    /// Whether each session's process lives, as last judged.
+    judged: Arc<Judged>,
+}
+
+/// Whether each session's process lives, as last judged, kept until an end
+/// may have been told. The node reads every presence at each change and
+/// each message, many a second, and judging a process reads the system's
+/// word on it; with a hundred sessions that was over a thousand reads a
+/// second, most of a busy node's reading.
+#[derive(Debug, Default)]
+struct Judged {
+    /// Moves each time a process's end may be told, before it is.
+    ends: Arc<AtomicU64>,
+    verdicts: Mutex<HashMap<Owner, Verdict>>,
+}
+
+/// A process judged: whether it lived, when, at which count of `ends`, and
+/// how often it has been judged.
+#[derive(Debug, Clone, Copy)]
+struct Verdict {
+    lives: bool,
+    at: Instant,
+    ends: u64,
+    times: u32,
 }
 
 /// A presence as it was read, and the file it was read from, by what
@@ -98,6 +126,7 @@ impl Folders {
             ended: Arc::default(),
             told: Arc::default(),
             kept: Arc::default(),
+            judged: Arc::default(),
         })
     }
 
@@ -135,6 +164,39 @@ impl Folders {
         }
         *kept = seen;
         kept.values().filter_map(|one| one.body.clone()).collect()
+    }
+
+    /// Whether `owner`'s process lives, judged again only once an end may
+    /// have been told since it last was, or [`JUDGED_FOR`] has passed.
+    /// Each owner not among `present` is forgotten.
+    fn lives(&self, owner: &Owner, boot: Option<&str>) -> bool {
+        let ends = self.judged.ends.load(Ordering::Acquire);
+        let mut verdicts = self
+            .judged
+            .verdicts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let was = verdicts.get(owner).copied();
+        let lives = owner.lives(boot);
+        verdicts.insert(
+            owner.clone(),
+            Verdict {
+                lives,
+                at: Instant::now(),
+                ends,
+                times: was.map_or(0, |was| was.times) + 1,
+            },
+        );
+        lives
+    }
+
+    /// Forgets each verdict on a process no presence names any more.
+    fn forget_judged(&self, present: &BTreeSet<&Owner>) {
+        self.judged
+            .verdicts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|owner, _| present.contains(owner));
     }
 
     fn ended_processes(&self) -> MutexGuard<'_, BTreeSet<i32>> {
@@ -228,21 +290,30 @@ impl Store for Folders {
     fn presences(&self) -> Vec<Presence> {
         let boot = boot_id();
         let ended = self.ended_processes().clone();
-        self.presence_bodies()
+        let read: Vec<(Facts, Value)> = self
+            .presence_bodies()
             .into_iter()
-            .filter_map(|body| {
-                let facts = Facts::deserialize(&body).ok()?;
+            .filter_map(|body| Some((Facts::deserialize(&body).ok()?, body)))
+            .collect();
+        let owners = read
+            .iter()
+            .filter(|(facts, _)| facts.machine.is_none())
+            .filter_map(|(facts, _)| facts.owner.as_ref())
+            .collect();
+        self.forget_judged(&owners);
+        read.into_iter()
+            .map(|(facts, body)| {
                 let lives = facts.machine.is_some()
                     || facts.owner.as_ref().is_some_and(|owner| {
-                        !ended.contains(&owner.pid) && owner.lives(boot.as_deref())
+                        !ended.contains(&owner.pid) && self.lives(owner, boot.as_deref())
                     });
-                Some(Presence {
+                Presence {
                     session: facts.session,
                     unreachable_since: facts.machine.as_ref().and(facts.unreachable_since),
                     elsewhere: facts.machine,
                     lives,
                     body,
-                })
+                }
             })
             .collect()
     }
@@ -556,7 +627,7 @@ struct Facts {
     unreachable_since: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Owner {
     pid: i32,
@@ -930,6 +1001,40 @@ mod tests {
             Ok(true),
             "the end of a process named once the watch began wasn't told within {PATIENCE:?}"
         );
+    }
+
+    #[test]
+    fn a_living_process_is_judged_once_until_an_end_may_be_told() {
+        let (_dir, store) = store();
+        let mine = me();
+        let presence = json!({
+            "session": "mine",
+            "owner": {"pid": mine.pid, "bootId": mine.boot_id, "startTicks": mine.start_ticks},
+        });
+        write_whole(&store.presence(), "mine.json", &presence).expect("its presence written");
+        let times = |store: &Folders| {
+            let verdicts = store.judged.verdicts.lock().ok()?;
+            verdicts.get(&mine).map(|verdict| verdict.times)
+        };
+        for _ in 0..3 {
+            assert!(
+                store.presences().iter().all(|one| one.lives),
+                "the session lives while its process runs"
+            );
+        }
+        assert_eq!(times(&store), Some(1), "judged once while no end is told");
+
+        store.judged.ends.fetch_add(1, Ordering::Release);
+        let _ = store.presences();
+        assert_eq!(
+            times(&store),
+            Some(2),
+            "judged again once an end may have been told"
+        );
+
+        fs::remove_file(store.presence().join("mine.json")).expect("its presence gone");
+        let _ = store.presences();
+        assert_eq!(times(&store), None, "forgotten once no presence names it");
     }
 
     #[tokio::test]
