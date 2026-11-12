@@ -20,9 +20,6 @@ use super::{Standing, Swarm, address, asked, listed, title};
 /// Who a steer is from: the person, as the harness's steers name them.
 const FROM: &str = "person";
 
-/// Stubbed until the steers are written.
-const STUB: bool = true;
-
 /// What the person does to the swarm.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Act {
@@ -179,9 +176,6 @@ fn aimed(session: &Value, steer: &Value) -> Aimed {
 /// When nothing, or more than one thing, goes by what was asked, or the
 /// act would change none of the sessions it names.
 pub fn aim(swarm: &Swarm, act: Act, asked: &str) -> Result<Aim, String> {
-    if STUB {
-        return Err(String::new());
-    }
     let steer = match &act {
         Act::Say(words) => json!({"text": words, "from": FROM}),
         Act::Pause => json!({"act": "pause", "from": FROM}),
@@ -281,9 +275,6 @@ pub fn send(
 ///
 /// When any session wasn't told, saying who was too.
 pub fn told(aim: &Aim, answers: &[Result<String, String>]) -> Result<String, String> {
-    if STUB {
-        return Err(String::new());
-    }
     let mut reached = Vec::new();
     let mut missed = Vec::new();
     for (aimed, answer) in aim.sessions.iter().zip(answers) {
