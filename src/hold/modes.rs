@@ -92,6 +92,11 @@ impl Modes {
         restored
     }
 
+    /// Whether the private mode `mode` is set now.
+    pub fn is_set(&self, mode: u16) -> bool {
+        self.private.get(&mode) == Some(&true)
+    }
+
     /// Whether the program draws on the alternate screen now.
     fn alternate(&self) -> bool {
         SCREENS
