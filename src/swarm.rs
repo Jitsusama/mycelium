@@ -375,10 +375,7 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
         [] => Err(format!("no team is named {asked}")),
         many => Err(format!(
             "{asked} could be {}",
-            many.iter()
-                .map(|team| title(team))
-                .collect::<Vec<_>>()
-                .join(", ")
+            listed(&many.iter().map(|team| title(team)).collect::<Vec<_>>())
         )),
     }
 }
