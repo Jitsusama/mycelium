@@ -8,12 +8,15 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use pty_process::{OwnedReadPty, OwnedWritePty};
+use rustix::process::{Pid, kill_process};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
+use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinSet;
 
@@ -132,6 +135,111 @@ pub struct Holding<'a> {
     pub environment: &'a dyn Environment,
     /// Where each run's end is said.
     pub journal: &'a dyn Journal,
+    /// What tells the holder to end its program, and so itself.
+    pub ending: Ending,
+}
+
+/// What tells a holder to end its program, and so itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ending {
+    /// A terminate signal or a hang-up, as its service manager sends
+    /// stopping its scope as the person logs out.
+    Signalled,
+    /// Nothing: it ends only as its program does, as a test's holder,
+    /// sharing its process with others, must.
+    Unsignalled,
+}
+
+/// The longest a program told to end, as its holder was, has to save what
+/// it holds and go before it's killed: well inside the five seconds a
+/// service manager gives a scope stopping as the person logs out.
+const ENDING_GRACE: Duration = Duration::from_secs(3);
+
+/// Hears what tells a holder to end.
+struct Told {
+    signals: Option<(Signal, Signal)>,
+}
+
+impl Told {
+    fn listening(ending: Ending) -> io::Result<Self> {
+        let signals = match ending {
+            Ending::Signalled => Some((
+                signal(SignalKind::terminate())?,
+                signal(SignalKind::hangup())?,
+            )),
+            Ending::Unsignalled => None,
+        };
+        Ok(Self { signals })
+    }
+
+    /// What `until` ends with, or none when the holder is told to end
+    /// first.
+    async fn before<T>(&mut self, until: impl Future<Output = T>) -> Option<T> {
+        tokio::select! {
+            ended = until => Some(ended),
+            () = self.told() => None,
+        }
+    }
+
+    /// Resolves once the holder is told to end.
+    async fn told(&mut self) {
+        match &mut self.signals {
+            Some((terminate, hangup)) => tokio::select! {
+                _ = terminate.recv() => {}
+                _ = hangup.recv() => {}
+            },
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// Ends the program as `pid`, its holder told to end: tells it to end too
+/// and waits while it saves what it holds, its terminal still there to
+/// write to, killing it only past [`ENDING_GRACE`]. A holder that went
+/// first would take the terminal with it, and a program whose terminal
+/// has gone, as pi's has, stops at once and saves nothing more.
+async fn ends(child: &mut tokio::process::Child, pid: u32) -> io::Result<ExitStatus> {
+    // A service manager tells the program itself as well, and one told
+    // twice ends once.
+    if let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) {
+        let _ = kill_process(pid, rustix::process::Signal::TERM);
+    }
+    if let Ok(status) = tokio::time::timeout(ENDING_GRACE, child.wait()).await {
+        return status;
+    }
+    child.start_kill()?;
+    child.wait().await
+}
+
+/// How `command` starts, as `holding` says, with `waking` and `naming` its
+/// wake and next-command files.
+fn starting(
+    holding: &Holding<'_>,
+    command: &[String],
+    waking: &Path,
+    naming: &Path,
+) -> io::Result<pty_process::Command> {
+    let words: Vec<&String> = holding.through.iter().chain(command).collect();
+    let Some((program, arguments)) = words.split_first() else {
+        return Err(io::Error::other("there is nothing to start"));
+    };
+    // The person's environment goes first, so what the holder says and
+    // takes away below is its own whatever that environment holds.
+    let mut command = pty_process::Command::new(program)
+        .args(arguments)
+        .current_dir(holding.folder)
+        .envs(keeping_path(
+            holding.environment.now(),
+            std::env::var("PATH").ok().as_deref(),
+        ))
+        .env("MYCELIUM_REALM", holding.realm)
+        .env("MYCELIUM_HELD", holding.id)
+        .env("MYCELIUM_WAKE", waking)
+        .env("MYCELIUM_AGAIN", naming);
+    for variable in WINDOW_VARIABLES {
+        command = command.env_remove(variable);
+    }
+    Ok(command)
 }
 
 /// Holds the program until it ends, answering its exit code, if it gave
@@ -155,6 +263,9 @@ pub async fn hold(
             "there is nothing to hold: name a program",
         ));
     }
+    // Heard from the first, so being told to end while the program starts
+    // ends it as well, rather than the holder alone.
+    let mut told = Told::listening(holding.ending)?;
     let socket = node::bind(&socket(holding.dir, holding.id))?;
     let waking = wake(holding.dir, holding.id);
     let naming = again(holding.dir, holding.id);
@@ -169,27 +280,7 @@ pub async fn hold(
     // The holder keeps the terminal's other end, so a parked program's
     // terminal outlives it and the program starts again on the same one.
     let start = |command: &[String], size: Size| {
-        let words: Vec<&String> = holding.through.iter().chain(command).collect();
-        let Some((program, arguments)) = words.split_first() else {
-            return Err(io::Error::other("there is nothing to start"));
-        };
-        // The person's environment goes first, so what the holder says
-        // and takes away below is its own whatever that environment holds.
-        let mut command = pty_process::Command::new(program)
-            .args(arguments)
-            .current_dir(holding.folder)
-            .envs(keeping_path(
-                holding.environment.now(),
-                std::env::var("PATH").ok().as_deref(),
-            ))
-            .env("MYCELIUM_REALM", holding.realm)
-            .env("MYCELIUM_HELD", holding.id)
-            .env("MYCELIUM_WAKE", &waking)
-            .env("MYCELIUM_AGAIN", &naming);
-        for variable in WINDOW_VARIABLES {
-            command = command.env_remove(variable);
-        }
-        end.start(command, size)
+        end.start(starting(holding, command, &waking, &naming)?, size)
     };
     let mut command = holding.command.to_vec();
     let mut child = start(&command, FIRST_SIZE)?;
@@ -222,11 +313,16 @@ pub async fn hold(
     let mut joined = JoinSet::new();
     // A terminal may join whether the program runs or is parked.
     let serving = |stream| serve(stream, terminal.clone(), shown.clone(), record.clone());
-    let status = loop {
+    let status = 'held: loop {
         let pid = child.id().unwrap_or_default();
-        let status = joining_until(child.wait(), &socket, &mut joined, &serving).await?;
+        let run = told.before(child.wait());
+        let (status, telling) = match joining_until(run, &socket, &mut joined, &serving).await {
+            Some(status) => (status?, false),
+            None => (ends(&mut child, pid).await?, true),
+        };
         ended(holding, pid, &command, status);
-        if status.code() != Some(PARKED) {
+        // Told to end, a program that parked as it saved stays down.
+        if telling || status.code() != Some(PARKED) {
             break status;
         }
         let mut restarting = restarting(&waking, &record, &shown);
@@ -235,7 +331,15 @@ pub async fn hold(
         // here, and a command named again may start.
         child = loop {
             if !std::mem::take(&mut restarting) {
-                joining_until(woken(&terminal, &waking), &socket, &mut joined, &serving).await;
+                let woke = told.before(woken(&terminal, &waking));
+                // A parked program has saved all it holds, so being told
+                // to end then ends only the holder.
+                if joining_until(woke, &socket, &mut joined, &serving)
+                    .await
+                    .is_none()
+                {
+                    break 'held status;
+                }
                 shown.show(FOCUS_OFF);
             }
             command = named(&naming).unwrap_or(command);
@@ -264,7 +368,7 @@ pub async fn hold(
 
 /// Says to the holding's journal that the run of `command` as `pid` ended
 /// as `status`.
-fn ended(holding: &Holding<'_>, pid: u32, command: &[String], status: std::process::ExitStatus) {
+fn ended(holding: &Holding<'_>, pid: u32, command: &[String], status: ExitStatus) {
     holding.journal.ended(&Ended {
         id: holding.id.to_owned(),
         realm: holding.realm.to_owned(),
@@ -955,6 +1059,7 @@ mod tests {
                     folder: &folder,
                     environment: &environment,
                     journal: &SystemJournal::at(&root_journal),
+                    ending: Ending::Unsignalled,
                 };
                 hold(&holding, |held| {
                     let _ = told.send(held.clone());
@@ -1524,6 +1629,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_program_told_to_end_with_its_holder_saves_on_its_terminal_first() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let dir = root.path().join("held");
+        let folder = root.path().to_owned();
+        let journal = root.path().join("journal");
+        // It saves only once it has said so on its terminal, as pi puts its
+        // terminal back before it exits, and a while after it's told. It
+        // says it's ready once a key is typed, since what it said before a
+        // terminal joined isn't shown there.
+        let saving = "trap 'sleep 0.3; echo saved || exit 9; exit 0' TERM; \
+                      read typed; echo ready; while :; do sleep 0.05; done";
+        let (told, ready) = oneshot::channel();
+        let holder = {
+            let dir = dir.clone();
+            tokio::spawn(async move {
+                let command = vec!["sh".to_owned(), "-c".to_owned(), saving.to_owned()];
+                let holding = Holding {
+                    dir: &dir,
+                    realm: "harbour",
+                    id: "ending1",
+                    command: &command,
+                    through: &[],
+                    folder: &folder,
+                    environment: &Given(Vec::new()),
+                    journal: &SystemJournal::at(&journal),
+                    ending: Ending::Signalled,
+                };
+                hold(&holding, |held| {
+                    let _ = told.send(held.clone());
+                    Ok(())
+                })
+                .await
+            })
+        };
+        let held = ready.await.expect("the holder says it holds");
+        let mut joined = Joined::join(socket(&dir, &held.id), FIRST_SIZE, None);
+        joined.types("go\r").await;
+        joined.sees("ready").await;
+
+        // Told as its service manager tells it, which tells only the
+        // holder here, this test's own process.
+        kill_process(rustix::process::getpid(), rustix::process::Signal::TERM)
+            .expect("the holder is told to end");
+        joined.sees("saved").await;
+        let ended = tokio::time::timeout(PATIENCE, holder)
+            .await
+            .expect("the holder ends once its program has")
+            .expect("the holder's task ran");
+        assert_eq!(
+            ended.expect("it held"),
+            Some(0),
+            "the program wrote on its terminal and ended as it chose"
+        );
+    }
+
+    #[tokio::test]
     async fn nothing_is_held_without_a_program() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let holding = Holding {
@@ -1535,6 +1696,7 @@ mod tests {
             folder: root.path(),
             environment: &Given(Vec::new()),
             journal: &SystemJournal::at(&root.path().join("journal")),
+            ending: Ending::Unsignalled,
         };
         let refused = hold(&holding, |_| Ok(())).await;
         assert!(refused.is_err(), "holding nothing is refused");
@@ -1556,6 +1718,7 @@ mod tests {
             folder: root.path(),
             environment: &Given(Vec::new()),
             journal: &SystemJournal::at(&socket),
+            ending: Ending::Unsignalled,
         };
         let said = tokio::time::timeout(PATIENCE, hold(&holding, |_| Ok(())))
             .await
