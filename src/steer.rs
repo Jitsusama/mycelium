@@ -24,14 +24,24 @@ use crate::hold;
 use crate::record::{Session, State};
 
 /// The fields of a steer the harness reads, which are all that is written.
-const FIELDS: [&str; 6] = ["text", "act", "to", "at", "from", "id"];
+const FIELDS: [&str; 10] = [
+    "text", "act", "to", "at", "from", "id", "want", "look", "value", "other",
+];
 
 /// What the person may do besides talk, as the harness's `STEER_ACTS`
 /// says: close ends a session for good, where stop only interrupts it,
 /// and carry ends it here once its work is carried for the machine `to`
 /// names; fill puts its words in the session's prompt for the person to
-/// send, and move takes it into a host or back out of one, as `to` says.
-const ACTS: [&str; 7] = ["pause", "resume", "fill", "stop", "close", "carry", "move"];
+/// send, and move takes it into a host or back out of one, as `to` says;
+/// answer answers an open ask, by the `want` it raised, with a choice's
+/// `value` or the person's words as `other`, or a look on the person's
+/// list, by its `look` id, with a choice's `value` only.
+const ACTS: [&str; 8] = [
+    "pause", "resume", "fill", "stop", "close", "carry", "move", "answer",
+];
+
+/// The fields only an answer carries.
+const ANSWERING: [&str; 4] = ["want", "look", "value", "other"];
 
 /// Where a move goes, as the harness's `MOVE_TARGETS` says: a host of
 /// its realm, by kind, or plain pi.
@@ -88,6 +98,11 @@ impl Steer {
         if act == Some("fill") && text.trim().is_empty() {
             return Err("a fill has words to put in the prompt".to_owned());
         }
+        if act == Some("answer") {
+            answers(&body)?;
+        } else if ANSWERING.iter().any(|field| body.contains_key(*field)) {
+            return Err("only an answer names an ask, a look or a choice".to_owned());
+        }
         // A carry names where to, as a machine names itself, a move one of
         // the places a session moves to, and nothing else names a place.
         let to = body.get("to").map(|to| to.as_str());
@@ -133,6 +148,28 @@ impl Steer {
         fs::write(&writing, Value::Object(self.body.clone()).to_string())?;
         fs::rename(&writing, folder.join(&name))?;
         Ok(name)
+    }
+}
+
+/// Why an answer isn't one, if it isn't: it names the want or the look it
+/// answers, never both, and gives a choice's value or, to a want only, the
+/// person's words, as the harness's `steerFrom` reads it.
+fn answers(body: &Map<String, Value>) -> Result<(), String> {
+    let named = |field: &str| {
+        body.get(field)
+            .and_then(Value::as_str)
+            .is_some_and(|it| !it.trim().is_empty())
+    };
+    match (named("want"), named("look")) {
+        (false, false) => return Err("an answer names the want or the look it answers".to_owned()),
+        (true, true) => return Err("an answer answers a want or a look, not both".to_owned()),
+        _ => {}
+    }
+    match (named("value"), named("other")) {
+        (false, false) => Err("an answer gives a choice's value or the person's words".to_owned()),
+        (true, true) => Err("an answer gives a choice or words, not both".to_owned()),
+        (false, true) if named("look") => Err("a look takes a choice, never words".to_owned()),
+        _ => Ok(()),
     }
 }
 
@@ -417,6 +454,26 @@ mod tests {
             ("AB12", json!({"act": "fill", "text": " "})),
             ("AB12", json!({"act": "move"})),
             ("AB12", json!({"act": "move", "to": "penelope"})),
+            ("AB12", json!({"act": "answer", "value": "yes"})),
+            ("AB12", json!({"act": "answer", "want": "question@t"})),
+            (
+                "AB12",
+                json!({"act": "answer", "want": " ", "value": "yes"}),
+            ),
+            (
+                "AB12",
+                json!({"act": "answer", "want": "question@t", "look": "l1", "value": "yes"}),
+            ),
+            (
+                "AB12",
+                json!({"act": "answer", "want": "question@t", "value": "yes", "other": "no"}),
+            ),
+            (
+                "AB12",
+                json!({"act": "answer", "look": "l1", "other": "my words"}),
+            ),
+            ("AB12", json!({"act": "pause", "value": "yes"})),
+            ("AB12", json!({"text": "hi", "look": "l1"})),
         ] {
             assert!(
                 Steer::new(address, &said).is_err(),
@@ -458,6 +515,20 @@ mod tests {
                 moving.body.get("to"),
                 Some(&json!(to)),
                 "a move's {to} is written for the harness"
+            );
+        }
+        // Needs You answers an open ask with a choice or his own words, and
+        // the look list answers a look with a choice, each where it waits.
+        for said in [
+            json!({"act": "answer", "want": "question@2026-11-12T07:00:00.000Z", "value": "keep", "from": "joel", "at": "t"}),
+            json!({"act": "answer", "want": "question@2026-11-12T07:00:00.000Z", "other": "roll it back"}),
+            json!({"act": "answer", "look": "look-1", "value": "Keep it"}),
+        ] {
+            let answering = Steer::new("AB12", &said).expect("an answer");
+            assert_eq!(
+                Value::Object(answering.body.clone()),
+                said,
+                "every field an answer carries is written for the harness"
             );
         }
         let talking = Steer::new("AB12", &json!({"text": "hi", "id": "talk-1"})).expect("a steer");
