@@ -45,6 +45,7 @@ use crate::within;
 
 mod crossing;
 mod standing;
+mod team;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
