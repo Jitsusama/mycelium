@@ -16,7 +16,7 @@ use mycelium::flow::Flows;
 use mycelium::group::{Group, Pattern};
 use mycelium::hold::environment::ServiceManager;
 use mycelium::hold::journal::SystemJournal;
-use mycelium::hold::start::{Starter, login_shell};
+use mycelium::hold::start::{Scope, Starter, login_shell};
 use mycelium::link::dial::{Connection, Program, Ssh, Way};
 use mycelium::link::discovery::Listed;
 use mycelium::link::membership::{Membership, Proven, Realm};
@@ -514,7 +514,11 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
             program: std::env::current_exe()?,
             // A node that is a systemd unit, as on Linux, would stop
             // every session it started when the unit stops.
-            scoped: cfg!(target_os = "linux") && std::env::var_os("INVOCATION_ID").is_some(),
+            scope: if cfg!(target_os = "linux") && std::env::var_os("INVOCATION_ID").is_some() {
+                Scope::Apart
+            } else {
+                Scope::None
+            },
         }),
         awake: Awake::here(),
         updater: place::updater(),
@@ -698,9 +702,10 @@ fn hold(
         Some(folder) => folder,
         None => std::env::current_dir()?,
     };
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     let starter = Starter {
         program: std::env::current_exe()?,
-        scoped: false,
+        scope: Scope::of_a_terminal(runtime.as_deref()),
     };
     let id = starter.start(realm, &folder, command, false)?;
     if detached {

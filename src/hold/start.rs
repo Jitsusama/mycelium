@@ -15,10 +15,55 @@ const HOLDS_WITHIN: Duration = Duration::from_secs(10);
 pub struct Starter {
     /// The mycelium program that becomes each holder.
     pub program: PathBuf,
-    /// Whether each holder starts in a user scope of its own, in the slice
-    /// the person's own programs run in. A node that is a systemd unit
-    /// needs it, or stopping the unit would stop every session it started.
-    pub scoped: bool,
+    /// Where each holder starts: in a user scope of its own, or beside
+    /// whatever started it.
+    pub scope: Scope,
+}
+
+/// Where a holder starts. A scope of its own is what a stop reaches: when
+/// the service manager stops it, as it does every unit at a shutdown, its
+/// holder and program are each sent the terminate signal and waited on,
+/// so the program saves and ends rather than being killed with the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Beside what started it, where nothing has a service manager.
+    None,
+    /// In the slice the person's own programs run in, for a node that is a
+    /// systemd unit, since stopping the unit would stop every session it
+    /// started.
+    Apart,
+    /// In the slice of the terminal that started it. A terminal's own
+    /// scope signals nothing when stopped (kitty makes its with
+    /// `KillMode=process` and no main process), so a holder left in it was
+    /// killed only once the shutdown gave up waiting (2026-11-11).
+    Beside,
+}
+
+impl Scope {
+    /// The scope for a hold from a terminal: beside its slice where a user
+    /// service manager answers in `runtime`, the user's runtime folder,
+    /// and none otherwise, as on a Mac.
+    #[must_use]
+    pub fn of_a_terminal(runtime: Option<&Path>) -> Self {
+        let _ = runtime;
+        Self::None
+    }
+
+    /// The words that start `program` in this scope, as the holder `id`.
+    fn command(self, program: &Path, id: &str) -> Command {
+        let slice = match self {
+            Self::None => return Command::new(program),
+            Self::Apart => "--slice=app.slice",
+            Self::Beside => "--slice-inherit",
+        };
+        let mut scoped = Command::new("systemd-run");
+        scoped
+            .args(["--user", "--scope", "--collect", "--quiet", slice])
+            .arg(format!("--unit=mycelium-pi-{id}"))
+            .arg("--")
+            .arg(program);
+        scoped
+    }
 }
 
 impl Starter {
@@ -40,18 +85,7 @@ impl Starter {
         login: bool,
     ) -> io::Result<String> {
         let id = super::new_id();
-        let mut holder = if self.scoped {
-            let mut scoped = Command::new("systemd-run");
-            scoped
-                .args(["--user", "--scope", "--collect", "--quiet"])
-                .arg("--slice=app.slice")
-                .arg(format!("--unit=mycelium-pi-{id}"))
-                .arg("--")
-                .arg(&self.program);
-            scoped
-        } else {
-            Command::new(&self.program)
-        };
+        let mut holder = self.scope.command(&self.program, &id);
         holder
             .args(["--realm", realm, "holder", "--id", &id, "--folder"])
             .arg(folder);
@@ -64,7 +98,7 @@ impl Starter {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             // A scope that can't be made says why on the node's own log.
-            .stderr(if self.scoped {
+            .stderr(if self.scope == Scope::Apart {
                 Stdio::inherit()
             } else {
                 Stdio::null()
@@ -171,6 +205,73 @@ pub fn attach_here(realm: &str, id: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_terminals_hold_has_a_scope_of_its_own_where_a_service_manager_answers() {
+        let runtime = tempfile::tempdir().expect("a temporary folder");
+        assert_eq!(
+            Scope::of_a_terminal(Some(runtime.path())),
+            Scope::None,
+            "with no user service manager, a holder starts beside its terminal"
+        );
+        assert_eq!(
+            Scope::of_a_terminal(None),
+            Scope::None,
+            "nor with no runtime folder"
+        );
+        fs::create_dir(runtime.path().join("systemd")).expect("the manager's folder");
+        fs::write(runtime.path().join("systemd/private"), "").expect("its socket");
+        let managed = if cfg!(target_os = "linux") {
+            Scope::Beside
+        } else {
+            Scope::None
+        };
+        assert_eq!(
+            Scope::of_a_terminal(Some(runtime.path())),
+            managed,
+            "a shutdown's stop reaches a holder only in a scope of its own"
+        );
+    }
+
+    #[test]
+    fn a_holder_beside_its_terminal_keeps_the_terminals_slice() {
+        let words = |scope: Scope| -> Vec<String> {
+            let command = scope.command(Path::new("/bin/mycelium"), "f00d");
+            std::iter::once(command.get_program())
+                .chain(command.get_args())
+                .map(|word| word.to_string_lossy().into_owned())
+                .collect()
+        };
+        let scoped = |slice: &str| {
+            [
+                "systemd-run",
+                "--user",
+                "--scope",
+                "--collect",
+                "--quiet",
+                slice,
+            ]
+            .into_iter()
+            .chain(["--unit=mycelium-pi-f00d", "--", "/bin/mycelium"])
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            words(Scope::None),
+            ["/bin/mycelium"],
+            "unscoped, it runs as itself"
+        );
+        assert_eq!(
+            words(Scope::Apart),
+            scoped("--slice=app.slice"),
+            "a node's go apart"
+        );
+        assert_eq!(
+            words(Scope::Beside),
+            scoped("--slice-inherit"),
+            "a terminal's stays in the terminal's slice, weighed as it was"
+        );
+    }
 
     #[test]
     fn a_program_runs_through_the_login_shell_with_its_words_kept_apart() {
