@@ -745,10 +745,11 @@ in milliseconds.
 
 A record carries `key` (`session:<id>`, `machine:<name>`,
 `message:<id>` or `team:<address>`), `kind`, `heard` (milliseconds
-since the epoch) and the fields `Sessions`, `Machines` and `Messages` give it. A field its source
-named `key`, `kind` or `heard`, such as a job's own `kind`, is kept under
-`source` rather than lost beneath the interface's, beside the record's own
-`source` where it has one. A session also says
+since the epoch) and the fields `Sessions`, `Machines` and `Messages`
+give it. A field its source named `key`, `kind` or `heard`, such as a
+job's own `kind`, is kept under `source` rather than lost beneath the
+interface's, beside the record's own `source` where it has one. A
+session also says
 whether it runs `here`, and how it stands, as `standing`: `running` while
 its process runs, here or on a machine heard of this boot; `parked` here,
 ended for its holder to start again, its park marked this boot; `closed`
@@ -770,7 +771,9 @@ as `needs-you` (wanting their person), `stuck` (paused or parked),
 team within it. Its `bridges` are repositories another team's sessions
 work in too, its `liaisons` its sessions hearing another team's
 `orchestration.<address>` group, and `landed` its newest landing. A
-session answering to nobody and leading nothing is in no team. A watch sends what
+session answering to nobody and leading nothing is in no team.
+
+A watch sends what
 changed by key, with only the fields that differ, a dropped one as null; nothing
 while nothing changes; and no sooner than 250 ms after its last send, so
 a reader too slow for it is sent the latest rather than a backlog. A
