@@ -47,6 +47,7 @@
 //! - [`served`]: files another program keeps, served as kinds of records
 //! - [`watching`]: watches of folders that hear only what changes them
 //! - [`client`]: a client of the socket
+//! - [`health`]: how a realm's network stands, for a daily read
 //! - [`place`]: where a node keeps things on its machine
 //! - [`awake`]: keeping its machine awake while it holds sessions
 //! - [`install`]: whether the build a process runs is still installed
@@ -63,6 +64,7 @@ pub mod facts;
 pub mod flow;
 pub mod group;
 pub mod handover;
+pub mod health;
 pub mod hold;
 pub mod hosted_attach;
 pub mod install;

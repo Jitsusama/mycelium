@@ -94,6 +94,14 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// Records that this store is linked with `machine` as of `at`.
     fn mark_linked(&self, machine: &str, at: i64) -> io::Result<()>;
 
+    /// Records that a link with `machine` ended at `at`, in milliseconds
+    /// since the epoch, for counting how often it drops.
+    fn mark_ended(&self, machine: &str, at: i64) -> io::Result<()>;
+
+    /// How many links with `machine` ended at `since` or later, as
+    /// [`Store::mark_ended`] kept them. Only the last day's are kept.
+    fn endings(&self, machine: &str, since: i64) -> usize;
+
     /// Keeps the presence of a session that runs on `machine`, another
     /// machine, as that machine wrote it. Refused when the id names this
     /// machine's own session or another machine's.

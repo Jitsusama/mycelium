@@ -42,6 +42,10 @@ The harness mesh's messages and presence, carried between machines:
   `hello` is answered in the daemon interface every daemon on the machine
   speaks, and watches the realm's sessions, machines and messages
   change.
+- `mycelium health` prints how the realm's network stands as one JSON
+  line for a daily read: each link and how often it dropped in the last
+  day, each machine's sessions, the presences still saying they run with
+  their process gone, and how long the node took to answer.
 
 [PROTOCOL.md](PROTOCOL.md) says how, and what comes next: shared scratch,
 the node's own log, connections of its own and providers for machines

@@ -25,8 +25,9 @@ use mycelium::placement::{Need, Work};
 use mycelium::record::Intent;
 use mycelium::share::exchange::Places;
 use mycelium::ssh::Asked as KeyAsked;
+use mycelium::store::Store as _;
 use mycelium::store::folders::Folders;
-use mycelium::wire::{Draft, Request, Start};
+use mycelium::wire::{Draft, Request, Response, Start};
 use mycelium::{carry, hold, hosted_attach, install, link, node, place, served};
 
 #[derive(Parser)]
@@ -96,6 +97,16 @@ enum Action {
     },
     /// Prints every session the node knows of, a JSON line each.
     Sessions,
+    /// Prints how the realm's network stands, as one JSON line for a daily
+    /// read: each link, `up` or `unreachable`, with how many times it
+    /// dropped in the last day; each machine's sessions by how they stand;
+    /// how many presences still say they run with their process gone; and
+    /// the node's slowest answer to this read, in whole seconds. Exits 0
+    /// whenever the node could be read, and within 10 seconds.
+    Health {
+        #[command(flatten)]
+        here: Here,
+    },
     /// Prints what this machine is, as its node measures it.
     Machine,
     /// Prints what every machine of the realm is, this one first.
@@ -390,6 +401,7 @@ fn run(command: Command) -> io::Result<ExitCode> {
             carry(&socket, shares, &quest, &to)
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
+        Action::Health { here } => health(&socket, here, realm),
         Action::Machine => print_reply(&socket, &Request::Machine),
         Action::Machines => print_reply(&socket, &Request::Machines),
         Action::Offers => print_reply(&socket, &Request::Offers),
@@ -644,6 +656,46 @@ fn open(here: Here, realm: String) -> io::Result<(Folders, Realm, Places)> {
         machine: here.machine.unwrap_or_else(place::machine),
     };
     Ok((store, membership, place::shares(&state)))
+}
+
+/// How long `health` waits on each of the node's answers, so its two asks
+/// and its read of the store end inside the 10 seconds a daily read allows.
+const HEALTH_WITHIN: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Prints how the realm's network stands, as [`mycelium::health`] says.
+fn health(socket: &Path, here: Here, realm: String) -> io::Result<()> {
+    let (store, membership, _) = open(here, realm)?;
+    let mut client = Client::connect_within(socket, HEALTH_WITHIN)?;
+    let mut slowest = std::time::Duration::ZERO;
+    let mut ask = |request: &Request| -> io::Result<Response> {
+        let begun = std::time::Instant::now();
+        let reply = client.ask(request)?;
+        slowest = slowest.max(begun.elapsed());
+        reply.map_err(io::Error::other)
+    };
+    let Response::Machines(machines) = ask(&Request::Machines)? else {
+        return Err(io::Error::other(
+            "the node answered machines with something else",
+        ));
+    };
+    let Response::Sessions(sessions) = ask(&Request::Sessions)? else {
+        return Err(io::Error::other(
+            "the node answered sessions with something else",
+        ));
+    };
+    let now = jiff::Timestamp::now();
+    let day_ago = now.as_millisecond() - 24 * 60 * 60 * 1000;
+    let read = mycelium::health::Read {
+        realm: &membership.name,
+        at: now.as_second(),
+        here: &membership.machine,
+        machines: &machines,
+        sessions: &sessions,
+        slowest,
+    };
+    print_line(&mycelium::health::line(&read, |machine| {
+        store.endings(machine, day_ago)
+    }))
 }
 
 /// Carries `quest` to the machine `to`, a JSON line on standard output

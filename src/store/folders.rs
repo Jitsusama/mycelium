@@ -47,6 +47,10 @@ const MACHINE: &str = "machine";
 /// has reached the machine of a session elsewhere.
 const UNREACHABLE: &str = "unreachableSince";
 
+/// How long the ends of a machine's links are kept, in milliseconds: a
+/// day, which is as far back as anything asks.
+const ENDINGS_KEPT: i64 = 24 * 60 * 60 * 1000;
+
 /// Numbers each staged write of this process, so no two share a file.
 static STAGED: AtomicU64 = AtomicU64::new(0);
 
@@ -95,6 +99,15 @@ impl Folders {
             told: Arc::default(),
             kept: Arc::default(),
         })
+    }
+
+    /// When each link with `machine` kept here ended, oldest first; none
+    /// for a machine whose name isn't safe as a file's, or never ended.
+    fn ended_at(&self, machine: &str) -> Vec<i64> {
+        safe(machine)
+            .ok()
+            .and_then(|name| read(&self.claims.join(format!("{name}.ended"))))
+            .unwrap_or_default()
     }
 
     /// Each presence in the folder, read again only where its file changed
@@ -251,6 +264,23 @@ impl Store for Folders {
     fn mark_linked(&self, machine: &str, at: i64) -> io::Result<()> {
         let file = format!("{}.linked", safe(machine)?);
         write_whole(&self.claims, &file, &Value::from(at))
+    }
+
+    fn mark_ended(&self, machine: &str, at: i64) -> io::Result<()> {
+        let file = format!("{}.ended", safe(machine)?);
+        // Written whole, the last day's alone, so a link dropping each
+        // minute keeps the file to about 1,440 numbers.
+        let mut ended = self.ended_at(machine);
+        ended.retain(|then| *then > at - ENDINGS_KEPT);
+        ended.push(at);
+        write_whole(&self.claims, &file, &Value::from(ended))
+    }
+
+    fn endings(&self, machine: &str, since: i64) -> usize {
+        self.ended_at(machine)
+            .into_iter()
+            .filter(|then| *then >= since)
+            .count()
     }
 
     fn put_presence(&self, session: &str, machine: &str, body: &Value) -> io::Result<()> {
@@ -1184,6 +1214,32 @@ mod tests {
             .mark_linked("equilibrius", 1_793_046_604_647)
             .expect("the time is kept");
         assert_eq!(store.linked_until("equilibrius"), Some(1_793_046_604_647));
+    }
+
+    #[test]
+    fn a_machines_link_endings_are_counted_for_the_last_day() {
+        let (_dir, store) = store();
+        let hour = 60 * 60 * 1000;
+        let noon = 1_793_046_604_647;
+        assert_eq!(store.endings("penelope", 0), 0, "never ended");
+        for at in [noon - 30 * hour, noon - 2 * hour, noon - hour, noon] {
+            store.mark_ended("penelope", at).expect("the end is kept");
+        }
+        store
+            .mark_ended("equilibrius", noon)
+            .expect("another machine's is its own");
+        assert_eq!(
+            store.endings("penelope", noon - 24 * hour),
+            3,
+            "three ended in the day before noon"
+        );
+        assert_eq!(
+            store.endings("penelope", 0),
+            3,
+            "one over a day before the last isn't kept"
+        );
+        assert_eq!(store.endings("equilibrius", 0), 1, "each machine apart");
+        assert_eq!(store.endings("../far", 0), 0, "a path is no machine");
     }
 
     #[tokio::test]
