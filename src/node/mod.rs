@@ -2758,7 +2758,7 @@ mod tests {
         let far_store = Memory::default();
         let holds = Starter {
             program: holder,
-            scoped: false,
+            scope: start::Scope::None,
         };
         let nobody = Vec::<Piped>::new();
         let far = node(&far_store, "equilibrius", nobody, Some(holds), &far_socket);
@@ -2976,7 +2976,7 @@ mod tests {
         );
         let holds = Starter {
             program: holder,
-            scoped: false,
+            scope: start::Scope::None,
         };
         let dial = Piped {
             store: far_store.clone(),
@@ -3401,7 +3401,7 @@ mod tests {
         let node = tokio::spawn(async move {
             let starter = Starter {
                 program: holder,
-                scoped: false,
+                scope: start::Scope::None,
             };
             let given = bare(steers, Some(starter));
             let stopped = async {
