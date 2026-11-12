@@ -270,7 +270,7 @@ fn counts_of(team: &Value) -> [u64; 4] {
 }
 
 /// Living sessions no team holds.
-fn alone<'a>(swarm: &'a Swarm) -> Vec<&'a Value> {
+fn alone(swarm: &Swarm) -> Vec<&Value> {
     let held: BTreeSet<&str> = swarm
         .teams
         .iter()
@@ -611,12 +611,16 @@ mod tests {
         Look {
             width: 72,
             colour: false,
-            now: "2026-11-12T17:00:00Z[UTC]".parse().expect("a time"),
+            // UTC as jiff holds it, since a build has no zone database.
+            now: "2026-11-12T17:00:00Z"
+                .parse::<jiff::Timestamp>()
+                .expect("a time")
+                .to_zoned(jiff::tz::TimeZone::UTC),
         }
     }
 
     /// A team record keyed by `address`.
-    fn team_of(address: &str, title: &str, within: Option<&str>, fields: Value) -> Value {
+    fn team_of(address: &str, title: &str, within: Option<&str>, fields: &Value) -> Value {
         let mut team = json!({
             "key": format!("team:{address}"),
             "kind": "team",
@@ -651,14 +655,14 @@ mod tests {
                     "REEF01",
                     "Reef",
                     None,
-                    json!({"worst": "moving", "members": ["s-reef"],
+                    &json!({"worst": "moving", "members": ["s-reef"],
                            "counts": {"needs-you": 0, "stuck": 0, "moving": 1, "quiet": 0}}),
                 ),
                 team_of(
                     "HARBOR",
                     "Harbour",
                     None,
-                    json!({"worst": "needs-you", "lead": "s-lead",
+                    &json!({"worst": "needs-you", "lead": "s-lead",
                            "members": ["s-lead", "s-pause", "s-busy"],
                            "counts": {"needs-you": 0, "stuck": 1, "moving": 1, "quiet": 1},
                            "bridges": [{"repo": "skiff", "teams": ["REEF01"]}],
@@ -669,7 +673,7 @@ mod tests {
                     "KELP01",
                     "Kelp",
                     Some("HARBOR"),
-                    json!({"worst": "needs-you", "members": ["s-ask"],
+                    &json!({"worst": "needs-you", "members": ["s-ask"],
                            "counts": {"needs-you": 1, "stuck": 0, "moving": 0, "quiet": 0},
                            "liaisons": [{"session": "s-ask", "teams": ["REEF01"]}]}),
                 ),
