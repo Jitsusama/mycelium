@@ -45,8 +45,12 @@ impl Scope {
     /// and none otherwise, as on a Mac.
     #[must_use]
     pub fn of_a_terminal(runtime: Option<&Path>) -> Self {
-        let _ = runtime;
-        Self::None
+        let managed = runtime.is_some_and(|runtime| runtime.join("systemd/private").exists());
+        if cfg!(target_os = "linux") && managed {
+            Self::Beside
+        } else {
+            Self::None
+        }
     }
 
     /// The words that start `program` in this scope, as the holder `id`.
