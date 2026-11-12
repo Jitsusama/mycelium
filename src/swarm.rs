@@ -114,8 +114,6 @@ impl Standing {
     }
 }
 
-const STUB: bool = true;
-
 const BOLD: &str = "\x1b[1m";
 const FAINT: &str = "\x1b[2m";
 const RED: &str = "\x1b[31m";
@@ -144,9 +142,6 @@ impl Look {
     /// When `at`, an RFC 3339 instant, was: its time today, its weekday
     /// and time this week, else its day.
     fn when(&self, at: &str) -> Option<String> {
-        if STUB {
-            return None;
-        }
         let at = at
             .parse::<jiff::Timestamp>()
             .ok()?
@@ -261,11 +256,10 @@ fn header(look: &Look, depth: usize) -> String {
 fn ordered<'a>(teams: impl Iterator<Item = &'a Value>) -> Vec<&'a Value> {
     let mut teams: Vec<&Value> = teams.collect();
     teams.sort_by(|one, other| {
-        (worst(one), std::cmp::Reverse(size(one)), title(one)).cmp(&(
-            worst(other),
-            std::cmp::Reverse(size(other)),
-            title(other),
-        ))
+        worst(one)
+            .cmp(&worst(other))
+            .then_with(|| size(other).cmp(&size(one)))
+            .then_with(|| title(one).cmp(title(other)))
     });
     teams
 }
@@ -296,9 +290,6 @@ fn alone<'a>(swarm: &'a Swarm) -> Vec<&'a Value> {
 /// on their own.
 #[must_use]
 pub fn overview(swarm: &Swarm, look: &Look) -> String {
-    if STUB {
-        return String::new();
-    }
     let living: Vec<Standing> = swarm.sessions.iter().filter_map(Standing::of).collect();
     let mut head = format!("{} · {} running", swarm.realm, living.len());
     for each in [Standing::NeedsYou, Standing::Stuck] {
@@ -328,10 +319,11 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
     let alone = alone(swarm);
     if !alone.is_empty() {
         let counts = Standing::EACH.map(|each| {
-            alone
+            let many = alone
                 .iter()
                 .filter(|one| Standing::of(one) == Some(each))
-                .count() as u64
+                .count();
+            u64::try_from(many).unwrap_or(u64::MAX)
         });
         lines.push(row(look, 0, "on their own", counts, false));
     }
@@ -379,7 +371,7 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
         .filter(|team| title(team).to_lowercase().contains(&lower))
         .collect();
     match found.as_slice() {
-        [one] => Ok(one),
+        [one] => Ok(*one),
         [] => Err(format!("no team is named {asked}")),
         many => Err(format!(
             "{asked} could be {}",
@@ -399,9 +391,6 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
 ///
 /// When no team, or more than one, goes by what was asked.
 pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
-    if STUB {
-        return Err(String::new());
-    }
     let team = named(swarm, asked)?;
     let titled: BTreeMap<&str, &str> = swarm
         .teams
@@ -443,7 +432,7 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
         .filter_map(|id| sessions.get(id.as_str()?))
         .filter_map(|session| Some((Standing::of(session)?, *session)))
         .collect();
-    members.sort_by(|(one, a), (other, b)| (one, title(a)).cmp(&(other, title(b))));
+    members.sort_by(|(one, a), (other, b)| one.cmp(other).then_with(|| title(a).cmp(title(b))));
     if !members.is_empty() {
         lines.push(String::new());
         lines.extend(
@@ -566,7 +555,7 @@ fn listed(names: &[&str]) -> String {
 /// When no node answers, or it answers in a way it shouldn't, or holds no
 /// teams, as a node too old for them doesn't.
 pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Swarm> {
-    let writing = UnixStream::connect(socket).map_err(|error| {
+    let mut writing = UnixStream::connect(socket).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("no node answers at {}: {error}", socket.display()),
@@ -575,7 +564,6 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Swarm> {
     writing.set_read_timeout(Some(within))?;
     writing.set_write_timeout(Some(within))?;
     let mut reading = BufReader::new(writing.try_clone()?);
-    let mut writing = writing;
     for ask in [
         json!({"id": 0, "ask": "hello"}),
         json!({"id": 1, "ask": "list", "kind": "team"}),
