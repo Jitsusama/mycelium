@@ -45,8 +45,8 @@ The harness mesh's messages and presence, carried between machines:
 - `mycelium health` prints how the realm's network stands as one JSON
   line for a daily read: each link and how often it dropped in the last
   day, why a link was refused (such as a machine on another link version,
-  saying which to update) while none reaches it, each machine's sessions, the presences still saying they run with
-  their process gone, and how long the node took to answer.
+  saying which to update) while none reaches it, each machine's
+  sessions, the presences still saying they run with their process gone, and how long the node took to answer.
 
 [PROTOCOL.md](PROTOCOL.md) says how, and what comes next: shared scratch,
 the node's own log, connections of its own and providers for machines

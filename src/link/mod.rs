@@ -230,13 +230,7 @@ pub async fn run(
         )));
     };
     let reach = reach_start(&store, &other.machine);
-    store.mark_linked(&other.machine, now())?;
-    if let Err(error) = store.link_admitted(&other.machine) {
-        eprintln!(
-            "{} linked, but its last refusal stands: {error}",
-            other.machine
-        );
-    }
+    admitted(&store, &other.machine)?;
     let exchange = shares
         .map(|places| Exchange::new(places, membership.hello().machine, other.machine.clone()));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
@@ -378,6 +372,16 @@ fn asked_of(
         }
         None => (None, None),
     }
+}
+
+/// Keeps that this store is linked with `machine` as of now, and forgets
+/// why a link with it was last refused.
+fn admitted(store: &impl Store, machine: &str) -> io::Result<()> {
+    store.mark_linked(machine, now())?;
+    if let Err(error) = store.link_admitted(machine) {
+        eprintln!("{machine} linked, but its last refusal stands: {error}");
+    }
+    Ok(())
 }
 
 /// Says this end's hello, saying whether its way in `releases` the other
