@@ -6,14 +6,35 @@
 //! them all at once, so the end is told at once and nothing is judged on a
 //! timer. Elsewhere every session is judged again every few seconds, until a
 //! Mac has its own way to be told.
+//!
+//! Each telling first moves a count the store keeps, so the store knows to
+//! judge its sessions' processes again rather than trust its last verdict.
 
 use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::mpsc;
 
 use super::Change;
 
 pub(super) use watch::Ends;
+
+/// Tells a store's reader its sessions should be judged again, first
+/// moving the count of `ends` the store's verdicts are kept by.
+#[derive(Clone)]
+struct Teller {
+    told: mpsc::UnboundedSender<Change>,
+    ends: Arc<AtomicU64>,
+}
+
+impl Teller {
+    /// Tells it, or says nobody receives any more.
+    fn tell(&self) -> Result<(), mpsc::error::SendError<Change>> {
+        self.ends.fetch_add(1, Ordering::AcqRel);
+        self.told.send(Change::Presence)
+    }
+}
 
 #[cfg(target_os = "linux")]
 mod watch {
@@ -26,7 +47,7 @@ mod watch {
     use rustix::event::{EventfdFlags, eventfd};
     use rustix::process::{Pid, PidfdFlags, pidfd_open};
 
-    use super::{Change, io, mpsc};
+    use super::{AtomicU64, Change, Teller, io, mpsc};
 
     /// The key the waiting thread is woken with to stop; no process id is
     /// so large.
@@ -38,7 +59,7 @@ mod watch {
     /// The processes watched for one reader of a store's changes, each
     /// watch ended when this is dropped.
     pub(in crate::store) struct Ends {
-        told: mpsc::UnboundedSender<Change>,
+        told: Teller,
         epoll: Arc<OwnedFd>,
         stop: OwnedFd,
         /// Each process held, by its id, so none is watched twice and each
@@ -48,8 +69,12 @@ mod watch {
     }
 
     impl Ends {
-        /// Tells each end to `told`.
-        pub(in crate::store) fn new(told: mpsc::UnboundedSender<Change>) -> io::Result<Self> {
+        /// Tells each end to `told`, first moving `ends`.
+        pub(in crate::store) fn new(
+            told: mpsc::UnboundedSender<Change>,
+            ends: Arc<AtomicU64>,
+        ) -> io::Result<Self> {
+            let told = Teller { told, ends };
             let epoll = Arc::new(epoll::create(CreateFlags::CLOEXEC)?);
             let stop = eventfd(0, EventfdFlags::CLOEXEC)?;
             epoll::add(&epoll, &stop, EventData::new_u64(STOP), EventFlags::IN)?;
@@ -101,7 +126,7 @@ mod watch {
                 }
                 // Nobody receives once the store's reader has gone.
                 None => {
-                    let _ = self.told.send(Change::Presence);
+                    let _ = self.told.tell();
                 }
             }
         }
@@ -109,11 +134,7 @@ mod watch {
 
     /// Waits on every held process, letting go of each as it ends and
     /// telling it, until woken to stop.
-    fn wait(
-        epoll: &OwnedFd,
-        watched: &Mutex<HashMap<i32, OwnedFd>>,
-        told: &mpsc::UnboundedSender<Change>,
-    ) {
+    fn wait(epoll: &OwnedFd, watched: &Mutex<HashMap<i32, OwnedFd>>, told: &Teller) {
         let mut ends = Vec::with_capacity(AT_ONCE);
         loop {
             ends.clear();
@@ -135,7 +156,7 @@ mod watch {
                         .unwrap_or_else(PoisonError::into_inner)
                         .remove(&pid);
                 }
-                if told.send(Change::Presence).is_err() {
+                if told.tell().is_err() {
                     return;
                 }
             }
@@ -161,7 +182,7 @@ mod watch {
     use tokio::runtime::Handle;
     use tokio::task::AbortHandle;
 
-    use super::{Change, io, mpsc};
+    use super::{Arc, AtomicU64, Change, Teller, io, mpsc};
 
     /// How often the sessions are judged again where no process can be
     /// watched.
@@ -174,15 +195,19 @@ mod watch {
     }
 
     impl Ends {
-        /// Tells `told` every few seconds to judge the sessions again, from
-        /// a task on the runtime this is made in.
-        pub(in crate::store) fn new(told: mpsc::UnboundedSender<Change>) -> io::Result<Self> {
+        /// Tells `told` every few seconds to judge the sessions again, first
+        /// moving `ends`, from a task on the runtime this is made in.
+        pub(in crate::store) fn new(
+            told: mpsc::UnboundedSender<Change>,
+            ends: Arc<AtomicU64>,
+        ) -> io::Result<Self> {
+            let told = Teller { told, ends };
             let runtime = Handle::try_current().map_err(io::Error::other)?;
             let judging = runtime.spawn(async move {
                 let mut every = tokio::time::interval(JUDGED_EVERY);
                 loop {
                     every.tick().await;
-                    if told.send(Change::Presence).is_err() {
+                    if told.tell().is_err() {
                         break;
                     }
                 }
