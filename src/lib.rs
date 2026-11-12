@@ -53,6 +53,7 @@
 //! - [`install`]: whether the build a process runs is still installed
 //! - [`ssh`]: what another machine's link key may run on this one
 //! - [`update`]: its configuration's updater, asked to update it to main
+//! - [`web`]: a quest's shared space of murmurs and ties, one log folded
 
 pub mod awake;
 pub mod carry;
@@ -86,5 +87,6 @@ pub mod steer;
 pub mod store;
 pub mod update;
 pub mod watching;
+pub mod web;
 pub mod wire;
 pub mod within;
