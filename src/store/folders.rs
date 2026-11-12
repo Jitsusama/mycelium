@@ -267,13 +267,20 @@ impl Store for Folders {
     }
 
     fn mark_ended(&self, machine: &str, at: i64) -> io::Result<()> {
-        let _ = (machine, at, ENDINGS_KEPT);
-        Ok(())
+        let file = format!("{}.ended", safe(machine)?);
+        // Written whole, the last day's alone, so a link dropping each
+        // minute keeps the file to about 1,440 numbers.
+        let mut ended = self.ended_at(machine);
+        ended.retain(|then| *then > at - ENDINGS_KEPT);
+        ended.push(at);
+        write_whole(&self.claims, &file, &Value::from(ended))
     }
 
     fn endings(&self, machine: &str, since: i64) -> usize {
-        let _ = (self.ended_at(machine), since);
-        0
+        self.ended_at(machine)
+            .into_iter()
+            .filter(|then| *then >= since)
+            .count()
     }
 
     fn put_presence(&self, session: &str, machine: &str, body: &Value) -> io::Result<()> {

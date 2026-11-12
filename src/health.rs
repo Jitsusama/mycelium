@@ -41,7 +41,7 @@ pub fn line(read: &Read<'_>, ended: impl Fn(&str) -> usize) -> Value {
                 Readiness::Ready => "up",
                 Readiness::Unreachable => "unreachable",
             };
-            json!({"machine": machine.name, "state": state, "ended24h": ended(&machine.name).min(0)})
+            json!({"machine": machine.name, "state": state, "ended24h": ended(&machine.name)})
         })
         .collect();
     links.sort_by(|a, b| a["machine"].as_str().cmp(&b["machine"].as_str()));
@@ -83,8 +83,7 @@ const fn named(state: State) -> &'static str {
 /// process went without its session saying so, as a parked or closed one
 /// does.
 fn dead(session: &Session) -> bool {
-    let _ = Value::Null;
-    session.state == State::Ended && false
+    session.state == State::Ended
         && (session.presence["busy"] == Value::Bool(true)
             || matches!(
                 session.presence["state"].as_str(),

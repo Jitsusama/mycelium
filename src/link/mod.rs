@@ -309,6 +309,7 @@ pub async fn run(
     let _ = end.store.mark_linked(&end.other, left);
     // A handover is the link's work done, so only a drop counts as one.
     if !matches!(result, Ok(Ending::HandedOver)) {
+        let _ = end.store.mark_ended(&end.other, left);
     }
     store::out_of_reach(&end.store, &end.other, left);
     result
