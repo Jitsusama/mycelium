@@ -61,6 +61,42 @@ const WAKE_LOOK: Duration = Duration::from_secs(1);
 /// What every joined window shows while its program is parked.
 const PARKED_LINE: &[u8] = b"\r\nParked, its memory given back. A key or a message wakes it.\r\n";
 
+/// Asks a window to say when it gains and loses focus, as xterm's mode
+/// 1004 does, so a parked program wakes as its window comes in front of
+/// the person, before they type (Joel, 2026-11-11, switching between
+/// windows: "i'm not able to tell if any of them were not drawing ...
+/// except for parked ones which stay parked").
+const FOCUS_ON: &[u8] = b"\x1b[?1004h";
+
+/// Stops a window saying when it gains and loses focus, as the program
+/// starts again: one that wants it asks for it itself.
+const FOCUS_OFF: &[u8] = b"\x1b[?1004l";
+
+/// What a window says as it gains focus, and as it loses it.
+const FOCUS_IN: &[u8] = b"\x1b[I";
+const FOCUS_OUT: &[u8] = b"\x1b[O";
+
+/// What a window typed, its focus reports taken out: whether it said it
+/// gained focus, and the rest.
+fn focus_of(typed: &[u8]) -> (bool, Vec<u8>) {
+    let mut gained = false;
+    let mut rest = Vec::with_capacity(typed.len());
+    let mut at = 0;
+    while at < typed.len() {
+        let here = &typed[at..];
+        if here.starts_with(FOCUS_IN) {
+            gained = true;
+            at += FOCUS_IN.len();
+        } else if here.starts_with(FOCUS_OUT) {
+            at += FOCUS_OUT.len();
+        } else {
+            rest.push(typed[at]);
+            at += 1;
+        }
+    }
+    (gained, rest)
+}
+
 /// What wakes a parked program, said again after a start that failed.
 const PARKED_WAKES: &str = "A key or a message tries again.";
 
@@ -200,6 +236,7 @@ pub async fn hold(
         child = loop {
             if !std::mem::take(&mut restarting) {
                 joining_until(woken(&terminal, &waking), &socket, &mut joined, &serving).await;
+                shown.show(FOCUS_OFF);
             }
             command = named(&naming).unwrap_or(command);
             match start(&command, terminal.size()) {
@@ -256,10 +293,12 @@ fn unstarted(error: &io::Error) -> Vec<u8> {
 }
 
 /// Says the program is parked, in its record and with `line` in every
-/// joined window.
+/// joined window, each asked to say when it comes in front, which wakes
+/// the program as a key does. A window joining while it's parked is
+/// asked as it's given the modes.
 fn parks(record: &Record, shown: &Shown, line: &[u8]) {
     record.parks();
-    shown.show(line);
+    shown.show(&[FOCUS_ON, line].concat());
 }
 
 /// The command a parking program named in `naming`, a JSON list of its
@@ -340,6 +379,11 @@ impl Terminal {
         self.parked.send_if_modified(std::mem::take)
     }
 
+    /// Whether the program is parked.
+    fn is_parked(&self) -> bool {
+        *self.parked.borrow()
+    }
+
     /// The size the program was last given.
     fn size(&self) -> Size {
         *self.size.lock().unwrap_or_else(PoisonError::into_inner)
@@ -395,6 +439,15 @@ impl Shown {
         let _ = self.output.send(Arc::from(bytes));
     }
 
+    /// Whether the program asked to be told when its window gains and
+    /// loses focus, or the holder did while it's parked.
+    fn reports_focus(&self) -> bool {
+        self.modes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_set(1004)
+    }
+
     /// What a terminal joining now is given first, and its share of all
     /// that is shown after. Both are had under the lock `show` takes, so
     /// no mode is missed between them, or given twice.
@@ -428,8 +481,7 @@ async fn serve(
         };
         while let Ok(Some(said)) = Said::read(&mut reading).await {
             let done = match said {
-                Said::Typed(_) if terminal.wakes() => Ok(()),
-                Said::Typed(bytes) => terminal.writing.lock().await.write_all(&bytes).await,
+                Said::Typed(bytes) => typed(&terminal, &shown, bytes).await,
                 Said::Size(size) => terminal.resize(size, std::mem::take(&mut joining)).await,
                 Said::Window(said) => {
                     window.is(said);
@@ -478,6 +530,26 @@ async fn serve(
         () = typing => {}
         () = showing => {}
     }
+}
+
+/// Takes what a window typed. A parked program is woken by a key or by
+/// its window coming in front, and what woke it isn't the program's to
+/// read; a window going behind wakes nothing. A running program is given
+/// what was typed, without the focus reports it didn't ask for, which
+/// it would read as keys.
+async fn typed(terminal: &Terminal, shown: &Shown, bytes: Vec<u8>) -> io::Result<()> {
+    let (gained, rest) = focus_of(&bytes);
+    if terminal.is_parked() {
+        if gained || !rest.is_empty() {
+            terminal.wakes();
+        }
+        return Ok(());
+    }
+    let given = if shown.reports_focus() { bytes } else { rest };
+    if given.is_empty() {
+        return Ok(());
+    }
+    terminal.writing.lock().await.write_all(&given).await
 }
 
 /// Passes the program's output to every joined terminal until it ends.
@@ -1134,6 +1206,56 @@ mod tests {
         );
         window.types("stty size; echo again $((6 * 7))\r").await;
         window.sees("30 100").await;
+        window.sees("again 42").await;
+    }
+
+    #[test]
+    fn a_windows_focus_reports_are_told_apart_from_what_it_typed() {
+        assert_eq!(focus_of(b"\x1b[I"), (true, Vec::new()), "it came in front");
+        assert_eq!(
+            focus_of(b"\x1b[O"),
+            (false, Vec::new()),
+            "it went behind, which says nothing typed"
+        );
+        assert_eq!(
+            focus_of(b"\x1b[Ox\x1b[Iy"),
+            (true, b"xy".to_vec()),
+            "keys typed between them are kept"
+        );
+        assert_eq!(
+            focus_of(b"\x1b[A"),
+            (false, b"\x1b[A".to_vec()),
+            "an arrow is a key"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_parked_program_starts_again_as_its_window_comes_in_front() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        window.types("echo first $((40 + 2)); exit 75\r").await;
+        window.sees("first 42").await;
+        window.sees("\u{1b}[?1004h").await;
+        window.sees("Parked").await;
+        listed_parked(&dir, &mut changes, true).await;
+        // One joining while it's parked is asked to say so too.
+        let mut later = Joined::join(socket(&dir, &held.id), size, None);
+        later.sees("\u{1b}[?1004h").await;
+
+        later.types("\u{1b}[I").await;
+        listed_parked(&dir, &mut changes, false).await;
+        window.sees("\u{1b}[?1004l").await;
+        // Running, it never asked for focus reports, so they don't reach
+        // it as keys, whose line would fail with them before it.
+        window
+            .types("\u{1b}[O\u{1b}[Iecho again $((6 * 7))\r")
+            .await;
         window.sees("again 42").await;
     }
 
