@@ -98,6 +98,17 @@ enum Action {
     },
     /// Prints every session the node knows of, a JSON line each.
     Sessions,
+    /// Shows the swarm: every team, nested as they are, with how many of
+    /// its sessions need you, are stuck, move or wait, those needing you
+    /// first; or, named by its address or a part of its name, one team's
+    /// sessions and where it meets the others.
+    Swarm {
+        /// The team, such as `harbour`.
+        team: Option<String>,
+        /// Prints each team's record as a JSON line instead.
+        #[arg(long)]
+        json: bool,
+    },
     /// Prints how the realm's network stands, as one JSON line for a daily
     /// read: each link, `up` or `unreachable`, with how many times it
     /// dropped in the last day; each machine's sessions by how they stand;
@@ -470,6 +481,7 @@ fn run(command: Command) -> io::Result<ExitCode> {
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Health { here } => health(&socket, here, realm),
+        Action::Swarm { team, json } => swarm(&socket, &realm, team.as_deref(), json),
         Action::Web(asked) => web(asked),
         Action::Machine => print_reply(&socket, &Request::Machine),
         Action::Machines => print_reply(&socket, &Request::Machines),
@@ -767,6 +779,39 @@ fn health(socket: &Path, here: Here, realm: String) -> io::Result<()> {
         |machine| store.endings(machine, day_ago),
         |machine| store.link_refused(machine),
     ))
+}
+
+/// How long `swarm` waits on each of the node's answers, as `health` does.
+const SWARM_WITHIN: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// How wide the swarm is drawn where its output isn't a terminal that says.
+const SWARM_WIDTH: usize = 100;
+
+/// Prints the swarm's teams, or the one `team` names, as
+/// [`mycelium::swarm`] draws them, or each team's record as a JSON line.
+fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Result<()> {
+    use std::io::IsTerminal as _;
+    let swarm = mycelium::swarm::read(socket, realm, SWARM_WITHIN)?;
+    if json {
+        return swarm.teams.iter().try_for_each(print_line);
+    }
+    let stdout = io::stdout();
+    let terminal = stdout.is_terminal();
+    let width = rustix::termios::tcgetwinsize(&stdout)
+        .ok()
+        .filter(|size| terminal && size.ws_col > 0)
+        .map_or(SWARM_WIDTH, |size| usize::from(size.ws_col));
+    let look = mycelium::swarm::Look {
+        width,
+        colour: terminal && std::env::var_os("NO_COLOR").is_none(),
+        now: jiff::Zoned::now(),
+    };
+    let shown = match team {
+        Some(team) => mycelium::swarm::team(&swarm, team, &look)
+            .map_err(|why| io::Error::new(io::ErrorKind::NotFound, why))?,
+        None => mycelium::swarm::overview(&swarm, &look),
+    };
+    writeln!(stdout.lock(), "{shown}")
 }
 
 /// Carries `quest` to the machine `to`, a JSON line on standard output

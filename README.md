@@ -48,6 +48,11 @@ The harness mesh's messages and presence, carried between machines:
   saying which to update) while none reaches it, each machine's
   sessions, the presences still saying they run with their process gone,
   and how long the node took to answer.
+- `mycelium swarm` shows the realm's teams in a terminal, nested as
+  they are and those needing you first, with how many of each one's
+  sessions need you, are stuck, move or wait; `mycelium swarm <TEAM>`
+  shows one team's sessions and where it meets the others, and
+  `--json` prints each team's record.
 - `mycelium web <QUEST> say|tie|settle` speaks in a quest's web, the
   murmurs and ties its sessions share: each machine appends to its own
   file in the quest's `web` scratch folder, which a share carries like

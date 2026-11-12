@@ -45,6 +45,7 @@
 //! - [`state`]: what one node holds in memory
 //! - [`node`]: the node itself
 //! - [`served`]: files another program keeps, served as kinds of records
+//! - [`swarm`]: the swarm's teams as a person reads them in a terminal
 //! - [`watching`]: watches of folders that hear only what changes them
 //! - [`client`]: a client of the socket
 //! - [`health`]: how a realm's network stands, for a daily read
@@ -85,6 +86,7 @@ pub mod ssh;
 pub mod state;
 pub mod steer;
 pub mod store;
+pub mod swarm;
 pub mod update;
 pub mod watching;
 pub mod web;
