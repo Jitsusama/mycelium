@@ -27,6 +27,7 @@ use mycelium::share::exchange::Places;
 use mycelium::ssh::Asked as KeyAsked;
 use mycelium::store::Store as _;
 use mycelium::store::folders::Folders;
+use mycelium::web::Said;
 use mycelium::wire::{Draft, Request, Response, Start};
 use mycelium::{carry, hold, hosted_attach, install, link, node, place, served};
 
@@ -107,6 +108,9 @@ enum Action {
         #[command(flatten)]
         here: Here,
     },
+    /// Speaks in a quest's web, the murmurs and ties its sessions on every
+    /// machine share: says into it, or folds it into what it says now.
+    Web(WebAsked),
     /// Prints what this machine is, as its node measures it.
     Machine,
     /// Prints what every machine of the realm is, this one first.
@@ -348,6 +352,70 @@ impl From<Asked> for Work {
 }
 
 #[derive(clap::Args)]
+struct WebAsked {
+    /// The quest whose web it is, such as `QEST-20261013-4UHC5Q`.
+    quest: String,
+    /// The quests' scratch folders, if not where the harness keeps them.
+    #[arg(long)]
+    scratch: Option<PathBuf>,
+    /// This machine's name, which writes its own file, if not the system's.
+    #[arg(long)]
+    machine: Option<String>,
+    #[command(subcommand)]
+    act: WebAct,
+}
+
+#[derive(Subcommand)]
+enum WebAct {
+    /// Says a murmur, a line of intent for whoever heeds it, and prints
+    /// the event, whose id ties and settles it.
+    Say {
+        /// Its words.
+        #[arg(required = true)]
+        words: Vec<String>,
+        /// Who says it, such as a session's address.
+        #[arg(long)]
+        by: Option<String>,
+    },
+    /// Ties one thing to another, a murmur's id, a quest's or a change's,
+    /// and prints the event.
+    Tie {
+        /// What it ties.
+        from: String,
+        /// What it's tied to.
+        to: String,
+        /// How, such as `about`.
+        #[arg(long)]
+        how: Option<String>,
+        /// Who ties it.
+        #[arg(long)]
+        by: Option<String>,
+    },
+    /// Settles a murmur, saying how, and prints the event.
+    Settle {
+        /// The murmur's id.
+        of: String,
+        /// How, such as `filed` or `let go`.
+        how: String,
+        /// Who settles it.
+        #[arg(long)]
+        by: Option<String>,
+    },
+    /// Folds every machine's events into a file written whole, as a page
+    /// reads it, and prints whether it wrote; with `--every`, again each
+    /// so many seconds until stopped, writing only when it says something
+    /// new.
+    Fold {
+        /// The file it's written to.
+        #[arg(long)]
+        into: PathBuf,
+        /// Seconds between folds, if it keeps folding.
+        #[arg(long)]
+        every: Option<u64>,
+    },
+}
+
+#[derive(clap::Args)]
 struct Here {
     /// The harness mesh's folders, if not where the harness keeps them.
     #[arg(long)]
@@ -402,6 +470,7 @@ fn run(command: Command) -> io::Result<ExitCode> {
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Health { here } => health(&socket, here, realm),
+        Action::Web(asked) => web(asked),
         Action::Machine => print_reply(&socket, &Request::Machine),
         Action::Machines => print_reply(&socket, &Request::Machines),
         Action::Offers => print_reply(&socket, &Request::Offers),
@@ -900,6 +969,40 @@ fn print_reply(socket: &Path, request: &Request) -> io::Result<()> {
 /// Prints the node's answer to a request a flow may refuse.
 fn print_answer(socket: &Path, request: &Request) -> io::Result<()> {
     print_line(&Client::connect(socket)?.answer(request)?)
+}
+
+fn web(asked: WebAsked) -> io::Result<()> {
+    let scratch = asked
+        .scratch
+        .unwrap_or_else(|| place::shares(&place::state()).scratch);
+    let web = mycelium::web::Web::of(&scratch, &asked.quest)?;
+    let writer = asked.machine.unwrap_or_else(place::machine);
+    let now = || jiff::Timestamp::now().as_second();
+    let (by, said) = match asked.act {
+        WebAct::Say { words, by } => (
+            by,
+            Said::Murmur {
+                words: words.join(" "),
+            },
+        ),
+        WebAct::Tie { from, to, how, by } => (by, Said::Tie { from, to, how }),
+        WebAct::Settle { of, how, by } => (by, Said::Settle { of, how }),
+        WebAct::Fold { into, every } => loop {
+            let wrote = web.fold_into(&into, now())?;
+            // A fold reads only files, so a loop of them is cheap; one that
+            // isn't asked to keep folding folds once.
+            let Some(every) = every else {
+                return print_line(&serde_json::json!({ "wrote": wrote }));
+            };
+            // Kept folding, it says only what it wrote, so a quiet web
+            // writes nothing to the journal either.
+            if wrote {
+                print_line(&serde_json::json!({ "wrote": into }))?;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(every.max(1)));
+        },
+    };
+    print_line(&web.say(&writer, by.as_deref(), said, now())?)
 }
 
 fn print_line(value: &impl serde::Serialize) -> io::Result<()> {

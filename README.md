@@ -48,6 +48,11 @@ The harness mesh's messages and presence, carried between machines:
   saying which to update) while none reaches it, each machine's
   sessions, the presences still saying they run with their process gone,
   and how long the node took to answer.
+- `mycelium web <QUEST> say|tie|settle` speaks in a quest's web, the
+  murmurs and ties its sessions share: each machine appends to its own
+  file in the quest's `web` scratch folder, which a share carries like
+  any other, and `mycelium web <QUEST> fold --into <FILE>` folds every
+  machine's into what the web says now, for a page to read.
 
 [PROTOCOL.md](PROTOCOL.md) says how, and what comes next: shared scratch,
 the node's own log, connections of its own and providers for machines
