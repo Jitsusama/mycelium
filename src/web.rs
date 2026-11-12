@@ -179,10 +179,10 @@ impl Web {
         if same {
             return Ok(false);
         }
-        let folder = into.parent().unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(folder)?;
+        let beside = into.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(beside)?;
         // Written aside and moved in, so a page reading it never reads half.
-        let staged = folder.join(format!(".web.{}.tmp", std::process::id()));
+        let staged = beside.join(format!(".web.{}.tmp", std::process::id()));
         let written = serde_json::to_vec(&folded)
             .map_err(io::Error::other)
             .and_then(|bytes| fs::write(&staged, bytes))
