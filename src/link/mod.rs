@@ -1621,6 +1621,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_machine_refused_for_its_version_is_kept_as_why_until_it_links() {
+        let optimus = Memory::default();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let optimus_end = end(&optimus, "optimus", near);
+        let (_far_reading, mut far_writing) = tokio::io::split(far);
+        let newer = Hello {
+            version: VERSION + 1,
+            ..realm("equilibrius").hello()
+        };
+        send(&mut far_writing, &Frame::Hello(newer))
+            .await
+            .expect("the far end says hello");
+        let refused = optimus_end.await.expect("optimus's end runs to its end");
+        let why = refused
+            .expect_err("optimus refuses another version")
+            .to_string();
+        assert_eq!(
+            optimus.link_refused("equilibrius"),
+            Some(why),
+            "the store keeps why, as the link said it"
+        );
+
+        let equilibrius = Memory::default();
+        equilibrius.start_here("walgit", json!({"session": "walgit"}), true);
+        let _linked = linked(&optimus, &equilibrius, 1 << 16);
+        // Its sessions cross only once the link is admitted.
+        until(&optimus, |store| !store.presences().is_empty()).await;
+        assert_eq!(
+            optimus.link_refused("equilibrius"),
+            None,
+            "a link admitted ends the refusal"
+        );
+    }
+
+    #[tokio::test]
     async fn a_record_the_store_refuses_is_skipped_and_the_link_carries_on() {
         let optimus = Memory::default();
         let (near, far) = tokio::io::duplex(1 << 16);

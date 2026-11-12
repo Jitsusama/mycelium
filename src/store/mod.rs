@@ -102,6 +102,17 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// [`Store::mark_ended`] kept them. Only the last day's are kept.
     fn endings(&self, machine: &str, since: i64) -> usize;
 
+    /// Keeps why a link with `machine` was last refused, as its end said
+    /// it, over any it kept before, until one is admitted.
+    fn refuse_link(&self, machine: &str, why: &str) -> io::Result<()>;
+
+    /// Why a link with `machine` was last refused, if none was admitted
+    /// since, as [`Store::refuse_link`] kept it.
+    fn link_refused(&self, machine: &str) -> Option<String>;
+
+    /// Forgets why a link with `machine` was refused, once one is admitted.
+    fn link_admitted(&self, machine: &str) -> io::Result<()>;
+
     /// Keeps the presence of a session that runs on `machine`, another
     /// machine, as that machine wrote it. Refused when the id names this
     /// machine's own session or another machine's.

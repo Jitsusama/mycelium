@@ -283,6 +283,18 @@ impl Store for Folders {
             .count()
     }
 
+    fn refuse_link(&self, _machine: &str, _why: &str) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn link_refused(&self, _machine: &str) -> Option<String> {
+        None
+    }
+
+    fn link_admitted(&self, _machine: &str) -> io::Result<()> {
+        Ok(())
+    }
+
     fn put_presence(&self, session: &str, machine: &str, body: &Value) -> io::Result<()> {
         let file = format!("{}.json", safe(session)?);
         let mut body = body.clone();
@@ -1214,6 +1226,41 @@ mod tests {
             .mark_linked("equilibrius", 1_793_046_604_647)
             .expect("the time is kept");
         assert_eq!(store.linked_until("equilibrius"), Some(1_793_046_604_647));
+    }
+
+    #[test]
+    fn why_a_machines_link_was_refused_is_kept_until_one_is_admitted() {
+        let (dir, store) = store();
+        assert_eq!(store.link_refused("penelope"), None, "never refused");
+        store
+            .refuse_link("penelope", "penelope speaks link version 2")
+            .expect("the refusal is kept");
+        store
+            .refuse_link("penelope", "penelope speaks link version 3")
+            .expect("a later refusal is kept over it");
+        let again = Folders::open(&dir.path().join("mesh"), &dir.path().join("claims"))
+            .expect("the store opens again");
+        assert_eq!(
+            again.link_refused("penelope").as_deref(),
+            Some("penelope speaks link version 3"),
+            "the last refusal outlives the node that kept it"
+        );
+        assert_eq!(
+            again.link_refused("equilibrius"),
+            None,
+            "another machine's is its own"
+        );
+        again
+            .link_admitted("penelope")
+            .expect("the refusal is forgotten");
+        assert_eq!(
+            again.link_refused("penelope"),
+            None,
+            "a link admitted ends it"
+        );
+        again
+            .link_admitted("penelope")
+            .expect("forgetting none is no error");
     }
 
     #[test]

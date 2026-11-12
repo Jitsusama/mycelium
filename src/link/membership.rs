@@ -191,6 +191,33 @@ mod tests {
     }
 
     #[test]
+    fn another_version_says_both_and_which_machine_brings_them_level() {
+        let optimus = realm("work", "optimus");
+        let at = |version| Hello {
+            version,
+            ..realm("work", "equilibrius").hello()
+        };
+        assert_eq!(
+            optimus.admit(&at(VERSION + 1)),
+            Err(format!(
+                "equilibrius speaks link version {} and optimus {VERSION}, so they link again \
+                 once optimus's mycelium is as new as equilibrius's",
+                VERSION + 1
+            )),
+            "a newer machine waits on this one"
+        );
+        assert_eq!(
+            optimus.admit(&at(VERSION - 1)),
+            Err(format!(
+                "equilibrius speaks link version {} and optimus {VERSION}, so they link again \
+                 once equilibrius's mycelium is as new as optimus's",
+                VERSION - 1
+            )),
+            "an older machine is the one to update"
+        );
+    }
+
+    #[test]
     fn another_realm_this_machine_and_another_version_are_refused() {
         let optimus = realm("work", "optimus");
         for other in [

@@ -693,9 +693,11 @@ fn health(socket: &Path, here: Here, realm: String) -> io::Result<()> {
         sessions: &sessions,
         slowest,
     };
-    print_line(&mycelium::health::line(&read, |machine| {
-        store.endings(machine, day_ago)
-    }))
+    print_line(&mycelium::health::line(
+        &read,
+        |machine| store.endings(machine, day_ago),
+        |machine| store.link_refused(machine),
+    ))
 }
 
 /// Carries `quest` to the machine `to`, a JSON line on standard output

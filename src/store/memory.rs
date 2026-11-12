@@ -221,6 +221,18 @@ impl Store for Memory {
             .map_or(0, |ended| ended.iter().filter(|at| **at >= since).count())
     }
 
+    fn refuse_link(&self, _machine: &str, _why: &str) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn link_refused(&self, _machine: &str) -> Option<String> {
+        None
+    }
+
+    fn link_admitted(&self, _machine: &str) -> io::Result<()> {
+        Ok(())
+    }
+
     fn put_presence(&self, session: &str, machine: &str, body: &Value) -> io::Result<()> {
         let mut held = self.held();
         if body.get("session").and_then(Value::as_str) != Some(session) {
