@@ -228,7 +228,10 @@ Three seams shape a link:
 - **Membership** (`link::membership::Membership`): which machines to admit,
   and whether the far end is proven to be the machine it says. Today, a
   realm: any machine of the same realm speaking the same version, never
-  the machine itself, proven only when a pinned key let the link in.
+  the machine itself, proven only when a pinned key let the link in. A
+  machine refused says why, naming both versions and which machine to
+  update when they differ, and the node keeps it until a link is
+  admitted, so `health` gives it as the link's why.
 
 ## A Shared Quest
 

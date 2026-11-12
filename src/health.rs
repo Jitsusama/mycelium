@@ -29,19 +29,35 @@ pub struct Read<'a> {
 }
 
 /// The line `read` makes, with `ended` saying how many times the link with
-/// a machine dropped in the last day.
+/// a machine dropped in the last day, and `refused` why its last was
+/// refused, if none was admitted since.
 #[must_use]
-pub fn line(read: &Read<'_>, ended: impl Fn(&str) -> usize) -> Value {
+pub fn line(
+    read: &Read<'_>,
+    ended: impl Fn(&str) -> usize,
+    refused: impl Fn(&str) -> Option<String>,
+) -> Value {
     let mut links: Vec<Value> = read
         .machines
         .iter()
         .filter(|machine| machine.name != read.here)
         .map(|machine| {
-            let state = match machine.state {
-                Readiness::Ready => "up",
-                Readiness::Unreachable => "unreachable",
-            };
-            json!({"machine": machine.name, "state": state, "ended24h": ended(&machine.name)})
+            let ended = ended(&machine.name);
+            match machine.state {
+                Readiness::Ready => {
+                    json!({"machine": machine.name, "state": "up", "ended24h": ended})
+                }
+                // A machine refused, as for speaking another version, says
+                // why, so it isn't read as one that is only asleep.
+                Readiness::Unreachable => match refused(&machine.name) {
+                    Some(why) => json!({
+                        "machine": machine.name, "state": "refused", "why": why, "ended24h": ended,
+                    }),
+                    None => {
+                        json!({"machine": machine.name, "state": "unreachable", "ended24h": ended})
+                    }
+                },
+            }
         })
         .collect();
     links.sort_by(|a, b| a["machine"].as_str().cmp(&b["machine"].as_str()));
@@ -145,9 +161,11 @@ mod tests {
             sessions: &sessions,
             slowest: Duration::from_millis(7_900),
         };
-        let line = line(&read, |machine| {
-            usize::from(machine == "methuselah") * 1_410
-        });
+        let line = line(
+            &read,
+            |machine| usize::from(machine == "methuselah") * 1_410,
+            |_| None,
+        );
         assert_eq!(
             line,
             json!({
@@ -165,6 +183,34 @@ mod tests {
                 "slowestAsk": 8,
             }),
             "this machine is no link, and only an ended one still saying it runs is dead"
+        );
+    }
+
+    #[test]
+    fn a_link_refused_says_why_until_it_is_up() {
+        let machines = [
+            machine("optimus", Readiness::Ready),
+            machine("penelope", Readiness::Ready),
+            machine("methuselah", Readiness::Unreachable),
+        ];
+        let read = Read {
+            realm: "personal",
+            at: 1_794_470_400,
+            here: "optimus",
+            machines: &machines,
+            sessions: &[],
+            slowest: Duration::ZERO,
+        };
+        let why = "methuselah speaks link version 2 and optimus 1, so they link again once \
+                   optimus's mycelium is as new as methuselah's";
+        let line = line(&read, |_| 0, |_| Some(why.to_owned()));
+        assert_eq!(
+            line["links"],
+            json!([
+                {"machine": "methuselah", "state": "refused", "why": why, "ended24h": 0},
+                {"machine": "penelope", "state": "up", "ended24h": 0},
+            ]),
+            "a refusal says why while no link reaches the machine, and a link up outranks it"
         );
     }
 }

@@ -95,9 +95,17 @@ impl Membership for Realm {
 
     fn admit(&self, other: &Hello) -> Result<(), String> {
         if other.version != VERSION {
+            // Said so whoever reads it knows which machine to update, as
+            // neither can link to update the other.
+            let (older, newer) = if other.version < VERSION {
+                (&other.machine, &self.machine)
+            } else {
+                (&self.machine, &other.machine)
+            };
             return Err(format!(
-                "{} speaks link version {}, not {VERSION}",
-                other.machine, other.version
+                "{} speaks link version {} and {} {VERSION}, so they link again once {older}'s \
+                 mycelium is as new as {newer}'s",
+                other.machine, other.version, self.machine
             ));
         }
         if other.realm != self.name {
@@ -188,6 +196,33 @@ mod tests {
     fn a_machine_of_the_same_realm_is_admitted() {
         let optimus = realm("work", "optimus");
         assert_eq!(optimus.admit(&realm("work", "equilibrius").hello()), Ok(()));
+    }
+
+    #[test]
+    fn another_version_says_both_and_which_machine_brings_them_level() {
+        let optimus = realm("work", "optimus");
+        let at = |version| Hello {
+            version,
+            ..realm("work", "equilibrius").hello()
+        };
+        assert_eq!(
+            optimus.admit(&at(VERSION + 1)),
+            Err(format!(
+                "equilibrius speaks link version {} and optimus {VERSION}, so they link again \
+                 once optimus's mycelium is as new as equilibrius's",
+                VERSION + 1
+            )),
+            "a newer machine waits on this one"
+        );
+        assert_eq!(
+            optimus.admit(&at(VERSION - 1)),
+            Err(format!(
+                "equilibrius speaks link version {} and optimus {VERSION}, so they link again \
+                 once equilibrius's mycelium is as new as optimus's",
+                VERSION - 1
+            )),
+            "an older machine is the one to update"
+        );
     }
 
     #[test]

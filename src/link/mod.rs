@@ -213,7 +213,7 @@ pub async fn run(
     let other = greet(
         &mut writing,
         &mut frames,
-        membership,
+        (&store, membership),
         releases,
         hello_within,
     )
@@ -230,7 +230,7 @@ pub async fn run(
         )));
     };
     let reach = reach_start(&store, &other.machine);
-    store.mark_linked(&other.machine, now())?;
+    admitted(&store, &other.machine)?;
     let exchange = shares
         .map(|places| Exchange::new(places, membership.hello().machine, other.machine.clone()));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
@@ -374,13 +374,24 @@ fn asked_of(
     }
 }
 
+/// Keeps that this store is linked with `machine` as of now, and forgets
+/// why a link with it was last refused.
+fn admitted(store: &impl Store, machine: &str) -> io::Result<()> {
+    store.mark_linked(machine, now())?;
+    if let Err(error) = store.link_admitted(machine) {
+        eprintln!("{machine} linked, but its last refusal stands: {error}");
+    }
+    Ok(())
+}
+
 /// Says this end's hello, saying whether its way in `releases` the other
 /// end's machine, and hears and admits the other end's, waiting on it no
-/// longer than `within`, if that says how long.
+/// longer than `within`, if that says how long. Why one is refused is kept
+/// in `store`, for health to say while no link reaches its machine.
 async fn greet(
     writing: &mut (impl AsyncWrite + Unpin),
     frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
-    membership: &impl Membership,
+    (store, membership): (&impl Store, &impl Membership),
     releases: bool,
     within: Option<Duration>,
 ) -> io::Result<Hello> {
@@ -390,7 +401,12 @@ async fn greet(
     };
     send(writing, &Frame::Hello(ours)).await?;
     let other = hello(frames, within).await?;
-    membership.admit(&other).map_err(refusal)?;
+    if let Err(why) = membership.admit(&other) {
+        if let Err(error) = store.refuse_link(&other.machine, &why) {
+            eprintln!("why {} was refused isn't kept: {error}", other.machine);
+        }
+        return Err(refusal(why));
+    }
     Ok(other)
 }
 
@@ -1617,6 +1633,41 @@ mod tests {
         assert!(
             matches!(heard.as_slice(), [Frame::Hello(_)]),
             "only optimus's hello crossed: {heard:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_machine_refused_for_its_version_is_kept_as_why_until_it_links() {
+        let optimus = Memory::default();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let optimus_end = end(&optimus, "optimus", near);
+        let (_far_reading, mut far_writing) = tokio::io::split(far);
+        let newer = Hello {
+            version: VERSION + 1,
+            ..realm("equilibrius").hello()
+        };
+        send(&mut far_writing, &Frame::Hello(newer))
+            .await
+            .expect("the far end says hello");
+        let refused = optimus_end.await.expect("optimus's end runs to its end");
+        let why = refused
+            .expect_err("optimus refuses another version")
+            .to_string();
+        assert_eq!(
+            optimus.link_refused("equilibrius"),
+            Some(why),
+            "the store keeps why, as the link said it"
+        );
+
+        let equilibrius = Memory::default();
+        equilibrius.start_here("walgit", json!({"session": "walgit"}), true);
+        let _linked = linked(&optimus, &equilibrius, 1 << 16);
+        // Its sessions cross only once the link is admitted.
+        until(&optimus, |store| !store.presences().is_empty()).await;
+        assert_eq!(
+            optimus.link_refused("equilibrius"),
+            None,
+            "a link admitted ends the refusal"
         );
     }
 

@@ -699,7 +699,12 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                 Readiness::Unreachable => serde_json::json!({
                     "name": machine.name,
                     "state": "refused",
-                    "why": format!("no link reaches it; it last said itself at {}", machine.measured_at),
+                    // Why its last link was refused, as for another version,
+                    // says what brings it back, which its last word doesn't.
+                    "why": self.store.link_refused(&machine.name).unwrap_or_else(|| format!(
+                        "no link reaches it; it last said itself at {}",
+                        machine.measured_at
+                    )),
                 }),
             })
             .chain(self.served.health())
