@@ -177,6 +177,12 @@ impl Folders {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let was = verdicts.get(owner).copied();
+        if let Some(was) = was
+            && was.ends == ends
+            && was.at.elapsed() < JUDGED_FOR
+        {
+            return was.lives;
+        }
         let lives = owner.lives(boot);
         verdicts.insert(
             owner.clone(),
@@ -527,7 +533,7 @@ impl Store for Folders {
         let presence = self.presence();
         let leases = self.leases();
         let claims = Arc::clone(&self.claims);
-        let ends = Arc::new(Ends::new(sender.clone())?);
+        let ends = Arc::new(Ends::new(sender.clone(), Arc::clone(&self.judged.ends))?);
         let watching = {
             let every = presence.clone();
             let ends = Arc::clone(&ends);
