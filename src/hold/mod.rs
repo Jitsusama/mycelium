@@ -209,8 +209,28 @@ pub fn next(dir: &Path, id: &str) -> PathBuf {
 /// When nothing is held as `id`, `command` names no program, or the file
 /// can't be written.
 pub fn name_next(dir: &Path, id: &str, command: &[String]) -> io::Result<bool> {
-    let _ = (dir, id, command);
-    Ok(false)
+    if command.first().is_none_or(String::is_empty) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a command names a program",
+        ));
+    }
+    let Some(one) = held(dir).into_iter().find(|one| one.id == id) else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("nothing is held as {id}; `mycelium held` lists what is"),
+        ));
+    };
+    let writing = dir.join(format!(".{id}.next"));
+    fs::write(
+        &writing,
+        serde_json::to_vec(command).map_err(io::Error::other)?,
+    )?;
+    fs::rename(&writing, next(dir, id))?;
+    if one.parked {
+        fs::write(wake(dir, id), b"{\"named\":true}\n")?;
+    }
+    Ok(one.parked)
 }
 
 /// Every session held in `dir` whose holder still runs, oldest first.

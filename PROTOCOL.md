@@ -896,7 +896,11 @@ the program. It starts the same command again, unless the program wrote
 which it is told the path of in `MYCELIUM_AGAIN`: so a session started
 as a bare `pi` comes back to its own conversation. That command is the
 one started, and the one the record says, from then on, and the file is
-taken away once read. A program a node started runs through the login
+taken away once read. A command named from outside, in `<id>.next`,
+wins over it, since a program names itself: a pi held on an old
+conversation would otherwise write that one over a newer one named for
+it while it ran. `mycelium again <id> -- <command>` writes that file
+whole and wakes the program if it is parked. A program a node started runs through the login
 shell at every start, not only its first, since its holder has only the
 node's environment, where a bare `pi` isn't found; the record says the
 program, not the shell. One that can't start again stays parked and

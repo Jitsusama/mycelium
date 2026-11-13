@@ -23,7 +23,7 @@ use tokio::task::JoinSet;
 use super::environment::{Environment, keeping_path};
 use super::journal::{Ended, How, Journal};
 use super::modes::Modes;
-use super::{Held, Said, Size, again, socket, wake};
+use super::{Held, Said, Size, again, next, socket, wake};
 use crate::node;
 use crate::record::Window;
 
@@ -249,8 +249,9 @@ fn starting(
 /// environment it was held from said, its id in `MYCELIUM_HELD`, the file that wakes it once
 /// parked in `MYCELIUM_WAKE`, and the file it may name its next command in
 /// as it parks in `MYCELIUM_AGAIN`. A program exiting with [`PARKED`] is
-/// started again on the same terminal when woken, with that command if it
-/// named one; one that wrote its wake file before it went is restarting,
+/// started again on the same terminal when woken, with the command named
+/// for it from outside if any was (see [`super::name_next`]), else with
+/// the one it named itself; one that wrote its wake file before it went is restarting,
 /// and starts again at once, never shown as parked. How each run ended,
 /// parked or not, is said to the holding's journal.
 pub async fn hold(
@@ -269,10 +270,12 @@ pub async fn hold(
     let socket = node::bind(&socket(holding.dir, holding.id))?;
     let waking = wake(holding.dir, holding.id);
     let naming = again(holding.dir, holding.id);
+    let chosen = next(holding.dir, holding.id);
     // A wake or a command left from before this program ran says nothing
     // to it.
     let _ = fs::remove_file(&waking);
     let _ = fs::remove_file(&naming);
+    let _ = fs::remove_file(&chosen);
     let (pty, pts) = pty_process::open().map_err(io::Error::other)?;
     pty.resize(size_of(FIRST_SIZE)).map_err(io::Error::other)?;
     let starts = Arc::new(Starts::default());
@@ -342,7 +345,10 @@ pub async fn hold(
                 }
                 shown.show(FOCUS_OFF);
             }
-            command = named(&naming).unwrap_or(command);
+            // Both are taken, so the program's own never waits for a
+            // later start; the one named for it wins.
+            let its_own = named(&naming);
+            command = named(&chosen).or(its_own).unwrap_or(command);
             match start(&command, terminal.size()) {
                 Ok(child) => break child,
                 Err(error) => parks(&record, &shown, &unstarted(&error)),
