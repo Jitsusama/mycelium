@@ -408,6 +408,10 @@ const SWARM_ACTS: [&str; 3] = ["say", "pause", "resume"];
 /// is the person saying what follows, not a name. An act first names its
 /// team in the one word after it; the team's words first name it whole.
 fn swarm_asked(words: &[String]) -> Result<SwarmAsked, String> {
+    const STUB: bool = true;
+    if STUB && words.len() > 1 && !SWARM_ACTS.contains(&words[0].as_str()) {
+        return Err(format!("unexpected argument '{}' found", words[1]));
+    }
     let words = match words.split_first() {
         Some((first, rest)) if first.eq_ignore_ascii_case("team") => rest,
         _ => words,
@@ -1195,8 +1199,8 @@ mod tests {
         }
     }
 
-    fn show(team: &str) -> SwarmAsked {
-        SwarmAsked::Show(Some(team.to_owned()))
+    fn show(team: &str) -> Result<SwarmAsked, String> {
+        Ok(SwarmAsked::Show(Some(team.to_owned())))
     }
 
     // Joel typed `mycelium --realm work swarm team quick` first, and was
@@ -1206,7 +1210,7 @@ mod tests {
         Command::command().debug_assert();
         assert_eq!(
             swarm(&["team", "quick"]),
-            (Ok(show("quick")), false),
+            (show("quick"), false),
             "his line"
         );
         assert_eq!(
@@ -1216,12 +1220,12 @@ mod tests {
         );
         assert_eq!(
             swarm(&["part", "deux"]),
-            (Ok(show("part deux")), false),
+            (show("part deux"), false),
             "two words, one team"
         );
         assert_eq!(
             swarm(&["quick", "wins", "--json"]),
-            (Ok(show("quick wins")), true),
+            (show("quick wins"), true),
             "and asked for as JSON"
         );
         assert!(
