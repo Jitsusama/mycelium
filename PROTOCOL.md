@@ -764,7 +764,8 @@ messages, so a quiet group's last words stay beside a busy one's, and a
 message is heard when it was sent and never changes. The `team` kind
 holds each orchestrator's team, keyed by its address: the living
 sessions answering to it as `members`, its `lead` working on its quest,
-its `title` as a served `quest` names it (else its lead's), the team it
+its `title` as a served `quest` names it (else its lead's), the name it
+goes by in the swarm as `swarm` where that quest gives one, the team it
 sits `within` by its lead's orchestrator, and `counts` of its members
 as `needs-you` (wanting their person), `stuck` (paused or parked),
 `moving` and `quiet`. Its `worst` is the worst of its own and of every

@@ -100,19 +100,25 @@ enum Action {
     Sessions,
     /// Shows the swarm: every team, nested as they are, with how many of
     /// its sessions need you, are stuck, move or wait, those needing you
-    /// first; or, named by its address or a part of its name, one team's
-    /// sessions and where it meets the others. Its acts steer the swarm as
-    /// its person: words to a team go to its lead, and a pause or resume
-    /// to each of its sessions.
+    /// first, each by its short name; or, named by that or any part of its
+    /// title, one team's sessions and where it meets the others. Its acts
+    /// steer the swarm as its person: `say` words to a team, which its
+    /// lead hears, or to one session; `pause` every session of a team and
+    /// the teams within it, or one session, so each finishes its turn and
+    /// waits; and `resume` them.
     Swarm {
-        /// What to do to it, rather than show it.
-        #[command(subcommand)]
-        act: Option<SwarmAct>,
-        /// The team, such as `harbour`.
-        team: Option<String>,
+        /// The team, by its short name or any words of its title, such as
+        /// `part deux`, a leading `team` left out; or an act and its team,
+        /// as `say harbour ship it`, `pause harbour`, or the team's words
+        /// first, as `part deux say ship it`.
+        words: Vec<String>,
         /// Prints each team's record as a JSON line instead.
         #[arg(long)]
         json: bool,
+        /// Prints each team as it's typed, a line each, for a shell to
+        /// complete.
+        #[arg(long, hide = true)]
+        names: bool,
     },
     /// Prints how the realm's network stands, as one JSON line for a daily
     /// read: each link, `up` or `unreachable`, with how many times it
@@ -381,29 +387,55 @@ struct WebAsked {
     act: WebAct,
 }
 
-#[derive(Subcommand)]
-enum SwarmAct {
-    /// Says something to a team, which its lead hears, or to one session,
-    /// as the person.
-    Say {
-        /// The team or session, such as `harbour`.
-        name: String,
-        /// The words.
-        #[arg(required = true)]
-        words: Vec<String>,
-    },
-    /// Pauses every session of a team and the teams within it, or one
-    /// session, so each finishes its turn and waits.
-    Pause {
-        /// The team or session.
-        name: String,
-    },
-    /// Resumes the paused sessions of a team and the teams within it, or
-    /// one session.
-    Resume {
-        /// The team or session.
-        name: String,
-    },
+/// What a person asks of the swarm, in the words they typed after it.
+#[derive(Debug, PartialEq, Eq)]
+enum SwarmAsked {
+    /// Every team, or the one named.
+    Show(Option<String>),
+    /// Words said to a team or a session, as the person.
+    Say { name: String, words: String },
+    /// A team's sessions, or one session, paused.
+    Pause(String),
+    /// A team's paused sessions, or one session, resumed.
+    Resume(String),
+}
+
+/// The swarm's acts, in the words that ask for them.
+const SWARM_ACTS: [&str; 3] = ["say", "pause", "resume"];
+
+/// What `words` ask of the swarm. Every word that isn't an act names the
+/// team, so a name of several words needs no quotes, and a leading `team`
+/// is the person saying what follows, not a name. An act first names its
+/// team in the one word after it; the team's words first name it whole.
+fn swarm_asked(words: &[String]) -> Result<SwarmAsked, String> {
+    let words = match words.split_first() {
+        Some((first, rest)) if first.eq_ignore_ascii_case("team") => rest,
+        _ => words,
+    };
+    let act = |word: &String| SWARM_ACTS.contains(&word.to_lowercase().as_str());
+    let Some(at) = words.iter().position(act) else {
+        return Ok(SwarmAsked::Show(
+            (!words.is_empty()).then(|| words.join(" ")),
+        ));
+    };
+    let (name, rest) = if at == 0 {
+        let Some((name, rest)) = words[1..].split_first() else {
+            return Err(format!("{} which team?", words[0]));
+        };
+        (name.clone(), rest)
+    } else {
+        (words[..at].join(" "), &words[at + 1..])
+    };
+    match (words[at].to_lowercase().as_str(), rest) {
+        ("say", []) => Err(format!("say what to {name}?")),
+        ("say", said) => Ok(SwarmAsked::Say {
+            name,
+            words: said.join(" "),
+        }),
+        ("pause", []) => Ok(SwarmAsked::Pause(name)),
+        ("resume", []) => Ok(SwarmAsked::Resume(name)),
+        (act, more) => Err(format!("{act} takes only a team, not {}", more.join(" "))),
+    }
 }
 
 #[derive(Subcommand)]
@@ -511,12 +543,7 @@ fn run(command: Command) -> io::Result<ExitCode> {
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Health { here } => health(&socket, here, realm),
-        Action::Swarm { act: Some(act), .. } => steer_swarm(&socket, &realm, act),
-        Action::Swarm {
-            act: None,
-            team,
-            json,
-        } => swarm(&socket, &realm, team.as_deref(), json),
+        Action::Swarm { words, json, names } => in_swarm(&socket, &realm, &words, json, names),
         Action::Web(asked) => web(asked),
         Action::Machine => print_reply(&socket, &Request::Machine),
         Action::Machines => print_reply(&socket, &Request::Machines),
@@ -853,16 +880,40 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
     writeln!(stdout.lock(), "{shown}")
 }
 
+/// Does what `words` ask of the swarm: shows it or a team, steers one,
+/// or, for a shell to complete, prints each team as it's typed.
+fn in_swarm(
+    socket: &Path,
+    realm: &str,
+    words: &[String],
+    json: bool,
+    names: bool,
+) -> io::Result<()> {
+    use mycelium::swarm::steers::Act;
+    if names {
+        let swarm = mycelium::swarm::read(socket, realm, SWARM_WITHIN)?;
+        let typed = mycelium::swarm::typed(&swarm);
+        let mut out = io::stdout().lock();
+        return typed.iter().try_for_each(|name| writeln!(out, "{name}"));
+    }
+    match swarm_asked(words).map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))? {
+        SwarmAsked::Show(team) => swarm(socket, realm, team.as_deref(), json),
+        SwarmAsked::Say { name, words } => steer_swarm(socket, realm, Act::Say(words), &name),
+        SwarmAsked::Pause(name) => steer_swarm(socket, realm, Act::Pause, &name),
+        SwarmAsked::Resume(name) => steer_swarm(socket, realm, Act::Resume, &name),
+    }
+}
+
 /// Does `act` to the swarm as its person, saying back who was told.
-fn steer_swarm(socket: &Path, realm: &str, act: SwarmAct) -> io::Result<()> {
-    use mycelium::swarm::steers::{self, Act};
-    let (act, name) = match act {
-        SwarmAct::Say { name, words } => (Act::Say(words.join(" ")), name),
-        SwarmAct::Pause { name } => (Act::Pause, name),
-        SwarmAct::Resume { name } => (Act::Resume, name),
-    };
+fn steer_swarm(
+    socket: &Path,
+    realm: &str,
+    act: mycelium::swarm::steers::Act,
+    name: &str,
+) -> io::Result<()> {
+    use mycelium::swarm::steers;
     let swarm = mycelium::swarm::read(socket, realm, SWARM_WITHIN)?;
-    let aim = steers::aim(&swarm, act, &name)
+    let aim = steers::aim(&swarm, act, name)
         .map_err(|why| io::Error::new(io::ErrorKind::NotFound, why))?;
     let at = jiff::Timestamp::now().to_string();
     let answers = steers::send(socket, STEER_WITHIN, &aim, &at)?;
@@ -1130,55 +1181,102 @@ fn intent(name: &str) -> Result<Intent, String> {
 mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Action, Command, SwarmAct};
+    use super::{Action, Command, SwarmAsked, swarm_asked};
 
-    fn swarm(words: &[&str]) -> (Option<SwarmAct>, Option<String>, bool) {
-        let asked = Command::try_parse_from(["mycelium", "swarm"].iter().chain(words))
+    /// What the words after `mycelium --realm work swarm` ask, and whether
+    /// they ask for JSON, as the command line parses them.
+    fn swarm(words: &[&str]) -> (Result<SwarmAsked, String>, bool) {
+        let line = ["mycelium", "--realm", "work", "swarm"];
+        let asked = Command::try_parse_from(line.iter().chain(words))
             .unwrap_or_else(|error| panic!("{words:?} parses: {error}"));
         match asked.action {
-            Action::Swarm { act, team, json } => (act, team, json),
+            Action::Swarm { words, json, .. } => (swarm_asked(&words), json),
             _ => panic!("{words:?} is the swarm"),
         }
     }
 
-    // A team's name sits where an act's would, so each must still be told
-    // apart from the other.
+    fn show(team: &str) -> SwarmAsked {
+        SwarmAsked::Show(Some(team.to_owned()))
+    }
+
+    // Joel typed `mycelium --realm work swarm team quick` first, and was
+    // told "error: unexpected argument 'quick' found" (2026-11-12).
     #[test]
-    fn the_swarm_takes_a_team_or_an_act() {
+    fn every_word_after_the_swarm_names_its_team_but_a_leading_team() {
         Command::command().debug_assert();
-        assert!(
-            matches!(swarm(&[]), (None, None, false)),
-            "alone, it's the overview"
+        assert_eq!(
+            swarm(&["team", "quick"]),
+            (Ok(show("quick")), false),
+            "his line"
         );
-        assert!(
-            matches!(swarm(&["harbour", "--json"]), (None, Some(team), true) if team == "harbour"),
-            "a name is one team"
+        assert_eq!(
+            swarm(&[]),
+            (Ok(SwarmAsked::Show(None)), false),
+            "the overview"
         );
-        assert!(
-            matches!(
-                swarm(&["say", "harbour", "ship", "it"]),
-                (Some(SwarmAct::Say { name, words }), None, false)
-                    if name == "harbour" && words == ["ship", "it"]
-            ),
-            "say takes a name and its words"
+        assert_eq!(
+            swarm(&["part", "deux"]),
+            (Ok(show("part deux")), false),
+            "two words, one team"
         );
-        assert!(
-            matches!(
-                swarm(&["pause", "reef"]),
-                (Some(SwarmAct::Pause { name }), ..) if name == "reef"
-            ),
-            "pause takes a name"
+        assert_eq!(
+            swarm(&["quick", "wins", "--json"]),
+            (Ok(show("quick wins")), true),
+            "and asked for as JSON"
         );
         assert!(
             matches!(
-                swarm(&["resume", "reef"]),
-                (Some(SwarmAct::Resume { name }), ..) if name == "reef"
+                Command::try_parse_from(["mycelium", "swarm", "--names"]).map(|asked| asked.action),
+                Ok(Action::Swarm { names: true, .. })
             ),
-            "resume takes a name"
+            "--names asks for the teams as they're typed"
         );
-        assert!(
-            Command::try_parse_from(["mycelium", "swarm", "say", "harbour"]).is_err(),
-            "say without words is refused"
+    }
+
+    // A team's words sit where an act's would, so each must still be told
+    // apart from the other, whichever comes first.
+    #[test]
+    fn an_act_takes_its_team_before_or_after_it() {
+        let say = |name: &str, words: &str| {
+            Ok(SwarmAsked::Say {
+                name: name.to_owned(),
+                words: words.to_owned(),
+            })
+        };
+        assert_eq!(
+            swarm(&["say", "harbour", "ship", "it"]).0,
+            say("harbour", "ship it"),
+            "the act first takes one word for its team"
+        );
+        assert_eq!(
+            swarm(&["part", "deux", "say", "ship", "it"]).0,
+            say("part deux", "ship it"),
+            "the team's words first are all its name"
+        );
+        assert_eq!(
+            swarm(&["team", "part", "deux", "pause"]).0,
+            Ok(SwarmAsked::Pause("part deux".to_owned())),
+            "pause after its team"
+        );
+        assert_eq!(
+            swarm(&["Resume", "reef"]).0,
+            Ok(SwarmAsked::Resume("reef".to_owned())),
+            "resume before it, in any case"
+        );
+        assert_eq!(
+            swarm(&["say", "harbour"]).0,
+            Err("say what to harbour?".to_owned()),
+            "say without words"
+        );
+        assert_eq!(
+            swarm(&["pause"]).0,
+            Err("pause which team?".to_owned()),
+            "an act without its team"
+        );
+        assert_eq!(
+            swarm(&["reef", "pause", "now"]).0,
+            Err("pause takes only a team, not now".to_owned()),
+            "words after a pause"
         );
     }
 }

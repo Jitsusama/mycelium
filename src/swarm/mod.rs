@@ -5,7 +5,9 @@
 //! Each team is a line saying how many of its sessions need their person,
 //! are stuck, move or wait, under one header, so the eye runs down a
 //! column rather than reading words on every line. A team's name, never
-//! its address, says which it is, and a count of none is left blank.
+//! its address, says which it is, its short name first where it has one
+//! (names.rs), its title after it, dimmed, and a count of none is left
+//! blank.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -16,7 +18,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+mod names;
 pub mod steers;
+
+pub use names::short_names;
 
 /// The swarm as the node holds it.
 #[derive(Debug, Default)]
@@ -215,18 +220,71 @@ fn worst(team: &Value) -> Standing {
         .unwrap_or(Standing::Quiet)
 }
 
-/// One row of counts under the header: `name` set in by `depth`, then a
-/// column for each standing, a count of none left blank.
-fn row(look: &Look, depth: usize, name: &str, counts: [u64; 4], strong: bool) -> String {
+/// How a row names what it counts: its short name, padded to `width` so
+/// the titles after it line up, where it has one, then its title.
+struct Label<'a> {
+    short: Option<&'a str>,
+    width: usize,
+    title: &'a str,
+}
+
+impl<'a> Label<'a> {
+    /// A row named only by `title`.
+    const fn titled(title: &'a str) -> Self {
+        Self {
+            short: None,
+            width: 0,
+            title,
+        }
+    }
+
+    /// `team`'s, its short name among `shorts` padded to `width`.
+    fn of(team: &'a Value, shorts: &'a BTreeMap<String, String>, width: usize) -> Self {
+        Self {
+            short: names::shown(team, shorts),
+            width,
+            title: title(team),
+        }
+    }
+}
+
+/// How wide the short names shown beside `teams` are, the widest's.
+fn shorts_width<'a>(
+    teams: impl Iterator<Item = &'a Value>,
+    shorts: &BTreeMap<String, String>,
+) -> usize {
+    teams
+        .filter_map(|team| names::shown(team, shorts))
+        .map(|short| short.chars().count())
+        .max()
+        .unwrap_or_default()
+}
+
+/// One row of counts under the header: what it counts, named by `label`
+/// and set in by `depth`, then a column for each standing, a count of
+/// none left blank.
+fn row(look: &Look, depth: usize, label: &Label<'_>, counts: [u64; 4], strong: bool) -> String {
     let room = look
         .width
         .saturating_sub(counts_width() + depth * STEP)
         .max(NARROWEST);
-    let name = padded(&fit(name, room), room);
+    let (plain, lead) = label.short.map_or_else(
+        || (label.title.to_owned(), room),
+        |short| {
+            (
+                format!("{}{GAP}{}", padded(short, label.width), label.title),
+                label.width + GAP.len(),
+            )
+        },
+    );
+    let name = padded(&fit(&plain, room), room);
+    let head: String = name.chars().take(lead).collect();
+    let tail: String = name.chars().skip(lead).collect();
     let mut line = format!(
-        "{}{}",
+        "{}{}{}",
         " ".repeat(depth * STEP),
-        look.paint(if strong { BOLD } else { "" }, &name)
+        look.paint(if strong { BOLD } else { "" }, &head),
+        look.paint(FAINT, &tail)
     );
     for (each, count) in Standing::EACH.into_iter().zip(counts) {
         let shown = if count == 0 {
@@ -316,8 +374,13 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
             .or_default()
             .push(team);
     }
+    let shorts = short_names(&swarm.teams);
+    let shown = Shorts {
+        width: shorts_width(swarm.teams.iter(), &shorts),
+        by: &shorts,
+    };
     let mut passed = BTreeSet::new();
-    nest(&mut lines, look, &within, "", 0, &mut passed);
+    nest(&mut lines, look, &within, &shown, "", 0, &mut passed);
     let alone = alone(swarm);
     if !alone.is_empty() {
         let counts = Standing::EACH.map(|each| {
@@ -327,11 +390,39 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
                 .count();
             u64::try_from(many).unwrap_or(u64::MAX)
         });
-        lines.push(row(look, 0, "on their own", counts, false));
+        lines.push(row(look, 0, &Label::titled("on their own"), counts, false));
     }
     lines.push(String::new());
-    lines.push(look.paint(FAINT, "mycelium swarm <team> shows one team's sessions"));
+    // The first team on the list is the example, typed as a person would.
+    let first = within
+        .get("")
+        .and_then(|top| ordered(top.iter().copied()).first().copied());
+    let example = first.map_or("<team>", |team| names::typed(team, &shorts));
+    lines.push(look.paint(
+        FAINT,
+        &format!(
+            "see a team by any part of its name: mycelium --realm {} swarm {example}",
+            swarm.realm
+        ),
+    ));
     lines.join("\n")
+}
+
+/// Each team as a person types it, its short name where it has one, in
+/// the order the overview lists them, for a shell to complete.
+#[must_use]
+pub fn typed(swarm: &Swarm) -> Vec<String> {
+    let shorts = short_names(&swarm.teams);
+    ordered(swarm.teams.iter())
+        .into_iter()
+        .map(|team| names::typed(team, &shorts).to_owned())
+        .collect()
+}
+
+/// The short names a row of a team is shown with, and how wide they are.
+struct Shorts<'a> {
+    by: &'a BTreeMap<String, String>,
+    width: usize,
 }
 
 /// The teams within `above` as rows set in by `depth`, each followed by
@@ -340,6 +431,7 @@ fn nest<'a>(
     lines: &mut Vec<String>,
     look: &Look,
     within: &BTreeMap<&str, Vec<&'a Value>>,
+    shorts: &Shorts<'_>,
     above: &str,
     depth: usize,
     passed: &mut BTreeSet<&'a str>,
@@ -351,19 +443,33 @@ fn nest<'a>(
         if !passed.insert(address(team)) {
             continue;
         }
-        lines.push(row(look, depth, title(team), counts_of(team), depth == 0));
-        nest(lines, look, within, address(team), depth + 1, passed);
+        let label = Label::of(team, shorts.by, shorts.width);
+        lines.push(row(look, depth, &label, counts_of(team), depth == 0));
+        nest(
+            lines,
+            look,
+            within,
+            shorts,
+            address(team),
+            depth + 1,
+            passed,
+        );
     }
 }
 
-/// The team `asked` names, by its address or a part of its name, or why
-/// none or several are.
+/// The team `asked` names, by its address, its short name or a part of
+/// its title, or why none or several are, naming each of several as it's
+/// typed, so one can be picked.
 fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
-    if let Some(team) = swarm
-        .teams
-        .iter()
-        .find(|team| address(team).eq_ignore_ascii_case(asked))
-    {
+    let shorts = short_names(&swarm.teams);
+    // A short name's words may be typed apart, as `part deux`.
+    let joined = asked.split_whitespace().collect::<Vec<_>>().join("-");
+    if let Some(team) = swarm.teams.iter().find(|team| {
+        address(team).eq_ignore_ascii_case(asked)
+            || shorts
+                .get(address(team))
+                .is_some_and(|short| short.eq_ignore_ascii_case(&joined))
+    }) {
         return Ok(team);
     }
     let lower = asked.to_lowercase();
@@ -377,7 +483,12 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
         [] => Err(format!("no team is named {asked}")),
         many => Err(format!(
             "{asked} could be {}",
-            listed(&many.iter().map(|team| title(team)).collect::<Vec<_>>())
+            either(
+                &many
+                    .iter()
+                    .map(|team| names::typed(team, &shorts))
+                    .collect::<Vec<_>>()
+            )
         )),
     }
 }
@@ -419,9 +530,12 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
             .filter(|other| other["within"] == json!(address(team))),
     );
     if !inner.is_empty() {
+        let shorts = short_names(&swarm.teams);
+        let width = shorts_width(inner.iter().copied(), &shorts);
         lines.extend([String::new(), header(look, 0)]);
         for other in inner {
-            lines.push(row(look, 0, title(other), counts_of(other), false));
+            let label = Label::of(other, &shorts, width);
+            lines.push(row(look, 0, &label, counts_of(other), false));
         }
     }
     let mut members: Vec<(Standing, &Value)> = team["members"]
@@ -539,10 +653,20 @@ fn meetings(
 /// `names` as a sentence lists them: one, two joined by and, or several
 /// with commas and a last and.
 fn listed(names: &[&str]) -> String {
+    joined(names, "and")
+}
+
+/// `names` as a sentence offers a choice of them: two joined by or, or
+/// several with commas and a last or.
+fn either(names: &[&str]) -> String {
+    joined(names, "or")
+}
+
+fn joined(names: &[&str], last_by: &str) -> String {
     match names {
         [] => String::new(),
         [one] => (*one).to_owned(),
-        [first @ .., last] => format!("{} and {last}", first.join(", ")),
+        [first @ .., last] => format!("{} {last_by} {last}", first.join(", ")),
     }
 }
 
@@ -620,7 +744,7 @@ fn asked(socket: &Path, within: Duration, asks: &[Value]) -> io::Result<BTreeMap
 mod tests {
     use serde_json::{Value, json};
 
-    use super::{Look, Swarm, overview, team};
+    use super::{Look, Swarm, overview, team, typed};
 
     /// A look 72 columns wide, without colour, at 17:00 on Thursday
     /// 12 November 2026, in UTC.
@@ -726,7 +850,7 @@ mod tests {
             "Reef                                                            1",
             "on their own                                                    1",
             "",
-            "mycelium swarm <team> shows one team's sessions",
+            "see a team by any part of its name: mycelium --realm work swarm harbour",
         ];
         assert_eq!(
             shown.lines().collect::<Vec<_>>(),
@@ -784,8 +908,81 @@ mod tests {
         );
         assert_eq!(
             team(&swarm(), "r", &look()),
-            Err("r could be Reef and Harbour".to_owned()),
-            "several, as the node lists them"
+            Err("r could be reef or harbour".to_owned()),
+            "several, each as it's typed, as the node lists them"
+        );
+    }
+
+    /// Teams titled as people title them: two sharing Harbour, one a
+    /// single word.
+    fn titled_swarm() -> Swarm {
+        let counted = |worst: &str, moving: u64, quiet: u64| {
+            json!({"worst": worst, "members": [],
+                   "counts": {"needs-you": 0, "stuck": 0, "moving": moving, "quiet": quiet}})
+        };
+        Swarm {
+            realm: "work".to_owned(),
+            teams: vec![
+                team_of(
+                    "DEPLOY",
+                    "Deploy v3: How Harbour Ships",
+                    None,
+                    &counted("quiet", 0, 1),
+                ),
+                team_of(
+                    "HARBR2",
+                    "Harbour Part Deux: Closures on MicroVMs",
+                    None,
+                    &counted("moving", 2, 0),
+                ),
+                team_of("REEF01", "Reef", None, &counted("moving", 1, 0)),
+            ],
+            sessions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn each_team_leads_with_its_short_name_and_the_list_says_how_to_type_one() {
+        let shown = overview(&titled_swarm(), &look());
+        let expected = [
+            "work · 0 running",
+            "",
+            "                                          need you  stuck  moving  quiet",
+            "part-deux  Harbour Part Deux: Closures…                         2",
+            "Reef                                                            1",
+            "deploy     Deploy v3: How Harbour Ships                                1",
+            "",
+            "see a team by any part of its name: mycelium --realm work swarm part-deux",
+        ];
+        assert_eq!(
+            shown.lines().collect::<Vec<_>>(),
+            expected,
+            "short names first, titles after them, Reef's own name once:\n{shown}"
+        );
+        assert_eq!(
+            typed(&titled_swarm()),
+            ["part-deux", "reef", "deploy"],
+            "what a shell completes, in the list's order"
+        );
+    }
+
+    #[test]
+    fn a_short_name_finds_its_team_and_several_are_offered_by_theirs() {
+        let swarm = titled_swarm();
+        let found = team(&swarm, "Part-Deux", &look()).expect("found by its short name");
+        assert!(
+            found.starts_with("Harbour Part Deux"),
+            "the team it names: {found}"
+        );
+        assert_eq!(
+            team(&swarm, "harbour", &look()),
+            Err("harbour could be deploy or part-deux".to_owned()),
+            "each it could be, as it's typed"
+        );
+        let words = team(&swarm, "part deux", &look()).expect("found by its words");
+        assert!(
+            words.starts_with("Harbour Part Deux"),
+            "a short name's words, spaced as typed, find it too: {words}"
         );
     }
 
@@ -799,8 +996,8 @@ mod tests {
             shown
                 .lines()
                 .any(|line| line
-                    == "A reef whose name runs far past every c…                        1"),
-            "cut to its room, its count still under moving:\n{shown}"
+                    == "reef  A reef whose name runs far past e…                        1"),
+            "cut to its room after its short name, its count still under moving:\n{shown}"
         );
     }
 

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Standing, Swarm, address, asked, listed, title};
+use super::{Standing, Swarm, address, asked, either, listed, names, short_names, title};
 
 /// Who a steer is from: the person, as the harness's steers name them.
 const FROM: &str = "person";
@@ -64,9 +64,11 @@ fn paused(session: &Value) -> bool {
     session["presence"]["paused"] == json!(true)
 }
 
-/// The team or session `asked` names: a team by its address, then a
-/// living session by its, then a team by a part of its name, then a
-/// living session by a part of its.
+/// The team or session `asked` names: a team by its address or its short
+/// name, then a living session by its address, then a team by a part of
+/// its name, then a living session by a part of its. Several are each
+/// named as they're typed, a team by its short name, so one can be
+/// picked.
 fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     let living = || {
         swarm
@@ -74,11 +76,15 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
             .iter()
             .filter(|session| Standing::of(session).is_some())
     };
-    if let Some(team) = swarm
-        .teams
-        .iter()
-        .find(|team| address(team).eq_ignore_ascii_case(asked))
-    {
+    let shorts = short_names(&swarm.teams);
+    // A short name's words may be typed apart, as `part deux`.
+    let joined = asked.split_whitespace().collect::<Vec<_>>().join("-");
+    if let Some(team) = swarm.teams.iter().find(|team| {
+        address(team).eq_ignore_ascii_case(asked)
+            || shorts
+                .get(address(team))
+                .is_some_and(|short| short.eq_ignore_ascii_case(&joined))
+    }) {
         return Ok(Named::Team(team));
     }
     if let Some(session) = living().find(|session| {
@@ -104,13 +110,14 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     match found.as_slice() {
         [] => Err(format!("nothing in the swarm is named {asked}")),
         many => {
-            let names: Vec<&str> = many
+            let typed: Vec<&str> = many
                 .iter()
                 .map(|one| match one {
-                    Named::Team(record) | Named::Session(record) => title(record),
+                    Named::Team(record) => names::typed(record, &shorts),
+                    Named::Session(record) => title(record),
                 })
                 .collect();
-            Err(format!("{asked} could be {}", listed(&names)))
+            Err(format!("{asked} could be {}", either(&typed)))
         }
     }
 }
@@ -426,8 +433,13 @@ mod tests {
         );
         assert_eq!(
             aim(&swarm(), Act::Pause, "one"),
-            Err("one could be Paused one, Busy one and Reef's one".to_owned()),
+            Err("one could be Paused one, Busy one or Reef's one".to_owned()),
             "several living, the ended one left out"
+        );
+        assert_eq!(
+            aim(&swarm(), Act::Pause, "e"),
+            Err("e could be reef or kelp".to_owned()),
+            "several teams, each by its short name"
         );
     }
 }
