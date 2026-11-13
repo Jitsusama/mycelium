@@ -164,7 +164,9 @@ impl Folders {
             seen.insert(path, one);
         }
         *kept = seen;
-        kept.values().filter_map(|one| one.body.clone()).collect()
+        kept.values()
+            .filter_map(|one| Some(Arc::new(Value::clone(one.body.as_deref()?))))
+            .collect()
     }
 
     /// Whether `owner`'s process lives, judged again only once an end may
