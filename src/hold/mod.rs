@@ -189,6 +189,50 @@ pub fn again(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.again"))
 }
 
+/// The file anyone but the program may write with the command the
+/// session held as `id` in `dir` starts with when it next starts again.
+/// It wins over the one the program names as it parks, since a program
+/// names itself: one that runs on an old conversation would otherwise
+/// write that conversation over a newer one named for it while it ran.
+#[must_use]
+pub fn next(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.next"))
+}
+
+/// Names `command` as what the session held as `id` in `dir` starts with
+/// when it next starts again, and wakes it if it is parked, answering
+/// whether it woke it. The file is written whole, under another name
+/// first, so its holder never reads half of it.
+///
+/// # Errors
+///
+/// When nothing is held as `id`, `command` names no program, or the file
+/// can't be written.
+pub fn name_next(dir: &Path, id: &str, command: &[String]) -> io::Result<bool> {
+    if command.first().is_none_or(String::is_empty) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a command names a program",
+        ));
+    }
+    let Some(one) = held(dir).into_iter().find(|one| one.id == id) else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("nothing is held as {id}; `mycelium held` lists what is"),
+        ));
+    };
+    let writing = dir.join(format!(".{id}.next"));
+    fs::write(
+        &writing,
+        serde_json::to_vec(command).map_err(io::Error::other)?,
+    )?;
+    fs::rename(&writing, next(dir, id))?;
+    if one.parked {
+        fs::write(wake(dir, id), b"{\"named\":true}\n")?;
+    }
+    Ok(one.parked)
+}
+
 /// Every session held in `dir` whose holder still runs, oldest first.
 #[must_use]
 pub fn held(dir: &Path) -> Vec<Held> {

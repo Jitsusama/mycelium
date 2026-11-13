@@ -23,7 +23,7 @@ use tokio::task::JoinSet;
 use super::environment::{Environment, keeping_path};
 use super::journal::{Ended, How, Journal};
 use super::modes::Modes;
-use super::{Held, Said, Size, again, socket, wake};
+use super::{Held, Said, Size, again, next, socket, wake};
 use crate::node;
 use crate::record::Window;
 
@@ -249,8 +249,9 @@ fn starting(
 /// environment it was held from said, its id in `MYCELIUM_HELD`, the file that wakes it once
 /// parked in `MYCELIUM_WAKE`, and the file it may name its next command in
 /// as it parks in `MYCELIUM_AGAIN`. A program exiting with [`PARKED`] is
-/// started again on the same terminal when woken, with that command if it
-/// named one; one that wrote its wake file before it went is restarting,
+/// started again on the same terminal when woken, with the command named
+/// for it from outside if any was (see [`super::name_next`]), else with
+/// the one it named itself; one that wrote its wake file before it went is restarting,
 /// and starts again at once, never shown as parked. How each run ended,
 /// parked or not, is said to the holding's journal.
 pub async fn hold(
@@ -269,10 +270,12 @@ pub async fn hold(
     let socket = node::bind(&socket(holding.dir, holding.id))?;
     let waking = wake(holding.dir, holding.id);
     let naming = again(holding.dir, holding.id);
+    let chosen = next(holding.dir, holding.id);
     // A wake or a command left from before this program ran says nothing
     // to it.
     let _ = fs::remove_file(&waking);
     let _ = fs::remove_file(&naming);
+    let _ = fs::remove_file(&chosen);
     let (pty, pts) = pty_process::open().map_err(io::Error::other)?;
     pty.resize(size_of(FIRST_SIZE)).map_err(io::Error::other)?;
     let starts = Arc::new(Starts::default());
@@ -342,7 +345,10 @@ pub async fn hold(
                 }
                 shown.show(FOCUS_OFF);
             }
-            command = named(&naming).unwrap_or(command);
+            // Both are taken, so the program's own never waits for a
+            // later start; the one named for it wins.
+            let its_own = named(&naming);
+            command = named(&chosen).or(its_own).unwrap_or(command);
             match start(&command, terminal.size()) {
                 Ok(child) => break child,
                 Err(error) => parks(&record, &shown, &unstarted(&error)),
@@ -931,7 +937,7 @@ mod tests {
 
     use super::super::environment::Given;
     use super::super::journal::SystemJournal;
-    use super::super::{attach, held as listed};
+    use super::super::{attach, held as listed, name_next, next};
     use super::*;
 
     /// How long a test waits for what it expects to show before failing.
@@ -1470,6 +1476,97 @@ mod tests {
             .expect("the holder ends with its program")
             .expect("the holder's task ran");
         assert_eq!(ended.expect("it held"), Some(3), "the named command ran");
+    }
+
+    // A pi on an old conversation, woken in its window, named itself as it
+    // parked over the newer conversation named for it while it ran, and
+    // each wake after started the old one again (2026-11-13).
+    #[tokio::test]
+    async fn a_command_named_for_a_running_program_wins_over_the_one_it_names_as_it_parks() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        let chosen = ["sh", "-c", "echo chosen $((6 * 7)); read -r _; exit 3"].map(str::to_owned);
+        assert!(
+            !name_next(&dir, &held.id, &chosen).expect("a command is named"),
+            "a running program isn't woken"
+        );
+        window
+            .types(concat!(
+                r#"printf '%s' '["sh","-c","echo its own $((6 * 7)); read -r _; exit 4"]'"#,
+                " > \"$MYCELIUM_AGAIN\"; exit 75\r",
+            ))
+            .await;
+        listed_parked(&dir, &mut changes, true).await;
+
+        fs::write(wake(&dir, &held.id), b"{}").expect("the wake is written");
+        let woken = listed_parked(&dir, &mut changes, false).await;
+        window.sees("chosen 42").await;
+        assert_eq!(
+            woken.command, chosen,
+            "the record says the command named for it"
+        );
+        assert!(
+            !next(&dir, &held.id).exists() && !again(&dir, &held.id).exists(),
+            "both commands are taken once read"
+        );
+        window.types("\r").await;
+        let ended = tokio::time::timeout(PATIENCE, holder)
+            .await
+            .expect("the holder ends with its program")
+            .expect("the holder's task ran");
+        assert_eq!(
+            ended.expect("it held"),
+            Some(3),
+            "the command named for it ran"
+        );
+    }
+
+    #[tokio::test]
+    async fn naming_a_parked_programs_next_command_wakes_it_with_that_command() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        let named = ["sh", "-c", "echo named $((6 * 7)); read -r _; exit 5"].map(str::to_owned);
+        assert_eq!(
+            name_next(&dir, "nothing1", &named).map_err(|error| error.kind()),
+            Err(io::ErrorKind::NotFound),
+            "nothing is named for a session not held"
+        );
+        assert_eq!(
+            name_next(&dir, &held.id, &[]).map_err(|error| error.kind()),
+            Err(io::ErrorKind::InvalidInput),
+            "a command names a program"
+        );
+        window.types("exit 75\r").await;
+        listed_parked(&dir, &mut changes, true).await;
+
+        assert!(
+            name_next(&dir, &held.id, &named).expect("a command is named"),
+            "a parked program is woken"
+        );
+        listed_parked(&dir, &mut changes, false).await;
+        window.sees("named 42").await;
+        window.types("\r").await;
+        let ended = tokio::time::timeout(PATIENCE, holder)
+            .await
+            .expect("the holder ends with its program")
+            .expect("the holder's task ran");
+        assert_eq!(
+            ended.expect("it held"),
+            Some(5),
+            "the command named for it ran"
+        );
     }
 
     #[tokio::test]

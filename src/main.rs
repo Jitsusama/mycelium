@@ -226,6 +226,17 @@ enum Action {
     },
     /// Prints every session held on this machine, a JSON line each.
     Held,
+    /// Names the command a session held on this machine starts with when
+    /// it next starts again, over any its program names as it parks, and
+    /// wakes it if it is parked; prints `{"id", "woke"}`. A pi held on an
+    /// old conversation is moved onto a newer one this way.
+    Again {
+        /// Its id, as `held` lists it.
+        id: String,
+        /// The program and its arguments, after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     /// Holds a program, as `hold` starts it, in a process of its own.
     #[command(hide = true)]
     Holder {
@@ -606,6 +617,8 @@ fn run(command: Command) -> io::Result<ExitCode> {
         Action::Held => hold::held(&place::held(&realm))
             .iter()
             .try_for_each(print_line),
+        Action::Again { id, command } => hold::name_next(&place::held(&realm), &id, &command)
+            .and_then(|woke| print_line(&serde_json::json!({"id": id, "woke": woke}))),
         Action::Holder {
             id,
             folder,
