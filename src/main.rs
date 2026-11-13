@@ -100,8 +100,8 @@ enum Action {
     Sessions,
     /// Shows the swarm: every team, nested as they are, with how many of
     /// its sessions need you, are stuck, move or wait, those needing you
-    /// first; or, named by its address or a part of its name, one team's
-    /// sessions and where it meets the others. Its acts steer the swarm as
+    /// first, each by its short name; or, named by that or any part of its
+    /// title, one team's sessions and where it meets the others. Its acts steer the swarm as
     /// its person: words to a team go to its lead, and a pause or resume
     /// to each of its sessions.
     Swarm {
@@ -113,6 +113,10 @@ enum Action {
         /// Prints each team's record as a JSON line instead.
         #[arg(long)]
         json: bool,
+        /// Prints each team as it's typed, a line each, for a shell to
+        /// complete.
+        #[arg(long, hide = true)]
+        names: bool,
     },
     /// Prints how the realm's network stands, as one JSON line for a daily
     /// read: each link, `up` or `unreachable`, with how many times it
@@ -514,8 +518,19 @@ fn run(command: Command) -> io::Result<ExitCode> {
         Action::Swarm { act: Some(act), .. } => steer_swarm(&socket, &realm, act),
         Action::Swarm {
             act: None,
+            names: true,
+            ..
+        } => {
+            let swarm = mycelium::swarm::read(&socket, &realm, SWARM_WITHIN)?;
+            let typed = mycelium::swarm::typed(&swarm);
+            let mut out = io::stdout().lock();
+            typed.iter().try_for_each(|name| writeln!(out, "{name}"))
+        }
+        Action::Swarm {
+            act: None,
             team,
             json,
+            ..
         } => swarm(&socket, &realm, team.as_deref(), json),
         Action::Web(asked) => web(asked),
         Action::Machine => print_reply(&socket, &Request::Machine),
@@ -1136,7 +1151,9 @@ mod tests {
         let asked = Command::try_parse_from(["mycelium", "swarm"].iter().chain(words))
             .unwrap_or_else(|error| panic!("{words:?} parses: {error}"));
         match asked.action {
-            Action::Swarm { act, team, json } => (act, team, json),
+            Action::Swarm {
+                act, team, json, ..
+            } => (act, team, json),
             _ => panic!("{words:?} is the swarm"),
         }
     }
@@ -1179,6 +1196,18 @@ mod tests {
         assert!(
             Command::try_parse_from(["mycelium", "swarm", "say", "harbour"]).is_err(),
             "say without words is refused"
+        );
+        assert!(
+            matches!(
+                Command::try_parse_from(["mycelium", "swarm", "--names"]).map(|asked| asked.action),
+                Ok(Action::Swarm {
+                    names: true,
+                    act: None,
+                    team: None,
+                    ..
+                })
+            ),
+            "--names asks for the teams as they're typed"
         );
     }
 }
