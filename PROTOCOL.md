@@ -149,7 +149,9 @@ same code, each line a JSON value:
     into the inbox of the session going by `address` on the other end's
     machine, as a `"Steer"` request says it. The other end writes it
     there itself, since a steer is only a file. A steer with an `id`
-    opens a talk, which the other end follows from then on.
+    opens a talk, which the other end follows from then on. Words with
+    `"now": true` go into the session's turn under way; without it,
+    they wait for that turn to end.
 11. `{"Follow": {"talks": [{"address", "id", "has"}]}}`: after the
     Have, the talks the sending end follows that no stage has ended and
     that were written within a day, with how many bytes of each it has,
