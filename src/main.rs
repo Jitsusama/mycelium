@@ -103,14 +103,16 @@ enum Action {
     /// first, each by its short name; or, named by that or any part of its
     /// title, one team's sessions and where it meets the others. Its acts
     /// steer the swarm as its person: `say` words to a team, which its
-    /// lead hears, or to one session; `pause` every session of a team and
+    /// lead hears, or to one session, read once its turn ends, or into
+    /// that turn when the words begin `now`; `pause` every session of a team and
     /// the teams within it, or one session, so each finishes its turn and
     /// waits; and `resume` them.
     Swarm {
         /// The team, by its short name or any words of its title, such as
         /// `part deux`, a leading `team` left out; or an act and its team,
-        /// as `say harbour ship it`, `pause harbour`, or the team's words
-        /// first, as `part deux say ship it`.
+        /// as `say harbour ship it`, `say harbour now stop that`,
+        /// `pause harbour`, or the team's words first, as
+        /// `part deux say ship it`.
         words: Vec<String>,
         /// Prints each team's record as a JSON line instead.
         #[arg(long)]
@@ -392,8 +394,13 @@ struct WebAsked {
 enum SwarmAsked {
     /// Every team, or the one named.
     Show(Option<String>),
-    /// Words said to a team or a session, as the person.
-    Say { name: String, words: String },
+    /// Words said to a team or a session, as the person: after the turn
+    /// under way, or `now`, into it.
+    Say {
+        name: String,
+        words: String,
+        now: bool,
+    },
     /// A team's sessions, or one session, paused.
     Pause(String),
     /// A team's paused sessions, or one session, resumed.
@@ -428,9 +435,22 @@ fn swarm_asked(words: &[String]) -> Result<SwarmAsked, String> {
     };
     match (words[at].to_lowercase().as_str(), rest) {
         ("say", []) => Err(format!("say what to {name}?")),
+        // A first word `now` sends the rest into the turn under way.
+        ("say", [first, said @ ..]) if first.eq_ignore_ascii_case("now") => {
+            if said.is_empty() {
+                Err(format!("say what to {name} now?"))
+            } else {
+                Ok(SwarmAsked::Say {
+                    name,
+                    words: said.join(" "),
+                    now: true,
+                })
+            }
+        }
         ("say", said) => Ok(SwarmAsked::Say {
             name,
             words: said.join(" "),
+            now: false,
         }),
         ("pause", []) => Ok(SwarmAsked::Pause(name)),
         ("resume", []) => Ok(SwarmAsked::Resume(name)),
@@ -898,7 +918,9 @@ fn in_swarm(
     }
     match swarm_asked(words).map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))? {
         SwarmAsked::Show(team) => swarm(socket, realm, team.as_deref(), json),
-        SwarmAsked::Say { name, words } => steer_swarm(socket, realm, Act::Say(words), &name),
+        SwarmAsked::Say { name, words, now } => {
+            steer_swarm(socket, realm, Act::Say { words, now }, &name)
+        }
         SwarmAsked::Pause(name) => steer_swarm(socket, realm, Act::Pause, &name),
         SwarmAsked::Resume(name) => steer_swarm(socket, realm, Act::Resume, &name),
     }
@@ -1241,8 +1263,36 @@ mod tests {
             Ok(SwarmAsked::Say {
                 name: name.to_owned(),
                 words: words.to_owned(),
+                now: false,
             })
         };
+        let now = |name: &str, words: &str| {
+            Ok(SwarmAsked::Say {
+                name: name.to_owned(),
+                words: words.to_owned(),
+                now: true,
+            })
+        };
+        assert_eq!(
+            swarm(&["say", "harbour", "now", "stop", "that"]).0,
+            now("harbour", "stop that"),
+            "now first goes into the turn under way (Joel, 2026-11-12)"
+        );
+        assert_eq!(
+            swarm(&["part", "deux", "say", "Now", "stop"]).0,
+            now("part deux", "stop"),
+            "after the team's words too, in any case"
+        );
+        assert_eq!(
+            swarm(&["say", "harbour", "ship", "it", "now"]).0,
+            say("harbour", "ship it now"),
+            "a now among the words is only a word"
+        );
+        assert_eq!(
+            swarm(&["say", "harbour", "now"]).0,
+            Err("say what to harbour now?".to_owned()),
+            "now without words"
+        );
         assert_eq!(
             swarm(&["say", "harbour", "ship", "it"]).0,
             say("harbour", "ship it"),

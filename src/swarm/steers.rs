@@ -23,8 +23,14 @@ const FROM: &str = "person";
 /// What the person does to the swarm.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Act {
-    /// Says these words.
-    Say(String),
+    /// Says these words: after the turn under way, or `now`, into it, as
+    /// Joel chose for words to a working session (2026-11-12, "yes").
+    Say {
+        /// What is said.
+        words: String,
+        /// Whether it goes into the turn under way rather than after it.
+        now: bool,
+    },
     /// Pauses, so a session finishes its turn and waits.
     Pause,
     /// Resumes a paused session.
@@ -184,12 +190,13 @@ fn aimed(session: &Value, steer: &Value) -> Aimed {
 /// act would change none of the sessions it names.
 pub fn aim(swarm: &Swarm, act: Act, asked: &str) -> Result<Aim, String> {
     let steer = match &act {
-        Act::Say(words) => json!({"text": words, "from": FROM}),
+        Act::Say { words, now: false } => json!({"text": words, "from": FROM}),
+        Act::Say { words, now: true } => json!({"text": words, "from": FROM, "now": true}),
         Act::Pause => json!({"act": "pause", "from": FROM}),
         Act::Resume => json!({"act": "resume", "from": FROM}),
     };
     let changes = |session: &Value| match act {
-        Act::Say(_) => true,
+        Act::Say { .. } => true,
         Act::Pause => !paused(session),
         Act::Resume => paused(session),
     };
@@ -199,13 +206,13 @@ pub fn aim(swarm: &Swarm, act: Act, asked: &str) -> Result<Aim, String> {
             let name = title(session);
             return Err(match act {
                 Act::Resume => format!("{name} isn't paused"),
-                Act::Pause | Act::Say(_) => format!("{name} is paused already"),
+                Act::Pause | Act::Say { .. } => format!("{name} is paused already"),
             });
         }
         Named::Team(team) => {
             let name = title(team);
             let sessions: Vec<Aimed> = match act {
-                Act::Say(_) => team["lead"]
+                Act::Say { .. } => team["lead"]
                     .as_str()
                     .and_then(|lead| swarm.sessions.iter().find(|one| one["id"] == json!(lead)))
                     .filter(|lead| Standing::of(lead).is_some())
@@ -220,7 +227,7 @@ pub fn aim(swarm: &Swarm, act: Act, asked: &str) -> Result<Aim, String> {
             };
             if sessions.is_empty() {
                 return Err(match act {
-                    Act::Say(_) => format!("{name} has no lead to say it to"),
+                    Act::Say { .. } => format!("{name} has no lead to say it to"),
                     Act::Pause => format!("every session of {name} is paused already"),
                     Act::Resume => format!("none of {name}'s sessions is paused"),
                 });
@@ -295,7 +302,8 @@ pub fn told(aim: &Aim, answers: &[Result<String, String>]) -> Result<String, Str
         let mut line = format!(
             "{} {}",
             match aim.act {
-                Act::Say(_) => "said to",
+                Act::Say { now: false, .. } => "said to",
+                Act::Say { now: true, .. } => "said now to",
                 Act::Pause => "paused",
                 Act::Resume => "resumed",
             },
@@ -303,7 +311,7 @@ pub fn told(aim: &Aim, answers: &[Result<String, String>]) -> Result<String, Str
         );
         if let Some(team) = &aim.team {
             let _ = match aim.act {
-                Act::Say(_) => write!(line, ", who leads {team}"),
+                Act::Say { .. } => write!(line, ", who leads {team}"),
                 Act::Pause | Act::Resume => write!(line, ", in {team}"),
             };
         }
@@ -333,9 +341,16 @@ mod tests {
             .collect()
     }
 
+    fn say(words: &str) -> Act {
+        Act::Say {
+            words: words.to_owned(),
+            now: false,
+        }
+    }
+
     #[test]
     fn words_to_a_team_go_to_its_lead_from_the_person() {
-        let aimed = aim(&swarm(), Act::Say("Ship it".to_owned()), "harbour").expect("aimed");
+        let aimed = aim(&swarm(), say("Ship it"), "harbour").expect("aimed");
         assert_eq!(
             aimed.sessions,
             [Aimed {
@@ -351,9 +366,31 @@ mod tests {
             "and says who heard it"
         );
         assert_eq!(
-            aim(&swarm(), Act::Say("Hello".to_owned()), "reef01"),
+            aim(&swarm(), say("Hello"), "reef01"),
             Err("Reef has no lead to say it to".to_owned()),
             "a team with no lead is said to be one"
+        );
+    }
+
+    // Joel chose that words to a working session wait for its turn to end
+    // unless he says now (2026-11-12): the steer says which, and so does
+    // what's told back.
+    #[test]
+    fn words_said_now_go_into_the_turn_and_say_so() {
+        let now = Act::Say {
+            words: "Stop that".to_owned(),
+            now: true,
+        };
+        let aimed = aim(&swarm(), now, "harbour").expect("aimed");
+        assert_eq!(
+            aimed.sessions[0].steer,
+            json!({"text": "Stop that", "from": "person", "now": true}),
+            "the steer says now"
+        );
+        assert_eq!(
+            told(&aimed, &[Ok("skiff".to_owned())]),
+            Ok("said now to Harbour's lead, who leads Harbour".to_owned()),
+            "and so does what's told back"
         );
     }
 
@@ -404,7 +441,7 @@ mod tests {
 
     #[test]
     fn one_session_goes_by_its_address_or_its_name() {
-        let aimed = aim(&swarm(), Act::Say("Hi".to_owned()), "alone").expect("aimed");
+        let aimed = aim(&swarm(), say("Hi"), "alone").expect("aimed");
         assert_eq!(
             (addresses(&aimed), &aimed.team),
             (vec!["ALONE"], &None),

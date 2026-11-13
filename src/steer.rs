@@ -23,9 +23,10 @@ use serde_json::{Map, Value};
 use crate::hold;
 use crate::record::{Session, State};
 
-/// The fields of a steer the harness reads, which are all that is written.
-const FIELDS: [&str; 10] = [
-    "text", "act", "to", "at", "from", "id", "want", "look", "value", "other",
+/// The fields of a steer the harness reads, which are all that is written:
+/// `now` sends words into the turn under way, rather than after it.
+const FIELDS: [&str; 11] = [
+    "text", "act", "to", "at", "from", "id", "want", "look", "value", "other", "now",
 ];
 
 /// What the person may do besides talk, as the harness's `STEER_ACTS`
@@ -97,6 +98,13 @@ impl Steer {
         }
         if act == Some("fill") && text.trim().is_empty() {
             return Err("a fill has words to put in the prompt".to_owned());
+        }
+        // Only words go into a turn under way, so only a talk says now,
+        // and only as true, since words wait for the turn without it.
+        if let Some(now) = body.get("now")
+            && (now != &Value::Bool(true) || act.is_some())
+        {
+            return Err("only words are said now, as `\"now\": true`".to_owned());
         }
         if act == Some("answer") {
             answers(&body)?;
@@ -410,6 +418,13 @@ mod tests {
         )
         .expect("a steer");
         let second = Steer::new("AB12CD", &json!({"act": "pause"})).expect("a steer");
+        let now = Steer::new("AB12CD", &json!({"text": "stop that", "now": true}))
+            .expect("words said now");
+        assert_eq!(
+            now.body.get("now"),
+            Some(&json!(true)),
+            "words said now keep it, for the harness to send into the turn"
+        );
         let one = first.deliver(inboxes.path()).expect("delivered");
         let two = second.deliver(inboxes.path()).expect("delivered");
         assert!(one < two, "a later steer sorts after: {one} {two}");
@@ -452,6 +467,9 @@ mod tests {
             ("AB12", json!({"act": "wake", "id": "talk-1"})),
             ("AB12", json!({"act": "fill"})),
             ("AB12", json!({"act": "fill", "text": " "})),
+            ("AB12", json!({"text": "hi", "now": "yes"})),
+            ("AB12", json!({"text": "hi", "now": false})),
+            ("AB12", json!({"act": "pause", "now": true})),
             ("AB12", json!({"act": "move"})),
             ("AB12", json!({"act": "move", "to": "penelope"})),
             ("AB12", json!({"act": "answer", "value": "yes"})),
