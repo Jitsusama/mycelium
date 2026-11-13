@@ -328,7 +328,7 @@ mod tests {
             host: None,
             conversation: None,
             at: "2026-11-12T22:00:00Z".to_owned(),
-            presence: json!({}),
+            presence: json!({}).into(),
         }
     }
 
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn a_parked_or_paused_session_is_stuck() {
         let mut paused = session("paused", State::Idle, (Some("HARBOR"), None), &[]);
-        paused.presence = json!({"paused": true});
+        paused.presence = json!({"paused": true}).into();
         let sessions = [
             paused,
             session("parked", State::Busy, (Some("HARBOR"), None), &[]),

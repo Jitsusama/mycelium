@@ -3,6 +3,8 @@
 //!
 //! PROTOCOL.md says what each field means and which machine may write it.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -124,8 +126,15 @@ pub struct Session {
     /// Its presence whole, as its session wrote it, for a reader that
     /// shows more of it than the fields above; a session elsewhere's has
     /// its process taken out. Whether it lives is `state`, never this.
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub presence: Value,
+    /// Shared with the store's reading of it, as every copy of the
+    /// sessions taken would otherwise copy each presence whole.
+    #[serde(default, skip_serializing_if = "is_null")]
+    pub presence: Arc<Value>,
+}
+
+/// Whether a presence held is none at all.
+fn is_null(presence: &Arc<Value>) -> bool {
+    presence.is_null()
 }
 
 /// What a session waits on its person for.

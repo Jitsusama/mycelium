@@ -236,7 +236,7 @@ mod tests {
             host: None,
             conversation: None,
             at: at.to_owned(),
-            presence,
+            presence: presence.into(),
         }
     }
 

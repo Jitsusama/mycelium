@@ -167,7 +167,7 @@ pub fn crossed(message: &Message, from_realm: &str, pid: u32) -> Value {
 
 /// The session a presence describes, on `here` unless it runs elsewhere.
 pub fn session(presence: &Presence, here: &str) -> Option<Session> {
-    let said = Said::deserialize(&presence.body).ok()?;
+    let said = Said::deserialize(&*presence.body).ok()?;
     let state = match (presence.lives, said.busy, said.state.as_deref()) {
         _ if presence.unreachable_since.is_some() => State::Unreachable,
         (false, _, _) => State::Ended,
@@ -520,7 +520,8 @@ mod tests {
             body: json!({
                 "session": "01a1", "addresses": ["4UHC5Q", "7DD51C6F"], "groups": ["#quest/4uhc5q"],
                 "busy": true, "state": "busy", "at": "2026-10-26T20:31:17.392Z",
-            }),
+            })
+            .into(),
             elsewhere: elsewhere.map(str::to_owned),
             lives,
             unreachable_since: None,
@@ -552,7 +553,7 @@ mod tests {
     fn a_session_says_its_quest_and_wants_and_here_its_window() {
         let presence = |body: Value, elsewhere: Option<&str>| Presence {
             session: "01a1".to_owned(),
-            body,
+            body: body.into(),
             elsewhere: elsewhere.map(str::to_owned),
             lives: true,
             unreachable_since: None,
@@ -616,7 +617,8 @@ mod tests {
             body: json!({
                 "session": "01a1", "addresses": ["4UHC5Q"], "at": "2026-11-01T14:00:00Z",
                 "landings": landings,
-            }),
+            })
+            .into(),
             elsewhere: Some("equilibrius".to_owned()),
             lives: true,
             unreachable_since: None,
@@ -655,7 +657,7 @@ mod tests {
     fn a_session_here_says_what_holds_it() {
         let presence = |pid: u32, elsewhere: Option<&str>| Presence {
             session: "01a1".to_owned(),
-            body: json!({"session": "01a1", "owner": {"pid": pid}}),
+            body: json!({"session": "01a1", "owner": {"pid": pid}}).into(),
             elsewhere: elsewhere.map(str::to_owned),
             lives: true,
             unreachable_since: None,
@@ -690,7 +692,8 @@ mod tests {
             body: json!({
                 "session": "01a1", "owner": {"pid": 4242},
                 "hosted": {"host": "lantern", "conversation": "c-01a1"},
-            }),
+            })
+            .into(),
             ..presence(4242, None)
         };
         assert_eq!(
@@ -712,7 +715,8 @@ mod tests {
             body: json!({
                 "session": "01a1", "owner": {"pid": 4244},
                 "wake": "/run/user/1000/mycelium/work.held/685a586d.wake",
-            }),
+            })
+            .into(),
             ..presence(4244, None)
         };
         let here = [held("5b992038", 4242), parked];
@@ -735,7 +739,8 @@ mod tests {
             body: json!({
                 "session": "01a1", "owner": {"pid": 4242},
                 "hosted": {"host": "work-attended", "conversation": "c-01a1"},
-            }),
+            })
+            .into(),
             elsewhere: elsewhere.map(str::to_owned),
             lives: true,
             unreachable_since: None,
@@ -793,7 +798,7 @@ mod tests {
             "a session elsewhere is never in a window here"
         );
         let plain = Presence {
-            body: json!({"session": "01a1", "owner": {"pid": 77}}),
+            body: json!({"session": "01a1", "owner": {"pid": 77}}).into(),
             ..hosted(None)
         };
         assert_eq!(
@@ -837,7 +842,8 @@ mod tests {
             body: json!({
                 "session": "01a1", "addresses": ["4UHC5Q"], "state": "idle",
                 "owner": {"pid": 4242}, "hosted": hosted, "at": "2026-11-09T19:00:00Z",
-            }),
+            })
+            .into(),
             elsewhere: None,
             lives: true,
             unreachable_since: None,

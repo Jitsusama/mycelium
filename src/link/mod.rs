@@ -56,6 +56,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -440,6 +441,11 @@ async fn hello(
     }
 }
 
+/// A living session's presence, the leases it holds and the id its holder
+/// keeps it by, as last sent: the presence shared with the store's reading
+/// of it, so one unchanged is compared by pointer and never copied.
+type Sent = (Arc<Value>, Vec<Value>, Option<String>);
+
 /// This end of a link, and what it knows of the other.
 struct End<S> {
     store: S,
@@ -473,7 +479,7 @@ struct End<S> {
     reach: i64,
     has: HashSet<String>,
     /// Each living session's presence and leases, as last sent.
-    sent: BTreeMap<String, (Value, Vec<Value>, Option<String>)>,
+    sent: BTreeMap<String, Sent>,
     /// The realm's folder of held sessions on this machine, if this end
     /// says which hold its sessions.
     held: Option<PathBuf>,
@@ -928,7 +934,7 @@ impl<S: Store> End<S> {
                     writing,
                     &Frame::Presence {
                         session: session.clone(),
-                        body: said.0.clone(),
+                        body: (*said.0).clone(),
                         leases: Some(said.1.clone()),
                         held: said.2.clone(),
                     },
@@ -942,7 +948,7 @@ impl<S: Store> End<S> {
 
     /// This machine's living sessions, as their presences say, with the id
     /// a holder here keeps each by, if one does.
-    fn living(&self) -> BTreeMap<String, (Value, Option<String>)> {
+    fn living(&self) -> BTreeMap<String, (Arc<Value>, Option<String>)> {
         let held = self.held.as_deref().map(hold::held).unwrap_or_default();
         self.store
             .presences()

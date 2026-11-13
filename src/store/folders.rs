@@ -22,7 +22,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use notify::event::ModifyKind;
@@ -107,7 +107,7 @@ struct Kept {
     inode: u64,
     len: u64,
     modified: Option<SystemTime>,
-    body: Option<Value>,
+    body: Option<Arc<Value>>,
 }
 
 impl Folders {
@@ -140,8 +140,9 @@ impl Folders {
     }
 
     /// Each presence in the folder, read again only where its file changed
-    /// since it was last read, and none kept of one gone.
-    fn presence_bodies(&self) -> Vec<Value> {
+    /// since it was last read, and none kept of one gone; each shared, not
+    /// copied, with what reads it.
+    fn presence_bodies(&self) -> Vec<Arc<Value>> {
         use std::os::unix::fs::MetadataExt;
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         let mut seen = BTreeMap::new();
@@ -158,7 +159,7 @@ impl Folders {
                 inode: meta.ino(),
                 len: meta.len(),
                 modified: meta.modified().ok(),
-                body: read::<Value>(&path),
+                body: read::<Value>(&path).map(Arc::new),
             });
             seen.insert(path, one);
         }
@@ -296,10 +297,10 @@ impl Store for Folders {
     fn presences(&self) -> Vec<Presence> {
         let boot = boot_id();
         let ended = self.ended_processes().clone();
-        let read: Vec<(Facts, Value)> = self
+        let read: Vec<(Facts, Arc<Value>)> = self
             .presence_bodies()
             .into_iter()
-            .filter_map(|body| Some((Facts::deserialize(&body).ok()?, body)))
+            .filter_map(|body| Some((Facts::deserialize(&*body).ok()?, body)))
             .collect();
         let owners = read
             .iter()
@@ -770,15 +771,20 @@ fn is_record(path: &Path) -> bool {
             .is_some_and(|extension| extension == "json")
 }
 
-/// This boot's id, where the system has one (Linux).
+/// This boot's id, where the system has one (Linux): read once, since it
+/// can't change under a process, and each pass over the sessions asks it.
 #[must_use]
 pub fn boot_id() -> Option<String> {
-    Some(
-        fs::read_to_string("/proc/sys/kernel/random/boot_id")
-            .ok()?
-            .trim()
-            .to_owned(),
-    )
+    static BOOT: OnceLock<Option<String>> = OnceLock::new();
+    BOOT.get_or_init(|| {
+        Some(
+            fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .ok()?
+                .trim()
+                .to_owned(),
+        )
+    })
+    .clone()
 }
 
 /// What the system says of a process (Linux).
@@ -856,6 +862,16 @@ mod tests {
         write("s-one.json", &json!({"session": "s-one", "title": "one"}));
         write("s-two.json", &json!({"session": "s-two", "title": "two"}));
         assert_eq!(titles(&folders), ["one", "two"], "each read");
+        // Each pass over the sessions reads them all, so one unchanged is
+        // the same reading shared, never copied again.
+        let (first, again) = (folders.presence_bodies(), folders.presence_bodies());
+        assert!(
+            first
+                .iter()
+                .zip(&again)
+                .all(|(one, two)| Arc::ptr_eq(one, two)),
+            "an unchanged presence is shared, not copied"
+        );
         // Written whole again, as a session rewrites its own.
         write(
             "s-one.json",
@@ -1168,7 +1184,7 @@ mod tests {
         );
         assert_eq!(held[1].elsewhere.as_deref(), Some("equilibrius"));
         assert_eq!(
-            held[1].body,
+            *held[1].body,
             json!({"session": "there", "title": "π - walgit", "machine": "equilibrius"})
         );
 

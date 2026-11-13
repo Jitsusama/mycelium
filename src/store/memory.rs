@@ -57,7 +57,7 @@ impl Memory {
             session.to_owned(),
             Presence {
                 session: session.to_owned(),
-                body,
+                body: Arc::new(body),
                 elsewhere: None,
                 lives,
                 unreachable_since: None,
@@ -257,7 +257,7 @@ impl Store for Memory {
             session.to_owned(),
             Presence {
                 session: session.to_owned(),
-                body: body.clone(),
+                body: Arc::new(body.clone()),
                 elsewhere: Some(machine.to_owned()),
                 lives: true,
                 unreachable_since: None,
