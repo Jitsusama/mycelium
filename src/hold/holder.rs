@@ -311,6 +311,7 @@ pub async fn hold(
     let shown = Arc::new(Shown {
         modes: Mutex::new(Modes::default()),
         output,
+        over: watch::Sender::new(false),
     });
     let mut reader = tokio::spawn(read_output(reading, shown.clone(), starts));
     let mut joined = JoinSet::new();
@@ -364,6 +365,11 @@ pub async fn hold(
     if tokio::time::timeout(LAST_WORDS, &mut reader).await.is_err() {
         reader.abort();
     }
+    // Each window holds what is shown as long as it's joined, so it is
+    // told the program is over rather than left to find out, which it
+    // never would: a holder told to end would wait out its windows'
+    // patience below, half a second of a shutdown's five, for nothing.
+    shown.ends();
     drop(shown);
     let _ = tokio::time::timeout(LAST_WORDS, async {
         while joined.join_next().await.is_some() {}
@@ -538,9 +544,17 @@ impl Terminal {
 struct Shown {
     modes: Mutex<Modes>,
     output: broadcast::Sender<Arc<[u8]>>,
+    /// Whether the program has shown all it will, its last output read.
+    over: watch::Sender<bool>,
 }
 
 impl Shown {
+    /// Says the program has shown all it will, so each joined window is
+    /// given what's left of it and let go.
+    fn ends(&self) {
+        self.over.send_replace(true);
+    }
+
     /// Passes `bytes` to every joined terminal, reading them for modes.
     fn show(&self, bytes: &[u8]) {
         let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
@@ -607,8 +621,19 @@ async fn serve(
         if writing.write_all(&modes).await.is_err() {
             return;
         }
+        let mut over = shown.over.subscribe();
         loop {
-            match output.recv().await {
+            let received = tokio::select! {
+                // What was shown before the program was over goes first.
+                biased;
+                received = output.recv() => Some(received),
+                _ = over.wait_for(|over| *over) => None,
+            };
+            let Some(received) = received else {
+                showing_the_rest(&mut output, &mut writing).await;
+                return;
+            };
+            match received {
                 Ok(bytes) => {
                     if writing.write_all(&bytes).await.is_err() {
                         return;
@@ -639,6 +664,26 @@ async fn serve(
     tokio::select! {
         () = typing => {}
         () = showing => {}
+    }
+}
+
+/// Gives a window what was shown and it hasn't had yet, the program over,
+/// so its last words reach it before it's let go. A window that fell
+/// behind as the program ended is given what's left after what it missed.
+async fn showing_the_rest(
+    output: &mut broadcast::Receiver<Arc<[u8]>>,
+    writing: &mut (impl AsyncWriteExt + Unpin),
+) {
+    loop {
+        match output.try_recv() {
+            Ok(bytes) => {
+                if writing.write_all(&bytes).await.is_err() {
+                    return;
+                }
+            }
+            Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+            Err(_) => return,
+        }
     }
 }
 
