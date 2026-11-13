@@ -102,10 +102,6 @@ fn short(title: &str, shared: &dyn Fn(&str) -> bool) -> Option<String> {
 /// theirs alone.
 #[must_use]
 pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
-    const STUB: bool = true;
-    if STUB {
-        return BTreeMap::new();
-    }
     let held: Vec<(&str, BTreeSet<String>)> = teams
         .iter()
         .map(|team| {
