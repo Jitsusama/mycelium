@@ -297,7 +297,7 @@ impl Store for Folders {
     fn presences(&self) -> Vec<Presence> {
         let boot = boot_id();
         let ended = self.ended_processes().clone();
-        let read: Vec<(Facts, Value)> = self
+        let read: Vec<(Facts, Arc<Value>)> = self
             .presence_bodies()
             .into_iter()
             .filter_map(|body| Some((Facts::deserialize(&*body).ok()?, body)))
