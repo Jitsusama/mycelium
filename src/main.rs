@@ -1195,8 +1195,8 @@ mod tests {
         }
     }
 
-    fn show(team: &str) -> Result<SwarmAsked, String> {
-        Ok(SwarmAsked::Show(Some(team.to_owned())))
+    fn show(team: &str) -> SwarmAsked {
+        SwarmAsked::Show(Some(team.to_owned()))
     }
 
     // Joel typed `mycelium --realm work swarm team quick` first, and was
@@ -1206,7 +1206,7 @@ mod tests {
         Command::command().debug_assert();
         assert_eq!(
             swarm(&["team", "quick"]),
-            (show("quick"), false),
+            (Ok(show("quick")), false),
             "his line"
         );
         assert_eq!(
@@ -1216,12 +1216,12 @@ mod tests {
         );
         assert_eq!(
             swarm(&["part", "deux"]),
-            (show("part deux"), false),
+            (Ok(show("part deux")), false),
             "two words, one team"
         );
         assert_eq!(
             swarm(&["quick", "wins", "--json"]),
-            (show("quick wins"), true),
+            (Ok(show("quick wins")), true),
             "and asked for as JSON"
         );
         assert!(
