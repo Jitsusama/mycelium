@@ -554,7 +554,8 @@ impl Drop for Served {
 /// Keeps `kind`'s records read from `source` in `held`, telling `tell`
 /// each time they change: read once its folder is watched, then again
 /// after each change there, and watched again once the folder is made
-/// anew or after [`AGAIN_AFTER`] while it can't be.
+/// anew, or once one not there is made, or after [`AGAIN_AFTER`] while it
+/// can't be.
 async fn keep(
     kind: String,
     source: Source,
@@ -585,7 +586,7 @@ async fn keep(
                     records: BTreeMap::new(),
                     refused,
                 });
-                tokio::time::sleep(AGAIN_AFTER).await;
+                made_or_after(source.watched(), AGAIN_AFTER).await;
                 continue;
             }
         };
@@ -600,6 +601,36 @@ async fn keep(
         }
         drop(watcher);
     }
+}
+
+/// Waits until `folder` may have been made, as something changing in the
+/// nearest folder above it that is there says, or until `after` passes:
+/// a folder made after the node started, as the steer inboxes are at
+/// pi's first steer, is watched as soon as it's there rather than up to
+/// `after` later. One that is there but can't be watched waits `after`.
+async fn made_or_after(folder: &Path, after: Duration) {
+    let above = folder.ancestors().skip(1).find(|one| one.is_dir());
+    let (tell, mut told) = mpsc::unbounded_channel();
+    let watcher = above.filter(|_| !folder.exists()).and_then(|above| {
+        let mut watcher = crate::watching::watcher(move |_: notify::Result<notify::Event>| {
+            // Nothing hears this once the wait is over.
+            let _ = tell.send(());
+        })
+        .ok()?;
+        watcher
+            .watch(above, notify::RecursiveMode::NonRecursive)
+            .ok()?;
+        Some(watcher)
+    });
+    let Some(watcher) = watcher else {
+        tokio::time::sleep(after).await;
+        return;
+    };
+    // Made while the watch above was being set up, it's there to watch.
+    if !folder.exists() {
+        let _ = tokio::time::timeout(after, told.recv()).await;
+    }
+    drop(watcher);
 }
 
 /// `read`, keeping each record `held` had that differs from its new read
@@ -949,6 +980,30 @@ mod tests {
             "talk",
             |r| stages(r) == Some(2),
             "each line it writes is heard",
+        )
+        .await;
+    }
+
+    // A node started before pi wrote its first steer served no talks for
+    // up to a minute after, longer than the shell waited (Y2YBTS,
+    // 2026-11-13).
+    #[tokio::test]
+    async fn a_talk_is_heard_once_its_inboxes_are_made_after_the_node_started() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let inboxes = dir.path().join("pi/steer");
+        let served = Served::start(BTreeMap::from([("talk".to_owned(), talks(&inboxes))]));
+        let mut told = served.told("talk").expect("talk is served");
+        tokio::time::timeout(PATIENCE, told.changed())
+            .await
+            .expect("its first look is kept")
+            .expect("still served");
+        talk(&inboxes, "VOID", "talk-1", "{\"stage\":\"replied\"}\n");
+        until(
+            &served,
+            &mut told,
+            "talk",
+            |records| records.contains_key("talk:VOID/talk-1"),
+            "a talk in inboxes made since the node started is heard",
         )
         .await;
     }
