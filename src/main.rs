@@ -436,7 +436,7 @@ fn swarm_asked(words: &[String]) -> Result<SwarmAsked, String> {
     match (words[at].to_lowercase().as_str(), rest) {
         ("say", []) => Err(format!("say what to {name}?")),
         // A first word `now` sends the rest into the turn under way.
-        ("say", [first, said @ ..]) if first.eq_ignore_ascii_case("now") => {
+        ("say", [first, said @ ..]) if first.eq_ignore_ascii_case("now-red") => {
             if said.is_empty() {
                 Err(format!("say what to {name} now?"))
             } else {
