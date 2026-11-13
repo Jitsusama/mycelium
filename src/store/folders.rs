@@ -866,7 +866,10 @@ mod tests {
         // the same reading shared, never copied again.
         let (first, again) = (folders.presence_bodies(), folders.presence_bodies());
         assert!(
-            first.iter().zip(&again).all(|(one, two)| Arc::ptr_eq(one, two)),
+            first
+                .iter()
+                .zip(&again)
+                .all(|(one, two)| Arc::ptr_eq(one, two)),
             "an unchanged presence is shared, not copied"
         );
         // Written whole again, as a session rewrites its own.

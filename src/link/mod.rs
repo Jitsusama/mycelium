@@ -441,6 +441,11 @@ async fn hello(
     }
 }
 
+/// A living session's presence, the leases it holds and the id its holder
+/// keeps it by, as last sent: the presence shared with the store's reading
+/// of it, so one unchanged is compared by pointer and never copied.
+type Sent = (Arc<Value>, Vec<Value>, Option<String>);
+
 /// This end of a link, and what it knows of the other.
 struct End<S> {
     store: S,
@@ -474,7 +479,7 @@ struct End<S> {
     reach: i64,
     has: HashSet<String>,
     /// Each living session's presence and leases, as last sent.
-    sent: BTreeMap<String, (Arc<Value>, Vec<Value>, Option<String>)>,
+    sent: BTreeMap<String, Sent>,
     /// The realm's folder of held sessions on this machine, if this end
     /// says which hold its sessions.
     held: Option<PathBuf>,
