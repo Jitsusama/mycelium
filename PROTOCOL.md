@@ -903,10 +903,10 @@ it while it ran. `mycelium again <id> -- <command>` writes that file
 whole and wakes the program if it is parked. A program a node started
 runs through the login shell at every start, not only its first, since
 its holder has only the node's environment, where a bare `pi` isn't
-found; the record says the program, not the shell. One that can't start again stays parked and
-says why on its terminal, and the next wake tries again, with any
-command named since. A parked program is no work: it keeps no machine
-awake and holds up no handover.
+found; the record says the program, not the shell. One that can't
+start again stays parked and says why on its terminal, and the next
+wake tries again, with any command named since. A parked program is no
+work: it keeps no machine awake and holds up no handover.
 
 A joined terminal sends frames of a tag byte, a two-byte big-endian
 length and what it carries: tag 0 is bytes typed, and tag 1 is its size,
