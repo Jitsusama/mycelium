@@ -77,11 +77,13 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
             .filter(|session| Standing::of(session).is_some())
     };
     let shorts = short_names(&swarm.teams);
+    // A short name's words may be typed apart, as `part deux`.
+    let joined = asked.split_whitespace().collect::<Vec<_>>().join("-");
     if let Some(team) = swarm.teams.iter().find(|team| {
         address(team).eq_ignore_ascii_case(asked)
             || shorts
                 .get(address(team))
-                .is_some_and(|short| short.eq_ignore_ascii_case(asked))
+                .is_some_and(|short| short.eq_ignore_ascii_case(&joined))
     }) {
         return Ok(Named::Team(team));
     }

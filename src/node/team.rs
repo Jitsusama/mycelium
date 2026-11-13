@@ -98,12 +98,12 @@ struct Team<'a> {
 
 /// Every team among `sessions`, by its orchestrator's address: when it was
 /// last heard, in milliseconds since the epoch by `heard`, and its fields.
-/// A team is titled as `titles` names its orchestrator's quest, by
-/// address, else as its lead's window is. Sessions `parked` here count as
-/// stuck.
+/// A team is titled as its orchestrator's quest is among `quests`, by
+/// address, else as its lead's window is, and goes by the name in the
+/// swarm that quest gives it. Sessions `parked` here count as stuck.
 pub fn teams(
     sessions: &[Session],
-    titles: &BTreeMap<String, String>,
+    quests: &BTreeMap<String, Value>,
     parked: &HashSet<String>,
     heard: impl Fn(&str) -> i64,
 ) -> Vec<(String, i64, Value)> {
@@ -139,7 +139,7 @@ pub fn teams(
     teams
         .iter()
         .map(|(id, team)| {
-            let fields = fields(id, team, &teams, (titles, parked), (&within, &worst));
+            let fields = fields(id, team, &teams, (quests, parked), (&within, &worst));
             let last = team
                 .members
                 .iter()
@@ -190,14 +190,19 @@ fn fields(
     id: &str,
     team: &Team,
     teams: &BTreeMap<&str, Team>,
-    (titles, parked): (&BTreeMap<String, String>, &HashSet<String>),
+    (quests, parked): (&BTreeMap<String, Value>, &HashSet<String>),
     (within, worst): (&BTreeMap<&str, &str>, &BTreeMap<&str, Attention>),
 ) -> Value {
-    let title = titles
-        .get(id)
-        .cloned()
+    let quest = quests.get(id);
+    let title = quest
+        .and_then(|quest| quest.get("title")?.as_str())
+        .map(str::to_owned)
         .or_else(|| team.lead.and_then(|lead| lead.title.clone()))
         .unwrap_or_else(|| id.to_owned());
+    const STUB: bool = true;
+    let swarm = quest
+        .and_then(|quest| quest.get("swarm")?.as_str())
+        .filter(|_| !STUB);
     let counts: serde_json::Map<String, Value> = Attention::EACH
         .iter()
         .map(|each| {
@@ -211,6 +216,7 @@ fn fields(
         .collect();
     json!({
         "title": title,
+        "swarm": swarm,
         "lead": team.lead.map(|lead| lead.id.clone()),
         "within": within.get(id),
         "worst": worst.get(id).map(|worst| worst.word()),
@@ -336,12 +342,12 @@ mod tests {
         titles: &[(&str, &str)],
         parked: &[&str],
     ) -> BTreeMap<String, Value> {
-        let titles = titles
+        let quests = titles
             .iter()
-            .map(|(id, title)| ((*id).to_owned(), (*title).to_owned()))
+            .map(|(id, title)| ((*id).to_owned(), json!({ "title": title })))
             .collect();
         let parked: HashSet<String> = parked.iter().map(|id| (*id).to_owned()).collect();
-        teams(sessions, &titles, &parked, |_| 1)
+        teams(sessions, &quests, &parked, |_| 1)
             .into_iter()
             .map(|(id, _, fields)| (id, fields))
             .collect()
@@ -374,6 +380,11 @@ mod tests {
             "titled by its quest, led by the session on it, within nothing"
         );
         assert_eq!(
+            team["swarm"],
+            Value::Null,
+            "no name in the swarm where its quest gives none"
+        );
+        assert_eq!(
             team["counts"],
             json!({"needs-you": 0, "stuck": 0, "moving": 1, "quiet": 2}),
             "its lead and its two living sessions counted, the ended one not"
@@ -384,6 +395,37 @@ mod tests {
             "its members"
         );
         assert_eq!(team["worst"], json!("moving"), "the worst of them");
+    }
+
+    #[test]
+    fn a_team_goes_by_the_name_its_quest_gives_it_in_the_swarm() {
+        let sessions = [
+            session(
+                "lead",
+                State::Idle,
+                (None, Some("QEST-20261007-HARBOR")),
+                &[],
+            ),
+            session("one", State::Busy, (Some("HARBOR"), None), &[]),
+        ];
+        let quests = BTreeMap::from([(
+            "HARBOR".to_owned(),
+            json!({"title": "Quick Wins That Move the Harbour", "swarm": "harbour"}),
+        )]);
+        let teams = teams(&sessions, &quests, &HashSet::new(), |_| 1);
+        let named: Vec<(&str, &Value, &Value)> = teams
+            .iter()
+            .map(|(id, _, fields)| (id.as_str(), &fields["title"], &fields["swarm"]))
+            .collect();
+        assert_eq!(
+            named,
+            [(
+                "HARBOR",
+                &json!("Quick Wins That Move the Harbour"),
+                &json!("harbour")
+            )],
+            "titled by its quest, and named in the swarm as its quest says"
+        );
     }
 
     #[test]

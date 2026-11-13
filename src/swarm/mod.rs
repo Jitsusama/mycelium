@@ -462,11 +462,13 @@ fn nest<'a>(
 /// typed, so one can be picked.
 fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
     let shorts = short_names(&swarm.teams);
+    // A short name's words may be typed apart, as `part deux`.
+    let joined = asked.split_whitespace().collect::<Vec<_>>().join("-");
     if let Some(team) = swarm.teams.iter().find(|team| {
         address(team).eq_ignore_ascii_case(asked)
             || shorts
                 .get(address(team))
-                .is_some_and(|short| short.eq_ignore_ascii_case(asked))
+                .is_some_and(|short| short.eq_ignore_ascii_case(&joined))
     }) {
         return Ok(team);
     }
@@ -911,7 +913,7 @@ mod tests {
         );
     }
 
-    /// Teams titled as people title them: two sharing Aquifer, one a
+    /// Teams titled as people title them: two sharing Harbour, one a
     /// single word.
     fn titled_swarm() -> Swarm {
         let counted = |worst: &str, moving: u64, quiet: u64| {
@@ -923,13 +925,13 @@ mod tests {
             teams: vec![
                 team_of(
                     "DEPLOY",
-                    "Deploy v3: How Aquifer Ships",
+                    "Deploy v3: How Harbour Ships",
                     None,
                     &counted("quiet", 0, 1),
                 ),
                 team_of(
-                    "AQUIFR",
-                    "Aquifer Part Deux: Closures on MicroVMs",
+                    "HARBR2",
+                    "Harbour Part Deux: Closures on MicroVMs",
                     None,
                     &counted("moving", 2, 0),
                 ),
@@ -946,9 +948,9 @@ mod tests {
             "work · 0 running",
             "",
             "                                          need you  stuck  moving  quiet",
-            "part-deux  Aquifer Part Deux: Closures…                         2",
+            "part-deux  Harbour Part Deux: Closures…                         2",
             "Reef                                                            1",
-            "deploy     Deploy v3: How Aquifer Ships                                1",
+            "deploy     Deploy v3: How Harbour Ships                                1",
             "",
             "see a team by any part of its name: mycelium --realm work swarm part-deux",
         ];
@@ -969,13 +971,18 @@ mod tests {
         let swarm = titled_swarm();
         let found = team(&swarm, "Part-Deux", &look()).expect("found by its short name");
         assert!(
-            found.starts_with("Aquifer Part Deux"),
+            found.starts_with("Harbour Part Deux"),
             "the team it names: {found}"
         );
         assert_eq!(
-            team(&swarm, "aquifer", &look()),
-            Err("aquifer could be deploy or part-deux".to_owned()),
+            team(&swarm, "harbour", &look()),
+            Err("harbour could be deploy or part-deux".to_owned()),
             "each it could be, as it's typed"
+        );
+        let words = team(&swarm, "part deux", &look()).expect("found by its words");
+        assert!(
+            words.starts_with("Harbour Part Deux"),
+            "a short name's words, spaced as typed, find it too: {words}"
         );
     }
 

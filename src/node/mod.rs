@@ -929,23 +929,22 @@ impl<S: Store> Shared<S> {
         }
     }
 
-    /// The swarm's teams as the daemon interface holds them, titled by the
-    /// quests it serves, where it serves them.
+    /// The swarm's teams as the daemon interface holds them, titled and
+    /// named by the quests it serves, where it serves them.
     fn team_records(&self) -> BTreeMap<String, serde_json::Value> {
-        let titles: BTreeMap<String, String> = self
+        let quests: BTreeMap<String, serde_json::Value> = self
             .served
             .records("quest")
             .unwrap_or_default()
             .into_values()
             .filter_map(|quest| {
                 let address = quest.get("address")?.as_str()?.to_owned();
-                let title = quest.get("title")?.as_str()?.to_owned();
-                Some((address, title))
+                Some((address, quest))
             })
             .collect();
         let parked = standing::parked(&self.parked);
         let sessions = self.lock().state.sessions();
-        team::teams(&sessions, &titles, &parked, millis_at)
+        team::teams(&sessions, &quests, &parked, millis_at)
             .into_iter()
             .map(|(id, heard, fields)| {
                 let record = daemon::record(team::KIND, &id, heard, fields);

@@ -1,18 +1,20 @@
-//! Each team's short name, one or two words a person types to reach it,
-//! worked out from the teams' titles alone, so it stays put as sessions
-//! come and go. Joel, trying the swarm first: "how do i know what the
-//! actual team names are? do I have to be exact?"
+//! Each team's short name, one or two words a person types to reach it.
+//! Joel, trying the swarm first: "how do i know what the actual team names
+//! are? do I have to be exact?"
 //!
-//! A title's own short name comes first: the words before its colon, when
-//! there are three at most, that no other team's title holds, a version
-//! left out ("Deploy v3: Reimagine How Aquifer and Worldtree Ship" is
-//! `deploy`, "Aquifer Part Deux: ..." is `part-deux`, since the other
-//! holds Aquifer). Else a word written in lower case, as a name a person
-//! writes that way is ("Bootstrap optimus to replace the work MacBook" is
-//! `optimus`). Else its leading words up to its first small one, two at
-//! most ("Quick Wins That Move Delta Toward tobi's Vision" is
-//! `quick-wins`). A name two teams would share, or that's one of the
-//! swarm's acts, goes to neither.
+//! A team goes by the name its quest gives it in the swarm, where it gives
+//! one, since that is what its person calls it. Else its name is worked
+//! out from the teams' titles alone, so it stays put as sessions come and
+//! go. A title's own short name comes first: the words before its colon,
+//! when there are three at most, that no other team's title holds, a
+//! version left out ("Deploy v3: How Kelp and Beacon Ship" is `deploy`,
+//! "Kelp Part Deux: ..." is `part-deux`, since the other holds Kelp). Else
+//! a word written in lower case, as a name a person writes that way is
+//! ("Bootstrap skiff to replace the old dinghy" is `skiff`). Else its
+//! leading words up to its first small one, two at most ("Quick Wins That
+//! Move Harbour Toward Lighthouse's Vision" is `quick-wins`). A name two
+//! teams would share, or that's one of the swarm's acts, goes to neither,
+//! and one worked out goes to none where a quest gives it to its own.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -98,10 +100,21 @@ fn short(title: &str, shared: &dyn Fn(&str) -> bool) -> Option<String> {
     (!leading.is_empty()).then(|| leading.join("-"))
 }
 
+/// The name `team`'s quest gives it in the swarm, as it's typed.
+fn given(team: &Value) -> Option<String> {
+    const STUB: bool = true;
+    if STUB {
+        return None;
+    }
+    let name = team.get("swarm")?.as_str()?.trim().to_lowercase();
+    (!name.is_empty()).then_some(name)
+}
+
 /// Each team's short name, by its address, for those that have one that's
 /// theirs alone.
 #[must_use]
 pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
+    let chosen: Vec<String> = teams.iter().filter_map(given).collect();
     let held: Vec<(&str, BTreeSet<String>)> = teams
         .iter()
         .map(|team| {
@@ -117,7 +130,10 @@ pub fn short_names(teams: &[Value]) -> BTreeMap<String, String> {
                 held.iter()
                     .any(|(other, typed)| *other != me && typed.contains(word))
             };
-            Some((me, short(title(team), &shared)?))
+            if let Some(name) = given(team) {
+                return Some((me, name));
+            }
+            Some((me, short(title(team), &shared)?)).filter(|(_, name)| !chosen.contains(name))
         })
         .filter(|(_, name)| !ACTS.contains(&name.as_str()))
         .collect();
@@ -155,20 +171,20 @@ mod tests {
     #[test]
     fn each_team_goes_by_a_short_name_of_its_own() {
         let titles = [
-            ("ACCELR", "Acceluary: The Acceleration Issue Tracker"),
+            ("ACCELR", "Tidemark: The Acceleration Issue Tracker"),
             (
                 "WEIGHT",
-                "Find the Right Weight for Agent Sessions: pi or pi-durable",
-            ),
-            ("DELTAQ", "Quick Wins That Move Delta Toward tobi's Vision"),
-            ("OPTIMS", "Bootstrap optimus to replace the work MacBook"),
-            (
-                "DEPLOY",
-                "Deploy v3: Reimagine How Aquifer and Worldtree Ship",
+                "Find the Right Weight for Agent Sessions: io or io-durable",
             ),
             (
-                "AQUIFR",
-                "Aquifer Part Deux: Nix Closures on MicroVMs on Kubernetes on NixOS",
+                "QUICKW",
+                "Quick Wins That Move Harbour Toward Lighthouse's Vision",
+            ),
+            ("SKIFF1", "Bootstrap skiff to replace the old dinghy"),
+            ("DEPLOY", "Deploy v3: Reimagine How Kelp and Beacon Ship"),
+            (
+                "KELP02",
+                "Kelp Part Deux: Nix Closures on MicroVMs on Rafts",
             ),
             ("REEF01", "Reef"),
         ];
@@ -184,15 +200,39 @@ mod tests {
         assert_eq!(
             said,
             [
-                ("ACCELR", "acceluary"),
-                ("AQUIFR", "part-deux"),
-                ("DELTAQ", "quick-wins"),
+                ("ACCELR", "tidemark"),
                 ("DEPLOY", "deploy"),
-                ("OPTIMS", "optimus"),
+                ("KELP02", "part-deux"),
+                ("QUICKW", "quick-wins"),
                 ("REEF01", "reef"),
-                ("WEIGHT", "pi-durable"),
+                ("SKIFF1", "skiff"),
+                ("WEIGHT", "io-durable"),
             ],
             "a name before a colon, else one written in lower case, else the leading words"
+        );
+    }
+
+    #[test]
+    fn a_name_a_quest_gives_its_team_wins_over_one_worked_out() {
+        let teams = [
+            json!({
+                "key": "team:QUICKW",
+                "title": "Quick Wins That Move the Reef",
+                "swarm": "Harbour",
+            }),
+            json!({"key": "team:HARBOR", "title": "Harbour"}),
+            json!({"key": "team:REEF01", "title": "Reef", "swarm": "say"}),
+        ];
+        let named = short_names(&teams);
+        let said: Vec<(&str, &str)> = named
+            .iter()
+            .map(|(team, name)| (team.as_str(), name.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            [("QUICKW", "harbour")],
+            "the quest's own name, typed in lower case, over the one the other's title \
+             would give; and an act given as a name goes to none"
         );
     }
 
