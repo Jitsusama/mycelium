@@ -4,7 +4,8 @@
 //! their own record: the node's configuration names each kind's file or
 //! folder, the field holding its records and the field keying each, or a
 //! file to hold whole as one record, and the node passes every record's
-//! fields on as they are.
+//! fields on as they are. A file of JSON lines held whole is one record
+//! of its lines, as a talk is.
 //!
 //! The talks in the steer inboxes are the one shape the node knows, as it
 //! carries them itself (`steer`): each `<ADDRESS>/replies/<id>.jsonl` is
@@ -308,13 +309,8 @@ fn read_talks(kind: &str, inboxes: &Path) -> Read {
             let Ok(text) = fs::read_to_string(&path) else {
                 continue;
             };
-            let whole = text.rfind('\n').map_or("", |end| &text[..end]);
-            let lines: Vec<Value> = whole
-                .lines()
-                .filter_map(|line| serde_json::from_str(line).ok())
-                .collect();
             let talk = format!("{address_name}/{id}");
-            let fields = json!({"address": address_name, "id": id, "lines": lines});
+            let fields = json!({"address": address_name, "id": id, "lines": lines_of(&text)});
             read.records.insert(
                 daemon::key(kind, &talk),
                 daemon::record(kind, &talk, heard, fields),
@@ -322,6 +318,23 @@ fn read_talks(kind: &str, inboxes: &Path) -> Read {
         }
     }
     read
+}
+
+/// Each whole line of JSON in `text`, in the order written: a line still
+/// being written is left for the next read, and one that isn't JSON is
+/// passed over.
+fn lines_of(text: &str) -> Vec<Value> {
+    let whole = text.rfind('\n').map_or("", |end| &text[..end]);
+    whole
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+/// Whether `file` is one of JSON lines, by its name, as a talk's is.
+fn is_lines_file(file: &Path) -> bool {
+    file.extension()
+        .is_some_and(|extension| extension == "jsonl")
 }
 
 /// When `path` was last written, in milliseconds since the epoch, or 0
@@ -389,6 +402,16 @@ fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String
         Err(error) => return Err(named(error.to_string())),
     };
     let heard = written(file);
+    // A file of JSON lines, as a program appending what happens keeps
+    // one, is held whole as one record of its lines, as a talk is.
+    if source.whole.is_some() && is_lines_file(file) {
+        let text = String::from_utf8_lossy(&bytes);
+        let records = source
+            .whole
+            .iter()
+            .map(|id| (id.clone(), json!({"lines": lines_of(&text)})));
+        return Ok(serve(kind, heard, records));
+    }
     let kept: Value =
         serde_json::from_slice(&bytes).map_err(|error| named(format!("not JSON: {error}")))?;
     let front = match &source.by {
@@ -830,6 +853,38 @@ mod tests {
                 json!({"key": "queue:optimus", "kind": "queue", "heartbeat": 7, "jobs": []})
             )]),
             "a file held whole is one record of all its fields"
+        );
+    }
+
+    #[test]
+    fn a_file_of_json_lines_held_whole_is_one_record_of_its_lines_in_order() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let answers = dir.path().join("answers.jsonl");
+        fs::write(
+            &answers,
+            "{\"msg\":\"b2\",\"event\":\"routed\"}\nnot JSON\n\
+             {\"msg\":\"a1\",\"event\":\"answered\"}\n{\"msg\":",
+        )
+        .expect("the answers are written");
+        let source = Source {
+            file: Some(answers),
+            records: None,
+            whole: Some("optimus".to_owned()),
+            key: None,
+            ..quests(dir.path())
+        };
+        let read = read("void-answers", &source);
+        assert_eq!(read.refused, None, "it reads");
+        assert_eq!(
+            unheard(&read.records),
+            BTreeMap::from([(
+                "void-answers:optimus".to_owned(),
+                json!({"key": "void-answers:optimus", "kind": "void-answers", "lines": [
+                    {"msg": "b2", "event": "routed"}, {"msg": "a1", "event": "answered"}
+                ]})
+            )]),
+            "its whole lines in the order written, one not JSON passed over, one being \
+             written left for later"
         );
     }
 
