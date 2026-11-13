@@ -953,6 +953,30 @@ mod tests {
         .await;
     }
 
+    // A node started before pi wrote its first steer served no talks for
+    // up to a minute after, longer than the shell waited (Y2YBTS,
+    // 2026-11-13).
+    #[tokio::test]
+    async fn a_talk_is_heard_once_its_inboxes_are_made_after_the_node_started() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let inboxes = dir.path().join("pi/steer");
+        let served = Served::start(BTreeMap::from([("talk".to_owned(), talks(&inboxes))]));
+        let mut told = served.told("talk").expect("talk is served");
+        tokio::time::timeout(PATIENCE, told.changed())
+            .await
+            .expect("its first look is kept")
+            .expect("still served");
+        talk(&inboxes, "VOID", "talk-1", "{\"stage\":\"replied\"}\n");
+        until(
+            &served,
+            &mut told,
+            "talk",
+            |records| records.contains_key("talk:VOID/talk-1"),
+            "a talk in inboxes made since the node started is heard",
+        )
+        .await;
+    }
+
     #[test]
     fn a_configuration_serves_talks_that_name_nothing_else() {
         let dir = tempfile::tempdir().expect("a temporary folder");
