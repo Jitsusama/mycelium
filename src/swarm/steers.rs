@@ -191,7 +191,7 @@ fn aimed(session: &Value, steer: &Value) -> Aimed {
 pub fn aim(swarm: &Swarm, act: Act, asked: &str) -> Result<Aim, String> {
     let steer = match &act {
         Act::Say { words, now: false } => json!({"text": words, "from": FROM}),
-        Act::Say { words, now: true } => json!({"text": words, "from": FROM, "now": true}),
+        Act::Say { words, now: true } => json!({"text": words, "from": FROM}),
         Act::Pause => json!({"act": "pause", "from": FROM}),
         Act::Resume => json!({"act": "resume", "from": FROM}),
     };
@@ -303,7 +303,7 @@ pub fn told(aim: &Aim, answers: &[Result<String, String>]) -> Result<String, Str
             "{} {}",
             match aim.act {
                 Act::Say { now: false, .. } => "said to",
-                Act::Say { now: true, .. } => "said now to",
+                Act::Say { now: true, .. } => "said to",
                 Act::Pause => "paused",
                 Act::Resume => "resumed",
             },

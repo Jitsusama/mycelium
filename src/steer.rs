@@ -25,8 +25,8 @@ use crate::record::{Session, State};
 
 /// The fields of a steer the harness reads, which are all that is written:
 /// `now` sends words into the turn under way, rather than after it.
-const FIELDS: [&str; 11] = [
-    "text", "act", "to", "at", "from", "id", "want", "look", "value", "other", "now",
+const FIELDS: [&str; 10] = [
+    "text", "act", "to", "at", "from", "id", "want", "look", "value", "other",
 ];
 
 /// What the person may do besides talk, as the harness's `STEER_ACTS`
