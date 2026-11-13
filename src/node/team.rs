@@ -199,10 +199,7 @@ fn fields(
         .map(str::to_owned)
         .or_else(|| team.lead.and_then(|lead| lead.title.clone()))
         .unwrap_or_else(|| id.to_owned());
-    const STUB: bool = true;
-    let swarm = quest
-        .and_then(|quest| quest.get("swarm")?.as_str())
-        .filter(|_| !STUB);
+    let swarm = quest.and_then(|quest| quest.get("swarm")?.as_str());
     let counts: serde_json::Map<String, Value> = Attention::EACH
         .iter()
         .map(|each| {

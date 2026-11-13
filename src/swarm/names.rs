@@ -102,10 +102,6 @@ fn short(title: &str, shared: &dyn Fn(&str) -> bool) -> Option<String> {
 
 /// The name `team`'s quest gives it in the swarm, as it's typed.
 fn given(team: &Value) -> Option<String> {
-    const STUB: bool = true;
-    if STUB {
-        return None;
-    }
     let name = team.get("swarm")?.as_str()?.trim().to_lowercase();
     (!name.is_empty()).then_some(name)
 }

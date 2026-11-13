@@ -408,10 +408,6 @@ const SWARM_ACTS: [&str; 3] = ["say", "pause", "resume"];
 /// is the person saying what follows, not a name. An act first names its
 /// team in the one word after it; the team's words first name it whole.
 fn swarm_asked(words: &[String]) -> Result<SwarmAsked, String> {
-    const STUB: bool = true;
-    if STUB && words.len() > 1 && !SWARM_ACTS.contains(&words[0].as_str()) {
-        return Err(format!("unexpected argument '{}' found", words[1]));
-    }
     let words = match words.split_first() {
         Some((first, rest)) if first.eq_ignore_ascii_case("team") => rest,
         _ => words,
