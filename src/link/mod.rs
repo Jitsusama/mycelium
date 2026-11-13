@@ -56,6 +56,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -473,7 +474,7 @@ struct End<S> {
     reach: i64,
     has: HashSet<String>,
     /// Each living session's presence and leases, as last sent.
-    sent: BTreeMap<String, (Value, Vec<Value>, Option<String>)>,
+    sent: BTreeMap<String, (Arc<Value>, Vec<Value>, Option<String>)>,
     /// The realm's folder of held sessions on this machine, if this end
     /// says which hold its sessions.
     held: Option<PathBuf>,
@@ -928,7 +929,7 @@ impl<S: Store> End<S> {
                     writing,
                     &Frame::Presence {
                         session: session.clone(),
-                        body: said.0.clone(),
+                        body: (*said.0).clone(),
                         leases: Some(said.1.clone()),
                         held: said.2.clone(),
                     },
@@ -942,7 +943,7 @@ impl<S: Store> End<S> {
 
     /// This machine's living sessions, as their presences say, with the id
     /// a holder here keeps each by, if one does.
-    fn living(&self) -> BTreeMap<String, (Value, Option<String>)> {
+    fn living(&self) -> BTreeMap<String, (Arc<Value>, Option<String>)> {
         let held = self.held.as_deref().map(hold::held).unwrap_or_default();
         self.store
             .presences()

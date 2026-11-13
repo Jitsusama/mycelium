@@ -2898,7 +2898,8 @@ mod tests {
                 "at": "2026-11-11T02:00:00Z",
                 "owner": {"pid": 4242},
                 "hosted": {"host": "work-attended", "conversation": "01a1"},
-            }),
+            })
+            .into(),
             elsewhere: None,
             lives: true,
             unreachable_since: None,

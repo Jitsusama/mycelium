@@ -19,6 +19,7 @@ pub mod folders;
 pub mod memory;
 
 use std::io;
+use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -30,8 +31,10 @@ use crate::facts::{Machine, Readiness};
 pub struct Presence {
     /// The session's id.
     pub session: String,
-    /// The presence as its machine wrote it.
-    pub body: Value,
+    /// The presence as its machine wrote it, shared with every other
+    /// reading of it until its file changes, since each pass over the
+    /// sessions reads them all and copying each was most of its cost.
+    pub body: Arc<Value>,
     /// The machine it runs on, when that is another; `None` is this one.
     pub elsewhere: Option<String>,
     /// Whether it still lives: judged from its process on this machine,

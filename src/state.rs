@@ -174,7 +174,7 @@ mod tests {
             host: None,
             conversation: None,
             at: "2026-10-26T20:00:00Z".to_owned(),
-            presence: serde_json::Value::Null,
+            presence: serde_json::Value::Null.into(),
         }
     }
 
