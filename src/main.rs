@@ -976,12 +976,21 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         parked: place::parked(),
         processes: node::Processes::here(),
     };
-    runtime()?.block_on(async {
+    let runtime = runtime()?;
+    let ran = runtime.block_on(async {
         let bound = node::bind(socket)?;
-        // Probing ends with the runtime, when the node does.
+        // Probing ends with the process, when the node does.
         tokio::spawn(mycelium::reach::keep(place::declared(), place::reached()));
         node::run(store, membership, Listed(dials), given, bound, stopped()).await
-    })
+    });
+    // Once the node has stopped, its links ended and their sessions let go,
+    // what its tasks still hold is left for the process's end to free.
+    // Freed piece by piece, it is paged back in from swap first: the work
+    // node, with 93 watchers and 93 MB swapped, took 2 s of the 5 its
+    // service manager allows. A helper still running is ended with the
+    // service.
+    std::mem::forget(runtime);
+    ran
 }
 
 /// Runs this machine's end of a link over this process's own input and

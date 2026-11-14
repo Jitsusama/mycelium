@@ -310,9 +310,18 @@ where
     // A link stopped mid-step can't say its sessions are out of reach, so
     // once every one has stopped and given up its claim, the node says so
     // for them.
+    let stopping = std::time::Instant::now();
     links.shutdown().await;
+    let ended = stopping.elapsed();
+    let letting_go = std::time::Instant::now();
     store::out_of_reach_of_unclaimed(&store)?;
     drop(socket);
+    // A stop's time is the service manager's to bound, so each is said.
+    eprintln!(
+        "stopped: its links ended in {} ms, and what they carried was let go in {} ms more",
+        ended.as_millis(),
+        letting_go.elapsed().as_millis(),
+    );
     result
 }
 
