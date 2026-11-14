@@ -151,11 +151,13 @@ pub fn typed<'a>(team: &'a Value, shorts: &'a BTreeMap<String, String>) -> &'a s
 /// says the title again, as `reef` says Reef.
 pub fn shown<'a>(team: &Value, shorts: &'a BTreeMap<String, String>) -> Option<&'a str> {
     let short = shorts.get(address(team))?;
-    let spelt: Vec<String> = words(title(team))
-        .into_iter()
-        .map(|word| word.typed)
-        .collect();
-    (spelt.join("-") != *short).then_some(short.as_str())
+    (!says_again(title(team), short)).then_some(short.as_str())
+}
+
+/// Whether `short` only says `title` again, as `reef` says Reef.
+pub(crate) fn says_again(title: &str, short: &str) -> bool {
+    let spelt: Vec<String> = words(title).into_iter().map(|word| word.typed).collect();
+    spelt.join("-") == short
 }
 
 #[cfg(test)]

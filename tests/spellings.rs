@@ -26,6 +26,10 @@ fn an_old_spelling_says_what_its_tree_says() {
         ("attach h0", "hold h0 attach"),
         ("again h0 -- pi", "holds h0 again -- pi"),
         ("machine penelope", "machines penelope"),
+        ("network grow", "networks grow"),
+        ("network --json", "networks -o json"),
+        ("cell QQ1UAK", "cells QQ1UAK"),
+        ("swarm --json", "swarm -o json"),
     ] {
         let (old_said, new_said) = (run(dir.path(), old), run(dir.path(), new));
         assert_eq!(

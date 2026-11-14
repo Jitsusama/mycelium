@@ -46,6 +46,8 @@
 //! - [`node`]: the node itself
 //! - [`served`]: files another program keeps, served as kinds of records
 //! - [`swarm`]: the swarm's teams as a person reads them in a terminal
+//! - [`networks`]: the cells and the networks they join, one model for
+//!   every view
 //! - [`watching`]: watches of folders that hear only what changes them
 //! - [`client`]: a client of the socket
 //! - [`health`]: how a realm's network stands, for a daily read
@@ -73,6 +75,7 @@ pub mod install;
 pub mod link;
 pub mod made;
 pub mod mesh;
+pub mod networks;
 pub mod node;
 pub mod offer;
 pub mod place;

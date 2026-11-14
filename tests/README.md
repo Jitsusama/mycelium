@@ -9,6 +9,7 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `made.rs`: a machine made for a start from a provider's offer, linked,
   started on and let go at its time or once it hands over, each node and
   link a process of its own
-- `spellings.rs`: each old spelling of a command, saying byte for byte
-  what the tree that took it in says
+- `spellings.rs`: each old spelling of a command, and each silent alias
+  such as `network` or `--json`, saying byte for byte what the tree
+  that took it in says
 - `ssh.rs`: what another machine's link key may run, as SSH runs it

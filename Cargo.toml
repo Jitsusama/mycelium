@@ -16,7 +16,7 @@ publish = false
 blake3 = "1"
 # A shared file's bytes in a link's JSON lines.
 base64 = "0.22"
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 # The time, for the ids and times of messages the node sends, and when a
 # machine says it leaves.
 jiff = { version = "0.2", features = ["serde"] }

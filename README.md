@@ -56,6 +56,15 @@ The harness mesh's messages and presence, carried between machines:
   sessions need you, are stuck, move or wait; `mycelium swarm <TEAM>`
   shows one team's sessions and where it meets the others, and
   `--json` prints each team's record.
+- `mycelium networks` draws the realm's networks as a tree under their
+  shapes (orchestrations, projects, repositories, groups and the
+  machines), with how many of each one's sessions need you, are stuck,
+  move, wait or lie dormant; `--cells` puts each network's sessions
+  under it, and `mycelium networks <NAME>` draws one with its cells.
+  `mycelium cells` lists every session worst first, then the machines,
+  and `mycelium cells <NAME>` says what one is and which networks it
+  joined. Both print JSON lines with `-o json`, networks first, then
+  cells, the model a page draws the mycelium from.
 - `mycelium swarm say <NAME> <WORDS>` says something as the person to
   a team, which its lead hears, or to one session;
   `mycelium swarm pause|resume <NAME>` pauses or resumes every session
