@@ -100,7 +100,8 @@ impl Drop for Socket {
 /// and private: a client waiting for it to appear was once refused, as
 /// binding makes the file before it listens (seen failing on 14
 /// November). Linking, unlike renaming, refuses a path another node took
-/// meanwhile.
+/// meanwhile. Hidden names left by binds whose process died before
+/// linking in are swept first.
 pub fn bind(path: &Path) -> io::Result<Socket> {
     let refused = |why: String| io::Error::new(io::ErrorKind::PermissionDenied, why);
     if let Some(parent) = path.parent() {
@@ -115,6 +116,7 @@ pub fn bind(path: &Path) -> io::Result<Socket> {
                 parent.display()
             )));
         }
+        sweep_staged(parent);
     }
     if let Ok(held) = fs::symlink_metadata(path) {
         if !held.file_type().is_socket() {
@@ -134,7 +136,7 @@ pub fn bind(path: &Path) -> io::Result<Socket> {
     let staged = staged(path);
     let _ = fs::remove_file(&staged);
     let listener = UnixListener::bind(&staged)?;
-    let placed = place(&staged, path);
+    let placed = link_in(&staged, path);
     let _ = fs::remove_file(&staged);
     placed.map(|()| Socket {
         listener,
@@ -144,7 +146,7 @@ pub fn bind(path: &Path) -> io::Result<Socket> {
 
 /// Makes the socket bound at `staged` private and links it in at `path`,
 /// refusing a `path` another node took since this one looked.
-fn place(staged: &Path, path: &Path) -> io::Result<()> {
+fn link_in(staged: &Path, path: &Path) -> io::Result<()> {
     fs::set_permissions(staged, fs::Permissions::from_mode(0o600))?;
     fs::hard_link(staged, path).map_err(|error| {
         if error.kind() == io::ErrorKind::AlreadyExists {
@@ -166,6 +168,45 @@ fn staged(path: &Path) -> PathBuf {
     let count = BINDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let name = format!(".{}-{count}", std::process::id());
     path.with_file_name(name)
+}
+
+/// Removes the sockets in `folder` that binds left under their hidden
+/// names when their process died between binding and linking in, so
+/// none gather there. A name whose process still runs, or might, stays.
+fn sweep_staged(folder: &Path) {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(staged_by) else {
+            continue;
+        };
+        if pid != std::process::id()
+            && gone(pid)
+            && entry.file_type().is_ok_and(|kind| kind.is_socket())
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The process that bound under `name`, when `name` is one `staged` gives.
+fn staged_by(name: &str) -> Option<u32> {
+    let (pid, count) = name.strip_prefix('.')?.split_once('-')?;
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    if !digits(pid) || !digits(count) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Whether no process holds the id `pid`: only the kernel's "no such
+/// process" says so, so a zombie, or one the signal may not reach, stays.
+fn gone(pid: u32) -> bool {
+    i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+        .is_some_and(|pid| rustix::process::test_kill_process(pid) == Err(rustix::io::Errno::SRCH))
 }
 
 /// What a node is given to run with besides its seams.
@@ -3566,7 +3607,7 @@ mod tests {
         // A second that looked before the first had linked its socket in.
         let late = staged(&socket);
         let latecomer = UnixListener::bind(&late).expect("the latecomer binds");
-        let placed = place(&late, &socket);
+        let placed = link_in(&late, &socket);
         drop(latecomer);
         let _ = fs::remove_file(&late);
         assert_eq!(
@@ -3583,6 +3624,68 @@ mod tests {
             .count();
         assert_eq!(staged, 1, "nothing but the socket is left beside it");
         drop(first);
+    }
+
+    #[tokio::test]
+    async fn a_bind_sweeps_only_what_dead_binds_left_behind() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let folder = socket.parent().expect("its folder").to_owned();
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&folder)
+            .expect("the folder is made");
+        let mut ended = std::process::Command::new("true")
+            .spawn()
+            .expect("a process starts");
+        let dead = ended.id();
+        ended.wait().expect("it ends");
+        let mut running = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("a process starts");
+        let left = |name: String| {
+            let at = folder.join(name);
+            drop(std::os::unix::net::UnixListener::bind(&at).expect("it binds"));
+            at
+        };
+        let dead_left = left(format!(".{dead}-0"));
+        let live_left = left(format!(".{}-0", running.id()));
+        let unlike = left(format!(".{dead}-0x"));
+        let plain = folder.join(format!(".{dead}-1"));
+        fs::write(&plain, "").expect("a plain file");
+
+        let bound = bind(&socket).expect("the socket binds");
+        running.kill().expect("the running one is stopped");
+        running.wait().expect("it ends");
+
+        assert!(!dead_left.exists(), "a dead bind's socket stayed");
+        assert!(live_left.exists(), "a running bind's socket was taken");
+        assert!(unlike.exists(), "a name unlike a staged one was taken");
+        assert!(plain.exists(), "a file that isn't a socket was taken");
+        drop(bound);
+    }
+
+    #[test]
+    fn a_staged_name_says_who_bound_it() {
+        let staged = staged(Path::new("/run/mycelium/work.sock"));
+        let name = staged.file_name().and_then(|name| name.to_str());
+        assert_eq!(name.and_then(staged_by), Some(std::process::id()));
+        for unlike in [
+            "work.sock",
+            ".12",
+            ".12-",
+            ".-3",
+            ".+12-3",
+            ".12-3x",
+            "12-3",
+        ] {
+            assert_eq!(
+                staged_by(unlike),
+                None,
+                "{unlike} was taken for a staged name"
+            );
+        }
     }
 
     #[tokio::test]
