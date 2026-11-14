@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use mycelium::awake::Awake;
 use mycelium::carry::through::Through;
 use mycelium::client::Client;
@@ -39,7 +39,8 @@ const HELP_WIDTH: usize = 60;
 #[command(
     version,
     about = "A nimble core for agent networks",
-    max_term_width = HELP_WIDTH
+    max_term_width = HELP_WIDTH,
+    after_help = "Example:\n  mycelium networks"
 )]
 struct Command {
     /// The realm: a set of machines that link, with nothing crossing
@@ -49,24 +50,37 @@ struct Command {
     /// The node's socket, if not where the realm's goes.
     #[arg(long, global = true)]
     socket: Option<PathBuf>,
+    /// The command, which bare `mycelium` leaves out to list them all.
+    /// It is optional rather than clap's `arg_required_else_help`, which
+    /// counts a realm set in the environment as an argument given, and a
+    /// person's shell most often sets one.
     #[command(subcommand)]
-    action: Action,
+    action: Option<Action>,
 }
 
 #[derive(Subcommand)]
 enum Action {
     /// Runs this machine's node.
+    ///
+    /// The node links this machine with the others of its realm and
+    /// answers every other command here.
+    #[command(after_help = "Example:\n  mycelium node --ssh joel@skiff.local")]
     Node(Node),
-    /// Runs this machine's end of a link over standard input and output, as
-    /// another machine's node starts it over SSH.
+    /// Runs this machine's end of a link to another machine.
+    ///
+    /// Another machine's node starts it over SSH and speaks through
+    /// its standard input and output.
+    #[command(after_help = "Example:\n  mycelium link")]
     Link {
         #[command(flatten)]
         here: Here,
     },
-    /// Runs what another machine's link key asked, as its pinned
-    /// `authorized_keys` line runs this: a link, whose far end must be
-    /// that machine, or an attach; anything else is refused and kept in
-    /// `refused-keys.jsonl` in mycelium's folder.
+    /// Runs what another machine's link key asks of this one.
+    ///
+    /// Its pinned `authorized_keys` line runs this: a link, whose far
+    /// end must be that machine, or an attach; anything else is refused
+    /// and kept in `refused-keys.jsonl` in mycelium's folder.
+    #[command(after_help = "Example:\n  mycelium ssh --from penelope")]
     Ssh {
         #[command(flatten)]
         here: Here,
@@ -74,14 +88,16 @@ enum Action {
         #[arg(long)]
         from: String,
     },
-    /// Shares a quest with every machine this one links with: its record,
-    /// kept the same on each, written on any, and the folders of its
-    /// scratch named. A machine that held its own copy of either moves it
-    /// aside first.
+    /// Shares a quest with every machine this one links with.
+    ///
+    /// Its record is kept the same on each and written on any, with the
+    /// folders of its scratch named. A machine that held its own copy of
+    /// either moves it aside first.
+    #[command(after_help = "Example:\n  mycelium share QEST-20261112-HARBOR --scratch notes")]
     Share {
         #[command(flatten)]
         here: Here,
-        /// The quest's id, such as `QEST-20261013-4UHC5Q`.
+        /// The quest's id, such as `QEST-20261112-HARBOR`.
         quest: String,
         /// A folder of the quest's scratch to share too, such as `notes`;
         /// none is shared unless named, and one holding more than 10,000
@@ -89,32 +105,41 @@ enum Action {
         #[arg(long)]
         scratch: Vec<String>,
     },
-    /// Carries a quest to another machine of the realm, its sessions with
-    /// it: each of its sessions here carries its work into the quest's
+    /// Carries a quest and its sessions to another machine.
+    ///
+    /// Each of its sessions here carries its work into the quest's
     /// handover and ends, `pi-carry` takes the rest, the quest is shared
     /// with its handover, and each session starts again there, held, once
     /// `pi-carry arrive` has its trees. Prints a JSON line for each step,
     /// `{"step", "state", "said"}`, and last where each session went.
+    #[command(after_help = "Example:\n  mycelium carry QEST-20261112-HARBOR --to penelope")]
     Carry {
         #[command(flatten)]
         here: Here,
-        /// The quest's id, such as `QEST-20261013-4UHC5Q`.
+        /// The quest's id, such as `QEST-20261112-HARBOR`.
         quest: String,
         /// The machine it goes to, by name.
         #[arg(long)]
         to: String,
     },
-    /// Prints every session the node knows of, a JSON line each.
+    /// Prints every session the node knows of.
+    ///
+    /// Each is a JSON line, as the node holds it.
+    #[command(after_help = "Example:\n  mycelium sessions")]
     Sessions,
-    /// Shows the swarm: every team, nested as they are, with how many of
+    /// Shows the teams and how their sessions stand, or steers them.
+    ///
+    /// Bare, it shows every team, nested as they are, with how many of
     /// its sessions need you, are stuck, move or wait, those needing you
-    /// first, each by its short name; or, named by that or any part of its
-    /// title, one team's sessions and where it meets the others. Its acts
-    /// steer the swarm as its person: `say` words to a team, which its
-    /// lead hears, or to one session, read once its turn ends, or into
-    /// that turn when the words begin `now`; `pause` every session of a team and
-    /// the teams within it, or one session, so each finishes its turn and
-    /// waits; and `resume` them.
+    /// first, each by its short name; named by that or any part of its
+    /// title, one team's sessions and where it meets the others.
+    ///
+    /// Its acts steer the swarm as its person: `say` words to a team,
+    /// which its lead hears, or to one session, read once its turn ends,
+    /// or into that turn when the words begin `now`; `pause` every
+    /// session of a team and the teams within it, or one session, so each
+    /// finishes its turn and waits; and `resume` them.
+    #[command(after_help = "Example:\n  mycelium swarm say grow ship it")]
     Swarm {
         /// The team, by its short name or any words of its title, such as
         /// `part deux`, a leading `team` left out; or an act and its team,
@@ -131,39 +156,45 @@ enum Action {
     },
     /// Draws the networks as a tree, or one network.
     ///
-    /// Draws every network as a tree under its shape:
-    /// orchestrations, projects, repositories, groups
-    /// and machines, each with how its sessions stand.
-    /// Named by its short name, its name or words of its
-    /// title, one network is drawn with its cells.
-    /// `network` is the same.
-    #[command(alias = "network", verbatim_doc_comment)]
+    /// Draws every network as a tree under its shape: orchestrations,
+    /// projects, repositories, groups and machines, each with how its
+    /// sessions stand. Named by its short name, its name or words of its
+    /// title, one network is drawn with its cells. `network` is the same.
+    #[command(alias = "network", after_help = "Example:\n  mycelium networks grow")]
     Networks(NetworksAsked),
     /// Lists the cells, or says what one is.
     ///
-    /// Lists every cell: the sessions, worst first, then
-    /// the machines. Named by its name or words of its
-    /// title, a session is said with the networks it
-    /// joined, and a machine as `machines NAME` says it.
+    /// Lists every cell: the sessions, worst first, then the machines.
+    /// Named by its name or words of its title, a session is said with
+    /// the networks it joined, and a machine as `machines NAME` says it.
     /// `cell` is the same.
-    #[command(alias = "cell", verbatim_doc_comment)]
+    #[command(alias = "cell", after_help = "Example:\n  mycelium cells HARBOR")]
     Cells(CellsAsked),
-    /// Prints how the realm's network stands, as one JSON line for a daily
-    /// read: each link, `up` or `unreachable`, with how many times it
-    /// dropped in the last day; each machine's sessions by how they stand;
-    /// how many presences still say they run with their process gone; and
-    /// the node's slowest answer to this read, in whole seconds. Exits 0
-    /// whenever the node could be read, and within 10 seconds.
+    /// Prints how the realm's network stands, for a daily read.
+    ///
+    /// One JSON line says each link, `up` or `unreachable`, with how many
+    /// times it dropped in the last day; each machine's sessions by how
+    /// they stand; how many presences still say they run with their
+    /// process gone; and the node's slowest answer to this read, in whole
+    /// seconds. Exits 0 whenever the node could be read, and within 10
+    /// seconds.
+    #[command(after_help = "Example:\n  mycelium health")]
     Health {
         #[command(flatten)]
         here: Here,
     },
-    /// Speaks in a quest's web, the murmurs and ties its sessions on every
-    /// machine share: says into it, or folds it into what it says now.
+    /// Speaks in a quest's web of murmurs and ties.
+    ///
+    /// A web is what a quest's sessions on every machine share: this says
+    /// into it, or folds it into what it says now.
+    #[command(after_help = "Example:\n  mycelium web QEST-20261112-HARBOR say look at the tide")]
     Web(WebAsked),
-    /// Prints what every machine of the realm is, this one first;
-    /// or, given its name, what one machine is. `machine` is the same,
-    /// and bare prints what this machine is.
+    /// Says what each machine of the realm is, or what one is.
+    ///
+    /// Bare, it prints every machine, this one first; given its name,
+    /// one machine. `machine` is the same, and bare prints what this
+    /// machine is.
+    #[command(after_help = "Example:\n  mycelium machines penelope")]
     Machines {
         /// The machine, such as `penelope`.
         name: Option<String>,
@@ -175,19 +206,31 @@ enum Action {
         /// The machine, if not this one.
         name: Option<String>,
     },
-    /// Prints the shapes of machine the node's providers could make, and
-    /// why any couldn't say.
+    /// Prints the machines the node's providers could make.
+    ///
+    /// Each shape of machine a provider offers, and why any provider
+    /// couldn't say.
+    #[command(after_help = "Example:\n  mycelium offers")]
     Offers,
-    /// Prints which machine of the realm work should go to, or why none.
+    /// Says which machine of the realm work should go to.
+    ///
+    /// Or, where none fits, why not.
+    #[command(after_help = "Example:\n  mycelium place --need system=linux")]
     Place(Asked),
-    /// Asks a machine to update itself to its configuration's main, this
-    /// one or one this machine links with directly, and prints how that
-    /// ended, as its updater said it.
+    /// Asks a machine to update itself.
+    ///
+    /// It updates to its configuration's main, this machine or one it
+    /// links with directly, and this prints how that ended, as its
+    /// updater said it.
+    #[command(after_help = "Example:\n  mycelium update penelope")]
     Update {
         /// The machine, such as `penelope`.
         machine: String,
     },
-    /// Prints the latest messages, a JSON line each.
+    /// Prints the latest messages on the mesh.
+    ///
+    /// Each is a JSON line, the newest last.
+    #[command(after_help = "Example:\n  mycelium messages quest.* --limit 5")]
     Messages {
         /// Which groups, such as `quest.*`.
         #[arg(default_value = ">")]
@@ -197,8 +240,11 @@ enum Action {
         limit: usize,
     },
     /// Sends a message on the mesh, as a session would.
+    ///
+    /// It goes to every group named, from who `--from` says.
     #[command(
-        override_usage = "mycelium send [OPTIONS] --from <FROM> --text <TEXT>\n       <GROUPS>..."
+        override_usage = "mycelium send [OPTIONS] --from <FROM> --text <TEXT>\n       <GROUPS>...",
+        after_help = "Example:\n  mycelium send --from HARBOR --text merged peer.kelp01"
     )]
     Send {
         /// Who sends it.
@@ -219,36 +265,53 @@ enum Action {
         to_realm: Option<String>,
     },
     /// Prints the realms this realm's text may cross into.
+    ///
+    /// Each is a flow the node was started with.
+    #[command(after_help = "Example:\n  mycelium flows")]
     Flows,
-    /// Asks the node to start a program held, on the machine of the realm
-    /// placement chooses, through that person's login shell; prints the
-    /// machine, its id and the words that attach to it.
+    /// Starts a program, held, on the machine that suits it.
+    ///
+    /// The node starts it on the machine of the realm placement chooses,
+    /// through that person's login shell, and this prints the machine,
+    /// its id and the words that attach to it.
+    #[command(after_help = "Example:\n  mycelium start --need system=linux -- pi")]
     Start(Starting),
-    /// Puts what is said into the steer inbox of the session going by
-    /// ADDRESS, on whichever machine it runs; reads the steer from input,
-    /// as the harness writes one: `{"text": "..."}`, with `act` and `id` if
-    /// it pauses, resumes, stops, closes or opens a talk, and `to` for a
-    /// carry.
+    /// Steers a session by its address, from standard input.
+    ///
+    /// What is said goes into the steer inbox of the session going by
+    /// ADDRESS, on whichever machine it runs. The steer is read from
+    /// input, as the harness writes one: `{"text": "..."}`, with `act`
+    /// and `id` if it pauses, resumes, stops, closes or opens a talk, and
+    /// `to` for a carry.
+    #[command(after_help = "Example:\n  echo '{\"text\": \"ship it\"}' | mycelium steer HARBOR")]
     Steer {
         /// The session's address.
         address: String,
     },
-    /// Prints every session held on this machine, a JSON line each, or
-    /// the one named. `holds add -- PROGRAM` starts a program on a
-    /// terminal a holder of its own keeps, so its window can close and
-    /// `holds ID attach` take it up again from any terminal, and joins
-    /// it unless `--detached`. `holds ID again -- PROGRAM` names the
-    /// command it starts with when it next starts again, over any its
-    /// program names as it parks, and wakes it if it is parked, printing
-    /// `{"id", "woke"}`; a pi held on an old conversation is moved onto
-    /// a newer one this way. `hold` is the same.
-    #[command(alias = "hold")]
+    /// Lists the sessions held on this machine, or holds one.
+    ///
+    /// Bare, it prints every session held here, a JSON line each, or the
+    /// one named. `holds add -- PROGRAM` starts a program on a terminal a
+    /// holder of its own keeps, so its window can close and `holds ID
+    /// attach` take it up again from any terminal, and joins it unless
+    /// `--detached`.
+    ///
+    /// `holds ID again -- PROGRAM` names the command it starts with when
+    /// it next starts again, over any its program names as it parks, and
+    /// wakes it if it is parked, printing `{"id", "woke"}`; a pi held on
+    /// an old conversation is moved onto a newer one this way. `hold` is
+    /// the same.
+    #[command(alias = "hold", after_help = "Example:\n  mycelium holds add -- pi")]
     Holds(Holds),
-    /// Joins a conversation a pi host holds, with `--host` and
-    /// `--session`; closing it only leaves. It exits 3 when the host
-    /// lets the conversation go back to plain pi, as a release does, and
-    /// 0 on any other leaving. A held session is joined with `holds ID
-    /// attach`, which `attach ID` still spells.
+    /// Joins a conversation a pi host holds.
+    ///
+    /// Name it with `--host` and `--session`; closing it only leaves. It
+    /// exits 3 when the host lets the conversation go back to plain pi,
+    /// as a release does, and 0 on any other leaving. A held session is
+    /// joined with `holds ID attach`, which `attach ID` still spells.
+    #[command(
+        after_help = "Example:\n  mycelium attach --host work-attended \\\n    --session 01a1d045-d580-7000-8000-000000000000"
+    )]
     Attach {
         /// A held session's id, as `holds` lists it.
         #[arg(required_unless_present = "host", conflicts_with = "host")]
@@ -286,7 +349,10 @@ enum Action {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
-    /// Prints the node's events as they come, a JSON line each.
+    /// Prints the node's events as they come.
+    ///
+    /// Each is a JSON line, the latest messages first.
+    #[command(after_help = "Example:\n  mycelium watch quest.*")]
     Watch {
         /// Which groups' messages, such as `quest.*`.
         #[arg(default_value = ">")]
@@ -305,7 +371,7 @@ struct Node {
     #[command(flatten)]
     here: Here,
     /// A machine to keep linked with over SSH, such as
-    /// `joel.gerber@192.168.4.32`; given again for each.
+    /// `joel@skiff.local`; given again for each.
     #[arg(long = "ssh")]
     destinations: Vec<String>,
     /// An SSH option for every link, as `-o` takes it.
@@ -410,7 +476,7 @@ struct NetworksAsked {
 /// What is asked of the cells, by the words after `cells`.
 #[derive(clap::Args)]
 struct CellsAsked {
-    /// The cell, such as `QQ1UAK` or `optimus`
+    /// The cell, such as `HARBOR` or `optimus`
     words: Vec<String>,
     #[command(flatten)]
     output: Output,
@@ -595,7 +661,7 @@ impl From<Asked> for Work {
 
 #[derive(clap::Args)]
 struct WebAsked {
-    /// The quest whose web it is, such as `QEST-20261013-4UHC5Q`.
+    /// The quest whose web it is, such as `QEST-20261112-HARBOR`.
     quest: String,
     /// The quests' scratch folders, if not where the harness keeps them.
     #[arg(long)]
@@ -678,8 +744,11 @@ fn swarm_asked(words: &[String]) -> Result<SwarmAsked, String> {
 
 #[derive(Subcommand)]
 enum WebAct {
-    /// Says a murmur, a line of intent for whoever heeds it, and prints
-    /// the event, whose id ties and settles it.
+    /// Says a murmur into the web.
+    ///
+    /// A murmur is a line of intent for whoever heeds it. This prints the
+    /// event, whose id ties and settles it.
+    #[command(after_help = "Example:\n  mycelium web QEST-20261112-HARBOR say look at the tide")]
     Say {
         /// Its words.
         #[arg(required = true)]
@@ -688,8 +757,13 @@ enum WebAct {
         #[arg(long)]
         by: Option<String>,
     },
-    /// Ties one thing to another, a murmur's id, a quest's or a change's,
-    /// and prints the event.
+    /// Ties one thing to another.
+    ///
+    /// Either may be a murmur's id, a quest's or a change's. This prints
+    /// the event.
+    #[command(
+        after_help = "Example:\n  mycelium web QEST-20261112-HARBOR tie optimus-12 optimus-9"
+    )]
     Tie {
         /// What it ties.
         from: String,
@@ -702,7 +776,10 @@ enum WebAct {
         #[arg(long)]
         by: Option<String>,
     },
-    /// Settles a murmur, saying how, and prints the event.
+    /// Settles a murmur, saying how.
+    ///
+    /// This prints the event.
+    #[command(after_help = "Example:\n  mycelium web QEST-20261112-HARBOR settle optimus-12 filed")]
     Settle {
         /// The murmur's id.
         of: String,
@@ -712,10 +789,12 @@ enum WebAct {
         #[arg(long)]
         by: Option<String>,
     },
-    /// Folds every machine's events into a file written whole, as a page
-    /// reads it, and prints whether it wrote; with `--every`, again each
-    /// so many seconds until stopped, writing only when it says something
-    /// new.
+    /// Folds every machine's events into one file.
+    ///
+    /// The file is written whole, as a page reads it, and this prints
+    /// whether it wrote; with `--every`, again each so many seconds until
+    /// stopped, writing only when it says something new.
+    #[command(after_help = "Example:\n  mycelium web QEST-20261112-HARBOR fold --into web.json")]
     Fold {
         /// The file it's written to.
         #[arg(long)]
@@ -742,9 +821,23 @@ struct Here {
     state: Option<PathBuf>,
 }
 
+/// The exit code for a command line that named no command, as clap gives
+/// one that asked for nothing.
+const NO_COMMAND: u8 = 2;
+
 fn main() -> ExitCode {
-    let command = Command::parse();
-    match run(command) {
+    let Command {
+        realm,
+        socket,
+        action,
+    } = Command::parse();
+    let Some(action) = action else {
+        // Help that can't be written, as to a pipe closed early, has
+        // nowhere else to go, and the exit code still says no command ran.
+        let _ = Command::command().print_help();
+        return ExitCode::from(NO_COMMAND);
+    };
+    match run(realm, socket, action) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("mycelium: {error}");
@@ -753,20 +846,20 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(command: Command) -> io::Result<ExitCode> {
-    let realm = command.realm.ok_or_else(|| {
+fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Result<ExitCode> {
+    let realm = realm.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "say which realm, with --realm or MYCELIUM_REALM",
         )
     })?;
     let realm = realm_named(realm)?;
-    let socket = command.socket.unwrap_or_else(|| place::socket(&realm));
-    if let Some(asked) = tree(&command.action) {
+    let socket = socket.unwrap_or_else(|| place::socket(&realm));
+    if let Some(asked) = tree(&action) {
         let asked = asked.map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
         return in_tree(&socket, &realm, asked);
     }
-    let ran = match command.action {
+    let ran = match action {
         Action::Node(node) => run_node(node, realm, &socket),
         Action::Link { here } => run_link(here, realm, socket, None),
         Action::Ssh { here, from } => return run_asked(here, realm, socket, from),
@@ -1578,12 +1671,84 @@ mod tests {
     }
 
     #[test]
+    fn every_command_says_one_plain_line_and_an_example_that_parses() {
+        let mut command = Command::command();
+        command.build();
+        let mut commands = vec![(String::new(), command)];
+        let mut unsaid = Vec::new();
+        while let Some((above, each)) = commands.pop() {
+            if each.is_hide_set() || each.get_name() == "help" {
+                continue;
+            }
+            let name = format!("{above} {}", each.get_name()).trim().to_owned();
+            let about = each
+                .get_about()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            if about.is_empty() || about.contains('\n') || about.chars().count() > HELP_WIDTH {
+                unsaid.push(format!("{name}: its first line is {about:?}"));
+            }
+            let after = each.get_after_help().map(ToString::to_string);
+            match after
+                .as_deref()
+                .and_then(|help| help.strip_prefix("Example:\n"))
+            {
+                None => unsaid.push(format!("{name}: no example")),
+                Some(example) => {
+                    let line = example.replace("\\\n", " ");
+                    let typed = line.rsplit("| ").next().unwrap_or_default();
+                    let words: Vec<&str> = typed
+                        .split_whitespace()
+                        .map(|word| word.trim_matches('\''))
+                        .collect();
+                    let named = name.split(' ').skip(1).all(|part| words.contains(&part));
+                    if words.first() != Some(&"mycelium") || !named {
+                        unsaid.push(format!("{name}: its example is {example:?}"));
+                    } else if let Err(error) = Command::try_parse_from(&words) {
+                        unsaid.push(format!("{name}: {example:?} doesn't parse: {error}"));
+                    }
+                }
+            }
+            commands.extend(
+                each.get_subcommands()
+                    .map(|sub| (name.clone(), sub.clone())),
+            );
+        }
+        assert!(unsaid.is_empty(), "{unsaid:#?}");
+    }
+
+    #[test]
+    fn mycelium_alone_lists_its_commands_whatever_realm_is_set() {
+        for line in [&["mycelium"][..], &["mycelium", "--realm", "work"]] {
+            let asked = Command::try_parse_from(line)
+                .unwrap_or_else(|error| panic!("{line:?} parses: {error}"));
+            assert!(asked.action.is_none(), "{line:?} names no command");
+        }
+        let said = Command::command().render_help().to_string();
+        assert!(
+            said.contains("networks  Draws the networks as a tree, or one network\n"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_command_missing_its_own_says_which_it_misses() {
+        let error = Command::try_parse_from(["mycelium", "--realm", "work", "web", "QEST-1"])
+            .err()
+            .expect("web needs its act");
+        assert_eq!(error.kind(), clap::error::ErrorKind::MissingSubcommand);
+        let said = error.render().to_string();
+        assert!(said.contains("Usage: mycelium web "), "{said}");
+    }
+
+    #[test]
     fn networks_and_cells_take_their_singular_and_either_json() {
         let parsed = |words: &[&str]| {
             let line = ["mycelium", "--realm", "work"];
             Command::try_parse_from(line.iter().chain(words))
                 .unwrap_or_else(|error| panic!("{words:?} parses: {error}"))
                 .action
+                .unwrap_or_else(|| panic!("{words:?} names a command"))
         };
         for words in [&["networks", "-o", "json"][..], &["network", "--json"]] {
             assert!(
@@ -1610,7 +1775,11 @@ mod tests {
         let line = ["mycelium", "--realm", "work"];
         let parsed = Command::try_parse_from(line.into_iter().chain(words.split(' ')))
             .map_err(|error| error.kind().to_string())?;
-        tree(&parsed.action).unwrap_or_else(|| panic!("{words:?} is a tree"))
+        parsed
+            .action
+            .as_ref()
+            .and_then(tree)
+            .unwrap_or_else(|| panic!("{words:?} is a tree"))
     }
 
     // Joel's pivot to command trees (2026-11-12): one command for each
@@ -1672,7 +1841,7 @@ mod tests {
         assert!(
             matches!(
                 Command::try_parse_from(["m", "attach", "--host", "h", "--session", "s"])
-                    .map(|line| tree(&line.action)),
+                    .map(|line| line.action.as_ref().and_then(tree)),
                 Ok(None)
             ),
             "a pi host's conversation is joined outside the tree"
@@ -1708,7 +1877,7 @@ mod tests {
         let asked = Command::try_parse_from(line.iter().chain(words))
             .unwrap_or_else(|error| panic!("{words:?} parses: {error}"));
         match asked.action {
-            Action::Swarm { words, output, .. } => (swarm_asked(&words), output.json()),
+            Some(Action::Swarm { words, output, .. }) => (swarm_asked(&words), output.json()),
             _ => panic!("{words:?} is the swarm"),
         }
     }
@@ -1745,7 +1914,7 @@ mod tests {
         assert!(
             matches!(
                 Command::try_parse_from(["mycelium", "swarm", "--names"]).map(|asked| asked.action),
-                Ok(Action::Swarm { names: true, .. })
+                Ok(Some(Action::Swarm { names: true, .. }))
             ),
             "--names asks for the teams as they're typed"
         );
