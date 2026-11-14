@@ -16,9 +16,12 @@ use mycelium::hold::{Said, socket};
 /// How long anything here has to happen before the test gives up.
 const PATIENCE: Duration = Duration::from_secs(20);
 
-/// How long a holder may take to end once its program has: a shutdown
-/// gives every scope five seconds in all, its program's save included,
-/// and the holder's own share of that is only letting its windows go.
+/// How long a holder may take to let its window go once its program has
+/// said its last: a shutdown gives every scope five seconds in all, its
+/// program's save included, and the holder's own share of that is only
+/// letting its windows go. It's timed from the program's own last words
+/// rather than from the signal, so a loaded machine's scheduling of the
+/// program's end isn't counted against the holder.
 const ENDS_WITHIN: Duration = Duration::from_millis(400);
 
 /// A process that is stopped when the test is done with it.
@@ -84,11 +87,12 @@ fn sees(window: &mut UnixStream, wanted: &str) {
 fn a_holder_told_to_end_with_a_window_joined_ends_as_its_program_does() {
     let home = tempfile::tempdir().expect("a temporary home");
     // It ends the moment it's told, as a program with nothing left to save
-    // does, once it has shown a key typed in the window, so the window is
-    // known to be joined.
+    // does, saying so as its last words, once it has shown a key typed in
+    // the window, so the window is known to be joined.
     let holder = holder(
         home.path(),
-        "read typed; echo \"got $typed\"; exec sleep 1000",
+        "trap 'kill $!; echo bye; exit 0' TERM HUP INT; read typed; echo \"got $typed\"; \
+         sleep 1000 & wait",
     );
     let held = home.path().join("r/mycelium/harbour.held");
     let mut window = UnixStream::connect(socket(&held, "ending1")).expect("a window joins");
@@ -97,7 +101,6 @@ fn a_holder_told_to_end_with_a_window_joined_ends_as_its_program_does() {
         .expect("the window types");
     sees(&mut window, "got go");
 
-    let told = Instant::now();
     let pid = rustix::process::Pid::from_raw(
         i32::try_from(holder.0.id()).expect("a process id fits a pid"),
     )
@@ -111,18 +114,20 @@ fn a_holder_told_to_end_with_a_window_joined_ends_as_its_program_does() {
         // The test hears it only while it still waits.
         let _ = ending.send((ended, Instant::now()));
     });
-    let (ended, at) = ends.recv_timeout(PATIENCE).expect("the holder ends");
-    let ended = ended.expect("the holder is waited on");
-    let took = at - told;
-    assert!(ended.success(), "the holder ends as told: {ended:?}");
-    assert!(
-        took < ENDS_WITHIN,
-        "the holder lets its window go as its program ends, not later: it took {took:?}"
-    );
+    sees(&mut window, "bye");
+    let said_its_last = Instant::now();
     let mut rest = Vec::new();
     window
         .read_to_end(&mut rest)
         .expect("the window is let go, its connection closed");
+    let took = said_its_last.elapsed();
+    assert!(
+        took < ENDS_WITHIN,
+        "the holder lets its window go as its program ends, not later: it took {took:?}"
+    );
+    let (ended, _) = ends.recv_timeout(PATIENCE).expect("the holder ends");
+    let ended = ended.expect("the holder is waited on");
+    assert!(ended.success(), "the holder ends as told: {ended:?}");
     assert!(
         !held.join("ending1.json").exists(),
         "its record is taken away once it has ended"
