@@ -352,7 +352,7 @@ mod tests {
                 log: log.clone(),
             },
             parked: "/nowhere/parked".into(),
-            procs: "/nowhere/proc".into(),
+            processes: crate::node::Processes::Folder("/nowhere/proc".into()),
         };
         let membership = Realm {
             name: realm.to_owned(),

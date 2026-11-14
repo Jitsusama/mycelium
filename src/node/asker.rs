@@ -4,26 +4,37 @@
 //!
 //! Only the person's own login speaks as the person, but a steer names who
 //! it is from itself, so any process of the person's account could claim
-//! to be them. The kernel says which process is at a client's end; its
-//! control group says which unit of the person's service manager runs it,
-//! and the machine runs its agents in units of their own: pi's hosts, each
-//! held session's scope, and the queues their commands wait in. A process
-//! with pi among its forebears is an agent's too, as a session started in
-//! a terminal rather than held is.
+//! to be them. The kernel says which process is at a client's end; on
+//! Linux its control group says which unit of the person's service
+//! manager runs it, and the machine runs its agents in units of their own:
+//! pi's hosts, each held session's scope, and the queues their commands
+//! wait in. A process with pi among its forebears is an agent's too, as a
+//! session started in a terminal rather than held is, and on a Mac, which
+//! has no control groups, that is all there is to tell.
 //!
-//! This keeps an agent from speaking as the person by habit or by mistake,
-//! not one set on it: a process of the person's account may move itself
-//! into any unit of theirs, or write a session's inbox itself.
+//! This is a fence against habit and mistakes, not a boundary. Within one
+//! account every check a process could make of another is forged by one
+//! set on it: a command may move itself into a unit of its own, as
+//! `systemd-run --user --scope` does, or fork twice so pi is no longer
+//! among its forebears, or write a session's inbox itself. What keeps an
+//! agent from the person's voice is what it can reach: commands fenced
+//! away from the node's socket and the inboxes.
 
+use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command;
 
 use serde_json::Value;
+
+use crate::steer::claims_the_person;
 
 /// How the names of the units the machine runs its agents in begin, below
 /// the person's service manager's own unit: pi's hosts, the scope each
 /// held session runs in, and the queues agents' commands wait their turn
-/// in, here or for a builder elsewhere.
+/// in, here or for a builder elsewhere. The rest of `agents.slice` is the
+/// person's as much as theirs: their own terminals, the node and its
+/// links run there.
 const AGENTS_UNITS: [&str; 4] = [
     "agents.slice/pi-host-",
     "agents.slice/mycelium-pi-",
@@ -38,55 +49,115 @@ const PI: &str = "pi";
 /// tells wrong can't hold a steer up for long.
 const FOREBEARS: usize = 64;
 
+/// Where a machine tells who runs each of its processes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Processes {
+    /// Linux's `/proc`, or a stand-in for it: each process's control
+    /// group, name and parent.
+    Folder(PathBuf),
+    /// What `ps` lists, as on a Mac, which has no `/proc`: each process's
+    /// name and parent.
+    Listed,
+}
+
+impl Processes {
+    /// This machine's own.
+    #[must_use]
+    pub fn here() -> Self {
+        if cfg!(target_os = "linux") {
+            Self::Folder("/proc".into())
+        } else {
+            Self::Listed
+        }
+    }
+
+    /// What is told of process `pid`.
+    fn tell(&self, pid: i32) -> Told {
+        match self {
+            Self::Folder(procs) => {
+                let cgroup = fs::read_to_string(procs.join(pid.to_string()).join("cgroup")).ok();
+                if let Some(unit) = cgroup.as_deref().and_then(agents_unit) {
+                    return Told::Agent(unit);
+                }
+                forebears(pid, |process| {
+                    let status =
+                        fs::read_to_string(procs.join(process.to_string()).join("status")).ok()?;
+                    named(&status).map(|(name, parent)| (name.to_owned(), parent))
+                })
+            }
+            Self::Listed => {
+                let Some(listed) = Command::new("/bin/ps")
+                    .args(["-axo", "pid=,ppid=,comm="])
+                    .output()
+                    .ok()
+                    .filter(|ran| ran.status.success())
+                else {
+                    return Told::Untold;
+                };
+                let listed = listing(&String::from_utf8_lossy(&listed.stdout));
+                forebears(pid, |process| listed.get(&process).cloned())
+            }
+        }
+    }
+}
+
+/// What a machine tells of the process that asks.
+#[derive(Debug, PartialEq, Eq)]
+enum Told {
+    /// It runs as an agent, in this unit or below this pi.
+    Agent(String),
+    /// It is the person's own.
+    Person,
+    /// Nothing could be read of it, or of a forebear.
+    Untold,
+}
+
 /// Whether `said` may be put to a session when process `asker` asks, as
-/// `procs`, the machine's `/proc`, tells it: what claims to be from the
-/// person is refused from an agent, saying why, and anything else goes.
-/// An asker the kernel won't name, or a machine with no control groups to
-/// read, as a Mac, is taken at its word, since nothing there tells an
-/// agent apart.
-pub fn may_say(asker: Option<i32>, procs: &Path, said: &Value) -> Result<(), String> {
+/// `processes` tell it, answering whether its asker was seen to be the
+/// person's own: what claims to be from the person is refused from an
+/// agent, or from an asker the kernel names no process for, saying why,
+/// and anything else goes. An asker whose process can't be read is taken
+/// at its word here, but not seen, so what it says as the person crosses
+/// no link.
+pub fn may_say(asker: Option<i32>, processes: &Processes, said: &Value) -> Result<bool, String> {
     if !claims_the_person(said) {
-        return Ok(());
+        return Ok(false);
     }
     let Some(pid) = asker else {
-        return Ok(());
+        return Err(
+            "nothing names the process that asks, so it can't speak as the person: \
+                    only the person's own login says what they say"
+                .to_owned(),
+        );
     };
-    match agent(pid, procs) {
-        Some(unit) => Err(format!(
+    match processes.tell(pid) {
+        Told::Agent(unit) => Err(format!(
             "this asks from {unit}, an agent's, and an agent can't speak as the person: \
              only the person's own login says what they say"
         )),
-        None => Ok(()),
+        Told::Person => Ok(true),
+        Told::Untold => Ok(false),
     }
 }
 
-/// Whether `said` claims to be from the person, as the harness reads a
-/// steer's `from`: naming nobody, Joel, or the person, in any case.
-fn claims_the_person(said: &Value) -> bool {
-    let from = said.get("from").and_then(Value::as_str).unwrap_or("");
-    from.is_empty() || from.eq_ignore_ascii_case("joel") || from.eq_ignore_ascii_case("person")
-}
-
-/// The agent's unit or process `pid` runs as, by its name, or none for a
-/// process of the person's own or one that can't be told.
-fn agent(pid: i32, procs: &Path) -> Option<String> {
-    let cgroup = fs::read_to_string(procs.join(pid.to_string()).join("cgroup")).ok();
-    if let Some(unit) = cgroup.as_deref().and_then(agents_unit) {
-        return Some(unit);
-    }
-    let mut process = pid;
+/// What `process`, a lookup of a process's name and parent, tells of `pid`
+/// by its forebears: an agent's below a process named pi, the person's
+/// once the chain ends without one.
+fn forebears(pid: i32, process: impl Fn(i32) -> Option<(String, i32)>) -> Told {
+    let mut at = pid;
     for _ in 0..FOREBEARS {
-        let status = fs::read_to_string(procs.join(process.to_string()).join("status")).ok()?;
-        let (name, parent) = named(&status)?;
+        let Some((name, parent)) = process(at) else {
+            return Told::Untold;
+        };
         if name == PI {
-            return Some(format!("pi's process {process}"));
+            return Told::Agent(format!("pi's process {at}"));
         }
         if parent <= 1 {
-            return None;
+            return Told::Person;
         }
-        process = parent;
+        at = parent;
     }
-    None
+    Told::Untold
 }
 
 /// The agent's unit a process runs in, as its `cgroup` file tells it, by
@@ -120,8 +191,26 @@ fn named(status: &str) -> Option<(&str, i32)> {
     Some((field("Name:")?, field("PPid:")?.parse().ok()?))
 }
 
+/// Each process's name and parent, by its id, as `ps -axo
+/// pid=,ppid=,comm=` lists them: a Mac's `comm` is the program's whole
+/// path, spaces and all, so its name is what follows the last slash.
+fn listing(listed: &str) -> HashMap<i32, (String, i32)> {
+    listed
+        .lines()
+        .filter_map(|line| {
+            let (pid, rest) = line.trim_start().split_once(char::is_whitespace)?;
+            let (parent, command) = rest.trim_start().split_once(char::is_whitespace)?;
+            let command = command.trim();
+            let name = command.rsplit('/').next().unwrap_or(command);
+            Some((pid.parse().ok()?, (name.to_owned(), parent.parse().ok()?)))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use serde_json::json;
 
     use super::*;
@@ -178,25 +267,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_steer_claims_the_person_as_the_harness_reads_it() {
-        for said in [
-            json!({"act": "pause"}),
-            json!({"act": "pause", "from": ""}),
-            json!({"text": "hi", "from": "Joel"}),
-            json!({"text": "hi", "from": "person"}),
-            json!({"text": "hi", "from": 7}),
-        ] {
-            assert!(claims_the_person(&said), "{said} speaks as the person");
-        }
-        for said in [
-            json!({"text": "leaving at six", "from": "machine"}),
-            json!({"text": "hi", "from": "P9R1KI"}),
-        ] {
-            assert!(!claims_the_person(&said), "{said} doesn't");
-        }
-    }
-
     /// A stand-in for `/proc` telling each of `processes`, by its id, its
     /// name, its parent and the control group it runs in.
     fn procs(processes: &[(i32, &str, i32, &str)]) -> tempfile::TempDir {
@@ -214,21 +284,25 @@ mod tests {
         procs
     }
 
+    /// The stand-in for `/proc` at `procs`, as the node reads it.
+    fn folder(procs: &Path) -> Processes {
+        Processes::Folder(procs.to_owned())
+    }
+
     #[test]
     fn an_agent_may_say_anything_but_as_the_person() {
-        let procs = procs(&[(
-            40,
-            "mycelium",
-            2,
-            "agents.slice/pi-host-work-attended.service",
-        )]);
-        let refused = may_say(
-            Some(40),
-            procs.path(),
-            &json!({"act": "pause", "from": "person"}),
-        );
+        let procs = procs(&[
+            (
+                40,
+                "mycelium",
+                2,
+                "agents.slice/pi-host-work-attended.service",
+            ),
+            (41, "quickshell", 1, "session.slice/quickshell.service"),
+        ]);
+        let pause = json!({"act": "pause", "from": "person"});
         assert_eq!(
-            refused,
+            may_say(Some(40), &folder(procs.path()), &pause),
             Err(
                 "this asks from pi-host-work-attended.service, an agent's, and an agent can't \
                  speak as the person: only the person's own login says what they say"
@@ -239,11 +313,16 @@ mod tests {
         assert_eq!(
             may_say(
                 Some(40),
-                procs.path(),
+                &folder(procs.path()),
                 &json!({"text": "your build is done", "from": "P9R1KI"})
             ),
-            Ok(()),
+            Ok(false),
             "an agent saying something as itself is let through"
+        );
+        assert_eq!(
+            may_say(Some(41), &folder(procs.path()), &pause),
+            Ok(true),
+            "the person's own launcher is seen to be theirs"
         );
     }
 
@@ -256,26 +335,84 @@ mod tests {
             (47, "zsh", 1, "agents.slice/kitty-2830-4.scope"),
         ]);
         assert_eq!(
-            agent(50, procs.path()),
-            Some("pi's process 48".to_owned()),
+            folder(procs.path()).tell(50),
+            Told::Agent("pi's process 48".to_owned()),
             "a command pi ran in a terminal is pi's"
         );
         assert_eq!(
-            agent(47, procs.path()),
-            None,
+            folder(procs.path()).tell(47),
+            Told::Person,
             "the person's own shell in that terminal is theirs"
         );
     }
 
     #[test]
-    fn an_asker_nothing_tells_apart_is_taken_at_its_word() {
-        let nowhere = Path::new("/nowhere/proc");
-        let pause = json!({"act": "pause"});
-        assert_eq!(may_say(Some(40), nowhere, &pause), Ok(()), "with no /proc");
+    fn a_mac_tells_pis_commands_by_what_ps_lists() {
+        let listed = listing(
+            "    1     0 /sbin/launchd\n\
+             \x20 700     1 /Applications/kitty.app/Contents/MacOS/kitty\n\
+             \x20 701   700 -zsh\n\
+             \x20 702   701 pi\n\
+             \x20 703   702 /bin/bash\n\
+             \x20 704   703 /Users/joel/.nix-profile/bin/mycelium\n\
+             \x20 705   701 /Users/joel/.nix-profile/bin/mycelium\n\
+             \x20 706     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n",
+        );
+        let process = |pid: i32| listed.get(&pid).cloned();
         assert_eq!(
-            may_say(None, nowhere, &pause),
-            Ok(()),
-            "with no process named"
+            forebears(704, process),
+            Told::Agent("pi's process 702".to_owned()),
+            "a command pi ran is pi's"
+        );
+        assert_eq!(
+            forebears(705, process),
+            Told::Person,
+            "the person's own command in that terminal is theirs"
+        );
+        assert_eq!(
+            listed.get(&706).map(|(name, _)| name.as_str()),
+            Some("Google Chrome"),
+            "a program's name may hold spaces"
+        );
+        assert_eq!(
+            forebears(999, process),
+            Told::Untold,
+            "one gone tells nothing"
+        );
+    }
+
+    #[test]
+    fn an_asker_nothing_names_cant_speak_as_the_person() {
+        let pause = json!({"act": "pause"});
+        assert_eq!(
+            may_say(None, &folder(Path::new("/nowhere/proc")), &pause),
+            Err(
+                "nothing names the process that asks, so it can't speak as the person: \
+                 only the person's own login says what they say"
+                    .to_owned()
+            ),
+            "as a client of a network door would be"
+        );
+        assert_eq!(
+            may_say(
+                None,
+                &folder(Path::new("/nowhere/proc")),
+                &json!({"text": "hi", "from": "machine"})
+            ),
+            Ok(false),
+            "though it may say what it likes as itself"
+        );
+    }
+
+    #[test]
+    fn an_asker_nothing_can_be_read_of_is_taken_at_its_word_but_not_seen() {
+        assert_eq!(
+            may_say(
+                Some(40),
+                &folder(Path::new("/nowhere/proc")),
+                &json!({"act": "pause"})
+            ),
+            Ok(false)
         );
     }
 }

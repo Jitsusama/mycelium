@@ -67,6 +67,10 @@ pub struct Steer {
     pub address: String,
     /// What is written, only the fields the harness reads.
     pub body: Map<String, Value>,
+    /// Whether the node it was first asked of saw who asked, and found
+    /// them the person's own, as a steer claiming the person must have
+    /// been to cross a link.
+    pub checked: bool,
 }
 
 impl Steer {
@@ -131,7 +135,11 @@ impl Steer {
         {
             return Err(format!("{id} can't name a talk"));
         }
-        Ok(Self { address, body })
+        Ok(Self {
+            address,
+            body,
+            checked: false,
+        })
     }
 
     /// Whether it only wakes a parked session, so nothing is delivered.
@@ -162,6 +170,14 @@ impl Steer {
 /// Why an answer isn't one, if it isn't: it names the want or the look it
 /// answers, never both, and gives a choice's value or, to a want only, the
 /// person's words, as the harness's `steerFrom` reads it.
+/// Whether `said` claims to be from the person, as the harness reads a
+/// steer's `from`: naming nobody, Joel, or the person, in any case.
+#[must_use]
+pub fn claims_the_person(said: &Value) -> bool {
+    let from = said.get("from").and_then(Value::as_str).unwrap_or("");
+    from.is_empty() || from.eq_ignore_ascii_case("joel") || from.eq_ignore_ascii_case("person")
+}
+
 fn answers(body: &Map<String, Value>) -> Result<(), String> {
     let named = |field: &str| {
         body.get(field)
@@ -404,6 +420,25 @@ pub fn open_talks(inboxes: &Path) -> Vec<Talk> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_steer_claims_the_person_as_the_harness_reads_it() {
+        for said in [
+            json!({"act": "pause"}),
+            json!({"act": "pause", "from": ""}),
+            json!({"text": "hi", "from": "Joel"}),
+            json!({"text": "hi", "from": "person"}),
+            json!({"text": "hi", "from": 7}),
+        ] {
+            assert!(claims_the_person(&said), "{said} speaks as the person");
+        }
+        for said in [
+            json!({"text": "leaving at six", "from": "machine"}),
+            json!({"text": "hi", "from": "P9R1KI"}),
+        ] {
+            assert!(!claims_the_person(&said), "{said} doesn't");
+        }
+    }
 
     fn inboxes() -> tempfile::TempDir {
         tempfile::tempdir().expect("a folder")

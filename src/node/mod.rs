@@ -44,6 +44,7 @@ use crate::wire::{Answer, Draft, Event, Offers, Reply, Request, Response, Start,
 use crate::within;
 
 mod asker;
+pub use asker::Processes;
 mod crossing;
 mod standing;
 mod team;
@@ -156,9 +157,9 @@ pub struct Given {
     pub flows: Flows,
     /// Where the harness marks each session it parks here.
     pub parked: PathBuf,
-    /// Where the machine tells its processes, `/proc`, which says whether
+    /// Where the machine tells who runs its processes, which says whether
     /// a client asking to steer as the person is an agent's.
-    pub procs: PathBuf,
+    pub processes: Processes,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -525,8 +526,9 @@ struct Shared<S> {
     boot: Arc<standing::Boot>,
     /// This machine's sessions' steer inboxes.
     steers: PathBuf,
-    /// Where the machine tells its processes, which says who asks to steer.
-    procs: Arc<Path>,
+    /// Where the machine tells who runs its processes, which says who asks
+    /// to steer.
+    processes: Arc<Processes>,
     /// The process at the other end of the connection served, as the
     /// kernel says, or none for the node's own loop and one it won't name.
     client: Option<i32>,
@@ -586,7 +588,7 @@ impl<S: Clone> Clone for Shared<S> {
             parked: self.parked.clone(),
             boot: self.boot.clone(),
             steers: self.steers.clone(),
-            procs: self.procs.clone(),
+            processes: self.processes.clone(),
             client: self.client,
             updater: self.updater.clone(),
             starter: self.starter.clone(),
@@ -853,10 +855,10 @@ impl<S: Store> Shared<S> {
             book,
             flows,
             parked,
-            procs,
+            processes,
         } = given;
         let shared = Self {
-            procs: procs.into(),
+            processes: processes.into(),
             client: None,
             served: Arc::new(Served::start(serves)),
             providers: providers.into(),
@@ -1268,8 +1270,15 @@ impl<S: Store> Shared<S> {
     /// so the replies carried back land where the person's launcher reads
     /// them.
     async fn steer(&self, address: &str, said: &serde_json::Value) -> Reply {
-        asker::may_say(self.client, &self.procs, said)?;
-        let steer = Steer::new(address, said)?;
+        // A Mac's `ps` takes tens of milliseconds, too long to hold the
+        // node's other work up for.
+        let (client, processes, asked) = (self.client, self.processes.clone(), said.clone());
+        let checked =
+            tokio::task::spawn_blocking(move || asker::may_say(client, &processes, &asked))
+                .await
+                .map_err(|error| format!("who asks couldn't be told: {error}"))??;
+        let mut steer = Steer::new(address, said)?;
+        steer.checked = checked;
         let address = steer.address.clone();
         let sessions: Vec<Session> = self
             .lock()
@@ -1808,7 +1817,7 @@ mod tests {
             book: Book::at("/nowhere/made.jsonl".into()),
             flows: Flows::default(),
             parked: "/nowhere/parked".into(),
-            procs: "/nowhere/proc".into(),
+            processes: Processes::Folder("/nowhere/proc".into()),
         }
     }
 
@@ -1848,7 +1857,7 @@ mod tests {
         let providers = providers_of(socket);
         let book = Book::at(socket.with_file_name("made.jsonl"));
         let parked = parks_of(socket);
-        let procs = procs_of(socket);
+        let processes = Processes::Folder(procs_of(socket));
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -1862,7 +1871,7 @@ mod tests {
                 book,
                 flows: Flows::default(),
                 parked,
-                procs,
+                processes,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -1957,6 +1966,27 @@ mod tests {
             address: "sak9fz".to_owned(),
             steer: json!({"text": "how goes it?", "from": "joel", "id": "t1"}),
         };
+        // Nothing the near node can read tells it who asks, so it lets
+        // the steer go but can't say it saw the person ask, and the far
+        // end takes nothing as the person on its word.
+        let Err(unseen) = ask(near_socket.to_owned(), asked.clone()).await else {
+            panic!("a steer as Joel nobody saw is refused across the link");
+        };
+        assert!(
+            unseen.starts_with("the machine it was asked on didn't say it saw who asked"),
+            "saying why: {unseen}"
+        );
+        // The client runs in this process, which the stand-in for /proc
+        // now tells as the person's own.
+        let client = procs_of(near_socket).join(std::process::id().to_string());
+        fs::create_dir_all(&client).expect("its folder is made");
+        fs::write(client.join("status"), "Name:\tmycelium\nPPid:\t1\n")
+            .expect("its status is written");
+        fs::write(
+            client.join("cgroup"),
+            "0::/user.slice/user-1000.slice/user@1000.service/session.slice/quickshell.service\n",
+        )
+        .expect("its group is written");
         assert_eq!(
             ask(near_socket.to_owned(), asked).await,
             Ok(Response::Steered {
