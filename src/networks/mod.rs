@@ -270,7 +270,26 @@ impl Mycelium {
     #[must_use]
     pub fn of(realm: &str, teams: &[Value], sessions: &[Value], machines: &[Value]) -> Self {
         let quests = quest_titles(sessions);
+        let renamed = renamed(sessions);
+        // A team under an address its orchestrator was renamed from is one
+        // a node too old to fold them still says; its sessions are drawn in
+        // the orchestrator's own.
+        let teams: Vec<Value> = teams
+            .iter()
+            .filter(|team| !renamed.contains_key(&swarm::address(team).to_lowercase()))
+            .cloned()
+            .collect();
+        let teams = teams.as_slice();
         let mut sessions: Vec<Cell> = sessions.iter().filter_map(session_cell).collect();
+        for cell in &mut sessions {
+            let mut seen = BTreeSet::new();
+            cell.networks = cell
+                .networks
+                .iter()
+                .map(|name| owned_network(name, &renamed))
+                .filter(|name| seen.insert(name.clone()))
+                .collect();
+        }
         sessions.sort_by(|one, other| one.since.cmp(&other.since).then(one.name.cmp(&other.name)));
         let mut networks = joined(teams, &sessions, &quests);
         networks.push(machines_network(machines, &sessions));
@@ -539,6 +558,42 @@ fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>)
     titled_by_teams(&mut networks, teams);
     titled_by_quests(&mut networks, quests);
     networks
+}
+
+/// Each address a living session goes by beside its own, to its own, both
+/// in lower case, as the node's teams fold them (`node::team`): an
+/// orchestrator renamed keeps its old address, and the sessions it spawned
+/// before still hear the old one's group.
+fn renamed(sessions: &[Value]) -> BTreeMap<String, String> {
+    let mut renamed = BTreeMap::new();
+    let living = sessions
+        .iter()
+        .filter(|session| matches!(session["state"].as_str(), Some("busy" | "idle")));
+    for session in living {
+        let Some(own) = session["address"].as_str() else {
+            continue;
+        };
+        let others = session["presence"]["addresses"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|other| *other != own);
+        for other in others {
+            renamed
+                .entry(other.to_lowercase())
+                .or_insert_with(|| own.to_lowercase());
+        }
+    }
+    renamed
+}
+
+/// The network `name`, under its orchestrator's own address where it
+/// names one the orchestrator was renamed from.
+fn owned_network(name: &str, renamed: &BTreeMap<String, String>) -> String {
+    name.strip_prefix("orchestration.")
+        .and_then(|old| renamed.get(old))
+        .map_or_else(|| name.to_owned(), |own| format!("orchestration.{own}"))
 }
 
 /// Each quest's title by its short id in lower case, as the sessions

@@ -76,6 +76,30 @@ fn address_of(quest: &str) -> &str {
     quest.rsplit('-').next().unwrap_or(quest)
 }
 
+/// Each address a living session goes by beside its own, mapped to its
+/// own, as the mesh reaches it by any of them. An orchestrator renamed
+/// keeps its old address among its addresses, while the sessions it
+/// spawned before still answer to the old one, so its team is one team
+/// under its own address rather than two, one of them without a lead
+/// (H2VYOB, once 37MNI3, 2026-11-14).
+fn renamed<'a>(living: &[&'a Session]) -> BTreeMap<&'a str, &'a str> {
+    let mut renamed = BTreeMap::new();
+    for session in living {
+        let others = session
+            .presence
+            .get("addresses")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|other| *other != session.address);
+        for other in others {
+            renamed.entry(other).or_insert(session.address.as_str());
+        }
+    }
+    renamed
+}
+
 /// The name of the group an orchestrator's team hears.
 fn group_of(team: &str) -> String {
     format!("orchestration.{}", team.to_lowercase())
@@ -111,17 +135,32 @@ pub fn teams(
         .iter()
         .filter(|session| Attention::of(session, parked).is_some())
         .collect();
+    let renamed = renamed(&living);
+    let own = |address: &str| -> String {
+        renamed
+            .get(address)
+            .map_or_else(|| address.to_owned(), |own| (*own).to_owned())
+    };
+    let owned: Vec<(Option<String>, Option<String>)> = living
+        .iter()
+        .map(|session| {
+            (
+                session.orchestrated_by.as_deref().map(own),
+                session.quest.as_deref().map(|quest| own(address_of(quest))),
+            )
+        })
+        .collect();
     let mut teams: BTreeMap<&str, Team> = BTreeMap::new();
-    for session in &living {
-        if let Some(team) = session.orchestrated_by.as_deref() {
+    for (session, (team, _)) in living.iter().zip(&owned) {
+        if let Some(team) = team.as_deref() {
             teams.entry(team).or_default().members.push(session);
         }
     }
-    for session in &living {
-        let Some(quest) = session.quest.as_deref() else {
+    for (session, (_, quest)) in living.iter().zip(&owned) {
+        let Some(quest) = quest.as_deref() else {
             continue;
         };
-        if let Some(team) = teams.get_mut(address_of(quest)) {
+        if let Some(team) = teams.get_mut(quest) {
             team.lead.get_or_insert(session);
             if session.orchestrated_by.is_none() {
                 team.members.push(session);
@@ -131,8 +170,9 @@ pub fn teams(
     let within: BTreeMap<&str, &str> = teams
         .iter()
         .filter_map(|(id, team)| {
-            let above = team.lead?.orchestrated_by.as_deref()?;
-            (above != *id && teams.contains_key(above)).then_some((*id, above))
+            let above = own(team.lead?.orchestrated_by.as_deref()?);
+            let (above, _) = teams.get_key_value(above.as_str())?;
+            (above != id).then_some((*id, *above))
         })
         .collect();
     let worst = rolled_up(&teams, &within, parked);
@@ -392,6 +432,46 @@ mod tests {
             "its members"
         );
         assert_eq!(team["worst"], json!("moving"), "the worst of them");
+    }
+
+    #[test]
+    fn an_orchestrator_renamed_leads_one_team_with_those_answering_its_old_address() {
+        let mut lead = session(
+            "lead",
+            State::Busy,
+            (Some("REEF01"), Some("QEST-20261114-KELP01")),
+            &[],
+        );
+        lead.address = "KELP01".to_owned();
+        lead.presence = json!({"addresses": ["KELP01", "HARBOR", "EF5B865E"]}).into();
+        let sessions = [
+            session(
+                "top",
+                State::Idle,
+                (None, Some("QEST-20261007-REEF01")),
+                &[],
+            ),
+            lead,
+            session("old", State::Busy, (Some("HARBOR"), None), &[]),
+            session("new", State::Idle, (Some("KELP01"), None), &[]),
+        ];
+        let teams = worked_out(&sessions, &[("KELP01", "Kelp Beds")], &[]);
+        assert_eq!(
+            teams.keys().collect::<Vec<_>>(),
+            ["KELP01", "REEF01"],
+            "no team left under the old address"
+        );
+        let team = &teams["KELP01"];
+        assert_eq!(
+            (&team["title"], &team["lead"], &team["within"]),
+            (&json!("Kelp Beds"), &json!("lead"), &json!("REEF01")),
+            "titled and led as its own address, within its orchestrator's team"
+        );
+        assert_eq!(
+            team["members"],
+            json!(["old", "new"]),
+            "those answering its old address and its new one alike"
+        );
     }
 
     #[test]
