@@ -28,7 +28,7 @@ use mycelium::ssh::Asked as KeyAsked;
 use mycelium::store::Store as _;
 use mycelium::store::folders::Folders;
 use mycelium::web::Said;
-use mycelium::wire::{Draft, Request, Response, Start};
+use mycelium::wire::{Draft, Reply, Request, Response, Start};
 use mycelium::{carry, hold, hosted_attach, install, link, node, place, served};
 
 #[derive(Parser)]
@@ -135,10 +135,20 @@ enum Action {
     /// Speaks in a quest's web, the murmurs and ties its sessions on every
     /// machine share: says into it, or folds it into what it says now.
     Web(WebAsked),
-    /// Prints what this machine is, as its node measures it.
-    Machine,
-    /// Prints what every machine of the realm is, this one first.
-    Machines,
+    /// Prints what every machine of the realm is, this one first;
+    /// or, given its name, what one machine is. `machine` is the same,
+    /// and bare prints what this machine is.
+    Machines {
+        /// The machine, such as `penelope`.
+        name: Option<String>,
+    },
+    /// `machines`, as it was spelt before, when bare it printed this
+    /// machine.
+    #[command(hide = true)]
+    Machine {
+        /// The machine, if not this one.
+        name: Option<String>,
+    },
     /// Prints the shapes of machine the node's providers could make, and
     /// why any couldn't say.
     Offers,
@@ -194,26 +204,24 @@ enum Action {
         /// The session's address.
         address: String,
     },
-    /// Starts a program on a terminal a holder of its own keeps, so its
-    /// window can close and `attach` take it up again from any terminal;
-    /// then joins it, unless `--detached`.
-    Hold {
-        /// The folder it starts in, if not this one.
-        #[arg(long)]
-        folder: Option<PathBuf>,
-        /// Prints its id and leaves it running, unjoined.
-        #[arg(long)]
-        detached: bool,
-        /// The program and its arguments, after `--`.
-        #[arg(last = true, required = true)]
-        command: Vec<String>,
-    },
-    /// Joins a held session from this terminal, or a conversation a pi
-    /// host holds with `--host` and `--session`; closing it only leaves.
-    /// Joined to a host, it exits 3 when the host lets the conversation go
-    /// back to plain pi, as a release does, and 0 on any other leaving.
+    /// Prints every session held on this machine, a JSON line each, or
+    /// the one named. `holds add -- PROGRAM` starts a program on a
+    /// terminal a holder of its own keeps, so its window can close and
+    /// `holds ID attach` take it up again from any terminal, and joins
+    /// it unless `--detached`. `holds ID again -- PROGRAM` names the
+    /// command it starts with when it next starts again, over any its
+    /// program names as it parks, and wakes it if it is parked, printing
+    /// `{"id", "woke"}`; a pi held on an old conversation is moved onto
+    /// a newer one this way. `hold` is the same.
+    #[command(alias = "hold")]
+    Holds(Holds),
+    /// Joins a conversation a pi host holds, with `--host` and
+    /// `--session`; closing it only leaves. It exits 3 when the host
+    /// lets the conversation go back to plain pi, as a release does, and
+    /// 0 on any other leaving. A held session is joined with `holds ID
+    /// attach`, which `attach ID` still spells.
     Attach {
-        /// Its id, as `held` lists it.
+        /// A held session's id, as `holds` lists it.
         #[arg(required_unless_present = "host", conflicts_with = "host")]
         id: Option<String>,
         /// The pi host holding the conversation, by its key, such as
@@ -224,20 +232,19 @@ enum Action {
         #[arg(long, requires = "host")]
         session: Option<String>,
     },
-    /// Prints every session held on this machine, a JSON line each.
+    /// `holds`, as it was spelt before.
+    #[command(hide = true)]
     Held,
-    /// Names the command a session held on this machine starts with when
-    /// it next starts again, over any its program names as it parks, and
-    /// wakes it if it is parked; prints `{"id", "woke"}`. A pi held on an
-    /// old conversation is moved onto a newer one this way.
+    /// `holds ID again`, as it was spelt before.
+    #[command(hide = true)]
     Again {
-        /// Its id, as `held` lists it.
+        /// Its id, as `holds` lists it.
         id: String,
         /// The program and its arguments, after `--`.
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
-    /// Holds a program, as `hold` starts it, in a process of its own.
+    /// Holds a program, as `holds add` starts it, in a process of its own.
     #[command(hide = true)]
     Holder {
         #[arg(long)]
@@ -329,6 +336,129 @@ impl Node {
             .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why)),
             None => Ok(BTreeMap::new()),
         }
+    }
+}
+
+/// What is asked of the sessions held on this machine, by the words after
+/// `holds`.
+#[derive(clap::Args)]
+struct Holds {
+    /// A held session's id, as bare `holds` lists them; or `add`, to
+    /// hold the program after `--`.
+    id: Option<String>,
+    /// What is done to it: `attach` joins it from this terminal, and
+    /// `again` names the program after `--` as its next start.
+    #[arg(requires = "id")]
+    act: Option<HoldAct>,
+    /// For `add`: the folder it starts in, if not this one.
+    #[arg(long)]
+    folder: Option<PathBuf>,
+    /// For `add`: prints its id and leaves it running, unjoined.
+    #[arg(long)]
+    detached: bool,
+    /// For `add` and `again`: the program and its arguments, after `--`.
+    #[arg(last = true)]
+    command: Vec<String>,
+}
+
+/// What is done to one held session.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum HoldAct {
+    /// Joins it from this terminal; closing it only leaves.
+    Attach,
+    /// Names the program its next start runs.
+    Again,
+}
+
+/// What a line asks of the machines or of what is held here, read the same
+/// whichever spelling it was typed in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Tree {
+    /// Every machine of the realm, this one first.
+    Machines,
+    /// This machine, as bare `machine` asks.
+    ThisMachine,
+    /// The machine of this name.
+    Machine(String),
+    /// Every session held here.
+    Holds,
+    /// The session held here by this id.
+    Held(String),
+    /// A program held, started in `folder` and joined unless `detached`.
+    Hold {
+        folder: Option<PathBuf>,
+        detached: bool,
+        command: Vec<String>,
+    },
+    /// The session held by this id, joined from this terminal.
+    Attach(String),
+    /// The program the session held as `id` runs at its next start.
+    Again { id: String, command: Vec<String> },
+}
+
+/// What `action` asks of the machines or the holds, its old spellings
+/// read as their new ones, or why its words don't fit; none for any other
+/// action, and for an attach to a pi host's conversation.
+fn tree(action: &Action) -> Option<Result<Tree, String>> {
+    Some(Ok(match action {
+        Action::Machines { name: None } => Tree::Machines,
+        Action::Machine { name: None } => Tree::ThisMachine,
+        Action::Machines { name: Some(name) } | Action::Machine { name: Some(name) } => {
+            Tree::Machine(name.clone())
+        }
+        Action::Holds(holds) => return Some(holds_asked(holds)),
+        Action::Held => Tree::Holds,
+        Action::Attach { id: Some(id), .. } => Tree::Attach(id.clone()),
+        Action::Again { id, command } => Tree::Again {
+            id: id.clone(),
+            command: command.clone(),
+        },
+        _ => return None,
+    }))
+}
+
+/// What the words after `holds` ask, or why they don't fit.
+fn holds_asked(holds: &Holds) -> Result<Tree, String> {
+    let Holds {
+        id,
+        act,
+        folder,
+        detached,
+        command,
+    } = holds;
+    let adding = match (id.as_deref(), act) {
+        (Some("add"), None) => true,
+        // `hold -- PROGRAM`, the old spelling, names no `add`.
+        (None, None) => !command.is_empty(),
+        _ => false,
+    };
+    if adding {
+        if command.is_empty() {
+            return Err("add what? name the program after --".to_owned());
+        }
+        return Ok(Tree::Hold {
+            folder: folder.clone(),
+            detached: *detached,
+            command: command.clone(),
+        });
+    }
+    if folder.is_some() || *detached {
+        return Err("--folder and --detached are for holds add".to_owned());
+    }
+    match (id, act) {
+        (Some(id), Some(HoldAct::Again)) if command.is_empty() => {
+            Err(format!("{id} again as what? name the program after --"))
+        }
+        (Some(id), Some(HoldAct::Again)) => Ok(Tree::Again {
+            id: id.clone(),
+            command: command.clone(),
+        }),
+        _ if !command.is_empty() => {
+            Err("a program after -- is for holds add and holds ID again".to_owned())
+        }
+        (Some(id), Some(HoldAct::Attach)) => Ok(Tree::Attach(id.clone())),
+        (Some(id), None) => Ok(Tree::Held(id.clone())),
+        (None, _) => Ok(Tree::Holds),
     }
 }
 
@@ -555,6 +685,10 @@ fn run(command: Command) -> io::Result<ExitCode> {
     })?;
     let realm = realm_named(realm)?;
     let socket = command.socket.unwrap_or_else(|| place::socket(&realm));
+    if let Some(asked) = tree(&command.action) {
+        let asked = asked.map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
+        return in_tree(&socket, &realm, asked);
+    }
     let ran = match command.action {
         Action::Node(node) => run_node(node, realm, &socket),
         Action::Link { here } => run_link(here, realm, socket, None),
@@ -576,8 +710,6 @@ fn run(command: Command) -> io::Result<ExitCode> {
         Action::Health { here } => health(&socket, here, realm),
         Action::Swarm { words, json, names } => in_swarm(&socket, &realm, &words, json, names),
         Action::Web(asked) => web(asked),
-        Action::Machine => print_reply(&socket, &Request::Machine),
-        Action::Machines => print_reply(&socket, &Request::Machines),
         Action::Offers => print_reply(&socket, &Request::Offers),
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
         Action::Update { machine } => print_reply(&socket, &Request::Update { machine }),
@@ -608,17 +740,11 @@ fn run(command: Command) -> io::Result<ExitCode> {
             }),
         ),
         Action::Flows => print_reply(&socket, &Request::Flows),
-        Action::Hold {
-            folder,
-            detached,
-            command,
-        } => hold(&realm, folder, detached, &command),
-        Action::Attach { id, host, session } => return join(&realm, id, host, session),
-        Action::Held => hold::held(&place::held(&realm))
-            .iter()
-            .try_for_each(print_line),
-        Action::Again { id, command } => hold::name_next(&place::held(&realm), &id, &command)
-            .and_then(|woke| print_line(&serde_json::json!({"id": id, "woke": woke}))),
+        Action::Attach {
+            host: Some(host),
+            session: Some(session),
+            ..
+        } => return attach_hosted(&realm, &host, &session),
         Action::Holder {
             id,
             folder,
@@ -639,8 +765,71 @@ fn run(command: Command) -> io::Result<ExitCode> {
             })
         }
         Action::Watch { groups, recent } => watch(&socket, groups, recent),
+        Action::Machines { .. }
+        | Action::Machine { .. }
+        | Action::Holds(_)
+        | Action::Held
+        | Action::Attach { .. }
+        | Action::Again { .. } => unreachable!("each is read as its tree above"),
     };
     ran.map(|()| ExitCode::SUCCESS)
+}
+
+/// Does what `asked` asks of the machines, through the node at `socket`,
+/// or of the sessions held here in `realm`.
+fn in_tree(socket: &Path, realm: &str, asked: Tree) -> io::Result<ExitCode> {
+    let held = place::held(realm);
+    match asked {
+        Tree::Machines => print_reply(socket, &Request::Machines),
+        Tree::ThisMachine => print_reply(socket, &Request::Machine),
+        Tree::Machine(name) => print_line(&one_machine(
+            Client::connect(socket)?.ask(&Request::Machines)?,
+            &name,
+        )?),
+        Tree::Holds => hold::held(&held).iter().try_for_each(print_line),
+        Tree::Held(id) => match hold::held(&held).into_iter().find(|one| one.id == id) {
+            Some(one) => print_line(&one),
+            None => Err(not_held(&id)),
+        },
+        Tree::Hold {
+            folder,
+            detached,
+            command,
+        } => hold(realm, folder, detached, &command),
+        Tree::Attach(id) => attach(&held, &id),
+        Tree::Again { id, command } => hold::name_next(&held, &id, &command)
+            .and_then(|woke| print_line(&serde_json::json!({"id": id, "woke": woke}))),
+    }
+    .map(|()| ExitCode::SUCCESS)
+}
+
+/// The node's answer for every machine, `reply`, cut to the one `name`d,
+/// in the answer `machine` gives for this one.
+fn one_machine(reply: Reply, name: &str) -> io::Result<Reply> {
+    match reply {
+        Ok(Response::Machines(machines)) => machines
+            .into_iter()
+            .find(|machine| machine.name == name)
+            .map(|machine| Ok(Response::Machine(Box::new(machine))))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no machine of the realm is {name}; `mycelium machines` lists them"),
+                )
+            }),
+        Ok(_) => Err(io::Error::other(
+            "the node answered machines with something else",
+        )),
+        Err(why) => Ok(Err(why)),
+    }
+}
+
+/// That nothing is held as `id`, and where to look for what is.
+fn not_held(id: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("nothing is held as {id}; `mycelium holds` lists what is"),
+    )
 }
 
 /// Prints what the node says of `groups` as it says it, after the
@@ -1064,10 +1253,7 @@ fn be_holder(holding: &hold::holder::Holding<'_>) -> io::Result<()> {
 fn attach(dir: &Path, id: &str) -> io::Result<()> {
     let socket = hold::socket(dir, id);
     if !socket.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("nothing is held as {id}; `mycelium held` lists what is"),
-        ));
+        return Err(not_held(id));
     }
     let runtime = runtime()?;
     let joined = runtime.block_on(hold::attach::join_here(&socket));
@@ -1077,21 +1263,6 @@ fn attach(dir: &Path, id: &str) -> io::Result<()> {
     joined?;
     eprintln!("mycelium: the session held as {id} has ended");
     Ok(())
-}
-
-/// Joins the session held by `id`, or the conversation `session` within
-/// the pi host `host`, as clap let one or the other through.
-fn join(
-    realm: &str,
-    id: Option<String>,
-    host: Option<String>,
-    session: Option<String>,
-) -> io::Result<ExitCode> {
-    match (id, host, session) {
-        (_, Some(host), Some(session)) => attach_hosted(realm, &host, &session),
-        (Some(id), _, _) => attach(&place::held(realm), &id).map(|()| ExitCode::SUCCESS),
-        _ => unreachable!("clap asks for an id or a host and session"),
-    }
 }
 
 /// Joins `session` through the pi host `host` of `realm` on this machine
@@ -1217,7 +1388,104 @@ fn intent(name: &str) -> Result<Intent, String> {
 mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Action, Command, SwarmAsked, swarm_asked};
+    use super::{Action, Command, SwarmAsked, Tree, swarm_asked, tree};
+
+    /// What `words` after `mycelium --realm work` ask of the machines or
+    /// the holds, or why they don't fit.
+    fn asked(words: &str) -> Result<Tree, String> {
+        let line = ["mycelium", "--realm", "work"];
+        let parsed = Command::try_parse_from(line.into_iter().chain(words.split(' ')))
+            .map_err(|error| error.kind().to_string())?;
+        tree(&parsed.action).unwrap_or_else(|| panic!("{words:?} is a tree"))
+    }
+
+    // Joel's pivot to command trees (2026-11-12): one command for each
+    // collection, the singular a silent alias, and every old spelling
+    // still working for the callers that use it.
+    #[test]
+    fn every_old_spelling_asks_what_its_tree_does() {
+        Command::command().debug_assert();
+        let pi = || vec!["pi".to_owned()];
+        for (old, new, both) in [
+            (
+                "machine penelope",
+                "machines penelope",
+                Tree::Machine("penelope".to_owned()),
+            ),
+            ("held", "holds", Tree::Holds),
+            (
+                "attach h0",
+                "holds h0 attach",
+                Tree::Attach("h0".to_owned()),
+            ),
+            (
+                "again h0 -- pi",
+                "holds h0 again -- pi",
+                Tree::Again {
+                    id: "h0".to_owned(),
+                    command: pi(),
+                },
+            ),
+            (
+                "hold --detached -- pi",
+                "holds add --detached -- pi",
+                Tree::Hold {
+                    folder: None,
+                    detached: true,
+                    command: pi(),
+                },
+            ),
+        ] {
+            assert_eq!(asked(old), Ok(both.clone()), "{old}");
+            assert_eq!(asked(new), Ok(both), "{new}");
+        }
+        assert_eq!(asked("machines"), Ok(Tree::Machines), "bare, every machine");
+        assert_eq!(
+            asked("machine"),
+            Ok(Tree::ThisMachine),
+            "the old singular, bare, this one"
+        );
+        assert_eq!(
+            asked("holds h0"),
+            Ok(Tree::Held("h0".to_owned())),
+            "one held"
+        );
+        assert_eq!(
+            asked("hold h0 attach"),
+            Ok(Tree::Attach("h0".to_owned())),
+            "the singular is the collection"
+        );
+        assert!(
+            matches!(
+                Command::try_parse_from(["m", "attach", "--host", "h", "--session", "s"])
+                    .map(|line| tree(&line.action)),
+                Ok(None)
+            ),
+            "a pi host's conversation is joined outside the tree"
+        );
+    }
+
+    #[test]
+    fn words_that_dont_fit_the_holds_say_why() {
+        for (words, why) in [
+            ("holds add", "add what? name the program after --"),
+            (
+                "holds h0 again",
+                "h0 again as what? name the program after --",
+            ),
+            (
+                "holds h0 attach -- pi",
+                "a program after -- is for holds add and holds ID again",
+            ),
+            (
+                "holds h0 --detached",
+                "--folder and --detached are for holds add",
+            ),
+        ] {
+            assert_eq!(asked(words), Err(why.to_owned()), "{words}");
+        }
+        assert!(asked("holds h0 juggle").is_err(), "an act it doesn't know");
+    }
 
     /// What the words after `mycelium --realm work swarm` ask, and whether
     /// they ask for JSON, as the command line parses them.

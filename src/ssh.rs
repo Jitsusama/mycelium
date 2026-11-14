@@ -28,8 +28,9 @@ pub enum Asked {
 /// those it may in `realm`, or why it is refused.
 ///
 /// A node asks `mycelium link --realm REALM` for a link and `mycelium
-/// --realm REALM attach ID` to join a session, or `attach --host KEY
-/// --session ID` for a conversation within a pi host, each word plain,
+/// --realm REALM attach ID` to join a session, or `holds ID attach` as
+/// it is spelt now, or `attach --host KEY --session ID` for a
+/// conversation within a pi host, each word plain,
 /// since those are all that a node dials with; any other words are
 /// refused, whatever program the first names.
 ///
@@ -63,7 +64,10 @@ pub fn asked(original: Option<&str>, realm: &str) -> Result<Asked, String> {
         [program, "link", "--realm", asked] if is_mycelium(program) => {
             realm_is(asked).map(|()| Asked::Link)
         }
-        [program, "--realm", asked, "attach", id] if is_mycelium(program) => {
+        [program, "--realm", asked, "attach", id]
+        | [program, "--realm", asked, "holds", id, "attach"]
+            if is_mycelium(program) =>
+        {
             realm_is(asked).map(|()| Asked::Attach((*id).to_owned()))
         }
         [
@@ -115,6 +119,11 @@ mod tests {
             asked(Some("mycelium --realm work attach 7bf12940"), "work"),
             Ok(Asked::Attach("7bf12940".to_owned())),
             "joining a held session"
+        );
+        assert_eq!(
+            asked(Some("mycelium --realm work holds 7bf12940 attach"), "work"),
+            Ok(Asked::Attach("7bf12940".to_owned())),
+            "joining it as the holds tree spells it"
         );
         assert_eq!(
             asked(

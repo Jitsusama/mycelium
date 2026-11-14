@@ -218,7 +218,7 @@ pub fn name_next(dir: &Path, id: &str, command: &[String]) -> io::Result<bool> {
     let Some(one) = held(dir).into_iter().find(|one| one.id == id) else {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("nothing is held as {id}; `mycelium held` lists what is"),
+            format!("nothing is held as {id}; `mycelium holds` lists what is"),
         ));
     };
     let writing = dir.join(format!(".{id}.next"));

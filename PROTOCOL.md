@@ -203,8 +203,9 @@ Three seams shape a link:
   pinned in the other's `authorized_keys` to `mycelium --realm REALM
   ssh --from NAME`, which reads what was asked from
   `SSH_ORIGINAL_COMMAND` and runs only `mycelium link --realm REALM`,
-  `mycelium --realm REALM attach ID` or `mycelium --realm REALM attach
-  --host HOST --session ID`, each in plain words. That link
+  `mycelium --realm REALM attach ID` (or `holds ID attach`, as it is
+  spelt now) or `mycelium --realm REALM attach --host HOST --session
+  ID`, each in plain words. That link
   admits only NAME, since the key proved it, and refuses an end saying
   it is another; anything else asked is refused, said to the asker, and
   kept as a JSON line in `refused-keys.jsonl` in mycelium's folder. Or a
@@ -475,8 +476,9 @@ kitty's socket, and `app_id`, the app id its window was opened with,
 where its opener said so in `MYCELIUM_APP_ID`, which names the same
 window in the compositor's list). Only a session of this machine's has a
 `window`, since a window is gone to on its own machine. A session a
-holder keeps, as one started with `mycelium hold -- pi` is, says
-`held`: the id `mycelium attach` takes it up by on its machine. It is
+holder keeps, as one started with `mycelium holds add -- pi` is, says
+`held`: the id `mycelium holds ID attach` takes it up by on its
+machine. It is
 known by the holder's program being the session's own process, which
 only its own machine sees, so a link carries it with the presence. A
 held session of this machine's has as its `window` the latest window
@@ -875,10 +877,12 @@ its session writes each line, in an inbox made since.
 
 ## A Held Session
 
-`mycelium hold -- <program>` starts a program on a terminal that a
-holder of its own keeps, so the window it started in can close and
-`mycelium attach <id>` take it up again from any terminal on the
-machine. The holder is its own process, in a session of its own, rather
+`mycelium holds add -- <program>` starts a program on a terminal that
+a holder of its own keeps, so the window it started in can close and
+`mycelium holds <id> attach` take it up again from any terminal on the
+machine. `hold` is the same as `holds`, and the older spellings,
+`hold -- <program>`, `held`, `attach <id>` and `again <id>`, still
+work. The holder is its own process, in a session of its own, rather
 than the node's: restarting the node's service stops everything the node
 started, and a closing window hangs up on its own session only.
 
@@ -888,11 +892,12 @@ reachable only by its account, beside
 `holder`'s and the program's `pid`, `since`, `parked` while it is, and
 the `windows` joined to it that said which they are, the latest last. A
 window leaves the record the moment its terminal leaves, and both go
-when the program ends. `mycelium held` lists every record whose holder
-still runs. Each start of the program, the first and every one after a
-park, has the person's environment as their service manager has it
-then (systemd's user manager's `Environment`, read with `busctl`), over
-the one its holder was started with, keeping only the holder's `PWD`,
+when the program ends. `mycelium holds` lists every record whose
+holder still runs, and `mycelium holds <id>` prints one. Each start of
+the program, the first and every one after a park, has the person's
+environment as their service manager has it then (systemd's user
+manager's `Environment`, read with `busctl`), over the one its holder
+was started with, keeping only the holder's `PWD`,
 `OLDPWD`, `SHLVL`, `_` and `TERM`, and its own `PATH` first, with only
 the manager's folders it lacks after it, since the shell it was started
 from puts there what the manager never hears of, such as a developer's
@@ -923,7 +928,7 @@ one started, and the one the record says, from then on, and the file is
 taken away once read. A command named from outside, in `<id>.next`,
 wins over it, since a program names itself: a pi held on an old
 conversation would otherwise write that one over a newer one named for
-it while it ran. `mycelium again <id> -- <command>` writes that file
+it while it ran. `mycelium holds <id> again -- <command>` writes that file
 whole and wakes the program if it is parked. A program a node started
 runs through the login shell at every start, not only its first, since
 its holder has only the node's environment, where a bare `pi` isn't
@@ -936,7 +941,7 @@ A joined terminal sends frames of a tag byte, a two-byte big-endian
 length and what it carries: tag 0 is bytes typed, and tag 1 is its size,
 rows then columns, two bytes each, sent on joining and on each change.
 Tag 2 is the window the terminal is, as JSON in a session's `window`
-shape, once on joining when it can say: `mycelium attach` in a kitty
+shape, once on joining when it can say: `mycelium holds <id> attach` in a kitty
 window says its id and kitty's socket.
 The holder sends back the program's output as it comes. Any number may
 join at once; the program takes the latest size it was told. One joining

@@ -42,12 +42,17 @@ fn a_key_asking_anything_but_a_link_or_an_attach_is_refused_and_kept() {
 #[test]
 fn a_key_asking_to_attach_is_let_through_to_attach() {
     let dir = tempfile::tempdir().expect("a temporary folder");
-    let attaching = asking(dir.path(), "mycelium --realm work attach 7bf12940");
-    assert_eq!(
-        String::from_utf8_lossy(&attaching.stderr),
-        "mycelium: nothing is held as 7bf12940; `mycelium held` lists what is\n",
-        "it attaches, and nothing is held by that id"
-    );
+    for asked in [
+        "mycelium --realm work attach 7bf12940",
+        "mycelium --realm work holds 7bf12940 attach",
+    ] {
+        let attaching = asking(dir.path(), asked);
+        assert_eq!(
+            String::from_utf8_lossy(&attaching.stderr),
+            "mycelium: nothing is held as 7bf12940; `mycelium holds` lists what is\n",
+            "{asked} attaches, and nothing is held by that id"
+        );
+    }
     assert!(
         !dir.path().join("refused-keys.jsonl").exists(),
         "and nothing is kept as refused"
