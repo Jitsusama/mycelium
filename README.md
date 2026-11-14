@@ -64,7 +64,9 @@ The harness mesh's messages and presence, carried between machines:
   `mycelium cells` lists every session worst first, then the machines,
   and `mycelium cells <NAME>` says what one is and which networks it
   joined. Both print JSON lines with `-o json`, networks first, then
-  cells, the model a page draws the mycelium from.
+  cells, the model a page draws the mycelium from: a session's cell
+  also says its id, what it asks, its repository, its usage today and
+  the orchestrations it leads.
 - `mycelium swarm say <NAME> <WORDS>` says something as the person to
   a team, which its lead hears, or to one session;
   `mycelium swarm pause|resume <NAME>` pauses or resumes every session
@@ -95,6 +97,9 @@ mycelium --realm work holds add -- pi
 mycelium --realm work holds
 mycelium --realm work holds 5b992038 attach
 ```
+
+Bare `mycelium` lists every command, and each command's `--help` says
+what it does in a line and gives an example to type.
 
 ## Lineage
 
