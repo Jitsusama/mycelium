@@ -170,7 +170,10 @@ pub struct Cell {
     /// What a session is doing, or asks, where it says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doing: Option<String>,
-    /// What a session asks its person, in its own words.
+    /// What a session asks its person, in its own words. `doing` carries
+    /// the same words for a session that asks, as the line a person reads;
+    /// this is the ask alone, for a reader that draws it apart, so keep
+    /// both.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asks: Option<String>,
     /// The repository a session works in, where it says.
