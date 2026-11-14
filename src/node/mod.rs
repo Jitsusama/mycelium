@@ -43,6 +43,7 @@ use crate::store::{self, Change, Store};
 use crate::wire::{Answer, Draft, Event, Offers, Reply, Request, Response, Start, Started};
 use crate::within;
 
+mod asker;
 mod crossing;
 mod standing;
 mod team;
@@ -155,6 +156,9 @@ pub struct Given {
     pub flows: Flows,
     /// Where the harness marks each session it parks here.
     pub parked: PathBuf,
+    /// Where the machine tells its processes, `/proc`, which says whether
+    /// a client asking to steer as the person is an agent's.
+    pub procs: PathBuf,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -521,6 +525,11 @@ struct Shared<S> {
     boot: Arc<standing::Boot>,
     /// This machine's sessions' steer inboxes.
     steers: PathBuf,
+    /// Where the machine tells its processes, which says who asks to steer.
+    procs: Arc<Path>,
+    /// The process at the other end of the connection served, as the
+    /// kernel says, or none for the node's own loop and one it won't name.
+    client: Option<i32>,
     /// The socket its machine's updater takes asks on.
     updater: PathBuf,
     starter: Option<Arc<Starter>>,
@@ -577,6 +586,8 @@ impl<S: Clone> Clone for Shared<S> {
             parked: self.parked.clone(),
             boot: self.boot.clone(),
             steers: self.steers.clone(),
+            procs: self.procs.clone(),
+            client: self.client,
             updater: self.updater.clone(),
             starter: self.starter.clone(),
             asks: self.asks.clone(),
@@ -842,8 +853,11 @@ impl<S: Store> Shared<S> {
             book,
             flows,
             parked,
+            procs,
         } = given;
         let shared = Self {
+            procs: procs.into(),
+            client: None,
             served: Arc::new(Served::start(serves)),
             providers: providers.into(),
             book,
@@ -1254,6 +1268,7 @@ impl<S: Store> Shared<S> {
     /// so the replies carried back land where the person's launcher reads
     /// them.
     async fn steer(&self, address: &str, said: &serde_json::Value) -> Reply {
+        asker::may_say(self.client, &self.procs, said)?;
         let steer = Steer::new(address, said)?;
         let address = steer.address.clone();
         let sessions: Vec<Session> = self
@@ -1567,10 +1582,11 @@ impl Inner {
 
 /// Serves one client: requests answered a line each, or a watch for as long
 /// as it stays.
-async fn serve<S: Store>(stream: UnixStream, shared: Shared<S>) {
+async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
     // The kernel says which process is at the other end, so no client can
-    // say it is present for another.
+    // say it is present for another, nor an agent's steer as the person.
     let process = stream.peer_cred().ok().and_then(|cred| cred.pid());
+    shared.client = process;
     let (reading, mut writing) = stream.into_split();
     let mut lines = BufReader::new(reading).lines();
     while let Ok(Some(line)) = lines.next_line().await {
@@ -1792,6 +1808,7 @@ mod tests {
             book: Book::at("/nowhere/made.jsonl".into()),
             flows: Flows::default(),
             parked: "/nowhere/parked".into(),
+            procs: "/nowhere/proc".into(),
         }
     }
 
@@ -1831,6 +1848,7 @@ mod tests {
         let providers = providers_of(socket);
         let book = Book::at(socket.with_file_name("made.jsonl"));
         let parked = parks_of(socket);
+        let procs = procs_of(socket);
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -1844,6 +1862,7 @@ mod tests {
                 book,
                 flows: Flows::default(),
                 parked,
+                procs,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -1987,6 +2006,13 @@ mod tests {
     /// `socket`, beside it.
     fn parks_of(socket: &Path) -> PathBuf {
         socket.with_file_name("parked")
+    }
+
+    /// Where a node on `socket` is told who its clients are, a stand-in
+    /// for `/proc` beside it: the tests run as an agent, so the machine's
+    /// own would refuse every steer they make as the person.
+    fn procs_of(socket: &Path) -> PathBuf {
+        socket.with_file_name("proc")
     }
 
     /// Where the updater of a node on `socket` is asked, beside it.
@@ -2490,6 +2516,89 @@ mod tests {
             ),
             "a message heard is sent as it arrives: {changed}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_agent_is_refused_a_steer_as_the_person_and_let_say_its_own() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let presence = json!({
+            "session": "here", "addresses": ["HERE12"], "groups": [],
+            "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
+        });
+        store.start_here("here", presence, true);
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        // The client runs in this process, which the stand-in for /proc
+        // tells as running in one of pi's hosts.
+        let asker = procs_of(&socket).join(std::process::id().to_string());
+        fs::create_dir_all(&asker).expect("its folder is made");
+        fs::write(
+            asker.join("cgroup"),
+            "0::/user.slice/user-1000.slice/user@1000.service/agents.slice/\
+             pi-host-work-background.service\n",
+        )
+        .expect("its group is written");
+        let refusal = "this asks from pi-host-work-background.service, an agent's, and an \
+                       agent can't speak as the person: only the person's own login says \
+                       what they say";
+
+        let paused = ask(
+            socket.clone(),
+            Request::Steer {
+                address: "HERE12".to_owned(),
+                steer: json!({"act": "pause", "from": "person"}),
+            },
+        )
+        .await;
+        assert_eq!(
+            paused,
+            Err(refusal.to_owned()),
+            "an agent's pause as the person is refused, saying why"
+        );
+
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        let said = json!({"text": "stop there", "from": "joel"});
+        client
+            .ask(json!({"id": 2, "ask": "steer", "address": "HERE12", "steer": said}))
+            .await;
+        assert_eq!(
+            client.next().await["error"]["message"],
+            json!(refusal),
+            "so is its steer as Joel in the daemon interface"
+        );
+        let inbox = inboxes(&socket).join("HERE12");
+        let held = || -> Vec<Value> {
+            fs::read_dir(&inbox)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|entry| entry.path().extension().is_some_and(|it| it == "json"))
+                .map(|entry| {
+                    serde_json::from_str(&fs::read_to_string(entry.path()).expect("it reads"))
+                        .expect("it is JSON")
+                })
+                .collect()
+        };
+        assert_eq!(
+            held(),
+            Vec::<Value>::new(),
+            "nothing refused reaches the inbox"
+        );
+
+        let own = json!({"text": "the build is done", "from": "machine"});
+        client
+            .ask(json!({"id": 3, "ask": "steer", "address": "HERE12", "steer": own}))
+            .await;
+        let steered = client.next().await;
+        assert_eq!(
+            steered["steered"]["machine"],
+            json!("optimus"),
+            "what an agent says as no one but itself is let through: {steered}"
+        );
+        assert_eq!(held(), [own], "and reaches the inbox");
     }
 
     #[tokio::test]

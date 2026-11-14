@@ -703,6 +703,18 @@ saying why, when no session goes by `address` now, as `no session goes
 by SAK9FZ now`, when its machine is out of reach, when it runs on two
 machines at once, or when the link can't carry it.
 
+Only the person's own login speaks as the person. A steer whose `from`
+names nobody, `joel` or `person`, in any case, is refused, saying so,
+when the process asking runs as one of the machine's agents, as Linux
+tells it: in a unit of the person's service manager whose name begins
+`agents.slice/pi-host-` or `agents.slice/mycelium-pi-`, in one under
+`jobs.slice/` or `offload.slice/`, or below a process named `pi`. A
+steer from anyone else, such as the node's own `machine`, goes as
+before. This keeps an agent from speaking as the person by habit or
+mistake, not one set on it, since a process of the person's account can
+move itself into any unit of theirs or write an inbox itself. Where the
+process or its unit can't be told, as on a Mac, the steer goes.
+
 `"Update"` asks `machine` to update itself to its configuration's main:
 this one through its updater, and one a link of this node's reaches
 directly through that link, which the far end takes only when its key
