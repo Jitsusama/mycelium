@@ -8,14 +8,22 @@ use serde_json::{Map, Value};
 
 use super::Holds;
 
+/// A kind's records by key, each shared, so one unchanged since the last
+/// build is the very record every watch of it already holds.
+pub type Shared = BTreeMap<String, Arc<Value>>;
+
 /// A kind's records as last built, by kind, with the count of its `told`
 /// they were built at.
-type Builds = HashMap<String, (u64, Arc<BTreeMap<String, Value>>)>;
+type Builds = HashMap<String, (u64, Arc<Shared>)>;
 
 /// Each kind's records as built for the latest change its `told` says,
 /// shared by every watch of the kind. A node with a hundred sessions and
 /// a dozen watches of them built each session's record a dozen times for
-/// every change (12 November); built once, each watch only compares.
+/// every change (12 November); built once, each watch only compares. A
+/// record that didn't change is kept as it was, so each watch finds it
+/// unchanged by its address alone, and every watch holds one copy of it
+/// rather than its own (14 November: 93 watches each held a copy of
+/// every record, and compared every field of each on every change).
 #[derive(Default)]
 pub struct Built(Mutex<Builds>);
 
@@ -24,12 +32,7 @@ impl Built {
     /// to `told`, built only by the first to ask at that count. A daemon
     /// changes what it holds before it counts, so records built at a count
     /// hold at least that change.
-    pub fn records(
-        &self,
-        holds: &impl Holds,
-        kind: &str,
-        told: u64,
-    ) -> Option<Arc<BTreeMap<String, Value>>> {
+    pub fn records(&self, holds: &impl Holds, kind: &str, told: u64) -> Option<Arc<Shared>> {
         // Held while building, so watches woken by one change wait for the
         // first's build rather than each making their own.
         let mut builds = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -38,10 +41,28 @@ impl Built {
         {
             return Some(Arc::clone(records));
         }
-        let records = Arc::new(holds.records(kind)?);
+        let fresh = holds.records(kind)?;
+        let last = builds.get(kind).map(|(_, records)| records.as_ref());
+        let records = Arc::new(shared(last, fresh));
         builds.insert(kind.to_owned(), (told, Arc::clone(&records)));
         Some(records)
     }
+}
+
+/// `fresh` shared, each record equal to the one `last` holds under its key
+/// kept as that one, the rest new.
+#[must_use]
+pub fn shared(last: Option<&Shared>, fresh: BTreeMap<String, Value>) -> Shared {
+    fresh
+        .into_iter()
+        .map(|(key, now)| {
+            let record = match last.and_then(|last| last.get(&key)) {
+                Some(was) if **was == now => Arc::clone(was),
+                _ => Arc::new(now),
+            };
+            (key, record)
+        })
+        .collect()
 }
 
 /// The interface's own fields of every record, which a record's fields
@@ -85,17 +106,15 @@ pub fn key(kind: &str, id: &str) -> String {
 /// What changed from `before` to `after`, each a set of records by key:
 /// each record new or changed, with its key and only the fields that
 /// differ (a new one whole), and the keys gone. Nothing, when nothing
-/// changed.
+/// changed. A record still the very one it was is unchanged without its
+/// fields being compared.
 #[must_use]
-pub fn changes(
-    before: &BTreeMap<String, Value>,
-    after: &BTreeMap<String, Value>,
-) -> (Vec<Value>, Vec<String>) {
+pub fn changes(before: &Shared, after: &Shared) -> (Vec<Value>, Vec<String>) {
     let changed = after
         .iter()
         .filter_map(|(key, now)| match before.get(key) {
-            None => Some(now.clone()),
-            Some(was) if was == now => None,
+            None => Some(Value::clone(now)),
+            Some(was) if Arc::ptr_eq(was, now) || was == now => None,
             Some(was) => Some(differs(key, was, now)),
         })
         .collect();
@@ -177,9 +196,14 @@ mod tests {
 
     #[test]
     fn a_change_says_only_what_differs_and_what_is_gone() {
-        let records = |all: &[Value]| -> BTreeMap<String, Value> {
+        let records = |all: &[Value]| -> Shared {
             all.iter()
-                .map(|one| (one["key"].as_str().expect("a key").to_owned(), one.clone()))
+                .map(|one| {
+                    (
+                        one["key"].as_str().expect("a key").to_owned(),
+                        Arc::new(one.clone()),
+                    )
+                })
                 .collect()
         };
         let before = records(&[
@@ -262,6 +286,15 @@ mod tests {
             next["session:a"]["step"],
             json!("next"),
             "as they stand after it"
+        );
+        assert!(
+            !Arc::ptr_eq(&next["session:a"], &first["session:a"]),
+            "a record that changed is a new one"
+        );
+        let after = built.records(&holds, "session", 3).expect("held");
+        assert!(
+            Arc::ptr_eq(&after["session:a"], &next["session:a"]),
+            "a record a change left as it was is the very one every watch holds"
         );
         assert_eq!(
             built.records(&holds, "machine", 2),

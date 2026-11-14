@@ -1,12 +1,13 @@
 //! A watch a client asked for: the records whole, then only what changed,
 //! no faster than a reader can take them.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
 
+use super::records::{Shared, shared};
 use super::{BETWEEN_SENDS, Holds, changes};
 
 /// A watch a client asked for, running, with what it watches, so asking
@@ -34,12 +35,14 @@ pub(super) async fn keep_watching<H: Holds>(
     (kind, keys): (String, Option<Vec<String>>),
     mut told: watch::Receiver<u64>,
     mut when: watch::Receiver<Option<Vec<String>>>,
-    answering: mpsc::Sender<Value>,
+    answering: mpsc::Sender<String>,
 ) {
     let held = |holds: &H, told: u64| {
         let records = match holds.built() {
             Some(built) => built.records(holds, &kind, told),
-            None => holds.records(&kind).map(Arc::new),
+            None => holds
+                .records(&kind)
+                .map(|fresh| Arc::new(shared(None, fresh))),
         }
         .unwrap_or_default();
         match &keys {
@@ -47,19 +50,17 @@ pub(super) async fn keep_watching<H: Holds>(
                 records
                     .iter()
                     .filter(|(key, _)| keys.contains(*key))
-                    .map(|(key, record)| (key.clone(), record.clone()))
+                    .map(|(key, record)| (key.clone(), Arc::clone(record)))
                     .collect(),
             ),
             None => records,
         }
     };
-    let mut sent = BTreeMap::clone(&held(&holds, *told.borrow_and_update()));
-    let whole: Vec<Value> = sent.values().cloned().collect();
-    if answering
-        .send(json!({"id": id, "records": whole}))
-        .await
-        .is_err()
-    {
+    let mut sent = Shared::clone(&held(&holds, *told.borrow_and_update()));
+    let Some(first) = whole(&id, &sent) else {
+        return;
+    };
+    if answering.send(first).await.is_err() {
         return;
     }
     loop {
@@ -77,25 +78,11 @@ pub(super) async fn keep_watching<H: Holds>(
             }
         }
         let now = held(&holds, *told.borrow_and_update());
-        let (changed, gone) = changes(&sent, &now);
-        let changed = sends(when.borrow().as_deref(), &sent, changed);
-        if changed.is_empty() && gone.is_empty() {
+        let Some((changed, gone)) = answer(when.borrow().as_deref(), &mut sent, &now) else {
             continue;
-        }
-        for record in &changed {
-            if let Some((key, record)) = record
-                .get("key")
-                .and_then(Value::as_str)
-                .and_then(|key| now.get_key_value(key))
-            {
-                sent.insert(key.clone(), record.clone());
-            }
-        }
-        for key in &gone {
-            sent.remove(key);
-        }
+        };
         if answering
-            .send(json!({"id": id, "changed": changed, "gone": gone}))
+            .send(json!({"id": id, "changed": changed, "gone": gone}).to_string())
             .await
             .is_err()
         {
@@ -104,16 +91,57 @@ pub(super) async fn keep_watching<H: Holds>(
     }
 }
 
+/// A watch's first answer, `records` whole, its fields in the order a
+/// `Value` gives its keys.
+#[derive(Serialize)]
+struct Whole<'a> {
+    id: &'a Value,
+    records: Vec<&'a Value>,
+}
+
+/// The first answer to watch `id`, serialized from the very records `sent`
+/// shares with every other watch, copying none of them. Records always
+/// serialize, being values already; were one ever not to, the watch ends
+/// rather than send a broken line.
+fn whole(id: &Value, sent: &Shared) -> Option<String> {
+    let records = sent.values().map(AsRef::as_ref).collect();
+    serde_json::to_string(&Whole { id, records }).ok()
+}
+
+/// What a watch that has sent `sent` answers now that the records stand
+/// at `now`: the records changed it sends and the keys gone, with `sent`
+/// moved to match. Nothing, when there is nothing to send.
+fn answer(
+    when: Option<&[String]>,
+    sent: &mut Shared,
+    now: &Shared,
+) -> Option<(Vec<Value>, Vec<String>)> {
+    let (changed, gone) = changes(sent, now);
+    let changed = sends(when, sent, changed);
+    if changed.is_empty() && gone.is_empty() {
+        return None;
+    }
+    for record in &changed {
+        if let Some((key, record)) = record
+            .get("key")
+            .and_then(Value::as_str)
+            .and_then(|key| now.get_key_value(key))
+        {
+            sent.insert(key.clone(), Arc::clone(record));
+        }
+    }
+    for key in &gone {
+        sent.remove(key);
+    }
+    Some((changed, gone))
+}
+
 /// Of a change's records, those a watch sends: every one while `when`
 /// names nothing; else each record come, and each moving a field `when`
 /// names, such as a session's `told`, which moves only with what a shut
 /// launcher reads. The rest are held back, so one session's `told`
 /// moving sends that session alone, not every other's step beside it.
-fn sends(
-    when: Option<&[String]>,
-    sent: &BTreeMap<String, Value>,
-    changed: Vec<Value>,
-) -> Vec<Value> {
+fn sends(when: Option<&[String]>, sent: &Shared, changed: Vec<Value>) -> Vec<Value> {
     let Some(when) = when else {
         return changed;
     };
@@ -131,13 +159,118 @@ fn sends(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+
+    /// A run of builds of a kind's records: steps moving, a digest moving,
+    /// one going, one coming, a field dropped, and one moving back to what
+    /// it was two builds before.
+    fn run() -> Vec<BTreeMap<String, Value>> {
+        let build = |all: &[Value]| -> BTreeMap<String, Value> {
+            all.iter()
+                .map(|one| (one["key"].as_str().expect("a key").to_owned(), one.clone()))
+                .collect()
+        };
+        vec![
+            build(&[
+                json!({"key": "session:a", "step": "x", "told": "1"}),
+                json!({"key": "session:b", "step": "x", "told": "1"}),
+            ]),
+            build(&[
+                json!({"key": "session:a", "step": "y", "told": "1"}),
+                json!({"key": "session:b", "step": "x", "told": "1"}),
+            ]),
+            build(&[
+                json!({"key": "session:a", "step": "y", "told": "2"}),
+                json!({"key": "session:b", "step": "x", "told": "1"}),
+                json!({"key": "session:c", "step": "x"}),
+            ]),
+            build(&[
+                json!({"key": "session:a", "step": "x", "told": "2"}),
+                json!({"key": "session:c", "step": "x"}),
+            ]),
+            build(&[
+                json!({"key": "session:a", "step": "x"}),
+                json!({"key": "session:c", "step": "x"}),
+            ]),
+            build(&[
+                json!({"key": "session:a", "step": "x"}),
+                json!({"key": "session:c", "step": "x"}),
+            ]),
+        ]
+    }
+
+    /// What a watch asked `when` sends over `builds`, as the bytes a
+    /// client reads, its first answer whole and then each change.
+    fn heard(when: Option<&[String]>, builds: &[Shared]) -> Vec<String> {
+        let (first, rest) = builds.split_first().expect("a first build");
+        let mut sent = first.clone();
+        let mut answers = vec![whole(&json!(1), &sent).expect("records serialize")];
+        for now in rest {
+            if let Some((changed, gone)) = answer(when, &mut sent, now) {
+                answers.push(json!({"id": 1, "changed": changed, "gone": gone}).to_string());
+            }
+        }
+        answers
+    }
+
+    #[test]
+    fn a_watch_of_shared_records_sends_byte_for_byte_what_one_of_its_own_would() {
+        let mut last: Option<Shared> = None;
+        let kept: Vec<Shared> = run()
+            .into_iter()
+            .map(|fresh| {
+                let now = shared(last.as_ref(), fresh);
+                last = Some(now.clone());
+                now
+            })
+            .collect();
+        let own: Vec<Shared> = run().into_iter().map(|fresh| shared(None, fresh)).collect();
+        assert!(
+            Arc::ptr_eq(&kept[1]["session:b"], &kept[0]["session:b"]),
+            "the run shares what didn't change"
+        );
+        let records: Vec<Value> = kept[0]
+            .values()
+            .map(|record| Value::clone(record))
+            .collect();
+        assert_eq!(
+            whole(&json!(1), &kept[0]),
+            Some(json!({"id": 1, "records": records}).to_string()),
+            "the first answer reads as one built whole would"
+        );
+        let told = ["told".to_owned()];
+        for when in [None, Some(&told[..])] {
+            let answers = heard(when, &kept);
+            assert_eq!(
+                answers,
+                heard(when, &own),
+                "asked when {when:?}, sharing changes not a byte of what is sent"
+            );
+            assert!(
+                answers.len() > 2,
+                "the run sends changes, asked when {when:?}"
+            );
+        }
+        assert_eq!(
+            heard(None, &kept).len(),
+            5,
+            "every build that changed something sends, and the last, unchanged, doesn't"
+        );
+    }
 
     #[test]
     fn a_watch_asked_when_a_field_moves_sends_only_the_records_moving_it() {
-        let sent: BTreeMap<String, Value> = BTreeMap::from([
-            ("session:a".to_owned(), json!({"key": "session:a"})),
-            ("session:c".to_owned(), json!({"key": "session:c"})),
+        let sent: Shared = Shared::from([
+            (
+                "session:a".to_owned(),
+                Arc::new(json!({"key": "session:a"})),
+            ),
+            (
+                "session:c".to_owned(),
+                Arc::new(json!({"key": "session:c"})),
+            ),
         ]);
         let told = ["told".to_owned()];
         let stepped = || vec![json!({"key": "session:a", "step": "y"})];
