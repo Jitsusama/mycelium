@@ -610,7 +610,7 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
         .collect();
     let mut head = title(team).to_owned();
     if let Some(lead) = team["lead"].as_str().and_then(|lead| sessions.get(lead)) {
-        let _ = write!(head, " · led by {}", title(lead));
+        let _ = write!(head, " · led by {}", beside(lead, &[title(team)]));
     }
     if let Some(above) = team["within"].as_str().and_then(|above| titled.get(above)) {
         let _ = write!(head, " · within {above}");
@@ -700,6 +700,18 @@ fn member(look: &Look, standing: Standing, session: &Value) -> String {
     line.trim_end().to_owned()
 }
 
+/// A session's name beside the teams titled `others`: its title, or its
+/// address where its title is one of theirs. A lead's quest is most often
+/// its team's own, and then its title would only repeat the team's.
+fn beside<'a>(session: &'a Value, others: &[&str]) -> &'a str {
+    let titled = title(session);
+    if others.contains(&titled) {
+        session["address"].as_str().unwrap_or(titled)
+    } else {
+        titled
+    }
+}
+
 /// Where a team meets others: the repositories it works in beside them,
 /// and its sessions hearing them too.
 fn meetings(
@@ -707,15 +719,15 @@ fn meetings(
     titled: &BTreeMap<&str, &str>,
     sessions: &BTreeMap<&str, &Value>,
 ) -> Vec<String> {
-    let names = |teams: &Value| -> String {
-        let names: Vec<&str> = teams
+    let heard = |teams: &Value| -> Vec<&str> {
+        teams
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|team| titled.get(team.as_str()?).copied())
-            .collect();
-        listed(&names)
+            .collect()
     };
+    let names = |teams: &Value| listed(&heard(teams));
     let bridges = team["bridges"]
         .as_array()
         .into_iter()
@@ -735,7 +747,7 @@ fn meetings(
             let session = sessions.get(liaison["session"].as_str()?)?;
             Some(format!(
                 "{} also hears {}",
-                title(session),
+                beside(session, &heard(&liaison["teams"])),
                 names(&liaison["teams"])
             ))
         });
@@ -975,6 +987,38 @@ mod tests {
             shown.lines().collect::<Vec<_>>(),
             expected,
             "one team, whole:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn a_lead_titled_as_its_team_is_named_by_its_address() {
+        let mut swarm = swarm();
+        if let Some(lead) = swarm
+            .sessions
+            .iter_mut()
+            .find(|each| each["id"] == "s-lead")
+        {
+            lead["presence"] = json!({"questInfo": {"title": "Harbour"}});
+        }
+        let shown = team(&swarm, "HARBOR", &look()).expect("Harbour is found by its address");
+        assert_eq!(
+            shown.lines().next(),
+            Some("Harbour · led by LEAD"),
+            "its quest's title would only repeat the team's:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn a_liaison_titled_as_the_team_it_hears_is_named_by_its_address() {
+        let mut swarm = swarm();
+        if let Some(asking) = swarm.sessions.iter_mut().find(|each| each["id"] == "s-ask") {
+            asking["presence"] = json!({"questInfo": {"title": "Reef"}});
+        }
+        let shown = team(&swarm, "KELP01", &look()).expect("Kelp is found by its address");
+        assert_eq!(
+            shown.lines().last(),
+            Some("ASK also hears Reef"),
+            "its quest's title would only repeat the team it hears:\n{shown}"
         );
     }
 

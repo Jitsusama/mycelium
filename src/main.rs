@@ -1347,9 +1347,6 @@ fn hold(
     }
 }
 
-/// The words a held program starts inside: a login shell, for a hold a
-/// node starts, or none for a hold from a terminal, which has the
-/// person's environment already.
 /// Holds `command` here as the session `id`, in `folder`, until its
 /// scope's stop tells it to end.
 fn hold_here(
@@ -1373,6 +1370,9 @@ fn hold_here(
     })
 }
 
+/// The words a held program starts inside: a login shell, for a hold a
+/// node starts, or none for a hold from a terminal, which has the
+/// person's environment already.
 fn held_through(login: bool, realm: &str) -> Vec<String> {
     if login {
         login_shell(realm)
