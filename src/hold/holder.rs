@@ -17,13 +17,14 @@ use rustix::process::{Pid, kill_process};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::signal::unix::{Signal, SignalKind, signal};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinSet;
 
 use super::environment::{Environment, keeping_path};
 use super::journal::{Ended, How, Journal};
 use super::modes::Modes;
-use super::{Held, Said, Size, again, next, socket, wake};
+use super::steering::{Heard, Steers, Watching};
+use super::{Held, Said, Size, again, next, socket, steers, wake};
 use crate::node;
 use crate::record::Window;
 
@@ -211,13 +212,41 @@ async fn ends(child: &mut tokio::process::Child, pid: u32) -> io::Result<ExitSta
     child.wait().await
 }
 
-/// How `command` starts, as `holding` says, with `waking` and `naming` its
-/// wake and next-command files.
+/// The files a held program and whatever wakes it speak through.
+struct Files {
+    /// Wakes it once parked.
+    waking: PathBuf,
+    /// Where it may name its next command as it parks.
+    naming: PathBuf,
+    /// Where its next command is named for it from outside.
+    chosen: PathBuf,
+    /// Where it may say, as it parks, which steers wake it.
+    steering: PathBuf,
+}
+
+impl Files {
+    /// The files of the program held as `id` in `dir`, any left from before
+    /// it ran taken away, as they say nothing to it.
+    fn fresh(dir: &Path, id: &str) -> Self {
+        let files = Self {
+            waking: wake(dir, id),
+            naming: again(dir, id),
+            chosen: next(dir, id),
+            steering: steers(dir, id),
+        };
+        for left in [&files.waking, &files.naming, &files.chosen, &files.steering] {
+            let _ = fs::remove_file(left);
+        }
+        files
+    }
+}
+
+/// How `command` starts, as `holding` says, told its wake, next-command
+/// and steers files.
 fn starting(
     holding: &Holding<'_>,
     command: &[String],
-    waking: &Path,
-    naming: &Path,
+    files: &Files,
 ) -> io::Result<pty_process::Command> {
     let words: Vec<&String> = holding.through.iter().chain(command).collect();
     let Some((program, arguments)) = words.split_first() else {
@@ -234,8 +263,9 @@ fn starting(
         ))
         .env("MYCELIUM_REALM", holding.realm)
         .env("MYCELIUM_HELD", holding.id)
-        .env("MYCELIUM_WAKE", waking)
-        .env("MYCELIUM_AGAIN", naming);
+        .env("MYCELIUM_WAKE", &files.waking)
+        .env("MYCELIUM_AGAIN", &files.naming)
+        .env("MYCELIUM_STEERS", &files.steering);
     for variable in WINDOW_VARIABLES {
         command = command.env_remove(variable);
     }
@@ -247,8 +277,10 @@ fn starting(
 /// start of the program has the person's environment as it is then, over
 /// the one the holder was started with. The program is told its realm in `MYCELIUM_REALM`, whatever realm the
 /// environment it was held from said, its id in `MYCELIUM_HELD`, the file that wakes it once
-/// parked in `MYCELIUM_WAKE`, and the file it may name its next command in
-/// as it parks in `MYCELIUM_AGAIN`. A program exiting with [`PARKED`] is
+/// parked in `MYCELIUM_WAKE`, the file it may name its next command in
+/// as it parks in `MYCELIUM_AGAIN`, and the file it may say where its
+/// steers land in as it parks in `MYCELIUM_STEERS`, which wakes it too as
+/// one lands that would give it a turn. A program exiting with [`PARKED`] is
 /// started again on the same terminal when woken, with the command named
 /// for it from outside if any was (see [`super::name_next`]), else with
 /// the one it named itself; one that wrote its wake file before it went is restarting,
@@ -268,23 +300,15 @@ pub async fn hold(
     // ends it as well, rather than the holder alone.
     let mut told = Told::listening(holding.ending)?;
     let socket = node::bind(&socket(holding.dir, holding.id))?;
-    let waking = wake(holding.dir, holding.id);
-    let naming = again(holding.dir, holding.id);
-    let chosen = next(holding.dir, holding.id);
-    // A wake or a command left from before this program ran says nothing
-    // to it.
-    let _ = fs::remove_file(&waking);
-    let _ = fs::remove_file(&naming);
-    let _ = fs::remove_file(&chosen);
+    let files = Files::fresh(holding.dir, holding.id);
     let (pty, pts) = pty_process::open().map_err(io::Error::other)?;
     pty.resize(size_of(FIRST_SIZE)).map_err(io::Error::other)?;
     let starts = Arc::new(Starts::default());
     let end = ChildEnd::of(pts, starts.clone())?;
     // The holder keeps the terminal's other end, so a parked program's
     // terminal outlives it and the program starts again on the same one.
-    let start = |command: &[String], size: Size| {
-        end.start(starting(holding, command, &waking, &naming)?, size)
-    };
+    let start =
+        |command: &[String], size: Size| end.start(starting(holding, command, &files)?, size);
     let mut command = holding.command.to_vec();
     let mut child = start(&command, FIRST_SIZE)?;
     let held = Held {
@@ -329,13 +353,13 @@ pub async fn hold(
         if telling || status.code() != Some(PARKED) {
             break status;
         }
-        let mut restarting = restarting(&waking, &record, &shown);
+        let mut restarting = restarting(&files.waking, &record, &shown);
         // One that can't start again stays parked, saying why, rather than
         // ending: its session, its window and its next wake are all still
         // here, and a command named again may start.
         child = loop {
             if !std::mem::take(&mut restarting) {
-                let woke = told.before(woken(&terminal, &waking));
+                let woke = told.before(woken(&terminal, &files.waking, &files.steering));
                 // A parked program has saved all it holds, so being told
                 // to end then ends only the holder.
                 if joining_until(woke, &socket, &mut joined, &serving)
@@ -346,10 +370,13 @@ pub async fn hold(
                 }
                 shown.show(FOCUS_OFF);
             }
+            // Where its steers land is said again at each park, so what
+            // this one said is spent whether a wake or a restart ends it.
+            let _ = fs::remove_file(&files.steering);
             // Both are taken, so the program's own never waits for a
             // later start; the one named for it wins.
-            let its_own = named(&naming);
-            command = named(&chosen).or(its_own).unwrap_or(command);
+            let its_own = named(&files.naming);
+            command = named(&files.chosen).or(its_own).unwrap_or(command);
             match start(&command, terminal.size()) {
                 Ok(child) => break child,
                 Err(error) => parks(&record, &shown, &unstarted(&error)),
@@ -453,21 +480,54 @@ async fn joining_until<T, Serving: Future<Output = ()> + Send + 'static>(
 }
 
 /// Waits while the program is parked, until a key is typed in a joined
-/// terminal or the file `waking` appears, then spends the wake.
-async fn woken(terminal: &Terminal, waking: &Path) {
+/// terminal, the file `waking` appears, or a steer that wakes it lands in
+/// an inbox it named in `steering`, then spends the wake.
+async fn woken(terminal: &Terminal, waking: &Path, steering: &Path) {
     let mut parked = terminal.parked.subscribe();
     terminal.parked.send_replace(true);
+    let steers = Steers::read(steering);
+    let (mut watching, mut heard) = steers
+        .as_ref()
+        .and_then(Watching::of)
+        .map_or((None, None), |(watching, heard)| {
+            (Some(watching), Some(heard))
+        });
+    // Looked at once the watch is set, so a steer that landed as the
+    // program parked, which no watch heard, wakes it too.
+    let mut steered = watching.as_mut().is_some_and(Watching::arm);
     let mut look = tokio::time::interval(WAKE_LOOK);
-    loop {
+    while !steered {
         tokio::select! {
             _ = parked.wait_for(|parked| !*parked) => break,
-            _ = look.tick() => if waking.exists() { break },
+            _ = look.tick() => {
+                if waking.exists() {
+                    break;
+                }
+                // An inbox made since, or made again, is watched from now.
+                steered = watching.as_mut().is_some_and(Watching::arm);
+            }
+            event = hearing(&mut heard) => {
+                steered = watching
+                    .as_mut()
+                    .is_some_and(|watching| watching.heard(&event));
+            }
         }
     }
     terminal.parked.send_replace(false);
     // The wake is spent once it has woken the program. One that can't be
     // taken away would only wake it again at its next park.
     let _ = fs::remove_file(waking);
+}
+
+/// What the watch of a parked program's inboxes hears next; never, for a
+/// program with none watched.
+async fn hearing(heard: &mut Option<mpsc::UnboundedReceiver<Heard>>) -> Heard {
+    if let Some(heard) = heard
+        && let Some(event) = heard.recv().await
+    {
+        return event;
+    }
+    std::future::pending().await
 }
 
 /// The longest a program joined at the size it has is kept one column
@@ -982,7 +1042,7 @@ mod tests {
 
     use super::super::environment::Given;
     use super::super::journal::SystemJournal;
-    use super::super::{attach, held as listed, name_next, next};
+    use super::super::{attach, held as listed, name_next, next, steers};
     use super::*;
 
     /// How long a test waits for what it expects to show before failing.
@@ -1443,6 +1503,66 @@ mod tests {
             .expect("the holder ends with its program")
             .expect("the holder's task ran");
         assert_eq!(ended.expect("it held"), Some(4), "any other exit ends it");
+    }
+
+    /// Lands `body` in `inbox` as the mesh writes a steer: under another
+    /// name first, then renamed whole.
+    fn steer_lands(inbox: &Path, name: &str, body: &str) {
+        let writing = inbox.join(format!(".{name}"));
+        fs::write(&writing, body).expect("the steer is written");
+        fs::rename(&writing, inbox.join(name)).expect("the steer lands");
+    }
+
+    // 14 November: a talk to a parked pi waited up to a minute for a
+    // running one's look to write its wake file.
+    #[tokio::test]
+    async fn a_parked_program_starts_again_as_a_steer_that_wakes_it_lands_in_its_inbox() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let inbox = root.path().join("steer").join("ZJ62K2");
+        fs::create_dir_all(&inbox).expect("the inbox is made");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut window = Joined::join(socket(&dir, &held.id), size, None);
+        let said = format!(
+            r#"{{"inboxes":["{}"],"wakes":{{"acts":["close"],"talk":true,"resumeWithWords":true}}}}"#,
+            inbox.display()
+        );
+        window
+            .types(&format!(
+                "printf '%s' '{said}' > \"$MYCELIUM_STEERS\"; exit 75\r"
+            ))
+            .await;
+        listed_parked(&dir, &mut changes, true).await;
+        let steering = steers(&dir, &held.id);
+        assert!(steering.exists(), "the program said where its steers land");
+
+        // Nothing says a holder looked and let it be, so a pause is given
+        // two of the holder's looks to wake it, and mustn't.
+        steer_lands(&inbox, "1-a.json", r#"{"act":"pause"}"#);
+        let paused =
+            tokio::time::timeout(WAKE_LOOK * 2, listed_parked(&dir, &mut changes, false)).await;
+        assert!(paused.is_err(), "a pause leaves it parked");
+
+        let landed = std::time::Instant::now();
+        steer_lands(&inbox, "2-b.json", r#"{"text":"are you there?"}"#);
+        listed_parked(&dir, &mut changes, false).await;
+        let took = landed.elapsed();
+        eprintln!("a talk woke a parked program in {took:?}");
+        assert!(
+            took < WAKE_LOOK / 2,
+            "a talk wakes it as it lands, well within a look: {took:?}"
+        );
+        assert!(!steering.exists(), "what it said is spent once it woke");
+        assert!(
+            inbox.join("2-b.json").exists(),
+            "the talk is left for the program to take"
+        );
+        window.types("echo woken $((6 * 7))\r").await;
+        window.sees("woken 42").await;
     }
 
     #[tokio::test]

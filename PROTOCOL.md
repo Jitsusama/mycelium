@@ -929,7 +929,18 @@ taken away once read. A command named from outside, in `<id>.next`,
 wins over it, since a program names itself: a pi held on an old
 conversation would otherwise write that one over a newer one named for
 it while it ran. `mycelium holds <id> again -- <command>` writes that file
-whole and wakes the program if it is parked. A program a node started
+whole and wakes the program if it is parked. A program may also write
+`<id>.steers` as it parks, whole, told its path in `MYCELIUM_STEERS`:
+`{"inboxes": [<folder>, ...], "wakes": {"acts": [<act>, ...], "talk":
+<bool>, "resumeWithWords": <bool>}}`, the steer inboxes it reads and
+which steers wake it. While it is parked its holder watches each of those
+folders, not recursively, and wakes it as a steer lands there whose `act`
+is one of `acts`, a `resume` with `text` when `resumeWithWords`, or `text`
+with no `act` when `talk`; it looks once as the watch begins, and the
+look a second watches for an inbox made later. The steer stays for the
+program to take, and the file is taken away once it has woken the
+program; a holder that finds none, or can't read it, wakes it as before.
+A program a node started
 runs through the login shell at every start, not only its first, since
 its holder has only the node's environment, where a bare `pi` isn't
 found; the record says the program, not the shell. One that can't
