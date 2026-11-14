@@ -87,7 +87,7 @@ where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let (answering, mut answers) = mpsc::channel::<Value>(WAITING_ANSWERS);
+    let (answering, mut answers) = mpsc::channel::<String>(WAITING_ANSWERS);
     let mut watches: HashMap<String, Watching> = HashMap::new();
     let mut asked = Some(Ok(first));
     loop {
@@ -97,7 +97,7 @@ where
             None => None,
         };
         if let Some(now) = now
-            && say(&mut writing, &now).await.is_err()
+            && say(&mut writing, now.to_string()).await.is_err()
         {
             break;
         }
@@ -106,7 +106,7 @@ where
                 Ok(Some(line)) => asked = Some(read(&line)),
                 _ => break,
             },
-            Some(pushed) = answers.recv() => if say(&mut writing, &pushed).await.is_err() {
+            Some(pushed) = answers.recv() => if say(&mut writing, pushed).await.is_err() {
                 break;
             },
         }
@@ -116,9 +116,12 @@ where
     }
 }
 
-/// Writes `answer` as a line.
-async fn say(writing: &mut (impl AsyncWrite + Unpin), answer: &Value) -> std::io::Result<()> {
-    let mut line = answer.to_string().into_bytes();
+/// Writes `answer`, serialized, as a line. Answers come serialized so a
+/// watch can write its records whole from the very records it shares,
+/// rather than copying each into an answer first (14 November: 90 watches
+/// opening at once copied 991 MB of records, and the node grew by gigabytes).
+async fn say(writing: &mut (impl AsyncWrite + Unpin), answer: String) -> std::io::Result<()> {
+    let mut line = answer.into_bytes();
     line.push(b'\n');
     writing.write_all(&line).await
 }
@@ -130,7 +133,7 @@ async fn say(writing: &mut (impl AsyncWrite + Unpin), answer: &Value) -> std::io
 fn answer<H: Holds + Steers>(
     holds: &Arc<H>,
     ask: Ask,
-    answering: &mpsc::Sender<Value>,
+    answering: &mpsc::Sender<String>,
     watches: &mut HashMap<String, Watching>,
 ) -> Option<Value> {
     let begun = std::time::Instant::now();
@@ -226,7 +229,7 @@ fn answer<H: Holds + Steers>(
 /// it names or as refused, so an ask that waits on another machine or a
 /// program holds up none of the connection's others.
 fn later(
-    answering: &mpsc::Sender<Value>,
+    answering: &mpsc::Sender<String>,
     id: Value,
     begun: std::time::Instant,
     answered: impl Future<Output = Result<(&'static str, Value), String>> + Send + 'static,
@@ -240,7 +243,7 @@ fn later(
         if let Some(fields) = answer.as_object_mut() {
             fields.insert("took".to_owned(), took(begun));
         }
-        let _ = answering.send(answer).await;
+        let _ = answering.send(answer.to_string()).await;
     });
 }
 
