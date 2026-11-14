@@ -12,3 +12,11 @@ that machine was; each prints its load beside it.
 ```sh
 nix develop -c cargo bench --bench heard -- --watches 100 --rate 200 --seconds 10
 ```
+
+- `many.rs`: how `networks` and `cells` hold up at thousands of cells:
+  each view's wall time and peak memory, the whole command run against
+  a stand-in node serving a made-up mycelium, sized as live records are.
+
+```sh
+nix develop -c cargo bench --bench many -- --cells 1000,3000,10000
+```
