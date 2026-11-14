@@ -198,8 +198,9 @@ pub struct Cell {
     /// How a machine is, such as `ready`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
-    /// How busy a machine's processors are, as the share of the last ten
-    /// seconds some task waited on one.
+    /// How busy a machine's processors are: the percentage, from 0 to 100,
+    /// of the last ten seconds in which some task waited on one, as the
+    /// kernel's pressure stall information says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub busy: Option<f64>,
     /// How many sessions a machine runs.
