@@ -761,7 +761,7 @@ in milliseconds.
 | --- | --- |
 | `hello` | `version`, `domain` (`node`), `state` and `kinds`, each with its `live` fields |
 | `get` with `keys` | `records`, those held, in the order asked |
-| `list` with `kind`, and `limit` | `records`, every one of the kind |
+| `list` with `kind`, and `limit` and `fields` | `records`, every one of the kind |
 | `watch` with `kind`, and `keys` and `when` | `records` whole, then `changed` and `gone` |
 | `unwatch` | nothing; the watch with that `id` ends |
 | `health` | `state`, and each linked machine and served file as a source |
@@ -798,6 +798,16 @@ team within it. Its `bridges` are repositories another team's sessions
 work in too, its `liaisons` its sessions hearing another team's
 `orchestration.<address>` group, and `landed` its newest landing. A
 session answering to nobody and leading nothing is in no team.
+
+A list naming `fields`, a list of paths of keys joined by dots such as
+`presence.usage.context`, is sent only those fields of each record,
+with its `key` and `kind` always; a path a record lacks is left out
+rather than sent as null, and so is an object left empty. A reader of
+thousands of sessions needs a few dozen of each one's hundreds of
+fields: `mycelium networks` reads 28, about a quarter of a session's
+bytes. Paths may not index lists, and more than 64 of them, or a path
+that isn't one, is `not-an-ask`. A watch sends records whole, as
+before.
 
 A watch sends what
 changed by key, with only the fields that differ, a dropped one as null; nothing

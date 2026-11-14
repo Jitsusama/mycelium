@@ -25,6 +25,8 @@ pub enum What {
         kind: String,
         /// At most how many, or all.
         limit: Option<usize>,
+        /// Only these fields of each, as `fields` reads them, or all.
+        fields: Option<Vec<String>>,
     },
     /// The records of a kind, or of these keys of it, then each change.
     Watch {
@@ -131,6 +133,11 @@ pub fn read(line: &str) -> Result<Ask, (Value, Refusal)> {
                 .get("limit")
                 .and_then(Value::as_u64)
                 .and_then(|limit| usize::try_from(limit).ok()),
+            fields: value
+                .get("fields")
+                .map(super::fields::read)
+                .transpose()
+                .map_err(|why| refused(Refusal::NotAnAsk(why)))?,
         },
         "watch" => What::Watch {
             kind: kind()?,
@@ -208,6 +215,24 @@ mod tests {
             read(r#"{"id":5,"ask":"list"}"#).map_err(|(_, refusal)| refusal.code()),
             Err("not-an-ask"),
             "a list names its kind"
+        );
+        assert_eq!(
+            read(r#"{"id":6,"ask":"list","kind":"session","fields":["presence.repo"]}"#),
+            Ok(Ask {
+                id: json!(6),
+                what: What::List {
+                    kind: "session".to_owned(),
+                    limit: None,
+                    fields: Some(vec!["presence.repo".to_owned()]),
+                },
+            }),
+            "a list may name the fields it reads"
+        );
+        assert_eq!(
+            read(r#"{"id":7,"ask":"list","kind":"session","fields":"presence"}"#)
+                .map_err(|(id, refusal)| (id, refusal.code())),
+            Err((json!(7), "not-an-ask")),
+            "its fields are a list of paths"
         );
     }
 
