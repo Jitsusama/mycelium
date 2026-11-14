@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 mod names;
 pub mod steers;
 
+pub(crate) use names::says_again;
 pub use names::short_names;
 
 /// The swarm as the node holds it.
@@ -45,26 +46,39 @@ pub struct Look {
     pub now: jiff::Zoned,
 }
 
-/// How a session stands, as a team counts it, worst first.
+/// How a session stands, as a team counts it, worst first, and dormant
+/// after them, as a cell is that parked to give back its memory, which a
+/// team doesn't count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Standing {
+pub(crate) enum Standing {
     NeedsYou,
     Stuck,
     Moving,
     Quiet,
+    Dormant,
 }
 
 impl Standing {
-    /// Each, in the order the header says them.
+    /// Each a team counts, in the order the header says them.
     const EACH: [Self; 4] = [Self::NeedsYou, Self::Stuck, Self::Moving, Self::Quiet];
 
+    /// Each a cell may stand as, in the order the header says them.
+    pub(crate) const CELLS: [Self; 5] = [
+        Self::NeedsYou,
+        Self::Stuck,
+        Self::Moving,
+        Self::Quiet,
+        Self::Dormant,
+    ];
+
     /// The word a team record counts it by.
-    const fn counted(self) -> &'static str {
+    pub(crate) const fn counted(self) -> &'static str {
         match self {
             Self::NeedsYou => "needs-you",
             Self::Stuck => "stuck",
             Self::Moving => "moving",
             Self::Quiet => "quiet",
+            Self::Dormant => "dormant",
         }
     }
 
@@ -75,16 +89,18 @@ impl Standing {
             Self::Stuck => "stuck",
             Self::Moving => "moving",
             Self::Quiet => "quiet",
+            Self::Dormant => "dormant",
         }
     }
 
     /// The word a session's line says it with.
-    const fn said(self) -> &'static str {
+    pub(crate) const fn said(self) -> &'static str {
         match self {
             Self::NeedsYou => "needs you",
             Self::Stuck => "stuck",
             Self::Moving => "moving",
             Self::Quiet => "quiet",
+            Self::Dormant => "dormant",
         }
     }
 
@@ -92,8 +108,29 @@ impl Standing {
         Self::EACH.into_iter().find(|each| each.counted() == word)
     }
 
+    /// How a session record stands as a cell: dormant where it parked,
+    /// whether its process has ended yet or not, else as a team counts it,
+    /// and none for one that has ended otherwise.
+    pub(crate) fn of_cell(session: &Value) -> Option<Self> {
+        let parked = json!("parked");
+        if session["standing"] == parked || session["presence"]["state"] == parked {
+            return Some(Self::Dormant);
+        }
+        Self::of(session)
+    }
+
+    /// What a session standing so is doing, or asks, where it says.
+    pub(crate) fn doing(self, session: &Value) -> Option<&str> {
+        match self {
+            Self::NeedsYou => session["wants"]["said"].as_str(),
+            Self::Stuck => Some("paused"),
+            Self::Moving | Self::Quiet => session["step"].as_str(),
+            Self::Dormant => None,
+        }
+    }
+
     /// How a session record stands, or none for one that has ended.
-    fn of(session: &Value) -> Option<Self> {
+    pub(crate) fn of(session: &Value) -> Option<Self> {
         let state = session["state"].as_str()?;
         if !matches!(state, "busy" | "idle") {
             return None;
@@ -111,34 +148,34 @@ impl Standing {
 
     /// The colour a terminal says it in: needing you in yellow, stuck in
     /// red, quiet faint, so what to look at stands out before it's read.
-    const fn colour(self) -> &'static str {
+    pub(crate) const fn colour(self) -> &'static str {
         match self {
             Self::NeedsYou => YELLOW,
             Self::Stuck => RED,
             Self::Moving => "",
-            Self::Quiet => FAINT,
+            Self::Quiet | Self::Dormant => FAINT,
         }
     }
 }
 
-const BOLD: &str = "\x1b[1m";
-const FAINT: &str = "\x1b[2m";
+pub(crate) const BOLD: &str = "\x1b[1m";
+pub(crate) const FAINT: &str = "\x1b[2m";
 const RED: &str = "\x1b[31m";
 const YELLOW: &str = "\x1b[33m";
 const RESET: &str = "\x1b[0m";
 
 /// The space between columns.
-const GAP: &str = "  ";
+pub(crate) const GAP: &str = "  ";
 
 /// How far each team in is set in from the one it is within.
 const STEP: usize = 2;
 
 /// The narrowest a name is cut to, however narrow the terminal.
-const NARROWEST: usize = 16;
+pub(crate) const NARROWEST: usize = 16;
 
 impl Look {
     /// `text` in `colour`, where it is drawn in colour.
-    fn paint(&self, colour: &str, text: &str) -> String {
+    pub(crate) fn paint(&self, colour: &str, text: &str) -> String {
         if self.colour && !colour.is_empty() && !text.trim().is_empty() {
             format!("{colour}{text}{RESET}")
         } else {
@@ -148,7 +185,7 @@ impl Look {
 
     /// When `at`, an RFC 3339 instant, was: its time today, its weekday
     /// and time this week, else its day.
-    fn when(&self, at: &str) -> Option<String> {
+    pub(crate) fn when(&self, at: &str) -> Option<String> {
         let at = at
             .parse::<jiff::Timestamp>()
             .ok()?
@@ -164,7 +201,7 @@ impl Look {
 }
 
 /// `text` cut to `width` characters, its last one an ellipsis where cut.
-fn fit(text: &str, width: usize) -> String {
+pub(crate) fn fit(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_owned();
     }
@@ -173,29 +210,31 @@ fn fit(text: &str, width: usize) -> String {
 }
 
 /// `text` padded with spaces to `width` characters.
-fn padded(text: &str, width: usize) -> String {
+pub(crate) fn padded(text: &str, width: usize) -> String {
     let short = width.saturating_sub(text.chars().count());
     format!("{text}{}", " ".repeat(short))
 }
 
 /// How wide the counts' columns are together, their gaps before each.
-fn counts_width() -> usize {
-    Standing::EACH
+fn counts_width(columns: &[Standing]) -> usize {
+    columns
         .iter()
         .map(|each| GAP.len() + each.header().len())
         .sum()
 }
 
-/// A team's or a session's name as a person reads it.
-fn title(record: &Value) -> &str {
-    record["title"]
+/// A team's or a session's name as a person reads it: a session's
+/// quest's title where it says one, rather than its window's.
+pub(crate) fn title(record: &Value) -> &str {
+    record["presence"]["questInfo"]["title"]
         .as_str()
+        .or_else(|| record["title"].as_str())
         .or_else(|| record["working_on"].as_str())
         .unwrap_or("a session without a name")
 }
 
 /// The address a team record is keyed by.
-fn address(team: &Value) -> &str {
+pub(crate) fn address(team: &Value) -> &str {
     team["key"]
         .as_str()
         .and_then(|key| key.strip_prefix("team:"))
@@ -222,15 +261,15 @@ fn worst(team: &Value) -> Standing {
 
 /// How a row names what it counts: its short name, padded to `width` so
 /// the titles after it line up, where it has one, then its title.
-struct Label<'a> {
-    short: Option<&'a str>,
-    width: usize,
-    title: &'a str,
+pub(crate) struct Label<'a> {
+    pub(crate) short: Option<&'a str>,
+    pub(crate) width: usize,
+    pub(crate) title: &'a str,
 }
 
 impl<'a> Label<'a> {
     /// A row named only by `title`.
-    const fn titled(title: &'a str) -> Self {
+    pub(crate) const fn titled(title: &'a str) -> Self {
         Self {
             short: None,
             width: 0,
@@ -261,12 +300,19 @@ fn shorts_width<'a>(
 }
 
 /// One row of counts under the header: what it counts, named by `label`
-/// and set in by `depth`, then a column for each standing, a count of
-/// none left blank.
-fn row(look: &Look, depth: usize, label: &Label<'_>, counts: [u64; 4], strong: bool) -> String {
+/// and set in by `depth`, then a column for each standing `counts` holds,
+/// in its order, a count of none left blank.
+pub(crate) fn row(
+    look: &Look,
+    depth: usize,
+    label: &Label<'_>,
+    counts: &[(Standing, u64)],
+    strong: bool,
+) -> String {
+    let columns: Vec<Standing> = counts.iter().map(|(each, _)| *each).collect();
     let room = look
         .width
-        .saturating_sub(counts_width() + depth * STEP)
+        .saturating_sub(counts_width(&columns) + depth * STEP)
         .max(NARROWEST);
     let (plain, lead) = label.short.map_or_else(
         || (label.title.to_owned(), room),
@@ -286,7 +332,7 @@ fn row(look: &Look, depth: usize, label: &Label<'_>, counts: [u64; 4], strong: b
         look.paint(if strong { BOLD } else { "" }, &head),
         look.paint(FAINT, &tail)
     );
-    for (each, count) in Standing::EACH.into_iter().zip(counts) {
+    for &(each, count) in counts {
         let shown = if count == 0 {
             String::new()
         } else {
@@ -298,14 +344,14 @@ fn row(look: &Look, depth: usize, label: &Label<'_>, counts: [u64; 4], strong: b
     line.trim_end().to_owned()
 }
 
-/// The header over the counts, lined up with them.
-fn header(look: &Look, depth: usize) -> String {
+/// The header over the counts of `columns`, lined up with them.
+pub(crate) fn header(look: &Look, depth: usize, columns: &[Standing]) -> String {
     let room = look
         .width
-        .saturating_sub(counts_width() + depth * STEP)
+        .saturating_sub(counts_width(columns) + depth * STEP)
         .max(NARROWEST);
     let mut line = " ".repeat(room + depth * STEP);
-    for each in Standing::EACH {
+    for &each in columns {
         let _ = write!(line, "{GAP}{}", each.header());
     }
     look.paint(FAINT, &line)
@@ -325,8 +371,8 @@ fn ordered<'a>(teams: impl Iterator<Item = &'a Value>) -> Vec<&'a Value> {
 }
 
 /// The counts a team's record holds, in the header's order.
-fn counts_of(team: &Value) -> [u64; 4] {
-    Standing::EACH.map(|each| count(team, each))
+fn counts_of(team: &Value) -> [(Standing, u64); 4] {
+    Standing::EACH.map(|each| (each, count(team, each)))
 }
 
 /// Living sessions no team holds.
@@ -362,7 +408,11 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
             );
         }
     }
-    let mut lines = vec![look.paint(BOLD, &head), String::new(), header(look, 0)];
+    let mut lines = vec![
+        look.paint(BOLD, &head),
+        String::new(),
+        header(look, 0, &Standing::EACH),
+    ];
     let addresses: BTreeSet<&str> = swarm.teams.iter().map(address).collect();
     let mut within: BTreeMap<&str, Vec<&Value>> = BTreeMap::new();
     for team in &swarm.teams {
@@ -388,9 +438,9 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
                 .iter()
                 .filter(|one| Standing::of(one) == Some(each))
                 .count();
-            u64::try_from(many).unwrap_or(u64::MAX)
+            (each, u64::try_from(many).unwrap_or(u64::MAX))
         });
-        lines.push(row(look, 0, &Label::titled("on their own"), counts, false));
+        lines.push(row(look, 0, &Label::titled("on their own"), &counts, false));
     }
     lines.push(String::new());
     // The first team on the list is the example, typed as a person would.
@@ -444,7 +494,7 @@ fn nest<'a>(
             continue;
         }
         let label = Label::of(team, shorts.by, shorts.width);
-        lines.push(row(look, depth, &label, counts_of(team), depth == 0));
+        lines.push(row(look, depth, &label, &counts_of(team), depth == 0));
         nest(
             lines,
             look,
@@ -462,26 +512,15 @@ fn nest<'a>(
 /// typed, so one can be picked.
 fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
     let shorts = short_names(&swarm.teams);
-    // A short name's words may be typed apart, as `part deux`.
-    let joined = asked.split_whitespace().collect::<Vec<_>>().join("-");
-    if let Some(team) = swarm.teams.iter().find(|team| {
-        address(team).eq_ignore_ascii_case(asked)
-            || shorts
-                .get(address(team))
-                .is_some_and(|short| short.eq_ignore_ascii_case(&joined))
-    }) {
-        return Ok(team);
-    }
-    let lower = asked.to_lowercase();
-    let found: Vec<&Value> = swarm
-        .teams
-        .iter()
-        .filter(|team| title(team).to_lowercase().contains(&lower))
-        .collect();
-    match found.as_slice() {
-        [one] => Ok(*one),
-        [] => Err(format!("no team is named {asked}")),
-        many => Err(format!(
+    let naming = |team: &'a Value| Naming {
+        address: address(team),
+        short: shorts.get(address(team)).map(String::as_str),
+        title: title(team),
+    };
+    match picked(&swarm.teams, asked, naming) {
+        Picked::One(team) => Ok(team),
+        Picked::None => Err(format!("no team is named {asked}")),
+        Picked::Several(many) => Err(format!(
             "{asked} could be {}",
             either(
                 &many
@@ -490,6 +529,63 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
                     .collect::<Vec<_>>()
             )
         )),
+    }
+}
+
+/// The names a person may type for one thing to reach it.
+pub(crate) struct Naming<'a> {
+    /// What it is keyed by, matched whole.
+    pub(crate) address: &'a str,
+    /// The short name it goes by, matched whole, its words typed apart or
+    /// joined by `-`.
+    pub(crate) short: Option<&'a str>,
+    /// Its title, matched by any part of it.
+    pub(crate) title: &'a str,
+}
+
+/// What a name typed picked among things.
+pub(crate) enum Picked<'a, T> {
+    /// Nothing goes by it.
+    None,
+    /// The one thing that does.
+    One(&'a T),
+    /// Each of several that do, for the person to choose between.
+    Several(Vec<&'a T>),
+}
+
+/// The one of `things` that `asked` names: by its address or its short
+/// name whole, in either case, and else by a part of its title, as
+/// `naming` says each; or none, or each of several.
+pub(crate) fn picked<'a: 'n, 'n, T>(
+    things: &'a [T],
+    asked: &str,
+    naming: impl Fn(&'a T) -> Naming<'n>,
+) -> Picked<'a, T> {
+    // A short name's words may be typed apart, as `part deux`.
+    let joined = asked.split_whitespace().collect::<Vec<_>>().join("-");
+    let whole: Vec<&T> = things
+        .iter()
+        .filter(|thing| {
+            let named = naming(thing);
+            named.address.eq_ignore_ascii_case(asked)
+                || named
+                    .short
+                    .is_some_and(|short| short.eq_ignore_ascii_case(&joined))
+        })
+        .collect();
+    let lower = asked.to_lowercase();
+    let found = if whole.is_empty() {
+        things
+            .iter()
+            .filter(|thing| naming(thing).title.to_lowercase().contains(&lower))
+            .collect()
+    } else {
+        whole
+    };
+    match found.as_slice() {
+        [] => Picked::None,
+        [one] => Picked::One(one),
+        _ => Picked::Several(found),
     }
 }
 
@@ -532,10 +628,10 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
     if !inner.is_empty() {
         let shorts = short_names(&swarm.teams);
         let width = shorts_width(inner.iter().copied(), &shorts);
-        lines.extend([String::new(), header(look, 0)]);
+        lines.extend([String::new(), header(look, 0, &Standing::EACH)]);
         for other in inner {
             let label = Label::of(other, &shorts, width);
-            lines.push(row(look, 0, &label, counts_of(other), false));
+            lines.push(row(look, 0, &label, &counts_of(other), false));
         }
     }
     let mut members: Vec<(Standing, &Value)> = team["members"]
@@ -584,11 +680,7 @@ fn member(look: &Look, standing: Standing, session: &Value) -> String {
         .map(|each| each.said().len())
         .max()
         .unwrap_or_default();
-    let doing = match standing {
-        Standing::NeedsYou => session["wants"]["said"].as_str(),
-        Standing::Stuck => Some("paused"),
-        Standing::Moving | Standing::Quiet => session["step"].as_str(),
-    };
+    let doing = standing.doing(session);
     let room = look.width.saturating_sub(said + GAP.len());
     let name_room = if doing.is_some() {
         (room / 2).max(NARROWEST)
@@ -652,13 +744,13 @@ fn meetings(
 
 /// `names` as a sentence lists them: one, two joined by and, or several
 /// with commas and a last and.
-fn listed(names: &[&str]) -> String {
+pub(crate) fn listed(names: &[&str]) -> String {
     joined(names, "and")
 }
 
 /// `names` as a sentence offers a choice of them: two joined by or, or
 /// several with commas and a last or.
-fn either(names: &[&str]) -> String {
+pub(crate) fn either(names: &[&str]) -> String {
     joined(names, "or")
 }
 
@@ -705,7 +797,11 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Swarm> {
 /// Asks the node at `socket` each of `asks` in the daemon interface,
 /// after its hello, and gives its answers by their place in `asks`,
 /// counting from one.
-fn asked(socket: &Path, within: Duration, asks: &[Value]) -> io::Result<BTreeMap<u64, Value>> {
+pub(crate) fn asked(
+    socket: &Path,
+    within: Duration,
+    asks: &[Value],
+) -> io::Result<BTreeMap<u64, Value>> {
     let mut writing = UnixStream::connect(socket).map_err(|error| {
         io::Error::new(
             error.kind(),

@@ -31,8 +31,16 @@ use mycelium::web::Said;
 use mycelium::wire::{Draft, Reply, Request, Response, Start};
 use mycelium::{carry, hold, hosted_attach, install, link, node, place, served};
 
+/// The widest a line of any command's help is drawn, so it reads in a
+/// narrow pane.
+const HELP_WIDTH: usize = 60;
+
 #[derive(Parser)]
-#[command(version, about = "A nimble core for agent networks")]
+#[command(
+    version,
+    about = "A nimble core for agent networks",
+    max_term_width = HELP_WIDTH
+)]
 struct Command {
     /// The realm: a set of machines that link, with nothing crossing
     /// between realms.
@@ -114,14 +122,32 @@ enum Action {
         /// `pause harbour`, or the team's words first, as
         /// `part deux say ship it`.
         words: Vec<String>,
-        /// Prints each team's record as a JSON line instead.
-        #[arg(long)]
-        json: bool,
+        #[command(flatten)]
+        output: Output,
         /// Prints each team as it's typed, a line each, for a shell to
         /// complete.
         #[arg(long, hide = true)]
         names: bool,
     },
+    /// Draws the networks as a tree, or one network.
+    ///
+    /// Draws every network as a tree under its shape:
+    /// orchestrations, projects, repositories, groups
+    /// and machines, each with how its sessions stand.
+    /// Named by its short name, its name or words of its
+    /// title, one network is drawn with its cells.
+    /// `network` is the same.
+    #[command(alias = "network", verbatim_doc_comment)]
+    Networks(NetworksAsked),
+    /// Lists the cells, or says what one is.
+    ///
+    /// Lists every cell: the sessions, worst first, then
+    /// the machines. Named by its name or words of its
+    /// title, a session is said with the networks it
+    /// joined, and a machine as `machines NAME` says it.
+    /// `cell` is the same.
+    #[command(alias = "cell", verbatim_doc_comment)]
+    Cells(CellsAsked),
     /// Prints how the realm's network stands, as one JSON line for a daily
     /// read: each link, `up` or `unreachable`, with how many times it
     /// dropped in the last day; each machine's sessions by how they stand;
@@ -171,6 +197,9 @@ enum Action {
         limit: usize,
     },
     /// Sends a message on the mesh, as a session would.
+    #[command(
+        override_usage = "mycelium send [OPTIONS] --from <FROM> --text <TEXT>\n       <GROUPS>..."
+    )]
     Send {
         /// Who sends it.
         #[arg(long)]
@@ -337,6 +366,54 @@ impl Node {
             None => Ok(BTreeMap::new()),
         }
     }
+}
+
+/// How what is asked is printed.
+#[derive(clap::Args)]
+struct Output {
+    /// How to print it: text, or JSON lines
+    #[arg(short = 'o', long = "output", value_enum, default_value_t = Format::Text)]
+    format: Format,
+    /// `-o json`, as it was spelt before.
+    #[arg(long, hide = true)]
+    json: bool,
+}
+
+impl Output {
+    /// Whether it is printed as JSON lines.
+    fn json(&self) -> bool {
+        self.json || self.format == Format::Json
+    }
+}
+
+/// A way of printing what is asked.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum Format {
+    /// For a person, drawn to the terminal's width.
+    Text,
+    /// For a program, a JSON line each.
+    Json,
+}
+
+/// What is asked of the networks, by the words after `networks`.
+#[derive(clap::Args)]
+struct NetworksAsked {
+    /// The network, such as `grow` or `world`
+    words: Vec<String>,
+    /// Puts each network's cells under it.
+    #[arg(long)]
+    cells: bool,
+    #[command(flatten)]
+    output: Output,
+}
+
+/// What is asked of the cells, by the words after `cells`.
+#[derive(clap::Args)]
+struct CellsAsked {
+    /// The cell, such as `QQ1UAK` or `optimus`
+    words: Vec<String>,
+    #[command(flatten)]
+    output: Output,
 }
 
 /// What is asked of the sessions held on this machine, by the words after
@@ -708,7 +785,13 @@ fn run(command: Command) -> io::Result<ExitCode> {
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Health { here } => health(&socket, here, realm),
-        Action::Swarm { words, json, names } => in_swarm(&socket, &realm, &words, json, names),
+        Action::Swarm {
+            words,
+            output,
+            names,
+        } => in_swarm(&socket, &realm, &words, output.json(), names),
+        Action::Networks(asked) => networks(&socket, &realm, &asked),
+        Action::Cells(asked) => cells(&socket, &realm, &asked),
         Action::Web(asked) => web(asked),
         Action::Offers => print_reply(&socket, &Request::Offers),
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
@@ -750,20 +833,7 @@ fn run(command: Command) -> io::Result<ExitCode> {
             folder,
             login,
             command,
-        } => {
-            let through = held_through(login, &realm);
-            be_holder(&hold::holder::Holding {
-                dir: &place::held(&realm),
-                realm: &realm,
-                id: &id,
-                command: &command,
-                through: &through,
-                folder: &folder,
-                environment: &ServiceManager,
-                journal: &SystemJournal::here(),
-                ending: hold::holder::Ending::Signalled,
-            })
-        }
+        } => hold_here(&realm, &id, &folder, login, &command),
         Action::Watch { groups, recent } => watch(&socket, groups, recent),
         Action::Machines { .. }
         | Action::Machine { .. }
@@ -1079,28 +1149,89 @@ const SWARM_WIDTH: usize = 100;
 /// Prints the swarm's teams, or the one `team` names, as
 /// [`mycelium::swarm`] draws them, or each team's record as a JSON line.
 fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Result<()> {
-    use std::io::IsTerminal as _;
     let swarm = mycelium::swarm::read(socket, realm, SWARM_WITHIN)?;
     if json {
         return swarm.teams.iter().try_for_each(print_line);
     }
+    let look = look();
+    let shown = match team {
+        Some(team) => mycelium::swarm::team(&swarm, team, &look).map_err(not_found)?,
+        None => mycelium::swarm::overview(&swarm, &look),
+    };
+    writeln!(io::stdout().lock(), "{shown}")
+}
+
+/// How a person's terminal is drawn on: as wide as it says, in colour
+/// unless it isn't one or `NO_COLOR` is set.
+fn look() -> mycelium::swarm::Look {
+    use std::io::IsTerminal as _;
     let stdout = io::stdout();
     let terminal = stdout.is_terminal();
     let width = rustix::termios::tcgetwinsize(&stdout)
         .ok()
         .filter(|size| terminal && size.ws_col > 0)
         .map_or(SWARM_WIDTH, |size| usize::from(size.ws_col));
-    let look = mycelium::swarm::Look {
+    mycelium::swarm::Look {
         width,
         colour: terminal && std::env::var_os("NO_COLOR").is_none(),
         now: jiff::Zoned::now(),
+    }
+}
+
+/// That nothing, or more than one thing, goes by what was asked, as `why`
+/// says.
+fn not_found(why: String) -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, why)
+}
+
+/// Draws every network, or the one `asked` names, as
+/// [`mycelium::networks`] draws them, or prints each as a JSON line, the
+/// cells after them.
+fn networks(socket: &Path, realm: &str, asked: &NetworksAsked) -> io::Result<()> {
+    use mycelium::networks;
+    let mycelium = networks::read(socket, realm, SWARM_WITHIN)?;
+    let name = asked.words.join(" ");
+    if asked.output.json() {
+        if name.is_empty() {
+            return mycelium.lines().iter().try_for_each(print_line);
+        }
+        let network = mycelium.named_network(&name).map_err(not_found)?;
+        print_line(network)?;
+        let cells = network.cells.iter().filter_map(|cell| mycelium.cell(cell));
+        return cells.into_iter().try_for_each(print_line);
+    }
+    let look = look();
+    let shown = if name.is_empty() {
+        networks::overview(&mycelium, &look, asked.cells)
+    } else {
+        networks::network(&mycelium, &name, &look).map_err(not_found)?
     };
-    let shown = match team {
-        Some(team) => mycelium::swarm::team(&swarm, team, &look)
-            .map_err(|why| io::Error::new(io::ErrorKind::NotFound, why))?,
-        None => mycelium::swarm::overview(&swarm, &look),
-    };
-    writeln!(stdout.lock(), "{shown}")
+    writeln!(io::stdout().lock(), "{shown}")
+}
+
+/// Lists every cell, or says the one `asked` names, a machine as
+/// `machines NAME` says it, or prints each as a JSON line.
+fn cells(socket: &Path, realm: &str, asked: &CellsAsked) -> io::Result<()> {
+    use mycelium::networks::{self, Is};
+    let mycelium = networks::read(socket, realm, SWARM_WITHIN)?;
+    let name = asked.words.join(" ");
+    if name.is_empty() {
+        if asked.output.json() {
+            return mycelium.cells.iter().try_for_each(print_line);
+        }
+        let shown = networks::cells(&mycelium, &look());
+        return writeln!(io::stdout().lock(), "{shown}");
+    }
+    let cell = mycelium.named_cell(&name).map_err(not_found)?;
+    if cell.is == Is::Machine {
+        let machines = Client::connect(socket)?.ask(&Request::Machines)?;
+        return print_line(&one_machine(machines, &cell.name)?);
+    }
+    if asked.output.json() {
+        return print_line(cell);
+    }
+    let shown = networks::cell(&mycelium, cell, &look());
+    writeln!(io::stdout().lock(), "{shown}")
 }
 
 /// Does what `words` ask of the swarm: shows it or a team, steers one,
@@ -1219,6 +1350,29 @@ fn hold(
 /// The words a held program starts inside: a login shell, for a hold a
 /// node starts, or none for a hold from a terminal, which has the
 /// person's environment already.
+/// Holds `command` here as the session `id`, in `folder`, until its
+/// scope's stop tells it to end.
+fn hold_here(
+    realm: &str,
+    id: &str,
+    folder: &Path,
+    login: bool,
+    command: &[String],
+) -> io::Result<()> {
+    let through = held_through(login, realm);
+    be_holder(&hold::holder::Holding {
+        dir: &place::held(realm),
+        realm,
+        id,
+        command,
+        through: &through,
+        folder,
+        environment: &ServiceManager,
+        journal: &SystemJournal::here(),
+        ending: hold::holder::Ending::Signalled,
+    })
+}
+
 fn held_through(login: bool, realm: &str) -> Vec<String> {
     if login {
         login_shell(realm)
@@ -1388,7 +1542,58 @@ fn intent(name: &str) -> Result<Intent, String> {
 mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Action, Command, SwarmAsked, Tree, swarm_asked, tree};
+    use super::{Action, Command, HELP_WIDTH, SwarmAsked, Tree, swarm_asked, tree};
+
+    #[test]
+    fn every_command_s_help_fits_sixty_columns() {
+        let mut command = Command::command();
+        command.build();
+        let mut commands = vec![command];
+        let mut wide = Vec::new();
+        while let Some(mut each) = commands.pop() {
+            if each.is_hide_set() {
+                continue;
+            }
+            let name = each.get_name().to_owned();
+            for help in [each.render_help(), each.render_long_help()] {
+                wide.extend(
+                    help.to_string()
+                        .lines()
+                        .filter(|line| line.chars().count() > HELP_WIDTH)
+                        .map(|line| format!("{name}: {line}")),
+                );
+            }
+            commands.extend(each.get_subcommands().cloned());
+        }
+        assert!(wide.is_empty(), "help passes {HELP_WIDTH}: {wide:#?}");
+    }
+
+    #[test]
+    fn networks_and_cells_take_their_singular_and_either_json() {
+        let parsed = |words: &[&str]| {
+            let line = ["mycelium", "--realm", "work"];
+            Command::try_parse_from(line.iter().chain(words))
+                .unwrap_or_else(|error| panic!("{words:?} parses: {error}"))
+                .action
+        };
+        for words in [&["networks", "-o", "json"][..], &["network", "--json"]] {
+            assert!(
+                matches!(parsed(words), Action::Networks(asked) if asked.output.json()),
+                "{words:?}"
+            );
+        }
+        assert!(
+            matches!(
+                parsed(&["cell", "part", "deux"]),
+                Action::Cells(asked) if asked.words == ["part", "deux"] && !asked.output.json()
+            ),
+            "a cell by words of its title, drawn for a person"
+        );
+        assert!(
+            matches!(parsed(&["swarm", "-o", "json"]), Action::Swarm { output, .. } if output.json()),
+            "the swarm takes -o json beside --json"
+        );
+    }
 
     /// What `words` after `mycelium --realm work` ask of the machines or
     /// the holds, or why they don't fit.
@@ -1494,7 +1699,7 @@ mod tests {
         let asked = Command::try_parse_from(line.iter().chain(words))
             .unwrap_or_else(|error| panic!("{words:?} parses: {error}"));
         match asked.action {
-            Action::Swarm { words, json, .. } => (swarm_asked(&words), json),
+            Action::Swarm { words, output, .. } => (swarm_asked(&words), output.json()),
             _ => panic!("{words:?} is the swarm"),
         }
     }
