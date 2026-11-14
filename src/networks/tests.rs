@@ -45,7 +45,8 @@ fn on_quest(mut session: Value, short: &str, title: &str) -> Value {
 /// two machines.
 fn mycelium() -> Mycelium {
     let teams = [
-        json!({"key": "team:HARBOR", "title": "Harbour Ships", "within": null}),
+        json!({"key": "team:HARBOR", "title": "Harbour Ships", "within": null,
+               "lead": "01a1d045-d581-7000-8000-000000000000"}),
         json!({"key": "team:KELP01", "title": "Kelp: Tides", "within": "HARBOR"}),
     ];
     let mut asking = on_quest(
@@ -77,6 +78,12 @@ fn mycelium() -> Mycelium {
         "Harbour Ships",
     );
     busy["step"] = json!("running the tests");
+    busy["presence"]["repo"] = json!("skiff");
+    busy["presence"]["usage"] = json!({
+        "context": {"limit": 1000, "used": 250},
+        "pi.cost.usd": {"last": 0.05, "today": 2.5},
+        "turns": {"last": {"at": "2026-11-12T16:59:00Z"}, "today": 12},
+    });
     let mut parked = session(
         "NAPS01",
         3,
@@ -194,11 +201,23 @@ fn json_lines_say_each_network_then_each_cell() {
     assert_eq!(
         lines[7],
         json!({"kind": "cell", "name": "ASKS01", "type": "session",
-               "title": "Kelp's question", "standing": "needs-you",
-               "doing": "Which tide?", "machine": "skiff",
+               "title": "Kelp's question",
+               "id": "01a1d045-d582-7000-8000-000000000000",
+               "window": "π - Kelp's q… - skiff", "standing": "needs-you",
+               "doing": "Which tide?", "asks": "Which tide?", "machine": "skiff",
                "since": "2026-11-12T15:00:00.002Z", "quest": "QEST-20261112-HARBOR",
                "networks": ["orchestration.kelp01", "repo.skiff"]}),
         "a session cell whole"
+    );
+    assert_eq!(
+        (&lines[6]["leads"], &lines[6]["repo"], &lines[6]["usage"]),
+        (
+            &json!(["orchestration.harbor"]),
+            &json!("skiff"),
+            &json!({"cost_today": 2.5, "context": {"limit": 1000, "used": 250},
+                    "turns_today": 12, "last_turn": "2026-11-12T16:59:00Z"})
+        ),
+        "the busy one leads Harbour, works in skiff and says what it spent"
     );
 }
 

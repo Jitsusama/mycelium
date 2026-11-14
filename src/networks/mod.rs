@@ -4,10 +4,11 @@
 //! one concern, which a cell joins by carrying its shape, so a session
 //! joins the networks of the work it does: each mesh group it hears, but
 //! its own address, is one. An orchestration's network is a team of the
-//! swarm, its title, short name and nesting the team's; a project's is a
-//! quest's group, counted only where two cells or more share it, since
-//! otherwise it is one cell's own; a repository's and a named group's are
-//! their groups; and the machines are cells of a network of their own.
+//! swarm, its title, short name and nesting the team's; a project's and a
+//! repository's are a quest's and a repository's groups, counted only
+//! where two cells or more share them, since otherwise each is one cell's
+//! own; a named group's is its group; and the machines are cells of a
+//! network of their own.
 //!
 //! Everything here is built from the node's `team`, `session` and
 //! `machine` records, as the swarm reads them, and says nothing back: the
@@ -154,14 +155,34 @@ pub struct Cell {
     /// What it is.
     #[serde(rename = "type")]
     pub is: Is,
-    /// What it is called, where it says.
+    /// What it is called, where it says: a session's quest's title, where
+    /// it works on one.
     pub title: Option<String>,
+    /// A session's id, which stays the same as long as it lives.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// A session's window's title, where it is not its `title`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
     /// How a session stands, by the word it is counted by.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub standing: Option<&'static str>,
     /// What a session is doing, or asks, where it says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doing: Option<String>,
+    /// What a session asks its person, in its own words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asks: Option<String>,
+    /// The repository a session works in, where it says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// What a session has spent today, as its presence says it.
+    #[serde(skip_serializing_if = "Usage::is_empty")]
+    pub usage: Usage,
+    /// The networks a session leads, as each orchestration's team names
+    /// its lead.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub leads: Vec<String>,
     /// The machine a session runs on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
@@ -183,6 +204,41 @@ pub struct Cell {
     pub runs: Option<usize>,
     /// The networks it joined, by name.
     pub networks: Vec<String>,
+}
+
+/// What a session has spent today, as its presence says it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Usage {
+    /// Its cost today, in US dollars.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_today: Option<f64>,
+    /// How much of its context window it holds, as `{used, limit}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<Value>,
+    /// How many turns it took today.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turns_today: Option<u64>,
+    /// When its last turn began.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_turn: Option<String>,
+}
+
+impl Usage {
+    /// What the presence of `session` says it spent.
+    fn of(session: &Value) -> Self {
+        let usage = &session["presence"]["usage"];
+        Self {
+            cost_today: usage["pi.cost.usd"]["today"].as_f64(),
+            context: Some(usage["context"].clone()).filter(Value::is_object),
+            turns_today: usage["turns"]["today"].as_u64(),
+            last_turn: usage["turns"]["last"]["at"].as_str().map(str::to_owned),
+        }
+    }
+
+    /// Whether it says nothing.
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl Cell {
@@ -216,8 +272,12 @@ impl Mycelium {
         let mut networks = joined(teams, &sessions, &quests);
         networks.push(machines_network(machines, &sessions));
         let names: BTreeSet<&str> = networks.iter().map(|each| each.name.as_str()).collect();
+        let leads = led(teams);
         for cell in &mut sessions {
             cell.networks.retain(|name| names.contains(name.as_str()));
+            if let Some(led) = cell.id.as_deref().and_then(|id| leads.get(id)) {
+                cell.leads.clone_from(led);
+            }
         }
         let machines = machines.iter().map(|one| machine_cell(one, &sessions));
         let cells = sessions.iter().cloned().chain(machines).collect();
@@ -338,13 +398,20 @@ fn session_cell(session: &Value) -> Option<Cell> {
         .filter(|group| Shape::of_group(group).is_some())
         .map(str::to_owned)
         .collect();
+    let title = swarm::title(session).to_owned();
     Some(Cell {
         kind: "cell",
         name: text("address")?,
         is: Is::Session,
-        title: Some(swarm::title(session).to_owned()),
+        id: text("id"),
+        window: text("title").filter(|window| *window != title),
+        title: Some(title),
         standing: Some(standing.counted()),
         doing: standing.doing(session).map(str::to_owned),
+        asks: session["wants"]["said"].as_str().map(str::to_owned),
+        repo: session["presence"]["repo"].as_str().map(str::to_owned),
+        usage: Usage::of(session),
+        leads: Vec::new(),
         machine: text("machine"),
         since: session["id"].as_str().and_then(begun),
         quest: text("quest"),
@@ -353,6 +420,19 @@ fn session_cell(session: &Value) -> Option<Cell> {
         runs: None,
         networks,
     })
+}
+
+/// The networks each session leads, by its id, as each team names its
+/// lead.
+fn led(teams: &[Value]) -> BTreeMap<String, Vec<String>> {
+    let mut leads: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for team in teams {
+        if let Some(lead) = team["lead"].as_str() {
+            let network = format!("orchestration.{}", swarm::address(team).to_lowercase());
+            leads.entry(lead.to_owned()).or_default().push(network);
+        }
+    }
+    leads
 }
 
 /// When the session of `id`, a UUID version 7, began: the milliseconds
@@ -375,8 +455,14 @@ fn machine_cell(machine: &Value, sessions: &[Cell]) -> Cell {
         kind: "cell",
         title: machine["model_name"].as_str().map(str::to_owned),
         is: Is::Machine,
+        id: None,
+        window: None,
         standing: None,
         doing: None,
+        asks: None,
+        repo: None,
+        usage: Usage::default(),
+        leads: Vec::new(),
         machine: None,
         since: None,
         quest: None,
