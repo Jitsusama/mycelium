@@ -154,19 +154,36 @@ impl<'a> Watching<'a> {
     }
 
     /// Takes in what the watch heard, answering whether a steer that wakes
-    /// the program now waits. An inbox removed is watched no more, until
-    /// [`Self::arm`] finds it made again.
+    /// the program now waits in the inbox it was heard in. An inbox removed
+    /// is watched no more, until [`Self::arm`] finds it made again. A watch
+    /// that failed, or heard no path, looks in every inbox.
     pub fn heard(&mut self, heard: &Heard) -> bool {
-        if let Ok(event) = heard
-            && matches!(event.kind, EventKind::Remove(_))
-        {
+        let Ok(event) = heard else {
+            return self.steers.waiting();
+        };
+        if event.paths.is_empty() {
+            return self.steers.waiting();
+        }
+        if matches!(event.kind, EventKind::Remove(_)) {
             for path in &event.paths {
                 if self.armed.remove(path) {
                     let _ = self.watcher.unwatch(path);
                 }
             }
         }
-        self.steers.waiting()
+        event
+            .paths
+            .iter()
+            .filter_map(|path| self.inbox_of(path))
+            .any(|inbox| self.steers.waits_in(inbox))
+    }
+
+    /// The watched inbox `path` is, or lies in.
+    fn inbox_of<'p>(&self, path: &'p Path) -> Option<&'p Path> {
+        if self.armed.contains(path) {
+            return Some(path);
+        }
+        path.parent().filter(|inbox| self.armed.contains(*inbox))
     }
 }
 
@@ -277,6 +294,34 @@ mod tests {
         })
         .await;
         assert!(matches!(woke, Ok(true)), "the talk is heard");
+    }
+
+    #[test]
+    fn what_is_heard_in_one_inbox_is_judged_by_that_inbox_alone() {
+        let root = tempfile::tempdir().expect("a folder");
+        let (one, other) = (root.path().join("ZJ62K2"), root.path().join("QUEST1"));
+        fs::create_dir(&one).expect("one inbox");
+        fs::create_dir(&other).expect("another");
+        let steers = steers(&[&one, &other]);
+        let (mut watching, _heard) = Watching::of(&steers).expect("a watch");
+        assert!(!watching.arm(), "both watched, and empty");
+        lands(&one, "1-a.json", r#"{"act":"pause"}"#);
+        lands(&other, "2-b.json", r#"{"text":"are you there?"}"#);
+        let landed = |inbox: &Path, name: &str| -> Heard {
+            Ok(
+                notify::Event::new(EventKind::Create(notify::event::CreateKind::File))
+                    .add_path(inbox.join(name)),
+            )
+        };
+
+        assert!(
+            !watching.heard(&landed(&one, "1-a.json")),
+            "a pause heard in one inbox wakes nothing"
+        );
+        assert!(
+            watching.heard(&landed(&other, "2-b.json")),
+            "the talk wakes it as it is heard in its own"
+        );
     }
 
     #[tokio::test]
