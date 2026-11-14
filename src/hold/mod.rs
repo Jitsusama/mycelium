@@ -15,7 +15,9 @@
 //! terminal when a key is typed in one of them or when its wake file,
 //! `<id>.wake`, appears. The program is told that file in
 //! `MYCELIUM_WAKE`, so whatever wakes it needs to know nothing of this
-//! folder.
+//! folder. One that says as it parks where its steers land, in
+//! `<id>.steers` (told in `MYCELIUM_STEERS`), wakes too as one lands
+//! there that would give it a turn ([`steering`]).
 //!
 //! - [`holder`]: the holder, keeping the program's terminal
 //! - [`attach`]: a terminal joining a holder
@@ -24,6 +26,7 @@
 //! - [`environment`]: the person's environment as it is now, which each
 //!   start of a held program is given
 //! - [`journal`]: where a holder says how each run of its program ended
+//! - [`steering`]: the steers a parked program wakes for
 //!
 //! What a joined terminal sends its holder is framed, as [`Said`]; what
 //! the holder sends back is the modes the program asked for so far, then
@@ -35,6 +38,7 @@ pub mod holder;
 pub mod journal;
 pub mod modes;
 pub mod start;
+pub mod steering;
 
 use std::fs;
 use std::io;
@@ -180,6 +184,13 @@ pub fn socket(dir: &Path, id: &str) -> PathBuf {
 #[must_use]
 pub fn wake(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.wake"))
+}
+
+/// The file a program held as `id` in `dir` may write, as it parks,
+/// saying where its steers land and which wake it ([`steering::Steers`]).
+#[must_use]
+pub fn steers(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.steers"))
 }
 
 /// The file a program held as `id` in `dir` may write, as it parks, with
