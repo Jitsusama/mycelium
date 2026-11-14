@@ -285,6 +285,66 @@ fn one_network_says_what_it_is_within_and_its_cells() {
 }
 
 #[test]
+fn an_orchestrator_renamed_draws_one_network_under_its_own_address() {
+    // A node too old to fold the old address still says its team.
+    let teams = [
+        json!({"key": "team:KELP01", "title": "Kelp Beds"}),
+        json!({"key": "team:HARBOR", "title": "HARBOR"}),
+    ];
+    let mut lead = session("KELP01", 1, "Kelp Beds", "busy", &["orchestration.kelp01"]);
+    lead["presence"] = json!({"addresses": ["KELP01", "HARBOR", "EF5B865E"]});
+    let sessions = [
+        lead,
+        session(
+            "OLD001",
+            2,
+            "Spawned before",
+            "idle",
+            &["orchestration.harbor"],
+        ),
+        session(
+            "NEW001",
+            3,
+            "Spawned since",
+            "busy",
+            &["orchestration.kelp01"],
+        ),
+    ];
+    let mycelium = Mycelium::of("work", &teams, &sessions, &[]);
+    let orchestrations: Vec<(&str, Option<&str>, &[String])> = mycelium
+        .networks
+        .iter()
+        .filter(|each| each.shape == Shape::Orchestration)
+        .map(|each| {
+            (
+                each.name.as_str(),
+                each.title.as_deref(),
+                each.cells.as_slice(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        orchestrations,
+        [(
+            "orchestration.kelp01",
+            Some("Kelp Beds"),
+            [
+                "KELP01".to_owned(),
+                "OLD001".to_owned(),
+                "NEW001".to_owned()
+            ]
+            .as_slice()
+        )],
+        "one network, titled, holding those answering either address"
+    );
+    assert_eq!(
+        mycelium.cell("OLD001").map(|cell| cell.networks.clone()),
+        Some(vec!["orchestration.kelp01".to_owned()]),
+        "a session spawned before the rename is in the orchestrator's own network"
+    );
+}
+
+#[test]
 fn a_name_matching_none_or_several_networks_is_said_plainly() {
     let mycelium = mycelium();
     assert_eq!(
