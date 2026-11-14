@@ -21,13 +21,15 @@ The harness mesh's messages and presence, carried between machines:
 - A quest carried with `mycelium carry --to` goes to another machine with
   its sessions: each carries its work into the quest's handover and ends
   here, and starts again there once its trees have arrived.
-- A program started with `mycelium hold` outlives the window it started
-  in, and `mycelium attach` takes it up again from any terminal on the
-  machine. One that exits 75 is parked: its window stays, and a key or
-  its wake file starts it again. While one held there is at work (a
-  turn, queued work, or a program that is no session), the node keeps
-  it from sleeping when idle, until its battery drops below 20%.
-  Shutting its lid or asking it to sleep always sleeps it.
+- A program started with `mycelium holds add` outlives the window it
+  started in, `mycelium holds` lists what is held, and `mycelium holds
+  <ID> attach` takes one up again from any terminal on the machine. The
+  older `hold`, `held`, `attach <ID>` and `again` still work. One that
+  exits 75 is parked: its window stays, and a key or its wake file
+  starts it again. While one held there is at work (a turn, queued
+  work, or a program that is no session), the node keeps it from
+  sleeping when idle, until its battery drops below 20%. Shutting its
+  lid or asking it to sleep always sleeps it.
 - `mycelium attach --host` shows a conversation a pi host holds until
   the host lets it go. It exits 3 when the host let the conversation go
   back to plain pi, as a release does, so whatever runs in the window
@@ -37,8 +39,9 @@ The harness mesh's messages and presence, carried between machines:
 - Links run over SSH, so a machine needs nothing but the `mycelium`
   command and an SSH login.
 - Each node serves a local socket in niri's shape, which pi, Quickshell
-  or a terminal reads, and says on it what its machine is (`mycelium
-  machine`), the facts work will be placed by. A client that opens with
+  or a terminal reads, and says on it what each machine is (`mycelium
+  machines`, or `machines <NAME>` for one), the facts work will be
+  placed by. A client that opens with
   `hello` is answered in the daemon interface every daemon on the machine
   speaks, and watches the realm's sessions, machines and messages
   change.
@@ -79,9 +82,9 @@ mycelium --realm work node --ssh joel.gerber@192.168.4.32
 mycelium --realm work share QEST-20261013-4UHC5Q
 
 # Hold a session, close its window, and take it up again elsewhere:
-mycelium --realm work hold -- pi
-mycelium --realm work held
-mycelium --realm work attach 5b992038
+mycelium --realm work holds add -- pi
+mycelium --realm work holds
+mycelium --realm work holds 5b992038 attach
 ```
 
 ## Lineage
