@@ -32,6 +32,8 @@ enum Carried {
     Steer {
         address: String,
         steer: Map<String, Value>,
+        #[serde(default)]
+        checked: bool,
     },
     Update,
 }
@@ -43,6 +45,7 @@ impl From<Asked> for Carried {
             Asked::Steer(steer) => Self::Steer {
                 address: steer.address,
                 steer: steer.body,
+                checked: steer.checked,
             },
             Asked::Update => Self::Update,
         }
@@ -53,9 +56,14 @@ impl From<Carried> for Asked {
     fn from(carried: Carried) -> Self {
         match carried {
             Carried::Start(start) => Self::Start(start),
-            Carried::Steer { address, steer } => Self::Steer(Steer {
+            Carried::Steer {
+                address,
+                steer,
+                checked,
+            } => Self::Steer(Steer {
                 address,
                 body: steer,
+                checked,
             }),
             Carried::Update => Self::Update,
         }

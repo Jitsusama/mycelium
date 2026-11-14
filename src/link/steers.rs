@@ -45,9 +45,25 @@ impl Following {
     }
 
     /// Writes what the other end says to `address` into its inbox here,
-    /// following the talk it opens from the start.
-    pub(super) fn deliver(&mut self, address: &str, said: &Value) -> Result<(), String> {
+    /// following the talk it opens from the start. What claims to be from
+    /// the person goes only where the other end `checked` who asked, as
+    /// a node on a machine that can't tell, or one older than this, never
+    /// says it did.
+    pub(super) fn deliver(
+        &mut self,
+        address: &str,
+        said: &Value,
+        checked: bool,
+    ) -> Result<(), String> {
         let steer = Steer::new(address, said)?;
+        if steer::claims_the_person(said) && !checked {
+            return Err(
+                "the machine it was asked on didn't say it saw who asked, so it \
+                        can't come from the person: that machine's mycelium may be too old \
+                        to say, or it couldn't tell"
+                    .to_owned(),
+            );
+        }
         steer
             .deliver(&self.inboxes)
             .map_err(|error| format!("its inbox refused it: {error}"))?;
@@ -127,4 +143,65 @@ pub(super) fn keep(inboxes: &std::path::Path, replies: &Replies) -> io::Result<(
         return Ok(());
     }
     steer::append(&path, replies.from, &replies.lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// What lies in `address`'s inbox in `inboxes`, in no order.
+    fn held(inboxes: &std::path::Path, address: &str) -> Vec<String> {
+        let mut held: Vec<String> = std::fs::read_dir(inboxes.join(address))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|it| it == "json"))
+            .map(|entry| {
+                let read: Value =
+                    serde_json::from_str(&std::fs::read_to_string(entry.path()).expect("it reads"))
+                        .expect("it is JSON");
+                read.to_string()
+            })
+            .collect();
+        held.sort();
+        held
+    }
+
+    #[test]
+    fn a_steer_as_the_person_crosses_only_where_the_other_end_saw_who_asked() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let mut following = Following::new(dir.path().to_owned());
+        let pause = json!({"act": "pause", "from": "joel"});
+
+        assert_eq!(
+            following.deliver("SAK9FZ", &pause, false),
+            Err(
+                "the machine it was asked on didn't say it saw who asked, so it can't come \
+                 from the person: that machine's mycelium may be too old to say, or it \
+                 couldn't tell"
+                    .to_owned()
+            ),
+            "a pause as Joel nobody checked is refused, saying why"
+        );
+        assert!(
+            following
+                .deliver("SAK9FZ", &json!({"text": "hello"}), false)
+                .is_err(),
+            "so is a steer naming nobody, which the harness reads as the person"
+        );
+        assert_eq!(held(dir.path(), "SAK9FZ"), Vec::<String>::new());
+
+        let own = json!({"text": "the build is done", "from": "machine"});
+        following
+            .deliver("SAK9FZ", &own, false)
+            .expect("what an agent says as itself needs no check");
+        following
+            .deliver("SAK9FZ", &pause, true)
+            .expect("a pause the other end checked is delivered");
+        let mut wanted = vec![pause.to_string(), own.to_string()];
+        wanted.sort();
+        assert_eq!(held(dir.path(), "SAK9FZ"), wanted);
+    }
 }

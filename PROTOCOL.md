@@ -145,10 +145,13 @@ same code, each line a JSON value:
 9. `{"Started": {"ask", "reply"}}`: the other end's reply to the ask
    of that number: its node's, as its socket answered, for a start, and
    its own for a steer.
-10. `{"Steer": {"ask", "address", "steer"}}`: put what the person says
-    into the inbox of the session going by `address` on the other end's
-    machine, as a `"Steer"` request says it. The other end writes it
-    there itself, since a steer is only a file. A steer with an `id`
+10. `{"Steer": {"ask", "address", "steer", "checked"}}`: put what the
+    person says into the inbox of the session going by `address` on the
+    other end's machine, as a `"Steer"` request says it. The other end
+    writes it there itself, since a steer is only a file. `checked`,
+    left out when false, says the sending end's node saw the person's
+    own process ask; without it the other end refuses a steer that
+    claims the person, saying so. A steer with an `id`
     opens a talk, which the other end follows from then on. Words with
     `"now": true` go into the session's turn under way; without it,
     they wait for that turn to end.
@@ -454,7 +457,7 @@ refuses.
 A `Carry` connection is how the end of a link another machine dialled
 carries what its node asks of that machine. The node writes each ask as
 `{"ask", "asked"}`, where `asked` is `{"Start": start}`, `{"Steer":
-{"address", "steer"}}` or `"Update"`, and the link writes back
+{"address", "steer", "checked"}}` or `"Update"`, and the link writes back
 `{"ask", "reply"}` with the other end's reply. It lasts until either
 hangs up, or until another link reaching the machine takes its place;
 an ask still waiting then hears that the link dropped.
@@ -705,15 +708,21 @@ machines at once, or when the link can't carry it.
 
 Only the person's own login speaks as the person. A steer whose `from`
 names nobody, `joel` or `person`, in any case, is refused, saying so,
-when the process asking runs as one of the machine's agents, as Linux
-tells it: in a unit of the person's service manager whose name begins
-`agents.slice/pi-host-` or `agents.slice/mycelium-pi-`, in one under
-`jobs.slice/` or `offload.slice/`, or below a process named `pi`. A
-steer from anyone else, such as the node's own `machine`, goes as
-before. This keeps an agent from speaking as the person by habit or
-mistake, not one set on it, since a process of the person's account can
-move itself into any unit of theirs or write an inbox itself. Where the
-process or its unit can't be told, as on a Mac, the steer goes.
+when the process asking runs as one of the machine's agents: on Linux,
+in a unit of the person's service manager whose name begins
+`agents.slice/pi-host-` or `agents.slice/mycelium-pi-`, or in one under
+`jobs.slice/` or `offload.slice/`; on Linux or a Mac, below a process
+named `pi`, as `/proc` or `ps` tells it. It is refused too when the
+kernel names no process at the client's end. Where the process can be
+told and is the person's, the node says so to a link carrying the steer
+to another machine; where it can't be read, the steer goes here but
+crosses no link, since the far end refuses what claims the person
+without that word, so it refuses all such steers from a node too old to
+say it. A steer from anyone else, such as the node's own
+`machine`, goes as before. This keeps an agent from speaking as the
+person by habit or mistake, not one set on it, since a process of the
+person's account can move itself into any unit of theirs, leave pi's
+line by forking twice, or write an inbox itself.
 
 `"Update"` asks `machine` to update itself to its configuration's main:
 this one through its updater, and one a link of this node's reaches

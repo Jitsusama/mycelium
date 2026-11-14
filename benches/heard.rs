@@ -177,7 +177,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 book: mycelium::made::Book::at("/nowhere/made.jsonl".into()),
                 flows: mycelium::flow::Flows::default(),
                 parked: "/nowhere/parked".into(),
-                procs: "/nowhere/proc".into(),
+                processes: node::Processes::Folder("/nowhere/proc".into()),
             },
             bound,
             until_stopped,

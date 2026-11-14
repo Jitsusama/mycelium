@@ -152,6 +152,10 @@ pub enum Frame {
         address: String,
         /// What is said, in the harness's own shape.
         steer: Value,
+        /// Whether this end's node saw who asked and found them the
+        /// person's own; an end older than this never says so.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        checked: bool,
     },
     /// Update the other end's machine to its configuration's main.
     Update {
@@ -600,17 +604,17 @@ impl<S: Store> End<S> {
                 ask,
                 address,
                 steer,
+                checked,
             } => {
-                let reply = match self.following.as_mut() {
-                    Some(following) => {
-                        following
-                            .deliver(&address, &steer)
-                            .map(|()| Response::Steered {
+                let reply =
+                    match self.following.as_mut() {
+                        Some(following) => following.deliver(&address, &steer, checked).map(|()| {
+                            Response::Steered {
                                 machine: self.here.clone(),
-                            })
-                    }
-                    None => Err(format!("{} carries no steers over this link", self.here)),
-                };
+                            }
+                        }),
+                        None => Err(format!("{} carries no steers over this link", self.here)),
+                    };
                 send(writing, &Frame::Started { ask, reply }).await?;
             }
             Frame::Update { ask } => self.update(ask),
@@ -660,6 +664,7 @@ impl<S: Store> End<S> {
                 ask: id,
                 address: steer.address,
                 steer: Value::Object(steer.body),
+                checked: steer.checked,
             },
             Asked::Update => Frame::Update { ask: id },
         };
