@@ -94,6 +94,13 @@ impl Drop for Socket {
 /// Binds the socket at `path` in a folder only this account can enter,
 /// refusing a folder anyone else could, and refusing to take over a socket
 /// a live node still serves or a path that isn't a socket.
+///
+/// The socket is bound and made private under a name of its own beside
+/// `path`, then linked into place, so `path` appears already listening
+/// and private: a client waiting for it to appear was once refused, as
+/// binding makes the file before it listens (seen failing on 14
+/// November). Linking, unlike renaming, refuses a path another node took
+/// meanwhile.
 pub fn bind(path: &Path) -> io::Result<Socket> {
     let refused = |why: String| io::Error::new(io::ErrorKind::PermissionDenied, why);
     if let Some(parent) = path.parent() {
@@ -124,12 +131,41 @@ pub fn bind(path: &Path) -> io::Result<Socket> {
         }
         fs::remove_file(path)?;
     }
-    let listener = UnixListener::bind(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(Socket {
+    let staged = staged(path);
+    let _ = fs::remove_file(&staged);
+    let listener = UnixListener::bind(&staged)?;
+    let placed = place(&staged, path);
+    let _ = fs::remove_file(&staged);
+    placed.map(|()| Socket {
         listener,
         path: path.to_owned(),
     })
+}
+
+/// Makes the socket bound at `staged` private and links it in at `path`,
+/// refusing a `path` another node took since this one looked.
+fn place(staged: &Path, path: &Path) -> io::Result<()> {
+    fs::set_permissions(staged, fs::Permissions::from_mode(0o600))?;
+    fs::hard_link(staged, path).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("a node already serves {}", path.display()),
+            )
+        } else {
+            error
+        }
+    })
+}
+
+/// Where the socket for `path` is bound before it is linked into place:
+/// beside it, hidden, and named for this process and its count of binds,
+/// so two binds never share one.
+fn staged(path: &Path) -> PathBuf {
+    static BINDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let count = BINDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = format!(".{}-{count}", std::process::id());
+    path.with_file_name(name)
 }
 
 /// What a node is given to run with besides its seams.
@@ -3479,6 +3515,74 @@ mod tests {
         drop(stop);
         let stopped = node.await.expect("the node runs to its end");
         assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    /// How a client that connects the instant a socket's path appears
+    /// finds it: the path's mode, and whether the connection was taken.
+    fn the_instant_it_appears(path: &Path) -> (u32, io::Result<()>) {
+        let waiting = std::time::Instant::now();
+        loop {
+            if let Ok(made) = fs::symlink_metadata(path) {
+                let connected = std::os::unix::net::UnixStream::connect(path).map(drop);
+                return (made.mode() & 0o777, connected);
+            }
+            assert!(
+                waiting.elapsed() < Duration::from_secs(5),
+                "the socket never appeared"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_socket_appears_already_listening_and_private() {
+        for _ in 0..300 {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let socket = dir.path().join("mycelium").join("work.sock");
+            let watched = socket.clone();
+            let client = std::thread::spawn(move || the_instant_it_appears(&watched));
+            let bound = bind(&socket).expect("the socket binds");
+            let (mode, connected) = client.join().expect("the client ran");
+            assert!(
+                connected.is_ok(),
+                "a client was refused the instant the socket appeared: {connected:?}"
+            );
+            assert_eq!(mode, 0o600, "the socket appeared open to others");
+            drop(bound);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_second_node_is_refused_the_socket_a_first_serves() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let first = bind(&socket).expect("the first binds");
+        let second = bind(&socket).map(drop);
+        assert_eq!(
+            second.as_ref().map_err(io::Error::kind),
+            Err(io::ErrorKind::AddrInUse),
+            "the second was let take it: {second:?}"
+        );
+
+        // A second that looked before the first had linked its socket in.
+        let late = staged(&socket);
+        let latecomer = UnixListener::bind(&late).expect("the latecomer binds");
+        let placed = place(&late, &socket);
+        drop(latecomer);
+        let _ = fs::remove_file(&late);
+        assert_eq!(
+            placed.as_ref().map_err(io::Error::kind),
+            Err(io::ErrorKind::AddrInUse),
+            "the latecomer was let take it: {placed:?}"
+        );
+        assert!(
+            std::os::unix::net::UnixStream::connect(&socket).is_ok(),
+            "the first still serves it"
+        );
+        let staged = fs::read_dir(socket.parent().expect("its folder"))
+            .expect("its folder reads")
+            .count();
+        assert_eq!(staged, 1, "nothing but the socket is left beside it");
+        drop(first);
     }
 
     #[tokio::test]
