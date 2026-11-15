@@ -98,30 +98,10 @@ enum Action {
     /// first. With `--to` and `--wait`, it returns once that machine holds
     /// it, printing a JSON line, `{"quest", "machine", "held", ...}`.
     #[command(
-        after_help = "Examples:\n  mycelium share QEST-20261112-HARBOR --scratch notes\n  \
-                            mycelium share QEST-20261112-HARBOR --to skiff --wait"
+        after_help = "Example:\n  mycelium share QEST-20261112-HARBOR --scratch notes \
+                            --to skiff --wait"
     )]
-    Share {
-        #[command(flatten)]
-        here: Here,
-        /// The quest's id, such as `QEST-20261112-HARBOR`.
-        quest: String,
-        /// A folder of the quest's scratch to share too, such as `notes`;
-        /// none is shared unless named, and one holding more than 10,000
-        /// files or 1 GiB is refused.
-        #[arg(long)]
-        scratch: Vec<String>,
-        /// The machine to wait for, by name.
-        #[arg(long, requires = "wait")]
-        to: Option<String>,
-        /// Waits until `--to` holds the quest's record and named scratch at
-        /// this machine's versions, failing past `--within`.
-        #[arg(long, requires = "to")]
-        wait: bool,
-        /// How many seconds to wait at most.
-        #[arg(long, requires = "wait", default_value_t = 120)]
-        within: u64,
-    },
+    Share(Sharing),
     /// Carries a quest and its sessions to another machine.
     ///
     /// Each of its sessions here carries its work into the quest's
@@ -689,6 +669,31 @@ fn holds_asked(holds: &Holds) -> Result<Tree, String> {
     }
 }
 
+/// A quest to share, and the machine to wait for, if any.
+#[derive(clap::Args)]
+struct Sharing {
+    #[command(flatten)]
+    here: Here,
+    /// The quest's id, such as `QEST-20261112-HARBOR`.
+    quest: String,
+    /// A folder of the quest's scratch to share too, such as `notes`;
+    /// none is shared unless named, but its handover, and one holding
+    /// more than 10,000 files or 1 GiB is refused.
+    #[arg(long)]
+    scratch: Vec<String>,
+    /// The machine to wait for, by name.
+    #[arg(long, requires = "wait")]
+    to: Option<String>,
+    /// Waits until `--to` holds the quest's record and named scratch, and
+    /// the READMEs above it, at this machine's versions, failing past
+    /// `--within`.
+    #[arg(long, requires = "to")]
+    wait: bool,
+    /// How many seconds to wait at most.
+    #[arg(long, requires = "wait", default_value_t = 120)]
+    within: u64,
+}
+
 #[derive(clap::Args)]
 struct Starting {
     /// What the machine must be, as for `place`.
@@ -972,19 +977,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Node(node) => run_node(node, realm, &socket),
         Action::Link { here } => run_link(here, realm, socket, None),
         Action::Ssh { here, from } => return run_asked(here, realm, socket, from),
-        Action::Share {
-            here,
-            quest,
-            scratch,
-            to,
-            within,
-            ..
-        } => share(
-            here,
-            realm,
-            &socket,
-            (&quest, to.as_deref(), &scratch, within),
-        ),
+        Action::Share(sharing) => share(sharing, realm, &socket),
         Action::Carry { here, quest, to } => {
             let (_, _, shares) = open(here, realm)?;
             carry(&socket, shares, &quest, &to)
@@ -1610,14 +1603,18 @@ fn steer_swarm(
 /// Shares `quest`, and if told `to`, waits as long as `within` seconds for
 /// that machine to hold it, printing what it found as a JSON line whatever
 /// it was, and failing with why unless held.
-fn share(
-    here: Here,
-    realm: String,
-    socket: &Path,
-    (quest, to, scratch, within): (&str, Option<&str>, &[String], u64),
-) -> io::Result<()> {
+fn share(sharing: Sharing, realm: String, socket: &Path) -> io::Result<()> {
+    let Sharing {
+        here,
+        quest,
+        scratch,
+        to,
+        within,
+        ..
+    } = sharing;
+    let (quest, scratch) = (quest.as_str(), scratch.as_slice());
     let (_, membership, shares) = open(here, realm)?;
-    let Some(to) = to else {
+    let Some(to) = to.as_deref() else {
         println!("{}", shares.offer(quest, scratch)?);
         return Ok(());
     };
