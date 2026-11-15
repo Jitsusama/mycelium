@@ -3033,8 +3033,6 @@ mod tests {
                 .put_presence(session, "equilibrius", &presence)
                 .expect("the presence is kept");
         };
-        put("reef01", &["#repo/skiff", "#peer/reef01"]);
-        put("kelp01", &["#repo/skiff", "#harbor"]);
         let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
@@ -3044,8 +3042,25 @@ mod tests {
             "hello names networks among the kinds it holds: {hello}"
         );
 
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "network"}))
+            .await;
+        let whole = client.next().await;
+        assert!(
+            whole["records"].is_array(),
+            "the records come whole first: {whole}"
+        );
+        put("reef01", &["#repo/skiff", "#peer/reef01"]);
+        put("kelp01", &["#repo/skiff", "#harbor"]);
+        let mut seen = std::collections::BTreeSet::new();
+        while !(seen.contains("network:repo.skiff") && seen.contains("network:harbor")) {
+            let changed = client.next().await;
+            let keys = changed["changed"].as_array().into_iter().flatten();
+            seen.extend(keys.filter_map(|one| one["key"].as_str().map(str::to_owned)));
+        }
+
         let mut listed = Vec::new();
-        for (id, kind) in [(2, "team"), (3, "session"), (4, "machine")] {
+        for (id, kind) in [(3, "team"), (4, "session"), (5, "machine"), (6, "network")] {
             client
                 .ask(json!({"id": id, "ask": "list", "kind": kind}))
                 .await;
@@ -3053,8 +3068,8 @@ mod tests {
             listed.push(answer["records"].as_array().cloned().unwrap_or_default());
         }
         let made = crate::networks::Mycelium::of("work", &listed[0], &listed[1], &listed[2]);
-        // This machine's own measure may come between the lists and the
-        // watch, so the machines' network is left out of what is compared.
+        // This machine's own measure may come between the lists, so the
+        // machines' network is left out of what is compared.
         let expected: BTreeMap<String, Value> = made
             .networks
             .iter()
@@ -3066,20 +3081,14 @@ mod tests {
             "the sessions share a repository and a named group: {expected:?}"
         );
 
-        client
-            .ask(json!({"id": 5, "ask": "watch", "kind": "network"}))
-            .await;
-        let whole = client.next().await;
-        let records = whole["records"]
-            .as_array()
-            .expect("the records come whole first");
         assert!(
-            records
+            listed[3]
                 .iter()
                 .all(|record| record["heard"].as_i64() > Some(0)),
-            "each network is heard as its cells last were: {whole}"
+            "each network is heard as its cells last were: {:?}",
+            listed[3]
         );
-        let served: BTreeMap<String, Value> = records
+        let served: BTreeMap<String, Value> = listed[3]
             .iter()
             .filter(|record| record["key"] != "network:machines")
             .map(|record| {

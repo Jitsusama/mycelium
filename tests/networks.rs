@@ -91,7 +91,7 @@ fn ten_thousand_cells_make_their_network_records_within_the_bar() {
             let team = json!({
                 "key": key, "kind": "team", "heard": 1_794_694_453_319_u64,
                 "lead": id(n * 40), "title": format!("The Work {leads} Leads"),
-                "within": (n % 5 != 0).then(|| address(n / 5 * 200)),
+                "within": (!n.is_multiple_of(5)).then(|| address(n / 5 * 200)),
                 "counts": {"moving": 2, "needs-you": 0, "quiet": 3, "stuck": 0},
             });
             (key, team)
@@ -144,7 +144,7 @@ fn session(n: usize) -> Session {
         format!("repo.repository-{:04}", n % 3),
         format!("peer.{}", address.to_lowercase()),
     ];
-    if n % 10 == 0 {
+    if n.is_multiple_of(10) {
         groups.push(format!("group-{:03}", n % 50));
     }
     let id = id(n);
@@ -163,14 +163,14 @@ fn session(n: usize) -> Session {
     let presence = json!({
         "addresses": [address, &id[id.len() - 8..]],
         "at": "2026-11-14T22:14:25.782Z",
-        "busy": n % 3 == 0,
+        "busy": n.is_multiple_of(3),
         "cwd": format!("/home/someone/src/repository/trees/{}", address.to_lowercase()),
         "groups": hashed,
         "landings": landings,
         "owner": {"bootId": "925e3151-b224-4649-b4d2-d837ac4195dc", "pid": 2_350_329,
                   "startTicks": 8_523_576, "startedAt": 1_794_690_558_760_u64},
         "owns": [quest, "repository"],
-        "paused": n % 50 == 0,
+        "paused": n.is_multiple_of(50),
         "questInfo": {"id": quest, "short": format!("P{:05}", n / 5), "status": "active",
                       "title": title},
         "repo": "repository",
@@ -198,7 +198,7 @@ fn session(n: usize) -> Session {
         "machine": format!("machine-{:04}", n % (CELLS / 25)),
         "title": format!("pi - {address} - the work at hand"),
         "groups": groups,
-        "state": if n % 3 == 0 { "busy" } else { "idle" },
+        "state": if n.is_multiple_of(3) { "busy" } else { "idle" },
         "step": "reading the code",
         "quest": quest,
         "landings": [
