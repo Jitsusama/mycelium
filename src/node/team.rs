@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde_json::{Value, json};
 
+use super::glyph::{self, Choosing};
 use crate::record::{Session, State};
 
 /// The kind of a team's records.
@@ -176,10 +177,28 @@ pub fn teams(
         })
         .collect();
     let worst = rolled_up(&teams, &within, parked);
+    let choosing: Vec<Choosing> = teams
+        .iter()
+        .map(|(id, team)| Choosing {
+            id,
+            // A session's id is a UUID version 7, so the least sorts first
+            // by when it began.
+            began: team
+                .lead
+                .iter()
+                .chain(&team.members)
+                .map(|session| session.id.as_str())
+                .min()
+                .unwrap_or_default(),
+            within: within.get(id).copied(),
+        })
+        .collect();
+    let glyphs = glyph::glyphs(&choosing);
     teams
         .iter()
         .map(|(id, team)| {
-            let fields = fields(id, team, &teams, (quests, parked), (&within, &worst));
+            let mut fields = fields(id, team, &teams, (quests, parked), (&within, &worst));
+            fields["glyph"] = glyphs.get(id).copied().into();
             let last = team
                 .members
                 .iter()
@@ -618,6 +637,31 @@ mod tests {
             teams["HARBOR"]["landed"],
             json!({"what": "Newest", "ref": "reef#6", "at": "2026-11-12T21:00:00Z", "session": "two"}),
             "the newest, and who landed it"
+        );
+    }
+
+    #[test]
+    fn each_team_says_the_shape_it_is_drawn_by() {
+        let sessions = [
+            session(
+                "01a1",
+                State::Busy,
+                (None, Some("QEST-20261007-HARBOR")),
+                &[],
+            ),
+            session(
+                "01a2",
+                State::Busy,
+                (Some("HARBOR"), Some("QEST-20261101-KELP01")),
+                &[],
+            ),
+            session("01a3", State::Idle, (Some("KELP01"), None), &[]),
+        ];
+        let teams = worked_out(&sessions, &[], &[]);
+        assert_eq!(
+            (&teams["HARBOR"]["glyph"], &teams["KELP01"]["glyph"]),
+            (&json!("square"), &json!("triangle")),
+            "both names hash to square, and Kelp, within Harbour and begun after it, steps on"
         );
     }
 }
