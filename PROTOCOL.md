@@ -814,7 +814,7 @@ A list naming `fields`, a list of paths of keys joined by dots such as
 with its `key` and `kind` always; a path a record lacks is left out
 rather than sent as null, and so is an object left empty. A reader of
 thousands of sessions needs a few dozen of each one's hundreds of
-fields: `mycelium networks` reads 28, about a quarter of a session's
+fields: `mycelium networks` reads 29, about a quarter of a session's
 bytes. Paths may not index lists, and more than 64 of them, or a path
 that isn't one, is `not-an-ask`. A watch sends records whole, as
 before.
