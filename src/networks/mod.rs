@@ -157,6 +157,10 @@ pub struct Network {
     pub cells: Vec<String>,
     /// The machines its cells run on.
     pub machines: Vec<String>,
+    /// The builders the machines' own network has beside its machines,
+    /// by name, which are none of its `cells`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub builders: Vec<String>,
     /// How many of its sessions stand as each, by the word each is counted
     /// by: a machine's network counts the sessions its machines run.
     pub counts: BTreeMap<&'static str, u64>,
@@ -201,9 +205,28 @@ pub enum Is {
     Machine,
     /// What senses an outside source for its person, intake only.
     Receptor,
+    /// A builder this machine sends Nix builds to, which is no machine of
+    /// the realm.
+    Builder,
 }
 
-/// One cell: a session, a machine or a receptor.
+/// What a builder takes, and why it stands as it does.
+#[derive(Debug, Clone, Serialize)]
+pub struct Builds {
+    /// The systems it builds for, such as `x86_64-linux`.
+    pub systems: Vec<String>,
+    /// How many builds it takes at once.
+    pub jobs: u64,
+    /// The machines files naming it, by name, such as `standing`.
+    pub lines: Vec<String>,
+    /// Whether it is lent, so never dialled.
+    pub lent: bool,
+    /// Why it stands as it does, where it says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub said: Option<String>,
+}
+
+/// One cell: a session, a machine, a receptor or a builder.
 #[derive(Debug, Clone, Serialize)]
 pub struct Cell {
     /// Always `cell`, for a reader of mixed lines.
@@ -276,6 +299,10 @@ pub struct Cell {
     /// How many signals a receptor brought in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counts: Option<crate::receptor::Counts>,
+    /// What a builder takes, boxed, as every session's cell carries
+    /// none and ten thousand of them would hold its room for nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub builds: Option<Box<Builds>>,
     /// The networks it joined, by name.
     pub networks: Vec<String>,
 }

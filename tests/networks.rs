@@ -156,7 +156,13 @@ impl Realm {
 
     /// Its network records, as the node makes them.
     fn records(&self) -> BTreeMap<String, Value> {
-        node::network_records(&self.teams, &self.sessions, |_| None, &self.machines)
+        node::network_records(
+            &self.teams,
+            &self.sessions,
+            |_| None,
+            &self.machines,
+            &BTreeMap::new(),
+        )
     }
 
     /// How long its records took to make.

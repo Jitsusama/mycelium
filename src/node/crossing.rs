@@ -360,6 +360,7 @@ mod tests {
             words: crate::words::Book::at("/nowhere/said.jsonl".into()),
             declared: "/nowhere/declared.json".into(),
             receptors: None,
+            builders: crate::builders::Given::default(),
         };
         let membership = Realm {
             name: realm.to_owned(),

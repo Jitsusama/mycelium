@@ -47,7 +47,8 @@ fn a_builder_several_files_name_is_one_saying_what_the_first_says() {
         .iter()
         .map(|one| (one.name.as_str(), one.jobs, one.lines.as_slice(), one.lent))
         .collect();
-    let named = |names: &[&str]| -> Vec<String> { names.iter().map(|&one| one.to_owned()).collect() };
+    let named =
+        |names: &[&str]| -> Vec<String> { names.iter().map(|&one| one.to_owned()).collect() };
     let (both, standing_only, lent_only) = (
         named(&["standing", "lent"]),
         named(&["standing"]),
@@ -143,14 +144,23 @@ async fn builders_are_heard_as_they_stand_and_a_lent_one_is_never_dialled() {
     let (ssh, asked) = ssh_keeping(folder.path(), port);
     let (standing, lent) = (folder.path().join("standing"), folder.path().join("lent"));
     write(&standing, "skiff x86_64-linux\nkestrel x86_64-linux");
-    write(&lent, "ssh-ng://hook@kestrel x86_64-linux\nheron x86_64-linux");
+    write(
+        &lent,
+        "ssh-ng://hook@kestrel x86_64-linux\nheron x86_64-linux",
+    );
     std::fs::write(
         folder.path().join("heron.json"),
-        format!(r#"{{"at": {}, "state": "passing"}}"#, jiff::Timestamp::now().as_second()),
+        format!(
+            r#"{{"at": {}, "state": "passing"}}"#,
+            jiff::Timestamp::now().as_second()
+        ),
     )
     .expect("heron's lender says it runs");
     let kept = Builders::start(Given {
-        files: vec![file("standing", &standing, false), file("lent", &lent, true)],
+        files: vec![
+            file("standing", &standing, false),
+            file("lent", &lent, true),
+        ],
         lent_health: Some(format!("{}/{{host}}.json", folder.path().display())),
         ssh,
     });
@@ -166,7 +176,11 @@ async fn builders_are_heard_as_they_stand_and_a_lent_one_is_never_dialled() {
         stood,
         vec![
             ("skiff", "answering", None),
-            ("kestrel", "not running", Some("its lender says nothing of it")),
+            (
+                "kestrel",
+                "not running",
+                Some("its lender says nothing of it")
+            ),
             ("heron", "running", Some("passing")),
         ]
     );
@@ -181,12 +195,17 @@ async fn builders_are_heard_as_they_stand_and_a_lent_one_is_never_dialled() {
     // isn't dialled again for it.
     write(&standing, "skiff x86_64-linux - 8");
     let changed = until(&kept, |builders| {
-        builders.iter().any(|one| one.name == "skiff" && one.jobs == 8)
+        builders
+            .iter()
+            .any(|one| one.name == "skiff" && one.jobs == 8)
     })
     .await;
     let names: Vec<&str> = changed.iter().map(|one| one.name.as_str()).collect();
     assert_eq!(names, vec!["skiff", "kestrel", "heron"]);
-    assert_eq!(changed[0].state, "answering", "skiff stands as it was heard");
+    assert_eq!(
+        changed[0].state, "answering",
+        "skiff stands as it was heard"
+    );
     assert_eq!(
         std::fs::read_to_string(&asked).expect("SSH was asked"),
         "skiff\n"

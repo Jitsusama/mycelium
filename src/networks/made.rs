@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Usage, kept};
+use super::{Builds, Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Usage, kept};
 use crate::receptor::{self, Counts, Source};
 use crate::swarm::{self, Standing};
 
@@ -41,6 +41,28 @@ impl Mycelium {
             read.add(&session);
         }
         Self::made(realm, teams, read, machines)
+    }
+
+    /// The same mycelium with the builders the node's `builders` records
+    /// name beside its machines: cells of their own after the machines',
+    /// and named in the machines' network as builders, never as its cells,
+    /// since no session runs on one and no work is placed there.
+    #[must_use]
+    pub fn with_builders(mut self, builders: &[Value]) -> Self {
+        let cells: Vec<Cell> = builders.iter().filter_map(builder_cell).collect();
+        if cells.is_empty() {
+            return self;
+        }
+        if let Some(machines) = self
+            .networks
+            .iter_mut()
+            .find(|each| each.shape == Shape::Machines)
+        {
+            machines.builders = cells.iter().map(|cell| cell.name.clone()).collect();
+        }
+        self.cells.extend(cells);
+        self.places = Places::of(&self.networks, &self.cells);
+        self
     }
 
     /// The mycelium of `realm` that the node's `teams` and `machines`
@@ -172,6 +194,7 @@ fn receptor_cell(record: &Value) -> Option<Cell> {
         busy: None,
         runs: None,
         counts: serde_json::from_value::<Counts>(record["counts"].clone()).ok(),
+        builds: None,
         networks: vec![source.network()],
     })
 }
@@ -189,39 +212,96 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
     // Teams, machines and receptors are few, but sessions are thousands,
     // so each is made its cell as it is read rather than all held first.
     let (mut teams, mut sessions, mut machines) = (Vec::new(), Sessions::default(), Vec::new());
-    let mut receptors = Vec::new();
-    let answers = kept::answered(reading, RECEPTORS_ASKED, |id, record| match id {
+    let (mut receptors, mut builders) = (Vec::new(), Vec::new());
+    let answers = kept::answered(reading, BUILDERS_ASKED, |id, record| match id {
         1 => teams.push(record),
         2 => sessions.add(&record),
         3 => machines.push(record),
-        _ => receptors.push(record),
+        RECEPTORS_ASKED => receptors.push(record),
+        _ => builders.push(record),
     })?;
-    // A node too old to hold receptors refuses their ask, and is read for
-    // the rest; its mycelium senses nothing outside.
+    // A node too old to hold receptors or know builders refuses their
+    // asks, and is read for the rest; its mycelium senses nothing outside
+    // and is drawn without builders.
     if let Some(why) = answers
         .iter()
-        .filter(|(id, _)| **id != RECEPTORS_ASKED)
+        .filter(|(id, _)| **id != RECEPTORS_ASKED && **id != BUILDERS_ASKED)
         .find_map(|(_, answer)| answer["error"]["message"].as_str())
     {
         return Err(io::Error::other(format!(
             "the node can't say its networks ({why}); it may need updating"
         )));
     }
-    Ok(Mycelium::made(realm, &teams, sessions, &machines).sensing(&receptors))
+    Ok(Mycelium::made(realm, &teams, sessions, &machines)
+        .sensing(&receptors)
+        .with_builders(&builders))
 }
 
-/// Which of the networks' asks is for the node's receptors: the last, so
-/// also how many there are.
+/// Which of the networks' asks is for the node's receptors.
 const RECEPTORS_ASKED: u64 = 4;
 
-/// What the networks ask a node: its teams, sessions, machines and
-/// receptors, of only the fields read. A node sends only those, and an
-/// older one, which sends every field whatever is asked, is read for only
-/// those as it streams.
-pub(super) fn asks() -> [Value; 4] {
+/// Which of the networks' asks is for the node's builders: the last, so
+/// also how many there are.
+const BUILDERS_ASKED: u64 = 5;
+
+/// What the networks ask a node: its teams, sessions, machines,
+/// receptors and builders, of only the fields read. A node sends only
+/// those, and an older one, which sends every field whatever is asked, is
+/// read for only those as it streams.
+pub(super) fn asks() -> [Value; 5] {
     let fields = kept::paths(&kept::RECORD);
-    ["team", "session", "machine", receptor::KIND]
-        .map(|kind| json!({"ask": "list", "kind": kind, "fields": fields}))
+    let [teams, sessions, machines, receptors] = ["team", "session", "machine", receptor::KIND]
+        .map(|kind| json!({"ask": "list", "kind": kind, "fields": fields}));
+    let builders = json!({"ask": "list", "kind": "builder", "fields": BUILDER_FIELDS});
+    [teams, sessions, machines, receptors, builders]
+}
+
+/// What the networks read of a builder's record.
+const BUILDER_FIELDS: [&str; 7] = ["name", "state", "systems", "jobs", "lines", "lent", "said"];
+
+/// A builder record as a cell, or none for one without a name.
+fn builder_cell(builder: &Value) -> Option<Cell> {
+    let name = builder["name"].as_str().filter(|name| !name.is_empty())?;
+    let words = |field: &str| -> Vec<String> {
+        builder[field]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    };
+    Some(Cell {
+        kind: "cell",
+        name: name.to_owned(),
+        is: Is::Builder,
+        title: Some("builder".to_owned()),
+        id: None,
+        window: None,
+        standing: None,
+        doing: None,
+        asks: None,
+        repo: None,
+        usage: Usage::default(),
+        leads: Vec::new(),
+        machine: None,
+        since: None,
+        quest: None,
+        plan: None,
+        cwd: None,
+        state: builder["state"].as_str().map(str::to_owned),
+        busy: None,
+        runs: None,
+        builds: Some(Box::new(Builds {
+            systems: words("systems"),
+            jobs: builder["jobs"].as_u64().unwrap_or_default(),
+            lines: words("lines"),
+            lent: builder["lent"].as_bool().unwrap_or_default(),
+            said: builder["said"].as_str().map(str::to_owned),
+        })),
+        counts: None,
+        networks: vec![MACHINES.to_owned()],
+    })
 }
 
 /// What a node's sessions make, read one by one: their cells, the titles
@@ -311,6 +391,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         busy: None,
         runs: None,
         counts: None,
+        builds: None,
         networks,
     })
 }
@@ -362,6 +443,7 @@ fn machine_cell(machine: &Value, runs: &HashMap<&str, usize>) -> Cell {
         busy: machine["room"]["pressure"]["cpu"].as_f64(),
         runs: Some(runs),
         counts: None,
+        builds: None,
         networks: vec![MACHINES.to_owned()],
         name,
     }
@@ -399,6 +481,7 @@ fn network_of(name: &str, shape: Shape, cells: &[&Cell]) -> Network {
         within: None,
         cells: cells.iter().map(|cell| cell.name.clone()).collect(),
         machines: machines.into_iter().map(str::to_owned).collect(),
+        builders: Vec::new(),
         counts: counted(cells.iter().copied()),
     }
 }
@@ -578,6 +661,7 @@ fn machines_network(machines: &[Value], sessions: &[Cell]) -> Network {
         within: None,
         cells: names.clone(),
         machines: names,
+        builders: Vec::new(),
         counts: counted(sessions.iter()),
     }
 }

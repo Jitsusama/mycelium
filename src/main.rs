@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use mycelium::awake::Awake;
+use mycelium::builders::{self, Builder};
 use mycelium::carry::through::Through;
 use mycelium::client::Client;
 use mycelium::flow::Flows;
@@ -229,12 +230,13 @@ enum Action {
     Web(WebAsked),
     /// Says what each machine of the realm is, or what one is.
     ///
-    /// Bare, it prints every machine, this one first; given its name,
-    /// one machine. `machine` is the same, and bare prints what this
-    /// machine is.
+    /// Bare, it prints every machine, this one first, then on a line of
+    /// their own the builders this machine sends Nix builds to; given its
+    /// name, one machine or builder. `machine` is the same, and bare
+    /// prints what this machine is.
     #[command(after_help = "Example:\n  mycelium machines tern")]
     Machines {
-        /// The machine, such as `tern`.
+        /// The machine or builder, such as `tern`.
         name: Option<String>,
     },
     /// `machines`, as it was spelt before, when bare it printed this
@@ -465,6 +467,30 @@ struct Node {
     /// A realm whose text this realm takes, one way; given again for each.
     #[arg(long = "flow-from")]
     flows_from: Vec<String>,
+    /// A Nix machines file naming builders this machine sends builds to,
+    /// as `NAME=PATH`; each builder is dialled at most every five
+    /// minutes to hear it answer. Given again for each.
+    #[arg(long = "builders", value_parser = dialled_builders)]
+    builders: Vec<builders::File>,
+    /// A Nix machines file naming lent builders, as `NAME=PATH`, which
+    /// are never dialled, since dialling one may wake what costs to
+    /// run. Given again for each.
+    #[arg(long = "lent-builders", value_parser = lent_builders)]
+    lent_builders: Vec<builders::File>,
+    /// Where a lent builder's lender says how it stands, as a path with
+    /// `{host}` for the builder's host, such as `/run/{host}/health.json`.
+    #[arg(long)]
+    lent_health: Option<String>,
+}
+
+/// A machines file of builders to dial, as `--builders` gives it.
+fn dialled_builders(said: &str) -> Result<builders::File, String> {
+    builders::File::parse(said, false)
+}
+
+/// A machines file of lent builders, as `--lent-builders` gives it.
+fn lent_builders(said: &str) -> Result<builders::File, String> {
+    builders::File::parse(said, true)
 }
 
 impl Node {
@@ -1179,10 +1205,19 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
 fn in_tree(socket: &Path, realm: &str, asked: Tree) -> io::Result<ExitCode> {
     let held = place::held(realm);
     match asked {
-        Tree::Machines => print_reply(socket, &Request::Machines),
+        Tree::Machines => {
+            print_reply(socket, &Request::Machines)?;
+            match builders_of(socket) {
+                Some(builders) if !builders.is_empty() => {
+                    print_line(&Reply::Ok(Response::Builders(builders)))
+                }
+                _ => Ok(()),
+            }
+        }
         Tree::ThisMachine => print_reply(socket, &Request::Machine),
         Tree::Machine(name) => print_line(&one_machine(
             Client::connect(socket)?.ask(&Request::Machines)?,
+            builders_of(socket).unwrap_or_default(),
             &name,
         )?),
         Tree::Holds => hold::held(&held).iter().try_for_each(print_line),
@@ -1204,22 +1239,37 @@ fn in_tree(socket: &Path, realm: &str, asked: Tree) -> io::Result<ExitCode> {
 
 /// The node's answer for every machine, `reply`, cut to the one `name`d,
 /// in the answer `machine` gives for this one.
-fn one_machine(reply: Reply, name: &str) -> io::Result<Reply> {
+fn one_machine(reply: Reply, builders: Vec<Builder>, name: &str) -> io::Result<Reply> {
     match reply {
         Ok(Response::Machines(machines)) => machines
             .into_iter()
             .find(|machine| machine.name == name)
             .map(|machine| Ok(Response::Machine(Box::new(machine))))
+            .or_else(|| {
+                let builder = builders.into_iter().find(|builder| builder.name == name)?;
+                Some(Ok(Response::Builders(vec![builder])))
+            })
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("no machine of the realm is {name}; `mycelium machines` lists them"),
+                    format!(
+                        "no machine of the realm or builder is {name}; `mycelium machines` lists them"
+                    ),
                 )
             }),
         Ok(_) => Err(io::Error::other(
             "the node answered machines with something else",
         )),
         Err(why) => Ok(Err(why)),
+    }
+}
+
+/// The builders the node at `socket` sends Nix builds to, or none when it
+/// can't say, as an older node can't.
+fn builders_of(socket: &Path) -> Option<Vec<Builder>> {
+    match Client::connect(socket).ok()?.ask(&Request::Builders) {
+        Ok(Ok(Response::Builders(builders))) => Some(builders),
+        _ => None,
     }
 }
 
@@ -1274,6 +1324,15 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let machine = place::node_machine(node.here.machine.as_deref())?;
     let (dials, serves) = (node.dials(), node.serves(&machine)?);
     let providers = node.providers;
+    let builders = builders::Given {
+        files: node
+            .builders
+            .into_iter()
+            .chain(node.lent_builders)
+            .collect(),
+        lent_health: node.lent_health,
+        ssh: "ssh".to_owned(),
+    };
     let mut here = node.here;
     here.machine = Some(machine);
     let state = here.state.clone().unwrap_or_else(place::state);
@@ -1316,6 +1375,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         words: mycelium::words::Book::at(state.join("said.jsonl")),
         declared: place::declared(),
         receptors: Some(mycelium::receptor::folder(&state)),
+        builders,
     };
     let runtime = runtime()?;
     let ran = runtime.block_on(async {
@@ -1666,7 +1726,7 @@ fn cells(socket: &Path, realm: &str, asked: &CellsAsked) -> io::Result<()> {
         let cell = mycelium.named_cell(&name).map_err(not_found)?;
         if cell.is == Is::Machine {
             let machines = Client::connect(socket)?.ask(&Request::Machines)?;
-            return print_line(&one_machine(machines, &cell.name)?);
+            return print_line(&one_machine(machines, Vec::new(), &cell.name)?);
         }
         return print_line(cell);
     }
@@ -1691,7 +1751,7 @@ fn drawn_cells(socket: &Path, realm: &str, asked: &CellsAsked) -> io::Result<Str
     let cell = mycelium.named_cell(&name).map_err(not_found)?;
     if cell.is == Is::Machine {
         let machines = Client::connect(socket)?.ask(&Request::Machines)?;
-        return serde_json::to_string(&one_machine(machines, &cell.name)?)
+        return serde_json::to_string(&one_machine(machines, Vec::new(), &cell.name)?)
             .map_err(io::Error::other);
     }
     Ok(networks::cell(&mycelium, cell, &look()))

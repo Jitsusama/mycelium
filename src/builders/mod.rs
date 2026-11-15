@@ -63,9 +63,9 @@ impl File {
     ///
     /// When it isn't a name, `=` and a full path.
     pub fn parse(said: &str, lent: bool) -> Result<Self, String> {
-        let (name, path) = said
-            .split_once('=')
-            .ok_or_else(|| format!("{said:?} isn't NAME=PATH, such as standing=/etc/nix/machines"))?;
+        let (name, path) = said.split_once('=').ok_or_else(|| {
+            format!("{said:?} isn't NAME=PATH, such as standing=/etc/nix/machines")
+        })?;
         let path = PathBuf::from(path);
         if name.is_empty() || !path.is_absolute() {
             return Err(format!("{said:?} isn't a name and a full path"));
@@ -210,9 +210,8 @@ impl Builders {
     pub fn start(given: Given) -> Self {
         let held = Arc::new(Mutex::new(Held::default()));
         let (told, _) = watch::channel(0);
-        let keeping = (!given.files.is_empty()).then(|| {
-            tokio::spawn(keep(given.clone(), Arc::clone(&held), told.clone()))
-        });
+        let keeping = (!given.files.is_empty())
+            .then(|| tokio::spawn(keep(given.clone(), Arc::clone(&held), told.clone())));
         Self {
             files: given.files,
             held,
@@ -281,7 +280,10 @@ fn read(files: &[File]) -> (Vec<Builder>, BTreeMap<String, String>) {
             Ok(text) => read.push((file, lines(&text))),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                refused.insert(file.name.clone(), format!("{}: {error}", file.path.display()));
+                refused.insert(
+                    file.name.clone(),
+                    format!("{}: {error}", file.path.display()),
+                );
             }
         }
     }
@@ -304,7 +306,11 @@ async fn keep(given: Given, held: Arc<Mutex<Held>>, told: watch::Sender<u64>) {
             }
         }
         let (mut builders, refused) = read(&given.files);
-        let kept = held.lock().unwrap_or_else(PoisonError::into_inner).builders.clone();
+        let kept = held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .builders
+            .clone();
         for builder in &mut builders {
             if let Some(was) = kept.iter().find(|was| was.name == builder.name) {
                 builder.state.clone_from(&was.state);
@@ -342,7 +348,8 @@ async fn hear(given: &Given, held: &Mutex<Held>, builders: &mut [Builder]) {
     let due: Vec<usize> = {
         let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
         let names: Vec<&str> = builders.iter().map(|one| one.name.as_str()).collect();
-        held.dialled.retain(|name, _| names.contains(&name.as_str()));
+        held.dialled
+            .retain(|name, _| names.contains(&name.as_str()));
         let due: Vec<usize> = builders
             .iter()
             .enumerate()
@@ -355,12 +362,16 @@ async fn hear(given: &Given, held: &Mutex<Held>, builders: &mut [Builder]) {
             .map(|(at, _)| at)
             .collect();
         for &at in &due {
-            held.dialled.insert(builders[at].name.clone(), Instant::now());
+            held.dialled
+                .insert(builders[at].name.clone(), Instant::now());
         }
         due
     };
     for builder in builders.iter_mut().filter(|builder| builder.lent) {
-        let host = builder.reached.as_ref().map_or("", |(host, _)| host.as_str());
+        let host = builder
+            .reached
+            .as_ref()
+            .map_or("", |(host, _)| host.as_str());
         let (state, said) = match lent::lent(given.lent_health.as_deref(), host, now.as_second()) {
             Lent::Running(word) => ("running", word),
             Lent::NotRunning(why) => ("not running", why),
@@ -383,7 +394,7 @@ async fn hear(given: &Given, held: &Mutex<Held>, builders: &mut [Builder]) {
             Answered::Unknown(why) => ("unknown", Some(why)),
         };
         let builder = &mut builders[at];
-        builder.state = state.to_owned();
+        state.clone_into(&mut builder.state);
         builder.said = said;
         builder.heard_at = Some(jiff::Timestamp::now());
     }
@@ -391,7 +402,7 @@ async fn hear(given: &Given, held: &Mutex<Held>, builders: &mut [Builder]) {
 
 /// Says `builder` stands as `state`, saying `said`, heard `now`.
 fn stands(builder: &mut Builder, state: &str, said: String, now: jiff::Timestamp) {
-    builder.state = state.to_owned();
+    state.clone_into(&mut builder.state);
     builder.said = Some(said);
     builder.heard_at = Some(now);
 }
@@ -414,10 +425,10 @@ fn watching(
     let watcher = crate::watching::watcher(move |event: notify::Result<notify::Event>| {
         let touched = event.as_ref().map_or(true, |event| {
             event.need_rescan()
-                || event
-                    .paths
-                    .iter()
-                    .any(|path| path.file_name().is_some_and(|name| names.iter().any(|one| one == name)))
+                || event.paths.iter().any(|path| {
+                    path.file_name()
+                        .is_some_and(|name| names.iter().any(|one| one == name))
+                })
         });
         if touched {
             // Nothing hears this once the builders are no longer kept.

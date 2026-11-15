@@ -788,6 +788,79 @@ fn every_cell_lists_worst_first_and_one_says_its_networks() {
     );
 }
 
+/// The builders the harbour's machine sends Nix builds to, as its node
+/// lists them: one standing that answers, one lent that isn't running.
+fn builders() -> Vec<Value> {
+    vec![
+        json!({"key": "builder:tern", "name": "tern", "systems": ["x86_64-linux"],
+               "jobs": 1, "lines": ["standing"], "lent": false, "state": "answering"}),
+        json!({"key": "builder:kestrel", "name": "kestrel",
+               "systems": ["x86_64-linux", "aarch64-linux"], "jobs": 16,
+               "lines": ["standing", "lent"], "lent": true, "state": "not running",
+               "said": "nothing is lent"}),
+    ]
+}
+
+#[test]
+fn builders_are_drawn_beside_the_machines_and_are_none_of_them() {
+    let mycelium = mycelium().with_builders(&builders());
+    let machines = mycelium.network("machines").expect("the machines' network");
+    assert_eq!(
+        (machines.cells.clone(), machines.builders.clone()),
+        (
+            vec!["skiff".to_owned(), "dinghy".to_owned()],
+            vec!["tern".to_owned(), "kestrel".to_owned()]
+        ),
+        "builders beside the machines, never among them"
+    );
+    let kestrel = mycelium.cell("kestrel").expect("kestrel");
+    assert_eq!(
+        (kestrel.is, kestrel.state.as_deref(), kestrel.runs),
+        (Is::Builder, Some("not running"), None)
+    );
+    assert_eq!(
+        mycelium.lines().last(),
+        Some(
+            &json!({"kind": "cell", "name": "kestrel", "type": "builder",
+                     "title": "builder", "state": "not running",
+                     "builds": {"systems": ["x86_64-linux", "aarch64-linux"], "jobs": 16,
+                                "lines": ["standing", "lent"], "lent": true,
+                                "said": "nothing is lent"},
+                     "networks": ["machines"]})
+        )
+    );
+    let shown = overview(&mycelium, &look(), false, false);
+    let tree: Vec<&str> = shown.lines().collect();
+    assert_eq!(
+        tree[0],
+        "work · 3 sessions in 6 networks on 2 machines and 2 builders · 1 needs you"
+    );
+    assert_eq!(
+        tree[14..19],
+        [
+            "  dinghy    ready",
+            "builders",
+            "  tern      standing · answering",
+            "  kestrel   lent · not running",
+            "",
+        ],
+        "the tree:\n{shown}"
+    );
+    let shown = cells(&mycelium, &look(), false, &[]);
+    let listed: Vec<&str> = shown.lines().collect();
+    assert_eq!(
+        listed[8..13],
+        [
+            "  dinghy  ready · runs 0",
+            "",
+            "builders",
+            "  tern     standing · answering · x86_64-linux · 1 job",
+            "  kestrel  standing, lent · not running · x86_64-linux, aarch64-linux · 16 jobs · nothing is lent",
+        ],
+        "cells:\n{shown}"
+    );
+}
+
 #[test]
 fn the_networks_asks_fit_one_write_a_node_takes_whole() {
     let asked = together(&asks());

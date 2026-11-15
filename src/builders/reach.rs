@@ -249,7 +249,10 @@ mod tests {
             ssh.write_all(b"SSH-2.0-x\r\n").await.expect("it greets");
         });
         let folder = tempfile::tempdir().expect("a temporary folder");
-        let ssh = ssh_saying(folder.path(), &format!("hostname 127.0.0.1\\nport {port}\\n"));
+        let ssh = ssh_saying(
+            folder.path(),
+            &format!("hostname 127.0.0.1\\nport {port}\\n"),
+        );
         assert_eq!(answered(&ssh, "skiff", None).await, Answered::Yes);
     }
 }

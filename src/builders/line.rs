@@ -156,14 +156,18 @@ mod tests {
     fn a_field_left_out_or_dashed_is_nixs_default() {
         assert_eq!(
             lines("ssh://skiff - - - - - -\nkestrel x86_64-linux"),
-            vec![line("skiff", &[], 1, 1.0), line("kestrel", &["x86_64-linux"], 1, 1.0)],
+            vec![
+                line("skiff", &[], 1, 1.0),
+                line("kestrel", &["x86_64-linux"], 1, 1.0)
+            ],
             "one job at a speed of one, and no systems or features said"
         );
     }
 
     #[test]
     fn comments_blank_lines_and_semicolons_part_builders_as_nix_reads_them() {
-        let text = "# the standing builders\n\n  skiff x86_64-linux # the boat\nkestrel; ssh://[::1]:2222";
+        let text =
+            "# the standing builders\n\n  skiff x86_64-linux # the boat\nkestrel; ssh://[::1]:2222";
         let mut local = line("::1", &[], 1, 1.0);
         local.port = Some(2222);
         assert_eq!(

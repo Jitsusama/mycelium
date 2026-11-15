@@ -94,7 +94,10 @@ mod tests {
             std::fs::write(folder.path().join(format!("{host}.json")), health)
                 .expect("the health is written");
         };
-        says("kestrel", r#"{"at": 1000, "state": "passing", "builder": "x"}"#);
+        says(
+            "kestrel",
+            r#"{"at": 1000, "state": "passing", "builder": "x"}"#,
+        );
         says("skiff", r#"{"at": 1000, "state": "none", "builder": null}"#);
         says("heron", "not json");
         let template = Some(template.as_str());
