@@ -791,15 +791,26 @@ fn titled_by_quests(networks: &mut [Network], quests: &BTreeMap<String, String>)
 /// `core.nix` for `repo.core-nix`. A name that reads as its short one
 /// does, `skiff` for `repo.skiff`, would only say it twice, so titles
 /// nothing.
+///
+/// A network's cells are in the order of `sessions`, so the first of them
+/// naming it is the first session that does; each is looked up by name
+/// rather than every session searched for each network, which at
+/// thousands of cells took most of a second.
 fn titled_by_repos(networks: &mut [Network], sessions: &[Cell]) {
+    let mut repos: HashMap<&str, &str> = HashMap::new();
+    for cell in sessions {
+        if let Some(repo) = cell.repo.as_deref() {
+            repos.entry(cell.name.as_str()).or_insert(repo);
+        }
+    }
     for each in networks
         .iter_mut()
         .filter(|each| each.shape == Shape::Repository)
     {
-        each.title = sessions
+        each.title = each
+            .cells
             .iter()
-            .filter(|cell| each.cells.contains(&cell.name))
-            .filter_map(|cell| cell.repo.as_deref())
+            .filter_map(|name| repos.get(name.as_str()).copied())
             .find(|repo| *repo != each.short && slug(repo) == each.short)
             .map(str::to_owned);
     }
