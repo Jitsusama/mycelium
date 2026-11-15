@@ -61,8 +61,19 @@ impl Scope {
             Self::Beside => "--slice-inherit",
         };
         let mut scoped = Command::new("systemd-run");
+        // systemd-run expands `${...}` in the command it runs unless told
+        // not to, which empties a shell's own `${4#~/}` before the shell
+        // sees it: a carried session started in the home folder rather
+        // than its own (14 November).
         scoped
-            .args(["--user", "--scope", "--collect", "--quiet", slice])
+            .args([
+                "--user",
+                "--scope",
+                "--collect",
+                "--quiet",
+                "--expand-environment=no",
+                slice,
+            ])
             .arg(format!("--unit=mycelium-pi-{id}"))
             .arg("--")
             .arg(program);
