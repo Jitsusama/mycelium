@@ -485,7 +485,7 @@ struct NetworksAsked {
 #[derive(clap::Args)]
 struct Watching {
     /// Redraws it in place every two seconds, until stopped.
-    #[arg(short = 'w', long)]
+    #[arg(short = 'w', long, conflicts_with_all = ["format", "json"])]
     watch: bool,
 }
 
@@ -1321,7 +1321,7 @@ fn not_found(why: String) -> io::Error {
 fn networks(socket: &Path, realm: &str, asked: &NetworksAsked) -> io::Result<()> {
     use mycelium::networks;
     if asked.watching.watch {
-        return watched(asked.output.json(), || drawn_networks(socket, realm, asked));
+        return watched(|| drawn_networks(socket, realm, asked));
     }
     if asked.output.json() {
         let mycelium = networks::read(socket, realm, SWARM_WITHIN)?;
@@ -1374,7 +1374,7 @@ fn drawn_networks(socket: &Path, realm: &str, asked: &NetworksAsked) -> io::Resu
 fn cells(socket: &Path, realm: &str, asked: &CellsAsked) -> io::Result<()> {
     use mycelium::networks::{self, Is};
     if asked.watching.watch {
-        return watched(asked.output.json(), || drawn_cells(socket, realm, asked));
+        return watched(|| drawn_cells(socket, realm, asked));
     }
     if asked.output.json() {
         let mycelium = networks::read(socket, realm, SWARM_WITHIN)?;
@@ -1426,12 +1426,15 @@ const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 /// Draws what `draw` makes in place, again every [`WATCH_EVERY`], until
 /// stopped or the terminal goes; a drawing that fails says why where it
 /// would have been, and is tried again, as a node restarting comes back.
-/// JSON is refused, since a program asks again when it wants.
-fn watched(json: bool, mut draw: impl FnMut() -> io::Result<String>) -> io::Result<()> {
-    if json {
+/// Refused where stdout is no terminal, which would take its escapes
+/// every two seconds forever; and clap refuses it with `-o json`, since
+/// a program asks again when it wants.
+fn watched(mut draw: impl FnMut() -> io::Result<String>) -> io::Result<()> {
+    use std::io::IsTerminal as _;
+    if !io::stdout().is_terminal() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--watch redraws text for a person; a program asks -o json again",
+            "--watch redraws a terminal; without one, ask again when you want",
         ));
     }
     loop {
@@ -1867,6 +1870,33 @@ mod tests {
         assert!(
             said.contains("networks  Draws the networks as a tree, or one network\n"),
             "{said}"
+        );
+    }
+
+    #[test]
+    fn a_watch_is_drawn_text_never_json() {
+        for words in ["networks -w -o json", "cells --watch --json"] {
+            let error = Command::try_parse_from(
+                ["mycelium", "--realm", "work"]
+                    .into_iter()
+                    .chain(words.split(' ')),
+            )
+            .err()
+            .expect("a watch of JSON is refused");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{words}"
+            );
+        }
+        assert!(
+            Command::try_parse_from(["mycelium", "--realm", "work", "cells", "-w", "-o", "text"])
+                .is_err(),
+            "even -o text, said with it, is refused: -w is text already"
+        );
+        assert!(
+            Command::try_parse_from(["mycelium", "--realm", "work", "networks", "-w"]).is_ok(),
+            "a watch alone is asked"
         );
     }
 
