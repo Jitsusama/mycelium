@@ -253,6 +253,7 @@ mod tests {
                 "--scope",
                 "--collect",
                 "--quiet",
+                "--expand-environment=no",
                 slice,
             ]
             .into_iter()
@@ -275,6 +276,26 @@ mod tests {
             scoped("--slice-inherit"),
             "a terminal's stays in the terminal's slice, weighed as it was"
         );
+    }
+
+    #[test]
+    fn a_scoped_holders_words_reach_its_shell_unexpanded() {
+        for scope in [Scope::Apart, Scope::Beside] {
+            let command = scope.command(Path::new("/bin/mycelium"), "f00d");
+            let words: Vec<_> = command
+                .get_args()
+                .map(|word| word.to_string_lossy())
+                .collect();
+            let program = words.iter().position(|word| word == "--");
+            let kept = words
+                .iter()
+                .position(|word| word == "--expand-environment=no");
+            assert!(
+                kept.is_some() && kept < program,
+                "systemd-run expands ${{...}} in what it runs unless told not to, which \
+                 emptied a carried session's folder (\"${{4#~/}}\"): {words:?}"
+            );
+        }
     }
 
     #[test]
