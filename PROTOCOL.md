@@ -397,6 +397,13 @@ session says of itself:
   address, or of one above it. A quest with no orchestrator is the
   person's alone to carry. A presence's `quest`, `orchestratedBy` and a
   pi's `PI_QUEST` are claims and count for nothing.
+- The chain is believed only where the mesh agrees: every running or
+  parked session of each quest in it has its orchestrator's
+  `#orchestration/<address>` among its presence's `groups`, at least one
+  does for each, and so does the asker for its own. A record rewritten
+  or gone stale is refused, saying where the two disagree. Pi works both
+  out from the quests' front matter, so an edit there reaches both in
+  time; the chain moves into the node's own state later.
 
 A refusal says why and who could order it, as `OSPHT4 doesn't
 orchestrate QEST-... by the quests' record, so it can't order HARBOR's
@@ -405,7 +412,9 @@ orchestrator's address as `by` and `from`, whatever the client gave, so
 it never reads as the person's, and before it reaches the inbox it is
 kept as a JSON line in `carries.jsonl` in mycelium's folder: `at`, `by`,
 the `asker`'s session, the carried `session`, its `address` and
-`quest`, the machine it goes `from` and `to`, and `why`. It is proved
+`quest`, the machine it goes `from` and `to`, `why`, and the `chain` it
+was taken on, each quest with its `orchestrator`, nearest first, with
+the `source` that chain came from, so a forged one is traced. It is proved
 only where both sessions run: one on another machine is refused, and a
 node never takes one a link carries. As the person's own steers, this
 keeps an agent from ordering a carry by habit or mistake, not one set

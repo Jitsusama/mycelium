@@ -225,6 +225,32 @@ fn parked_presence(session: &Session) -> bool {
             == Some("parked")
 }
 
+/// The groups the mesh put each session on `machine` in, running or
+/// parked, by its id, as its presence gives them, so an orchestrator's
+/// chain is believed only where the mesh agrees with the quests' record.
+fn grouped(sessions: &[Session], machine: &str) -> BTreeMap<String, Vec<String>> {
+    sessions
+        .iter()
+        .filter(|session| session.machine == machine)
+        .filter(|session| {
+            matches!(session.state, SessionState::Busy | SessionState::Idle)
+                || parked_presence(session)
+        })
+        .filter_map(|session| {
+            let id = session.presence.get("session")?.as_str()?.to_owned();
+            let groups = session
+                .presence
+                .get("groups")?
+                .as_array()?
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            Some((id, groups))
+        })
+        .collect()
+}
+
 /// What a node is given to run with besides its seams.
 pub struct Given {
     /// The quests this machine shares, whose files its links carry.
@@ -1490,10 +1516,10 @@ impl<S: Store> Shared<S> {
     /// proved only where both sessions run, so a session on another
     /// machine is refused.
     async fn ordered_carry(&self, address: &str, said: &serde_json::Value) -> Reply {
-        let address = Steer::new(address, said)?.address;
-        let sessions = self.lock().state.sessions();
         let runs =
             |session: &Session| matches!(session.state, SessionState::Busy | SessionState::Idle);
+        let address = Steer::new(address, said)?.address;
+        let sessions = self.lock().state.sessions();
         let carried: Vec<&Session> = sessions
             .iter()
             .filter(|session| session.address.eq_ignore_ascii_case(&address))
@@ -1547,17 +1573,19 @@ impl<S: Store> Shared<S> {
             .ok_or("this node serves no quests' record, so who orchestrates can't be told")?
             .into_values()
             .collect();
+        let asking = ordered::Known {
+            session: &asker,
+            address: asking,
+        };
         let order = ordered::ordered_by(
-            ordered::Known {
-                session: &asker,
-                address: asking,
-            },
+            asking,
             ordered::Known {
                 session,
                 address: &address,
             },
             &quests,
         )?;
+        ordered::agreed(&order, asking, &quests, &grouped(&sessions, &self.machine))?;
         let mut body = said.as_object().cloned().unwrap_or_default();
         body.insert("by".to_owned(), order.by.clone().into());
         body.insert("from".to_owned(), order.by.clone().into());
@@ -1569,6 +1597,11 @@ impl<S: Store> Shared<S> {
             "session": session,
             "address": address,
             "quest": order.quest,
+            "chain": order.chain.iter().map(|link| serde_json::json!({
+                "quest": link.quest,
+                "orchestrator": link.orchestrator,
+            })).collect::<Vec<_>>(),
+            "source": ordered::SOURCE,
             "from": self.machine,
             "to": steer.body.get("to"),
             "why": steer.body.get("why"),
@@ -3004,8 +3037,22 @@ mod tests {
     /// its own pi (7001, 7002 and 7003). OSPHT4's presence says it works on
     /// WCJQSG's quest too, which the record doesn't hold. It answers once
     /// the node serves the record, with what keeps the node running.
+    /// The quests' record of WCJQSG's realm, where it orchestrates OSPHT4
+    /// and HARBOR.
+    fn orchestrations() -> Value {
+        json!({"quests": [
+            {"id": "QEST-20261007-WCJQSG", "address": "WCJQSG", "orchestrator": null,
+             "sessions": ["s-steward"]},
+            {"id": "QEST-20261108-OSPHT4", "address": "OSPHT4", "orchestrator": "WCJQSG",
+             "sessions": ["s-weigh"]},
+            {"id": "QEST-20261115-HARBOR", "address": "HARBOR", "orchestrator": "WCJQSG",
+             "sessions": ["s-harbour"]},
+        ]})
+    }
+
     async fn orchestrated(
         socket: &Path,
+        quests: &Value,
     ) -> (
         tokio::sync::oneshot::Sender<()>,
         tokio::task::JoinHandle<io::Result<()>>,
@@ -3013,26 +3060,37 @@ mod tests {
     ) {
         let store = Memory::default();
         let at = jiff::Timestamp::now().to_string();
-        for (session, address, quest, pid) in [
-            ("s-steward", "WCJQSG", "QEST-20261007-WCJQSG", 7001),
-            ("s-weigh", "OSPHT4", "QEST-20261007-WCJQSG", 7002),
-            ("s-harbour", "HARBOR", "QEST-20261115-HARBOR", 7003),
+        // The groups the mesh put each in, as WCJQSG orchestrates them.
+        for (session, address, quest, pid, groups) in [
+            (
+                "s-steward",
+                "WCJQSG",
+                "QEST-20261007-WCJQSG",
+                7001,
+                json!(["#orchestration/wcjqsg"]),
+            ),
+            (
+                "s-weigh",
+                "OSPHT4",
+                "QEST-20261007-WCJQSG",
+                7002,
+                json!(["#orchestration/ospht4", "#orchestration/wcjqsg"]),
+            ),
+            (
+                "s-harbour",
+                "HARBOR",
+                "QEST-20261115-HARBOR",
+                7003,
+                json!(["#orchestration/wcjqsg", "#repo/mycelium"]),
+            ),
         ] {
             let presence = json!({
-                "session": session, "addresses": [address], "groups": [],
+                "session": session, "addresses": [address], "groups": groups,
                 "busy": false, "state": "listening", "at": at, "quest": quest,
                 "orchestratedBy": "WCJQSG", "owner": {"pid": pid},
             });
             store.start_here(session, presence, true);
         }
-        let quests = json!({"quests": [
-            {"id": "QEST-20261007-WCJQSG", "address": "WCJQSG", "orchestrator": null,
-             "sessions": ["s-steward"]},
-            {"id": "QEST-20261108-OSPHT4", "address": "OSPHT4", "orchestrator": "WCJQSG",
-             "sessions": ["s-weigh"]},
-            {"id": "QEST-20261115-HARBOR", "address": "HARBOR", "orchestrator": "WCJQSG",
-             "sessions": ["s-harbour"]},
-        ]});
         let (stop, running) = node(&store, "optimus", Vec::<Piped>::new(), None, socket);
         let mut client = Speaking::to(socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
@@ -3066,7 +3124,7 @@ mod tests {
     async fn only_an_orchestrator_by_the_quests_record_orders_a_carry() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("optimus").join("work.sock");
-        let (_stop, _node, _client) = orchestrated(&socket).await;
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations()).await;
         let inbox = inboxes(&socket).join("HARBOR");
         let held = || held_in(&inbox);
         let kept = socket.with_file_name("carries.jsonl");
@@ -3152,6 +3210,54 @@ mod tests {
                 &json!("it needs the camera"),
             ),
             "kept saying who ordered which carry, from where to where, and why: {line}"
+        );
+        assert_eq!(
+            (&line["chain"], &line["source"]),
+            (
+                &json!([{"quest": "QEST-20261115-HARBOR", "orchestrator": "WCJQSG"}]),
+                &json!("the quests' record, checked against the mesh's orchestration groups"),
+            ),
+            "and the chain it was taken on, and where that came from, so a forged one is \
+             traced: {line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chain_forged_in_the_quests_record_orders_no_carry() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        // OSPHT4 rewrites HARBOR's orchestrator in the quests' record as
+        // itself; the mesh still puts HARBOR in WCJQSG's orchestration.
+        let mut forged = orchestrations();
+        forged["quests"][2]["orchestrator"] = json!("OSPHT4");
+        let (_stop, _node, _client) = orchestrated(&socket, &forged).await;
+        asks_below(&socket, 7002);
+        assert_eq!(
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: "harbor".to_owned(),
+                    steer: json!({"act": "ordered-carry", "to": "penelope",
+                                  "why": "it needs the camera"}),
+                },
+            )
+            .await,
+            Err(
+                "the mesh doesn't put HARBOR's session in #orchestration/ospht4, as the quests' \
+                 record says QEST-20261115-HARBOR's orchestrator is OSPHT4, so the chain isn't \
+                 believed"
+                    .to_owned()
+            ),
+            "a forged orchestrator orders nothing"
+        );
+        assert_eq!(
+            held_in(&inboxes(&socket).join("HARBOR")),
+            Vec::<Value>::new(),
+            "nothing refused reaches the inbox"
+        );
+        assert!(
+            !socket.with_file_name("carries.jsonl").exists(),
+            "nor is kept as carried"
         );
     }
 
