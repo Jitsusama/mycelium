@@ -353,6 +353,7 @@ mod tests {
             },
             parked: "/nowhere/parked".into(),
             processes: crate::node::Processes::Folder("/nowhere/proc".into()),
+            carries: "/nowhere/carries.jsonl".into(),
         };
         let membership = Realm {
             name: realm.to_owned(),

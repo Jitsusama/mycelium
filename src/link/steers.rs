@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::carry::ordered;
 use crate::steer::{self, Steer, Talk};
 
 /// The talks this end carries back, and how far each has been carried.
@@ -56,6 +57,15 @@ impl Following {
         checked: bool,
     ) -> Result<(), String> {
         let steer = Steer::new(address, said)?;
+        // Only the node where both sessions run proves who ordered a carry,
+        // so none arrives from another machine.
+        if said.get("act").and_then(Value::as_str) == Some(ordered::ACT) {
+            return Err(
+                "a carry is ordered only on the machine its session runs on, where \
+                        its orchestrator is proved"
+                    .to_owned(),
+            );
+        }
         if steer::claims_the_person(said) && !checked {
             return Err(
                 "the machine it was asked on didn't say it saw who asked, so it \
@@ -203,5 +213,25 @@ mod tests {
         let mut wanted = vec![pause.to_string(), own.to_string()];
         wanted.sort();
         assert_eq!(held(dir.path(), "SAK9FZ"), wanted);
+    }
+
+    #[test]
+    fn an_ordered_carry_never_crosses_a_link() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let mut following = Following::new(dir.path().to_owned());
+        let ordered = json!({"act": "ordered-carry", "to": "penelope", "why": "its camera",
+                             "by": "WCJQSG", "from": "WCJQSG"});
+        for checked in [false, true] {
+            assert_eq!(
+                following.deliver("SAK9FZ", &ordered, checked),
+                Err(
+                    "a carry is ordered only on the machine its session runs on, where its \
+                     orchestrator is proved"
+                        .to_owned()
+                ),
+                "the far end can't prove who ordered it, checked or not"
+            );
+        }
+        assert_eq!(held(dir.path(), "SAK9FZ"), Vec::<String>::new());
     }
 }

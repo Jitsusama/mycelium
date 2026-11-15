@@ -178,6 +178,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 flows: mycelium::flow::Flows::default(),
                 parked: "/nowhere/parked".into(),
                 processes: node::Processes::Folder("/nowhere/proc".into()),
+                carries: "/nowhere/carries.jsonl".into(),
             },
             bound,
             until_stopped,

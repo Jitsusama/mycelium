@@ -1122,6 +1122,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         flows,
         parked: place::parked(),
         processes: node::Processes::here(),
+        carries: state.join("carries.jsonl"),
     };
     let runtime = runtime()?;
     let ran = runtime.block_on(async {
