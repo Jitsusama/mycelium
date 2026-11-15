@@ -17,7 +17,10 @@
 //!
 //! What it does to the world goes through [`Hands`], whose one
 //! implementation is the command's, so the order is proved over a fake.
+//! Who may order one session's carry other than the person, its
+//! orchestrator by the quests' record, is [`ordered`]'s to say.
 
+pub mod ordered;
 pub mod through;
 
 use std::collections::BTreeSet;

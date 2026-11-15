@@ -376,6 +376,41 @@ command exits non-zero, and nothing after it runs; what was done stays
 done, since each step can be taken again. It waits 15 minutes in all for
 the sessions to carry and then to end.
 
+### A Carry an Orchestrator Orders
+
+An orchestrator carries a session of a quest it orchestrates with a steer
+`{"act": "ordered-carry", "to": <machine>, "why": <reason>}`, an act of
+its own, so nothing trusting the person's `carry` trusts it. The node
+takes it only when it proves, from its own record, that the session
+asking orchestrates that session's quest, never from what either
+session says of itself:
+
+- Who asks is the client's process, as the kernel names it: its line of
+  parents is walked to the pi owning a session running here, its
+  presence's `owner.pid`. Where one pi hosts several sessions, the
+  asker's own `PI_SESSION_ID`, read from its process, says which, and it
+  must be one of them; where that can't be read, as on a Mac, the ask is
+  refused.
+- Who orchestrates is the quests' record the node serves as `quest`:
+  the session's quest is the one whose `sessions` holds its id, and the
+  asker must be among the `sessions` of that quest's `orchestrator`, by
+  address, or of one above it. A quest with no orchestrator is the
+  person's alone to carry. A presence's `quest`, `orchestratedBy` and a
+  pi's `PI_QUEST` are claims and count for nothing.
+
+A refusal says why and who could order it, as `OSPHT4 doesn't
+orchestrate QEST-... by the quests' record, so it can't order HARBOR's
+carry: only a session of WCJQSG could`. Taken, the steer names the
+orchestrator's address as `by` and `from`, whatever the client gave, so
+it never reads as the person's, and before it reaches the inbox it is
+kept as a JSON line in `carries.jsonl` in mycelium's folder: `at`, `by`,
+the `asker`'s session, the carried `session`, its `address` and
+`quest`, the machine it goes `from` and `to`, and `why`. It is proved
+only where both sessions run: one on another machine is refused, and a
+node never takes one a link carries. As the person's own steers, this
+keeps an agent from ordering a carry by habit or mistake, not one set
+on it.
+
 ## Realm Flows
 
 Realms are kept apart, but a machine's configuration may open a flow: a
@@ -698,8 +733,10 @@ A start whose providers make nothing says why: each machine's and each
 offer's reasons, and each program that couldn't say what it offers.
 
 `"Steer"` puts `steer`, in the harness's own shape (`text`, an `act` of
-`pause`, `resume`, `fill`, `stop`, `close`, `carry`, `move` or `answer`,
-a carry's `to`, the machine it goes to, or a move's, `attended`,
+`pause`, `resume`, `fill`, `stop`, `close`, `carry`, `ordered-carry`,
+`move` or `answer`, a carry's `to`, the machine it goes to, with an
+ordered carry's `why` and `by` (as A Carry an Orchestrator Orders says),
+or a move's, `attended`,
 `background` or `pi`, an answer's `want` or `look`, the ask or the look
 it answers, with a choice's `value` or, for a want, the person's words
 as `other`, `at`, `from` and a talk's `id`), into the

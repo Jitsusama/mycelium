@@ -71,6 +71,55 @@ impl Processes {
         }
     }
 
+    /// Process `pid` and each of its forebears in turn, as far as can be
+    /// read, nearest first.
+    fn lineage(&self, pid: i32) -> Vec<i32> {
+        let walk = |process: &dyn Fn(i32) -> Option<i32>| {
+            let mut lineage = vec![pid];
+            let mut at = pid;
+            while lineage.len() < FOREBEARS {
+                match process(at) {
+                    Some(parent) if parent > 1 => {
+                        lineage.push(parent);
+                        at = parent;
+                    }
+                    _ => break,
+                }
+            }
+            lineage
+        };
+        match self {
+            Self::Folder(procs) => walk(&|process| {
+                let status =
+                    fs::read_to_string(procs.join(process.to_string()).join("status")).ok()?;
+                named(&status).map(|(_, parent)| parent)
+            }),
+            Self::Listed => {
+                let listed = Command::new("/bin/ps")
+                    .args(["-axo", "pid=,ppid=,comm="])
+                    .output()
+                    .ok()
+                    .filter(|ran| ran.status.success())
+                    .map(|ran| listing(&String::from_utf8_lossy(&ran.stdout)))
+                    .unwrap_or_default();
+                walk(&|process| listed.get(&process).map(|(_, parent)| *parent))
+            }
+        }
+    }
+
+    /// The session process `pid` says it runs for, as the harness tells
+    /// each command it runs in its environment; a Mac's `ps` won't say.
+    fn named_session(&self, pid: i32) -> Option<String> {
+        let Self::Folder(procs) = self else {
+            return None;
+        };
+        let environ = fs::read(procs.join(pid.to_string()).join("environ")).ok()?;
+        environ.split(|byte| *byte == 0).find_map(|pair| {
+            let value = pair.strip_prefix(b"PI_SESSION_ID=")?;
+            String::from_utf8(value.to_vec()).ok()
+        })
+    }
+
     /// What is told of process `pid`.
     fn tell(&self, pid: i32) -> Told {
         match self {
@@ -137,6 +186,54 @@ pub fn may_say(asker: Option<i32>, processes: &Processes, said: &Value) -> Resul
         )),
         Told::Person => Ok(true),
         Told::Untold => Ok(false),
+    }
+}
+
+/// The session that asks, by its own id, among `owners`, each session of
+/// this machine's that runs and the process that owns it, as its presence
+/// says: the one whose process the asker is, or runs below. A pi host owns
+/// many sessions in one process, so among those the asker names its own,
+/// as the harness tells each command it runs (`PI_SESSION_ID`); it can
+/// name only one its own process's forebear owns. Refused, saying why,
+/// when nothing names the asker, it runs below no session, or it can't be
+/// told which.
+///
+/// Like [`may_say`], this fences habit, not an agent set on it: a host's
+/// command may name another session of its host.
+///
+/// # Errors
+///
+/// When no one session can be told to ask.
+pub fn session_of(
+    asker: Option<i32>,
+    processes: &Processes,
+    owners: &[(String, i32)],
+) -> Result<String, String> {
+    let Some(pid) = asker else {
+        return Err(
+            "nothing names the process that asks, so no session can be told to ask".to_owned(),
+        );
+    };
+    let owning = processes.lineage(pid).into_iter().find_map(|process| {
+        let sessions: Vec<&str> = owners
+            .iter()
+            .filter(|(_, owner)| *owner == process)
+            .map(|(session, _)| session.as_str())
+            .collect();
+        (!sessions.is_empty()).then_some(sessions)
+    });
+    let Some(sessions) = owning else {
+        return Err("this asks from no session this node knows, so it orders no carry".to_owned());
+    };
+    if let [one] = sessions.as_slice() {
+        return Ok((*one).to_owned());
+    }
+    match processes.named_session(pid) {
+        Some(named) if sessions.contains(&named.as_str()) => Ok(named),
+        _ => Err(format!(
+            "this asks from a process {} sessions share, and doesn't name which of them it is",
+            sessions.len()
+        )),
     }
 }
 
@@ -378,6 +475,68 @@ mod tests {
             forebears(999, process),
             Told::Untold,
             "one gone tells nothing"
+        );
+    }
+
+    #[test]
+    fn the_session_that_asks_is_the_one_whose_process_it_runs_below() {
+        let procs = procs(&[
+            (60, "mycelium", 59, "jobs.slice/jobs.service"),
+            (59, "bash", 58, "jobs.slice/jobs.service"),
+            (58, "pi", 1, "agents.slice/mycelium-pi-f3d9.scope"),
+            (61, "mycelium", 1, "session.slice/quickshell.service"),
+        ]);
+        let owners = [("s-own".to_owned(), 58), ("s-other".to_owned(), 70)];
+        assert_eq!(
+            session_of(Some(60), &folder(procs.path()), &owners),
+            Ok("s-own".to_owned()),
+            "a command a session ran is that session's"
+        );
+        assert_eq!(
+            session_of(Some(61), &folder(procs.path()), &owners),
+            Err("this asks from no session this node knows, so it orders no carry".to_owned()),
+            "the person's own process is no session's"
+        );
+        assert_eq!(
+            session_of(None, &folder(procs.path()), &owners),
+            Err("nothing names the process that asks, so no session can be told to ask".to_owned()),
+            "nor is a client the kernel names no process for"
+        );
+    }
+
+    #[test]
+    fn among_a_hosts_sessions_the_one_its_command_names_asks() {
+        let procs = procs(&[
+            (80, "mycelium", 79, "jobs.slice/jobs.service"),
+            (79, "bash", 78, "jobs.slice/jobs.service"),
+            (
+                78,
+                "node",
+                1,
+                "agents.slice/pi-host-work-background.service",
+            ),
+        ]);
+        let environ = procs.path().join("80").join("environ");
+        let owners = [
+            ("s-one".to_owned(), 78),
+            ("s-two".to_owned(), 78),
+            ("s-three".to_owned(), 90),
+        ];
+        let told = || session_of(Some(80), &folder(procs.path()), &owners);
+        assert!(
+            told().is_err_and(|why| why.contains("2 sessions share")),
+            "a host's command that names no session is no one's"
+        );
+        fs::write(
+            &environ,
+            "HOME=/home/joel\0PI_SESSION_ID=s-two\0PATH=/bin\0",
+        )
+        .expect("its environment is written");
+        assert_eq!(told(), Ok("s-two".to_owned()), "the one it names");
+        fs::write(&environ, "PI_SESSION_ID=s-three\0").expect("written");
+        assert!(
+            told().is_err(),
+            "never a session of another process, whatever it names"
         );
     }
 

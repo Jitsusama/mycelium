@@ -20,13 +20,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
+use crate::carry::ordered;
 use crate::hold;
 use crate::record::{Session, State};
 
 /// The fields of a steer the harness reads, which are all that is written:
-/// `now` sends words into the turn under way, rather than after it.
-const FIELDS: [&str; 11] = [
-    "text", "act", "to", "at", "from", "id", "want", "look", "value", "other", "now",
+/// `now` sends words into the turn under way, rather than after it, and
+/// `by` and `why` say who ordered an orchestrator's carry and for what.
+const FIELDS: [&str; 13] = [
+    "text", "act", "to", "at", "from", "id", "want", "look", "value", "other", "now", "by", "why",
 ];
 
 /// What the person may do besides talk, as the harness's `STEER_ACTS`
@@ -36,10 +38,22 @@ const FIELDS: [&str; 11] = [
 /// send, and move takes it into a host or back out of one, as `to` says;
 /// answer answers an open ask, by the `want` it raised, with a choice's
 /// `value` or the person's words as `other`, or a look on the person's
-/// list, by its `look` id, with a choice's `value` only.
-const ACTS: [&str; 8] = [
-    "pause", "resume", "fill", "stop", "close", "carry", "move", "answer",
+/// list, by its `look` id, with a choice's `value` only. An ordered carry
+/// is an orchestrator's, never the person's (`carry::ordered`).
+const ACTS: [&str; 9] = [
+    "pause",
+    "resume",
+    "fill",
+    "stop",
+    "close",
+    "carry",
+    "move",
+    "answer",
+    ordered::ACT,
 ];
+
+/// The fields only an ordered carry carries.
+const ORDERING: [&str; 2] = ["by", "why"];
 
 /// The fields only an answer carries.
 const ANSWERING: [&str; 4] = ["want", "look", "value", "other"];
@@ -115,17 +129,25 @@ impl Steer {
         } else if ANSWERING.iter().any(|field| body.contains_key(*field)) {
             return Err("only an answer names an ask, a look or a choice".to_owned());
         }
+        if act == Some(ordered::ACT) {
+            let why = body.get("why").and_then(Value::as_str).unwrap_or("");
+            if why.trim().is_empty() {
+                return Err("an ordered carry says why, as `why`".to_owned());
+            }
+        } else if ORDERING.iter().any(|field| body.contains_key(*field)) {
+            return Err("only an ordered carry says who ordered it and why".to_owned());
+        }
         // A carry names where to, as a machine names itself, a move one of
         // the places a session moves to, and nothing else names a place.
         let to = body.get("to").map(|to| to.as_str());
         match (act, to) {
-            (Some("carry"), to) if !to.flatten().is_some_and(is_machine) => {
+            (Some("carry" | ordered::ACT), to) if !to.flatten().is_some_and(is_machine) => {
                 return Err("a carry names the machine it goes to".to_owned());
             }
             (Some("move"), to) if !to.flatten().is_some_and(|to| MOVES.contains(&to)) => {
                 return Err(format!("a move goes to one of {}", MOVES.join(", ")));
             }
-            (Some("carry" | "move"), _) | (_, None) => {}
+            (Some("carry" | "move" | ordered::ACT), _) | (_, None) => {}
             (_, Some(_)) => {
                 return Err("only a carry or a move names where it goes".to_owned());
             }
@@ -586,6 +608,31 @@ mod tests {
         }
         let talking = Steer::new("AB12", &json!({"text": "hi", "id": "talk-1"})).expect("a steer");
         assert_eq!(talking.talk(), Some("talk-1"), "its talk");
+    }
+
+    #[test]
+    fn an_ordered_carry_is_an_act_of_its_own_saying_where_and_why() {
+        for said in [
+            json!({"act": "ordered-carry", "why": "its camera"}),
+            json!({"act": "ordered-carry", "to": "penelope"}),
+            json!({"act": "ordered-carry", "to": "penelope", "why": " "}),
+            json!({"act": "ordered-carry", "to": "../penelope", "why": "its camera"}),
+            json!({"act": "carry", "to": "penelope", "why": "its camera"}),
+            json!({"act": "carry", "to": "penelope", "by": "WCJQSG"}),
+            json!({"act": "pause", "by": "WCJQSG"}),
+        ] {
+            assert!(Steer::new("AB12", &said).is_err(), "{said} is refused");
+        }
+        // Nothing trusting the person's carry trusts an orchestrator's,
+        // which says who ordered it and why.
+        let ordered = json!({"act": "ordered-carry", "to": "penelope", "why": "its camera",
+                             "by": "WCJQSG", "from": "WCJQSG"});
+        let ordering = Steer::new("AB12", &ordered).expect("an ordered carry");
+        assert_eq!(
+            Value::Object(ordering.body.clone()),
+            ordered,
+            "every field an ordered carry carries is written for the harness"
+        );
     }
 
     #[test]
