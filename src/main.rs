@@ -296,16 +296,24 @@ enum Action {
     /// change; the node proves which session runs it and records the
     /// claim, refusing a quest another session holds. Without HEADS, it
     /// forgets what the session claimed, as it unloads or concludes.
+    ///
+    /// `--free QUEST`, from the person's own login, frees a quest from
+    /// the session holding it, such as one another session took while its
+    /// orchestrator was away.
     #[command(
         after_help = "Example:\n  mycelium orchestrates --heads QEST-20261007-WCJQSG \
-                      QEST-20261108-OSPHT4 QEST-20261115-HARBOR\n  mycelium orchestrates"
+                      QEST-20261108-OSPHT4 QEST-20261115-HARBOR"
     )]
     Orchestrates {
         /// The orchestrating quest the session has loaded.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "free")]
         heads: Option<String>,
         /// The quests it orchestrates.
+        #[arg(conflicts_with = "free")]
         quests: Vec<String>,
+        /// A quest to free from whichever session holds it, as the person.
+        #[arg(long)]
+        free: Option<String>,
     },
     /// Lists the sessions held on this machine, or holds one.
     ///
@@ -967,7 +975,10 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
             print_reply(&socket, &Request::Steer { address, steer })
         }
-        Action::Orchestrates { heads, quests } => {
+        Action::Orchestrates {
+            free: Some(quest), ..
+        } => print_reply(&socket, &Request::Free { quest }),
+        Action::Orchestrates { heads, quests, .. } => {
             print_reply(&socket, &Request::Orchestrates { heads, quests })
         }
         Action::Messages { groups, limit } => {

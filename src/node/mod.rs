@@ -1400,6 +1400,7 @@ impl<S: Store> Shared<S> {
             Request::Orchestrates { .. } => {
                 Err("an orchestration is answered by `orchestrates`".to_owned())
             }
+            Request::Free { .. } => Err("freeing a quest is answered by `frees`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
             Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
             Request::Turn { .. } => Err("a turn is answered by `take_turn`".to_owned()),
@@ -1545,18 +1546,8 @@ impl<S: Store> Shared<S> {
     /// sessions keep one of any two that claim one id.
     async fn asking_session(&self) -> Result<String, String> {
         let claims: Vec<asker::Claim> = self
-            .store
-            .presences()
+            .standing()
             .iter()
-            .filter(|presence| presence.elsewhere.is_none())
-            .filter(|presence| {
-                presence.lives
-                    || presence
-                        .body
-                        .get("state")
-                        .and_then(serde_json::Value::as_str)
-                        == Some("parked")
-            })
             .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
             .collect();
         let (client, processes, hosts, logs) = (
@@ -1571,6 +1562,49 @@ impl<S: Store> Shared<S> {
         })
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))?
+    }
+
+    /// The presences of this machine's sessions that run, or wait parked
+    /// to run again.
+    fn standing(&self) -> Vec<store::Presence> {
+        self.store
+            .presences()
+            .into_iter()
+            .filter(|presence| presence.elsewhere.is_none())
+            .filter(|presence| {
+                presence.lives
+                    || presence
+                        .body
+                        .get("state")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("parked")
+            })
+            .collect()
+    }
+
+    /// Changes the record of orchestrations as `change` says and keeps it,
+    /// holding it so two changes at once never undo each other; refused,
+    /// changing nothing, where `change` refuses.
+    async fn rerecord(
+        &self,
+        change: impl FnOnce(&mut chain::Orchestrations) -> Result<(), String> + Send + 'static,
+    ) -> Reply {
+        let (file, claiming) = (self.orchestrations.clone(), self.claiming.clone());
+        tokio::task::spawn_blocking(move || {
+            let _claiming = claiming
+                .lock()
+                .map_err(|_| "the record of orchestrations was left half kept".to_owned())?;
+            let mut record = chain::Orchestrations::read(&file).map_err(|error| {
+                format!("the record of orchestrations can't be read, so none is changed: {error}")
+            })?;
+            change(&mut record)?;
+            record.keep(&file).map_err(|error| {
+                format!("the record of orchestrations couldn't be kept: {error}")
+            })?;
+            Ok(Response::Orchestrated)
+        })
+        .await
+        .map_err(|error| format!("the orchestration couldn't be recorded: {error}"))?
     }
 
     /// The address the session `asker` goes by here, or its id where none
@@ -1592,28 +1626,26 @@ impl<S: Store> Shared<S> {
     /// Records what the session asking orchestrates, as the kernel and
     /// pi's records prove which session asks, or forgets it, where it
     /// names nothing (`carry::chain`). A session its own log says it
-    /// continues hands it what it held.
+    /// continues hands it what it held, and what a session claimed lapses
+    /// once it neither runs nor waits parked.
     async fn orchestrates(&self, heads: Option<String>, quests: Vec<String>) -> Reply {
         let asker = self.asking_session().await?;
         let sessions = self.lock().state.sessions();
         let address = self.address_of(&sessions, &asker).to_owned();
-        let (file, logs, claiming) = (
-            self.orchestrations.clone(),
-            self.logs.clone(),
-            self.claiming.clone(),
-        );
-        tokio::task::spawn_blocking(move || {
-            let _claiming = claiming
-                .lock()
-                .map_err(|_| "the record of orchestrations was left half kept".to_owned())?;
-            let mut record = chain::Orchestrations::read(&file).map_err(|error| {
-                format!("the record of orchestrations can't be read, so none is changed: {error}")
-            })?;
+        let standing: std::collections::BTreeSet<String> = self
+            .standing()
+            .into_iter()
+            .map(|presence| presence.session)
+            .collect();
+        let logs = self.logs.clone();
+        self.rerecord(move |record| {
+            record.lapse(|session| standing.contains(session));
             match heads {
-                None if quests.is_empty() => record.release(&asker),
-                None => {
-                    return Err("an orchestrator names the quest it heads".to_owned());
+                None if quests.is_empty() => {
+                    record.release(&asker);
+                    Ok(())
                 }
+                None => Err("an orchestrator names the quest it heads".to_owned()),
                 Some(heads) => {
                     let known = ordered::Known {
                         session: &asker,
@@ -1626,16 +1658,22 @@ impl<S: Store> Shared<S> {
                         &quests,
                         continued.as_deref(),
                         jiff::Timestamp::now(),
-                    )?;
+                    )
                 }
             }
-            record.keep(&file).map_err(|error| {
-                format!("the record of orchestrations couldn't be kept: {error}")
-            })?;
-            Ok(Response::Orchestrated)
         })
         .await
-        .map_err(|error| format!("the orchestration couldn't be recorded: {error}"))?
+    }
+
+    /// Frees `quest` from the session holding it by this node's record of
+    /// orchestrations, where the person's own login asks.
+    async fn frees(&self, quest: String) -> Reply {
+        let (client, processes) = (self.client, self.processes.clone());
+        tokio::task::spawn_blocking(move || asker::persons_own(client, &processes))
+            .await
+            .map_err(|error| format!("who asks couldn't be told: {error}"))??;
+        self.rerecord(move |record| record.free(&quest).map(|_| ()))
+            .await
     }
 
     /// Who orders the carry of `carried` when `asking` asks, as this
@@ -2073,6 +2111,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             Ok(Request::Orchestrates { heads, quests }) => {
                 shared.orchestrates(heads, quests).await.into()
             }
+            Ok(Request::Free { quest }) => shared.frees(quest).await.into(),
             Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
             Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
             Ok(Request::Send(draft))
@@ -3209,7 +3248,20 @@ mod tests {
         tokio::task::JoinHandle<io::Result<()>>,
         Speaking,
     ) {
-        let store = Memory::default();
+        orchestrated_in(&Memory::default(), socket, quests, also).await
+    }
+
+    /// As [`orchestrated`], keeping its sessions in `store`.
+    async fn orchestrated_in(
+        store: &Memory,
+        socket: &Path,
+        quests: &Value,
+        also: &[Value],
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+        Speaking,
+    ) {
         let at = jiff::Timestamp::now().to_string();
         // The groups the mesh put each in, as WCJQSG orchestrates them.
         for (session, address, quest, pid, groups) in [
@@ -3246,7 +3298,7 @@ mod tests {
         for (at, presence) in also.iter().enumerate() {
             store.start_here(&format!("also-{at}"), presence.clone(), true);
         }
-        let (stop, running) = node(&store, "optimus", Vec::<Piped>::new(), None, socket);
+        let (stop, running) = node(store, "optimus", Vec::<Piped>::new(), None, socket);
         let mut client = Speaking::to(socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
@@ -3310,6 +3362,137 @@ mod tests {
             .await,
             Ok(Response::Orchestrated),
             "the steward's orchestration is recorded"
+        );
+    }
+
+    /// Tells the stand-in for /proc beside `socket` that the client, this
+    /// process, is the person's own login's.
+    fn asks_as_the_person(socket: &Path) {
+        let client = procs_of(socket).join(std::process::id().to_string());
+        fs::create_dir_all(&client).expect("its folder is made");
+        fs::write(client.join("status"), "Name:\tmycelium\nPPid:\t1\n")
+            .expect("its status is written");
+        fs::write(
+            client.join("cgroup"),
+            "0::/user.slice/user-1000.slice/session-2.scope\n",
+        )
+        .expect("its group is written");
+    }
+
+    /// What the node at `socket` answers as it is asked to free `quest`.
+    async fn frees(socket: &Path, quest: &str) -> Reply {
+        ask(
+            socket.to_owned(),
+            Request::Free {
+                quest: quest.to_owned(),
+            },
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_started_afresh_claims_its_quests_again() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        store.start_here(
+            "s-fresh",
+            json!({"session": "s-fresh", "addresses": ["WCJQSG"], "groups": [],
+                   "busy": false, "state": "listening",
+                   "at": jiff::Timestamp::now().to_string(),
+                   "owner": {"pid": 7004, "startTicks": started_at(7004)}}),
+            true,
+        );
+        holds_log(&socket, 7004, "s-fresh");
+        let heads = Some("QEST-20261007-WCJQSG");
+        let quests = ["QEST-20261108-OSPHT4", "QEST-20261115-HARBOR"];
+        assert!(
+            claims(&socket, 7004, heads, &quests).await.is_err(),
+            "while the steward runs, a fresh session takes nothing of its"
+        );
+        store.ended(7001);
+        assert_eq!(
+            claims(&socket, 7003, heads, &["QEST-20261108-OSPHT4"]).await,
+            Ok(Response::Orchestrated),
+            "once it has ended, its claims lapse, so a helper may race for them"
+        );
+        asks_below(&socket, 7003);
+        assert_eq!(
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: "ospht4".to_owned(),
+                    steer: json!({"act": "ordered-carry", "to": "penelope",
+                                  "why": "it needs the camera"}),
+                },
+            )
+            .await,
+            Err(
+                "HARBOR doesn't orchestrate QEST-20261108-OSPHT4 by the quests' record, so it \
+                 can't order OSPHT4's carry: only a session of WCJQSG could"
+                    .to_owned()
+            ),
+            "but orders nothing the quests' record doesn't agree with"
+        );
+        assert!(
+            claims(&socket, 7004, heads, &quests).await.is_err(),
+            "and holds the quests from the fresh steward"
+        );
+        asks_as_the_person(&socket);
+        assert_eq!(
+            frees(&socket, "QEST-20261007-WCJQSG").await,
+            Ok(Response::Orchestrated),
+            "until the person frees them"
+        );
+        assert_eq!(
+            claims(&socket, 7004, heads, &quests).await,
+            Ok(Response::Orchestrated),
+            "so the fresh steward claims its quests again"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_persons_own_login_frees_a_quest() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        asks_below(&socket, 7002);
+        assert_eq!(
+            frees(&socket, "QEST-20261115-HARBOR").await,
+            Err(
+                "this asks from mycelium-pi-f3d9.scope, an agent's, so it can't free a quest: \
+                 only the person's own login does"
+                    .to_owned()
+            ),
+            "an agent frees nothing"
+        );
+        asks_as_the_person(&socket);
+        assert_eq!(
+            frees(&socket, "QEST-20261115-5HJZ8Z").await,
+            Err(
+                "no session holds QEST-20261115-5HJZ8Z by this node's record, so nothing is \
+                 freed"
+                    .to_owned()
+            ),
+            "a quest nobody holds is said to be free already"
+        );
+        assert_eq!(
+            frees(&socket, "QEST-20261115-HARBOR").await,
+            Ok(Response::Orchestrated),
+            "the person frees one an orchestrator holds"
+        );
+        assert_eq!(
+            orders_harbour(&socket, 7001).await,
+            Err(
+                "no orchestrator has told this node it orchestrates QEST-20261115-HARBOR, so \
+                 only the person carries it"
+                    .to_owned()
+            ),
+            "so it orders that quest's carry no more"
         );
     }
 

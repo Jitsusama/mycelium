@@ -81,6 +81,12 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         quests: Vec<String>,
     },
+    /// Frees `quest` from the session holding it by the node's record of
+    /// orchestrations, taken only from the person's own login.
+    Free {
+        /// The quest to free.
+        quest: String,
+    },
     /// Counts the connection's own process present for as long as it keeps
     /// the connection open, so a session it owns is judged ended the moment
     /// the connection closes, as the kernel closes it however the process
