@@ -8,10 +8,11 @@
 //! process exits (see `ends`), or the moment the connection it held to its
 //! node to say it was present closes. The presence of a session elsewhere is written with
 //! its process taken out, which the mesh takes as there, and with `machine`
-//! naming where it runs; it is never written over a session of this
-//! machine's or of another machine's. The leases such a session holds are
-//! kept in one holding of its own, marked the same way, which goes with its
-//! presence.
+//! naming where it runs; it is never written over a session of another
+//! machine's, nor over one of this machine's but once it has ended here,
+//! as a session carried to that machine does. The leases such a session
+//! holds are kept in one holding of its own, marked the same way, which
+//! goes with its presence.
 //!
 //! Claims are locks on files of mycelium's own, outside the mesh, so they
 //! hold across every mycelium process on the machine and go when the
@@ -197,6 +198,15 @@ impl Folders {
         lives
     }
 
+    /// Whether the session of this machine's that `facts` are of still
+    /// lives: its process neither said to have `ended` nor judged gone.
+    fn own_lives(&self, facts: &Facts, ended: &BTreeSet<i32>, boot: Option<&str>) -> bool {
+        facts
+            .owner
+            .as_ref()
+            .is_some_and(|owner| !ended.contains(&owner.pid) && self.lives(owner, boot))
+    }
+
     /// Forgets each verdict on a process no presence names any more.
     fn forget_judged(&self, present: &BTreeSet<&Owner>) {
         self.judged
@@ -310,10 +320,8 @@ impl Store for Folders {
         self.forget_judged(&owners);
         read.into_iter()
             .map(|(facts, body)| {
-                let lives = facts.machine.is_some()
-                    || facts.owner.as_ref().is_some_and(|owner| {
-                        !ended.contains(&owner.pid) && self.lives(owner, boot.as_deref())
-                    });
+                let lives =
+                    facts.machine.is_some() || self.own_lives(&facts, &ended, boot.as_deref());
                 Presence {
                     session: facts.session,
                     unreachable_since: facts.machine.as_ref().and(facts.unreachable_since),
@@ -393,8 +401,14 @@ impl Store for Folders {
                 format!("the presence of {session:?} names another session"),
             ));
         }
+        // A session of this machine's that ended here and runs on
+        // `machine` now, carried there, is that machine's to speak for:
+        // the mesh keeps a session's file after it ends, which would
+        // otherwise stand for it here as ended for good.
         if let Some(held) = read::<Facts>(&self.presence().join(&file))
             && held.machine.as_deref() != Some(machine)
+            && (held.machine.is_some()
+                || self.own_lives(&held, &self.ended_processes().clone(), boot_id().as_deref()))
         {
             let whose = held.machine.unwrap_or_else(|| "this machine".to_owned());
             return Err(io::Error::new(
@@ -461,8 +475,11 @@ impl Store for Folders {
     fn put_leases(&self, session: &str, machine: &str, leases: &[Value]) -> io::Result<()> {
         let file = format!("{}.json", safe(session)?);
         let path = self.leases().join(&file);
+        // A holding of this machine's goes with its session, once that is
+        // carried here from `machine`.
         if let Some(held) = read::<Value>(&path)
             && held.get(MACHINE).and_then(Value::as_str) != Some(machine)
+            && (held.get(MACHINE).is_some() || self.carried(session, machine)?.is_none())
         {
             let whose = held
                 .get(MACHINE)
@@ -1278,6 +1295,49 @@ mod tests {
             "a body naming another session"
         );
         assert_eq!(store.presences().len(), 2, "nothing was written over");
+    }
+
+    #[test]
+    fn a_session_carried_away_and_running_there_takes_the_place_of_its_end_here() {
+        let (_dir, store) = store();
+        let pid = std::process::id().cast_signed();
+        let here = json!({"session": "moved", "owner": {"pid": pid}, "title": "was here"});
+        write_whole(&store.presence(), "moved.json", &here)
+            .expect("this machine's session is written");
+        let change = json!({"kind": "change", "subject": "core.nix:flake.nix"});
+        let own = json!({"session": "moved", "leases": [change]});
+        write_whole(&store.leases(), "moved.json", &own).expect("its holding here");
+        store.ended(pid);
+
+        let there = json!({"session": "moved", "title": "runs there"});
+        store
+            .put_presence("moved", "equilibrius", &there)
+            .expect("its file here ended, so the machine it runs on now speaks for it");
+        store
+            .put_leases("moved", "equilibrius", std::slice::from_ref(&change))
+            .expect("and for the leases it holds");
+        let held = store.presences();
+        assert!(
+            matches!(held.as_slice(), [one] if one.elsewhere.as_deref() == Some("equilibrius")
+                && one.lives && one.body["title"] == "runs there"),
+            "it stands where it runs: {held:?}"
+        );
+        assert_eq!(
+            store.holdings(),
+            [json!({"session": "moved", "leases": [change], "machine": "equilibrius"})],
+            "its leases are the Mac's"
+        );
+        assert!(
+            store.put_presence("moved", "penelope", &there).is_err(),
+            "but no third machine speaks for it"
+        );
+
+        store.present(pid);
+        write_whole(&store.presence(), "moved.json", &here).expect("it runs here again");
+        assert!(
+            store.put_presence("moved", "equilibrius", &there).is_err(),
+            "and while it lives here, this machine alone speaks for it"
+        );
     }
 
     #[test]

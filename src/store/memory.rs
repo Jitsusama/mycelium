@@ -1,7 +1,8 @@
 //! A store held in memory, for tests: what the mesh's folders hold, with
 //! the machine's processes stood in for by whether each session lives. It
 //! keeps the folders' rules: a copy never goes over a session not its
-//! machine's, and one claim per machine at a time.
+//! machine's, but for one of this machine's that has ended, and one claim
+//! per machine at a time.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -125,6 +126,16 @@ impl Held {
             .get(session)
             .is_some_and(|presence| presence.elsewhere.as_deref() == Some(machine))
     }
+
+    /// Whether `session` is this machine's and has ended here, as the
+    /// folders judge it, so another machine may speak for it.
+    fn ended_here(&self, session: &str) -> bool {
+        self.presences.get(session).is_some_and(|presence| {
+            let owner = presence.body.pointer("/owner/pid").and_then(Value::as_i64);
+            presence.elsewhere.is_none()
+                && (!presence.lives || owner.is_some_and(|pid| self.ended.contains(&pid)))
+        })
+    }
 }
 
 impl Store for Memory {
@@ -247,7 +258,10 @@ impl Store for Memory {
                 "the presence names another session",
             ));
         }
-        if held.presences.contains_key(session) && !held.carries(session, machine) {
+        if held.presences.contains_key(session)
+            && !held.carries(session, machine)
+            && !held.ended_here(session)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "not that machine's session",
@@ -302,7 +316,14 @@ impl Store for Memory {
 
     fn put_leases(&self, session: &str, machine: &str, leases: &[Value]) -> io::Result<()> {
         let mut held = self.held();
-        if held.holdings.contains_key(session) && !held.holds_for(session, machine) {
+        let own = held
+            .holdings
+            .get(session)
+            .is_some_and(|holding| holding.get("machine").is_none());
+        if held.holdings.contains_key(session)
+            && !held.holds_for(session, machine)
+            && !(own && held.carries(session, machine))
+        {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "not that machine's holding",

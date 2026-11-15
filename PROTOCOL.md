@@ -122,7 +122,11 @@ same code, each line a JSON value:
    path names the sender's disk and stays, as does its `checkout`. The
    other end keeps them as one holding of the session's, marked with
    `machine`, never over a holding of its own machine's, and lets it go
-   with the presence. An end older than `leases` sends none.
+   with the presence. An end older than `leases` sends none. A session
+   carried from one machine to the other keeps its id, and its first
+   machine keeps its file after it ends there: that file, ended, gives
+   way to the presence from where it runs now, and its holding with it,
+   while one whose process still lives there never does.
 5. `{"Ended": {"session"}}`: a session of the sending end's machine has
    ended.
 6. `{"Share": say}`: talk about shared quests, as below. An end that
