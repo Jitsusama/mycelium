@@ -17,7 +17,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::awake::{self, Awake};
-use crate::carry::{chain, ordered};
+use crate::carry::{chain, ground, ordered};
 use crate::daemon;
 use crate::facts::{self, Readiness};
 use crate::flow::{self, Flows};
@@ -293,6 +293,9 @@ pub struct Given {
     pub logs: PathBuf,
     /// Where it keeps what the person says to sessions through it.
     pub words: words::Book,
+    /// Where this machine's configuration declares it, whose fences say
+    /// what ground a carry ordered from here may land on.
+    pub declared: PathBuf,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -699,6 +702,8 @@ struct Shared<S> {
     words: Arc<words::Book>,
     /// What their talks said when last read.
     talks: Arc<words::Talks>,
+    /// Where this machine's configuration declares it.
+    declared: PathBuf,
     /// Held while the record of orchestrations is read and kept again, so
     /// two claims at once never undo each other.
     claiming: Arc<Mutex<()>>,
@@ -766,6 +771,7 @@ impl<S: Clone> Clone for Shared<S> {
             logs: self.logs.clone(),
             words: self.words.clone(),
             talks: self.talks.clone(),
+            declared: self.declared.clone(),
             claiming: self.claiming.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
@@ -1060,6 +1066,7 @@ impl<S: Store> Shared<S> {
             orchestrations,
             logs,
             words,
+            declared,
         } = given;
         let shared = Self {
             processes: processes.into(),
@@ -1069,6 +1076,7 @@ impl<S: Store> Shared<S> {
             logs,
             words: Arc::new(words),
             talks: Arc::default(),
+            declared,
             claiming: Arc::default(),
             client: None,
             served: Arc::new(Served::start(serves)),
@@ -1880,9 +1888,15 @@ impl<S: Store> Shared<S> {
             .into_values()
             .collect();
         let quest = ordered::quest_of(carried, &quests)?;
-        let record = chain::Orchestrations::read(&self.orchestrations).map_err(|error| {
+        let mut record = chain::Orchestrations::read(&self.orchestrations).map_err(|error| {
             format!("this node's record of orchestrations can't be read, so no carry is ordered: {error}")
         })?;
+        let standing: std::collections::BTreeSet<String> = self
+            .standing()
+            .into_iter()
+            .map(|presence| presence.session)
+            .collect();
+        record.lapse(|session| standing.contains(session));
         let order = record.chain(&quest, asking)?;
         chain::agrees(&order, &ordered::ordered_by(asking, carried, &quests)?)?;
         ordered::agreed(&order, asking, &quests, &grouped(sessions, &self.machine))?;
@@ -1936,6 +1950,24 @@ impl<S: Store> Shared<S> {
             address: &address,
         };
         let order = self.ordered_by(asking, carried, &sessions)?;
+        let to = said
+            .get("to")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if to == self.machine {
+            return Err(format!("{address} already runs on {to}"));
+        }
+        let kind = target
+            .presence
+            .get("fence")
+            .and_then(|kind| serde_json::from_value::<crate::declared::Kind>(kind.clone()).ok());
+        let there = self.others().into_iter().find(|machine| machine.name == to);
+        ground::firm(
+            kind,
+            crate::declared::read(&self.declared).as_ref(),
+            to,
+            there.as_ref(),
+        )?;
         let mut body = said.as_object().cloned().unwrap_or_default();
         body.insert("by".to_owned(), order.by.clone().into());
         body.insert("from".to_owned(), order.by.clone().into());
@@ -2503,6 +2535,7 @@ mod tests {
             orchestrations: "/nowhere/orchestrations.json".into(),
             logs: "/nowhere/sessions".into(),
             words: words::Book::at("/nowhere/said.jsonl".into()),
+            declared: "/nowhere/declared.json".into(),
         }
     }
 
@@ -2548,6 +2581,7 @@ mod tests {
         let orchestrations = socket.with_file_name("orchestrations.json");
         let logs = socket.with_file_name("sessions");
         let words = words::Book::at(socket.with_file_name("said.jsonl"));
+        let declared = socket.with_file_name("declared.json");
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -2567,6 +2601,7 @@ mod tests {
                 orchestrations,
                 logs,
                 words,
+                declared,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -2959,6 +2994,7 @@ mod tests {
                 leaves_at: Some(leaves),
                 within: None,
                 hosts: Vec::new(),
+                fence: None,
             }),
             ..facts::measure(name, &nowhere)
         };
@@ -3657,7 +3693,7 @@ mod tests {
             let presence = json!({
                 "session": session, "addresses": [address], "groups": groups,
                 "busy": false, "state": "listening", "at": at, "quest": quest,
-                "orchestratedBy": "WCJQSG",
+                "orchestratedBy": "WCJQSG", "fence": "strict",
                 "owner": {"pid": pid, "startTicks": started_at(pid)},
             });
             store.start_here(session, presence, true);
@@ -3669,6 +3705,11 @@ mod tests {
         let mut client = Speaking::to(socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
+        // Once the node has started, as a link carries it, since a machine
+        // no link claims as the node starts is marked out of reach.
+        store
+            .put_machine(&fenced("penelope", &["remote"]))
+            .expect("what it said is kept");
         client
             .ask(json!({"id": 2, "ask": "watch", "kind": "quest"}))
             .await;
@@ -3680,7 +3721,48 @@ mod tests {
         for (pid, session) in [(7001, "s-steward"), (7002, "s-weigh"), (7003, "s-harbour")] {
             holds_log(socket, pid, session);
         }
+        let here = fenced("optimus", &["remote", "big"]).declared;
+        fs::write(
+            socket.with_file_name("declared.json"),
+            serde_json::to_vec(&here).expect("it is JSON"),
+        )
+        .expect("this machine's declaration is written");
         (stop, running, client)
+    }
+
+    /// What `name` says of itself, running its sessions strictly fenced,
+    /// building only on `builders`, reaching no forge and released no
+    /// secret.
+    fn fenced(name: &str, builders: &[&str]) -> facts::Machine {
+        let nowhere = facts::Sources {
+            home: "/".into(),
+            queue: None,
+            disk_guard: None,
+            declared: "/nowhere".into(),
+            reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
+        };
+        let strict = crate::declared::Doors {
+            builders: builders.iter().map(|&one| one.to_owned()).collect(),
+            forges: std::collections::BTreeSet::new(),
+            secrets: std::collections::BTreeSet::new(),
+        };
+        facts::Machine {
+            declared: Some(crate::declared::Declared {
+                reach: Vec::new(),
+                probes: BTreeMap::new(),
+                outlives: Vec::new(),
+                costs_money: false,
+                taints: Vec::new(),
+                cores: None,
+                agents: BTreeMap::new(),
+                leaves_at: None,
+                within: None,
+                hosts: Vec::new(),
+                fence: Some(BTreeMap::from([(crate::declared::Kind::Strict, strict)])),
+            }),
+            ..facts::measure(name, &nowhere)
+        }
     }
 
     /// Opens, for the test's pi `pid`, the log pi keeps of `session` in the
@@ -3875,6 +3957,66 @@ mod tests {
             },
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn an_ordered_carry_never_lands_on_looser_ground() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        let to = |machine: &str| {
+            let socket = socket.clone();
+            let machine = machine.to_owned();
+            async move {
+                asks_below(&socket, 7001);
+                ask(
+                    socket,
+                    Request::Steer {
+                        address: "harbor".to_owned(),
+                        steer: json!({"act": "ordered-carry", "to": machine,
+                                      "why": "it needs the camera"}),
+                    },
+                )
+                .await
+            }
+        };
+        assert_eq!(
+            to("optimus").await,
+            Err("HARBOR already runs on optimus".to_owned()),
+            "a carry goes somewhere else"
+        );
+        assert_eq!(
+            to("kestrel").await,
+            Err(
+                "kestrel isn't one of this realm's machines, so nothing is carried there"
+                    .to_owned()
+            ),
+            "a machine this realm doesn't know, as one of another realm"
+        );
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        assert_eq!(
+            to("tern").await,
+            Err(
+                "tern's strictly fenced session opens builders cloud, which here's \
+                 doesn't, so the session would land looser there"
+                    .to_owned()
+            ),
+            "a machine whose fence opens a builder here's doesn't"
+        );
+        assert!(
+            !socket.with_file_name("carries.jsonl").exists(),
+            "and nothing refused is kept as carried"
+        );
+        assert_eq!(
+            held_in(&inboxes(&socket).join("HARBOR")),
+            Vec::<Value>::new(),
+            "nor reaches the inbox"
+        );
     }
 
     #[tokio::test]

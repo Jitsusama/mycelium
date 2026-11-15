@@ -11,7 +11,7 @@
 //! no taint it doesn't tolerate applies, and the machine itself enforces
 //! it, since what is said here only saves work a trip.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -54,6 +54,58 @@ pub struct Declared {
     /// The machines that run within it, each told its power and room.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<Within>,
+    /// The fences an agent session runs in there, by kind, each with the
+    /// doors it opens; unknown where it says none, or says it in a shape
+    /// this build doesn't read, so a carry ordered there is refused.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "fence_or_none"
+    )]
+    pub fence: Option<BTreeMap<Kind, Doors>>,
+}
+
+/// The fence an agent session runs in, as the harness names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// None: the session runs as its account does.
+    None,
+    /// The agent fence, open through the doors it names.
+    Fence,
+    /// The strict fence, shut but for the doors it names.
+    Strict,
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Kind::None => "unfenced",
+            Kind::Fence => "fenced",
+            Kind::Strict => "strictly fenced",
+        })
+    }
+}
+
+/// What a fence lets a session reach: each by the name the machine's
+/// configuration gives it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Doors {
+    /// The machines it may build on.
+    pub builders: BTreeSet<String>,
+    /// The forges it may push to and fetch from.
+    pub forges: BTreeSet<String>,
+    /// The secrets it may be released.
+    pub secrets: BTreeSet<String>,
+}
+
+/// A fence as declared, or none where it isn't in the shape this build
+/// reads, which spoils only the fence, never the rest of what's declared.
+fn fence_or_none<'de, D: serde::Deserializer<'de>>(
+    said: D,
+) -> Result<Option<BTreeMap<Kind, Doors>>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(said)?
+        .and_then(|fence| serde_json::from_value(fence).ok()))
 }
 
 /// One machine within another, as either declares it: the other machine,
@@ -186,8 +238,44 @@ mod tests {
                 leaves_at: None,
                 within: None,
                 hosts: Vec::new(),
+                fence: None,
             }),
             "it reads as declared"
+        );
+    }
+
+    #[test]
+    fn a_fence_reads_by_kind_and_one_misshapen_is_unknown() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        fs::write(
+            &file,
+            r#"{"reach": [], "outlives": [], "costs_money": false, "taints": [],
+                "fence": {"strict": {"builders": ["remote"], "forges": [],
+                                      "secrets": []}}}"#,
+        )
+        .expect("the configuration is written");
+        let strict = Doors {
+            builders: BTreeSet::from(["remote".to_owned()]),
+            forges: BTreeSet::new(),
+            secrets: BTreeSet::new(),
+        };
+        assert_eq!(
+            read(&file).and_then(|declared| declared.fence),
+            Some(BTreeMap::from([(Kind::Strict, strict)])),
+            "each kind it runs reads with its doors"
+        );
+        fs::write(
+            &file,
+            r#"{"reach": ["internet"], "outlives": [], "costs_money": false,
+                "taints": [], "fence": {"strict": {"builders": ["remote"]}}}"#,
+        )
+        .expect("the configuration is written");
+        let declared = read(&file).expect("the rest still reads");
+        assert_eq!(
+            (declared.fence, declared.reach),
+            (None, vec!["internet".to_owned()]),
+            "a fence missing a door is unknown, and spoils nothing else"
         );
     }
 

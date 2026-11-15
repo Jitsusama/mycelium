@@ -1187,6 +1187,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         orchestrations: state.join("orchestrations.json"),
         logs: place::logs(),
         words: mycelium::words::Book::at(state.join("said.jsonl")),
+        declared: place::declared(),
     };
     let runtime = runtime()?;
     let ran = runtime.block_on(async {
