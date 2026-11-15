@@ -954,7 +954,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             folder,
             login,
             command,
-        } => hold_here(&realm, &id, &folder, login, &command),
+        } => hold_here(&realm, &id, &folder, login, &command, &socket),
         Action::Watch { groups, recent } => watch(&socket, groups, recent),
         Action::Machines { .. }
         | Action::Machine { .. }
@@ -1578,13 +1578,15 @@ fn hold(
 }
 
 /// Holds `command` here as the session `id`, in `folder`, until its
-/// scope's stop tells it to end.
+/// scope's stop tells it to end, asking the node at `node` for a turn
+/// first when it resumes a session.
 fn hold_here(
     realm: &str,
     id: &str,
     folder: &Path,
     login: bool,
     command: &[String],
+    node: &Path,
 ) -> io::Result<()> {
     let through = held_through(login, realm);
     be_holder(&hold::holder::Holding {
@@ -1597,6 +1599,7 @@ fn hold_here(
         environment: &ServiceManager,
         journal: &SystemJournal::here(),
         ending: hold::holder::Ending::Signalled,
+        node: Some(node),
     })
 }
 

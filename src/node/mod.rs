@@ -42,6 +42,7 @@ use crate::steer::{self, Steer};
 use crate::store::{self, Change, Store};
 use crate::wire::{Answer, Draft, Event, Offers, Reply, Request, Response, Start, Started};
 use crate::within;
+use turns::{Asked, Turns};
 
 mod asker;
 pub use asker::Processes;
@@ -49,6 +50,7 @@ mod crossing;
 mod glyph;
 mod standing;
 mod team;
+mod turns;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -887,6 +889,9 @@ struct Inner {
     /// The ids of the messages handed across, or being handed, or refused
     /// for good, which aren't handed across again.
     crossed: HashSet<String>,
+    /// The held sessions waiting to come back, and those on their first
+    /// turn, kept only while the node runs (see [`turns`]).
+    turns: Turns,
 }
 
 /// Watches a folder of records, of what is held or what is parked, or,
@@ -1293,6 +1298,7 @@ impl<S: Store> Shared<S> {
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
             Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
+            Request::Turn { .. } => Err("a turn is answered by `take_turn`".to_owned()),
         }
     }
 
@@ -1460,6 +1466,29 @@ impl<S: Store> Shared<S> {
             }
             (None, false) => Ok(()),
         }
+    }
+
+    /// Asks a turn for the holder resuming `session`, as the sessions
+    /// stand now.
+    fn ask_turn(&self, session: &str) -> Asked {
+        let mut inner = self.lock();
+        let sessions = inner.state.sessions();
+        inner
+            .turns
+            .ask(session, &sessions, tokio::time::Instant::now())
+    }
+
+    /// Ends the turns their sessions are done with and lets the next
+    /// through, at most once each [`turns::LOOKS_EVERY`] however many
+    /// holders wait, since each look reads every session record.
+    fn pass_turns(&self) {
+        let now = tokio::time::Instant::now();
+        let mut inner = self.lock();
+        if !inner.turns.due(now) {
+            return;
+        }
+        let sessions = inner.state.sessions();
+        inner.turns.pass(&sessions, now);
     }
 
     /// Counts `pid` present through a new connection, which replaces any
@@ -1704,6 +1733,10 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             be_present(&shared, process, lines, writing).await;
             return;
         }
+        if let Ok(Request::Turn { session }) = request {
+            take_turn(&shared, &session, lines, writing).await;
+            return;
+        }
         if let Ok(Request::Carry { machine }) = request {
             link::carried::to_link(&shared.asks, &machine, lines, writing).await;
             return;
@@ -1752,6 +1785,34 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             return;
         }
     }
+}
+
+/// Answers a holder's ask for a turn once it may resume `session`,
+/// looking at the turns each [`turns::LOOKS_EVERY`] while it waits. A holder that
+/// hangs up first leaves the queue.
+async fn take_turn<S: Store>(
+    shared: &Shared<S>,
+    session: &str,
+    mut lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    mut writing: tokio::net::unix::OwnedWriteHalf,
+) {
+    if let Asked::Wait { ticket, mut go } = shared.ask_turn(session) {
+        let mut look = tokio::time::interval(turns::LOOKS_EVERY);
+        loop {
+            tokio::select! {
+                _ = &mut go => break,
+                _ = look.tick() => shared.pass_turns(),
+                // A waiting holder says nothing; anything it does send,
+                // or its hanging up, ends its wait.
+                _ = lines.next_line() => {
+                    shared.lock().turns.leave(ticket);
+                    return;
+                }
+            }
+        }
+    }
+    // A holder that hung up as it was let through starts nothing to tell.
+    let _ = write(&mut writing, &Reply::Ok(Response::Turn)).await;
 }
 
 /// Counts `process` present until it hangs up, then says it has ended. A

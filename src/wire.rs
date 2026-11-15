@@ -81,6 +81,14 @@ pub enum Request {
         /// The machine the link reaches.
         machine: String,
     },
+    /// A turn for the holder about to resume `session`, answered once it
+    /// may start it: at once for a session no record names, else once
+    /// fewer than a few resumed sessions are on their first turn. A
+    /// holder that hangs up leaves the queue.
+    Turn {
+        /// The session its program resumes, by id.
+        session: String,
+    },
     /// The whole state, then each change, for as long as the client stays.
     Watch {
         /// Which groups' messages to send, or none when not given; sessions
@@ -220,6 +228,8 @@ pub enum Response {
     Present,
     /// Asks follow, one per line, each to be answered on a line back.
     Carrying,
+    /// The session asked about may start now.
+    Turn,
 }
 
 /// What a node's providers' programs offer, and why any couldn't say.

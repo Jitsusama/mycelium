@@ -27,6 +27,7 @@
 //!   start of a held program is given
 //! - [`journal`]: where a holder says how each run of its program ended
 //! - [`steering`]: the steers a parked program wakes for
+//! - [`turn`]: a resuming program's wait for its node to give it a turn
 //!
 //! What a joined terminal sends its holder is framed, as [`Said`]; what
 //! the holder sends back is the modes the program asked for so far, then
@@ -39,6 +40,7 @@ pub mod journal;
 pub mod modes;
 pub mod start;
 pub mod steering;
+pub mod turn;
 
 use std::fs;
 use std::io;
