@@ -343,8 +343,9 @@ in order and says each step:
    quest's scratch, under `handover/<this machine's short hostname>/`
    (up to its first dot), writes
    `<session>.done.json` there saying what it put (at least `session`;
-   the harness adds its folder and trees, within its home), and ends. Once each has, `pi-carry QEST-...
-   --to <machine>` carries what no session held.
+   the harness adds its folder and trees, within its home), and ends.
+   Once each has, `pi-carry QEST-... --to <machine>` carries what no
+   session held.
 3. `share`: the quest is shared with `handover`, as `mycelium share
    --scratch handover` does.
 4. `start`: each carried session starts again on the machine, held, as
