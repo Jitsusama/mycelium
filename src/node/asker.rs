@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
@@ -150,6 +150,145 @@ impl Processes {
     }
 }
 
+/// Who owns a session, as its presence claims it, which the session
+/// writes itself and so proves nothing until the kernel and its host
+/// back it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Claim {
+    /// The session's own id.
+    pub session: String,
+    /// The process it says owns it.
+    pub pid: Option<i32>,
+    /// When it says that process started, in the kernel's clock ticks
+    /// since boot, which tells one process from a later one given its id.
+    pub start_ticks: Option<u64>,
+    /// The pi host it says holds it, by its key, when one does.
+    pub host: Option<String>,
+}
+
+impl Claim {
+    /// The claim `presence`, filed under the session id `filed`, makes, if
+    /// it names its session. Pi files each presence under its own
+    /// session's id, so one filed under another names no owner: it is
+    /// forged, though it still counts toward a session claimed twice.
+    #[must_use]
+    pub fn of(filed: &str, presence: &Value) -> Option<Self> {
+        let session = presence.get("session")?.as_str()?.to_owned();
+        let owner = presence.get("owner").filter(|_| session == filed);
+        let field = |key: &str| owner.and_then(|owner| owner.get(key));
+        Some(Self {
+            session,
+            pid: field("pid")
+                .and_then(Value::as_i64)
+                .and_then(|pid| i32::try_from(pid).ok()),
+            start_ticks: field("startTicks").and_then(Value::as_u64),
+            host: field("host").and_then(Value::as_str).map(str::to_owned),
+        })
+    }
+}
+
+/// The owners `claims` prove, each session and its process, from records
+/// no session writes. A claim counts only where its process started when
+/// it says, as the kernel tells it, so a later process given the same id
+/// isn't taken for it. One a pi host holds counts only where the host's
+/// own record, in `hosts`, lists the session; one held by no host only
+/// where its process is pi's own and no other session claims it. Refused
+/// outright when two claims name one session, as one forged to borrow
+/// another's name would, or where the kernel can't say when a process
+/// started, as on a Mac.
+///
+/// Like [`session_of`], this fences habit: a session's own process may
+/// write another's presence, with its process's start, while that one
+/// isn't running.
+///
+/// # Errors
+///
+/// When a session is claimed twice, or no claim can be proved here.
+pub fn proved(
+    claims: &[Claim],
+    processes: &Processes,
+    hosts: &Path,
+) -> Result<Vec<(String, i32)>, String> {
+    let Processes::Folder(procs) = processes else {
+        return Err(
+            "this machine can't say when a process started, so who owns a session can't be \
+             proved and no carry is ordered"
+                .to_owned(),
+        );
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    if let Some(twice) = claims
+        .iter()
+        .find(|claim| !seen.insert(claim.session.as_str()))
+    {
+        return Err(format!(
+            "two presences here claim the session {}, so who owns it can't be told and no \
+             carry is ordered",
+            twice.session
+        ));
+    }
+    let unhosted = |pid: i32| {
+        claims
+            .iter()
+            .filter(|claim| claim.host.is_none() && claim.pid == Some(pid))
+            .count()
+    };
+    Ok(claims
+        .iter()
+        .filter_map(|claim| {
+            let (pid, ticks) = (claim.pid?, claim.start_ticks?);
+            if started(procs, pid)? != ticks {
+                return None;
+            }
+            let held = match &claim.host {
+                Some(host) => hosts_session(hosts, host, pid, ticks, &claim.session),
+                None => named_pi(procs, pid) && unhosted(pid) == 1,
+            };
+            held.then(|| (claim.session.clone(), pid))
+        })
+        .collect())
+}
+
+/// When process `pid` started, in clock ticks since boot, as its `stat`
+/// in `procs` tells it: the twentieth field after its name, which is in
+/// brackets and may hold spaces or brackets itself.
+fn started(procs: &Path, pid: i32) -> Option<u64> {
+    let stat = fs::read_to_string(procs.join(pid.to_string()).join("stat")).ok()?;
+    let (_, after) = stat.rsplit_once(')')?;
+    after.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Whether process `pid` in `procs` is pi's own, by the name the kernel
+/// gives it.
+fn named_pi(procs: &Path, pid: i32) -> bool {
+    fs::read_to_string(procs.join(pid.to_string()).join("status"))
+        .is_ok_and(|status| named(&status).is_some_and(|(name, _)| name == PI))
+}
+
+/// Whether the pi host keyed `key`, at process `pid` started at `ticks`,
+/// lists `session` among its own in its record in `hosts`: the file the
+/// host keeps as `<pid>-<ticks>.json`, which pi itself trusts to tell
+/// which sessions a host holds.
+fn hosts_session(hosts: &Path, key: &str, pid: i32, ticks: u64, session: &str) -> bool {
+    let Some(record) = fs::read_to_string(hosts.join(format!("{pid}-{ticks}.json")))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    else {
+        return false;
+    };
+    record.get("key").and_then(Value::as_str) == Some(key)
+        && record.pointer("/owner/pid").and_then(Value::as_i64) == Some(i64::from(pid))
+        && record.pointer("/owner/startTicks").and_then(Value::as_u64) == Some(ticks)
+        && record
+            .get("sessions")
+            .and_then(Value::as_array)
+            .is_some_and(|sessions| {
+                sessions
+                    .iter()
+                    .any(|one| one.get("id").and_then(Value::as_str) == Some(session))
+            })
+}
+
 /// What a machine tells of the process that asks.
 #[derive(Debug, PartialEq, Eq)]
 enum Told {
@@ -190,8 +329,8 @@ pub fn may_say(asker: Option<i32>, processes: &Processes, said: &Value) -> Resul
 }
 
 /// The session that asks, by its own id, among `owners`, each session of
-/// this machine's that runs and the process that owns it, as its presence
-/// says: the one whose process the asker is, or runs below. A pi host owns
+/// this machine's that runs and the process that owns it, as [`proved`]
+/// proves them: the one whose process the asker is, or runs below. A pi host owns
 /// many sessions in one process, so among those the asker names its own,
 /// as the harness tells each command it runs (`PI_SESSION_ID`); it can
 /// name only one its own process's forebear owns. Refused, saying why,
@@ -538,6 +677,193 @@ mod tests {
             told().is_err(),
             "never a session of another process, whatever it names"
         );
+    }
+
+    /// Writes in `procs` that process `pid`, named `name`, started
+    /// `ticks` after boot, as its `stat` file tells it.
+    fn started(procs: &Path, pid: i32, name: &str, ticks: u64) {
+        let process = procs.join(pid.to_string());
+        fs::create_dir_all(&process).expect("its folder is made");
+        let zeros = "0 ".repeat(17);
+        fs::write(
+            process.join("stat"),
+            format!("{pid} ({name}) S 1 {zeros}{ticks} 0 0\n"),
+        )
+        .expect("its stat is written");
+    }
+
+    fn claim(session: &str, pid: i32, ticks: Option<u64>, host: Option<&str>) -> Claim {
+        Claim {
+            session: session.to_owned(),
+            pid: Some(pid),
+            start_ticks: ticks,
+            host: host.map(str::to_owned),
+        }
+    }
+
+    fn owned(owners: &[(&str, i32)]) -> Vec<(String, i32)> {
+        owners
+            .iter()
+            .map(|(session, pid)| ((*session).to_owned(), *pid))
+            .collect()
+    }
+
+    #[test]
+    fn an_owner_counts_only_where_its_process_started_when_it_says() {
+        let procs = procs(&[
+            (58, "pi", 1, "agents.slice/mycelium-pi-f3d9.scope"),
+            (62, "pi", 1, "agents.slice/mycelium-pi-a1b2.scope"),
+            (63, "pi", 1, "agents.slice/mycelium-pi-c3d4.scope"),
+        ]);
+        started(procs.path(), 58, "pi", 500);
+        started(procs.path(), 62, "pi", 900);
+        started(procs.path(), 63, "pi", 950);
+        let hosts = tempfile::tempdir().expect("no hosts");
+        assert_eq!(
+            proved(
+                &[
+                    claim("s-own", 58, Some(500), None),
+                    claim("s-stale", 62, Some(800), None),
+                    claim("s-untimed", 63, None, None),
+                    claim("s-gone", 64, Some(100), None),
+                ],
+                &folder(procs.path()),
+                hosts.path()
+            ),
+            Ok(owned(&[("s-own", 58)])),
+            "a process started later under an old id, or one that says no start or is gone, \
+             owns nothing"
+        );
+    }
+
+    #[test]
+    fn a_helper_claiming_anothers_session_owns_nothing() {
+        let procs = procs(&[
+            (58, "pi", 1, "agents.slice/mycelium-pi-f3d9.scope"),
+            (60, "bash", 59, "jobs.slice/jobs.service"),
+        ]);
+        started(procs.path(), 58, "pi", 500);
+        started(procs.path(), 60, "bash", 700);
+        let hosts = tempfile::tempdir().expect("no hosts");
+        let processes = folder(procs.path());
+        assert_eq!(
+            proved(
+                &[
+                    claim("s-steward", 58, Some(500), None),
+                    claim("s-steward", 60, Some(700), None),
+                ],
+                &processes,
+                hosts.path()
+            ),
+            Err(
+                "two presences here claim the session s-steward, so who owns it can't be told \
+                 and no carry is ordered"
+                    .to_owned()
+            ),
+            "one forged beside the session's own refuses outright"
+        );
+        assert_eq!(
+            proved(
+                &[claim("s-steward", 60, Some(700), None)],
+                &processes,
+                hosts.path()
+            ),
+            Ok(Vec::new()),
+            "and alone, a process that isn't pi owns no session no host holds"
+        );
+        assert_eq!(
+            proved(
+                &[
+                    claim("s-steward", 58, Some(500), None),
+                    claim("s-borrow", 58, Some(500), None),
+                ],
+                &processes,
+                hosts.path()
+            ),
+            Ok(Vec::new()),
+            "nor does a pi two sessions no host holds both claim"
+        );
+    }
+
+    #[test]
+    fn a_hosted_session_counts_only_where_its_hosts_record_lists_it() {
+        let procs = procs(&[(
+            78,
+            "node",
+            1,
+            "agents.slice/pi-host-work-background.service",
+        )]);
+        started(procs.path(), 78, "node", 700);
+        let hosts = tempfile::tempdir().expect("the hosts' records");
+        fs::write(
+            hosts.path().join("78-700.json"),
+            json!({"key": "work-background",
+                   "owner": {"pid": 78, "startedAt": 1, "startTicks": 700},
+                   "sessions": [{"id": "s-one", "state": "running"},
+                                {"id": "s-two", "state": "running"}]})
+            .to_string(),
+        )
+        .expect("its record is written");
+        let host = Some("work-background");
+        assert_eq!(
+            proved(
+                &[
+                    claim("s-one", 78, Some(700), host),
+                    claim("s-two", 78, Some(700), host),
+                    claim("s-three", 78, Some(700), host),
+                    claim("s-four", 78, Some(700), Some("work-attended")),
+                ],
+                &folder(procs.path()),
+                hosts.path()
+            ),
+            Ok(owned(&[("s-one", 78), ("s-two", 78)])),
+            "a session its host doesn't list, or a host by another key, owns nothing"
+        );
+    }
+
+    #[test]
+    fn where_the_kernel_cant_say_when_a_process_started_nothing_is_proved() {
+        let hosts = tempfile::tempdir().expect("no hosts");
+        assert_eq!(
+            proved(
+                &[claim("s-own", 58, Some(500), None)],
+                &Processes::Listed,
+                hosts.path()
+            ),
+            Err(
+                "this machine can't say when a process started, so who owns a session can't \
+                 be proved and no carry is ordered"
+                    .to_owned()
+            ),
+            "as on a Mac"
+        );
+    }
+
+    #[test]
+    fn a_claim_is_read_from_its_presence() {
+        let hosted = json!({"session": "s-one", "owner": {
+            "pid": 78, "startedAt": 1, "startTicks": 700, "host": "work-background"}});
+        assert_eq!(
+            Claim::of("s-one", &hosted),
+            Some(claim("s-one", 78, Some(700), Some("work-background")))
+        );
+        let ownerless = Claim {
+            session: "s-one".to_owned(),
+            pid: None,
+            start_ticks: None,
+            host: None,
+        };
+        assert_eq!(
+            Claim::of("s-forged", &hosted),
+            Some(ownerless.clone()),
+            "one filed under another session's id names no owner"
+        );
+        assert_eq!(
+            Claim::of("s-one", &json!({"session": "s-one", "owner": null})),
+            Some(ownerless),
+            "one that names no owner still counts toward a session claimed twice"
+        );
+        assert_eq!(Claim::of("s-one", &json!({"owner": {"pid": 1}})), None);
     }
 
     #[test]

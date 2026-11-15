@@ -386,11 +386,18 @@ asking orchestrates that session's quest, never from what either
 session says of itself:
 
 - Who asks is the client's process, as the kernel names it: its line of
-  parents is walked to the pi owning a session running here, its
-  presence's `owner.pid`. Where one pi hosts several sessions, the
-  asker's own `PI_SESSION_ID`, read from its process, says which, and it
-  must be one of them; where that can't be read, as on a Mac, the ask is
-  refused.
+  parents is walked to the pi owning a session running here. A session
+  writes its own presence, so its `owner` is believed only where records
+  it doesn't write back it: the process `owner.pid` started at
+  `owner.startTicks`, by the kernel's `stat`, and either pi's host keyed
+  `owner.host` lists the session in its own record,
+  `hosts/<pid>-<startTicks>.json` in pi's state, or no host holds it and
+  the process is pi's own, with no other session claiming it. One filed
+  under another session's id owns nothing, and two presences claiming
+  one session refuse the carry outright. Where one pi hosts several sessions,
+  the asker's own `PI_SESSION_ID`, read from its process, says which,
+  and it must be one of them. Where the kernel can't say when a process
+  started, as on a Mac, the ask is refused.
 - Who orchestrates is the quests' record the node serves as `quest`:
   the session's quest is the one whose `sessions` holds its id, and the
   asker must be among the `sessions` of that quest's `orchestrator`, by
