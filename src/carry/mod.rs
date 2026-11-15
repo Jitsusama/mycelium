@@ -10,8 +10,9 @@
 //! step as it goes: it tells the sessions, waits until each has carried,
 //! carries the rest, shares the quest with its handover, starts each
 //! carried session again on the other machine, held, once `pi-carry
-//! arrive` has its trees there, and waits until the sessions here have
-//! ended. A step that fails says why and nothing after it runs; what was
+//! arrive` has its trees there, marking each started so no later carry
+//! starts it again, and waits until the sessions here have ended. A
+//! step that fails says why and nothing after it runs; what was
 //! done stays done, since each step can be taken again.
 //!
 //! What it does to the world goes through [`Hands`], whose one
@@ -135,12 +136,20 @@ pub trait Hands {
     ///
     /// When the node refuses it.
     fn steer(&mut self, address: &str, steer: Value) -> Result<(), String>;
-    /// What has been carried into the quest's handover from here so far.
+    /// What has been carried into the quest's handover from here and not
+    /// yet started on another machine.
     ///
     /// # Errors
     ///
     /// When a done file can't be read.
     fn done(&mut self) -> Result<Vec<Done>, String>;
+    /// Marks `one` started on another machine, so [`Hands::done`] answers
+    /// it no more until it is carried again.
+    ///
+    /// # Errors
+    ///
+    /// When the mark can't be made.
+    fn started(&mut self, one: &Done) -> Result<(), String>;
     /// Carries what no session carried, with `pi-carry`.
     ///
     /// # Errors
@@ -286,7 +295,9 @@ impl<F: FnMut(&Value)> Saying<'_, F> {
 }
 
 /// Starts each session `done` names again on `to`, by the address it went
-/// by here, or its id where no session here named it. The quest's own
+/// by here, or its id where no session here named it, marking each started
+/// as it goes, so neither a later carry nor this one taken again after a
+/// failure starts it twice. The quest's own
 /// done file, holding the trees no session held, arrives there too, but
 /// no session starts for it, so it isn't among those answered.
 fn start_each(
@@ -306,6 +317,9 @@ fn start_each(
             let started = hands
                 .start(arriving(quest, here, to, one))
                 .map_err(|why| format!("{address} didn't start on {to}: {why}"))?;
+            hands.started(one).map_err(|why| {
+                format!("{address} started on {to}, but a later carry would start it again: {why}")
+            })?;
             Ok((one.session != quest).then_some(Arrived {
                 address,
                 held: started.held,
@@ -382,7 +396,9 @@ fn push(
     hands.carry_rest(quest, to)?;
     let done = hands.done()?;
     if done.is_empty() {
-        return Err(format!("nothing of {quest} was here to carry"));
+        return Err(format!(
+            "nothing of {quest} was here to carry that hadn't started already"
+        ));
     }
     Ok(done)
 }
@@ -534,8 +550,26 @@ mod tests {
         patience: usize,
         steered: Vec<(String, Value)>,
         rest: Option<String>,
+        /// The done files in the handover, each with whether it was
+        /// marked started.
+        handover: Vec<(Done, bool)>,
+        /// The session, by id, whose start there fails.
+        refuses: Option<String>,
         shared: Vec<String>,
         started: Vec<Start>,
+    }
+
+    impl Realm {
+        /// Writes `session`'s done file, afresh where one was there.
+        fn write(&mut self, session: &str) {
+            let one = Done {
+                session: session.to_owned(),
+            };
+            match self.handover.iter_mut().find(|(at, _)| at == &one) {
+                Some(there) => there.1 = false,
+                None => self.handover.push((one, false)),
+            }
+        }
     }
 
     impl Hands for Realm {
@@ -556,32 +590,40 @@ mod tests {
         }
         fn steer(&mut self, address: &str, steer: Value) -> Result<(), String> {
             self.steered.push((address.to_owned(), steer));
+            let carries = self
+                .sessions
+                .iter()
+                .filter(|one| one.address == address)
+                .filter_map(|one| one.presence.get("session")?.as_str())
+                .find(|id| self.carries.contains(*id))
+                .map(str::to_owned);
+            if let Some(id) = carries {
+                self.write(&id);
+            }
             Ok(())
         }
         fn done(&mut self) -> Result<Vec<Done>, String> {
-            let told: BTreeSet<&str> = self.steered.iter().map(|(at, _)| at.as_str()).collect();
-            let mut done: Vec<Done> = self
-                .sessions
+            Ok(self
+                .handover
                 .iter()
-                .filter(|one| told.contains(one.address.as_str()))
-                .filter_map(|one| one.presence.get("session")?.as_str())
-                .filter(|id| self.carries.contains(*id))
-                .map(|id| Done {
-                    session: id.to_owned(),
-                })
-                .collect();
-            if self.rest.is_some() {
-                done.push(Done {
-                    session: "s-gone".to_owned(),
-                });
-                // The trees no session held, as `pi-carry` names them.
-                done.push(Done {
-                    session: QUEST.to_owned(),
-                });
-            }
-            Ok(done)
+                .filter(|(_, started)| !started)
+                .map(|(one, _)| one.clone())
+                .collect())
+        }
+        fn started(&mut self, one: &Done) -> Result<(), String> {
+            let there = self.handover.iter_mut().find(|(at, _)| at == one);
+            there
+                .map(|there| there.1 = true)
+                .ok_or_else(|| format!("{} has no done file to mark", one.session))
         }
         fn carry_rest(&mut self, quest: &str, to: &str) -> Result<(), String> {
+            // What no session held goes the first time; nothing is left
+            // of it for a later carry.
+            if self.rest.is_none() {
+                self.write("s-gone");
+                // The trees no session held, as `pi-carry` names them.
+                self.write(QUEST);
+            }
             self.rest = Some(format!("{quest} {to}"));
             Ok(())
         }
@@ -590,6 +632,9 @@ mod tests {
             Ok(())
         }
         fn start(&mut self, start: Start) -> Result<Started, String> {
+            if self.refuses.as_deref() == start.command.get(6).map(String::as_str) {
+                return Err("the machine there refused it".to_owned());
+            }
             let held = format!("h{}", self.started.len());
             self.started.push(start);
             Ok(Started {
@@ -956,6 +1001,59 @@ mod tests {
             realm.started.len(),
             4,
             "what started there, the quest's own trees' arrival too, stays started"
+        );
+    }
+
+    /// The session, or quest, each start arrives with.
+    fn arrivals(started: &[Start]) -> Vec<&str> {
+        started
+            .iter()
+            .filter_map(|one| one.command.get(6).map(String::as_str))
+            .collect()
+    }
+
+    #[test]
+    fn a_later_carry_starts_only_what_was_carried_since() {
+        let mut realm = realm();
+        carried(&mut realm, "penelope").0.expect("the first carry");
+        realm.started.clear();
+        realm.sessions = vec![session("FRESH5", "optimus", QUEST, "busy", &json!({}))];
+        realm.carries.insert("s-fresh5".to_owned());
+        let (done, lines) = carried(&mut realm, "penelope");
+        done.expect("the later carry");
+        assert_eq!(
+            arrivals(&realm.started),
+            ["s-fresh5"],
+            "what the first carry started there starts no more: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_carry_taken_again_after_a_start_failed_starts_only_what_had_not() {
+        let mut realm = Realm {
+            refuses: Some("s-naps02".to_owned()),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "penelope");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Start }),
+            "it fails at the start"
+        );
+        let said = last_said(&lines);
+        assert!(said.contains("NAPS02"), "naming the one refused: {said}");
+        assert_eq!(
+            arrivals(&realm.started),
+            ["s-busy01"],
+            "the one before it started"
+        );
+        realm.refuses = None;
+        let (done, lines) = carried(&mut realm, "penelope");
+        done.expect("taken again, it goes through");
+        assert_eq!(
+            arrivals(&realm.started),
+            ["s-busy01", "s-naps02", "s-gone", QUEST],
+            "each carried session starts once, those not yet started now: {lines:?}"
         );
     }
 }

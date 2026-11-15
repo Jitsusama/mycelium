@@ -361,7 +361,11 @@ in order and says each step:
    off, so it never waits to be woken. The quest's own done
    file, `<quest>.done.json`, holds the trees no session held; it
    arrives the same way, but no pi starts for it and it isn't among the
-   sessions said.
+   sessions said. Once each has started, `<session>.started` is written
+   beside its done file, which stays for `pi-carry` there to read, and
+   no carry takes a done file up again until it is written afresh, newer
+   than its mark, so neither a later carry nor this one taken again
+   starts a session twice.
 5. `close`: the sessions here are seen to end.
 
 Each step prints `{"step", "state", "said"}` on a line as it begins
