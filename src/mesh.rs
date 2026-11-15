@@ -128,6 +128,8 @@ pub fn message(body: &Value) -> Option<Message> {
     if groups.is_empty() {
         return None;
     }
+    // Only an answer ends a hold, as the harness reads it.
+    let ends_hold = sent.ends_hold && sent.re.is_some();
     Some(Message {
         id: sent.id,
         at: sent.at,
@@ -139,6 +141,7 @@ pub fn message(body: &Value) -> Option<Message> {
         supersedes: sent.supersedes,
         from_realm: sent.from_realm,
         for_realm: sent.for_realm,
+        ends_hold,
     })
 }
 
@@ -313,6 +316,8 @@ struct Sent {
     from_realm: Option<String>,
     #[serde(rename = "forRealm")]
     for_realm: Option<String>,
+    #[serde(default, rename = "endsHold")]
+    ends_hold: bool,
 }
 
 #[derive(Deserialize)]

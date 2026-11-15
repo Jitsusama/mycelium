@@ -537,6 +537,8 @@ one line for the sender, and `code` one of `no_flow` (no flow that way),
 and `unreached` (the other realm's node here doesn't answer). A message
 sent across carries `fromRealm`, and one left waiting for a link to
 carry it `forRealm`. A `Send` naming its own realm is a plain send.
+A message answering a hold (`re`) on the person's word that it is over
+carries `endsHold`, kept as its sender's file says it, and nowhere else.
 
 A `Present` connection counts the process at its other end, as the
 kernel names it, present until the connection closes; then every session
@@ -862,7 +864,8 @@ in milliseconds.
 | `update` with `machine` | `updated`, the ending its updater said, as `Updated` gives it |
 
 A record carries `key` (`session:<id>`, `machine:<name>`,
-`message:<id>`, `team:<address>` or `network:<name>`), `kind`, `heard` (milliseconds
+`message:<id>`, `team:<address>`, `network:<name>`, `unanswered:<id>`
+or `said:<id>`), `kind`, `heard` (milliseconds
 since the epoch) and the fields `Sessions`, `Machines` and `Messages`
 give it. A field its source named `key`, `kind` or `heard`, such as a
 job's own `kind`, is kept under `source` rather than lost beneath the
@@ -904,6 +907,46 @@ heard when the latest of its cells was, or its team where its cells say
 nothing. Its records change as the sessions do, so a machine come or
 gone shows with the next change to a session. Ten thousand cells make
 their networks within 30 MB, in time that grows with them.
+
+The `unanswered` kind holds what waits on the mesh, keyed by the
+message's id, as `mesh_read unanswered` and the hold leases judge it:
+each question of the last two hours still waiting on a peer it was put
+to, and each hold of the last two hours still standing. A record says
+the message's `id`, `from`, `intent`, `groups`, `text`, `re` where it
+has one and `since`, when it was sent. A question waits on each peer
+it names by address, as `@SKIFF1`, other than its asker, and carries
+them as `waiting_on`, its one live field; a peer has answered once a
+message from it, under any address its session goes by, answers the
+question or anything answering it, down to 20 deep, in whatever order
+they come. A question asked to a group alone waits on nobody named and
+is left out, as is one withdrawn (`supersedes`) or asked again by its
+asker in answer to it. A hold stands until its sender answers or
+withdraws it, or a message answering it carries `endsHold`, and says
+the `until` it lapses at, two hours after it was sent. The node keeps
+this as each message comes, never reading its 50,000 messages again,
+and changes it with the messages: a session taking another address,
+or a question passing two hours, shows with the next message. Ten
+thousand cells' two hours of messages are judged within 100 ms.
+
+The `said` kind holds what the person said to sessions through this
+machine's node, keyed by its talk's id: each `steer` claiming the
+person that has words, its newest 200. It holds the `address` it went
+to, the `machine` running that session, its `text`, `at`, its `act`
+where it had one, and its `talk`, and from that talk's lines, when it
+was `taken_up` (delivered into the session's turn), `answered`
+(replied) or `failed` (`at` and `why`). Words sent with no talk of their
+own are given one, its id `said-<milliseconds>-<eight hex>`, so their
+session says what became of them. Only a talk's delivered line marks
+them taken up: a session's presence is written for more than its turns,
+and an act such as a pause opens no talk, so it is never marked taken
+up. It changes with the sessions, so a talk written while no session
+changes shows with the next one that does. The node keeps them in
+`said.jsonl` in its own folder, readable by its account alone, and
+written again with its newest 500 once it passes 1,000 lines. They are
+this machine's own: no link carries them, and each machine serves only
+what was said through it. The node hides none of their text, as it
+hides nothing while a screen is shared; a reader showing them decides
+that.
 
 A team's `glyph` is the shape every view draws it by: `square`,
 `triangle`, `plus`, `hexagon`, `circle`, `down-triangle` or `star`.
@@ -990,7 +1033,7 @@ which is no trouble, and a folder not there is looked for again each
 minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine`,
-`message`, `team` or `network`, can't be served.
+`message`, `team`, `network`, `unanswered` or `said`, can't be served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and

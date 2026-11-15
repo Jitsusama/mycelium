@@ -44,6 +44,25 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Swarm> {
     })
 }
 
+/// Every record of `kind` the node at `socket` holds, as the daemon
+/// interface lists them, giving up on any read or write taking longer
+/// than `within`.
+///
+/// # Errors
+///
+/// When no node answers, or it answers in a way it shouldn't, or holds no
+/// such kind, as a node too old for it doesn't.
+pub fn records(socket: &Path, kind: &str, within: Duration) -> io::Result<Vec<Value>> {
+    let mut answers = asked(socket, within, &[json!({"ask": "list", "kind": kind})])?;
+    let answer = answers.remove(&1).unwrap_or_default();
+    if let Some(why) = answer["error"]["message"].as_str() {
+        return Err(io::Error::other(format!(
+            "the node can't say its {kind} records ({why}); it may need updating"
+        )));
+    }
+    Ok(answer["records"].as_array().cloned().unwrap_or_default())
+}
+
 /// Asks the node at `socket` each of `asks` in the daemon interface,
 /// after its hello, and gives its answers by their place in `asks`,
 /// counting from one.

@@ -357,6 +357,7 @@ mod tests {
             hosts: "/nowhere/hosts".into(),
             orchestrations: "/nowhere/orchestrations.json".into(),
             logs: "/nowhere/sessions".into(),
+            words: crate::words::Book::at("/nowhere/said.jsonl".into()),
         };
         let membership = Realm {
             name: realm.to_owned(),
@@ -581,6 +582,7 @@ mod tests {
             supersedes: None,
             from_realm: None,
             for_realm: None,
+            ends_hold: false,
         };
         let crossing = crate::flow::Crossing {
             message: hold.clone(),

@@ -285,6 +285,7 @@ mod tests {
             supersedes: None,
             from_realm: None,
             for_realm: None,
+            ends_hold: false,
         }
     }
 

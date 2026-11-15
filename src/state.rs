@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use crate::group::{Group, Pattern};
 use crate::record::{Message, Session};
+use crate::unanswered::{Open, Unanswered};
 use crate::wire::Event;
 
 /// How many messages the node keeps in memory, oldest let go first. The
@@ -19,6 +20,8 @@ pub struct State {
     sessions: BTreeMap<String, Session>,
     messages: VecDeque<Message>,
     message_ids: HashSet<String>,
+    /// What waits among the messages, kept as each comes.
+    unanswered: Unanswered,
 }
 
 impl State {
@@ -63,12 +66,21 @@ impl State {
             .messages
             .partition_point(|held| sent_first(held, &message));
         self.messages.insert(at, message.clone());
+        self.unanswered
+            .add(&message, jiff::Timestamp::now().as_millisecond());
         while self.messages.len() > KEPT_MESSAGES {
             if let Some(gone) = self.messages.pop_front() {
                 self.message_ids.remove(&gone.id);
             }
         }
         Some(message)
+    }
+
+    /// The questions waiting and holds standing among the messages held,
+    /// as `now` stands, oldest first, a peer going by every address
+    /// `aliases` gives it.
+    pub fn unanswered(&self, aliases: impl Fn(&str) -> Vec<String>, now: i64) -> Vec<Open> {
+        self.unanswered.open(aliases, now)
     }
 
     /// Whether the message `id` is held.
@@ -150,6 +162,7 @@ mod tests {
             supersedes: None,
             from_realm: None,
             for_realm: None,
+            ends_hold: false,
         }
     }
 

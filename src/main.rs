@@ -128,6 +128,19 @@ enum Action {
     /// Each is a JSON line, as the node holds it.
     #[command(after_help = "Example:\n  mycelium sessions")]
     Sessions,
+    /// Prints the questions and holds the mesh waits on.
+    ///
+    /// Each question of the last two hours still waiting on a peer it
+    /// was put to, and each hold still standing, oldest first, a JSON
+    /// line each, as the node holds it.
+    #[command(after_help = "Example:\n  mycelium unanswered")]
+    Unanswered,
+    /// Prints what you said to sessions through this machine.
+    ///
+    /// Oldest first, with when each was taken up and answered, a JSON
+    /// line each, as the node holds it.
+    #[command(after_help = "Example:\n  mycelium said")]
+    Said,
     /// Shows the teams and how their sessions stand, or steers them.
     ///
     /// Bare, it shows every team, nested as they are, with how many of
@@ -957,6 +970,8 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             carry(&socket, shares, &quest, &to)
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
+        Action::Unanswered => print_records(&socket, mycelium::unanswered::KIND),
+        Action::Said => print_records(&socket, mycelium::words::KIND),
         Action::Health { here } => health(&socket, here, realm),
         Action::Swarm {
             words,
@@ -1158,6 +1173,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         hosts: place::hosts(),
         orchestrations: state.join("orchestrations.json"),
         logs: place::logs(),
+        words: mycelium::words::Book::at(state.join("said.jsonl")),
     };
     let runtime = runtime()?;
     let ran = runtime.block_on(async {
@@ -1811,6 +1827,14 @@ fn web(asked: WebAsked) -> io::Result<()> {
         },
     };
     print_line(&web.say(&writer, by.as_deref(), said, now())?)
+}
+
+/// Prints each record of `kind` the node holds, a JSON line each, oldest
+/// first.
+fn print_records(socket: &Path, kind: &str) -> io::Result<()> {
+    let mut records = mycelium::swarm::records(socket, kind, SWARM_WITHIN)?;
+    records.sort_by_key(|record| record["heard"].as_i64());
+    records.iter().try_for_each(print_line)
 }
 
 fn print_line(value: &impl serde::Serialize) -> io::Result<()> {

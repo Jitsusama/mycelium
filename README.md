@@ -55,6 +55,11 @@ The harness mesh's messages and presence, carried between machines:
   saying which to update) while none reaches it, each machine's
   sessions, the presences still saying they run with their process gone,
   and how long the node took to answer.
+- `mycelium unanswered` prints what holds the mesh up as JSON lines,
+  oldest first: each question of the last two hours still waiting on a
+  peer it was put to, and each hold still standing. `mycelium said`
+  prints what you said to sessions through this machine, with when each
+  was taken up and answered.
 - `mycelium swarm` shows the realm's teams in a terminal, nested as
   they are and those needing you first, with how many of each one's
   sessions need you, are stuck, move or wait; `mycelium swarm <TEAM>`

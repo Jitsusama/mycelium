@@ -20,3 +20,12 @@ nix develop -c cargo bench --bench heard -- --watches 100 --rate 200 --seconds 1
 ```sh
 nix develop -c cargo bench --bench many -- --cells 1000,3000,10000
 ```
+
+- `unanswered.rs`: how the node's view of what waits on the mesh holds
+  up at thousands of cells: how long each of two hours' messages takes
+  to judge as it comes, the slowest one, and how long the `unanswered`
+  records take to make from it, with the memory it held.
+
+```sh
+nix develop -c cargo bench --bench unanswered -- --cells 1000,10000
+```

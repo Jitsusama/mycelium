@@ -43,6 +43,7 @@ use crate::steer::{self, Steer};
 use crate::store::{self, Change, Store};
 use crate::wire::{Answer, Draft, Event, Offers, Reply, Request, Response, Start, Started};
 use crate::within;
+use crate::{unanswered, words};
 use turns::{Asked, Turns};
 
 mod asker;
@@ -290,6 +291,8 @@ pub struct Given {
     /// Where pi keeps each session's log, whose first line says which
     /// session it continues.
     pub logs: PathBuf,
+    /// Where it keeps what the person says to sessions through it.
+    pub words: words::Book,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -298,7 +301,15 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 5] = ["session", "machine", "message", team::KIND, network::KIND];
+pub const HOLDS: [&str; 7] = [
+    "session",
+    "machine",
+    "message",
+    team::KIND,
+    network::KIND,
+    unanswered::KIND,
+    words::KIND,
+];
 
 /// How many of each group's latest messages the daemon interface holds as
 /// `message` records: a conversation's recent tail, as a person reads it,
@@ -679,6 +690,8 @@ struct Shared<S> {
     orchestrations: PathBuf,
     /// Where pi keeps each session's log.
     logs: PathBuf,
+    /// What the person said to sessions through it.
+    words: Arc<words::Book>,
     /// Held while the record of orchestrations is read and kept again, so
     /// two claims at once never undo each other.
     claiming: Arc<Mutex<()>>,
@@ -744,6 +757,7 @@ impl<S: Clone> Clone for Shared<S> {
             hosts: self.hosts.clone(),
             orchestrations: self.orchestrations.clone(),
             logs: self.logs.clone(),
+            words: self.words.clone(),
             claiming: self.claiming.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
@@ -771,7 +785,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             .served
             .kinds()
             .map(|kind| (kind.to_owned(), Vec::new()));
-        let [sessions, machines, messages, teams, networks] = HOLDS.map(str::to_owned);
+        let [sessions, machines, messages, teams, networks, open, words] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
                 sessions,
@@ -806,6 +820,9 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                 networks,
                 vec!["title", "glyph", "within", "cells", "machines", "counts"],
             ),
+            // A hold says nothing more until it ends, when it is gone.
+            (open, vec!["waiting_on"]),
+            (words, vec!["taken_up", "answered", "failed"]),
         ])
         .into_iter()
         .chain(served)
@@ -840,6 +857,8 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             ),
             team::KIND => Some(self.team_records()),
             network::KIND => Some(self.network_records()),
+            unanswered::KIND => Some(self.unanswered_records()),
+            words::KIND => Some(self.word_records()),
             _ => self.served.records(kind),
         }
     }
@@ -852,7 +871,14 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // change, so a machine come or gone shows with the next.
             "session" | team::KIND | network::KIND => Some(self.said.sessions.subscribe()),
             "machine" => Some(self.said.machines.subscribe()),
-            "message" => Some(self.said.messages.subscribe()),
+            // What waits changes as messages come, and a peer's addresses,
+            // which change far more seldom, show with the next message,
+            // as does a question or hold past its two hours.
+            "message" | unanswered::KIND => Some(self.said.messages.subscribe()),
+            // The person's words are taken up and answered as their
+            // session takes its turn on them, which its presence says, and
+            // a word kept tells its watchers too.
+            words::KIND => Some(self.said.sessions.subscribe()),
             _ => self.served.told(kind),
         }
     }
@@ -1011,6 +1037,7 @@ impl<S: Store> Shared<S> {
             hosts,
             orchestrations,
             logs,
+            words,
         } = given;
         let shared = Self {
             processes: processes.into(),
@@ -1018,6 +1045,7 @@ impl<S: Store> Shared<S> {
             hosts,
             orchestrations,
             logs,
+            words: Arc::new(words),
             claiming: Arc::default(),
             client: None,
             served: Arc::new(Served::start(serves)),
@@ -1103,6 +1131,99 @@ impl<S: Store> Shared<S> {
         for event in events {
             inner.send_all(&event);
         }
+    }
+
+    /// The questions waiting and holds standing on the mesh as the daemon
+    /// interface holds them, a peer going by each address its sessions'
+    /// presences give it.
+    fn unanswered_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let now = jiff::Timestamp::now().as_millisecond();
+        let inner = self.lock();
+        let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
+        for session in inner.state.sessions() {
+            let mut addresses: Vec<String> = session.presence["addresses"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_ascii_uppercase)
+                .collect();
+            addresses.push(session.address.to_ascii_uppercase());
+            for address in &addresses {
+                aliases
+                    .entry(address.clone())
+                    .or_default()
+                    .extend(addresses.iter().cloned());
+            }
+        }
+        let open = inner.state.unanswered(
+            |address| {
+                aliases
+                    .get(&address.to_ascii_uppercase())
+                    .cloned()
+                    .unwrap_or_default()
+            },
+            now,
+        );
+        drop(inner);
+        open.iter()
+            .map(|open| {
+                let (id, fields) = open.fields();
+                let heard = millis_at(&open.message.at);
+                let record = daemon::record(unanswered::KIND, &id, heard, fields);
+                (daemon::key(unanswered::KIND, &id), record)
+            })
+            .collect()
+    }
+
+    /// The person's words as the daemon interface holds them, each marked
+    /// as its talk's file here says it was taken up and answered.
+    fn word_records(&self) -> BTreeMap<String, serde_json::Value> {
+        self.words
+            .words()
+            .into_iter()
+            .map(|word| {
+                let marks = word
+                    .talk
+                    .as_deref()
+                    .and_then(|talk| steer::replies(&self.steers, &word.address, talk))
+                    .and_then(|talk| fs::read_to_string(talk).ok())
+                    .map(|lines| words::Marks::of(&lines))
+                    .unwrap_or_default();
+                let heard = millis_at(&word.at);
+                let record = daemon::record(words::KIND, &word.id, heard, word.fields(&marks));
+                (daemon::key(words::KIND, &word.id), record)
+            })
+            .collect()
+    }
+
+    /// Keeps what the person said to `address`, on `machine`, as `steer`
+    /// put it, and tells the watchers of their words.
+    fn keep_word(&self, steer: &Steer, machine: &str) {
+        let text = |field: &str| {
+            steer
+                .body
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let talk = steer.talk().map(str::to_owned);
+        let word = words::Word {
+            id: talk.clone().unwrap_or_else(words::talk_id),
+            at: jiff::Timestamp::now().to_string(),
+            address: steer.address.clone(),
+            machine: machine.to_owned(),
+            text: text("text").unwrap_or_default(),
+            act: text("act"),
+            talk,
+        };
+        if let Err(error) = self.words.keep(word) {
+            eprintln!(
+                "the person's words to {} weren't kept: {error}",
+                steer.address
+            );
+        }
+        self.said.sessions.send_modify(|said| *said += 1);
     }
 
     /// The swarm's teams as the daemon interface holds them, titled and
@@ -1480,6 +1601,17 @@ impl<S: Store> Shared<S> {
                 .map_err(|error| format!("who asks couldn't be told: {error}"))??;
         let mut steer = Steer::new(address, said)?;
         steer.checked = checked;
+        // The person's words are kept, and go with a talk, so whether they
+        // were taken up and answered is its session's own word.
+        let person = steer::claims_the_person(said) && !steer.only_wakes();
+        let says = steer
+            .body
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty());
+        if person && says && !steer.body.contains_key("act") && steer.talk().is_none() {
+            steer.body.insert("id".to_owned(), words::talk_id().into());
+        }
         let address = steer.address.clone();
         let sessions: Vec<Session> = self
             .lock()
@@ -1533,9 +1665,16 @@ impl<S: Store> Shared<S> {
                     "{address} runs on {machine}, and a wake reaches only here"
                 ));
             }
-            return self.asks.steer(&machine, steer).await;
+            let steered = self.asks.steer(&machine, steer.clone()).await;
+            if person && matches!(steered, Ok(Response::Steered { .. })) {
+                self.keep_word(&steer, &machine);
+            }
+            return steered;
         }
         self.steer_here(&steer, &sessions)?;
+        if person {
+            self.keep_word(&steer, &machine);
+        }
         Ok(Response::Steered { machine })
     }
 
@@ -2314,6 +2453,7 @@ mod tests {
             hosts: "/nowhere/hosts".into(),
             orchestrations: "/nowhere/orchestrations.json".into(),
             logs: "/nowhere/sessions".into(),
+            words: words::Book::at("/nowhere/said.jsonl".into()),
         }
     }
 
@@ -2358,6 +2498,7 @@ mod tests {
         let hosts = socket.with_file_name("hosts");
         let orchestrations = socket.with_file_name("orchestrations.json");
         let logs = socket.with_file_name("sessions");
+        let words = words::Book::at(socket.with_file_name("said.jsonl"));
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -2376,6 +2517,7 @@ mod tests {
                 hosts,
                 orchestrations,
                 logs,
+                words,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -3100,6 +3242,182 @@ mod tests {
                 &json!("second")
             ),
             "a message heard is sent as it arrives: {changed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn what_waits_on_the_mesh_is_watched_until_it_is_answered_or_ended() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        // SKIFF1's session goes by its own address too.
+        let presence = json!({
+            "session": "skiff", "addresses": ["SKIFF1", "5F6018AA"], "groups": [],
+            "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
+        });
+        store.start_here("skiff", presence, true);
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let now = jiff::Timestamp::now();
+        let sent = |n: u32, from: &str, to: &str, intent: &str, more: Value| {
+            let id = format!("{}-{from}-1-{n:08x}", now.as_millisecond());
+            let mut body = json!({
+                "v": 1, "id": id, "at": now.to_string(), "from": from, "to": [to],
+                "intent": intent, "text": format!("{intent} {n}"), "pid": 1,
+            });
+            if let (Some(body), Some(more)) = (body.as_object_mut(), more.as_object()) {
+                body.extend(more.clone());
+            }
+            store.send_here(&id, body);
+            id
+        };
+        let asked = sent(1, "KESTRL", "@SKIFF1", "question", json!({}));
+        let held = sent(2, "KESTRL", "#machine", "hold", json!({}));
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert_eq!(
+            hello["kinds"]["unanswered"],
+            json!({"live": ["waiting_on"]}),
+            "hello names what waits: {hello}"
+        );
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "unanswered"}))
+            .await;
+        let records = client.next().await["records"].clone();
+        assert_eq!(
+            (
+                &records[0]["key"],
+                &records[0]["intent"],
+                &records[0]["from"],
+                &records[0]["waiting_on"],
+                &records[0]["groups"],
+            ),
+            (
+                &json!(format!("unanswered:{asked}")),
+                &json!("question"),
+                &json!("KESTRL"),
+                &json!(["SKIFF1"]),
+                &json!(["@SKIFF1"]),
+            ),
+            "the question waits on the peer it was put to: {records}"
+        );
+        assert_eq!(
+            (&records[1]["key"], &records[1]["groups"]),
+            (&json!(format!("unanswered:{held}")), &json!(["#machine"])),
+            "and the hold stands: {records}"
+        );
+
+        sent(3, "5F6018AA", "@KESTRL", "fyi", json!({"re": asked}));
+        let answered = client.next().await;
+        assert_eq!(
+            answered["gone"],
+            json!([format!("unanswered:{asked}")]),
+            "its session's own address answers for SKIFF1: {answered}"
+        );
+        sent(
+            4,
+            "SKIFF1",
+            "#machine",
+            "fyi",
+            json!({"re": held, "endsHold": true}),
+        );
+        let ended = client.next().await;
+        assert_eq!(
+            ended["gone"],
+            json!([format!("unanswered:{held}")]),
+            "a hold ended on the person's word stands no longer: {ended}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_persons_words_are_kept_with_a_talk_that_says_what_became_of_them() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let presence = json!({
+            "session": "here", "addresses": ["HERE12"], "groups": [],
+            "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
+        });
+        store.start_here("here", presence, true);
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+
+        let words = json!({"text": "ship it", "from": "joel"});
+        client
+            .ask(json!({"id": 2, "ask": "steer", "address": "HERE12", "steer": words}))
+            .await;
+        client.next().await;
+        let machines = json!({"text": "this machine leaves at noon", "from": "machine"});
+        client
+            .ask(json!({"id": 3, "ask": "steer", "address": "HERE12", "steer": machines}))
+            .await;
+        client.next().await;
+        let inbox: Vec<Value> = held_in(&inboxes(&socket).join("HERE12"));
+        let talk = inbox
+            .iter()
+            .find(|steer| steer["text"] == json!("ship it"))
+            .and_then(|steer| steer["id"].as_str())
+            .expect("the person's words go with a talk")
+            .to_owned();
+        assert!(
+            inbox
+                .iter()
+                .any(|steer| steer["from"] == json!("machine") && steer.get("id").is_none()),
+            "the machine's words open none: {inbox:?}"
+        );
+
+        client
+            .ask(json!({"id": 4, "ask": "list", "kind": "said"}))
+            .await;
+        let records = client.next().await["records"].clone();
+        assert_eq!(
+            records.as_array().map(|records| records
+                .iter()
+                .map(|record| (
+                    record["key"].clone(),
+                    record["address"].clone(),
+                    record["machine"].clone(),
+                    record["text"].clone(),
+                    record.get("taken_up").cloned(),
+                ))
+                .collect::<Vec<_>>()),
+            Some(vec![(
+                json!(format!("said:{talk}")),
+                json!("HERE12"),
+                json!("optimus"),
+                json!("ship it"),
+                None,
+            )]),
+            "only the person's words are kept, not yet taken up: {records}"
+        );
+        let kept = socket.with_file_name("said.jsonl");
+        let mode = fs::metadata(&kept).expect("kept").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "only its account reads what the person said");
+
+        let replies = steer::replies(&inboxes(&socket), "HERE12", &talk).expect("a talk");
+        fs::write(
+            &replies,
+            concat!(
+                r#"{"stage":"delivered","session":"here","text":"ship it","at":"2026-11-15T12:00:01Z"}"#,
+                "\n",
+                r#"{"stage":"replied","text":"shipped","at":"2026-11-15T12:02:00Z"}"#,
+                "\n",
+            ),
+        )
+        .expect("the session answers");
+        client
+            .ask(json!({"id": 5, "ask": "list", "kind": "said"}))
+            .await;
+        let records = client.next().await["records"].clone();
+        assert_eq!(
+            (&records[0]["taken_up"], &records[0]["answered"]),
+            (
+                &json!("2026-11-15T12:00:01Z"),
+                &json!("2026-11-15T12:02:00Z")
+            ),
+            "its talk says when it was taken up and answered: {records}"
         );
     }
 
