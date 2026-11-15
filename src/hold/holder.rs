@@ -807,11 +807,20 @@ impl Reading {
     }
 
     /// Watches the parent end afresh, as a start has opened its child end
-    /// again. One that can't be watched reads as ended until the next.
+    /// again. One that can't be watched reads as ended until the next,
+    /// said on the holder's log, as output nobody sees is a gap worth
+    /// finding.
     fn started(&mut self) {
         // The old watch goes first, so the two never overlap.
         self.watched = None;
-        self.watched = watching(&self.parent).ok();
+        self.watched = watching(&self.parent)
+            .inspect_err(|error| {
+                eprintln!(
+                    "mycelium: a holder can't watch its terminal, so what this start \
+                     shows goes unseen: {error}"
+                );
+            })
+            .ok();
     }
 
     /// Reads what the program shows into `buffer`, nothing once the
