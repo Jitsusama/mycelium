@@ -86,6 +86,13 @@ The harness mesh's messages and presence, carried between machines:
   leads, and each `event` line says a cell's commit, push, change
   proposed or merged, or stage moved, newest first. `mycelium networks -o json --counts`
   prints the networks alone, a summary for an agent to read.
+- A receptor senses one outside source for its person, such as Slack,
+  intake only, and says how it stands with `mycelium receptors say`:
+  counts and times alone, never what it read. The node judges each,
+  marking one whose process is gone `off` and one fallen late
+  `failing`, and the networks draw it as a cell of its source's
+  `outside` network, beyond the machines; `mycelium cells` lists each
+  with what it brought in today.
 - `mycelium swarm say <NAME> <WORDS>` says something as the person to
   a team, which its lead hears, or to one session;
   `mycelium swarm pause|resume <NAME>` pauses or resumes every session

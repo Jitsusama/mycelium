@@ -84,6 +84,7 @@ pub mod offer;
 pub mod place;
 pub mod placement;
 pub mod reach;
+pub mod receptor;
 pub mod record;
 pub mod room;
 pub mod served;

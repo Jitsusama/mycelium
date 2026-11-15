@@ -359,6 +359,7 @@ mod tests {
             logs: "/nowhere/sessions".into(),
             words: crate::words::Book::at("/nowhere/said.jsonl".into()),
             declared: "/nowhere/declared.json".into(),
+            receptors: None,
         };
         let membership = Realm {
             name: realm.to_owned(),

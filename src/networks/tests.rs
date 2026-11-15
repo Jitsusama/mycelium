@@ -799,3 +799,90 @@ fn the_networks_asks_fit_one_write_a_node_takes_whole() {
         asked.len()
     );
 }
+
+/// A receptor's record as the node lists it, for `source` on `machine`.
+fn receptor(source: &str, machine: &str, state: &str, today: u32) -> Value {
+    json!({"key": format!("receptor:{source}"), "kind": "receptor", "heard": 1,
+           "source": source, "realm": "work", "state": state,
+           "since": "2026-11-15T19:00:00Z", "read_at": "2026-11-15T20:00:00Z",
+           "every": 300, "pid": 4242,
+           "counts": {"hour": 1, "today": today, "addressed": 2},
+           "machine": machine})
+}
+
+#[test]
+fn each_receptor_is_a_cell_on_its_source_s_outside_network() {
+    let receptors = [
+        receptor("slack", "skiff", "reading", 4),
+        receptor("slack", "kestrel", "off", 0),
+        receptor("mail", "skiff", "quiet", 0),
+        receptor("#general", "skiff", "reading", 9),
+        json!({"source": "mail", "state": "reading"}),
+    ];
+    let mycelium = mycelium().sensing(&receptors);
+    let sensed: Vec<(&str, Option<&str>, Vec<String>)> = mycelium
+        .cells
+        .iter()
+        .filter(|cell| cell.is == Is::Receptor)
+        .map(|cell| {
+            (
+                cell.name.as_str(),
+                cell.state.as_deref(),
+                cell.networks.clone(),
+            )
+        })
+        .collect();
+    let on = |network: &str| vec![network.to_owned()];
+    assert_eq!(
+        sensed,
+        [
+            ("slack@skiff", Some("reading"), on("outside.slack")),
+            ("slack@kestrel", Some("off"), on("outside.slack")),
+            ("mail@skiff", Some("quiet"), on("outside.mail")),
+        ],
+        "one each, named by source and machine; none for a source no receptor senses, or no machine"
+    );
+    let slack = mycelium.network("outside.slack").expect("Slack's");
+    assert_eq!(
+        (slack.shape, slack.short.as_str(), slack.title.as_deref()),
+        (Shape::Outside, "slack", Some("Slack")),
+    );
+    assert_eq!(slack.cells, ["slack@skiff", "slack@kestrel"]);
+    assert_eq!(
+        mycelium.networks.last().map(|each| each.shape),
+        Some(Shape::Outside),
+        "drawn beyond the machines"
+    );
+    let line = json!(mycelium.cell("slack@skiff").expect("Slack on skiff"));
+    assert_eq!(
+        line,
+        json!({"kind": "cell", "name": "slack@skiff", "type": "receptor", "title": "Slack",
+               "machine": "skiff", "since": "2026-11-15T19:00:00Z", "state": "reading",
+               "counts": {"hour": 1, "today": 4, "addressed": 2},
+               "networks": ["outside.slack"]}),
+        "counts and times alone: nothing it read"
+    );
+}
+
+#[test]
+fn the_cells_say_each_receptor_and_what_it_brought_in() {
+    let mycelium = mycelium().sensing(&[receptor("slack", "skiff", "reading", 4)]);
+    let shown = cells(&mycelium, &look(), false, &[]);
+    assert!(
+        shown.contains("receptors\n  slack@skiff  reading · 1 this hour · 4 today, 2 to you"),
+        "{shown}"
+    );
+    let one = cell(
+        &mycelium,
+        mycelium.cell("slack@skiff").expect("it"),
+        &look(),
+    );
+    assert!(one.starts_with("slack@skiff · Slack\nreading · "), "{one}");
+    let tree = overview(&mycelium, &look(), false, false);
+    assert!(tree.contains("\noutside\n"), "{tree}");
+}
+
+#[test]
+fn a_mycelium_sensing_nothing_is_the_same_mycelium() {
+    assert_eq!(mycelium().sensing(&[]).lines(), mycelium().lines());
+}

@@ -180,6 +180,16 @@ enum Action {
     /// `cell` is the same.
     #[command(alias = "cell", after_help = "Example:\n  mycelium cells HARBOR")]
     Cells(CellsAsked),
+    /// Says how a receptor stands, as the receptor.
+    ///
+    /// A receptor senses one outside source, intake only, and says how it
+    /// stands in a file the node serves: counts and times alone, never what
+    /// it read. `mycelium cells` lists each beside the sessions.
+    #[command(
+        alias = "receptor",
+        after_help = "Example:\n  mycelium receptors say slack --state quiet \\\n    --every 300 --pid 4242"
+    )]
+    Receptors(ReceptorsAsked),
     /// Prints how the realm's network stands, for a daily read.
     ///
     /// One JSON line says each link, `up` or `unreachable`, with how many
@@ -749,6 +759,97 @@ impl From<Asked> for Work {
     }
 }
 
+/// What is asked of the receptors, by the words after `receptors`.
+#[derive(clap::Args)]
+struct ReceptorsAsked {
+    #[command(subcommand)]
+    act: ReceptorAct,
+}
+
+/// What a receptor does.
+#[derive(Subcommand)]
+enum ReceptorAct {
+    /// Says how this receptor stands now.
+    ///
+    /// Written whole over what it said before, its counts and times
+    /// alone: any other word is refused.
+    #[command(
+        override_usage = "mycelium receptors say [OPTIONS] --state <STATE>\n       --every <EVERY> --pid <PID> <SOURCE>",
+        after_help = "Example:\n  mycelium receptors say slack --state reading \\\n    --today 4 --addressed 2 --every 300 --pid 4242"
+    )]
+    Say(ReceptorSaid),
+}
+
+/// How a receptor says it stands: counts and times alone.
+#[derive(clap::Args)]
+struct ReceptorSaid {
+    /// What it senses.
+    #[arg(value_parser = clap::builder::PossibleValuesParser::new(
+        mycelium::receptor::Source::EACH.map(mycelium::receptor::Source::name)
+    ))]
+    source: String,
+    /// How it stands.
+    #[arg(long, value_parser = ["reading", "quiet", "failing", "off"])]
+    state: String,
+    /// Signals it brought in in the last hour.
+    #[arg(long, default_value_t = 0)]
+    hour: u32,
+    /// Signals it brought in today.
+    #[arg(long, default_value_t = 0)]
+    today: u32,
+    /// Of today's, those addressed to its person.
+    #[arg(long, default_value_t = 0)]
+    addressed: u32,
+    /// How often it reads, in seconds.
+    #[arg(long)]
+    every: u32,
+    /// The process that keeps it, which the node marks it off without.
+    #[arg(long)]
+    pid: u32,
+    /// Mycelium's own folder, if not where it goes by default.
+    #[arg(long = "state-folder")]
+    state_folder: Option<PathBuf>,
+}
+
+/// Writes how the receptor `said` stands for `realm`, saying where.
+fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
+    use mycelium::receptor::{self, Counts, Record, Source, State};
+    let word = |what: &str, value: &str| {
+        serde_json::from_value(serde_json::Value::from(value)).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{value:?} is no receptor's {what}"),
+            )
+        })
+    };
+    let source = Source::named(&said.source).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{:?} is no receptor's source", said.source),
+        )
+    })?;
+    let state: State = word("state", &said.state)?;
+    let now = jiff::Timestamp::now();
+    let record = Record {
+        source,
+        realm,
+        state,
+        since: now,
+        read_at: now,
+        every: said.every,
+        pid: said.pid,
+        started: receptor::started_at(said.pid),
+        counts: Counts {
+            hour: said.hour,
+            today: said.today,
+            addressed: said.addressed,
+        },
+    };
+    let folder = receptor::folder(&said.state_folder.unwrap_or_else(place::state));
+    let written = receptor::write(&folder, &record.realm.clone(), record)?;
+    writeln!(io::stdout().lock(), "{}", written.display())
+}
+
 #[derive(clap::Args)]
 struct WebAsked {
     /// The quest whose web it is, such as `QEST-20261112-HARBOR`.
@@ -992,6 +1093,9 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         } => in_swarm(&socket, &realm, &words, output.json(), names),
         Action::Networks(asked) => networks(&socket, &realm, &asked),
         Action::Cells(asked) => cells(&socket, &realm, &asked),
+        Action::Receptors(ReceptorsAsked {
+            act: ReceptorAct::Say(said),
+        }) => receptor_said(said, realm),
         Action::Web(asked) => web(asked),
         Action::Offers => print_reply(&socket, &Request::Offers),
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
@@ -1192,6 +1296,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         logs: place::logs(),
         words: mycelium::words::Book::at(state.join("said.jsonl")),
         declared: place::declared(),
+        receptors: Some(mycelium::receptor::folder(&state)),
     };
     let runtime = runtime()?;
     let ran = runtime.block_on(async {

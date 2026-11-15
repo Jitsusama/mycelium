@@ -17,6 +17,10 @@ The rest of the tests sit beside the code they prove, in `src/`.
   by an allocator of its own, which only a program of its own may hold
 - `shared.rs`: a quest shared and waited for, printing one JSON line
   however the wait ends and failing unless the machine holds it
+
+- `receptors.rs`: what `mycelium receptors say` leaves on disk, its
+  owner's alone, and each word it refuses, so nothing a receptor read can
+  reach the file
 - `spellings.rs`: each old spelling of a command, and each silent alias
   such as `network` or `--json`, saying byte for byte what the tree
   that took it in says

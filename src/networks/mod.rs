@@ -8,10 +8,12 @@
 //! repository's are a quest's and a repository's groups, counted only
 //! where two cells or more share them, since otherwise each is one cell's
 //! own; a named group's is its group; and the machines are cells of a
-//! network of their own.
+//! network of their own. A receptor, sensing one outside source for its
+//! person, is a cell of that source's outside network, beyond the
+//! machines.
 //!
-//! Everything here is built from the node's `team`, `session` and
-//! `machine` records, as the swarm reads them, and says nothing back: the
+//! Everything here is built from the node's `team`, `session`,
+//! `machine` and `receptor` records, as the swarm reads them, and says nothing back: the
 //! one model every view renders, the terminal's in `shown` and a page's or
 //! an agent's from the JSON lines of [`Mycelium::lines`].
 
@@ -105,16 +107,19 @@ pub enum Shape {
     Group,
     /// The realm's machines.
     Machines,
+    /// An outside source the realm's receptors sense, such as Slack.
+    Outside,
 }
 
 impl Shape {
     /// Each, in the order the tree draws them.
-    pub const EACH: [Self; 5] = [
+    pub const EACH: [Self; 6] = [
         Self::Orchestration,
         Self::Project,
         Self::Repository,
         Self::Group,
         Self::Machines,
+        Self::Outside,
     ];
 
     /// The shape a group's name says, or none for a peer's own address.
@@ -194,14 +199,17 @@ pub enum Is {
     Session,
     /// A machine of the realm.
     Machine,
+    /// What senses an outside source for its person, intake only.
+    Receptor,
 }
 
-/// One cell: a session or a machine.
+/// One cell: a session, a machine or a receptor.
 #[derive(Debug, Clone, Serialize)]
 pub struct Cell {
     /// Always `cell`, for a reader of mixed lines.
     pub kind: &'static str,
-    /// Its name: a session's address, a machine's own name.
+    /// Its name: a session's address, a machine's own name, a receptor's
+    /// source and machine, such as `slack@kestrel`.
     pub name: String,
     /// What it is.
     #[serde(rename = "type")]
@@ -237,7 +245,7 @@ pub struct Cell {
     /// its lead.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub leads: Vec<String>,
-    /// The machine a session runs on.
+    /// The machine a session or a receptor runs on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
     /// When a session began, from its id, so its place never moves.
@@ -253,7 +261,8 @@ pub struct Cell {
     /// The folder a session works in, as an absolute path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// How a machine is, such as `ready`.
+    /// How a machine is, such as `ready`, or a receptor, such as
+    /// `reading`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     /// How busy a machine's processors are: the percentage, from 0 to 100,
@@ -264,6 +273,9 @@ pub struct Cell {
     /// How many sessions a machine runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runs: Option<usize>,
+    /// How many signals a receptor brought in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counts: Option<crate::receptor::Counts>,
     /// The networks it joined, by name.
     pub networks: Vec<String>,
 }
