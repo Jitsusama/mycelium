@@ -192,14 +192,16 @@ impl Claim {
 /// it says, as the kernel tells it, so a later process given the same id
 /// isn't taken for it. One a pi host holds counts only where the host's
 /// own record, in `hosts`, lists the session; one held by no host only
-/// where its process is pi's own and no other session claims it. Refused
+/// where its process is pi's own and no other session claims it. Either
+/// way, its process must hold the session's log in `logs` open, as pi
+/// does for each session it owns. Refused
 /// outright when two claims name one session, as one forged to borrow
 /// another's name would, or where the kernel can't say when a process
 /// started, as on a Mac.
 ///
 /// Like [`session_of`], this fences habit: a session's own process may
-/// write another's presence, with its process's start, while that one
-/// isn't running.
+/// write another's presence, with its process's start, and open its log,
+/// while that one isn't running.
 ///
 /// # Errors
 ///
@@ -208,6 +210,7 @@ pub fn proved(
     claims: &[Claim],
     processes: &Processes,
     hosts: &Path,
+    logs: &Path,
 ) -> Result<Vec<(String, i32)>, String> {
     let Processes::Folder(procs) = processes else {
         return Err(
@@ -227,6 +230,7 @@ pub fn proved(
             twice.session
         ));
     }
+    let logs = fs::canonicalize(logs).unwrap_or_else(|_| logs.to_owned());
     let unhosted = |pid: i32| {
         claims
             .iter()
@@ -244,9 +248,32 @@ pub fn proved(
                 Some(host) => hosts_session(hosts, host, pid, ticks, &claim.session),
                 None => named_pi(procs, pid) && unhosted(pid) == 1,
             };
-            held.then(|| (claim.session.clone(), pid))
+            (held && holds_log(procs, pid, &logs, &claim.session))
+                .then(|| (claim.session.clone(), pid))
         })
         .collect())
+}
+
+/// Whether process `pid` in `procs` holds open the log pi keeps of
+/// `session` in `logs`, `<folder>/<time>_<session>.jsonl`, as the kernel
+/// gives each open file's real path in its `fd` folder. Pi holds its
+/// session's log open as it owns it, and a host each it hosts, so this
+/// says the process means to own it, which a helper writing another's
+/// presence by habit doesn't.
+fn holds_log(procs: &Path, pid: i32, logs: &Path, session: &str) -> bool {
+    let Ok(open) = fs::read_dir(procs.join(pid.to_string()).join("fd")) else {
+        return false;
+    };
+    let named = format!("_{session}.jsonl");
+    open.flatten()
+        .filter_map(|file| fs::canonicalize(file.path()).ok())
+        .any(|log| {
+            log.parent().and_then(Path::parent) == Some(logs)
+                && log
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(&named))
+        })
 }
 
 /// When process `pid` started, in clock ticks since boot, as its `stat`
@@ -701,11 +728,61 @@ mod tests {
         }
     }
 
+    /// Opens, for process `pid` in `procs`, the log pi keeps of `session`
+    /// in `logs`, as a link in its `fd` folder to the log's real path.
+    fn holds_log(procs: &Path, pid: i32, logs: &Path, session: &str) {
+        let log = logs
+            .join("--home-joel--")
+            .join(format!("2026-11-15T12-00-00-000Z_{session}.jsonl"));
+        fs::create_dir_all(log.parent().expect("its folder")).expect("made");
+        fs::write(
+            &log,
+            format!("{{\"type\":\"session\",\"id\":\"{session}\"}}\n"),
+        )
+        .expect("written");
+        let fds = procs.join(pid.to_string()).join("fd");
+        fs::create_dir_all(&fds).expect("made");
+        let next = fs::read_dir(&fds).expect("read").count() + 3;
+        std::os::unix::fs::symlink(&log, fds.join(next.to_string())).expect("linked");
+    }
+
     fn owned(owners: &[(&str, i32)]) -> Vec<(String, i32)> {
         owners
             .iter()
             .map(|(session, pid)| ((*session).to_owned(), *pid))
             .collect()
+    }
+
+    #[test]
+    fn an_owner_counts_only_where_it_holds_its_sessions_log_open() {
+        let procs = procs(&[
+            (58, "pi", 1, "agents.slice/mycelium-pi-f3d9.scope"),
+            (62, "pi", 1, "agents.slice/mycelium-pi-a1b2.scope"),
+            (63, "pi", 1, "agents.slice/mycelium-pi-c3d4.scope"),
+        ]);
+        started(procs.path(), 58, "pi", 500);
+        started(procs.path(), 62, "pi", 900);
+        started(procs.path(), 63, "pi", 950);
+        let logs = tempfile::tempdir().expect("pi's logs");
+        let elsewhere = tempfile::tempdir().expect("somewhere else");
+        holds_log(procs.path(), 58, logs.path(), "s-own");
+        holds_log(procs.path(), 62, logs.path(), "s-other");
+        holds_log(procs.path(), 63, elsewhere.path(), "s-astray");
+        let hosts = tempfile::tempdir().expect("no hosts");
+        assert_eq!(
+            proved(
+                &[
+                    claim("s-own", 58, Some(500), None),
+                    claim("s-borrowed", 62, Some(900), None),
+                    claim("s-astray", 63, Some(950), None),
+                ],
+                &folder(procs.path()),
+                hosts.path(),
+                logs.path()
+            ),
+            Ok(owned(&[("s-own", 58)])),
+            "a pi holding another session's log, or a log outside pi's, owns nothing"
+        );
     }
 
     #[test]
@@ -718,6 +795,10 @@ mod tests {
         started(procs.path(), 58, "pi", 500);
         started(procs.path(), 62, "pi", 900);
         started(procs.path(), 63, "pi", 950);
+        let logs = tempfile::tempdir().expect("pi's logs");
+        holds_log(procs.path(), 58, logs.path(), "s-own");
+        holds_log(procs.path(), 62, logs.path(), "s-stale");
+        holds_log(procs.path(), 63, logs.path(), "s-untimed");
         let hosts = tempfile::tempdir().expect("no hosts");
         assert_eq!(
             proved(
@@ -728,7 +809,8 @@ mod tests {
                     claim("s-gone", 64, Some(100), None),
                 ],
                 &folder(procs.path()),
-                hosts.path()
+                hosts.path(),
+                logs.path()
             ),
             Ok(owned(&[("s-own", 58)])),
             "a process started later under an old id, or one that says no start or is gone, \
@@ -744,6 +826,10 @@ mod tests {
         ]);
         started(procs.path(), 58, "pi", 500);
         started(procs.path(), 60, "bash", 700);
+        let logs = tempfile::tempdir().expect("pi's logs");
+        holds_log(procs.path(), 58, logs.path(), "s-steward");
+        holds_log(procs.path(), 58, logs.path(), "s-borrow");
+        holds_log(procs.path(), 60, logs.path(), "s-steward");
         let hosts = tempfile::tempdir().expect("no hosts");
         let processes = folder(procs.path());
         assert_eq!(
@@ -753,7 +839,8 @@ mod tests {
                     claim("s-steward", 60, Some(700), None),
                 ],
                 &processes,
-                hosts.path()
+                hosts.path(),
+                logs.path()
             ),
             Err(
                 "two presences here claim the session s-steward, so who owns it can't be told \
@@ -766,7 +853,8 @@ mod tests {
             proved(
                 &[claim("s-steward", 60, Some(700), None)],
                 &processes,
-                hosts.path()
+                hosts.path(),
+                logs.path()
             ),
             Ok(Vec::new()),
             "and alone, a process that isn't pi owns no session no host holds"
@@ -778,7 +866,8 @@ mod tests {
                     claim("s-borrow", 58, Some(500), None),
                 ],
                 &processes,
-                hosts.path()
+                hosts.path(),
+                logs.path()
             ),
             Ok(Vec::new()),
             "nor does a pi two sessions no host holds both claim"
@@ -804,6 +893,10 @@ mod tests {
             .to_string(),
         )
         .expect("its record is written");
+        let logs = tempfile::tempdir().expect("pi's logs");
+        for session in ["s-one", "s-two", "s-three", "s-four"] {
+            holds_log(procs.path(), 78, logs.path(), session);
+        }
         let host = Some("work-background");
         assert_eq!(
             proved(
@@ -814,7 +907,8 @@ mod tests {
                     claim("s-four", 78, Some(700), Some("work-attended")),
                 ],
                 &folder(procs.path()),
-                hosts.path()
+                hosts.path(),
+                logs.path()
             ),
             Ok(owned(&[("s-one", 78), ("s-two", 78)])),
             "a session its host doesn't list, or a host by another key, owns nothing"
@@ -828,6 +922,7 @@ mod tests {
             proved(
                 &[claim("s-own", 58, Some(500), None)],
                 &Processes::Listed,
+                hosts.path(),
                 hosts.path()
             ),
             Err(

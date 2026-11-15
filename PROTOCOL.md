@@ -392,7 +392,10 @@ session says of itself:
   `owner.startTicks`, by the kernel's `stat`, and either pi's host keyed
   `owner.host` lists the session in its own record,
   `hosts/<pid>-<startTicks>.json` in pi's state, or no host holds it and
-  the process is pi's own, with no other session claiming it. One filed
+  the process is pi's own, with no other session claiming it. Either
+  way, that process must hold the session's log open, as pi does each
+  it owns: `<time>_<session>.jsonl` in a folder of pi's `sessions`, by
+  the real path the kernel gives in `/proc/<pid>/fd`. One filed
   under another session's id owns nothing, and two presences claiming
   one session refuse the carry outright. Where one pi hosts several sessions,
   the asker's own `PI_SESSION_ID`, read from its process, says which,
