@@ -30,6 +30,10 @@ says what crosses between machines and how clients speak to a node.
   so pi sessions never notice the node.
 - A lint is silenced only with `#[expect]` and its reason.
 - A test waits on the change it needs, never on a fixed sleep.
+- The repository is public, so nothing names a real machine, employer,
+  account or place: machines are kestrel, osprey, skiff and tern, and
+  addresses come from the documentation ranges. The `names-stay-out`
+  check fails on the real ones.
 
 ## Commands
 
