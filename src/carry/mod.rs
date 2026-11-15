@@ -103,15 +103,13 @@ pub struct Failed {
     pub step: Step,
 }
 
-/// What a session, or `pi-carry`, says it carried: the session and the
-/// folder it ran in, within its home, since the other machine's home is
-/// elsewhere. The harness says more, which the other machine reads.
+/// What a session, or `pi-carry`, says it carried: the session. The
+/// harness says more, such as its folder and trees, which `pi-carry` on
+/// the other machine reads to say where it arrives.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Done {
     /// The session's id.
     pub session: String,
-    /// The folder it ran in, such as `~/src/mycelium`.
-    pub cwd: String,
 }
 
 /// What a carry does to the world.
@@ -413,28 +411,27 @@ fn closed(hands: &mut impl Hands, here: &str, sessions: &[Session]) -> Result<()
 
 /// The start of `one` again on `to`: in its home there, where `pi-carry
 /// arrive` waits for its handover, fetches its trees and puts its file
-/// in place, and only then pi takes it up in its own folder. The quest's
-/// own done file names no session, so its arrival ends with its trees in
-/// place. Its words go to the shell apart from the script, so none is
-/// read as the shell's. Pi is told first to carry on, as a reopened
-/// session is, since one taken up again with no first prompt sits idle
-/// until a message wakes it.
+/// in place, and only then pi takes it up in the folder `pi-carry where`
+/// says it arrived in. The quest's own done file names no session, so
+/// its arrival ends with its trees in place. Its words go to the shell
+/// apart from the script, so none is read as the shell's. Pi is told
+/// first to carry on, as a reopened session is, since one taken up again
+/// with no first prompt sits idle until a message wakes it.
 fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
     let arrive = r#"pi-carry arrive "$1" --from "$2" --session "$3""#;
-    // A folder within home (`~` or `~/...`) is found under home there,
-    // and any other as it is, as `pi-carry arrive` places the session's
-    // file there. Only trees travel, so a folder that held none, such as
-    // a quest's scratch, is made rather than found. A session taken up
-    // again loads its quest only when told, as the shell's starts tell
-    // it, so pi is told which.
+    // The harness alone knows which trees came and where a quest's
+    // scratch is, so it says the folder: the session's own where a tree
+    // it brought holds it, else its quest's scratch, never a folder of
+    // the person's that no tree brought. That folder is entered as it
+    // stands, never made here. A session taken up again loads its quest
+    // only when told, as the shell's starts tell it, so pi is told which.
     let script = if one.session == quest {
         arrive.to_owned()
     } else {
         [
             arrive,
-            r#" || exit; case "$4" in "~") folder="$HOME" ;; "~/"*) folder="$HOME/${4#"~/"}" ;; "#,
-            r#"*) folder="$4" ;; esac; mkdir -p "$folder" && cd "$folder" && "#,
-            r#"QUEST_WORKFLOW_AUTOLOAD_ID="$1" exec pi --session "$3" -- "$5""#,
+            r#" || exit; folder=$(pi-carry where "$1" --from "$2" --session "$3") || exit; "#,
+            r#"cd "$folder" && QUEST_WORKFLOW_AUTOLOAD_ID="$1" exec pi --session "$3" -- "$4""#,
         ]
         .concat()
     };
@@ -456,7 +453,6 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
             quest,
             from,
             &one.session,
-            &one.cwd,
             &told,
         ]
         .map(str::to_owned)
@@ -572,18 +568,15 @@ mod tests {
                 .filter(|id| self.carries.contains(*id))
                 .map(|id| Done {
                     session: id.to_owned(),
-                    cwd: "~/src/harbour".to_owned(),
                 })
                 .collect();
             if self.rest.is_some() {
                 done.push(Done {
                     session: "s-gone".to_owned(),
-                    cwd: "~/src/gone".to_owned(),
                 });
                 // The trees no session held, as `pi-carry` names them.
                 done.push(Done {
                     session: QUEST.to_owned(),
-                    cwd: "~".to_owned(),
                 });
             }
             Ok(done)
@@ -756,10 +749,9 @@ mod tests {
                 QUEST,
                 "optimus",
                 "s-busy01",
-                "~/src/harbour",
                 &super::carry_on("optimus")
             ],
-            "arriving with its own session and folder, told to carry on"
+            "arriving with its own session, told to carry on, its folder left to pi-carry"
         );
         assert!(
             first.command[2].starts_with("pi-carry arrive"),
@@ -784,11 +776,13 @@ mod tests {
     }
 
     /// Runs a carried session's arrival as the shell there would, with
-    /// `pi-carry` and `pi` stood in for under `home`: `pi-carry` exiting
-    /// as `arrives` says, `pi` writing its folder, its words and the quest
-    /// it's told to load to `ran`, and its first prompt, the words after
-    /// `--`, to `told`.
-    fn arrive(home: &std::path::Path, cwd: &str, arrives: bool) -> Option<String> {
+    /// `pi-carry` and `pi` stood in for under `home`: `pi-carry arrive`
+    /// exiting as `arrives` says and `pi-carry where` printing `where`,
+    /// or failing where it names none; `pi` writing its folder, its words
+    /// and the quest it's told to load to `ran`, and its first prompt, the
+    /// words after `--`, to `told`. The session ran in `~/checkout/src`
+    /// where it left, which is here too, and no tree brought.
+    fn arrive(home: &std::path::Path, where_: Option<&str>, arrives: bool) -> Option<String> {
         use std::os::unix::fs::PermissionsExt;
         let bin = home.join("bin");
         std::fs::create_dir_all(&bin).expect("bin");
@@ -799,7 +793,15 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
                 .expect("runnable");
         };
-        stand_in(PI_CARRY, if arrives { "exit 0" } else { "exit 3" });
+        std::fs::create_dir_all(home.join("checkout/src")).expect("a checkout");
+        stand_in(
+            PI_CARRY,
+            &format!(
+                "case \"$1\" in arrive) exit {} ;; where) {} ;; *) exit 2 ;; esac",
+                if arrives { 0 } else { 3 },
+                where_.map_or_else(|| "exit 1".to_owned(), |at| format!("echo '{at}'")),
+            ),
+        );
         stand_in(
             "pi",
             &format!(
@@ -811,7 +813,6 @@ mod tests {
         );
         let one = Done {
             session: "s-busy01".to_owned(),
-            cwd: cwd.to_owned(),
         };
         let start = super::arriving(QUEST, "optimus", "penelope", &one);
         let path = format!(
@@ -831,50 +832,58 @@ mod tests {
     }
 
     #[test]
-    fn a_carried_session_starts_in_its_own_folder_once_it_has_arrived() {
+    fn a_carried_session_starts_where_its_arrival_says_once_it_has_arrived() {
         let home = tempfile::tempdir().expect("a home");
         let home = home.path().canonicalize().expect("its path");
-        std::fs::create_dir_all(home.join("src/harbour")).expect("a tree");
+        let tree = home.join("src/harbour");
+        std::fs::create_dir_all(&tree).expect("a tree");
+        let tree = tree.display().to_string();
         assert_eq!(
-            arrive(&home, "~/src/harbour", true),
-            Some(format!(
-                "{}/src/harbour --session s-busy01 for {QUEST}",
-                home.display()
-            )),
-            "in its folder under home there, its quest loaded"
-        );
-        assert_eq!(
-            arrive(&home, "~", true),
-            Some(format!("{} --session s-busy01 for {QUEST}", home.display())),
-            "or in home itself"
-        );
-        assert_eq!(
-            arrive(&home, "~/scratch/notes", true),
-            Some(format!(
-                "{}/scratch/notes --session s-busy01 for {QUEST}",
-                home.display()
-            )),
-            "or in a folder no tree brought, made there"
-        );
-        let elsewhere = home.join("src").display().to_string();
-        assert_eq!(
-            arrive(&home, &elsewhere, true),
-            Some(format!("{elsewhere} --session s-busy01 for {QUEST}")),
-            "or where a folder outside home says"
+            arrive(&home, Some(&tree), true),
+            Some(format!("{tree} --session s-busy01 for {QUEST}")),
+            "in the folder pi-carry says it arrived in, its quest loaded"
         );
         std::fs::remove_file(home.join("ran")).expect("forgotten");
         assert_eq!(
-            arrive(&home, "~", false),
+            arrive(&home, Some(&tree), false),
             None,
             "never once its arrival failed"
         );
+        assert_eq!(
+            arrive(&home, None, true),
+            None,
+            "nor when pi-carry names no folder"
+        );
+    }
+
+    #[test]
+    fn a_carried_session_never_enters_a_folder_no_tree_brought() {
+        let home = tempfile::tempdir().expect("a home");
+        let home = home.path().canonicalize().expect("its path");
+        let scratch = home.join("quest-workspace").join(QUEST);
+        std::fs::create_dir_all(&scratch).expect("its scratch");
+        let scratch = scratch.display().to_string();
+        assert_eq!(
+            arrive(&home, Some(&scratch), true),
+            Some(format!("{scratch} --session s-busy01 for {QUEST}")),
+            "its checkout is here, but no tree brought it, so it arrives in its scratch"
+        );
+        std::fs::remove_file(home.join("ran")).expect("forgotten");
+        let missing = home.join("src/never-brought");
+        assert_eq!(
+            arrive(&home, Some(&missing.display().to_string()), true),
+            None,
+            "and nothing starts in a folder that isn't there"
+        );
+        assert!(!missing.exists(), "which is never made");
     }
 
     #[test]
     fn a_carried_session_is_told_to_carry_on_where_it_left_off() {
         let home = tempfile::tempdir().expect("a home");
         let home = home.path().canonicalize().expect("its path");
-        arrive(&home, "~", true).expect("pi started");
+        let at = home.display().to_string();
+        arrive(&home, Some(&at), true).expect("pi started");
         let told = std::fs::read_to_string(home.join("told")).unwrap_or_default();
         assert_eq!(
             told,
