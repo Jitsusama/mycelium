@@ -41,6 +41,14 @@ pub struct Message {
     /// it.
     #[serde(default, rename = "forRealm", skip_serializing_if = "Option::is_none")]
     pub for_realm: Option<String>,
+    /// That the hold it answers (`re`) is over on the person's word, said
+    /// by a peer other than its holder.
+    #[serde(
+        default,
+        rename = "endsHold",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub ends_hold: bool,
 }
 
 /// What a message asks of those who hear it, in the mesh's words.

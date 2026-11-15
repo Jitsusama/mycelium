@@ -182,6 +182,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 hosts: "/nowhere/hosts".into(),
                 orchestrations: "/nowhere/orchestrations.json".into(),
                 logs: "/nowhere/sessions".into(),
+                words: mycelium::words::Book::at("/nowhere/said.jsonl".into()),
             },
             bound,
             until_stopped,

@@ -19,10 +19,10 @@ mod names;
 mod shapes;
 pub mod steers;
 
-pub use asks::read;
 #[cfg(test)]
 pub(crate) use asks::{ASKS_FIT, together};
 pub(crate) use asks::{asked, asking};
+pub use asks::{read, records};
 pub(crate) use names::says_again;
 pub use names::short_names;
 pub use shapes::Shapes;

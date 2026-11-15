@@ -43,6 +43,9 @@
 //! - [`record`]: messages and sessions, as clients read them
 //! - [`mesh`]: the harness mesh's files read as records
 //! - [`state`]: what one node holds in memory
+//! - [`unanswered`]: the questions waiting and holds standing on the mesh
+//! - [`words`]: the person's own words to sessions, and what became of
+//!   each
 //! - [`node`]: the node itself
 //! - [`served`]: files another program keeps, served as kinds of records
 //! - [`swarm`]: the swarm's teams as a person reads them in a terminal
@@ -90,8 +93,10 @@ pub mod state;
 pub mod steer;
 pub mod store;
 pub mod swarm;
+pub mod unanswered;
 pub mod update;
 pub mod watching;
 pub mod web;
 pub mod wire;
 pub mod within;
+pub mod words;
