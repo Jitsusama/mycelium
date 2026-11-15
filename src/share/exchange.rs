@@ -144,7 +144,11 @@ impl Places {
     }
 
     /// Shares `quest`, which must be here to share, with each of the
-    /// folders of its scratch named in `scratch`, and says what is shared.
+    /// folders of its scratch named in `scratch`, and its [`HANDOVER`]
+    /// whenever it is there, named or not, and the record of each quest
+    /// above it on this machine ([`Self::above`]), none of their scratch,
+    /// so a session there can tell what orchestrates it; and says what is
+    /// shared.
     ///
     /// # Errors
     ///
@@ -162,8 +166,15 @@ impl Places {
         }
         let ledgers = self.ledgers();
         ledgers.hold(quest)?.keep()?;
-        for folder in scratch {
+        let handover = (self.scratch.join(quest).join(HANDOVER).is_dir()
+            && !scratch.iter().any(|folder| folder == HANDOVER))
+        .then(|| HANDOVER.to_owned());
+        for folder in scratch.iter().chain(&handover) {
             self.name_scratch(quest, folder)?;
+        }
+        let above = self.above(quest);
+        for parent in &above {
+            ledgers.hold(parent)?.keep()?;
         }
         let folders = ledgers.hold(quest)?.ledger.scratch;
         let with = if folders.is_empty() {
@@ -172,9 +183,40 @@ impl Places {
             let names: Vec<String> = folders.into_iter().collect();
             format!("its scratch's {}", names.join(", "))
         };
+        let with = if above.is_empty() {
+            with
+        } else {
+            format!("{with}, and the records of {}", above.join(", "))
+        };
         Ok(format!(
             "{quest} is shared, with {with}; each link carries it from its next look"
         ))
+    }
+
+    /// The quests above `id` whose records are on this machine, nearest
+    /// first, each its README's front matter's `parent`, stopping at one
+    /// not here or named twice.
+    #[must_use]
+    pub fn above(&self, id: &str) -> Vec<String> {
+        let mut above: Vec<String> = Vec::new();
+        let mut at = id.to_owned();
+        while above.len() < MOST_NESTED {
+            let Some(parent) = fs::read_to_string(self.record(&at).join("README.md"))
+                .ok()
+                .and_then(|readme| parent(&readme))
+                .filter(|parent| {
+                    is_quest(parent)
+                        && parent != id
+                        && !above.contains(parent)
+                        && self.record(parent).is_dir()
+                })
+            else {
+                break;
+            };
+            above.push(parent.clone());
+            at = parent;
+        }
+        above
     }
 
     /// The group the sessions on quest `id` hear, named by the short ids of
@@ -197,6 +239,10 @@ impl Places {
         Group::new(format!("quest.{}", shorts.join("."))).ok()
     }
 }
+
+/// The folder of a quest's scratch a carry or a spawn leaves for the
+/// machine it goes to, shared whenever it is there.
+pub const HANDOVER: &str = "handover";
 
 /// The most files a scratch folder named for sharing may hold, so a
 /// folder of bulk data isn't named by mistake.
@@ -506,9 +552,11 @@ impl Exchange {
             };
             let mut changed: BTreeSet<String> = scan.changed.into_iter().collect();
             let clones_changed = found_clones(&mut held.ledger, &quest, &walk)?;
+            // A file deleted here drops out of what the other end holds.
+            let dropped = scan.is_new && held.ledger.bound_theirs();
             // A file read and found as it was is kept as seen too, or every
             // look would read it again.
-            if scan.is_new || clones_changed {
+            if scan.is_new || clones_changed || dropped {
                 held.keep()?;
             }
             changed.extend(self.unsaid.remove(&id).unwrap_or_default());
@@ -597,7 +645,12 @@ impl Exchange {
             }
             Say::Holds { quest, files } => {
                 self.share(&quest)?;
-                self.held(&quest, files)
+                let wants = self.held(&quest, files.clone())?;
+                let mut held = self.places.ledgers().hold(&quest)?;
+                if held.ledger.heard(&self.other, files) {
+                    held.keep()?;
+                }
+                Ok(wants)
             }
             Say::Want { quest, file, at } => self.want(&quest, &file, at),
             Say::Piece {
@@ -953,18 +1006,24 @@ impl Exchange {
                 })
             }
         };
+        let taken = entry.is_some();
         if let Some(entry) = entry {
             let state = entry.state();
-            let changed = state != *theirs;
             held.ledger.files.insert(key.to_owned(), entry);
-            held.keep()?;
-            if changed {
-                says.push(Say::Holds {
-                    quest: id.to_owned(),
-                    files: BTreeMap::from([(key.to_owned(), state)]),
-                });
-            }
-        } else if sight.is_new() {
+            // Said even when this end now holds just what was sent, so the
+            // other end knows it was taken: a wait for the quest to reach
+            // this machine counts on it.
+            says.push(Say::Holds {
+                quest: id.to_owned(),
+                files: BTreeMap::from([(key.to_owned(), state)]),
+            });
+        }
+        // The other end holds what it sent, at least.
+        let heard = held.ledger.heard(
+            &self.other,
+            BTreeMap::from([(key.to_owned(), theirs.clone())]),
+        );
+        if taken || sight.is_new() || heard {
             held.keep()?;
         }
         Ok(says)
@@ -1143,6 +1202,145 @@ mod tests {
             optimus.read("README.md").as_deref(),
             Some("# Changed there\n"),
             "a change comes back"
+        );
+    }
+
+    #[test]
+    fn each_end_keeps_what_the_other_holds_once_it_says_or_takes() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let plan = "plans/PLAN-20261115-AAAAAA.md";
+        kestrel.write("README.md", "# Shared\n");
+        kestrel.write(plan, "plan\n");
+        kestrel
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("held")
+            .keep()
+            .expect("shared");
+        let ledger = |machine: &Machine| machine.places.ledgers().hold(QUEST).expect("held").ledger;
+        let own = |ledger: &Ledger, key: &str| ledger.files[key].state();
+
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        let kept = ledger(&kestrel);
+        assert_eq!(
+            kept.theirs.get("skiff"),
+            Some(&BTreeMap::from([
+                (
+                    "record/README.md".to_owned(),
+                    own(&kept, "record/README.md")
+                ),
+                (
+                    format!("record/{plan}"),
+                    own(&kept, &format!("record/{plan}"))
+                ),
+            ])),
+            "what skiff took, it said it holds"
+        );
+
+        skiff.write("README.md", "# Changed there\n");
+        talk(&mut near, &mut far);
+        let kept = ledger(&kestrel);
+        assert_eq!(
+            kept.theirs["skiff"]["record/README.md"],
+            own(&kept, "record/README.md"),
+            "what skiff wrote and kestrel took, skiff holds"
+        );
+        let there = ledger(&skiff);
+        assert_eq!(
+            there.theirs["kestrel"]["record/README.md"],
+            own(&there, "record/README.md"),
+            "and skiff knows kestrel took it"
+        );
+
+        fs::remove_file(kestrel.places.quests.join(QUEST).join(plan)).expect("removed");
+        talk(&mut near, &mut far);
+        assert!(
+            !ledger(&kestrel).theirs["skiff"].contains_key(&format!("record/{plan}")),
+            "a file deleted drops out of what the other end holds"
+        );
+    }
+
+    #[test]
+    fn a_quest_shared_carries_the_records_of_the_quests_above_it() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, middle) = ("QEST-20261007-WCJQSG", "QEST-20261013-4UHC5Q");
+        let grandchild = "QEST-20261115-5XF89V";
+        let put = |root: &std::path::Path, path: &str, text: &str| {
+            let at = root.join(path);
+            fs::create_dir_all(at.parent().expect("a file has a folder")).expect("made");
+            fs::write(at, text).expect("written");
+        };
+        let quests = &kestrel.places.quests;
+        put(
+            quests,
+            &format!("{top}/README.md"),
+            "---\nparent: null\n---\n# Top\n",
+        );
+        put(quests, &format!("{top}/JOURNEY.md"), "# Journey\n");
+        put(
+            quests,
+            &format!("{middle}/README.md"),
+            &format!("---\nparent: {top}\n---\n# Middle\n"),
+        );
+        put(
+            quests,
+            &format!("{grandchild}/README.md"),
+            &format!("---\nparent: \"{middle}\"\n---\n# Grandchild\n"),
+        );
+        let scratch = &kestrel.places.scratch;
+        put(
+            scratch,
+            &format!("{middle}/handover/kestrel/a.json"),
+            "{}\n",
+        );
+        put(
+            scratch,
+            &format!("{grandchild}/handover/kestrel/b.json"),
+            "{}\n",
+        );
+        kestrel.places.offer(grandchild, &[]).expect("shared");
+
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        let there = |path: &str| fs::read_to_string(skiff.places.quests.join(path)).ok();
+        assert_eq!(
+            there(&format!("{middle}/README.md")).as_deref(),
+            Some(format!("---\nparent: {top}\n---\n# Middle\n").as_str()),
+            "the parent's record arrived"
+        );
+        assert_eq!(
+            there(&format!("{top}/JOURNEY.md")).as_deref(),
+            Some("# Journey\n"),
+            "and its parent's, whole"
+        );
+        assert!(
+            skiff
+                .places
+                .scratch
+                .join(grandchild)
+                .join("handover/kestrel/b.json")
+                .exists(),
+            "the quest's own handover arrived"
+        );
+        assert!(
+            !skiff.places.scratch.join(middle).exists(),
+            "never a parent's scratch"
+        );
+
+        put(
+            quests,
+            &format!("{top}/README.md"),
+            "---\nparent: null\n---\n# Top, later\n",
+        );
+        talk(&mut near, &mut far);
+        assert_eq!(
+            there(&format!("{top}/README.md")).as_deref(),
+            Some("---\nparent: null\n---\n# Top, later\n"),
+            "a parent is kept current"
         );
     }
 

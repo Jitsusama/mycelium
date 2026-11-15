@@ -73,6 +73,12 @@ pub struct Ledger {
     /// this machine last found them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub clones: BTreeMap<String, Clone>,
+    /// What each other machine last said it holds of the quest's files,
+    /// or was seen to take, by machine and key: only those this machine
+    /// holds too, so a file deleted drops out. A machine named here has
+    /// said it shares the quest, even holding none of it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub theirs: BTreeMap<String, BTreeMap<String, State>>,
 }
 
 /// A shared file's key in a ledger and on a link: its place and its path.
@@ -250,6 +256,36 @@ impl Ledger {
         } else {
             Sight::Same
         })
+    }
+
+    /// Enters what `machine` said it holds of `files`, answering whether
+    /// that changed what the ledger holds of it.
+    pub fn heard(&mut self, machine: &str, files: BTreeMap<String, State>) -> bool {
+        let before = self.theirs.get(machine).cloned();
+        self.theirs
+            .entry(machine.to_owned())
+            .or_default()
+            .extend(files);
+        self.bound_theirs();
+        self.theirs.get(machine) != before.as_ref()
+    }
+
+    /// Keeps what the other machines hold to the files this one holds,
+    /// answering whether any dropped out.
+    pub fn bound_theirs(&mut self) -> bool {
+        let mut dropped = false;
+        for held in self.theirs.values_mut() {
+            let before = held.len();
+            held.retain(|key, state| {
+                state.hash.is_some()
+                    && self
+                        .files
+                        .get(key)
+                        .is_some_and(|entry| entry.hash.is_some())
+            });
+            dropped |= held.len() != before;
+        }
+        dropped
     }
 
     /// Every file's state, as the other end is told it.

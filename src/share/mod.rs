@@ -18,6 +18,7 @@ pub mod journey;
 pub mod ledger;
 pub mod log;
 pub mod pieces;
+pub mod reached;
 pub mod settle;
 pub mod tree;
 pub mod version;
