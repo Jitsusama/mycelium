@@ -934,11 +934,27 @@ impl ChildEnd {
     }
 }
 
+/// A Mac's end goes as the holder is done with its program, so the reader
+/// of its output is told no start is coming, rather than waiting out its
+/// last words for one.
+#[cfg(target_os = "macos")]
+impl Drop for ChildEnd {
+    fn drop(&mut self) {
+        self.starts
+            .over
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.starts.started.notify_one();
+    }
+}
+
 /// Each start of the program, as the reader of its output is told of it.
 #[derive(Default)]
 struct Starts {
     #[cfg(target_os = "macos")]
     started: tokio::sync::Notify,
+    /// Whether the holder is done starting the program.
+    #[cfg(target_os = "macos")]
+    over: std::sync::atomic::AtomicBool,
 }
 
 impl Starts {
@@ -952,11 +968,17 @@ impl Starts {
     }
 
     /// Whether output may come once the terminal has read as ended: on
-    /// macOS once the program starts again, on its end opened anew.
+    /// macOS once the program starts again, on its end opened anew, and
+    /// never once the holder is done starting it.
     #[cfg(target_os = "macos")]
     async fn again(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        if self.over.load(Ordering::SeqCst) {
+            return false;
+        }
+        // Being done tells it as a start does, so it's heard here too.
         self.started.notified().await;
-        true
+        !self.over.load(Ordering::SeqCst)
     }
 }
 
