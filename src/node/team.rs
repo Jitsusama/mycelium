@@ -381,6 +381,8 @@ mod tests {
             quest: quest.map(str::to_owned),
             wants: None,
             landings: Vec::new(),
+            doing: None,
+            events: Vec::new(),
             window: None,
             held: None,
             attach: None,

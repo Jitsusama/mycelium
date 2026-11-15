@@ -106,6 +106,14 @@ pub struct Session {
     /// orchestrator would otherwise be told in a message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub landings: Vec<Landing>,
+    /// What its plan does next, and what it chose last, as its presence
+    /// says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doing: Option<Doing>,
+    /// What it did lately, newest first, as its presence says: its
+    /// commits, pushes, changes proposed and merged, and stages moved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<Event>,
     /// The window it runs in, for going to it. Only a session of this
     /// machine's has one, since a window is reached on its own machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -171,6 +179,55 @@ pub struct Landing {
     /// What it means to the person, when it means something to them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub person: Option<String>,
+}
+
+/// What a session's plan does next, and what it chose last.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Doing {
+    /// The plan, by id.
+    pub plan: String,
+    /// The plan's item it works on, by number, where it says one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<u32>,
+    /// What it does next, in one short line.
+    pub next: String,
+    /// What it chose last, in one short line, where it says one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chose: Option<String>,
+    /// When it said so, as an RFC 3339 instant.
+    pub at: String,
+}
+
+/// Something a session did: a commit, a push, a change proposed or
+/// merged, or a stage of its plan moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Event {
+    /// When, as an RFC 3339 instant.
+    pub at: String,
+    /// What kind of thing it did.
+    pub kind: EventKind,
+    /// Where: a repository by its key, such as `github:Jitsusama/mycelium`,
+    /// or a quest by its id.
+    #[serde(rename = "where")]
+    pub place: String,
+    /// What it is, in one short line.
+    pub title: String,
+}
+
+/// The kinds of thing a session's events say it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EventKind {
+    /// A commit made.
+    Commit,
+    /// A branch pushed.
+    Push,
+    /// A change proposed for review.
+    Pr,
+    /// A change merged.
+    Merge,
+    /// A plan's stage moved.
+    Stage,
 }
 
 /// A terminal's window, as the terminal names it: for kitty, the window's

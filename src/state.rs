@@ -181,6 +181,8 @@ mod tests {
             quest: None,
             wants: None,
             landings: Vec::new(),
+            doing: None,
+            events: Vec::new(),
             window: None,
             held: None,
             attach: None,

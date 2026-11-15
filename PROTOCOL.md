@@ -563,7 +563,14 @@ from an older presence, the quest among what it owns), what it `wants` of
 its person (`kind`, `since`, `said`) while it waits, the `landings` it
 says it made lately, newest first (each `at`, `ref`, a one-line `what`
 and, when it means something to its person, `person`; any it can't read is
-left out), and the `window` it
+left out), what its plan is `doing` (its `plan` by id, the `item` it works
+on by number where it says one, the `next` thing it does and what it
+`chose` last where it says, each a line of at most 120 characters, and
+the `at` it said so; a `doing` it can't read, or whose line is longer, is
+left out whole), its latest `events`, newest first and at most 20 (each
+`at`, its `kind` as `commit`, `push`, `pr`, `merge` or `stage`, `where`
+as a repository's key or a quest's id, and a `title` cut to 120
+characters; any it can't read is left out), and the `window` it
 runs in (`terminal`, `id`, `within`, such as a kitty window's id and
 kitty's socket, and `app_id`, the app id its window was opened with,
 where its opener said so in `MYCELIUM_APP_ID`, which names the same
@@ -864,8 +871,8 @@ in milliseconds.
 | `update` with `machine` | `updated`, the ending its updater said, as `Updated` gives it |
 
 A record carries `key` (`session:<id>`, `machine:<name>`,
-`message:<id>`, `team:<address>`, `network:<name>`, `unanswered:<id>`
-or `said:<id>`), `kind`, `heard` (milliseconds
+`message:<id>`, `team:<address>`, `network:<name>`, `unanswered:<id>`,
+`said:<id>` or `event:<session>:<at>`), `kind`, `heard` (milliseconds
 since the epoch) and the fields `Sessions`, `Machines` and `Messages`
 give it. A field its source named `key`, `kind` or `heard`, such as a
 job's own `kind`, is kept under `source` rather than lost beneath the
@@ -947,6 +954,15 @@ this machine's own: no link carries them, and each machine serves only
 what was said through it. The node hides none of their text, as it
 hides nothing while a screen is shared; a reader showing them decides
 that.
+
+The `event` kind holds each thing a session's `events` say it did, keyed
+by its session's id and its `at`: the `cell` that did it by its address,
+its `session` by id, `at`, `what` it did (`commit`, `push`, `pr`,
+`merge` or `stage`), `where` and `title`. An event is heard at its `at`
+and never changes, and comes with its session's next presence. A page
+polling the realm reads the same events as lines of `mycelium networks
+-o json`; a watch of this kind is for a reader that wants each as it
+comes.
 
 A team's `glyph` is the shape every view draws it by: `square`,
 `triangle`, `plus`, `hexagon`, `circle`, `down-triangle` or `star`.
@@ -1033,7 +1049,8 @@ which is no trouble, and a folder not there is looked for again each
 minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine`,
-`message`, `team`, `network`, `unanswered` or `said`, can't be served.
+`message`, `team`, `network`, `unanswered`, `said` or `event`, can't be
+served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and

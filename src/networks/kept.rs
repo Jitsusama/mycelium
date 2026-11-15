@@ -30,6 +30,8 @@ use Kept::{Only, Whole};
 /// machine's fields, as `Mycelium::of` and the swarm's names read them.
 pub(super) const RECORD: Kept = Only(&[
     ("address", Whole),
+    ("doing", Whole),
+    ("events", Whole),
     ("glyph", Whole),
     ("groups", Whole),
     ("id", Whole),
@@ -54,6 +56,7 @@ pub(super) const RECORD: Kept = Only(&[
 /// What the networks read of a session's presence.
 pub(super) const PRESENCE: Kept = Only(&[
     ("addresses", Whole),
+    ("cwd", Whole),
     ("paused", Whole),
     ("questInfo", Only(&[("short", Whole), ("title", Whole)])),
     ("repo", Whole),
