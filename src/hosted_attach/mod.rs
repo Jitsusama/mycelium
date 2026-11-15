@@ -1022,22 +1022,29 @@ mod tests {
             let (_tell, mut sizes) = mpsc::unbounded_channel();
             let mut shown = Vec::new();
             let mut here = Script::typing(b"");
+            // The restarted host is awaited only once the viewer is done,
+            // so a viewer that gave up fails here rather than leaving it
+            // waiting.
+            let mut second = None;
             let back = async {
                 let (dropped, _) = stopping.accept().await.expect("the try");
                 dropped.readable().await.expect("its attach");
                 drop((dropped, stopping));
                 std::fs::remove_file(&path).expect("the stopped host's socket");
-                serve(&path, accepted(), vec![Step::Say(closed())])
+                second = Some(serve(&path, accepted(), vec![Step::Say(closed())]));
             };
             let joining = join_again(
                 &path, "s-1", SIZE, &mut here, &mut shown, &mut sizes, PATIENT,
             );
-            let (left, second) = tokio::join!(joining, back);
+            let (left, ()) = tokio::join!(joining, back);
             assert_eq!(
                 left.expect("joined again, not ended by the reset"),
                 Left::Detached("Conversation closed".to_owned())
             );
-            second.await.expect("the restarted host ran");
+            second
+                .expect("the host came back")
+                .await
+                .expect("the restarted host ran");
         })
         .await;
     }
