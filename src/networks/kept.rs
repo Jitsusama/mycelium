@@ -30,6 +30,7 @@ use Kept::{Only, Whole};
 /// machine's fields, as `Mycelium::of` and the swarm's names read them.
 pub(super) const RECORD: Kept = Only(&[
     ("address", Whole),
+    ("glyph", Whole),
     ("groups", Whole),
     ("id", Whole),
     ("key", Whole),

@@ -175,7 +175,8 @@ fn records() -> [Vec<Value>; 3] {
     let teams = vec![
         json!({"key": "team:HARBOR", "title": "Harbour Ships", "within": null,
                "lead": "01a1d045-d581-7000-8000-000000000000"}),
-        json!({"key": "team:KELP01", "title": "Kelp: Tides", "within": "HARBOR"}),
+        json!({"key": "team:KELP01", "title": "Kelp: Tides", "within": "HARBOR",
+               "glyph": "triangle"}),
     ];
     let mut asking = on_quest(
         session(
@@ -325,10 +326,16 @@ fn every_group_but_an_address_is_a_network_and_a_lone_quest_or_repo_is_not() {
         (
             kelp.short.as_str(),
             kelp.title.as_deref(),
-            kelp.within.as_deref()
+            kelp.within.as_deref(),
+            kelp.glyph.as_deref()
         ),
-        ("kelp", Some("Kelp: Tides"), Some("orchestration.harbor")),
-        "named and nested as the swarm's team is"
+        (
+            "kelp",
+            Some("Kelp: Tides"),
+            Some("orchestration.harbor"),
+            Some("triangle")
+        ),
+        "named, nested and shaped as the swarm's team is"
     );
     let harbour = mycelium.network("quest.harbor").expect("Harbour's quest");
     assert_eq!(
@@ -387,6 +394,7 @@ fn json_lines_say_each_network_then_each_cell() {
         lines[0],
         json!({"kind": "network", "name": "orchestration.kelp01",
                "shape": "orchestration", "short": "kelp", "title": "Kelp: Tides",
+               "glyph": "triangle",
                "within": "orchestration.harbor", "cells": ["ASKS01"],
                "machines": ["skiff"],
                "counts": {"needs-you": 1, "stuck": 0, "moving": 0, "quiet": 0, "dormant": 0}}),

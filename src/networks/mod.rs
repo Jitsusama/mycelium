@@ -140,6 +140,9 @@ pub struct Network {
     pub short: String,
     /// What it is about, where something says.
     pub title: Option<String>,
+    /// The shape it is drawn by, such as `square`, where the node chose
+    /// one: only an orchestration's, as its team's record says.
+    pub glyph: Option<String>,
     /// The network it branched from, by name.
     pub within: Option<String>,
     /// Its cells, by name.
@@ -636,6 +639,7 @@ fn network_of(name: &str, shape: Shape, cells: &[&Cell]) -> Network {
         shape,
         short,
         title: None,
+        glyph: None,
         within: None,
         cells: cells.iter().map(|cell| cell.name.clone()).collect(),
         machines: machines.into_iter().map(str::to_owned).collect(),
@@ -721,6 +725,7 @@ fn titled_by_teams(networks: &mut [Network], teams: &[Value]) {
             continue;
         };
         each.title = Some(swarm::title(team).to_owned());
+        each.glyph = team["glyph"].as_str().map(str::to_owned);
         if let Some(short) = shorts.get(swarm::address(team)) {
             each.short.clone_from(short);
         }
@@ -768,6 +773,7 @@ fn machines_network(machines: &[Value], sessions: &[Cell]) -> Network {
         shape: Shape::Machines,
         short: MACHINES.to_owned(),
         title: Some("the realm's machines".to_owned()),
+        glyph: None,
         within: None,
         cells: names.clone(),
         machines: names,

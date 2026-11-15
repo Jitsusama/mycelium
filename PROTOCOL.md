@@ -799,12 +799,22 @@ work in too, its `liaisons` its sessions hearing another team's
 `orchestration.<address>` group, and `landed` its newest landing. A
 session answering to nobody and leading nothing is in no team.
 
+A team's `glyph` is the shape every view draws it by: `square`,
+`triangle`, `plus`, `hexagon`, `circle`, `down-triangle` or `star`.
+Its first choice is its `orchestration.<address>` name hashed as the map
+page hashes it, each UTF-16 unit added to 31 times the hash before,
+wrapping at 32 bits, modulo seven in that order. The oldest team, by its
+oldest session's id, chooses first, and one whose choice is taken steps
+on to the next free shape. Past seven, a team takes the shape held by
+the fewest teams it is drawn beside (within the same team, or within it
+or holding it), then by the fewest at all.
+
 A list naming `fields`, a list of paths of keys joined by dots such as
 `presence.usage.context`, is sent only those fields of each record,
 with its `key` and `kind` always; a path a record lacks is left out
 rather than sent as null, and so is an object left empty. A reader of
 thousands of sessions needs a few dozen of each one's hundreds of
-fields: `mycelium networks` reads 28, about a quarter of a session's
+fields: `mycelium networks` reads 29, about a quarter of a session's
 bytes. Paths may not index lists, and more than 64 of them, or a path
 that isn't one, is `not-an-ask`. A watch sends records whole, as
 before.
