@@ -141,6 +141,32 @@ fn cells_by_standing_are_only_those_standing_so() {
 }
 
 #[test]
+fn cells_by_a_standing_none_stand_as_say_so_plainly() {
+    let crowd = crowd(3, 0);
+    let asked = |standing: &[&str]| {
+        let standing: Vec<String> = standing.iter().map(|&each| each.to_owned()).collect();
+        cells(&crowd, &look(), false, &standing)
+            .lines()
+            .nth(2)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert_eq!(
+        (
+            asked(&["needs-you", "stuck"]),
+            asked(&["stuck"]),
+            asked(&["needs-you", "stuck", "dormant"]),
+        ),
+        (
+            "Nothing needs you and nothing is stuck.".to_owned(),
+            "Nothing is stuck.".to_owned(),
+            "Nothing needs you, nothing is stuck and nothing is dormant.".to_owned(),
+        ),
+        "in place of an empty table"
+    );
+}
+
+#[test]
 fn a_long_list_of_networks_folds_to_the_worrying_the_busiest_and_a_row_for_the_rest() {
     let crowd = crowd(40, 2);
     let shown = overview(&crowd, &look(), false, false);
