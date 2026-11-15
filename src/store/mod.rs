@@ -118,7 +118,8 @@ pub trait Store: Clone + Send + Sync + 'static {
 
     /// Keeps the presence of a session that runs on `machine`, another
     /// machine, as that machine wrote it. Refused when the id names this
-    /// machine's own session or another machine's.
+    /// machine's own session, unless that has ended here, as one carried
+    /// to `machine` has, or another machine's.
     fn put_presence(&self, session: &str, machine: &str, body: &Value) -> io::Result<()>;
 
     /// Says again that a session `machine` carries still stands, so a copy
@@ -141,8 +142,9 @@ pub trait Store: Clone + Send + Sync + 'static {
 
     /// Keeps the leases held by a session that runs on `machine`, another
     /// machine, as that machine said them, or lets them go when there are
-    /// none. Refused when the id names a holding of this machine's or of
-    /// another machine's.
+    /// none. Refused when the id names a holding of another machine's, or
+    /// of this machine's while its session is not one `machine` carries
+    /// here.
     fn put_leases(&self, session: &str, machine: &str, leases: &[Value]) -> io::Result<()>;
 
     /// Says this machine's process `pid` has ended, since the connection

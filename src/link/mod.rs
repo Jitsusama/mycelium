@@ -1348,6 +1348,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_carried_to_the_other_machine_stands_where_it_runs_on_both() {
+        let optimus = Memory::default();
+        let equilibrius = Memory::default();
+        // Carried from optimus, it ended there and runs on the Mac.
+        optimus.start_here("moved", json!({"session": "moved"}), false);
+        equilibrius.start_here("moved", json!({"session": "moved"}), true);
+        optimus.hold_here("moved", json!({"session": "moved", "leases": []}));
+        equilibrius.hold_here(
+            "moved",
+            json!({"session": "moved", "leases": [{"kind": "change", "subject": "a"}]}),
+        );
+
+        let _link = linked(&optimus, &equilibrius, 1 << 16);
+        until(&optimus, |store| {
+            store
+                .presences()
+                .iter()
+                .any(|p| p.elsewhere.as_deref() == Some("equilibrius") && p.lives)
+        })
+        .await;
+        until(&optimus, |store| {
+            store
+                .holdings()
+                .iter()
+                .any(|holding| holding["machine"] == "equilibrius")
+        })
+        .await;
+        let mac = equilibrius.presences();
+        assert!(
+            matches!(mac.as_slice(), [one] if one.elsewhere.is_none() && one.lives),
+            "the Mac keeps its own, its end on optimus never carried back: {mac:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn each_end_says_what_its_machine_is_which_stays_out_of_reach_once_the_link_drops() {
         let optimus = Memory::default();
         let equilibrius = Memory::default();
