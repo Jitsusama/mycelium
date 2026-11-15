@@ -1559,9 +1559,14 @@ impl<S: Store> Shared<S> {
             })
             .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
             .collect();
-        let (client, processes, hosts) = (self.client, self.processes.clone(), self.hosts.clone());
+        let (client, processes, hosts, logs) = (
+            self.client,
+            self.processes.clone(),
+            self.hosts.clone(),
+            self.logs.clone(),
+        );
         tokio::task::spawn_blocking(move || {
-            let owners = asker::proved(&claims, &processes, &hosts)?;
+            let owners = asker::proved(&claims, &processes, &hosts, &logs)?;
             asker::session_of(client, &processes, &owners)
         })
         .await
@@ -3253,7 +3258,29 @@ mod tests {
         fs::write(&beside, quests.to_string()).expect("written");
         fs::rename(&beside, socket.with_file_name("quests.json")).expect("renamed into place");
         client.next().await;
+        for (pid, session) in [(7001, "s-steward"), (7002, "s-weigh"), (7003, "s-harbour")] {
+            holds_log(socket, pid, session);
+        }
         (stop, running, client)
+    }
+
+    /// Opens, for the test's pi `pid`, the log pi keeps of `session` in the
+    /// logs beside `socket`, as a link in its `fd` folder in the stand-in
+    /// for /proc.
+    fn holds_log(socket: &Path, pid: i32, session: &str) {
+        let log = socket
+            .with_file_name("sessions")
+            .join("--home-joel--")
+            .join(format!("2026-11-15T17-00-00-000Z_{session}.jsonl"));
+        fs::create_dir_all(log.parent().expect("its folder")).expect("made");
+        fs::write(
+            &log,
+            format!("{{\"type\":\"session\",\"id\":\"{session}\"}}\n"),
+        )
+        .expect("written");
+        let fds = procs_of(socket).join(pid.to_string()).join("fd");
+        fs::create_dir_all(&fds).expect("made");
+        std::os::unix::fs::symlink(&log, fds.join("3")).expect("linked");
     }
 
     /// What the node at `socket` answers the session owned by pi `pid` as it
