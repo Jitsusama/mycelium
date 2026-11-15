@@ -11,7 +11,11 @@
 //! folds: what needs its person or is stuck first, then the busiest few,
 //! then one row for the rest, counting them. A view asked for `all` folds
 //! nothing, and any one of what folded is seen by its name.
+//!
+//! An orchestration's title follows the mark its shape is drawn by, the
+//! one the launcher and the map draw it by, where the theme has one.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
@@ -58,12 +62,26 @@ fn shown_short(network: &Network) -> Option<&str> {
     (!again).then_some(network.short.as_str())
 }
 
-/// How `network`'s row names it, its short name padded to `width`.
-fn label(network: &Network, width: usize) -> Label<'_> {
+/// `network`'s title, or its short name where it has none, after the
+/// mark its shape is drawn by where `look`'s theme has one.
+fn titled<'a>(network: &'a Network, look: &Look) -> Cow<'a, str> {
+    let title = network.title.as_deref().unwrap_or(&network.short);
+    let mark = network
+        .glyph
+        .as_deref()
+        .and_then(|glyph| look.shapes.mark(glyph));
+    mark.map_or(Cow::Borrowed(title), |mark| {
+        Cow::Owned(format!("{mark} {title}"))
+    })
+}
+
+/// How `network`'s row names it, its short name padded to `width`, then
+/// `title`.
+fn label<'a>(network: &'a Network, title: &'a str, width: usize) -> Label<'a> {
     Label {
         short: shown_short(network),
         width,
-        title: network.title.as_deref().unwrap_or(&network.short),
+        title,
     }
 }
 
@@ -334,7 +352,8 @@ impl<'a> Drawing<'a> {
     /// `network`'s row, set in by `depth`, then its cells where asked, then
     /// the networks within it.
     fn network(&self, lines: &mut Vec<String>, network: &Network, depth: usize) {
-        let label = label(network, self.width);
+        let title = titled(network, self.look);
+        let label = label(network, &title, self.width);
         lines.push(row(self.look, depth, &label, &counts(network), false));
         if self.with_cells {
             let cells = network
@@ -541,10 +560,7 @@ fn cell_line(
 /// lists fold unless `all` is asked.
 pub fn network(mycelium: &Mycelium, asked: &str, look: &Look, all: bool) -> Result<String, String> {
     let network = mycelium.named_network(asked)?;
-    let mut head = network
-        .title
-        .clone()
-        .unwrap_or_else(|| network.short.clone());
+    let mut head = titled(network, look).into_owned();
     let _ = write!(head, " · {} {}", network.shape.said(), network.short);
     if let Some(above) = network
         .within
@@ -584,7 +600,8 @@ pub fn network(mycelium: &Mycelium, asked: &str, look: &Look, all: bool) -> Resu
         lines.extend([String::new(), header(look, 0, &Standing::CELLS)]);
         let (shown, folded) = folding.split(&NETWORKS_FOLD, within, |each| network_worrying(each));
         for other in shown {
-            let label = label(other, drawing.width);
+            let title = titled(other, look);
+            let label = label(other, &title, drawing.width);
             lines.push(row(look, 0, &label, &counts(other), false));
         }
         if !folded.is_empty() {
@@ -716,12 +733,13 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
                 padded(&each.short, width),
                 padded(each.shape.said(), shapes)
             );
-            if let Some(title) = &each.title {
+            if each.title.is_some() {
+                let title = titled(each, look);
                 let room = look
                     .width
                     .saturating_sub(line.chars().count() + GAP.len())
                     .max(NARROWEST);
-                let _ = write!(line, "{GAP}{}", look.paint(FAINT, &fit(title, room)));
+                let _ = write!(line, "{GAP}{}", look.paint(FAINT, &fit(&title, room)));
             }
             lines.push(line.trim_end().to_owned());
         }

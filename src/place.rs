@@ -106,6 +106,14 @@ pub fn declared() -> PathBuf {
         .join("declared.json")
 }
 
+/// The account's theme, where its built configuration writes it: the
+/// marks and colours every surface of the account draws from.
+pub fn theme() -> PathBuf {
+    xdg("XDG_CONFIG_HOME", &[".config"])
+        .join("jitsusama")
+        .join("theme.json")
+}
+
 /// The node's record of which networks this machine's probes reached,
 /// beside its sockets, for every realm's node and link to read.
 pub fn reached() -> PathBuf {

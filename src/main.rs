@@ -1280,7 +1280,7 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
 }
 
 /// How a person's terminal is drawn on: as wide as it says, in colour
-/// unless it isn't one or `NO_COLOR` is set.
+/// unless it isn't one or `NO_COLOR` is set, with the theme's marks.
 fn look() -> mycelium::swarm::Look {
     use std::io::IsTerminal as _;
     let stdout = io::stdout();
@@ -1293,6 +1293,7 @@ fn look() -> mycelium::swarm::Look {
         width,
         colour: terminal && std::env::var_os("NO_COLOR").is_none(),
         now: jiff::Zoned::now(),
+        shapes: mycelium::swarm::Shapes::read(),
     }
 }
 

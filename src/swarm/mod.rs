@@ -19,10 +19,12 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 mod names;
+mod shapes;
 pub mod steers;
 
 pub(crate) use names::says_again;
 pub use names::short_names;
+pub use shapes::Shapes;
 
 /// The swarm as the node holds it.
 #[derive(Debug, Default)]
@@ -35,8 +37,8 @@ pub struct Swarm {
     pub sessions: Vec<Value>,
 }
 
-/// How it is drawn: how many columns it may take, whether in colour, and
-/// when now is, for the times it says.
+/// How it is drawn: how many columns it may take, whether in colour, when
+/// now is, for the times it says, and the marks it draws shapes by.
 pub struct Look {
     /// The terminal's width, in columns.
     pub width: usize,
@@ -44,6 +46,8 @@ pub struct Look {
     pub colour: bool,
     /// Now, in the time zone the times are said in.
     pub now: jiff::Zoned,
+    /// The mark each orchestration's shape is drawn by.
+    pub shapes: Shapes,
 }
 
 /// How a session stands, as a team counts it, worst first, and dormant
@@ -905,6 +909,7 @@ mod tests {
                 .parse::<jiff::Timestamp>()
                 .expect("a time")
                 .to_zoned(jiff::tz::TimeZone::UTC),
+            shapes: super::Shapes::default(),
         }
     }
 

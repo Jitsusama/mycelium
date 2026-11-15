@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use super::kept::{RECORD, answered, paths, pruned};
 use super::{Is, Mycelium, Shape, asks, cell, cells, network, overview};
 use crate::daemon::fields::{MOST_FIELDS, projected};
-use crate::swarm::{ASKS_FIT, Look, together};
+use crate::swarm::{ASKS_FIT, Look, Shapes, together};
 
 /// A look 80 columns wide, without colour, at 17:00 on Thursday
 /// 12 November 2026, in UTC.
@@ -18,6 +18,19 @@ fn look() -> Look {
             .parse::<jiff::Timestamp>()
             .expect("a time")
             .to_zoned(jiff::tz::TimeZone::UTC),
+        shapes: Shapes::default(),
+    }
+}
+
+/// The same look, with a theme marking a triangle `^` and a square `#`.
+fn marked() -> Look {
+    let theme = json!({"marks": {
+        "shapeTriangle": {"glyph": "^", "console": "A"},
+        "shapeSquare": {"glyph": "#", "console": "S"},
+    }});
+    Look {
+        shapes: Shapes::of(&theme, false),
+        ..look()
     }
 }
 
@@ -482,6 +495,31 @@ fn the_tree_draws_each_shape_its_networks_nested_and_the_machines() {
         shown.lines().collect::<Vec<_>>(),
         expected,
         "the tree:\n{shown}"
+    );
+}
+
+#[test]
+fn an_orchestration_wears_the_mark_its_shape_is_drawn_by() {
+    let mycelium = mycelium();
+    let tree = overview(&mycelium, &marked(), false, false);
+    assert!(
+        tree.lines()
+            .any(|line| line == "    kelp      ^ Kelp: Tides                     1")
+            && tree
+                .lines()
+                .any(|line| line.starts_with("  Harbour Ships ")),
+        "Kelp's triangle before its title, and none on Harbour, which has no shape:\n{tree}"
+    );
+    let kelp = network(&mycelium, "kelp", &marked(), false).expect("Kelp");
+    assert!(
+        kelp.starts_with("^ Kelp: Tides · orchestration kelp"),
+        "its heading wears it too:\n{kelp}"
+    );
+    let asking = mycelium.cell("ASKS01").expect("the asking session");
+    let joined = cell(&mycelium, asking, &marked());
+    assert!(
+        joined.lines().any(|line| line.ends_with("^ Kelp: Tides")),
+        "and so does the cell's list of its networks:\n{joined}"
     );
 }
 
