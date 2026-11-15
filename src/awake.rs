@@ -111,6 +111,9 @@ pub enum Kept {
     Stayed,
     /// It let the machine sleep.
     LetSleep,
+    /// Nothing here can keep it awake, as its keeper isn't installed,
+    /// which is said this once.
+    Cannot,
 }
 
 impl Awake {
@@ -424,6 +427,26 @@ mod tests {
             Kept::Stayed,
             "with nothing kept, nothing to let go"
         );
+    }
+
+    #[tokio::test]
+    async fn a_keeper_not_installed_is_said_once_and_never_asked_for_again() {
+        let mut awake = Awake::by(Some(vec![
+            "mycelium-test-no-such-keeper".to_owned(),
+            "cat".to_owned(),
+        ]));
+        assert_eq!(
+            awake.keep(true),
+            Kept::Cannot,
+            "asked first, it says it can't"
+        );
+        awake.keep(false);
+        assert_eq!(
+            awake.keep(true),
+            Kept::Stayed,
+            "asked for each hold after, it says nothing more and tries nothing"
+        );
+        assert_eq!(awake.keep(true), Kept::Stayed, "nor while it holds");
     }
 
     #[tokio::test]
