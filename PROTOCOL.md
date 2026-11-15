@@ -947,7 +947,8 @@ session says what became of them. Only a talk's delivered line marks
 them taken up: a session's presence is written for more than its turns,
 and an act such as a pause opens no talk, so it is never marked taken
 up. It changes with the sessions, so a talk written while no session
-changes shows with the next one that does. The node keeps them in
+changes shows with the next one that does; a talk is read again only
+once its file's length or time written moves. The node keeps them in
 `said.jsonl` in its own folder, readable by its account alone, and
 written again with its newest 500 once it passes 1,000 lines. They are
 this machine's own: no link carries them, and each machine serves only
@@ -979,7 +980,7 @@ A list naming `fields`, a list of paths of keys joined by dots such as
 with its `key` and `kind` always; a path a record lacks is left out
 rather than sent as null, and so is an object left empty. A reader of
 thousands of sessions needs a few dozen of each one's hundreds of
-fields: `mycelium networks` reads 29, about a quarter of a session's
+fields: `mycelium networks` reads 32, about a quarter of a session's
 bytes. Paths may not index lists, and more than 64 of them, or a path
 that isn't one, is `not-an-ask`. A watch sends records whole, as
 before.

@@ -11,9 +11,7 @@ use serde_json::{Value, json};
 
 use crate::group::Group;
 use crate::hold::Held;
-use crate::record::{
-    Doing, Event, EventKind, Intent, Landing, Message, Session, State, Want, Window,
-};
+use crate::record::{Doing, Event, Intent, Landing, Message, Session, State, Want, Window};
 use crate::store::Presence;
 use crate::wire::Draft;
 
@@ -426,6 +424,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::record::EventKind;
 
     #[test]
     fn only_changes_to_a_repositorys_files_go_to_other_machines() {

@@ -697,6 +697,8 @@ struct Shared<S> {
     logs: PathBuf,
     /// What the person said to sessions through it.
     words: Arc<words::Book>,
+    /// What their talks said when last read.
+    talks: Arc<words::Talks>,
     /// Held while the record of orchestrations is read and kept again, so
     /// two claims at once never undo each other.
     claiming: Arc<Mutex<()>>,
@@ -763,6 +765,7 @@ impl<S: Clone> Clone for Shared<S> {
             orchestrations: self.orchestrations.clone(),
             logs: self.logs.clone(),
             words: self.words.clone(),
+            talks: self.talks.clone(),
             claiming: self.claiming.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
@@ -790,8 +793,16 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             .served
             .kinds()
             .map(|kind| (kind.to_owned(), Vec::new()));
-        let [sessions, machines, messages, teams, networks, open, words, events] =
-            HOLDS.map(str::to_owned);
+        let [
+            sessions,
+            machines,
+            messages,
+            teams,
+            networks,
+            open,
+            words,
+            events,
+        ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
                 sessions,
@@ -1057,6 +1068,7 @@ impl<S: Store> Shared<S> {
             orchestrations,
             logs,
             words: Arc::new(words),
+            talks: Arc::default(),
             claiming: Arc::default(),
             client: None,
             served: Arc::new(Served::start(serves)),
@@ -1190,17 +1202,19 @@ impl<S: Store> Shared<S> {
     /// The person's words as the daemon interface holds them, each marked
     /// as its talk's file here says it was taken up and answered.
     fn word_records(&self) -> BTreeMap<String, serde_json::Value> {
-        self.words
-            .words()
-            .into_iter()
+        let words = self.words.words();
+        let talks: Vec<Option<PathBuf>> = words
+            .iter()
             .map(|word| {
-                let marks = word
-                    .talk
-                    .as_deref()
-                    .and_then(|talk| steer::replies(&self.steers, &word.address, talk))
-                    .and_then(|talk| fs::read_to_string(talk).ok())
-                    .map(|lines| words::Marks::of(&lines))
-                    .unwrap_or_default();
+                let talk = word.talk.as_deref()?;
+                steer::replies(&self.steers, &word.address, talk)
+            })
+            .collect();
+        let marks = self.talks.marks(talks.iter().map(Option::as_deref));
+        words
+            .into_iter()
+            .zip(marks)
+            .map(|(word, marks)| {
                 let heard = millis_at(&word.at);
                 let record = daemon::record(words::KIND, &word.id, heard, word.fields(&marks));
                 (daemon::key(words::KIND, &word.id), record)
@@ -4323,9 +4337,9 @@ mod tests {
     #[tokio::test]
     async fn a_watch_of_events_is_sent_each_thing_a_session_says_it_did() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         let hello = client.next().await;
@@ -4350,7 +4364,7 @@ mod tests {
                 "where": "github:Jitsusama/mycelium", "title": "Serve what waits"}],
         });
         store
-            .put_presence("there", "equilibrius", &presence)
+            .put_presence("there", "kestrel", &presence)
             .expect("the presence is kept");
         let arrived = client.next().await;
         let event = &arrived["changed"][0];

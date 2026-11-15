@@ -16,13 +16,14 @@
 //! the session runs. An act opens no talk, and a presence is written for
 //! more than a turn, so an act is never marked taken up.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::hash::{BuildHasher, RandomState};
 use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -231,6 +232,72 @@ impl Book {
     }
 }
 
+/// What each talk's file said when it was last read, so a file that
+/// hasn't moved is never read again: the sessions change with every
+/// presence written, and the words' records are made again each time.
+#[derive(Debug, Default)]
+pub struct Talks {
+    read: Mutex<Read>,
+}
+
+/// The talks read, and how many files were read in all.
+#[derive(Debug, Default)]
+struct Read {
+    talks: HashMap<PathBuf, (Seen, Marks)>,
+    files: u64,
+}
+
+/// How a talk's file stood when it was read: its length and when it was
+/// last written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Seen {
+    length: u64,
+    modified: Option<SystemTime>,
+}
+
+impl Talks {
+    /// What each talk at `paths` says became of its words, in the same
+    /// order, none for one with no file. A file whose length and time
+    /// written are as they were is not read again, and a talk not among
+    /// `paths` is let go, so only the words served are ever held.
+    pub fn marks<'a>(&self, paths: impl IntoIterator<Item = Option<&'a Path>>) -> Vec<Marks> {
+        let mut read = self.read.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut kept = HashMap::new();
+        let marks = paths
+            .into_iter()
+            .map(|path| {
+                let path = path?;
+                let file = fs::metadata(path).ok()?;
+                let seen = Seen {
+                    length: file.len(),
+                    modified: file.modified().ok(),
+                };
+                let marks = match read.talks.remove(path) {
+                    Some((was, marks)) if was == seen => marks,
+                    _ => {
+                        read.files += 1;
+                        Marks::of(&fs::read_to_string(path).unwrap_or_default())
+                    }
+                };
+                kept.insert(path.to_owned(), (seen, marks.clone()));
+                Some(marks)
+            })
+            .map(Option::unwrap_or_default)
+            .collect();
+        read.talks = kept;
+        marks
+    }
+
+    /// How many talks' files it has read.
+    #[must_use]
+    pub fn files_read(&self) -> u64 {
+        self.read
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .files
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +366,47 @@ mod tests {
             json!({"id": "said-1", "at": "2026-11-15T12:00:00Z", "address": "KESTRL",
                    "machine": "skiff", "text": "word 1", "talk": "said-1"}),
             "a talk not taken says only what was said"
+        );
+    }
+
+    #[test]
+    fn a_talk_is_read_again_only_once_its_file_moves() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (one, two) = (dir.path().join("one.jsonl"), dir.path().join("two.jsonl"));
+        let delivered = r#"{"stage":"delivered","at":"2026-11-15T12:00:05Z"}"#;
+        fs::write(&one, format!("{delivered}\n")).expect("a talk");
+        fs::write(&two, format!("{delivered}\n")).expect("another talk");
+        let talks = Talks::default();
+        let both = || [Some(one.as_path()), Some(two.as_path()), None];
+        let marks = talks.marks(both());
+        assert_eq!(
+            marks
+                .iter()
+                .map(|mark| mark.taken_up.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                Some("2026-11-15T12:00:05Z"),
+                Some("2026-11-15T12:00:05Z"),
+                None
+            ],
+            "each talk's marks, and none for words with no talk"
+        );
+        assert_eq!(talks.files_read(), 2, "each talk is read once");
+
+        let _ = talks.marks(both());
+        assert_eq!(
+            talks.files_read(),
+            2,
+            "a talk that hasn't moved isn't read again"
+        );
+
+        let replied = r#"{"stage":"replied","at":"2026-11-15T12:01:00Z"}"#;
+        fs::write(&two, format!("{delivered}\n{replied}\n")).expect("the talk goes on");
+        let marks = talks.marks(both());
+        assert_eq!(
+            (talks.files_read(), marks[1].answered.as_deref()),
+            (3, Some("2026-11-15T12:01:00Z")),
+            "only the talk whose file grew is read again, and says it was answered"
         );
     }
 }
