@@ -222,10 +222,10 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
 
 /// Joins `session` as [`join`] does, through a host that may be starting:
 /// while its socket is missing or refuses the connection, or it closes
-/// before answering, it tries again every `patience.every`, and once
-/// `patience.within` has passed, a try still waiting on its answer
-/// included, it answers [`Left::Gone`]. A host that is back and refuses
-/// the session ends the wait at once.
+/// or drops the try before answering, it tries again every
+/// `patience.every`, and once `patience.within` has passed, a try still
+/// waiting on its answer included, it answers [`Left::Gone`]. A host
+/// that is back and refuses the session ends the wait at once.
 ///
 /// # Errors
 ///
@@ -255,12 +255,18 @@ pub async fn join_again(
     }
 }
 
-/// Whether `error` connecting is a host not listening yet: its socket
-/// not made again, or made with nobody accepting on it.
+/// Whether `error` connecting is a host not listening yet, or still
+/// stopping: its socket not made again, made with nobody accepting on it,
+/// or the stopped host's still listening, as it does while a child forked
+/// before it closed holds a copy, which drops the try unread once that
+/// copy closes.
 fn starting(error: &io::Error) -> bool {
     matches!(
         error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+        io::ErrorKind::NotFound
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::BrokenPipe
     )
 }
 
@@ -609,6 +615,17 @@ mod tests {
         );
     }
 
+    /// Longer than any test here takes, so one that would wait for ever
+    /// fails rather than holding up the whole run.
+    const BOUND: Duration = Duration::from_secs(30);
+
+    /// Runs `test`, failing it once it has taken longer than [`BOUND`].
+    async fn bounded(test: impl Future<Output = ()>) {
+        tokio::time::timeout(BOUND, test)
+            .await
+            .expect("the test ended within its bound, not waiting for ever");
+    }
+
     /// What a host in a test does, in turn, once it has answered.
     enum Step {
         /// Waits for the viewer's next frame, keeping it.
@@ -705,175 +722,197 @@ mod tests {
 
     #[tokio::test]
     async fn a_viewer_types_and_shows_until_the_host_lets_it_go() {
-        let (_dir, path, serving) = host(
-            accepted(),
-            vec![
-                // What the viewer types comes before anything is sent back.
-                Step::Hear,
-                Step::Say(json!({"type": "output", "data": "hello ❄"})),
-                Step::Say(json!({"type": "detached", "reason": "Conversation closed"})),
-            ],
-        );
-        let (_tell, mut sizes) = mpsc::unbounded_channel();
-        let mut shown = Vec::new();
-        let mut here = Script::typing(b"\x1b[13u");
-        let left = join(&path, "s-1", SIZE, &mut here, &mut shown, &mut sizes)
-            .await
-            .expect("joined");
-        assert_eq!(left, Left::Detached("Conversation closed".to_owned()));
-        assert_eq!(
-            String::from_utf8_lossy(&shown),
-            "hello ❄",
-            "the screen's output, as sent"
-        );
-        assert_eq!(
-            serving.await.expect("the host ran"),
-            vec![
-                json!({"v": 1, "id": "attach", "op": "attach", "sessionId": "s-1",
+        bounded(async {
+            let (_dir, path, serving) = host(
+                accepted(),
+                vec![
+                    // What the viewer types comes before anything is sent back.
+                    Step::Hear,
+                    Step::Say(json!({"type": "output", "data": "hello ❄"})),
+                    Step::Say(json!({"type": "detached", "reason": "Conversation closed"})),
+                ],
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut shown = Vec::new();
+            let mut here = Script::typing(b"\x1b[13u");
+            let left = join(&path, "s-1", SIZE, &mut here, &mut shown, &mut sizes)
+                .await
+                .expect("joined");
+            assert_eq!(left, Left::Detached("Conversation closed".to_owned()));
+            assert_eq!(
+                String::from_utf8_lossy(&shown),
+                "hello ❄",
+                "the screen's output, as sent"
+            );
+            assert_eq!(
+                serving.await.expect("the host ran"),
+                vec![
+                    json!({"v": 1, "id": "attach", "op": "attach", "sessionId": "s-1",
                        "rows": 40, "columns": 120, "features": ["edit", "suspend"]}),
-                json!({"type": "input", "data": "\x1b[13u"}),
-            ],
-            "the attach at its size with what it can do, then the keys as typed"
-        );
+                    json!({"type": "input", "data": "\x1b[13u"}),
+                ],
+                "the attach at its size with what it can do, then the keys as typed"
+            );
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn a_viewer_whose_conversation_is_released_says_so_apart() {
-        let (_dir, path, _serving) = host(
-            accepted(),
-            vec![
-                Step::Hear,
-                Step::Say(json!({"type": "detached", "reason": "Conversation released"})),
-            ],
-        );
-        let (_tell, mut sizes) = mpsc::unbounded_channel();
-        let mut here = Script::typing(b"\x1b[13u");
-        let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
-            .await
-            .expect("joined");
-        assert_eq!(left, Left::Released, "a release, apart from a close");
+        bounded(async {
+            let (_dir, path, _serving) = host(
+                accepted(),
+                vec![
+                    Step::Hear,
+                    Step::Say(json!({"type": "detached", "reason": "Conversation released"})),
+                ],
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"\x1b[13u");
+            let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
+                .await
+                .expect("joined");
+            assert_eq!(left, Left::Released, "a release, apart from a close");
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn an_edit_the_host_asks_for_comes_back_as_the_editor_left_it() {
-        let (_dir, path, serving) = host(
-            accepted(),
-            vec![
-                Step::Hear,
-                Step::Say(json!({"type": "edit", "id": "e1", "text": "a draft"})),
-                Step::Hear,
-                Step::Say(json!({"type": "edit", "id": "e2", "text": "again"})),
-                Step::Hear,
-                Step::Say(json!({"type": "detached", "reason": "Conversation closed"})),
-            ],
-        );
-        let (_tell, mut sizes) = mpsc::unbounded_channel();
-        let mut here = Script::typing(b"\x07");
-        here.answers = [Some("a draft and more".to_owned()), None].into();
-        let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
-            .await
-            .expect("joined");
-        assert_eq!(left, Left::Detached("Conversation closed".to_owned()));
-        assert_eq!(
-            here.drafts,
-            ["a draft", "again"],
-            "each draft, in its editor"
-        );
-        let heard = serving.await.expect("the host ran");
-        assert_eq!(
-            heard[2..],
-            [
-                json!({"type": "edited", "id": "e1", "text": "a draft and more"}),
-                json!({"type": "edited", "id": "e2"}),
-            ],
-            "each edit's answer, with no text where the editor failed"
-        );
+        bounded(async {
+            let (_dir, path, serving) = host(
+                accepted(),
+                vec![
+                    Step::Hear,
+                    Step::Say(json!({"type": "edit", "id": "e1", "text": "a draft"})),
+                    Step::Hear,
+                    Step::Say(json!({"type": "edit", "id": "e2", "text": "again"})),
+                    Step::Hear,
+                    Step::Say(json!({"type": "detached", "reason": "Conversation closed"})),
+                ],
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"\x07");
+            here.answers = [Some("a draft and more".to_owned()), None].into();
+            let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
+                .await
+                .expect("joined");
+            assert_eq!(left, Left::Detached("Conversation closed".to_owned()));
+            assert_eq!(
+                here.drafts,
+                ["a draft", "again"],
+                "each draft, in its editor"
+            );
+            let heard = serving.await.expect("the host ran");
+            assert_eq!(
+                heard[2..],
+                [
+                    json!({"type": "edited", "id": "e1", "text": "a draft and more"}),
+                    json!({"type": "edited", "id": "e2"}),
+                ],
+                "each edit's answer, with no text where the editor failed"
+            );
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn a_host_that_suspends_the_viewer_lets_it_go_to_come_back() {
-        let (_dir, path, serving) = host(
-            accepted(),
-            vec![Step::Hear, Step::Say(json!({"type": "suspend"}))],
-        );
-        let (_tell, mut sizes) = mpsc::unbounded_channel();
-        let mut here = Script::typing(b"\x1a");
-        let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
-            .await
-            .expect("joined");
-        serving.await.expect("the host ran");
-        assert_eq!(left, Left::Suspended);
+        bounded(async {
+            let (_dir, path, serving) = host(
+                accepted(),
+                vec![Step::Hear, Step::Say(json!({"type": "suspend"}))],
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"\x1a");
+            let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
+                .await
+                .expect("joined");
+            serving.await.expect("the host ran");
+            assert_eq!(left, Left::Suspended);
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn a_frame_that_comes_in_pieces_between_keys_is_read_whole() {
-        let (mut near, far) = tokio::io::duplex(64);
-        let mut frames = Frames::new(BufReader::new(far));
-        near.write_all(br#"{"type": "out"#).await.expect("written");
-        let outran = tokio::select! {
-            biased;
-            _ = frames.next() => false,
-            () = std::future::ready(()) => true,
-        };
-        assert!(outran, "half a frame is no frame yet");
-        near.write_all(b"put\"}\n").await.expect("written");
-        assert_eq!(
-            frames.next().await.expect("read"),
-            Some(json!({"type": "output"})),
-            "the start read before is kept"
-        );
+        bounded(async {
+            let (mut near, far) = tokio::io::duplex(64);
+            let mut frames = Frames::new(BufReader::new(far));
+            near.write_all(br#"{"type": "out"#).await.expect("written");
+            let outran = tokio::select! {
+                biased;
+                _ = frames.next() => false,
+                () = std::future::ready(()) => true,
+            };
+            assert!(outran, "half a frame is no frame yet");
+            near.write_all(b"put\"}\n").await.expect("written");
+            assert_eq!(
+                frames.next().await.expect("read"),
+                Some(json!({"type": "output"})),
+                "the start read before is kept"
+            );
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn a_host_that_goes_away_mid_join_lets_the_viewer_go() {
-        let (_dir, path, serving) = host(
-            accepted(),
-            vec![
-                Step::Hear,
-                Step::Say(json!({"type": "title", "data": "a kind a later host might add"})),
-                Step::Say(json!({"type": "output", "data": "bye"})),
-            ],
-        );
-        // The terminal still has a size to say, so only the host ends it.
-        let (_tell, mut sizes) = mpsc::unbounded_channel();
-        let mut shown = Vec::new();
-        let mut here = Script::typing(b"x");
-        let left = join(&path, "s-1", SIZE, &mut here, &mut shown, &mut sizes)
-            .await
-            .expect("joined");
-        serving.await.expect("the host ran");
-        assert_eq!(
-            left,
-            Left::Gone,
-            "an unknown frame is passed over, and a closed connection says the host has gone"
-        );
-        assert_eq!(
-            String::from_utf8_lossy(&shown),
-            "bye",
-            "what it showed before it went"
-        );
+        bounded(async {
+            let (_dir, path, serving) = host(
+                accepted(),
+                vec![
+                    Step::Hear,
+                    Step::Say(json!({"type": "title", "data": "a kind a later host might add"})),
+                    Step::Say(json!({"type": "output", "data": "bye"})),
+                ],
+            );
+            // The terminal still has a size to say, so only the host ends it.
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut shown = Vec::new();
+            let mut here = Script::typing(b"x");
+            let left = join(&path, "s-1", SIZE, &mut here, &mut shown, &mut sizes)
+                .await
+                .expect("joined");
+            serving.await.expect("the host ran");
+            assert_eq!(
+                left,
+                Left::Gone,
+                "an unknown frame is passed over, and a closed connection says the host has gone"
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&shown),
+                "bye",
+                "what it showed before it went"
+            );
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn a_session_the_host_refuses_says_why() {
-        let (_dir, path, _serving) = host(
-            json!({"v": 1, "id": "attach", "ok": false,
+        bounded(async {
+            let (_dir, path, _serving) = host(
+                json!({"v": 1, "id": "attach", "ok": false,
                    "error": {"code": "not_found", "message": "Conversation is not hosted: s-9"}}),
-            Vec::new(),
-        );
-        let (_tell, mut sizes) = mpsc::unbounded_channel();
-        let mut here = Script::typing(b"");
-        let refused = join(&path, "s-9", SIZE, &mut here, Vec::new(), &mut sizes)
-            .await
-            .expect_err("refused");
-        assert_eq!(refused.to_string(), "Conversation is not hosted: s-9");
+                Vec::new(),
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"");
+            let refused = join(&path, "s-9", SIZE, &mut here, Vec::new(), &mut sizes)
+                .await
+                .expect_err("refused");
+            assert_eq!(refused.to_string(), "Conversation is not hosted: s-9");
+        })
+        .await;
     }
 
-    /// Trying often, for longer than any test takes.
+    /// Trying often, for longer than any test takes, and less long than
+    /// its bound, so a host that never answers is said to have gone.
     const PATIENT: Patience = Patience {
         every: Duration::from_millis(5),
-        within: Duration::from_secs(30),
-        hold: Duration::from_secs(30),
+        within: Duration::from_secs(20),
+        hold: Duration::from_secs(20),
     };
 
     fn restarting() -> Value {
@@ -886,153 +925,208 @@ mod tests {
 
     #[tokio::test]
     async fn a_host_that_says_it_is_restarting_lets_the_viewer_go_to_come_back() {
-        let (_dir, path, serving) = host(
-            accepted(),
-            vec![
-                Step::Hear,
-                Step::Say(json!({"type": "output", "data": "before"})),
-                Step::Say(restarting()),
-            ],
-        );
-        let (_tell, mut sizes) = mpsc::unbounded_channel();
-        let mut shown = Vec::new();
-        let mut here = Script::typing(b"x");
-        let left = join(&path, "s-1", SIZE, &mut here, &mut shown, &mut sizes)
-            .await
-            .expect("joined");
-        serving.await.expect("the host ran");
-        assert_eq!(
-            left,
-            Left::Restarting,
-            "a host that closes after saying it restarts is coming back"
-        );
-        assert_eq!(String::from_utf8_lossy(&shown), "before");
+        bounded(async {
+            let (_dir, path, serving) = host(
+                accepted(),
+                vec![
+                    Step::Hear,
+                    Step::Say(json!({"type": "output", "data": "before"})),
+                    Step::Say(restarting()),
+                ],
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut shown = Vec::new();
+            let mut here = Script::typing(b"x");
+            let left = join(&path, "s-1", SIZE, &mut here, &mut shown, &mut sizes)
+                .await
+                .expect("joined");
+            serving.await.expect("the host ran");
+            assert_eq!(
+                left,
+                Left::Restarting,
+                "a host that closes after saying it restarts is coming back"
+            );
+            assert_eq!(String::from_utf8_lossy(&shown), "before");
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn a_viewer_joins_the_same_conversation_again_once_its_host_is_back() {
-        let (_dir, path, first) = host(accepted(), vec![Step::Hear, Step::Say(restarting())]);
-        let (tell, mut sizes) = mpsc::unbounded_channel();
-        let mut here = Script::typing(b"x");
-        let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
-            .await
-            .expect("joined");
-        assert_eq!(left, Left::Restarting);
-        first.await.expect("the first host ran");
-
-        // The stopped host's socket stays behind with nobody accepting, so
-        // the first try is refused; the host comes back on the same path.
-        let resized = Size {
-            rows: 30,
-            cols: 100,
-        };
-        tell.send(resized).expect("a size");
-        let mut shown = Vec::new();
-        let mut here = Script::typing(b"");
-        let back = async {
-            std::fs::remove_file(&path).expect("the stopped host's socket");
-            let steps = vec![
-                Step::Hear,
-                Step::Say(json!({"type": "output", "data": "again"})),
-                Step::Say(closed()),
-            ];
-            serve(&path, accepted(), steps)
+        bounded(async {
+            let (_dir, path, first) = host(accepted(), vec![Step::Hear, Step::Say(restarting())]);
+            let (tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"x");
+            let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
                 .await
-                .expect("the restarted host ran")
-        };
-        let joining = join_again(
-            &path, "s-1", SIZE, &mut here, &mut shown, &mut sizes, PATIENT,
-        );
-        let (left, second) = tokio::join!(joining, back);
-        assert_eq!(
-            left.expect("joined again"),
-            Left::Detached("Conversation closed".to_owned())
-        );
-        assert_eq!(
-            String::from_utf8_lossy(&shown),
-            "again",
-            "the restarted host's screen"
-        );
-        assert_eq!(
-            second,
-            vec![
-                json!({"v": 1, "id": "attach", "op": "attach", "sessionId": "s-1",
+                .expect("joined");
+            assert_eq!(left, Left::Restarting);
+            first.await.expect("the first host ran");
+
+            // The stopped host's socket stays behind with nobody accepting, so
+            // the first try is refused; the host comes back on the same path.
+            let resized = Size {
+                rows: 30,
+                cols: 100,
+            };
+            tell.send(resized).expect("a size");
+            let mut shown = Vec::new();
+            let mut here = Script::typing(b"");
+            let back = async {
+                std::fs::remove_file(&path).expect("the stopped host's socket");
+                let steps = vec![
+                    Step::Hear,
+                    Step::Say(json!({"type": "output", "data": "again"})),
+                    Step::Say(closed()),
+                ];
+                serve(&path, accepted(), steps)
+                    .await
+                    .expect("the restarted host ran")
+            };
+            let joining = join_again(
+                &path, "s-1", SIZE, &mut here, &mut shown, &mut sizes, PATIENT,
+            );
+            let (left, second) = tokio::join!(joining, back);
+            assert_eq!(
+                left.expect("joined again"),
+                Left::Detached("Conversation closed".to_owned())
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&shown),
+                "again",
+                "the restarted host's screen"
+            );
+            assert_eq!(
+                second,
+                vec![
+                    json!({"v": 1, "id": "attach", "op": "attach", "sessionId": "s-1",
                        "rows": 40, "columns": 120, "features": ["edit", "suspend"]}),
-                json!({"type": "resize", "rows": 30, "columns": 100}),
-            ],
-            "the same conversation, then the size the terminal took while it waited"
-        );
+                    json!({"type": "resize", "rows": 30, "columns": 100}),
+                ],
+                "the same conversation, then the size the terminal took while it waited"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_try_a_stopping_host_drops_unread_is_made_again() {
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            // The stopped host's socket still listens while a copy of it is
+            // open, as one is in a child forked before it closed, until that
+            // child execs: the try is taken, and dropped unread, so the viewer
+            // reads that it was reset.
+            let stopping = UnixListener::bind(&path).expect("a socket");
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut shown = Vec::new();
+            let mut here = Script::typing(b"");
+            // The restarted host is awaited only once the viewer is done,
+            // so a viewer that gave up fails here rather than leaving it
+            // waiting.
+            let mut second = None;
+            let back = async {
+                let (dropped, _) = stopping.accept().await.expect("the try");
+                dropped.readable().await.expect("its attach");
+                drop((dropped, stopping));
+                std::fs::remove_file(&path).expect("the stopped host's socket");
+                second = Some(serve(&path, accepted(), vec![Step::Say(closed())]));
+            };
+            let joining = join_again(
+                &path, "s-1", SIZE, &mut here, &mut shown, &mut sizes, PATIENT,
+            );
+            let (left, ()) = tokio::join!(joining, back);
+            assert_eq!(
+                left.expect("joined again, not ended by the reset"),
+                Left::Detached("Conversation closed".to_owned())
+            );
+            second
+                .expect("the host came back")
+                .await
+                .expect("the restarted host ran");
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn a_restarted_host_that_refuses_the_conversation_ends_the_wait() {
-        let (_dir, path, _serving) = host(
-            json!({"v": 1, "id": "attach", "ok": false,
+        bounded(async {
+            let (_dir, path, _serving) = host(
+                json!({"v": 1, "id": "attach", "ok": false,
                    "error": {"code": "not_found", "message": "Conversation is not hosted: s-1"}}),
-            Vec::new(),
-        );
-        let (_tell, mut sizes) = mpsc::unbounded_channel();
-        let mut here = Script::typing(b"");
-        let refused = join_again(
-            &path,
-            "s-1",
-            SIZE,
-            &mut here,
-            Vec::new(),
-            &mut sizes,
-            PATIENT,
-        )
-        .await
-        .expect_err("refused at once, not waited out");
-        assert_eq!(refused.to_string(), "Conversation is not hosted: s-1");
+                Vec::new(),
+            );
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"");
+            let refused = join_again(
+                &path,
+                "s-1",
+                SIZE,
+                &mut here,
+                Vec::new(),
+                &mut sizes,
+                PATIENT,
+            )
+            .await
+            .expect_err("refused at once, not waited out");
+            assert_eq!(refused.to_string(), "Conversation is not hosted: s-1");
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn a_host_that_never_comes_back_has_gone() {
-        let dir = tempfile::tempdir().expect("a folder");
-        let path = dir.path().join("work-attended.sock");
-        let (_tell, mut sizes) = mpsc::unbounded_channel();
-        let mut here = Script::typing(b"");
-        let brief = Patience {
-            every: Duration::from_millis(5),
-            within: Duration::from_millis(20),
-            hold: Duration::from_secs(30),
-        };
-        let left = join_again(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes, brief)
-            .await
-            .expect("waited");
-        assert_eq!(left, Left::Gone, "no socket within its patience");
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"");
+            let brief = Patience {
+                every: Duration::from_millis(5),
+                within: Duration::from_millis(20),
+                hold: Duration::from_secs(30),
+            };
+            let left = join_again(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes, brief)
+                .await
+                .expect("waited");
+            assert_eq!(left, Left::Gone, "no socket within its patience");
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn a_host_that_accepts_and_never_answers_has_gone_within_its_patience() {
-        let dir = tempfile::tempdir().expect("a folder");
-        let path = dir.path().join("work-attended.sock");
-        // A socket held for a host that never starts, as systemd holds one:
-        // the connection is taken and nothing is ever said on it.
-        let listener = UnixListener::bind(&path).expect("a socket");
-        let holding = tokio::spawn(async move {
-            let (_held, _) = listener.accept().await.expect("a connection");
-            std::future::pending::<()>().await;
-        });
-        let (_tell, mut sizes) = mpsc::unbounded_channel();
-        let mut here = Script::typing(b"");
-        let brief = Patience {
-            every: Duration::from_millis(5),
-            within: Duration::from_millis(50),
-            hold: Duration::from_secs(30),
-        };
-        // Bounded far past its patience, so a try that waits for ever fails
-        // here rather than holding up the whole run.
-        let left = tokio::time::timeout(
-            Duration::from_secs(10),
-            join_again(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes, brief),
-        )
-        .await
-        .expect("ended with its patience, not waiting for ever on the answer")
-        .expect("waited");
-        assert_eq!(left, Left::Gone, "an unanswered try ends with its patience");
-        holding.abort();
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            // A socket held for a host that never starts, as systemd holds one:
+            // the connection is taken and nothing is ever said on it.
+            let listener = UnixListener::bind(&path).expect("a socket");
+            let holding = tokio::spawn(async move {
+                let (_held, _) = listener.accept().await.expect("a connection");
+                std::future::pending::<()>().await;
+            });
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"");
+            let brief = Patience {
+                every: Duration::from_millis(5),
+                within: Duration::from_millis(50),
+                hold: Duration::from_secs(30),
+            };
+            // Bounded far past its patience, so a try that waits for ever fails
+            // here rather than holding up the whole run.
+            let left = tokio::time::timeout(
+                Duration::from_secs(10),
+                join_again(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes, brief),
+            )
+            .await
+            .expect("ended with its patience, not waiting for ever on the answer")
+            .expect("waited");
+            assert_eq!(left, Left::Gone, "an unanswered try ends with its patience");
+            holding.abort();
+        })
+        .await;
     }
 
     /// Reads what `seen` is shown until it has shown `what`.
@@ -1054,82 +1148,88 @@ mod tests {
 
     #[tokio::test]
     async fn a_viewer_told_of_a_restart_keeps_what_it_would_send_for_the_next_host() {
-        let (go, going) = tokio::sync::oneshot::channel();
-        let (_dir, path, first) = host(
-            accepted(),
-            vec![
-                Step::Say(restarting()),
-                Step::Say(json!({"type": "output", "data": "told"})),
-                Step::Until(going),
-            ],
-        );
-        let (tell, mut sizes) = mpsc::unbounded_channel();
-        let (shown, mut seen) = tokio::io::duplex(1024);
-        let mut here = Script::typing(b"");
-        let resizing = async {
-            until_shown(&mut seen, "told").await;
-            tell.send(RESIZED).expect("a size");
-            go.send(()).expect("the host waits");
-        };
-        let joining = join_again(&path, "s-1", SIZE, &mut here, shown, &mut sizes, PATIENT);
-        let (left, ()) = tokio::join!(joining, resizing);
-        assert_eq!(left.expect("joined"), Left::Restarting);
-        first.await.expect("the first host ran");
+        bounded(async {
+            let (go, going) = tokio::sync::oneshot::channel();
+            let (_dir, path, first) = host(
+                accepted(),
+                vec![
+                    Step::Say(restarting()),
+                    Step::Say(json!({"type": "output", "data": "told"})),
+                    Step::Until(going),
+                ],
+            );
+            let (tell, mut sizes) = mpsc::unbounded_channel();
+            let (shown, mut seen) = tokio::io::duplex(1024);
+            let mut here = Script::typing(b"");
+            let resizing = async {
+                until_shown(&mut seen, "told").await;
+                tell.send(RESIZED).expect("a size");
+                go.send(()).expect("the host waits");
+            };
+            let joining = join_again(&path, "s-1", SIZE, &mut here, shown, &mut sizes, PATIENT);
+            let (left, ()) = tokio::join!(joining, resizing);
+            assert_eq!(left.expect("joined"), Left::Restarting);
+            first.await.expect("the first host ran");
 
-        std::fs::remove_file(&path).expect("the stopped host's socket");
-        let second = serve(&path, accepted(), vec![Step::Hear, Step::Say(closed())]);
-        let left = join_again(
-            &path,
-            "s-1",
-            SIZE,
-            &mut here,
-            Vec::new(),
-            &mut sizes,
-            PATIENT,
-        )
-        .await
-        .expect("joined again");
-        assert_eq!(left, Left::Detached("Conversation closed".to_owned()));
-        let heard = second.await.expect("the restarted host ran");
-        assert_eq!(
-            heard.get(1),
-            Some(&json!({"type": "resize", "rows": 30, "columns": 100})),
-            "the size taken while the host stopped goes to the next one"
-        );
+            std::fs::remove_file(&path).expect("the stopped host's socket");
+            let second = serve(&path, accepted(), vec![Step::Hear, Step::Say(closed())]);
+            let left = join_again(
+                &path,
+                "s-1",
+                SIZE,
+                &mut here,
+                Vec::new(),
+                &mut sizes,
+                PATIENT,
+            )
+            .await
+            .expect("joined again");
+            assert_eq!(left, Left::Detached("Conversation closed".to_owned()));
+            let heard = second.await.expect("the restarted host ran");
+            assert_eq!(
+                heard.get(1),
+                Some(&json!({"type": "resize", "rows": 30, "columns": 100})),
+                "the size taken while the host stopped goes to the next one"
+            );
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn a_host_that_stays_after_saying_it_restarts_is_sent_what_waited() {
-        let (_dir, path, serving) = host(
-            accepted(),
-            vec![
-                Step::Say(restarting()),
-                Step::Say(json!({"type": "output", "data": "told"})),
-                Step::Hear,
-                Step::Say(closed()),
-            ],
-        );
-        let (tell, mut sizes) = mpsc::unbounded_channel();
-        let (shown, mut seen) = tokio::io::duplex(1024);
-        let mut here = Script::typing(b"");
-        let brief = Patience {
-            hold: Duration::from_millis(20),
-            ..PATIENT
-        };
-        let resizing = async {
-            until_shown(&mut seen, "told").await;
-            tell.send(RESIZED).expect("a size");
-        };
-        let joining = join_again(&path, "s-1", SIZE, &mut here, shown, &mut sizes, brief);
-        let (left, ()) = tokio::join!(joining, resizing);
-        assert_eq!(
-            left.expect("joined"),
-            Left::Detached("Conversation closed".to_owned())
-        );
-        assert_eq!(
-            serving.await.expect("the host ran").get(1),
-            Some(&json!({"type": "resize", "rows": 30, "columns": 100})),
-            "once the hold has passed, the size waiting goes to the host that stayed"
-        );
+        bounded(async {
+            let (_dir, path, serving) = host(
+                accepted(),
+                vec![
+                    Step::Say(restarting()),
+                    Step::Say(json!({"type": "output", "data": "told"})),
+                    Step::Hear,
+                    Step::Say(closed()),
+                ],
+            );
+            let (tell, mut sizes) = mpsc::unbounded_channel();
+            let (shown, mut seen) = tokio::io::duplex(1024);
+            let mut here = Script::typing(b"");
+            let brief = Patience {
+                hold: Duration::from_millis(20),
+                ..PATIENT
+            };
+            let resizing = async {
+                until_shown(&mut seen, "told").await;
+                tell.send(RESIZED).expect("a size");
+            };
+            let joining = join_again(&path, "s-1", SIZE, &mut here, shown, &mut sizes, brief);
+            let (left, ()) = tokio::join!(joining, resizing);
+            assert_eq!(
+                left.expect("joined"),
+                Left::Detached("Conversation closed".to_owned())
+            );
+            assert_eq!(
+                serving.await.expect("the host ran").get(1),
+                Some(&json!({"type": "resize", "rows": 30, "columns": 100})),
+                "once the hold has passed, the size waiting goes to the host that stayed"
+            );
+        })
+        .await;
     }
 }
