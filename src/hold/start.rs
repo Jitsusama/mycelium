@@ -61,8 +61,19 @@ impl Scope {
             Self::Beside => "--slice-inherit",
         };
         let mut scoped = Command::new("systemd-run");
+        // systemd-run expands `${...}` in the command it runs unless told
+        // not to, which empties a shell's own `${4#~/}` before the shell
+        // sees it: a carried session started in the home folder rather
+        // than its own (14 November).
         scoped
-            .args(["--user", "--scope", "--collect", "--quiet", slice])
+            .args([
+                "--user",
+                "--scope",
+                "--collect",
+                "--quiet",
+                "--expand-environment=no",
+                slice,
+            ])
             .arg(format!("--unit=mycelium-pi-{id}"))
             .arg("--")
             .arg(program);
@@ -253,6 +264,7 @@ mod tests {
                 "--scope",
                 "--collect",
                 "--quiet",
+                "--expand-environment=no",
                 slice,
             ]
             .into_iter()
@@ -275,6 +287,26 @@ mod tests {
             scoped("--slice-inherit"),
             "a terminal's stays in the terminal's slice, weighed as it was"
         );
+    }
+
+    #[test]
+    fn a_scoped_holders_words_reach_its_shell_unexpanded() {
+        for scope in [Scope::Apart, Scope::Beside] {
+            let command = scope.command(Path::new("/bin/mycelium"), "f00d");
+            let words: Vec<_> = command
+                .get_args()
+                .map(|word| word.to_string_lossy())
+                .collect();
+            let program = words.iter().position(|word| word == "--");
+            let kept = words
+                .iter()
+                .position(|word| word == "--expand-environment=no");
+            assert!(
+                kept.is_some() && kept < program,
+                "systemd-run expands ${{...}} in what it runs unless told not to, which \
+                 emptied a carried session's folder (\"${{4#~/}}\"): {words:?}"
+            );
+        }
     }
 
     #[test]
