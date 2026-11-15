@@ -70,7 +70,13 @@ pub fn records(
                 .max()
                 .copied()
                 .unwrap_or_default();
-            let record = daemon::record(KIND, &network.name, latest, json_of(network));
+            let mut fields = json_of(network);
+            // Its own `kind` is the interface's, so is said once, not kept
+            // again under `source` as another's would be.
+            if let Some(fields) = fields.as_object_mut() {
+                fields.remove("kind");
+            }
+            let record = daemon::record(KIND, &network.name, latest, fields);
             (daemon::key(KIND, &network.name), record)
         })
         .collect()
