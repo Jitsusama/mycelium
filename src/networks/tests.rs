@@ -449,7 +449,7 @@ fn a_repository_is_titled_by_the_name_its_group_was_made_from() {
         (Some("Skiff.rs".to_owned()), None),
         "the first cell's name its group's spells, and none where no cell's does"
     );
-    let tree = overview(&mycelium, &look(), false);
+    let tree = overview(&mycelium, &look(), false, false);
     assert!(
         tree.contains("Skiff.rs") && !tree.contains("skiff-rs"),
         "drawn by its name, without the group's spelling of it again:\n{tree}"
