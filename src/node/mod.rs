@@ -2991,6 +2991,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_watch_of_networks_is_sent_each_network_as_the_networks_view_makes_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let at = jiff::Timestamp::now().to_string();
+        let put = |session: &str, groups: &[&str]| {
+            let presence = json!({
+                "session": session, "addresses": [session.to_uppercase()], "groups": groups,
+                "busy": true, "state": "busy", "at": at,
+            });
+            store
+                .put_presence(session, "equilibrius", &presence)
+                .expect("the presence is kept");
+        };
+        put("reef01", &["#repo/skiff", "#peer/reef01"]);
+        put("kelp01", &["#repo/skiff", "#harbor"]);
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert!(
+            hello["kinds"]["network"]["live"].is_array(),
+            "hello names networks among the kinds it holds: {hello}"
+        );
+
+        let mut listed = Vec::new();
+        for (id, kind) in [(2, "team"), (3, "session"), (4, "machine")] {
+            client
+                .ask(json!({"id": id, "ask": "list", "kind": kind}))
+                .await;
+            let answer = client.next().await;
+            listed.push(answer["records"].as_array().cloned().unwrap_or_default());
+        }
+        let made = crate::networks::Mycelium::of("work", &listed[0], &listed[1], &listed[2]);
+        let expected: BTreeMap<String, Value> = made
+            .networks
+            .iter()
+            .map(|network| (format!("network:{}", network.name), json!(network)))
+            .collect();
+        assert!(
+            expected.contains_key("network:repo.skiff") && expected.contains_key("network:harbor"),
+            "the sessions share a repository and a named group: {expected:?}"
+        );
+
+        client
+            .ask(json!({"id": 5, "ask": "watch", "kind": "network"}))
+            .await;
+        let whole = client.next().await;
+        let records = whole["records"]
+            .as_array()
+            .expect("the records come whole first");
+        assert!(
+            records.iter().all(|record| record["heard"].as_i64() > Some(0)),
+            "each network is heard as its cells last were: {whole}"
+        );
+        let served: BTreeMap<String, Value> = records
+            .iter()
+            .map(|record| {
+                let mut fields = record.clone();
+                let key = fields["key"].as_str().unwrap_or_default().to_owned();
+                if let Some(fields) = fields.as_object_mut() {
+                    fields.remove("key");
+                    fields.remove("heard");
+                }
+                (key, fields)
+            })
+            .collect();
+        assert_eq!(
+            served, expected,
+            "one record each, by its name, with the fields the networks view makes"
+        );
+
+        put("skiff01", &["#repo/skiff"]);
+        let mut changed = client.next().await;
+        let skiff = |changed: &Value| {
+            changed["changed"]
+                .as_array()
+                .and_then(|each| each.iter().find(|one| one["key"] == "network:repo.skiff"))
+                .cloned()
+        };
+        // The machines' network, counting every session, may be told first.
+        while skiff(&changed).is_none() {
+            changed = client.next().await;
+        }
+        assert_eq!(
+            skiff(&changed).map(|record| record["cells"].clone()),
+            Some(json!(["KELP01", "REEF01", "SKIFF01"])),
+            "a session joining a network is sent as what changed in it: {changed}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_watch_asked_when_told_moves_holds_back_what_only_an_open_launcher_shows() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("optimus").join("work.sock");
