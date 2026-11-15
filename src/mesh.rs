@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::group::Group;
 use crate::hold::Held;
-use crate::record::{Intent, Landing, Message, Session, State, Want, Window};
+use crate::record::{Doing, Event, Intent, Landing, Message, Session, State, Want, Window};
 use crate::store::Presence;
 use crate::wire::Draft;
 
@@ -200,6 +200,8 @@ pub fn session(presence: &Presence, here: &str) -> Option<Session> {
             .or_else(|| said.owns.into_iter().find(|owned| owned.starts_with(QUEST))),
         wants: said.wants,
         landings: landings(&said.landings),
+        doing: doing(&said.doing),
+        events: events(&said.events),
         window: said
             .terminal
             .filter(|_| presence.elsewhere.is_none())
@@ -342,6 +344,12 @@ struct Said {
     // Read one by one, so a landing it can't read costs only itself.
     #[serde(default)]
     landings: Value,
+    // Read by hand, so a plan's line it can't read costs only itself.
+    #[serde(default)]
+    doing: Value,
+    // Read one by one, so an event it can't read costs only itself.
+    #[serde(default)]
+    events: Value,
     terminal: Option<Terminal>,
     // The pi host it runs in among others, and its conversation there,
     // read field by field, so a part it can't read costs only that part.
@@ -359,6 +367,49 @@ fn landings(said: &Value) -> Vec<Landing> {
         .collect()
 }
 
+/// The most characters a line of a session's plan or event may hold.
+const LINE_MOST: usize = 120;
+
+/// The most events a session is heard saying.
+const EVENTS_MOST: usize = 20;
+
+/// What a presence says its plan does next, or nothing when it says
+/// nothing or something it can't read: a line past `LINE_MOST`, an empty
+/// plan or an instant that isn't one is not a plan's line.
+fn doing(said: &Value) -> Option<Doing> {
+    let doing = Doing::deserialize(said).ok()?;
+    let short = |line: &str| line.chars().count() <= LINE_MOST;
+    let readable = !doing.plan.is_empty()
+        && !doing.next.is_empty()
+        && short(&doing.next)
+        && doing.chose.as_deref().is_none_or(short)
+        && is_instant(&doing.at);
+    readable.then_some(doing)
+}
+
+/// The newest events a presence says, as it says them newest first,
+/// leaving out any it can't read and cutting a title past `LINE_MOST`.
+fn events(said: &Value) -> Vec<Event> {
+    said.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|event| Event::deserialize(event).ok())
+        .filter(|event| !event.place.is_empty() && is_instant(&event.at))
+        .map(|mut event| {
+            if let Some((cut, _)) = event.title.char_indices().nth(LINE_MOST) {
+                event.title.truncate(cut);
+            }
+            event
+        })
+        .take(EVENTS_MOST)
+        .collect()
+}
+
+/// Whether a presence's time is an RFC 3339 instant.
+fn is_instant(time: &str) -> bool {
+    time.parse::<jiff::Timestamp>().is_ok()
+}
+
 /// A session's window, as the harness's terminal driver names it.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -373,6 +424,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::record::EventKind;
 
     #[test]
     fn only_changes_to_a_repositorys_files_go_to_other_machines() {
@@ -655,6 +707,149 @@ mod tests {
         assert!(
             unread.is_some_and(|session| session.landings.is_empty()),
             "landings it can't read never cost the session itself"
+        );
+    }
+
+    #[test]
+    fn a_session_says_what_it_does_next_leaving_it_out_when_it_cant_be_read() {
+        let presence = |doing: Value| Presence {
+            session: "01a1".to_owned(),
+            body: json!({
+                "session": "01a1", "addresses": ["KESTRL"], "at": "2026-11-15T15:30:00Z",
+                "doing": doing,
+            })
+            .into(),
+            elsewhere: Some("skiff".to_owned()),
+            lives: true,
+            unreachable_since: None,
+        };
+        let doing = |said: Value| session(&presence(said), "kestrel").and_then(|it| it.doing);
+        let said = json!({"plan": "PLAN-20261115-8CYRTK", "item": 9,
+            "next": "Pass the doing through", "chose": "Leave out what can't be read",
+            "at": "2026-11-15T15:29:00Z"});
+        assert_eq!(
+            doing(said.clone()),
+            Some(Doing {
+                plan: "PLAN-20261115-8CYRTK".to_owned(),
+                item: Some(9),
+                next: "Pass the doing through".to_owned(),
+                chose: Some("Leave out what can't be read".to_owned()),
+                at: "2026-11-15T15:29:00Z".to_owned(),
+            }),
+            "a session elsewhere says what its plan does next and what it chose"
+        );
+        assert_eq!(
+            doing(json!({"plan": "PLAN-20261115-8CYRTK", "next": "Begin",
+                "at": "2026-11-15T15:29:00Z"}))
+            .map(|doing| (doing.item, doing.chose)),
+            Some((None, None)),
+            "its item and its choice may go unsaid"
+        );
+        let long = "a".repeat(121);
+        let unread = [
+            json!("not an object"),
+            json!({"plan": "PLAN-20261115-8CYRTK", "at": "2026-11-15T15:29:00Z"}),
+            json!({"plan": "PLAN-20261115-8CYRTK", "item": "nine", "next": "Begin",
+                "at": "2026-11-15T15:29:00Z"}),
+            json!({"plan": "PLAN-20261115-8CYRTK", "next": long,
+                "at": "2026-11-15T15:29:00Z"}),
+            json!({"plan": "PLAN-20261115-8CYRTK", "next": "Begin", "chose": long,
+                "at": "2026-11-15T15:29:00Z"}),
+            json!({"plan": "", "next": "Begin", "at": "2026-11-15T15:29:00Z"}),
+            json!({"plan": "PLAN-20261115-8CYRTK", "next": "Begin"}),
+        ];
+        for said in unread {
+            let read = session(&presence(said.clone()), "kestrel");
+            assert!(
+                read.as_ref().is_some_and(|it| it.doing.is_none()),
+                "{said} is left out, and never costs the session: {read:?}"
+            );
+        }
+        assert!(
+            session(
+                &Presence {
+                    body: json!({"session": "01a1", "addresses": ["KESTRL"],
+                        "at": "2026-11-15T15:30:00Z"})
+                    .into(),
+                    ..presence(Value::Null)
+                },
+                "kestrel"
+            )
+            .is_some_and(|it| it.doing.is_none()),
+            "a session saying nothing of it does nothing said"
+        );
+        let serialized =
+            serde_json::to_value(session(&presence(said), "kestrel").expect("a presence reads"))
+                .expect("a session serializes");
+        assert_eq!(
+            serialized["doing"]["next"],
+            json!("Pass the doing through"),
+            "a session's record says it: {serialized}"
+        );
+    }
+
+    #[test]
+    fn a_session_says_its_latest_events_leaving_out_what_cant_be_read() {
+        let presence = |events: Value| Presence {
+            session: "01a1".to_owned(),
+            body: json!({
+                "session": "01a1", "addresses": ["KESTRL"], "at": "2026-11-15T15:30:00Z",
+                "events": events,
+            })
+            .into(),
+            elsewhere: Some("skiff".to_owned()),
+            lives: true,
+            unreachable_since: None,
+        };
+        let event = |n: usize, kind: &str| {
+            json!({"at": format!("2026-11-15T15:{:02}:00Z", 59 - n), "kind": kind,
+                "where": "github:Jitsusama/mycelium", "title": format!("event {n}")})
+        };
+        let mut said: Vec<Value> = (0..25)
+            .map(|n| event(n, ["commit", "push", "pr", "merge", "stage"][n % 5]))
+            .collect();
+        said.insert(
+            1,
+            json!({"at": "2026-11-15T15:58:30Z", "kind": "lunch",
+            "where": "QEST-20261115-IAHL3O", "title": "not a kind there is"}),
+        );
+        said.insert(2, json!({"kind": "push", "where": "x", "title": "no time"}));
+        said[3]["title"] = json!("é".repeat(130));
+        let read = session(&presence(json!(said)), "kestrel").expect("a presence reads");
+        assert_eq!(
+            read.events
+                .iter()
+                .map(|event| event.at.as_str())
+                .collect::<Vec<_>>(),
+            (0..20)
+                .map(|n| format!("2026-11-15T15:{:02}:00Z", 59 - n))
+                .collect::<Vec<_>>(),
+            "its newest 20 it can read, newest first, and none it can't"
+        );
+        assert_eq!(
+            (
+                read.events[0].kind,
+                read.events[0].place.as_str(),
+                read.events[0].title.as_str()
+            ),
+            (EventKind::Commit, "github:Jitsusama/mycelium", "event 0"),
+            "each says what happened, where, and its title"
+        );
+        assert_eq!(
+            read.events[1].title,
+            "é".repeat(120),
+            "a long title is cut at 120 characters"
+        );
+        let serialized = serde_json::to_value(&read).expect("a session serializes");
+        assert_eq!(
+            serialized["events"][0],
+            event(0, "commit"),
+            "a session's record says them as its presence did: {serialized}"
+        );
+        assert!(
+            session(&presence(json!("not a list")), "kestrel")
+                .is_some_and(|session| session.events.is_empty()),
+            "events it can't read never cost the session itself"
         );
     }
 

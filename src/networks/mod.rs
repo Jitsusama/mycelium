@@ -42,6 +42,9 @@ pub struct Mycelium {
     pub networks: Vec<Network>,
     /// Every cell: the sessions running or dormant, then the machines.
     pub cells: Vec<Cell>,
+    /// What the sessions drawn say they did lately, newest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<EventLine>,
     /// Where each network and each cell is among them, by its name, so a
     /// view of thousands finds each one at once.
     #[serde(skip)]
@@ -243,6 +246,13 @@ pub struct Cell {
     /// The quest a session works on, by its id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quest: Option<String>,
+    /// What a session's plan does next and what it chose last, as its
+    /// presence's `doing` says: `plan`, `item`, `next`, `chose` and `at`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<Value>,
+    /// The folder a session works in, as an absolute path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     /// How a machine is, such as `ready`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
@@ -256,6 +266,26 @@ pub struct Cell {
     pub runs: Option<usize>,
     /// The networks it joined, by name.
     pub networks: Vec<String>,
+}
+
+/// One thing a session drawn says it did, as a line of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EventLine {
+    /// Always `event`, for a reader of mixed lines.
+    pub kind: &'static str,
+    /// The cell that did it, by its name.
+    pub cell: String,
+    /// Its session, by its id.
+    pub session: String,
+    /// When, as an RFC 3339 instant.
+    pub at: String,
+    /// What it did: `commit`, `push`, `pr`, `merge` or `stage`.
+    pub what: String,
+    /// Where: a repository by its key, or a quest by its id.
+    #[serde(rename = "where")]
+    pub place: String,
+    /// What it is, in one short line.
+    pub title: String,
 }
 
 /// What a session has spent today, as its presence says it.
@@ -332,6 +362,7 @@ impl Mycelium {
         let networks = self.networks.iter().map(|each| json!(each));
         networks
             .chain(self.cells.iter().map(|each| json!(each)))
+            .chain(self.events.iter().map(|each| json!(each)))
             .collect()
     }
 

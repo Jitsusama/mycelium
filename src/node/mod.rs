@@ -301,7 +301,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 7] = [
+pub const HOLDS: [&str; 8] = [
     "session",
     "machine",
     "message",
@@ -309,7 +309,12 @@ pub const HOLDS: [&str; 7] = [
     network::KIND,
     unanswered::KIND,
     words::KIND,
+    EVENT,
 ];
+
+/// The kind of record that is one thing a session did, as its presence's
+/// `events` says it.
+pub const EVENT: &str = "event";
 
 /// How many of each group's latest messages the daemon interface holds as
 /// `message` records: a conversation's recent tail, as a person reads it,
@@ -692,6 +697,8 @@ struct Shared<S> {
     logs: PathBuf,
     /// What the person said to sessions through it.
     words: Arc<words::Book>,
+    /// What their talks said when last read.
+    talks: Arc<words::Talks>,
     /// Held while the record of orchestrations is read and kept again, so
     /// two claims at once never undo each other.
     claiming: Arc<Mutex<()>>,
@@ -758,6 +765,7 @@ impl<S: Clone> Clone for Shared<S> {
             orchestrations: self.orchestrations.clone(),
             logs: self.logs.clone(),
             words: self.words.clone(),
+            talks: self.talks.clone(),
             claiming: self.claiming.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
@@ -785,7 +793,16 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             .served
             .kinds()
             .map(|kind| (kind.to_owned(), Vec::new()));
-        let [sessions, machines, messages, teams, networks, open, words] = HOLDS.map(str::to_owned);
+        let [
+            sessions,
+            machines,
+            messages,
+            teams,
+            networks,
+            open,
+            words,
+            events,
+        ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
                 sessions,
@@ -796,6 +813,8 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     "title",
                     "wants",
                     "landings",
+                    "doing",
+                    "events",
                     "working_on",
                     "presence",
                     "standing",
@@ -813,8 +832,9 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     "disk_band",
                 ],
             ),
-            // A message is said once and never changes.
+            // A message is said once and never changes, nor does an event.
             (messages, Vec::new()),
+            (events, Vec::new()),
             (teams, vec!["title", "worst", "counts", "members", "landed"]),
             (
                 networks,
@@ -859,6 +879,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             network::KIND => Some(self.network_records()),
             unanswered::KIND => Some(self.unanswered_records()),
             words::KIND => Some(self.word_records()),
+            EVENT => Some(self.event_records()),
             _ => self.served.records(kind),
         }
     }
@@ -869,7 +890,8 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // shows with the next change to any. A network also holds the
             // machines, which come and go far more seldom than sessions
             // change, so a machine come or gone shows with the next.
-            "session" | team::KIND | network::KIND => Some(self.said.sessions.subscribe()),
+            // An event comes with its session's presence.
+            "session" | team::KIND | network::KIND | EVENT => Some(self.said.sessions.subscribe()),
             "machine" => Some(self.said.machines.subscribe()),
             // What waits changes as messages come, and a peer's addresses,
             // which change far more seldom, show with the next message,
@@ -1046,6 +1068,7 @@ impl<S: Store> Shared<S> {
             orchestrations,
             logs,
             words: Arc::new(words),
+            talks: Arc::default(),
             claiming: Arc::default(),
             client: None,
             served: Arc::new(Served::start(serves)),
@@ -1179,17 +1202,19 @@ impl<S: Store> Shared<S> {
     /// The person's words as the daemon interface holds them, each marked
     /// as its talk's file here says it was taken up and answered.
     fn word_records(&self) -> BTreeMap<String, serde_json::Value> {
-        self.words
-            .words()
-            .into_iter()
+        let words = self.words.words();
+        let talks: Vec<Option<PathBuf>> = words
+            .iter()
             .map(|word| {
-                let marks = word
-                    .talk
-                    .as_deref()
-                    .and_then(|talk| steer::replies(&self.steers, &word.address, talk))
-                    .and_then(|talk| fs::read_to_string(talk).ok())
-                    .map(|lines| words::Marks::of(&lines))
-                    .unwrap_or_default();
+                let talk = word.talk.as_deref()?;
+                steer::replies(&self.steers, &word.address, talk)
+            })
+            .collect();
+        let marks = self.talks.marks(talks.iter().map(Option::as_deref));
+        words
+            .into_iter()
+            .zip(marks)
+            .map(|(word, marks)| {
                 let heard = millis_at(&word.at);
                 let record = daemon::record(words::KIND, &word.id, heard, word.fields(&marks));
                 (daemon::key(words::KIND, &word.id), record)
@@ -1308,6 +1333,30 @@ impl<S: Store> Shared<S> {
         }
         let record = daemon::record(kind, &session.id, heard, fields);
         (daemon::key(kind, &session.id), record)
+    }
+
+    /// Each event the realm's sessions say, keyed by its session and its
+    /// time, with the session's address as its cell.
+    fn event_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let sessions = self.lock().state.sessions();
+        sessions
+            .iter()
+            .flat_map(|session| {
+                session.events.iter().map(move |event| {
+                    let id = format!("{}:{}", session.id, event.at);
+                    let fields = serde_json::json!({
+                        "cell": session.address,
+                        "session": session.id,
+                        "at": event.at,
+                        "what": event.kind,
+                        "where": event.place,
+                        "title": event.title,
+                    });
+                    let record = daemon::record(EVENT, &id, millis_at(&event.at), fields);
+                    (daemon::key(EVENT, &id), record)
+                })
+            })
+            .collect()
     }
 
     /// Reads a message that landed and sends it to those who hear it.
@@ -4282,6 +4331,61 @@ mod tests {
             ),
             (&json!(4), &json!("session:there"), &json!(false)),
             "a session arriving is sent, saying it runs elsewhere: {arrived}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_watch_of_events_is_sent_each_thing_a_session_says_it_did() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert_eq!(
+            hello["kinds"]["event"]["live"],
+            json!([]),
+            "an event never changes: {hello}"
+        );
+
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "event"}))
+            .await;
+        assert_eq!(
+            client.next().await,
+            json!({"id": 2, "records": []}),
+            "no session has done anything yet"
+        );
+        let presence = json!({
+            "session": "there", "addresses": ["THERE1"], "groups": [],
+            "state": "busy", "at": jiff::Timestamp::now().to_string(),
+            "events": [{"at": "2026-11-15T15:40:00Z", "kind": "merge",
+                "where": "github:Jitsusama/mycelium", "title": "Serve what waits"}],
+        });
+        store
+            .put_presence("there", "kestrel", &presence)
+            .expect("the presence is kept");
+        let arrived = client.next().await;
+        let event = &arrived["changed"][0];
+        assert_eq!(
+            (
+                &event["key"],
+                &event["cell"],
+                &event["session"],
+                &event["what"],
+                &event["where"],
+                &event["title"],
+            ),
+            (
+                &json!("event:there:2026-11-15T15:40:00Z"),
+                &json!("THERE1"),
+                &json!("there"),
+                &json!("merge"),
+                &json!("github:Jitsusama/mycelium"),
+                &json!("Serve what waits"),
+            ),
+            "an event arrives with its session's presence, as its cell: {arrived}"
         );
     }
 

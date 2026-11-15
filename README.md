@@ -79,9 +79,12 @@ The harness mesh's messages and presence, carried between machines:
   standing so. `-w` on either draws it again in place every two
   seconds, as it changes, until stopped. Both print JSON lines with
   `-o json`, networks first,
-  then cells, the model a page draws the mycelium from: a session's
-  cell also says its id, what it asks, its repository, its usage today
-  and the orchestrations it leads. `mycelium networks -o json --counts`
+  then cells, then what the cells did, the model a page draws the
+  mycelium from: a session's cell also says its id, what it asks, its
+  repository, the folder it works in as `cwd`, its plan's next line and
+  last choice as `plan`, its usage today and the orchestrations it
+  leads, and each `event` line says a cell's commit, push, change
+  proposed or merged, or stage moved, newest first. `mycelium networks -o json --counts`
   prints the networks alone, a summary for an agent to read.
 - `mycelium swarm say <NAME> <WORDS>` says something as the person to
   a team, which its lead hears, or to one session;

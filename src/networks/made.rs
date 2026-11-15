@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Cell, Is, MACHINES, Mycelium, Network, Places, Shape, Usage, kept};
+use super::{Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Usage, kept};
 use crate::swarm::{self, Standing};
 
 impl Mycelium {
@@ -48,7 +48,9 @@ impl Mycelium {
             cells: mut sessions,
             quests,
             renamed,
+            mut events,
         } = sessions;
+        events.sort_by(|one, other| other.at.cmp(&one.at).then(one.cell.cmp(&other.cell)));
         // A team under an address its orchestrator was renamed from is one
         // a node too old to fold them still says; its sessions are drawn in
         // the orchestrator's own.
@@ -107,6 +109,7 @@ impl Mycelium {
             places: Places::of(&networks, &cells),
             networks,
             cells,
+            events,
         }
     }
 }
@@ -150,13 +153,14 @@ pub(super) fn asks() -> [Value; 3] {
 }
 
 /// What a node's sessions make, read one by one: their cells, the titles
-/// of the quests they work on, and the addresses orchestrators were
-/// renamed from.
+/// of the quests they work on, the addresses orchestrators were renamed
+/// from, and what the cells drawn say they did.
 #[derive(Default)]
 struct Sessions {
     cells: Vec<Cell>,
     quests: BTreeMap<String, String>,
     renamed: BTreeMap<String, String>,
+    events: Vec<EventLine>,
 }
 
 impl Sessions {
@@ -169,8 +173,32 @@ impl Sessions {
             self.quests.insert(short.to_lowercase(), title.to_owned());
         }
         renamed_by(session, &mut self.renamed);
-        self.cells.extend(session_cell(session));
+        let Some(cell) = session_cell(session) else {
+            return;
+        };
+        self.events.extend(events_of(session, &cell));
+        self.cells.push(cell);
     }
+}
+
+/// The events a session record says, each a line of `cell`'s.
+fn events_of<'a>(session: &'a Value, cell: &'a Cell) -> impl Iterator<Item = EventLine> + 'a {
+    session["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(move |event| {
+            let text = |field: &str| event[field].as_str().map(str::to_owned);
+            Some(EventLine {
+                kind: "event",
+                cell: cell.name.clone(),
+                session: cell.id.clone()?,
+                at: text("at")?,
+                what: text("kind")?,
+                place: text("where")?,
+                title: text("title")?,
+            })
+        })
 }
 
 /// A session record as a cell, or none for one that has ended.
@@ -202,6 +230,11 @@ fn session_cell(session: &Value) -> Option<Cell> {
         machine: text("machine"),
         since: session["id"].as_str().and_then(begun),
         quest: text("quest"),
+        plan: session
+            .get("doing")
+            .filter(|doing| doing.is_object())
+            .cloned(),
+        cwd: session["presence"]["cwd"].as_str().map(str::to_owned),
         state: None,
         busy: None,
         runs: None,
@@ -250,6 +283,8 @@ fn machine_cell(machine: &Value, runs: &HashMap<&str, usize>) -> Cell {
         machine: None,
         since: None,
         quest: None,
+        plan: None,
+        cwd: None,
         state: machine["state"].as_str().map(str::to_owned),
         busy: machine["room"]["pressure"]["cpu"].as_f64(),
         runs: Some(runs),

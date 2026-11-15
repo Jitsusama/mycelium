@@ -464,6 +464,80 @@ fn json_lines_say_each_network_then_each_cell() {
 }
 
 #[test]
+fn json_lines_say_each_cells_plan_and_folder_then_what_the_cells_did_newest_first() {
+    let doing = json!({"plan": "PLAN-20261115-8CYRTK", "item": 9,
+                       "next": "Serve the events", "at": "2026-11-15T15:50:00Z"});
+    let mut busy = session("REEF01", 1, "Reef", "busy", &[]);
+    busy["doing"] = doing.clone();
+    busy["presence"] = json!({"cwd": "/home/kestrel/src/skiff"});
+    busy["events"] = json!([
+        {"at": "2026-11-15T15:40:00Z", "kind": "push",
+         "where": "github:kestrel/skiff", "title": "Push the oars"},
+        {"at": "2026-11-15T15:20:00Z", "kind": "commit",
+         "where": "github:kestrel/skiff", "title": "Carve the oars"},
+    ]);
+    let mut idle = session("REEF02", 2, "Reef too", "idle", &[]);
+    idle["events"] = json!([{"at": "2026-11-15T15:30:00Z", "kind": "stage",
+                             "where": "QEST-20261112-HARBOR", "title": "build"}]);
+    let mut ended = session("REEF03", 3, "Reef gone", "ended", &[]);
+    ended["events"] = json!([{"at": "2026-11-15T15:45:00Z", "kind": "merge",
+                              "where": "github:kestrel/skiff", "title": "Gone"}]);
+    let mycelium = Mycelium::of("work", &[], &[busy, idle, ended], &[]);
+    let reef = mycelium.cell("REEF01").expect("the busy cell");
+    assert_eq!(
+        (&reef.plan, reef.cwd.as_deref()),
+        (&Some(doing), Some("/home/kestrel/src/skiff")),
+        "a cell says its plan's line and the folder it works in"
+    );
+    assert_eq!(
+        mycelium.cell("REEF02").map(|cell| (&cell.plan, &cell.cwd)),
+        Some((&None, &None)),
+        "and says neither where its presence doesn't"
+    );
+    let events: Vec<Value> = mycelium
+        .lines()
+        .into_iter()
+        .filter(|line| line["kind"] == "event")
+        .collect();
+    assert_eq!(
+        events.first(),
+        Some(&json!({"kind": "event", "cell": "REEF01",
+                     "session": "01a1d045-d581-7000-8000-000000000000",
+                     "at": "2026-11-15T15:40:00Z", "what": "push",
+                     "where": "github:kestrel/skiff", "title": "Push the oars"})),
+        "an event is a line of its own, after the cells"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .map(|line| (&line["cell"], &line["what"]))
+            .collect::<Vec<_>>(),
+        [
+            (&json!("REEF01"), &json!("push")),
+            (&json!("REEF02"), &json!("stage")),
+            (&json!("REEF01"), &json!("commit")),
+        ],
+        "newest first across the cells, none of a session that has ended"
+    );
+    assert_eq!(
+        mycelium.lines().last().map(|line| line["kind"].clone()),
+        Some(json!("event")),
+        "the events follow every cell"
+    );
+}
+
+#[test]
+fn a_networks_ask_reads_what_a_cell_says_it_does_and_did() {
+    let asked = paths(&RECORD);
+    for field in ["doing", "events", "presence.cwd"] {
+        assert!(
+            asked.iter().any(|path| path == field),
+            "{field} is asked of the node: {asked:?}"
+        );
+    }
+}
+
+#[test]
 fn a_repository_is_titled_by_the_name_its_group_was_made_from() {
     let in_repo = |address: &str, n: u8, repo: Option<&str>| {
         let mut cell = session(address, n, address, "idle", &["repo.skiff-rs", "repo.oars"]);
