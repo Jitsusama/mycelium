@@ -1,4 +1,4 @@
-//! A machine made for a start that may cost money: optimus's node asks a
+//! A machine made for a start that may cost money: skiff's node asks a
 //! provider's program what it offers, makes the one machine that would
 //! take the work, links it through the program, starts the work there, and
 //! lets it go at its time, or once it has handed over after its work,
@@ -138,7 +138,7 @@ fn provider(root: &Path, lent: &Path, until: jiff::Timestamp) -> PathBuf {
     program
 }
 
-/// Two nodes, optimus's asking `program` and lent's, until dropped.
+/// Two nodes, skiff's asking `program` and lent's, until dropped.
 fn nodes(home: &Path, lent: &Path, program: &Path) -> (Running, Running) {
     let lent_node = Running(
         mycelium(lent)
@@ -153,12 +153,12 @@ fn nodes(home: &Path, lent: &Path, program: &Path) -> (Running, Running) {
                 "work",
                 "node",
                 "--machine",
-                "optimus",
+                "skiff",
                 "--provider",
             ])
             .arg(program)
             .spawn()
-            .expect("optimus's node starts"),
+            .expect("skiff's node starts"),
     );
     for at in [home, lent] {
         let socket = at.join("r").join("mycelium").join("work.sock");
@@ -167,7 +167,7 @@ fn nodes(home: &Path, lent: &Path, program: &Path) -> (Running, Running) {
     (lent_node, node)
 }
 
-/// Starts work that ends at once, as optimus's may cost and lent alone
+/// Starts work that ends at once, as skiff's may cost and lent alone
 /// reaches, answering where it started.
 fn start(home: &Path) -> serde_json::Value {
     let (answered, answer) = mpsc::channel();
@@ -190,7 +190,7 @@ fn start(home: &Path) -> serde_json::Value {
     serde_json::from_slice(&started.stdout).expect("the start says what it did")
 }
 
-/// The book at optimus's `home`, once it holds a make and a release.
+/// The book at skiff's `home`, once it holds a make and a release.
 fn book(home: &Path, within: Duration) -> Vec<serde_json::Value> {
     let book = home.join("s").join("mycelium").join("made.jsonl");
     heard(home, &book, within, |text| {

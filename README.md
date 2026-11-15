@@ -106,7 +106,7 @@ such as hosted sandboxes.
 ```sh
 # On each machine the node reaches, only the command is needed.
 # On the machine that dials:
-mycelium --realm work node --ssh joel.gerber@192.168.4.32
+mycelium --realm work node --ssh jsama@192.0.2.32
 
 # Then, on either machine, share a quest with every machine it links:
 mycelium --realm work share QEST-20261013-4UHC5Q

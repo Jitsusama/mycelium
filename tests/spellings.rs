@@ -25,7 +25,7 @@ fn an_old_spelling_says_what_its_tree_says() {
         ("attach h0", "holds h0 attach"),
         ("attach h0", "hold h0 attach"),
         ("again h0 -- pi", "holds h0 again -- pi"),
-        ("machine penelope", "machines penelope"),
+        ("machine tern", "machines tern"),
         ("network grow", "networks grow"),
         ("network --json", "networks -o json"),
         ("cell QQ1UAK", "cells QQ1UAK"),

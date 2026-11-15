@@ -3,12 +3,12 @@
 
 use std::process::{Command, Output};
 
-/// Runs `mycelium --realm work ssh --from equilibrius` with mycelium's
+/// Runs `mycelium --realm work ssh --from kestrel` with mycelium's
 /// folder and runtime folder in `dir`, as SSH runs it for a client asking
 /// `asked`.
 fn asking(dir: &std::path::Path, asked: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_mycelium"))
-        .args(["--realm", "work", "ssh", "--from", "equilibrius", "--state"])
+        .args(["--realm", "work", "ssh", "--from", "kestrel", "--state"])
         .arg(dir)
         .env("SSH_ORIGINAL_COMMAND", asked)
         .env("XDG_RUNTIME_DIR", dir)
@@ -32,7 +32,7 @@ fn a_key_asking_anything_but_a_link_or_an_attach_is_refused_and_kept() {
     assert_eq!(
         (&line["from"], &line["asked"]),
         (
-            &serde_json::json!("equilibrius"),
+            &serde_json::json!("kestrel"),
             &serde_json::json!("sh -c id")
         ),
         "whose key asked what: {kept}"
