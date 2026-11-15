@@ -395,7 +395,10 @@ session says of itself:
   the process is pi's own, with no other session claiming it. Either
   way, that process must hold the session's log open, as pi does each
   it owns: `<time>_<session>.jsonl` in a folder of pi's `sessions`, by
-  the real path the kernel gives in `/proc/<pid>/fd`. One filed
+  the real path the kernel gives in `/proc/<pid>/fd`. Any process of
+  the person's account may open that file, so this keeps one session
+  from being taken for another by confusion, not by a helper set on
+  it: the fence is the boundary against that. One filed
   under another session's id owns nothing, and two presences claiming
   one session refuse the carry outright. Where one pi hosts several sessions,
   the asker's own `PI_SESSION_ID`, read from its process, says which,
@@ -412,8 +415,9 @@ session says of itself:
   only that session hands it on, by forgetting it, or by being
   continued, as a session whose log's first line, `<time>_<id>.jsonl`
   under pi's `sessions` folder, names it as `parentSession`. What a
-  session claimed lapses once it neither runs nor waits parked, so an
-  orchestrator started afresh claims its quests again; and the person's
+  session claimed lapses once it neither runs nor waits parked, as the
+  record is next read or changed, so an orchestrator started afresh
+  claims its quests again and one ended holds nothing; and the person's
   own login, never an agent's, frees a quest from whichever session
   holds it with `{"Free": {"quest"}}`, whole where that session heads
   it. The file is the node's state, never written by hand; a fenced
@@ -431,6 +435,16 @@ session says of itself:
   `groups`, at least one does for each, and so does the asker for its
   own. Pi works both out from the quests' front matter, so they check
   the node's record and never prove it.
+- The ground it lands on is at least as firm: `to` is another of this
+  realm's machines, in reach, whose `declared` `fence` runs sessions
+  in the fence the carried session's presence names as its `fence`
+  (`none`, `fence` or `strict`), and this machine's own declaration
+  runs that fence too, with no door of it there wider than here: each
+  of its `builders`, `forges` and `secrets` is one here's opens. A
+  session that names no fence, or a machine that declares none for it,
+  is refused, since where it lands can't be told. A refusal names the
+  doors that are wider, as `penelope's strictly fenced session opens
+  builders cloud, which here's doesn't`.
 
 A refusal says why and who could order it, as `OSPHT4 doesn't
 orchestrate QEST-... by this node's record, so it can't order its
@@ -675,7 +689,14 @@ machine does its host, and a file the two share, `{"machine": "...",
 last said them there, while that is under two minutes old, since it
 reads neither of its own truly. A host declares each machine within it
 in `hosts`, in the same shape, and its node writes its `power` and
-`room` to each file each minute, whole. Only
+`room` to each file each minute, whole.
+Where given, `fence` says the fences an agent session runs in there, by
+kind (`none`, `fence` or `strict`), each with the doors it opens:
+`{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,
+each door by the name the machine's configuration gives it. A fence
+missing a door, or of a kind this build doesn't know, is read as no
+fence, spoiling nothing else declared; a carry an orchestrator orders
+lands only where it says one (A Carry an Orchestrator Orders). Only
 the machine's own built configuration writes it, as
 `~/.config/mycelium/declared.json` (or under `XDG_CONFIG_HOME`), and
 the machine enforces its own taints. It is `null` where nothing is

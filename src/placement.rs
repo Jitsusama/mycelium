@@ -528,6 +528,7 @@ mod tests {
                 leaves_at: None,
                 within: None,
                 hosts: Vec::new(),
+                fence: None,
             }),
             ..facts::measure(name, &nowhere)
         }
