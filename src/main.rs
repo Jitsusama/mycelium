@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -867,11 +868,34 @@ fn main() -> ExitCode {
     };
     match run(realm, socket, action) {
         Ok(code) => code,
+        Err(error) if reader_left(&error, io::stdout()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("mycelium: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Whether `error` is `out`'s reader having gone, as when `| head` has
+/// read all it wanted. The answer was taken as far as it was wanted, so
+/// nothing is said and the command succeeds. A broken pipe while `out`
+/// is still read is the node hanging up, and is said.
+fn reader_left(error: &io::Error, out: impl AsFd) -> bool {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    if error.kind() != io::ErrorKind::BrokenPipe {
+        return false;
+    }
+    // A pipe's writing end polls as an error once nothing reads it, so
+    // the look is at `out` itself rather than at whatever broke.
+    let mut looked = [PollFd::new(&out, PollFlags::OUT)];
+    let now = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    poll(&mut looked, Some(&now)).is_ok()
+        && looked[0]
+            .revents()
+            .intersects(PollFlags::ERR | PollFlags::HUP)
 }
 
 fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Result<ExitCode> {
@@ -1775,7 +1799,28 @@ fn intent(name: &str) -> Result<Intent, String> {
 mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Action, Command, HELP_WIDTH, SwarmAsked, Tree, in_place, swarm_asked, tree};
+    use std::io;
+
+    use super::{
+        Action, Command, HELP_WIDTH, SwarmAsked, Tree, in_place, reader_left, swarm_asked, tree,
+    };
+
+    #[test]
+    fn a_reader_that_left_ends_the_answer_quietly_and_only_it() {
+        let broken = io::Error::from(io::ErrorKind::BrokenPipe);
+        let (reader, gone) = io::pipe().expect("a pipe");
+        drop(reader);
+        let (_reading, read) = io::pipe().expect("a pipe");
+        assert_eq!(
+            (
+                reader_left(&broken, &gone),
+                reader_left(&broken, &read),
+                reader_left(&io::Error::other("refused"), &gone),
+            ),
+            (true, false, false),
+            "quiet only for a broken pipe whose reader has gone, not the node hanging up"
+        );
+    }
 
     #[test]
     fn a_watch_draws_over_the_last_drawing_and_never_scrolls() {
