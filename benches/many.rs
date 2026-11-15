@@ -26,7 +26,6 @@
 //! ```
 
 use std::error::Error;
-use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -34,6 +33,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use std::{env, fs};
 
 use clap::Parser;
 use mycelium::daemon::fields;
@@ -100,12 +100,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("{}", load());
     println!(
         "{:>6} {:>5} {:>6}  {:<22} {:>9} {:>8} {:>9}",
-        "cells", "nets", "sent", "view", "ms", "peak MB", "printed"
+        "cells", "nets", "whole", "view", "ms", "peak MB", "printed"
     );
     for cells in asked.cells {
         let made = Made::of(cells);
         let socket = folder.path().join(format!("{cells}.sock"));
-        let sent = made.serve(&socket, asked.older)?;
+        let whole = made.serve(&socket, asked.older)?;
         let network = made.busiest.clone();
         let cell = made.addresses[cells / 2].clone();
         let views: [(&str, Vec<&str>); 7] = [
@@ -122,7 +122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!(
                 "{cells:>6} {:>5} {:>5}M  {view:<22} {:>9.1} {:>8} {:>9}",
                 made.networks,
-                sent / 1_000_000,
+                whole / 1_000_000,
                 measured.took.as_secs_f64() * 1000.0,
                 measured
                     .peak
@@ -205,8 +205,14 @@ fn measure(mycelium: &Path, socket: &Path, words: &[&str], runs: usize) -> io::R
     })
 }
 
-/// The most memory process `pid` has held, in bytes, as Linux says.
+/// The most memory process `pid` has held, in bytes, as Linux says; none
+/// while it is still this bench, forked and not yet running what it was
+/// spawned to run, since until then it reports this bench's own memory.
 fn high_water(pid: u32) -> Option<u64> {
+    let running = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    if env::current_exe().is_ok_and(|bench| bench == running) {
+        return None;
+    }
     let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     let line = status.lines().find(|line| line.starts_with("VmHWM:"))?;
     let kilobytes: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
