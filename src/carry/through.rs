@@ -5,7 +5,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -101,27 +101,11 @@ impl Hands for Through {
     }
 
     fn done(&mut self) -> Result<Vec<Done>, String> {
-        let entries = match fs::read_dir(&self.handover) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(format!("{}: {error}", self.handover.display())),
-        };
-        let mut done = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let named = path.file_name().and_then(OsStr::to_str).unwrap_or("");
-            if !named.ends_with(".done.json") {
-                continue;
-            }
-            let read = fs::read_to_string(&path)
-                .map_err(|error| format!("{}: {error}", path.display()))?;
-            let one: Done = serde_json::from_str(&read).map_err(|error| {
-                format!("{} isn't a carry's done file: {error}", path.display())
-            })?;
-            done.push(one);
-        }
-        done.sort_by(|one, other| one.session.cmp(&other.session));
-        Ok(done)
+        unstarted(&self.handover)
+    }
+
+    fn started(&mut self, one: &Done) -> Result<(), String> {
+        mark_started(&self.handover, &one.session)
     }
 
     fn carry_rest(&mut self, quest: &str, to: &str) -> Result<(), String> {
@@ -163,6 +147,64 @@ impl Hands for Through {
     }
 }
 
+/// What a done file's name ends with, after its session's id.
+const DONE: &str = ".done.json";
+
+/// What the mark that a done file's session started ends with.
+const STARTED: &str = ".started";
+
+/// The done files in `handover` whose sessions haven't started on another
+/// machine since they were written, by session.
+fn unstarted(handover: &Path) -> Result<Vec<Done>, String> {
+    let entries = match fs::read_dir(handover) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("{}: {error}", handover.display())),
+    };
+    let mut done = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let named = path.file_name().and_then(OsStr::to_str).unwrap_or("");
+        let Some(session) = named.strip_suffix(DONE) else {
+            continue;
+        };
+        if marked(&path, &handover.join(format!("{session}{STARTED}"))) {
+            continue;
+        }
+        let read =
+            fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let one: Done = serde_json::from_str(&read)
+            .map_err(|error| format!("{} isn't a carry's done file: {error}", path.display()))?;
+        done.push(one);
+    }
+    done.sort_by(|one, other| one.session.cmp(&other.session));
+    Ok(done)
+}
+
+/// Marks `session`'s done file in `handover` started, with a mark beside
+/// it. The done file stays where it is: `pi-carry` on the other machine
+/// reads it there, and the share would carry its rename or removal there
+/// as its deletion, perhaps before it had been read.
+fn mark_started(handover: &Path, session: &str) -> Result<(), String> {
+    if Path::new(session).file_name() != Some(OsStr::new(session)) {
+        return Err(format!(
+            "{session} isn't a session's id a file can be named for"
+        ));
+    }
+    let mark = handover.join(format!("{session}{STARTED}"));
+    fs::write(&mark, format!("{session}\n")).map_err(|error| format!("{}: {error}", mark.display()))
+}
+
+/// Whether `mark` says the done file at `done` started: a mark no older
+/// than it, since a session carried again writes its done file afresh.
+fn marked(done: &Path, mark: &Path) -> bool {
+    let modified = |path: &Path| fs::metadata(path).and_then(|file| file.modified()).ok();
+    match (modified(done), modified(mark)) {
+        (Some(done), Some(mark)) => mark >= done,
+        _ => false,
+    }
+}
+
 /// A hostname up to its first dot, as the harness names a machine's
 /// handover: a Mac calls itself `lantern.local`, and its handover goes in
 /// `lantern`.
@@ -193,7 +235,85 @@ fn failed_why(output: &[u8], errors: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{failed_why, short_host};
+    use std::fs;
+    use std::path::Path;
+    use std::time::{Duration, SystemTime};
+
+    use super::{failed_why, mark_started, short_host, unstarted};
+
+    /// Writes `session`'s done file in `handover`, as the harness does.
+    fn write_done(handover: &Path, session: &str) {
+        fs::write(
+            handover.join(format!("{session}.done.json")),
+            format!("{{\"session\": \"{session}\", \"trees\": []}}"),
+        )
+        .expect("a done file");
+    }
+
+    /// The sessions of the done files in `handover` not yet started.
+    fn sessions(handover: &Path) -> Vec<String> {
+        unstarted(handover)
+            .expect("read")
+            .into_iter()
+            .map(|one| one.session)
+            .collect()
+    }
+
+    #[test]
+    fn a_done_file_marked_started_is_carried_no_more_but_stays_for_its_arrival() {
+        let handover = tempfile::tempdir().expect("a handover");
+        let handover = handover.path();
+        write_done(handover, "s-first");
+        write_done(handover, "s-second");
+        assert_eq!(sessions(handover), ["s-first", "s-second"], "both carried");
+        mark_started(handover, "s-first").expect("marked");
+        assert_eq!(
+            sessions(handover),
+            ["s-second"],
+            "the one started goes no more"
+        );
+        assert!(
+            handover.join("s-first.done.json").exists(),
+            "its done file stays where the other machine reads it"
+        );
+    }
+
+    #[test]
+    fn a_session_carried_again_after_it_started_is_carried_again() {
+        let handover = tempfile::tempdir().expect("a handover");
+        let handover = handover.path();
+        write_done(handover, "s-first");
+        mark_started(handover, "s-first").expect("marked");
+        write_done(handover, "s-first");
+        let later = SystemTime::now() + Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(handover.join("s-first.done.json"))
+            .and_then(|file| file.set_modified(later))
+            .expect("written after its mark");
+        assert_eq!(
+            sessions(handover),
+            ["s-first"],
+            "a done file newer than its mark is a carry of its own"
+        );
+    }
+
+    #[test]
+    fn a_mark_is_made_only_for_a_plain_session_id() {
+        let handover = tempfile::tempdir().expect("a handover");
+        let handover = handover.path().join("optimus");
+        fs::create_dir(&handover).expect("this machine's handover");
+        for odd in ["../s-elsewhere", "..", ""] {
+            assert!(mark_started(&handover, odd).is_err(), "{odd:?} is refused");
+        }
+        assert_eq!(
+            fs::read_dir(handover.parent().expect("above"))
+                .expect("listed")
+                .count(),
+            1,
+            "and nothing was written outside the handover"
+        );
+    }
 
     #[test]
     fn a_handover_goes_by_the_short_hostname() {
