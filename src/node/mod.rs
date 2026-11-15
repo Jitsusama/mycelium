@@ -225,6 +225,32 @@ fn parked_presence(session: &Session) -> bool {
             == Some("parked")
 }
 
+/// The groups the mesh put each session on `machine` in, running or
+/// parked, by its id, as its presence gives them, so an orchestrator's
+/// chain is believed only where the mesh agrees with the quests' record.
+fn grouped(sessions: &[Session], machine: &str) -> BTreeMap<String, Vec<String>> {
+    sessions
+        .iter()
+        .filter(|session| session.machine == machine)
+        .filter(|session| {
+            matches!(session.state, SessionState::Busy | SessionState::Idle)
+                || parked_presence(session)
+        })
+        .filter_map(|session| {
+            let id = session.presence.get("session")?.as_str()?.to_owned();
+            let groups = session
+                .presence
+                .get("groups")?
+                .as_array()?
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            Some((id, groups))
+        })
+        .collect()
+}
+
 /// What a node is given to run with besides its seams.
 pub struct Given {
     /// The quests this machine shares, whose files its links carry.
@@ -255,6 +281,9 @@ pub struct Given {
     pub processes: Processes,
     /// Where it keeps each carry an orchestrator ordered, a line each.
     pub carries: PathBuf,
+    /// Where pi's hosts each keep their record of the sessions they hold,
+    /// which proves who owns a session a host holds.
+    pub hosts: PathBuf,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -638,6 +667,8 @@ struct Shared<S> {
     client: Option<i32>,
     /// Where it keeps each carry an orchestrator ordered.
     carries: PathBuf,
+    /// Where pi's hosts keep their records of the sessions they hold.
+    hosts: PathBuf,
     /// The socket its machine's updater takes asks on.
     updater: PathBuf,
     starter: Option<Arc<Starter>>,
@@ -697,6 +728,7 @@ impl<S: Clone> Clone for Shared<S> {
             processes: self.processes.clone(),
             client: self.client,
             carries: self.carries.clone(),
+            hosts: self.hosts.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
             asks: self.asks.clone(),
@@ -960,10 +992,12 @@ impl<S: Store> Shared<S> {
             parked,
             processes,
             carries,
+            hosts,
         } = given;
         let shared = Self {
             processes: processes.into(),
             carries,
+            hosts,
             client: None,
             served: Arc::new(Served::start(serves)),
             providers: providers.into(),
@@ -1480,6 +1514,36 @@ impl<S: Store> Shared<S> {
         Ok(Response::Steered { machine })
     }
 
+    /// The id of the session this connection's client asks for. Each
+    /// session here claims its owner in its own presence, which proves
+    /// nothing until the kernel and its host back it. They are read from
+    /// the store, where each presence is its own, since the node's
+    /// sessions keep one of any two that claim one id.
+    async fn asking_session(&self) -> Result<String, String> {
+        let claims: Vec<asker::Claim> = self
+            .store
+            .presences()
+            .iter()
+            .filter(|presence| presence.elsewhere.is_none())
+            .filter(|presence| {
+                presence.lives
+                    || presence
+                        .body
+                        .get("state")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("parked")
+            })
+            .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
+            .collect();
+        let (client, processes, hosts) = (self.client, self.processes.clone(), self.hosts.clone());
+        tokio::task::spawn_blocking(move || {
+            let owners = asker::proved(&claims, &processes, &hosts)?;
+            asker::session_of(client, &processes, &owners)
+        })
+        .await
+        .map_err(|error| format!("who asks couldn't be told: {error}"))?
+    }
+
     /// Puts a carry an orchestrator orders into the inbox of the session
     /// going by `address`, once the node has proved from its own record
     /// that the session asking orchestrates that session's quest: the
@@ -1490,10 +1554,10 @@ impl<S: Store> Shared<S> {
     /// proved only where both sessions run, so a session on another
     /// machine is refused.
     async fn ordered_carry(&self, address: &str, said: &serde_json::Value) -> Reply {
-        let address = Steer::new(address, said)?.address;
-        let sessions = self.lock().state.sessions();
         let runs =
             |session: &Session| matches!(session.state, SessionState::Busy | SessionState::Idle);
+        let address = Steer::new(address, said)?.address;
+        let sessions = self.lock().state.sessions();
         let carried: Vec<&Session> = sessions
             .iter()
             .filter(|session| session.address.eq_ignore_ascii_case(&address))
@@ -1511,20 +1575,7 @@ impl<S: Store> Shared<S> {
             [] => return Err(format!("no session goes by {address} now")),
             _ => return Err(format!("{address} runs twice, so it isn't carried")),
         };
-        let owners: Vec<(String, i32)> = sessions
-            .iter()
-            .filter(|session| session.machine == self.machine && runs(session))
-            .filter_map(|session| {
-                let id = session.presence.get("session")?.as_str()?.to_owned();
-                let pid = session.presence.pointer("/owner/pid")?.as_i64()?;
-                Some((id, i32::try_from(pid).ok()?))
-            })
-            .collect();
-        let (client, processes) = (self.client, self.processes.clone());
-        let asker =
-            tokio::task::spawn_blocking(move || asker::session_of(client, &processes, &owners))
-                .await
-                .map_err(|error| format!("who asks couldn't be told: {error}"))??;
+        let asker = self.asking_session().await?;
         let asking = sessions
             .iter()
             .find(|session| {
@@ -1547,17 +1598,19 @@ impl<S: Store> Shared<S> {
             .ok_or("this node serves no quests' record, so who orchestrates can't be told")?
             .into_values()
             .collect();
+        let asking = ordered::Known {
+            session: &asker,
+            address: asking,
+        };
         let order = ordered::ordered_by(
-            ordered::Known {
-                session: &asker,
-                address: asking,
-            },
+            asking,
             ordered::Known {
                 session,
                 address: &address,
             },
             &quests,
         )?;
+        ordered::agreed(&order, asking, &quests, &grouped(&sessions, &self.machine))?;
         let mut body = said.as_object().cloned().unwrap_or_default();
         body.insert("by".to_owned(), order.by.clone().into());
         body.insert("from".to_owned(), order.by.clone().into());
@@ -1569,6 +1622,11 @@ impl<S: Store> Shared<S> {
             "session": session,
             "address": address,
             "quest": order.quest,
+            "chain": order.chain.iter().map(|link| serde_json::json!({
+                "quest": link.quest,
+                "orchestrator": link.orchestrator,
+            })).collect::<Vec<_>>(),
+            "source": ordered::SOURCE,
             "from": self.machine,
             "to": steer.body.get("to"),
             "why": steer.body.get("why"),
@@ -2112,6 +2170,7 @@ mod tests {
             parked: "/nowhere/parked".into(),
             processes: Processes::Folder("/nowhere/proc".into()),
             carries: "/nowhere/carries.jsonl".into(),
+            hosts: "/nowhere/hosts".into(),
         }
     }
 
@@ -2153,6 +2212,7 @@ mod tests {
         let parked = parks_of(socket);
         let processes = Processes::Folder(procs_of(socket));
         let carries = socket.with_file_name("carries.jsonl");
+        let hosts = socket.with_file_name("hosts");
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -2168,6 +2228,7 @@ mod tests {
                 parked,
                 processes,
                 carries,
+                hosts,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -2984,6 +3045,14 @@ mod tests {
         let procs = procs_of(socket);
         let client = procs.join(std::process::id().to_string());
         let pi = procs.join(parent.to_string());
+        // Pi started when its presence says, by [`started_at`].
+        let zeros = "0 ".repeat(17);
+        fs::create_dir_all(&pi).expect("its folder is made");
+        fs::write(
+            pi.join("stat"),
+            format!("{parent} (pi) S 1 {zeros}{} 0 0\n", started_at(parent)),
+        )
+        .expect("its stat is written");
         for (folder, status) in [
             (&client, format!("Name:\tmycelium\nPPid:\t{parent}\n")),
             (&pi, "Name:\tpi\nPPid:\t1\n".to_owned()),
@@ -2999,13 +3068,34 @@ mod tests {
         }
     }
 
-    /// A node on `socket` serving three quests' record: WCJQSG's own,
-    /// orchestrating OSPHT4's and HARBOR's, each with one session owned by
-    /// its own pi (7001, 7002 and 7003). OSPHT4's presence says it works on
-    /// WCJQSG's quest too, which the record doesn't hold. It answers once
-    /// the node serves the record, with what keeps the node running.
+    /// When the test's pi `pid` started, in clock ticks since boot.
+    fn started_at(pid: i32) -> u64 {
+        u64::try_from(pid).expect("a pid") * 10
+    }
+
+    /// The quests' record of WCJQSG's realm, where it orchestrates OSPHT4
+    /// and HARBOR.
+    fn orchestrations() -> Value {
+        json!({"quests": [
+            {"id": "QEST-20261007-WCJQSG", "address": "WCJQSG", "orchestrator": null,
+             "sessions": ["s-steward"]},
+            {"id": "QEST-20261108-OSPHT4", "address": "OSPHT4", "orchestrator": "WCJQSG",
+             "sessions": ["s-weigh"]},
+            {"id": "QEST-20261115-HARBOR", "address": "HARBOR", "orchestrator": "WCJQSG",
+             "sessions": ["s-harbour"]},
+        ]})
+    }
+
+    /// A node on `socket` serving `quests`, the quests' record: WCJQSG's
+    /// own, orchestrating OSPHT4's and HARBOR's, each with one session
+    /// owned by its own pi (7001, 7002 and 7003), and the presences `also`
+    /// beside them. OSPHT4's presence says it works on WCJQSG's quest too,
+    /// which the record doesn't hold. It answers once the node serves the
+    /// record, with what keeps the node running.
     async fn orchestrated(
         socket: &Path,
+        quests: &Value,
+        also: &[Value],
     ) -> (
         tokio::sync::oneshot::Sender<()>,
         tokio::task::JoinHandle<io::Result<()>>,
@@ -3013,26 +3103,41 @@ mod tests {
     ) {
         let store = Memory::default();
         let at = jiff::Timestamp::now().to_string();
-        for (session, address, quest, pid) in [
-            ("s-steward", "WCJQSG", "QEST-20261007-WCJQSG", 7001),
-            ("s-weigh", "OSPHT4", "QEST-20261007-WCJQSG", 7002),
-            ("s-harbour", "HARBOR", "QEST-20261115-HARBOR", 7003),
+        // The groups the mesh put each in, as WCJQSG orchestrates them.
+        for (session, address, quest, pid, groups) in [
+            (
+                "s-steward",
+                "WCJQSG",
+                "QEST-20261007-WCJQSG",
+                7001,
+                json!(["#orchestration/wcjqsg"]),
+            ),
+            (
+                "s-weigh",
+                "OSPHT4",
+                "QEST-20261007-WCJQSG",
+                7002,
+                json!(["#orchestration/ospht4", "#orchestration/wcjqsg"]),
+            ),
+            (
+                "s-harbour",
+                "HARBOR",
+                "QEST-20261115-HARBOR",
+                7003,
+                json!(["#orchestration/wcjqsg", "#repo/mycelium"]),
+            ),
         ] {
             let presence = json!({
-                "session": session, "addresses": [address], "groups": [],
+                "session": session, "addresses": [address], "groups": groups,
                 "busy": false, "state": "listening", "at": at, "quest": quest,
-                "orchestratedBy": "WCJQSG", "owner": {"pid": pid},
+                "orchestratedBy": "WCJQSG",
+                "owner": {"pid": pid, "startTicks": started_at(pid)},
             });
             store.start_here(session, presence, true);
         }
-        let quests = json!({"quests": [
-            {"id": "QEST-20261007-WCJQSG", "address": "WCJQSG", "orchestrator": null,
-             "sessions": ["s-steward"]},
-            {"id": "QEST-20261108-OSPHT4", "address": "OSPHT4", "orchestrator": "WCJQSG",
-             "sessions": ["s-weigh"]},
-            {"id": "QEST-20261115-HARBOR", "address": "HARBOR", "orchestrator": "WCJQSG",
-             "sessions": ["s-harbour"]},
-        ]});
+        for (at, presence) in also.iter().enumerate() {
+            store.start_here(&format!("also-{at}"), presence.clone(), true);
+        }
         let (stop, running) = node(&store, "optimus", Vec::<Piped>::new(), None, socket);
         let mut client = Speaking::to(socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
@@ -3066,7 +3171,7 @@ mod tests {
     async fn only_an_orchestrator_by_the_quests_record_orders_a_carry() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("optimus").join("work.sock");
-        let (_stop, _node, _client) = orchestrated(&socket).await;
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
         let inbox = inboxes(&socket).join("HARBOR");
         let held = || held_in(&inbox);
         let kept = socket.with_file_name("carries.jsonl");
@@ -3152,6 +3257,92 @@ mod tests {
                 &json!("it needs the camera"),
             ),
             "kept saying who ordered which carry, from where to where, and why: {line}"
+        );
+        assert_eq!(
+            (&line["chain"], &line["source"]),
+            (
+                &json!([{"quest": "QEST-20261115-HARBOR", "orchestrator": "WCJQSG"}]),
+                &json!("the quests' record, checked against the mesh's orchestration groups"),
+            ),
+            "and the chain it was taken on, and where that came from, so a forged one is \
+             traced: {line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_presence_borrowing_the_orchestrators_session_orders_no_carry() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        // A helper of OSPHT4's writes a presence naming WCJQSG's session
+        // as its own, owned by the helper's own process.
+        let helper = i32::try_from(std::process::id()).expect("a pid");
+        let borrowed = json!({
+            "session": "s-steward", "addresses": ["BORROW"], "groups": [],
+            "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
+            "owner": {"pid": helper, "startTicks": 1},
+        });
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[borrowed]).await;
+        asks_below(&socket, 7002);
+        assert_eq!(
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: "harbor".to_owned(),
+                    steer: json!({"act": "ordered-carry", "to": "penelope",
+                                  "why": "it needs the camera"}),
+                },
+            )
+            .await,
+            Err(
+                "two presences here claim the session s-steward, so who owns it can't be told \
+                 and no carry is ordered"
+                    .to_owned()
+            ),
+            "a session claimed twice orders nothing"
+        );
+        assert_eq!(
+            held_in(&inboxes(&socket).join("HARBOR")),
+            Vec::<Value>::new(),
+            "nothing refused reaches the inbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chain_forged_in_the_quests_record_orders_no_carry() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        // OSPHT4 rewrites HARBOR's orchestrator in the quests' record as
+        // itself; the mesh still puts HARBOR in WCJQSG's orchestration.
+        let mut forged = orchestrations();
+        forged["quests"][2]["orchestrator"] = json!("OSPHT4");
+        let (_stop, _node, _client) = orchestrated(&socket, &forged, &[]).await;
+        asks_below(&socket, 7002);
+        assert_eq!(
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: "harbor".to_owned(),
+                    steer: json!({"act": "ordered-carry", "to": "penelope",
+                                  "why": "it needs the camera"}),
+                },
+            )
+            .await,
+            Err(
+                "the mesh doesn't put HARBOR's session in #orchestration/ospht4, as the quests' \
+                 record says QEST-20261115-HARBOR's orchestrator is OSPHT4, so the chain isn't \
+                 believed"
+                    .to_owned()
+            ),
+            "a forged orchestrator orders nothing"
+        );
+        assert_eq!(
+            held_in(&inboxes(&socket).join("HARBOR")),
+            Vec::<Value>::new(),
+            "nothing refused reaches the inbox"
+        );
+        assert!(
+            !socket.with_file_name("carries.jsonl").exists(),
+            "nor is kept as carried"
         );
     }
 

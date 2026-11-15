@@ -1123,6 +1123,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         parked: place::parked(),
         processes: node::Processes::here(),
         carries: state.join("carries.jsonl"),
+        hosts: place::hosts(),
     };
     let runtime = runtime()?;
     let ran = runtime.block_on(async {

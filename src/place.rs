@@ -151,6 +151,15 @@ pub fn steer() -> PathBuf {
         .join("steer")
 }
 
+/// Where pi's hosts on this machine each keep their record of the
+/// sessions they hold, a file named by the host's process and its start.
+pub fn hosts() -> PathBuf {
+    state_home()
+        .join("pi")
+        .join("agentic-harness.pi")
+        .join("hosts")
+}
+
 /// Where the harness marks each session it parks on this machine, a file
 /// named by the session's id.
 pub fn parked() -> PathBuf {

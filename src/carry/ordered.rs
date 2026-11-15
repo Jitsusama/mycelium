@@ -9,8 +9,18 @@
 //! or to that one's orchestrator, and so on up the chain; nobody else's
 //! word, a presence's or `PI_QUEST`'s, counts. Each carry ordered is kept
 //! as a line, so the person sees who ordered it and why.
+//!
+//! The quests' record is a file any process of the person's account can
+//! write, so the chain it gives is believed only where the mesh agrees:
+//! each running session of a quest in the chain is in its orchestrator's
+//! `#orchestration/` group, as its presence gives the groups the mesh put
+//! it in, and so is the session asking. An index rewritten, or one gone
+//! stale, is then refused. Both are worked out by pi from the quests'
+//! own front matter, though, so an edit there reaches both in time: this
+//! fences habit and mistakes until the chain is kept in the node's own
+//! state as each orchestration is made.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
@@ -37,6 +47,86 @@ pub struct Order {
     pub by: String,
     /// The id of the quest the carried session works on.
     pub quest: String,
+    /// Each quest from that one up to the one ordering, with the address
+    /// of the orchestrator its record names, nearest first.
+    pub chain: Vec<Link>,
+}
+
+/// One step of a chain of orchestrators: a quest, and its orchestrator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    /// The quest's id.
+    pub quest: String,
+    /// The address of the orchestrator its record names.
+    pub orchestrator: String,
+}
+
+/// Says where the chain an ordered carry was taken on came from, for its
+/// record, so a forged one can be traced.
+pub const SOURCE: &str = "the quests' record, checked against the mesh's orchestration groups";
+
+/// Whether the mesh agrees with `order`'s chain: every session of each
+/// quest in it that `running` holds, by its id, with the groups its
+/// presence says the mesh put it in, is in that quest's orchestrator's
+/// `#orchestration/` group, at least one does for each, and `asker` is in
+/// the ordering orchestrator's own. Refused, saying where they disagree
+/// or where it can't be told.
+///
+/// # Errors
+///
+/// When the mesh disagrees with the record, or can't say.
+pub fn agreed(
+    order: &Order,
+    asker: Known,
+    quests: &[Value],
+    running: &BTreeMap<String, Vec<String>>,
+) -> Result<(), String> {
+    for link in &order.chain {
+        let group = orchestration(&link.orchestrator);
+        let record = quests
+            .iter()
+            .find(|quest| id_of(quest) == Some(link.quest.as_str()));
+        let sessions: Vec<&Vec<String>> = record
+            .and_then(|quest| quest.get("sessions"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter_map(|session| running.get(session))
+            .collect();
+        if sessions.is_empty() {
+            return Err(format!(
+                "no session of {} runs to say the mesh puts it in {group}, so the chain can't \
+                 be checked",
+                link.quest
+            ));
+        }
+        if sessions.iter().any(|groups| !groups.contains(&group)) {
+            return Err(format!(
+                "the mesh doesn't put {}'s session in {group}, as the quests' record says {}'s \
+                 orchestrator is {}, so the chain isn't believed",
+                record.and_then(address_of).unwrap_or(&link.quest),
+                link.quest,
+                link.orchestrator
+            ));
+        }
+    }
+    let own = orchestration(&order.by);
+    if !running
+        .get(asker.session)
+        .is_some_and(|groups| groups.contains(&own))
+    {
+        return Err(format!(
+            "the mesh doesn't put {}'s asking session in {own}, so the chain isn't believed",
+            asker.address
+        ));
+    }
+    Ok(())
+}
+
+/// The mesh's group of the orchestration `address` heads.
+fn orchestration(address: &str) -> String {
+    format!("#orchestration/{}", address.to_ascii_lowercase())
 }
 
 /// Whether `asker` may order the carry of `session`, by `quests`, the
@@ -74,6 +164,7 @@ pub fn ordered_by(asker: Known, session: Known, quests: &[Value]) -> Result<Orde
     // Up the chain of orchestrators, each found by its address, until one
     // attaches the asker, the chain ends, or it comes round again.
     let mut chain: Vec<&str> = Vec::new();
+    let mut links = Vec::new();
     let mut passed = BTreeSet::new();
     let mut missing = None;
     let mut at = target;
@@ -81,6 +172,10 @@ pub fn ordered_by(asker: Known, session: Known, quests: &[Value]) -> Result<Orde
         if !passed.insert(above) {
             break;
         }
+        links.push(Link {
+            quest: id_of(at).unwrap_or_default().to_owned(),
+            orchestrator: above.to_ascii_uppercase(),
+        });
         let Some(orchestrating) = quests
             .iter()
             .find(|quest| address_of(quest).is_some_and(|it| it.eq_ignore_ascii_case(above)))
@@ -92,6 +187,7 @@ pub fn ordered_by(asker: Known, session: Known, quests: &[Value]) -> Result<Orde
             return Ok(Order {
                 by: above.to_ascii_uppercase(),
                 quest,
+                chain: links,
             });
         }
         chain.push(above);
@@ -152,9 +248,144 @@ pub fn keep(file: &Path, line: &Value) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use serde_json::{Value, json};
 
-    use super::{Known, Order, keep, ordered_by};
+    use super::{Known, Link, Order, agreed, keep, ordered_by};
+
+    fn link(quest: &str, orchestrator: &str) -> Link {
+        Link {
+            quest: quest.to_owned(),
+            orchestrator: orchestrator.to_owned(),
+        }
+    }
+
+    /// The sessions running, each with the groups the mesh put it in, as
+    /// the realm of `quests` has them.
+    fn running() -> BTreeMap<String, Vec<String>> {
+        [
+            ("s-steward", vec!["#orchestration/wcjqsg"]),
+            ("s-owner", vec!["#orchestration/wcjqsg"]),
+            (
+                "s-weigh",
+                vec!["#orchestration/ospht4", "#orchestration/wcjqsg"],
+            ),
+            ("s-harbour", vec!["#orchestration/wcjqsg", "#repo/mycelium"]),
+            ("s-aquifer", vec!["#orchestration/wm4ksz"]),
+            ("s-threads", vec!["#orchestration/wm4ksz"]),
+        ]
+        .into_iter()
+        .map(|(session, groups)| {
+            (
+                session.to_owned(),
+                groups.into_iter().map(str::to_owned).collect(),
+            )
+        })
+        .collect()
+    }
+
+    #[test]
+    fn the_chain_is_believed_where_the_mesh_agrees() {
+        let quests = quests();
+        let order = ordered_by(
+            known("s-steward", "WCJQSG"),
+            known("s-harbour", "HARBOR"),
+            &quests,
+        )
+        .expect("the record proves it");
+        assert_eq!(
+            agreed(&order, known("s-steward", "WCJQSG"), &quests, &running()),
+            Ok(()),
+            "HARBOR's session is in WCJQSG's orchestration, and so is WCJQSG's"
+        );
+    }
+
+    #[test]
+    fn a_session_that_rewrites_its_quests_orchestrator_neither_orders_nor_is_carried() {
+        // OSPHT4 names itself HARBOR's orchestrator in the quests' record,
+        // which the record alone would take.
+        let mut forged = quests();
+        forged[3]["orchestrator"] = json!("OSPHT4");
+        let order = ordered_by(
+            known("s-weigh", "OSPHT4"),
+            known("s-harbour", "HARBOR"),
+            &forged,
+        )
+        .expect("the forged record says so");
+        assert_eq!(
+            agreed(&order, known("s-weigh", "OSPHT4"), &forged, &running()),
+            Err(
+                "the mesh doesn't put HARBOR's session in #orchestration/ospht4, as the quests' \
+                 record says QEST-20261115-HARBOR's orchestrator is OSPHT4, so the chain isn't \
+                 believed"
+                    .to_owned()
+            ),
+            "a forged orchestrator orders nothing"
+        );
+        // THREAD names WCJQSG its orchestrator, to be carried on its word.
+        let mut forged = quests();
+        forged[5]["orchestrator"] = json!("WCJQSG");
+        let order = ordered_by(
+            known("s-steward", "WCJQSG"),
+            known("s-threads", "THREAD"),
+            &forged,
+        )
+        .expect("the forged record says so");
+        assert!(
+            agreed(&order, known("s-steward", "WCJQSG"), &forged, &running())
+                .is_err_and(|why| why.contains("#orchestration/wcjqsg")),
+            "nor is a session carried on a chain it forged"
+        );
+    }
+
+    #[test]
+    fn a_chain_the_mesh_cant_speak_for_isnt_believed() {
+        let mut quests = quests();
+        quests[0]["orchestrator"] = json!("WM4KSZ");
+        quests[4]["orchestrator"] = json!(null);
+        let order = ordered_by(
+            known("s-aquifer", "WM4KSZ"),
+            known("s-harbour", "HARBOR"),
+            &quests,
+        )
+        .expect("the record proves it");
+        let mut running = running();
+        running.insert(
+            "s-steward".to_owned(),
+            vec!["#orchestration/wm4ksz".to_owned()],
+        );
+        assert_eq!(
+            agreed(&order, known("s-aquifer", "WM4KSZ"), &quests, &running),
+            Ok(()),
+            "each step up the chain agrees"
+        );
+        running.remove("s-steward");
+        assert_eq!(
+            agreed(&order, known("s-aquifer", "WM4KSZ"), &quests, &running),
+            Err(
+                "no session of QEST-20261007-WCJQSG runs to say the mesh puts it in \
+                 #orchestration/wm4ksz, so the chain can't be checked"
+                    .to_owned()
+            ),
+            "a step no running session speaks for can't be told"
+        );
+        let mut running = self::running();
+        running.insert(
+            "s-steward".to_owned(),
+            vec!["#orchestration/wm4ksz".to_owned()],
+        );
+        running.insert("s-aquifer".to_owned(), Vec::new());
+        assert_eq!(
+            agreed(&order, known("s-aquifer", "WM4KSZ"), &quests, &running),
+            Err(
+                "the mesh doesn't put WM4KSZ's asking session in #orchestration/wm4ksz, so the \
+                 chain isn't believed"
+                    .to_owned()
+            ),
+            "nor an asker the mesh doesn't put in its own orchestration"
+        );
+    }
 
     /// The quests' records of a realm where WCJQSG orchestrates MYCELI,
     /// MYCELI holds HARBOR, and WM4KSZ stands alone above THREAD, each
@@ -191,6 +422,7 @@ mod tests {
             Ok(Order {
                 by: "WCJQSG".to_owned(),
                 quest: "QEST-20261115-HARBOR".to_owned(),
+                chain: vec![link("QEST-20261115-HARBOR", "WCJQSG")],
             }),
             "WCJQSG orchestrates HARBOR, by HARBOR's record"
         );
@@ -203,6 +435,7 @@ mod tests {
             Ok(Order {
                 by: "WM4KSZ".to_owned(),
                 quest: "QEST-20261109-THREAD".to_owned(),
+                chain: vec![link("QEST-20261109-THREAD", "WM4KSZ")],
             }),
             "and WM4KSZ orchestrates THREAD"
         );
@@ -219,8 +452,14 @@ mod tests {
                 known("s-harbour", "HARBOR"),
                 &quests
             )
-            .map(|order| order.by),
-            Ok("WM4KSZ".to_owned()),
+            .map(|order| (order.by, order.chain)),
+            Ok((
+                "WM4KSZ".to_owned(),
+                vec![
+                    link("QEST-20261115-HARBOR", "WCJQSG"),
+                    link("QEST-20261007-WCJQSG", "WM4KSZ")
+                ]
+            )),
             "an orchestrator above WCJQSG orders it, under its own name"
         );
     }
