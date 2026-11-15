@@ -37,6 +37,8 @@
 //! - [`declared`]: what its configuration says of it
 //! - [`reach`]: whether the networks it reaches only now and then answer
 //! - [`placement`]: which machine work goes to, by what each says it is
+//! - [`builders`]: the Nix builders it sends builds to, which are no
+//!   machines of the realm
 //! - [`offer`]: the shapes of machine a provider's program could make
 //! - [`made`]: machines made from offers, and the book of each
 //! - [`group`]: groups' names, patterns that hear them, and routes
@@ -63,6 +65,7 @@
 
 pub mod awake;
 pub mod balance;
+pub mod builders;
 pub mod carry;
 pub mod client;
 pub mod daemon;
