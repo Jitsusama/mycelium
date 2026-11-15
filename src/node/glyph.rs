@@ -25,6 +25,7 @@ pub const GLYPHS: [&str; 7] = [
 
 /// One team as its shape is chosen: its id, what sorts it among the
 /// others by when it began, and the team it is within.
+#[derive(Clone, Copy, Debug)]
 pub struct Choosing<'a> {
     /// The team's id, its orchestrator's address.
     pub id: &'a str,
