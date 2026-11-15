@@ -3,14 +3,15 @@
 //! is counted by an allocator of this test's own, which only a program of
 //! its own may hold, so this is a test of its own.
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use mycelium::node;
 use mycelium::record::Session;
 use serde_json::{Value, json};
+
+use counting::{HELD, PEAK};
 
 /// How many cells the bar is held at.
 const CELLS: usize = 10_000;
@@ -22,57 +23,63 @@ const WITHIN: Duration = Duration::from_millis(100);
 const AT_MOST: usize = 30_000_000;
 
 /// The system's allocator, counting what is held and the most held.
-struct Counting;
-
-/// How many bytes are held now.
-static HELD: AtomicUsize = AtomicUsize::new(0);
-
-/// The most bytes held since it was last reset.
-static PEAK: AtomicUsize = AtomicUsize::new(0);
-
-/// That `bytes` more are held.
-fn took(bytes: usize) {
-    let held = HELD.fetch_add(bytes, Ordering::Relaxed) + bytes;
-    PEAK.fetch_max(held, Ordering::Relaxed);
-}
-
-/// That `bytes` fewer are held.
-fn gave(bytes: usize) {
-    HELD.fetch_sub(bytes, Ordering::Relaxed);
-}
-
 #[expect(unsafe_code, reason = "an allocator is unsafe to implement")]
-// SAFETY: each call is the system allocator's own, only counted.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the caller keeps `alloc`'s contract, which this passes on.
-        let made = unsafe { System.alloc(layout) };
-        if !made.is_null() {
-            took(layout.size());
+mod counting {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The system's allocator, counting.
+    struct Counting;
+
+    /// How many bytes are held now.
+    pub static HELD: AtomicUsize = AtomicUsize::new(0);
+
+    /// The most bytes held since it was last reset.
+    pub static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+    /// That `bytes` more are held.
+    fn took(bytes: usize) {
+        let held = HELD.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        PEAK.fetch_max(held, Ordering::Relaxed);
+    }
+
+    /// That `bytes` fewer are held.
+    fn gave(bytes: usize) {
+        HELD.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
+    // SAFETY: each call is the system allocator's own, only counted.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: the caller keeps `alloc`'s contract, which this passes on.
+            let made = unsafe { System.alloc(layout) };
+            if !made.is_null() {
+                took(layout.size());
+            }
+            made
         }
-        made
-    }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: the caller keeps `dealloc`'s contract, which this passes on.
-        unsafe { System.dealloc(ptr, layout) };
-        gave(layout.size());
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        // SAFETY: the caller keeps `realloc`'s contract, which this passes on.
-        let made = unsafe { System.realloc(ptr, layout, new_size) };
-        if !made.is_null() {
-            took(new_size);
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: the caller keeps `dealloc`'s contract, which this passes on.
+            unsafe { System.dealloc(ptr, layout) };
             gave(layout.size());
         }
-        made
-    }
-}
 
-#[expect(unsafe_code, reason = "an allocator is unsafe to implement")]
-#[global_allocator]
-static COUNTING: Counting = Counting;
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            // SAFETY: the caller keeps `realloc`'s contract, which this passes on.
+            let made = unsafe { System.realloc(ptr, layout, new_size) };
+            if !made.is_null() {
+                took(new_size);
+                gave(layout.size());
+            }
+            made
+        }
+    }
+
+    /// Every allocation this test makes, counted.
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+}
 
 #[test]
 fn ten_thousand_cells_make_their_network_records_within_the_bar() {

@@ -46,8 +46,9 @@ The harness mesh's messages and presence, carried between machines:
   machines`, or `machines <NAME>` for one), the facts work will be
   placed by. A client that opens with
   `hello` is answered in the daemon interface every daemon on the machine
-  speaks, and watches the realm's sessions, machines and messages
-  change.
+  speaks, and watches the realm's sessions, machines, messages, teams
+  and networks change, each network made as `mycelium networks` makes
+  it.
 - `mycelium health` prints how the realm's network stands as one JSON
   line for a daily read: each link and how often it dropped in the last
   day, why a link was refused (such as a machine on another link version,

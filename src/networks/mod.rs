@@ -336,6 +336,23 @@ impl Mycelium {
         Self::made(realm, teams, read, machines)
     }
 
+    /// The mycelium of `realm` that the node's `teams`, `sessions` and
+    /// `machines` records make, each session's made its cell as it comes
+    /// and let go, so thousands are never all held at once.
+    #[must_use]
+    pub fn of_each(
+        realm: &str,
+        teams: &[Value],
+        sessions: impl IntoIterator<Item = Value>,
+        machines: &[Value],
+    ) -> Self {
+        let mut read = Sessions::default();
+        for session in sessions {
+            read.add(&session);
+        }
+        Self::made(realm, teams, read, machines)
+    }
+
     /// The mycelium of `realm` that the node's `teams` and `machines`
     /// records make, with what its sessions' records made as each was read.
     fn made(realm: &str, teams: &[Value], sessions: Sessions, machines: &[Value]) -> Self {
@@ -490,6 +507,13 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
         )));
     }
     Ok(Mycelium::made(realm, &teams, sessions, &machines))
+}
+
+/// A session's `presence` with only what the networks read of it, so a
+/// node making a session's record for them copies little of it.
+#[must_use]
+pub fn kept_presence(presence: &Value) -> Value {
+    kept::pruned(presence, &kept::PRESENCE)
 }
 
 /// What the networks ask a node: its teams, sessions and machines, of

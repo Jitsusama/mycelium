@@ -48,6 +48,8 @@ mod asker;
 pub use asker::Processes;
 mod crossing;
 mod glyph;
+mod network;
+pub use network::records as network_records;
 mod standing;
 mod team;
 mod turns;
@@ -248,7 +250,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 4] = ["session", "machine", "message", team::KIND];
+pub const HOLDS: [&str; 5] = ["session", "machine", "message", team::KIND, network::KIND];
 
 /// How many of each group's latest messages the daemon interface holds as
 /// `message` records: a conversation's recent tail, as a person reads it,
@@ -705,7 +707,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             .served
             .kinds()
             .map(|kind| (kind.to_owned(), Vec::new()));
-        let [sessions, machines, messages, teams] = HOLDS.map(str::to_owned);
+        let [sessions, machines, messages, teams, networks] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
                 sessions,
@@ -736,6 +738,10 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // A message is said once and never changes.
             (messages, Vec::new()),
             (teams, vec!["title", "worst", "counts", "members", "landed"]),
+            (
+                networks,
+                vec!["title", "glyph", "within", "cells", "machines", "counts"],
+            ),
         ])
         .into_iter()
         .chain(served)
@@ -754,21 +760,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                         .collect(),
                 )
             }
-            "machine" => Some(
-                self.known_machines()
-                    .into_iter()
-                    .map(|machine| {
-                        let heard = millis_at(&machine.measured_at);
-                        let name = machine.name.clone();
-                        let mut fields = json_of(&machine);
-                        if let Some(fields) = fields.as_object_mut() {
-                            fields.insert("here".to_owned(), (name == self.machine).into());
-                        }
-                        let record = daemon::record(kind, &name, heard, fields);
-                        (daemon::key(kind, &name), record)
-                    })
-                    .collect(),
-            ),
+            "machine" => Some(self.machine_records()),
             "message" => Some(
                 self.lock()
                     .state
@@ -783,6 +775,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     .collect(),
             ),
             team::KIND => Some(self.team_records()),
+            network::KIND => Some(self.network_records()),
             _ => self.served.records(kind),
         }
     }
@@ -790,8 +783,10 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
     fn told(&self, kind: &str) -> Option<watch::Receiver<u64>> {
         match kind {
             // A team changes only as its sessions do; a quest's new title
-            // shows with the next change to any.
-            "session" | team::KIND => Some(self.said.sessions.subscribe()),
+            // shows with the next change to any. A network also holds the
+            // machines, which come and go far more seldom than sessions
+            // change, so a machine come or gone shows with the next.
+            "session" | team::KIND | network::KIND => Some(self.said.sessions.subscribe()),
             "machine" => Some(self.said.machines.subscribe()),
             "message" => Some(self.said.messages.subscribe()),
             _ => self.served.told(kind),
@@ -1059,6 +1054,39 @@ impl<S: Store> Shared<S> {
                 (daemon::key(team::KIND, &id), record)
             })
             .collect()
+    }
+
+    /// Every machine of the realm as the daemon interface holds it, each
+    /// saying whether it is this one.
+    fn machine_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let kind = "machine";
+        self.known_machines()
+            .into_iter()
+            .map(|machine| {
+                let heard = millis_at(&machine.measured_at);
+                let name = machine.name.clone();
+                let mut fields = json_of(&machine);
+                if let Some(fields) = fields.as_object_mut() {
+                    fields.insert("here".to_owned(), (name == self.machine).into());
+                }
+                let record = daemon::record(kind, &name, heard, fields);
+                (daemon::key(kind, &name), record)
+            })
+            .collect()
+    }
+
+    /// The realm's networks as the daemon interface holds them, as the
+    /// networks view makes them of the node's teams, sessions and machines.
+    fn network_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let teams = self.team_records();
+        let machines = self.machine_records();
+        let parked = standing::parked(&self.parked);
+        let sessions = self.lock().state.sessions();
+        let standing = |session: &Session| {
+            let here = session.machine == self.machine;
+            standing::standing(session, here, &parked, &self.boot)
+        };
+        network::records(&teams, &sessions, standing, &machines)
     }
 
     /// A session as the daemon interface holds it: its fields, whether it
@@ -3043,7 +3071,9 @@ mod tests {
             .as_array()
             .expect("the records come whole first");
         assert!(
-            records.iter().all(|record| record["heard"].as_i64() > Some(0)),
+            records
+                .iter()
+                .all(|record| record["heard"].as_i64() > Some(0)),
             "each network is heard as its cells last were: {whole}"
         );
         let served: BTreeMap<String, Value> = records

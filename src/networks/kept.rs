@@ -38,27 +38,7 @@ pub(super) const RECORD: Kept = Only(&[
     ("machine", Whole),
     ("model_name", Whole),
     ("name", Whole),
-    (
-        "presence",
-        Only(&[
-            ("addresses", Whole),
-            ("paused", Whole),
-            ("questInfo", Only(&[("short", Whole), ("title", Whole)])),
-            ("repo", Whole),
-            ("state", Whole),
-            (
-                "usage",
-                Only(&[
-                    ("context", Whole),
-                    ("pi.cost.usd", Only(&[("today", Whole)])),
-                    (
-                        "turns",
-                        Only(&[("last", Only(&[("at", Whole)])), ("today", Whole)]),
-                    ),
-                ]),
-            ),
-        ]),
-    ),
+    ("presence", PRESENCE),
     ("quest", Whole),
     ("room", Only(&[("pressure", Only(&[("cpu", Whole)]))])),
     ("standing", Whole),
@@ -69,6 +49,26 @@ pub(super) const RECORD: Kept = Only(&[
     ("wants", Whole),
     ("within", Whole),
     ("working_on", Whole),
+]);
+
+/// What the networks read of a session's presence.
+pub(super) const PRESENCE: Kept = Only(&[
+    ("addresses", Whole),
+    ("paused", Whole),
+    ("questInfo", Only(&[("short", Whole), ("title", Whole)])),
+    ("repo", Whole),
+    ("state", Whole),
+    (
+        "usage",
+        Only(&[
+            ("context", Whole),
+            ("pi.cost.usd", Only(&[("today", Whole)])),
+            (
+                "turns",
+                Only(&[("last", Only(&[("at", Whole)])), ("today", Whole)]),
+            ),
+        ]),
+    ),
 ]);
 
 /// The paths of every field `kept` keeps whole, its keys joined by dots,
@@ -133,7 +133,6 @@ pub(super) fn answered(
 }
 
 /// `value` kept as `kept` says, as if it had been read so.
-#[cfg(test)]
 pub(super) fn pruned(value: &Value, kept: &'static Kept) -> Value {
     Pruned(kept)
         .deserialize(value)
