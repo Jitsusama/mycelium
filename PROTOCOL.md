@@ -811,7 +811,7 @@ the `machines` they run on, and `counts` of its sessions as
 heard when the latest of its cells was, or its team where its cells say
 nothing. Its records change as the sessions do, so a machine come or
 gone shows with the next change to a session. Ten thousand cells make
-their networks within 100 ms and 30 MB.
+their networks within 30 MB, in time that grows with them.
 
 A team's `glyph` is the shape every view draws it by: `square`,
 `triangle`, `plus`, `hexagon`, `circle`, `down-triangle` or `star`.

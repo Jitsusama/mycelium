@@ -132,11 +132,25 @@ pub(super) fn answered(
     Ok(answers)
 }
 
-/// `value` kept as `kept` says, as if it had been read so.
-pub(super) fn pruned(value: &Value, kept: &'static Kept) -> Value {
-    Pruned(kept)
-        .deserialize(value)
-        .expect("a JSON value reads as one")
+/// `value` kept as `kept` says, as if it had been read so: each field
+/// kept looked up, rather than every field walked, since a presence is
+/// mostly what isn't.
+pub(super) fn pruned(value: &Value, kept: &Kept) -> Value {
+    match (kept, value) {
+        (Only(fields), Value::Object(object)) => Value::Object(
+            fields
+                .iter()
+                .filter_map(|(name, inner)| {
+                    let each = object.get(*name)?;
+                    Some(((*name).to_owned(), pruned(each, inner)))
+                })
+                .collect(),
+        ),
+        (Only(_), Value::Array(each)) => {
+            Value::Array(each.iter().map(|one| pruned(one, kept)).collect())
+        }
+        (Whole | Only(_), _) => value.clone(),
+    }
 }
 
 /// An answer read for which ask it answers and why it was refused, each

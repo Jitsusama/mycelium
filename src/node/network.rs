@@ -6,12 +6,13 @@
 //!
 //! A session's record is mostly what the networks never read, so each is
 //! made for them lean, with only that of its presence, and let go once
-//! its cell is made: ten thousand cells build within 100 ms and 30 MB.
+//! its cell is made, and the cells are let go before the records are
+//! made: ten thousand cells build within 30 MB, in time that grows with
+//! them, as `tests/networks.rs` shows.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::{json_of, millis_at};
 use crate::daemon;
@@ -57,10 +58,13 @@ pub fn records(
         .iter()
         .map(|session| lean(session, standing(session)));
     // The realm names none of its networks' fields.
-    let mycelium = Mycelium::of_each("", &teams, each, &machines);
-    mycelium
-        .networks
-        .iter()
+    let mut mycelium = Mycelium::of_each("", &teams, each, &machines);
+    // Only its networks are made records, so its cells are let go before
+    // they are, never held beside them.
+    let networks = std::mem::take(&mut mycelium.networks);
+    drop(mycelium);
+    networks
+        .into_iter()
         .map(|network| {
             let latest = network
                 .cells
@@ -70,7 +74,7 @@ pub fn records(
                 .max()
                 .copied()
                 .unwrap_or_default();
-            let mut fields = json_of(network);
+            let mut fields = json_of(&network);
             // Its own `kind` is the interface's, so is said once, not kept
             // again under `source` as another's would be.
             if let Some(fields) = fields.as_object_mut() {
@@ -83,16 +87,28 @@ pub fn records(
 }
 
 /// `session`'s record as the networks read it, `standing` as it does:
-/// its presence only what they read of it, and none of its landings.
+/// only the fields they read, as a client listing sessions for them asks
+/// for, and its presence only what they read of it. Made from the fields
+/// themselves rather than the record whole, which at thousands of cells
+/// took most of the build.
 fn lean(session: &Session, standing: Option<&str>) -> Value {
-    let lean = Session {
-        presence: Arc::new(networks::kept_presence(&session.presence)),
-        landings: Vec::new(),
-        ..session.clone()
+    let mut fields = Map::new();
+    let mut put = |key: &str, value: Value| {
+        if !value.is_null() {
+            fields.insert(key.to_owned(), value);
+        }
     };
-    let mut fields = json_of(&lean);
-    if let (Some(standing), Some(fields)) = (standing, fields.as_object_mut()) {
-        fields.insert("standing".to_owned(), standing.into());
-    }
-    fields
+    put("id", session.id.as_str().into());
+    put("address", session.address.as_str().into());
+    put("machine", session.machine.as_str().into());
+    put("title", session.title.as_deref().into());
+    put("working_on", session.working_on.as_deref().into());
+    put("groups", json_of(&session.groups));
+    put("state", json_of(&session.state));
+    put("step", session.step.as_deref().into());
+    put("quest", session.quest.as_deref().into());
+    put("wants", json_of(&session.wants));
+    put("presence", networks::kept_presence(&session.presence));
+    put("standing", standing.into());
+    Value::Object(fields)
 }

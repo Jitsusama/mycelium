@@ -370,14 +370,25 @@ impl Mycelium {
             .cloned()
             .collect();
         let teams = teams.as_slice();
+        // Renamed in place, and the few a cell joins kept once each, as
+        // copying every name of thousands of cells took a good part of the
+        // build.
         for cell in &mut sessions {
-            let mut seen = BTreeSet::new();
-            cell.networks = cell
-                .networks
-                .iter()
-                .map(|name| owned_network(name, &renamed))
-                .filter(|name| seen.insert(name.clone()))
-                .collect();
+            if !renamed.is_empty() {
+                for name in &mut cell.networks {
+                    if let Some(own) = owned_network(name, &renamed) {
+                        *name = own;
+                    }
+                }
+            }
+            let mut kept = 0;
+            for at in 0..cell.networks.len() {
+                if !cell.networks[..kept].contains(&cell.networks[at]) {
+                    cell.networks.swap(kept, at);
+                    kept += 1;
+                }
+            }
+            cell.networks.truncate(kept);
         }
         sessions.sort_by(|one, other| one.since.cmp(&other.since).then(one.name.cmp(&other.name)));
         let mut networks = joined(teams, &sessions, &quests);
@@ -726,12 +737,12 @@ fn renamed_by(session: &Value, renamed: &mut BTreeMap<String, String>) {
     }
 }
 
-/// The network `name`, under its orchestrator's own address where it
+/// The network `name` under its orchestrator's own address, where it
 /// names one the orchestrator was renamed from.
-fn owned_network(name: &str, renamed: &BTreeMap<String, String>) -> String {
+fn owned_network(name: &str, renamed: &BTreeMap<String, String>) -> Option<String> {
     name.strip_prefix("orchestration.")
         .and_then(|old| renamed.get(old))
-        .map_or_else(|| name.to_owned(), |own| format!("orchestration.{own}"))
+        .map(|own| format!("orchestration.{own}"))
 }
 
 /// Each orchestration's network titled, short-named and nested as the

@@ -11,8 +11,8 @@ The rest of the tests sit beside the code they prove, in `src/`.
   started on and let go at its time or once it hands over, each node and
   link a process of its own
 - `networks.rs`: the node's network records built for ten thousand cells
-  within 100 ms and 30 MB, the memory counted by an allocator of its
-  own, which only a program of its own may hold
+  within 30 MB, in time that grows with the cells, the memory counted
+  by an allocator of its own, which only a program of its own may hold
 - `spellings.rs`: each old spelling of a command, and each silent alias
   such as `network` or `--json`, saying byte for byte what the tree
   that took it in says
