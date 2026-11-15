@@ -222,10 +222,10 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
 
 /// Joins `session` as [`join`] does, through a host that may be starting:
 /// while its socket is missing or refuses the connection, or it closes
-/// or drops the try before answering, it tries again every `patience.every`, and once
-/// `patience.within` has passed, a try still waiting on its answer
-/// included, it answers [`Left::Gone`]. A host that is back and refuses
-/// the session ends the wait at once.
+/// or drops the try before answering, it tries again every
+/// `patience.every`, and once `patience.within` has passed, a try still
+/// waiting on its answer included, it answers [`Left::Gone`]. A host
+/// that is back and refuses the session ends the wait at once.
 ///
 /// # Errors
 ///
