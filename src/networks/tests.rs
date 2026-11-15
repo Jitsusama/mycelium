@@ -424,6 +424,39 @@ fn json_lines_say_each_network_then_each_cell() {
 }
 
 #[test]
+fn a_repository_is_titled_by_the_name_its_group_was_made_from() {
+    let in_repo = |address: &str, n: u8, repo: Option<&str>| {
+        let mut cell = session(address, n, address, "idle", &["repo.skiff-rs", "repo.oars"]);
+        cell["presence"] = json!({"repo": repo});
+        cell
+    };
+    let mycelium = Mycelium::of(
+        "work",
+        &[],
+        &[
+            in_repo("REEF01", 1, None),
+            in_repo("REEF02", 2, Some("Skiff.rs")),
+            in_repo("REEF03", 3, Some("skiff.rs")),
+        ],
+        &[],
+    );
+    let titled = |name: &str| {
+        let network = mycelium.network(name).expect("the repository");
+        network.title.clone()
+    };
+    assert_eq!(
+        (titled("repo.skiff-rs"), titled("repo.oars")),
+        (Some("Skiff.rs".to_owned()), None),
+        "the first cell's name its group's spells, and none where no cell's does"
+    );
+    let tree = overview(&mycelium, &look(), false, false);
+    assert!(
+        tree.contains("Skiff.rs") && !tree.contains("skiff-rs"),
+        "drawn by its name, without the group's spelling of it again:\n{tree}"
+    );
+}
+
+#[test]
 fn the_tree_draws_each_shape_its_networks_nested_and_the_machines() {
     let shown = overview(&mycelium(), &look(), false, false);
     let expected = [

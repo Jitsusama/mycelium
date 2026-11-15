@@ -50,10 +50,12 @@ fn doing(cell: &Cell) -> Option<&str> {
 }
 
 /// The short name worth showing beside `network`'s title: none where it
-/// has no title, or the short name only says it again.
+/// has no title, or the short name only says it again, as `core-nix`
+/// says core.nix.
 fn shown_short(network: &Network) -> Option<&str> {
     let title = network.title.as_deref()?;
-    (!says_again(title, &network.short)).then_some(network.short.as_str())
+    let again = says_again(title, &network.short) || super::slug(title) == network.short;
+    (!again).then_some(network.short.as_str())
 }
 
 /// How `network`'s row names it, its short name padded to `width`.

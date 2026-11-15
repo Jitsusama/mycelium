@@ -673,6 +673,7 @@ fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>)
         .collect();
     titled_by_teams(&mut networks, teams);
     titled_by_quests(&mut networks, quests);
+    titled_by_repos(&mut networks, sessions);
     networks
 }
 
@@ -759,6 +760,39 @@ fn titled_by_quests(networks: &mut [Network], quests: &BTreeMap<String, String>)
             }
         };
     }
+}
+
+/// Each repository's network titled by the repository's own name, as its
+/// cells say it, where that name is the one its group was made from:
+/// `core.nix` for `repo.core-nix`. A name that reads as its short one
+/// does, `skiff` for `repo.skiff`, would only say it twice, so titles
+/// nothing.
+fn titled_by_repos(networks: &mut [Network], sessions: &[Cell]) {
+    for each in networks
+        .iter_mut()
+        .filter(|each| each.shape == Shape::Repository)
+    {
+        each.title = sessions
+            .iter()
+            .filter(|cell| each.cells.contains(&cell.name))
+            .filter_map(|cell| cell.repo.as_deref())
+            .find(|repo| *repo != each.short && slug(repo) == each.short)
+            .map(str::to_owned);
+    }
+}
+
+/// The name a group gives `text`, as the mesh makes a repository's: in
+/// lower case, each run of what isn't a letter or a digit one hyphen.
+pub(crate) fn slug(text: &str) -> String {
+    let mut slug = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            slug.extend(c.to_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_owned()
 }
 
 /// The machines' own network, counting the sessions each runs.
