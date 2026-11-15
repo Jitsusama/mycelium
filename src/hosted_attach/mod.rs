@@ -222,7 +222,7 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
 
 /// Joins `session` as [`join`] does, through a host that may be starting:
 /// while its socket is missing or refuses the connection, or it closes
-/// before answering, it tries again every `patience.every`, and once
+/// or drops the try before answering, it tries again every `patience.every`, and once
 /// `patience.within` has passed, a try still waiting on its answer
 /// included, it answers [`Left::Gone`]. A host that is back and refuses
 /// the session ends the wait at once.
@@ -255,12 +255,18 @@ pub async fn join_again(
     }
 }
 
-/// Whether `error` connecting is a host not listening yet: its socket
-/// not made again, or made with nobody accepting on it.
+/// Whether `error` connecting is a host not listening yet, or still
+/// stopping: its socket not made again, made with nobody accepting on it,
+/// or the stopped host's still listening, as it does while a child forked
+/// before it closed holds a copy, which drops the try unread once that
+/// copy closes.
 fn starting(error: &io::Error) -> bool {
     matches!(
         error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+        io::ErrorKind::NotFound
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::BrokenPipe
     )
 }
 
