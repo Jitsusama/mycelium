@@ -384,7 +384,7 @@ mod tests {
             ".quest.lock",
             ".README.md.tmp-42-1",
             "stray.txt",
-            "attachments/map.md.from-equilibrius",
+            "attachments/map.md.from-kestrel",
         ] {
             write(&quest.record, path, path);
         }
@@ -397,7 +397,7 @@ mod tests {
             "notes/ttc/.git/HEAD",
             "notes/ttc/src/lib.rs",
             "notes/.plan.md.42.mycelium.tmp",
-            "notes/plan.md.from-equilibrius",
+            "notes/plan.md.from-kestrel",
             "clone/.git/HEAD",
             "clone/src/lib.rs",
             "hub-home/big.bin",
@@ -438,7 +438,7 @@ mod tests {
             "node_modules",
             ".direnv",
             "notes/runs",
-            "notes.from-equilibrius",
+            "notes.from-kestrel",
         ] {
             assert!(!may_name(folder), "{folder:?} may not be named");
         }

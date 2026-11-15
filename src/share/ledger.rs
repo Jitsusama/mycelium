@@ -458,10 +458,10 @@ mod tests {
                 .expect("its time set");
         };
         written("one");
-        ledger.scan(&quest, "optimus").expect("scanned");
+        ledger.scan(&quest, "skiff").expect("scanned");
         written("two");
         assert_eq!(
-            ledger.scan(&quest, "optimus").expect("scanned").changed,
+            ledger.scan(&quest, "skiff").expect("scanned").changed,
             ["record/README.md"],
             "the same size and time just after a hash are hashed again"
         );
@@ -492,30 +492,30 @@ mod tests {
         let mut ledger = Ledger::default();
         write(&quest, "README.md", "one");
         assert_eq!(
-            ledger.scan(&quest, "optimus").expect("scanned").changed,
+            ledger.scan(&quest, "skiff").expect("scanned").changed,
             ["record/README.md"],
             "a new file is a change"
         );
         assert!(
             ledger
-                .scan(&quest, "optimus")
+                .scan(&quest, "skiff")
                 .expect("scanned")
                 .changed
                 .is_empty(),
             "an unchanged file is none"
         );
         write(&quest, "README.md", "two");
-        ledger.scan(&quest, "optimus").expect("scanned");
+        ledger.scan(&quest, "skiff").expect("scanned");
         fs::remove_file(quest.record.join("README.md")).expect("removed");
-        ledger.scan(&quest, "optimus").expect("scanned");
+        ledger.scan(&quest, "skiff").expect("scanned");
         let entry = &ledger.files["record/README.md"];
         assert_eq!(entry.hash, None, "a removed file is entered as deleted");
         assert_eq!(
             entry.version,
             Version::default()
-                .changed_on("optimus")
-                .changed_on("optimus")
-                .changed_on("optimus"),
+                .changed_on("skiff")
+                .changed_on("skiff")
+                .changed_on("skiff"),
             "made, changed and removed: three changes"
         );
     }

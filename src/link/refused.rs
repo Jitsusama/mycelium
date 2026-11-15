@@ -144,18 +144,18 @@ mod tests {
     async fn a_refused_key_is_told_from_a_machine_out_of_reach() {
         let refused = turned_away(
             &b"Warning: added a host key\n\
-               joel@equilibrius.local: Permission denied (publickey,password).\n"[..],
+               joel@kestrel.local: Permission denied (publickey,password).\n"[..],
         )
         .await;
         assert_eq!(
             refused.as_deref(),
-            Some("joel@equilibrius.local: Permission denied (publickey,password)."),
+            Some("joel@kestrel.local: Permission denied (publickey,password)."),
             "a key the other machine doesn't take turns this one away"
         );
         for out_of_reach in [
-            "ssh: connect to host equilibrius.local port 22: Connection refused\n",
-            "ssh: Could not resolve hostname equilibrius.local: Name or service not known\n",
-            "ssh: connect to host equilibrius.local port 22: Operation timed out\n",
+            "ssh: connect to host kestrel.local port 22: Connection refused\n",
+            "ssh: Could not resolve hostname kestrel.local: Name or service not known\n",
+            "ssh: connect to host kestrel.local port 22: Operation timed out\n",
         ] {
             assert_eq!(
                 turned_away(out_of_reach.as_bytes()).await,
@@ -169,40 +169,38 @@ mod tests {
     fn a_refusal_is_remembered_for_the_words_that_dialled_it_until_forgotten() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let refusals = Refusals::kept_in(dir.path().join("refused"));
-        let equilibrius = words("equilibrius");
-        assert!(!refusals.stands(&equilibrius), "nothing refused yet");
+        let kestrel = words("kestrel");
+        assert!(!refusals.stands(&kestrel), "nothing refused yet");
 
         refusals
-            .remember(&equilibrius, "Permission denied (publickey).")
+            .remember(&kestrel, "Permission denied (publickey).")
             .expect("the refusal is remembered");
-        assert!(refusals.stands(&equilibrius), "the link waits");
+        assert!(refusals.stands(&kestrel), "the link waits");
         assert!(
-            Refusals::kept_in(dir.path().join("refused")).stands(&equilibrius),
+            Refusals::kept_in(dir.path().join("refused")).stands(&kestrel),
             "a node started again reads the same refusal"
         );
         assert!(
-            !refusals.stands(&words("equilibrius.local")),
+            !refusals.stands(&words("kestrel.local")),
             "a link whose words changed is dialled at once"
         );
 
+        refusals.forget(&kestrel).expect("the refusal is forgotten");
+        assert!(!refusals.stands(&kestrel), "and dialled again");
         refusals
-            .forget(&equilibrius)
-            .expect("the refusal is forgotten");
-        assert!(!refusals.stands(&equilibrius), "and dialled again");
-        refusals
-            .forget(&equilibrius)
+            .forget(&kestrel)
             .expect("forgetting what isn't remembered is no error");
     }
 
     #[test]
     fn a_refusal_kept_nowhere_is_never_waited_out_from_a_record() {
         let refusals = Refusals::default();
-        let equilibrius = words("equilibrius");
+        let kestrel = words("kestrel");
         refusals
-            .remember(&equilibrius, "Permission denied (publickey).")
+            .remember(&kestrel, "Permission denied (publickey).")
             .expect("nothing is written");
-        assert_eq!(refusals.record(&equilibrius), None, "no record is kept");
-        assert!(!refusals.stands(&equilibrius), "so none is read back");
+        assert_eq!(refusals.record(&kestrel), None, "no record is kept");
+        assert!(!refusals.stands(&kestrel), "so none is read back");
     }
 
     #[tokio::test]
@@ -212,20 +210,20 @@ mod tests {
             folder: Some(dir.path().join("refused")),
             look_every: Duration::from_millis(10),
         };
-        let equilibrius = words("equilibrius");
+        let kestrel = words("kestrel");
         refusals
-            .remember(&equilibrius, "Permission denied (publickey).")
+            .remember(&kestrel, "Permission denied (publickey).")
             .expect("the refusal is remembered");
         let waiting = {
-            let (refusals, equilibrius) = (refusals.clone(), equilibrius.clone());
-            tokio::spawn(async move { refusals.withdrawn(&equilibrius).await })
+            let (refusals, kestrel) = (refusals.clone(), kestrel.clone());
+            tokio::spawn(async move { refusals.withdrawn(&kestrel).await })
         };
         // That nothing withdraws it can only be shown over a span, here ten
         // looks' worth, rather than waited on as an event.
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!waiting.is_finished(), "no time withdraws a refusal");
 
-        let record = refusals.record(&equilibrius).expect("a record is kept");
+        let record = refusals.record(&kestrel).expect("a record is kept");
         fs::remove_file(record).expect("the record is removed");
         tokio::time::timeout(Duration::from_secs(5), waiting)
             .await

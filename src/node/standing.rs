@@ -219,7 +219,7 @@ mod tests {
         Session {
             id: "s-one".to_owned(),
             address: "ONE001".to_owned(),
-            machine: "optimus".to_owned(),
+            machine: "skiff".to_owned(),
             title: None,
             working_on: None,
             groups: Vec::new(),

@@ -4,7 +4,7 @@
 //! The record names places on the machine that wrote it: a quest's working
 //! folder, its trees, its scratch. Those sit under the account's home
 //! folder, which differs between machines (`/home/jitsusama` on one,
-//! `/Users/joel.gerber` on another), so the record's text crosses with its
+//! `/Users/jsama` on another), so the record's text crosses with its
 //! home folder as a mark that each machine writes back as its own. A file's
 //! hash is taken of what crosses, so both ends name the same content alike.
 //!
@@ -308,17 +308,17 @@ mod tests {
 
     #[test]
     fn places_cross_as_the_reader_names_them() {
-        let optimus = Path::new("/home/jitsusama");
-        let equilibrius = Path::new("/Users/joel.gerber");
+        let skiff = Path::new("/home/jitsusama");
+        let kestrel = Path::new("/Users/jsama");
         let text =
             b"cwd: /home/jitsusama/src/walgit-rs\nnot /home/jitsusamaX, but /home/jitsusama\n";
-        let crossed = portable(text, optimus);
+        let crossed = portable(text, skiff);
         assert_eq!(
-            local(&crossed, equilibrius),
-            b"cwd: /Users/joel.gerber/src/walgit-rs\nnot /home/jitsusamaX, but /Users/joel.gerber\n",
+            local(&crossed, kestrel),
+            b"cwd: /Users/jsama/src/walgit-rs\nnot /home/jitsusamaX, but /Users/jsama\n",
             "each place under the home folder is written for the reader's"
         );
-        assert_eq!(local(&crossed, optimus), text, "and back again unchanged");
+        assert_eq!(local(&crossed, skiff), text, "and back again unchanged");
     }
 
     #[test]

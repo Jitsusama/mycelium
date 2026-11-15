@@ -81,8 +81,8 @@ mod tests {
 
     #[test]
     fn a_change_makes_a_version_newer() {
-        let first = Version::default().changed_on("optimus");
-        let second = first.changed_on("equilibrius");
+        let first = Version::default().changed_on("skiff");
+        let second = first.changed_on("kestrel");
         assert_eq!(
             second.against(&first),
             Standing::Newer,
@@ -102,15 +102,15 @@ mod tests {
 
     #[test]
     fn changes_made_apart_are_apart_until_joined() {
-        let shared = Version::default().changed_on("optimus");
-        let here = shared.changed_on("optimus");
-        let there = shared.changed_on("equilibrius");
+        let shared = Version::default().changed_on("skiff");
+        let here = shared.changed_on("skiff");
+        let there = shared.changed_on("kestrel");
         assert_eq!(
             here.against(&there),
             Standing::Apart,
             "two changes on one version, each on its own machine, are apart"
         );
-        let settled = here.joined(&there).changed_on("optimus");
+        let settled = here.joined(&there).changed_on("skiff");
         assert_eq!(
             settled.against(&here),
             Standing::Newer,

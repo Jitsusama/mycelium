@@ -82,7 +82,7 @@ enum Action {
     /// Its pinned `authorized_keys` line runs this: a link, whose far
     /// end must be that machine, or an attach; anything else is refused
     /// and kept in `refused-keys.jsonl` in mycelium's folder.
-    #[command(after_help = "Example:\n  mycelium ssh --from penelope")]
+    #[command(after_help = "Example:\n  mycelium ssh --from tern")]
     Ssh {
         #[command(flatten)]
         here: Here,
@@ -109,7 +109,7 @@ enum Action {
     /// with its handover, and each session starts again there, held, once
     /// `pi-carry arrive` has its trees. Prints a JSON line for each step,
     /// `{"step", "state", "said"}`, and last where each session went.
-    #[command(after_help = "Example:\n  mycelium carry QEST-20261112-HARBOR --to penelope")]
+    #[command(after_help = "Example:\n  mycelium carry QEST-20261112-HARBOR --to tern")]
     Carry {
         #[command(flatten)]
         here: Here,
@@ -204,9 +204,9 @@ enum Action {
     /// Bare, it prints every machine, this one first; given its name,
     /// one machine. `machine` is the same, and bare prints what this
     /// machine is.
-    #[command(after_help = "Example:\n  mycelium machines penelope")]
+    #[command(after_help = "Example:\n  mycelium machines tern")]
     Machines {
-        /// The machine, such as `penelope`.
+        /// The machine, such as `tern`.
         name: Option<String>,
     },
     /// `machines`, as it was spelt before, when bare it printed this
@@ -232,9 +232,9 @@ enum Action {
     /// It updates to its configuration's main, this machine or one it
     /// links with directly, and this prints how that ended, as its
     /// updater said it.
-    #[command(after_help = "Example:\n  mycelium update penelope")]
+    #[command(after_help = "Example:\n  mycelium update tern")]
     Update {
-        /// The machine, such as `penelope`.
+        /// The machine, such as `tern`.
         machine: String,
     },
     /// Prints the latest messages on the mesh.
@@ -528,7 +528,7 @@ struct Watching {
 /// What is asked of the cells, by the words after `cells`.
 #[derive(clap::Args)]
 struct CellsAsked {
-    /// The cell, such as `HARBOR` or `optimus`
+    /// The cell, such as `HARBOR` or `skiff`
     words: Vec<String>,
     /// Shows every cell, folding no long list.
     #[arg(long)]
@@ -850,9 +850,7 @@ enum WebAct {
     ///
     /// Either may be a murmur's id, a quest's or a change's. This prints
     /// the event.
-    #[command(
-        after_help = "Example:\n  mycelium web QEST-20261112-HARBOR tie optimus-12 optimus-9"
-    )]
+    #[command(after_help = "Example:\n  mycelium web QEST-20261112-HARBOR tie skiff-12 skiff-9")]
     Tie {
         /// What it ties.
         from: String,
@@ -868,7 +866,7 @@ enum WebAct {
     /// Settles a murmur, saying how.
     ///
     /// This prints the event.
-    #[command(after_help = "Example:\n  mycelium web QEST-20261112-HARBOR settle optimus-12 filed")]
+    #[command(after_help = "Example:\n  mycelium web QEST-20261112-HARBOR settle skiff-12 filed")]
     Settle {
         /// The murmur's id.
         of: String,
@@ -2131,9 +2129,9 @@ mod tests {
         let pi = || vec!["pi".to_owned()];
         for (old, new, both) in [
             (
-                "machine penelope",
-                "machines penelope",
-                Tree::Machine("penelope".to_owned()),
+                "machine tern",
+                "machines tern",
+                Tree::Machine("tern".to_owned()),
             ),
             ("held", "holds", Tree::Holds),
             (

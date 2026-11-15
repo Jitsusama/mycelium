@@ -164,23 +164,21 @@ mod tests {
     #[test]
     fn a_proven_end_is_admitted_only_as_the_machine_its_key_is() {
         let proven = Proven {
-            by: realm("work", "optimus"),
-            far: "equilibrius".to_owned(),
+            by: realm("work", "skiff"),
+            far: "kestrel".to_owned(),
         };
         assert_eq!(
-            proven.admit(&realm("work", "equilibrius").hello()),
+            proven.admit(&realm("work", "kestrel").hello()),
             Ok(()),
             "the machine its key is"
         );
         assert_eq!(
-            proven.admit(&realm("work", "penelope").hello()),
-            Err("this link came in by equilibrius's key, so it can't be penelope".to_owned()),
+            proven.admit(&realm("work", "tern").hello()),
+            Err("this link came in by kestrel's key, so it can't be tern".to_owned()),
             "another machine saying it is itself"
         );
         assert!(
-            proven
-                .admit(&realm("personal", "equilibrius").hello())
-                .is_err(),
+            proven.admit(&realm("personal", "kestrel").hello()).is_err(),
             "and what its realm refuses still is"
         );
     }
@@ -194,31 +192,31 @@ mod tests {
 
     #[test]
     fn a_machine_of_the_same_realm_is_admitted() {
-        let optimus = realm("work", "optimus");
-        assert_eq!(optimus.admit(&realm("work", "equilibrius").hello()), Ok(()));
+        let skiff = realm("work", "skiff");
+        assert_eq!(skiff.admit(&realm("work", "kestrel").hello()), Ok(()));
     }
 
     #[test]
     fn another_version_says_both_and_which_machine_brings_them_level() {
-        let optimus = realm("work", "optimus");
+        let skiff = realm("work", "skiff");
         let at = |version| Hello {
             version,
-            ..realm("work", "equilibrius").hello()
+            ..realm("work", "kestrel").hello()
         };
         assert_eq!(
-            optimus.admit(&at(VERSION + 1)),
+            skiff.admit(&at(VERSION + 1)),
             Err(format!(
-                "equilibrius speaks link version {} and optimus {VERSION}, so they link again \
-                 once optimus's mycelium is as new as equilibrius's",
+                "kestrel speaks link version {} and skiff {VERSION}, so they link again \
+                 once skiff's mycelium is as new as kestrel's",
                 VERSION + 1
             )),
             "a newer machine waits on this one"
         );
         assert_eq!(
-            optimus.admit(&at(VERSION - 1)),
+            skiff.admit(&at(VERSION - 1)),
             Err(format!(
-                "equilibrius speaks link version {} and optimus {VERSION}, so they link again \
-                 once equilibrius's mycelium is as new as optimus's",
+                "kestrel speaks link version {} and skiff {VERSION}, so they link again \
+                 once kestrel's mycelium is as new as skiff's",
                 VERSION - 1
             )),
             "an older machine is the one to update"
@@ -227,19 +225,16 @@ mod tests {
 
     #[test]
     fn another_realm_this_machine_and_another_version_are_refused() {
-        let optimus = realm("work", "optimus");
+        let skiff = realm("work", "skiff");
         for other in [
-            realm("personal", "penelope").hello(),
-            realm("work", "optimus").hello(),
+            realm("personal", "tern").hello(),
+            realm("work", "skiff").hello(),
             Hello {
                 version: VERSION + 1,
-                ..realm("work", "equilibrius").hello()
+                ..realm("work", "kestrel").hello()
             },
         ] {
-            assert!(
-                optimus.admit(&other).is_err(),
-                "{other:?} should be refused"
-            );
+            assert!(skiff.admit(&other).is_err(), "{other:?} should be refused");
         }
     }
 }

@@ -1173,9 +1173,7 @@ mod tests {
         );
         let escape = json!({"session": "../escape"});
         assert!(
-            store
-                .put_presence("../escape", "equilibrius", &escape)
-                .is_err(),
+            store.put_presence("../escape", "kestrel", &escape).is_err(),
             "nor a session"
         );
     }
@@ -1189,7 +1187,7 @@ mod tests {
             .expect("this machine's session is written");
         let there = json!({"session": "there", "owner": {"pid": 1}, "title": "π - walgit"});
         store
-            .put_presence("there", "equilibrius", &there)
+            .put_presence("there", "kestrel", &there)
             .expect("the session elsewhere is kept");
 
         let mut held = store.presences();
@@ -1199,17 +1197,17 @@ mod tests {
             held[0].lives,
             "this machine's session lives, being this test"
         );
-        assert_eq!(held[1].elsewhere.as_deref(), Some("equilibrius"));
+        assert_eq!(held[1].elsewhere.as_deref(), Some("kestrel"));
         assert_eq!(
             *held[1].body,
-            json!({"session": "there", "title": "π - walgit", "machine": "equilibrius"})
+            json!({"session": "there", "title": "π - walgit", "machine": "kestrel"})
         );
 
         store
-            .remove_presence("here", "equilibrius")
+            .remove_presence("here", "kestrel")
             .expect("asking to remove this machine's session is quiet");
         store
-            .remove_presence("there", "penelope")
+            .remove_presence("there", "tern")
             .expect("asking for another machine's is quiet");
         assert_eq!(
             store.presences().len(),
@@ -1217,7 +1215,7 @@ mod tests {
             "neither was another machine's to remove"
         );
         store
-            .remove_presence("there", "equilibrius")
+            .remove_presence("there", "kestrel")
             .expect("the session elsewhere is let go");
         let left: Vec<String> = store
             .presences()
@@ -1232,7 +1230,7 @@ mod tests {
         let (_dir, store) = store();
         let there = json!({"session": "there"});
         store
-            .put_presence("there", "equilibrius", &there)
+            .put_presence("there", "kestrel", &there)
             .expect("the session elsewhere is kept");
         let file = store.presence().join("there.json");
         let vouched = SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_046_604);
@@ -1243,10 +1241,10 @@ mod tests {
             .expect("its time is set");
 
         store
-            .mark_unreachable("there", "equilibrius", 7)
+            .mark_unreachable("there", "kestrel", 7)
             .expect("marked");
         store
-            .mark_unreachable("there", "equilibrius", 9)
+            .mark_unreachable("there", "kestrel", 9)
             .expect("marked again");
         let held = store.presences();
         assert_eq!(
@@ -1261,7 +1259,7 @@ mod tests {
         );
 
         store
-            .put_presence("there", "equilibrius", &there)
+            .put_presence("there", "kestrel", &there)
             .expect("carried again");
         assert_eq!(
             store.presences()[0].unreachable_since,
@@ -1278,20 +1276,20 @@ mod tests {
             .expect("this machine's session is written");
         let claimed = json!({"session": "here", "title": "not yours"});
         assert!(
-            store.put_presence("here", "equilibrius", &claimed).is_err(),
+            store.put_presence("here", "kestrel", &claimed).is_err(),
             "this machine's own"
         );
         let there = json!({"session": "there"});
         store
-            .put_presence("there", "equilibrius", &there)
+            .put_presence("there", "kestrel", &there)
             .expect("the Mac's own session is kept");
         assert!(
-            store.put_presence("there", "penelope", &there).is_err(),
+            store.put_presence("there", "tern", &there).is_err(),
             "another machine's"
         );
         let other = json!({"session": "other"});
         assert!(
-            store.put_presence("there", "equilibrius", &other).is_err(),
+            store.put_presence("there", "kestrel", &other).is_err(),
             "a body naming another session"
         );
         assert_eq!(store.presences().len(), 2, "nothing was written over");
@@ -1311,31 +1309,31 @@ mod tests {
 
         let there = json!({"session": "moved", "title": "runs there"});
         store
-            .put_presence("moved", "equilibrius", &there)
+            .put_presence("moved", "kestrel", &there)
             .expect("its file here ended, so the machine it runs on now speaks for it");
         store
-            .put_leases("moved", "equilibrius", std::slice::from_ref(&change))
+            .put_leases("moved", "kestrel", std::slice::from_ref(&change))
             .expect("and for the leases it holds");
         let held = store.presences();
         assert!(
-            matches!(held.as_slice(), [one] if one.elsewhere.as_deref() == Some("equilibrius")
+            matches!(held.as_slice(), [one] if one.elsewhere.as_deref() == Some("kestrel")
                 && one.lives && one.body["title"] == "runs there"),
             "it stands where it runs: {held:?}"
         );
         assert_eq!(
             store.holdings(),
-            [json!({"session": "moved", "leases": [change], "machine": "equilibrius"})],
+            [json!({"session": "moved", "leases": [change], "machine": "kestrel"})],
             "its leases are the Mac's"
         );
         assert!(
-            store.put_presence("moved", "penelope", &there).is_err(),
+            store.put_presence("moved", "tern", &there).is_err(),
             "but no third machine speaks for it"
         );
 
         store.present(pid);
         write_whole(&store.presence(), "moved.json", &here).expect("it runs here again");
         assert!(
-            store.put_presence("moved", "equilibrius", &there).is_err(),
+            store.put_presence("moved", "kestrel", &there).is_err(),
             "and while it lives here, this machine alone speaks for it"
         );
     }
@@ -1349,29 +1347,27 @@ mod tests {
         write_whole(&store.leases(), "here.json", &own).expect("this machine's holding");
         assert!(
             store
-                .put_leases("here", "equilibrius", std::slice::from_ref(&change))
+                .put_leases("here", "kestrel", std::slice::from_ref(&change))
                 .is_err(),
             "a holding of this machine's is never written over"
         );
         store
-            .put_presence("there", "equilibrius", &json!({"session": "there"}))
+            .put_presence("there", "kestrel", &json!({"session": "there"}))
             .expect("the Mac's session is kept");
         store
-            .put_leases("there", "equilibrius", std::slice::from_ref(&change))
+            .put_leases("there", "kestrel", std::slice::from_ref(&change))
             .expect("and its leases");
         assert!(
-            store.put_leases("there", "penelope", &[]).is_err(),
+            store.put_leases("there", "tern", &[]).is_err(),
             "nor is another machine's let go"
         );
         let carried = read::<Value>(&store.leases().join("there.json")).expect("written");
         assert_eq!(
             carried,
-            json!({"session": "there", "leases": [change], "machine": "equilibrius"}),
+            json!({"session": "there", "leases": [change], "machine": "kestrel"}),
             "held as the mesh holds a peer's, marked as the Mac's"
         );
-        store
-            .remove_presence("there", "equilibrius")
-            .expect("let go");
+        store.remove_presence("there", "kestrel").expect("let go");
         assert_eq!(
             store.holdings(),
             vec![own],
@@ -1382,16 +1378,14 @@ mod tests {
     #[test]
     fn a_claim_is_held_by_one_at_a_time() {
         let (_dir, store) = store();
-        let first = store
-            .claim("equilibrius")
-            .expect("a claim can be asked for");
+        let first = store.claim("kestrel").expect("a claim can be asked for");
         assert!(first.is_some(), "the first claim is granted");
         assert!(
-            store.claim("equilibrius").expect("asked").is_none(),
+            store.claim("kestrel").expect("asked").is_none(),
             "a second waits"
         );
         assert!(
-            store.claim("penelope").expect("asked").is_some(),
+            store.claim("tern").expect("asked").is_some(),
             "another machine's is free"
         );
         drop(first);
@@ -1401,7 +1395,7 @@ mod tests {
         // once the copy closes.
         let deadline = Instant::now() + Duration::from_secs(5);
         let again = loop {
-            let claim = store.claim("equilibrius").expect("asked");
+            let claim = store.claim("kestrel").expect("asked");
             if claim.is_some() || Instant::now() > deadline {
                 break claim;
             }
@@ -1413,45 +1407,41 @@ mod tests {
     #[test]
     fn when_a_machine_was_last_linked_is_kept() {
         let (_dir, store) = store();
-        assert_eq!(store.linked_until("equilibrius"), None, "never linked");
+        assert_eq!(store.linked_until("kestrel"), None, "never linked");
         store
-            .mark_linked("equilibrius", 1_793_046_604_647)
+            .mark_linked("kestrel", 1_793_046_604_647)
             .expect("the time is kept");
-        assert_eq!(store.linked_until("equilibrius"), Some(1_793_046_604_647));
+        assert_eq!(store.linked_until("kestrel"), Some(1_793_046_604_647));
     }
 
     #[test]
     fn why_a_machines_link_was_refused_is_kept_until_one_is_admitted() {
         let (dir, store) = store();
-        assert_eq!(store.link_refused("penelope"), None, "never refused");
+        assert_eq!(store.link_refused("tern"), None, "never refused");
         store
-            .refuse_link("penelope", "penelope speaks link version 2")
+            .refuse_link("tern", "tern speaks link version 2")
             .expect("the refusal is kept");
         store
-            .refuse_link("penelope", "penelope speaks link version 3")
+            .refuse_link("tern", "tern speaks link version 3")
             .expect("a later refusal is kept over it");
         let again = Folders::open(&dir.path().join("mesh"), &dir.path().join("claims"))
             .expect("the store opens again");
         assert_eq!(
-            again.link_refused("penelope").as_deref(),
-            Some("penelope speaks link version 3"),
+            again.link_refused("tern").as_deref(),
+            Some("tern speaks link version 3"),
             "the last refusal outlives the node that kept it"
         );
         assert_eq!(
-            again.link_refused("equilibrius"),
+            again.link_refused("kestrel"),
             None,
             "another machine's is its own"
         );
         again
-            .link_admitted("penelope")
+            .link_admitted("tern")
             .expect("the refusal is forgotten");
-        assert_eq!(
-            again.link_refused("penelope"),
-            None,
-            "a link admitted ends it"
-        );
+        assert_eq!(again.link_refused("tern"), None, "a link admitted ends it");
         again
-            .link_admitted("penelope")
+            .link_admitted("tern")
             .expect("forgetting none is no error");
     }
 
@@ -1460,24 +1450,24 @@ mod tests {
         let (_dir, store) = store();
         let hour = 60 * 60 * 1000;
         let noon = 1_793_046_604_647;
-        assert_eq!(store.endings("penelope", 0), 0, "never ended");
+        assert_eq!(store.endings("tern", 0), 0, "never ended");
         for at in [noon - 30 * hour, noon - 2 * hour, noon - hour, noon] {
-            store.mark_ended("penelope", at).expect("the end is kept");
+            store.mark_ended("tern", at).expect("the end is kept");
         }
         store
-            .mark_ended("equilibrius", noon)
+            .mark_ended("kestrel", noon)
             .expect("another machine's is its own");
         assert_eq!(
-            store.endings("penelope", noon - 24 * hour),
+            store.endings("tern", noon - 24 * hour),
             3,
             "three ended in the day before noon"
         );
         assert_eq!(
-            store.endings("penelope", 0),
+            store.endings("tern", 0),
             3,
             "one over a day before the last isn't kept"
         );
-        assert_eq!(store.endings("equilibrius", 0), 1, "each machine apart");
+        assert_eq!(store.endings("kestrel", 0), 1, "each machine apart");
         assert_eq!(store.endings("../far", 0), 0, "a path is no machine");
     }
 
@@ -1513,9 +1503,9 @@ mod tests {
         let mut changes = store.changes().expect("the store tells its changes");
         let claims = dir.path().join("claims");
         store
-            .mark_linked("equilibrius", 1_793_046_604_647)
+            .mark_linked("kestrel", 1_793_046_604_647)
             .expect("the time is kept");
-        fs::write(claims.join("equilibrius.machine"), b"{}").expect("a link writes");
+        fs::write(claims.join("kestrel.machine"), b"{}").expect("a link writes");
         let told = tokio::time::timeout(PATIENCE, async {
             loop {
                 match changes.changes.recv().await {
@@ -1528,7 +1518,7 @@ mod tests {
         .await
         .expect("a machine was told");
         assert_eq!(
-            told, "equilibrius",
+            told, "kestrel",
             "by its name, and not for when it was linked"
         );
     }

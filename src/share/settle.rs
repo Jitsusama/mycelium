@@ -96,12 +96,12 @@ mod tests {
         }
     }
 
-    /// Two versions of one file: changed once on optimus, then here
+    /// Two versions of one file: changed once on skiff, then here
     /// ahead of there, and there ahead of here.
     fn versions() -> (Version, Version, Version) {
-        let shared = Version::default().changed_on("optimus");
-        let here = shared.changed_on("optimus");
-        let there = shared.changed_on("equilibrius");
+        let shared = Version::default().changed_on("skiff");
+        let here = shared.changed_on("skiff");
+        let there = shared.changed_on("kestrel");
         (shared, here, there)
     }
 
@@ -186,8 +186,8 @@ mod tests {
             "a write here outlasts a deletion there"
         );
         assert_eq!(
-            beside("plans/PLAN-20261026-IZH11J.md", "equilibrius"),
-            "plans/PLAN-20261026-IZH11J.md.from-equilibrius",
+            beside("plans/PLAN-20261026-IZH11J.md", "kestrel"),
+            "plans/PLAN-20261026-IZH11J.md.from-kestrel",
             "theirs is named for its machine"
         );
     }

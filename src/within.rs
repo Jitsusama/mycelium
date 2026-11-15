@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn what_a_host_says_is_read_while_it_stands() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let file = dir.path().join("methuselah.json");
+        let file = dir.path().join("osprey.json");
         let at: jiff::Timestamp = "2026-10-30T21:00:00Z".parse().expect("a time");
         let said = Said {
             at,
@@ -93,7 +93,7 @@ mod tests {
             "and is gone once it has said nothing longer"
         );
         assert!(
-            !dir.path().join("methuselah.json.new").exists(),
+            !dir.path().join("osprey.json.new").exists(),
             "nothing is left beside it"
         );
     }

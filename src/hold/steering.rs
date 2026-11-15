@@ -230,7 +230,7 @@ mod tests {
             (r#"{"act":"pause"}"#, false),
             (r#"{"act":"stop"}"#, false),
             (r#"{"act":"close"}"#, true),
-            (r#"{"act":"carry","to":"penelope"}"#, true),
+            (r#"{"act":"carry","to":"tern"}"#, true),
             (r#"{"act":"fill","text":"Ready for this."}"#, true),
             (r#"{"text":"   "}"#, false),
             ("not a steer", false),
@@ -345,7 +345,7 @@ mod tests {
         .await;
         assert!(forgot.is_ok(), "its removal is heard");
         fs::create_dir(&inbox).expect("a sender makes it again");
-        lands(&inbox, "1-a.json", r#"{"act":"carry","to":"penelope"}"#);
+        lands(&inbox, "1-a.json", r#"{"act":"carry","to":"tern"}"#);
         assert!(watching.arm(), "watched again, its carry is seen");
     }
 }

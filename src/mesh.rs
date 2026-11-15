@@ -442,7 +442,7 @@ mod tests {
             json!({"session": "01a1-hand", "handOf": "01a1",
                    "leases": [change("mycelium:src/mesh.rs")]}),
             json!({"session": "01b2", "leases": [change("core.nix:README.md")]}),
-            json!({"session": "01a1", "machine": "equilibrius",
+            json!({"session": "01a1", "machine": "kestrel",
                    "leases": [change("core.nix:carried.nix")]}),
         ];
         let subjects: Vec<Value> = carried_leases(&holdings, "01a1")
@@ -549,7 +549,7 @@ mod tests {
     #[test]
     fn a_nodes_finding_is_written_as_the_mesh_reads_it() {
         let draft = Draft {
-            from: "mycelium@optimus".to_owned(),
+            from: "mycelium@skiff".to_owned(),
             groups: vec![Group::new("quest.wcjqsg.4uhc5q").expect("a group")],
             intent: Some(Intent::Finding),
             text: "kept beside".to_owned(),
@@ -559,7 +559,7 @@ mod tests {
         let (id, body) = written(&draft, 4242);
         crate::store::folders::safe(&id).expect("its id is a name the store keeps");
         assert!(
-            id.contains("-mycelium@optimus-4242-"),
+            id.contains("-mycelium@skiff-4242-"),
             "its id names its sender and the node's pid: {id}"
         );
         assert_eq!(
@@ -583,22 +583,21 @@ mod tests {
             lives,
             unreachable_since: None,
         };
-        let here = session(&presence(true, None), "optimus").expect("a presence reads");
+        let here = session(&presence(true, None), "skiff").expect("a presence reads");
         assert_eq!(
             (here.address.as_str(), here.machine.as_str(), here.state),
-            ("4UHC5Q", "optimus", State::Busy)
+            ("4UHC5Q", "skiff", State::Busy)
         );
-        let there =
-            session(&presence(true, Some("equilibrius")), "optimus").expect("a presence reads");
-        assert_eq!(there.machine, "equilibrius");
-        let ended = session(&presence(false, None), "optimus").expect("a presence reads");
+        let there = session(&presence(true, Some("kestrel")), "skiff").expect("a presence reads");
+        assert_eq!(there.machine, "kestrel");
+        let ended = session(&presence(false, None), "skiff").expect("a presence reads");
         assert_eq!(ended.state, State::Ended);
         let out_of_reach = Presence {
             unreachable_since: Some(1_793_046_604_647),
-            ..presence(true, Some("equilibrius"))
+            ..presence(true, Some("kestrel"))
         };
         assert_eq!(
-            session(&out_of_reach, "optimus")
+            session(&out_of_reach, "skiff")
                 .expect("a presence reads")
                 .state,
             State::Unreachable,
@@ -619,10 +618,10 @@ mod tests {
             "session": "01a1", "addresses": ["4UHC5Q"], "at": "2026-10-28T21:50:00Z",
             "quest": "QEST-20261013-4UHC5Q", "owns": ["QEST-20261007-WCJQSG", "mycelium"],
             "wants": {"kind": "question", "since": "2026-10-28T21:49:00Z", "said": "which?"},
-            "terminal": {"driverId": "kitty", "kind": "kitty-window", "hostId": "optimus",
+            "terminal": {"driverId": "kitty", "kind": "kitty-window", "hostId": "skiff",
                 "value": "13", "scope": "unix:@kitty-6753"},
         });
-        let here = session(&presence(said.clone(), None), "optimus").expect("a presence reads");
+        let here = session(&presence(said.clone(), None), "skiff").expect("a presence reads");
         assert_eq!(
             here.quest.as_deref(),
             Some("QEST-20261013-4UHC5Q"),
@@ -647,8 +646,7 @@ mod tests {
             json!(["QEST-20261007-WCJQSG", "mycelium"]),
             "its presence goes along whole, for a reader that shows more of it"
         );
-        let there =
-            session(&presence(said, Some("equilibrius")), "optimus").expect("a presence reads");
+        let there = session(&presence(said, Some("kestrel")), "skiff").expect("a presence reads");
         assert_eq!(
             there.window, None,
             "a window on another machine can't be gone to from this one"
@@ -658,7 +656,7 @@ mod tests {
             "owns": ["mycelium", "QEST-20261013-4UHC5Q"],
         });
         assert_eq!(
-            session(&presence(older, None), "optimus")
+            session(&presence(older, None), "skiff")
                 .expect("a presence reads")
                 .quest
                 .as_deref(),
@@ -676,7 +674,7 @@ mod tests {
                 "landings": landings,
             })
             .into(),
-            elsewhere: Some("equilibrius".to_owned()),
+            elsewhere: Some("kestrel".to_owned()),
             lives: true,
             unreachable_since: None,
         };
@@ -687,7 +685,7 @@ mod tests {
                 json!([landed, {"ref": "no time or line"}, {"at": "2026-11-01T12:00:00Z",
                 "ref": "PLAN-20261026-IZH11J#3", "what": "an item done"}]),
             ),
-            "optimus",
+            "skiff",
         )
         .expect("a presence reads");
         assert_eq!(
@@ -703,7 +701,7 @@ mod tests {
             Some("less to read"),
             "a landing says what it means to the person"
         );
-        let unread = session(&presence(json!("not a list")), "optimus");
+        let unread = session(&presence(json!("not a list")), "skiff");
         assert!(
             unread.is_some_and(|session| session.landings.is_empty()),
             "landings it can't read never cost the session itself"
@@ -884,7 +882,7 @@ mod tests {
             "a session no holder runs isn't held"
         );
         assert_eq!(
-            held_by(&presence(4242, Some("equilibrius")), &here),
+            held_by(&presence(4242, Some("kestrel")), &here),
             None,
             "a process elsewhere is never one held here"
         );
@@ -990,10 +988,7 @@ mod tests {
             "a join fallen back to plain pi, or one of another session, joins it to nothing"
         );
         assert_eq!(
-            joined_by(
-                &hosted(Some("equilibrius")),
-                &[held("0d1e", &by_conversation)]
-            ),
+            joined_by(&hosted(Some("kestrel")), &[held("0d1e", &by_conversation)]),
             None,
             "a session elsewhere is never in a window here"
         );
@@ -1050,7 +1045,7 @@ mod tests {
         };
         let hosted = session(
             &presence(json!({"host": "lantern", "conversation": "c-01a1"})),
-            "optimus",
+            "skiff",
         )
         .expect("a hosted presence reads");
         assert_eq!(
@@ -1063,14 +1058,14 @@ mod tests {
             (Some("lantern"), Some("c-01a1"), None, State::Idle),
             "it lives while its host does, held by nothing of its own"
         );
-        let unread = session(&presence(json!({"host": 7})), "optimus")
+        let unread = session(&presence(json!({"host": 7})), "skiff")
             .expect("a presence with a hosted part it can't read still reads");
         assert_eq!(
             (unread.host, unread.conversation),
             (None, None),
             "what it can't read of its host it leaves out"
         );
-        let own = session(&presence(Value::Null), "optimus").expect("a presence reads");
+        let own = session(&presence(Value::Null), "skiff").expect("a presence reads");
         assert_eq!(
             (own.host, own.conversation),
             (None, None),

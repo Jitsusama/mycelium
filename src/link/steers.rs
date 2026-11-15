@@ -219,7 +219,7 @@ mod tests {
     fn an_ordered_carry_never_crosses_a_link() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let mut following = Following::new(dir.path().to_owned());
-        let ordered = json!({"act": "ordered-carry", "to": "penelope", "why": "its camera",
+        let ordered = json!({"act": "ordered-carry", "to": "tern", "why": "its camera",
                              "by": "WCJQSG", "from": "WCJQSG"});
         for checked in [false, true] {
             assert_eq!(

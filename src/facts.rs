@@ -632,13 +632,13 @@ mod tests {
         };
         let mut said = serde_json::to_value(Machine {
             disk_band: Some(Band::Filling),
-            ..measure("methuselah", &nowhere)
+            ..measure("osprey", &nowhere)
         })
         .expect("a machine says itself");
         assert_eq!(said["disk_band"], "filling", "its band is said");
         said["disk_band"] = "overflowing".into();
         let heard: Machine = serde_json::from_value(said).expect("the machine is still heard");
-        assert_eq!(heard.name, "methuselah", "the rest of the machine stays");
+        assert_eq!(heard.name, "osprey", "the rest of the machine stays");
         assert_eq!(heard.disk_band, None, "only the band it can't read goes");
     }
 
@@ -700,7 +700,7 @@ mod tests {
                 supply("USB", "System", true, None),
             ]),
             power(false, Some(56)),
-            "a laptop plugged in, as optimus says it"
+            "a laptop plugged in, as skiff says it"
         );
         assert_eq!(
             linux::power(&[
@@ -861,13 +861,13 @@ mod tests {
     #[test]
     fn a_machine_within_another_has_its_hosts_power_while_its_host_says_it() {
         let home = tempfile::tempdir().expect("a temporary folder");
-        let host_says = home.path().join("methuselah.json");
+        let host_says = home.path().join("osprey.json");
         let declared = home.path().join("declared.json");
         std::fs::write(
             &declared,
             serde_json::json!({
                 "reach": [], "outlives": [], "costs_money": false, "taints": [],
-                "within": {"machine": "methuselah", "file": host_says}
+                "within": {"machine": "osprey", "file": host_says}
             })
             .to_string(),
         )
@@ -893,7 +893,7 @@ mod tests {
 
         within::tell(&host_says, &says(jiff::Timestamp::now())).expect("told");
         assert_eq!(
-            measure("methuselah-linux", &sources).power,
+            measure("osprey-linux", &sources).power,
             Some(draining),
             "it is on its battery while its host is"
         );
@@ -905,7 +905,7 @@ mod tests {
         let long_ago = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
         within::tell(&host_says, &says(long_ago)).expect("told");
         assert_ne!(
-            measure("methuselah-linux", &sources).power,
+            measure("osprey-linux", &sources).power,
             Some(draining),
             "and reads its own once its host has long said nothing"
         );
@@ -924,7 +924,7 @@ mod tests {
             updated: home.path().join("last.json"),
         };
         assert_eq!(
-            measure("penelope", &sources).updated,
+            measure("tern", &sources).updated,
             None,
             "unknown before its updater keeps an ending"
         );
@@ -934,7 +934,7 @@ mod tests {
             "at": "2026-11-08T23:40:00Z"});
         std::fs::write(&sources.updated, done.to_string()).expect("kept");
         assert_eq!(
-            measure("penelope", &sources).updated,
+            measure("tern", &sources).updated,
             Some(done),
             "then as its updater kept it, a restart it waits on included"
         );
@@ -958,7 +958,7 @@ mod tests {
             reached: home.path().join("reached.json"),
             updated: home.path().join("last.json"),
         };
-        let agents = measure_in("optimus", "work", &sources)
+        let agents = measure_in("skiff", "work", &sources)
             .declared
             .map(|said| said.agents);
         assert_eq!(

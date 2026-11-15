@@ -1087,7 +1087,7 @@ mod tests {
         let (sender, frames) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             tokio::time::sleep(after).await;
-            let _ = sender.send(Ok(Frame::Hello(realm("equilibrius").hello())));
+            let _ = sender.send(Ok(Frame::Hello(realm("kestrel").hello())));
             // Held, so the hello is read before the end seems to close.
             tokio::time::sleep(after).await;
         });
@@ -1100,7 +1100,7 @@ mod tests {
         let heard = hello(&mut said_after(setting_up), None).await;
         assert_eq!(
             heard.expect("heard").machine,
-            "equilibrius",
+            "kestrel",
             "a way in that ends itself when it can't is waited on however long"
         );
         let given_up = hello(&mut said_after(setting_up), Some(dial::HELLO_WITHIN)).await;
@@ -1164,31 +1164,28 @@ mod tests {
 
     /// Marks the two stores as last linked `ms_ago`, as if they had been
     /// apart since.
-    fn apart_since(optimus: &Memory, equilibrius: &Memory, ms_ago: i64) {
+    fn apart_since(skiff: &Memory, kestrel: &Memory, ms_ago: i64) {
         let until = now() - ms_ago;
-        optimus
-            .mark_linked("equilibrius", until)
+        skiff
+            .mark_linked("kestrel", until)
             .expect("a memory store marks");
-        equilibrius
-            .mark_linked("optimus", until)
+        kestrel
+            .mark_linked("skiff", until)
             .expect("a memory store marks");
     }
 
     /// Two stores joined by a link over an in-memory pipe of `buffer` bytes,
-    /// optimus's end first.
+    /// skiff's end first.
     fn linked(
-        optimus: &Memory,
-        equilibrius: &Memory,
+        skiff: &Memory,
+        kestrel: &Memory,
         buffer: usize,
     ) -> (
         tokio::task::JoinHandle<io::Result<()>>,
         tokio::task::JoinHandle<io::Result<()>>,
     ) {
         let (near, far) = tokio::io::duplex(buffer);
-        (
-            end(optimus, "optimus", near),
-            end(equilibrius, "equilibrius", far),
-        )
+        (end(skiff, "skiff", near), end(kestrel, "kestrel", far))
     }
 
     /// Waits on `store`'s changes until `holds` is true of it.
@@ -1223,26 +1220,26 @@ mod tests {
 
     #[tokio::test]
     async fn each_end_gets_the_messages_it_lacked_and_each_new_one() {
-        let optimus = Memory::default();
-        let equilibrius = Memory::default();
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
         let before = recent(1000, "WCJQSG", 0);
         let theirs = recent(900, "20KSI7", 0);
         let stale = format!("{}-OLD-1-0", now() - millis(REACH) - 1000);
-        said(&optimus, &before, "@20KSI7");
-        said(&optimus, &stale, "@20KSI7");
-        said(&equilibrius, &theirs, "@WCJQSG");
+        said(&skiff, &before, "@20KSI7");
+        said(&skiff, &stale, "@20KSI7");
+        said(&kestrel, &theirs, "@WCJQSG");
 
         // Apart longer than the mesh keeps anything, so the week is the reach.
-        apart_since(&optimus, &equilibrius, 2 * millis(REACH));
-        let _link = linked(&optimus, &equilibrius, 1 << 16);
-        until(&equilibrius, |store| store.message(&before).is_some()).await;
-        until(&optimus, |store| store.message(&theirs).is_some()).await;
+        apart_since(&skiff, &kestrel, 2 * millis(REACH));
+        let _link = linked(&skiff, &kestrel, 1 << 16);
+        until(&kestrel, |store| store.message(&before).is_some()).await;
+        until(&skiff, |store| store.message(&theirs).is_some()).await;
 
         let after = recent(0, "4UHC5Q", 0);
-        said(&optimus, &after, "#quest/4uhc5q");
-        until(&equilibrius, |store| store.message(&after).is_some()).await;
+        said(&skiff, &after, "#quest/4uhc5q");
+        until(&kestrel, |store| store.message(&after).is_some()).await;
         assert_eq!(
-            equilibrius.message(&stale),
+            kestrel.message(&stale),
             None,
             "a message past reach stays behind"
         );
@@ -1250,60 +1247,60 @@ mod tests {
 
     #[tokio::test]
     async fn what_is_said_to_the_machine_stays_on_it() {
-        let optimus = Memory::default();
-        let equilibrius = Memory::default();
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
         let hold = recent(30, "16V6F4", 0);
         let ended = recent(20, "16V6F4", 1);
         let next = recent(10, "WCJQSG", 0);
-        said(&optimus, &hold, "#all");
+        said(&skiff, &hold, "#all");
         let answer = json!({"id": ended, "to": ["@16V6F4"], "re": hold, "text": "parked"});
-        optimus.send_here(&ended, answer);
-        said(&optimus, &next, "@20KSI7");
+        skiff.send_here(&ended, answer);
+        said(&skiff, &next, "@20KSI7");
 
-        apart_since(&optimus, &equilibrius, 60_000);
-        let _link = linked(&optimus, &equilibrius, 1 << 16);
-        until(&equilibrius, |store| store.message(&next).is_some()).await;
+        apart_since(&skiff, &kestrel, 60_000);
+        let _link = linked(&skiff, &kestrel, 1 << 16);
+        until(&kestrel, |store| store.message(&next).is_some()).await;
         assert_eq!(
-            equilibrius.message(&hold),
+            kestrel.message(&hold),
             None,
             "a hold to the machine stays on it"
         );
-        assert_eq!(equilibrius.message(&ended), None, "and so do its answers");
+        assert_eq!(kestrel.message(&ended), None, "and so do its answers");
     }
 
     #[tokio::test]
     async fn two_ends_with_a_week_each_catch_up_through_a_narrow_pipe() {
-        let optimus = Memory::default();
-        let equilibrius = Memory::default();
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
         let many = 2000;
         for n in 0..many {
-            said(&optimus, &recent(5000, "WCJQSG", n), "@20KSI7");
-            said(&equilibrius, &recent(5000, "20KSI7", n), "@WCJQSG");
+            said(&skiff, &recent(5000, "WCJQSG", n), "@20KSI7");
+            said(&kestrel, &recent(5000, "20KSI7", n), "@WCJQSG");
         }
         // A pipe narrower than one message, so neither end can write its
         // backlog without the other reading.
-        apart_since(&optimus, &equilibrius, 60_000);
-        let _link = linked(&optimus, &equilibrius, 64);
-        until(&optimus, |store| store.message_ids(0).len() == 2 * many).await;
-        until(&equilibrius, |store| store.message_ids(0).len() == 2 * many).await;
+        apart_since(&skiff, &kestrel, 60_000);
+        let _link = linked(&skiff, &kestrel, 64);
+        until(&skiff, |store| store.message_ids(0).len() == 2 * many).await;
+        until(&kestrel, |store| store.message_ids(0).len() == 2 * many).await;
     }
 
     #[tokio::test]
     async fn a_first_link_carries_only_what_is_said_from_then_on() {
-        let optimus = Memory::default();
-        let equilibrius = Memory::default();
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
         let before = recent(1000, "WCJQSG", 0);
-        said(&optimus, &before, "#repo/walgit-rs");
+        said(&skiff, &before, "#repo/walgit-rs");
 
-        optimus.start_here("launcher", json!({"session": "launcher"}), true);
-        let _link = linked(&optimus, &equilibrius, 1 << 16);
+        skiff.start_here("launcher", json!({"session": "launcher"}), true);
+        let _link = linked(&skiff, &kestrel, 1 << 16);
         // The launcher arriving says the link stands.
-        until(&equilibrius, |store| !store.presences().is_empty()).await;
+        until(&kestrel, |store| !store.presences().is_empty()).await;
         let after = recent(0, "WCJQSG", 1);
-        said(&optimus, &after, "#repo/walgit-rs");
-        until(&equilibrius, |store| store.message(&after).is_some()).await;
+        said(&skiff, &after, "#repo/walgit-rs");
+        until(&kestrel, |store| store.message(&after).is_some()).await;
         assert_eq!(
-            equilibrius.message(&before),
+            kestrel.message(&before),
             None,
             "talk from before the machines linked stays"
         );
@@ -1311,34 +1308,34 @@ mod tests {
 
     #[tokio::test]
     async fn a_living_session_is_carried_let_go_when_it_ends_and_unreachable_once_the_link_drops() {
-        let optimus = Memory::default();
-        let equilibrius = Memory::default();
-        equilibrius.start_here("walgit", json!({"session": "walgit"}), true);
-        equilibrius.start_here("gone", json!({"session": "gone"}), false);
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        kestrel.start_here("walgit", json!({"session": "walgit"}), true);
+        kestrel.start_here("gone", json!({"session": "gone"}), false);
 
-        let (near, _far) = linked(&optimus, &equilibrius, 1 << 16);
-        until(&optimus, |store| !store.presences().is_empty()).await;
-        let carried = optimus.presences();
+        let (near, _far) = linked(&skiff, &kestrel, 1 << 16);
+        until(&skiff, |store| !store.presences().is_empty()).await;
+        let carried = skiff.presences();
         assert_eq!(
             carried.len(),
             1,
             "only the living session is carried: {carried:?}"
         );
-        assert_eq!(carried[0].elsewhere.as_deref(), Some("equilibrius"));
+        assert_eq!(carried[0].elsewhere.as_deref(), Some("kestrel"));
 
-        equilibrius.start_here("walgit", json!({"session": "walgit"}), false);
-        until(&optimus, |store| store.presences().is_empty()).await;
+        kestrel.start_here("walgit", json!({"session": "walgit"}), false);
+        until(&skiff, |store| store.presences().is_empty()).await;
 
-        optimus.start_here("launcher", json!({"session": "launcher"}), true);
-        until(&equilibrius, |store| {
+        skiff.start_here("launcher", json!({"session": "launcher"}), true);
+        until(&kestrel, |store| {
             store.presences().iter().any(|p| p.elsewhere.is_some())
         })
         .await;
-        // Stopping optimus's end closes its half of the pipe, so the Mac's
-        // end sees the link drop, and keeps what optimus carried out of
+        // Stopping skiff's end closes its half of the pipe, so the Mac's
+        // end sees the link drop, and keeps what skiff carried out of
         // reach rather than gone.
         near.abort();
-        until(&equilibrius, |store| {
+        until(&kestrel, |store| {
             store
                 .presences()
                 .iter()
@@ -1349,55 +1346,55 @@ mod tests {
 
     #[tokio::test]
     async fn a_session_carried_to_the_other_machine_stands_where_it_runs_on_both() {
-        let optimus = Memory::default();
-        let equilibrius = Memory::default();
-        // Carried from optimus, it ended there and runs on the Mac.
-        optimus.start_here("moved", json!({"session": "moved"}), false);
-        equilibrius.start_here("moved", json!({"session": "moved"}), true);
-        optimus.hold_here("moved", json!({"session": "moved", "leases": []}));
-        equilibrius.hold_here(
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        // Carried from skiff, it ended there and runs on the Mac.
+        skiff.start_here("moved", json!({"session": "moved"}), false);
+        kestrel.start_here("moved", json!({"session": "moved"}), true);
+        skiff.hold_here("moved", json!({"session": "moved", "leases": []}));
+        kestrel.hold_here(
             "moved",
             json!({"session": "moved", "leases": [{"kind": "change", "subject": "a"}]}),
         );
 
-        let _link = linked(&optimus, &equilibrius, 1 << 16);
-        until(&optimus, |store| {
+        let _link = linked(&skiff, &kestrel, 1 << 16);
+        until(&skiff, |store| {
             store
                 .presences()
                 .iter()
-                .any(|p| p.elsewhere.as_deref() == Some("equilibrius") && p.lives)
+                .any(|p| p.elsewhere.as_deref() == Some("kestrel") && p.lives)
         })
         .await;
-        until(&optimus, |store| {
+        until(&skiff, |store| {
             store
                 .holdings()
                 .iter()
-                .any(|holding| holding["machine"] == "equilibrius")
+                .any(|holding| holding["machine"] == "kestrel")
         })
         .await;
-        let mac = equilibrius.presences();
+        let mac = kestrel.presences();
         assert!(
             matches!(mac.as_slice(), [one] if one.elsewhere.is_none() && one.lives),
-            "the Mac keeps its own, its end on optimus never carried back: {mac:?}"
+            "the Mac keeps its own, its end on skiff never carried back: {mac:?}"
         );
     }
 
     #[tokio::test]
     async fn each_end_says_what_its_machine_is_which_stays_out_of_reach_once_the_link_drops() {
-        let optimus = Memory::default();
-        let equilibrius = Memory::default();
-        equilibrius.start_here("walgit", json!({"session": "walgit"}), true);
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        kestrel.start_here("walgit", json!({"session": "walgit"}), true);
 
-        let (_near, far) = linked(&optimus, &equilibrius, 1 << 16);
+        let (_near, far) = linked(&skiff, &kestrel, 1 << 16);
         // A machine says what it is before its sessions, so once one is
         // carried, so is what it said.
-        until(&optimus, |store| !store.presences().is_empty()).await;
-        let said = optimus.machines();
+        until(&skiff, |store| !store.presences().is_empty()).await;
+        let said = skiff.machines();
         assert_eq!(
             said.iter()
                 .map(|one| (one.name.as_str(), one.state))
                 .collect::<Vec<_>>(),
-            [("equilibrius", Readiness::Ready)],
+            [("kestrel", Readiness::Ready)],
             "the far machine is kept as ready while linked"
         );
         assert_eq!(
@@ -1407,7 +1404,7 @@ mod tests {
         );
 
         far.abort();
-        until(&optimus, |store| {
+        until(&skiff, |store| {
             store
                 .presences()
                 .iter()
@@ -1415,34 +1412,30 @@ mod tests {
         })
         .await;
         assert_eq!(
-            optimus
+            skiff
                 .machines()
                 .iter()
                 .map(|one| (one.name.as_str(), one.state))
                 .collect::<Vec<_>>(),
-            [("equilibrius", Readiness::Unreachable)],
+            [("kestrel", Readiness::Unreachable)],
             "what it said stays, as of when the link last carried it"
         );
-        assert_eq!(
-            optimus.endings("equilibrius", 0),
-            1,
-            "and the drop is counted"
-        );
+        assert_eq!(skiff.endings("kestrel", 0), 1, "and the drop is counted");
     }
 
     #[tokio::test]
     async fn an_older_end_hears_nothing_of_machines_and_none_speaks_for_another() {
-        let optimus = Memory::default();
-        optimus.start_here("launcher", json!({"session": "launcher"}), true);
+        let skiff = Memory::default();
+        skiff.start_here("launcher", json!({"session": "launcher"}), true);
         let (near, far) = tokio::io::duplex(1 << 16);
-        let _optimus_end = end(&optimus, "optimus", near);
+        let _skiff_end = end(&skiff, "skiff", near);
         let (far_reading, mut far_writing) = tokio::io::split(far);
 
         let older = Hello {
             facts: false,
             starts: false,
             steers: false,
-            ..realm("equilibrius").hello()
+            ..realm("kestrel").hello()
         };
         send(&mut far_writing, &Frame::Hello(older))
             .await
@@ -1460,7 +1453,7 @@ mod tests {
             }
         })
         .await;
-        assert!(waited.is_ok(), "optimus's session never crossed");
+        assert!(waited.is_ok(), "skiff's session never crossed");
         assert!(
             !heard.iter().any(|frame| matches!(frame, Frame::Machine(_))),
             "an end that doesn't say it knows of machines hears none: {heard:?}"
@@ -1474,14 +1467,14 @@ mod tests {
             reached: "/nowhere".into(),
             updated: "/nowhere".into(),
         };
-        let mut penelope = facts::measure("penelope", &nowhere);
-        penelope.state = Readiness::Ready;
+        let mut tern = facts::measure("tern", &nowhere);
+        tern.state = Readiness::Ready;
         for frame in [
             Frame::Have {
                 messages: Vec::new(),
                 living: Some(vec!["walgit".to_owned()]),
             },
-            Frame::Machine(Box::new(penelope)),
+            Frame::Machine(Box::new(tern)),
             Frame::Presence {
                 session: "walgit".to_owned(),
                 body: json!({"session": "walgit"}),
@@ -1493,20 +1486,20 @@ mod tests {
                 .await
                 .expect("the far end speaks");
         }
-        until(&optimus, |store| {
+        until(&skiff, |store| {
             store.presences().iter().any(|p| p.session == "walgit")
         })
         .await;
         assert!(
-            optimus.machines().is_empty(),
-            "equilibrius can't say what penelope is"
+            skiff.machines().is_empty(),
+            "kestrel can't say what tern is"
         );
     }
 
     #[tokio::test]
     async fn a_sessions_changes_are_carried_with_it_and_go_when_it_ends() {
-        let optimus = Memory::default();
-        let equilibrius = Memory::default();
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
         let change = |subject: &str| {
             json!({"kind": "change", "subject": subject, "since": "s",
                    "until": "2999-01-01T00:00:00.000Z"})
@@ -1515,53 +1508,53 @@ mod tests {
             store
                 .holdings()
                 .iter()
-                .filter(|holding| holding["machine"] == "equilibrius")
+                .filter(|holding| holding["machine"] == "kestrel")
                 .flat_map(|holding| holding["leases"].as_array().cloned().unwrap_or_default())
                 .collect()
         };
-        equilibrius.start_here("walgit", json!({"session": "walgit"}), true);
-        equilibrius.hold_here(
+        kestrel.start_here("walgit", json!({"session": "walgit"}), true);
+        kestrel.hold_here(
             "walgit",
             json!({"session": "walgit", "leases": [change("core.nix:flake.nix")]}),
         );
 
-        let _link = linked(&optimus, &equilibrius, 1 << 16);
-        until(&optimus, |store| leases_of(store).len() == 1).await;
+        let _link = linked(&skiff, &kestrel, 1 << 16);
+        until(&skiff, |store| leases_of(store).len() == 1).await;
         assert_eq!(
-            leases_of(&optimus)[0]["subject"],
+            leases_of(&skiff)[0]["subject"],
             "core.nix:flake.nix",
             "the Mac session's change is held here, marked as the Mac's"
         );
 
-        equilibrius.hold_here("walgit", json!({"session": "walgit", "leases": []}));
-        until(&optimus, |store| leases_of(store).is_empty()).await;
+        kestrel.hold_here("walgit", json!({"session": "walgit", "leases": []}));
+        until(&skiff, |store| leases_of(store).is_empty()).await;
 
-        equilibrius.hold_here(
+        kestrel.hold_here(
             "walgit",
             json!({"session": "walgit", "leases": [change("mycelium:src/mesh.rs")]}),
         );
-        until(&optimus, |store| leases_of(store).len() == 1).await;
-        equilibrius.start_here("walgit", json!({"session": "walgit"}), false);
-        until(&optimus, |store| store.holdings().is_empty()).await;
+        until(&skiff, |store| leases_of(store).len() == 1).await;
+        kestrel.start_here("walgit", json!({"session": "walgit"}), false);
+        until(&skiff, |store| store.holdings().is_empty()).await;
     }
 
     #[tokio::test]
     async fn what_a_session_landed_crosses_with_its_presence() {
-        let optimus = Memory::default();
-        let equilibrius = Memory::default();
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
         let landings = json!([{"at": "2026-11-01T13:58:00Z", "ref": "shop/world#2351158",
             "what": "a provider makes machines", "person": "the swarm borrows a machine"}]);
-        equilibrius.start_here(
+        kestrel.start_here(
             "walgit",
             json!({"session": "walgit", "addresses": ["NTQHL6"],
                    "at": "2026-11-01T14:00:00Z", "landings": landings}),
             true,
         );
 
-        let _link = linked(&optimus, &equilibrius, 1 << 16);
-        until(&optimus, |store| !store.presences().is_empty()).await;
+        let _link = linked(&skiff, &kestrel, 1 << 16);
+        until(&skiff, |store| !store.presences().is_empty()).await;
         let carried =
-            mesh::session(&optimus.presences()[0], "optimus").expect("the Mac session reads here");
+            mesh::session(&skiff.presences()[0], "skiff").expect("the Mac session reads here");
         assert_eq!(
             serde_json::to_value(&carried.landings).expect("landings write"),
             landings,
@@ -1571,28 +1564,28 @@ mod tests {
 
     #[tokio::test]
     async fn a_link_coming_back_says_which_sessions_out_of_reach_still_run() {
-        let optimus = Memory::default();
-        let equilibrius = Memory::default();
-        optimus.start_here("launcher", json!({"session": "launcher"}), true);
-        optimus.start_here("done", json!({"session": "done"}), true);
-        let (near, far) = linked(&optimus, &equilibrius, 1 << 16);
-        until(&equilibrius, |store| store.presences().len() == 2).await;
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        skiff.start_here("launcher", json!({"session": "launcher"}), true);
+        skiff.start_here("done", json!({"session": "done"}), true);
+        let (near, far) = linked(&skiff, &kestrel, 1 << 16);
+        until(&kestrel, |store| store.presences().len() == 2).await;
         near.abort();
         far.await
             .expect("the Mac's end runs to its end")
             .expect("a dropped link ends quietly");
         assert!(
-            equilibrius
+            kestrel
                 .presences()
                 .iter()
                 .all(|p| p.unreachable_since.is_some()),
             "both are out of reach: {:?}",
-            equilibrius.presences()
+            kestrel.presences()
         );
 
-        optimus.start_here("done", json!({"session": "done"}), false);
-        let _back = linked(&optimus, &equilibrius, 1 << 16);
-        until(&equilibrius, |store| {
+        skiff.start_here("done", json!({"session": "done"}), false);
+        let _back = linked(&skiff, &kestrel, 1 << 16);
+        until(&kestrel, |store| {
             matches!(
                 store.presences().as_slice(),
                 [one] if one.session == "launcher" && one.unreachable_since.is_none()
@@ -1603,17 +1596,17 @@ mod tests {
 
     #[tokio::test]
     async fn an_end_that_names_no_living_sessions_has_every_one_out_of_reach_let_go() {
-        let optimus = Memory::default();
-        optimus
-            .put_presence("walgit", "equilibrius", &json!({"session": "walgit"}))
+        let skiff = Memory::default();
+        skiff
+            .put_presence("walgit", "kestrel", &json!({"session": "walgit"}))
             .expect("a copy is kept");
-        store::out_of_reach(&optimus, "equilibrius", now());
+        store::out_of_reach(&skiff, "kestrel", now());
         let (near, far) = tokio::io::duplex(1 << 16);
-        let _optimus_end = end(&optimus, "optimus", near);
+        let _skiff_end = end(&skiff, "skiff", near);
         let (_far_reading, mut far_writing) = tokio::io::split(far);
         // As an end older than naming its living sessions says it.
         for line in [
-            serde_json::to_string(&Frame::Hello(realm("equilibrius").hello())).expect("a frame"),
+            serde_json::to_string(&Frame::Hello(realm("kestrel").hello())).expect("a frame"),
             r#"{"Have":{"messages":[]}}"#.to_owned(),
         ] {
             far_writing
@@ -1621,42 +1614,38 @@ mod tests {
                 .await
                 .expect("the far end sends");
         }
-        until(&optimus, |store| store.presences().is_empty()).await;
+        until(&skiff, |store| store.presences().is_empty()).await;
     }
 
     #[tokio::test]
     async fn a_second_link_to_a_machine_already_linked_is_refused() {
-        let optimus = Memory::default();
-        let equilibrius = Memory::default();
-        equilibrius.start_here("walgit", json!({"session": "walgit"}), true);
-        let _first = linked(&optimus, &equilibrius, 1 << 16);
-        until(&optimus, |store| !store.presences().is_empty()).await;
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        kestrel.start_here("walgit", json!({"session": "walgit"}), true);
+        let _first = linked(&skiff, &kestrel, 1 << 16);
+        until(&skiff, |store| !store.presences().is_empty()).await;
 
-        let (near, far) = linked(&optimus, &equilibrius, 1 << 16);
+        let (near, far) = linked(&skiff, &kestrel, 1 << 16);
         let refused = near.await.expect("the second link's end runs to its end");
         assert!(
             refused.is_err(),
-            "optimus already carries the Mac by the first link"
+            "skiff already carries the Mac by the first link"
         );
         drop(far);
-        assert_eq!(
-            optimus.presences().len(),
-            1,
-            "the first link's sessions stay"
-        );
+        assert_eq!(skiff.presences().len(), 1, "the first link's sessions stay");
     }
 
     #[tokio::test]
     async fn another_realm_is_refused_before_anything_crosses() {
-        let optimus = Memory::default();
-        said(&optimus, &recent(0, "WCJQSG", 0), "@20KSI7");
-        optimus.start_here("launcher", json!({"session": "launcher"}), true);
+        let skiff = Memory::default();
+        said(&skiff, &recent(0, "WCJQSG", 0), "@20KSI7");
+        skiff.start_here("launcher", json!({"session": "launcher"}), true);
         let (near, far) = tokio::io::duplex(1 << 16);
-        let optimus_end = end(&optimus, "optimus", near);
+        let skiff_end = end(&skiff, "skiff", near);
 
         let (far_reading, mut far_writing) = tokio::io::split(far);
         let personal = Hello {
-            machine: "penelope".to_owned(),
+            machine: "tern".to_owned(),
             realm: "personal".to_owned(),
             version: VERSION,
             facts: true,
@@ -1668,8 +1657,8 @@ mod tests {
         send(&mut far_writing, &Frame::Hello(personal))
             .await
             .expect("the far end says hello");
-        let refused = optimus_end.await.expect("optimus's end runs to its end");
-        assert!(refused.is_err(), "optimus refuses the personal realm");
+        let refused = skiff_end.await.expect("skiff's end runs to its end");
+        assert!(refused.is_err(), "skiff refuses the personal realm");
 
         let mut heard = Vec::new();
         let mut lines = BufReader::new(far_reading).lines();
@@ -1678,40 +1667,40 @@ mod tests {
         }
         assert!(
             matches!(heard.as_slice(), [Frame::Hello(_)]),
-            "only optimus's hello crossed: {heard:?}"
+            "only skiff's hello crossed: {heard:?}"
         );
     }
 
     #[tokio::test]
     async fn a_machine_refused_for_its_version_is_kept_as_why_until_it_links() {
-        let optimus = Memory::default();
+        let skiff = Memory::default();
         let (near, far) = tokio::io::duplex(1 << 16);
-        let optimus_end = end(&optimus, "optimus", near);
+        let skiff_end = end(&skiff, "skiff", near);
         let (_far_reading, mut far_writing) = tokio::io::split(far);
         let newer = Hello {
             version: VERSION + 1,
-            ..realm("equilibrius").hello()
+            ..realm("kestrel").hello()
         };
         send(&mut far_writing, &Frame::Hello(newer))
             .await
             .expect("the far end says hello");
-        let refused = optimus_end.await.expect("optimus's end runs to its end");
+        let refused = skiff_end.await.expect("skiff's end runs to its end");
         let why = refused
-            .expect_err("optimus refuses another version")
+            .expect_err("skiff refuses another version")
             .to_string();
         assert_eq!(
-            optimus.link_refused("equilibrius"),
+            skiff.link_refused("kestrel"),
             Some(why),
             "the store keeps why, as the link said it"
         );
 
-        let equilibrius = Memory::default();
-        equilibrius.start_here("walgit", json!({"session": "walgit"}), true);
-        let _linked = linked(&optimus, &equilibrius, 1 << 16);
+        let kestrel = Memory::default();
+        kestrel.start_here("walgit", json!({"session": "walgit"}), true);
+        let _linked = linked(&skiff, &kestrel, 1 << 16);
         // Its sessions cross only once the link is admitted.
-        until(&optimus, |store| !store.presences().is_empty()).await;
+        until(&skiff, |store| !store.presences().is_empty()).await;
         assert_eq!(
-            optimus.link_refused("equilibrius"),
+            skiff.link_refused("kestrel"),
             None,
             "a link admitted ends the refusal"
         );
@@ -1719,14 +1708,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_record_the_store_refuses_is_skipped_and_the_link_carries_on() {
-        let optimus = Memory::default();
+        let skiff = Memory::default();
         let (near, far) = tokio::io::duplex(1 << 16);
-        let _optimus_end = end(&optimus, "optimus", near);
+        let _skiff_end = end(&skiff, "skiff", near);
         let (_far_reading, mut far_writing) = tokio::io::split(far);
 
         let good = recent(0, "20KSI7", 0);
         let frames = [
-            Frame::Hello(realm("equilibrius").hello()),
+            Frame::Hello(realm("kestrel").hello()),
             Frame::Message {
                 id: "../escape".to_owned(),
                 body: json!({"id": "../escape"}),
@@ -1751,14 +1740,14 @@ mod tests {
                 .await
                 .expect("the far end sends");
         }
-        until(&optimus, |store| store.message(&good).is_some()).await;
+        until(&skiff, |store| store.message(&good).is_some()).await;
         assert_eq!(
-            optimus.message_ids(0),
+            skiff.message_ids(0),
             [good],
             "only the good message was kept"
         );
         assert!(
-            optimus.presences().is_empty(),
+            skiff.presences().is_empty(),
             "the presence naming another session was refused"
         );
     }
@@ -1772,7 +1761,7 @@ mod tests {
             home: dir.path().join(machine).join("home"),
             state: dir.path().join(machine).join("state"),
         };
-        let (here, there) = (places("optimus"), places("equilibrius"));
+        let (here, there) = (places("skiff"), places("kestrel"));
         let quest = "QEST-20261013-4UHC5Q";
         let ours = here.quests.join(quest).join("README.md");
         let theirs = there.quests.join(quest).join("README.md");
@@ -1784,10 +1773,10 @@ mod tests {
             .keep()
             .expect("the quest shared");
 
-        let (optimus, equilibrius) = (Memory::default(), Memory::default());
+        let (skiff, kestrel) = (Memory::default(), Memory::default());
         let (near, far) = tokio::io::duplex(1 << 16);
-        let _near = sharing_end(&optimus, "optimus", near, Some(here));
-        let _far = sharing_end(&equilibrius, "equilibrius", far, Some(there));
+        let _near = sharing_end(&skiff, "skiff", near, Some(here));
+        let _far = sharing_end(&kestrel, "kestrel", far, Some(there));
 
         until_file(&theirs, "# Shared\n").await;
         std::fs::write(&theirs, "# Changed there\n").expect("changed on the far end");
@@ -1814,14 +1803,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_link_that_can_release_ends_once_the_other_machine_hands_over() {
-        let optimus = Memory::default();
-        let store = optimus.clone();
+        let skiff = Memory::default();
+        let store = skiff.clone();
         let (near, far) = tokio::io::duplex(1 << 16);
         let (reading, writing) = tokio::io::split(near);
-        let optimus_end = tokio::spawn(async move {
+        let skiff_end = tokio::spawn(async move {
             run(
                 store,
-                &realm("optimus"),
+                &realm("skiff"),
                 Connection {
                     releases: true,
                     ..connection(reading, writing)
@@ -1837,9 +1826,9 @@ mod tests {
             .next_line()
             .await
             .expect("the pipe reads")
-            .expect("optimus says hello");
+            .expect("skiff says hello");
         let Ok(Frame::Hello(hello)) = serde_json::from_str::<Frame>(&first) else {
-            panic!("optimus's first line is its hello: {first}");
+            panic!("skiff's first line is its hello: {first}");
         };
         assert!(hello.releases, "an end that can release says so");
 
@@ -1855,17 +1844,17 @@ mod tests {
                 .await
                 .expect("the far end speaks");
         }
-        let ended = tokio::time::timeout(PATIENCE, optimus_end)
+        let ended = tokio::time::timeout(PATIENCE, skiff_end)
             .await
-            .expect("optimus's end ends")
-            .expect("optimus's end runs");
+            .expect("skiff's end ends")
+            .expect("skiff's end runs");
 
         assert_eq!(
             ended.expect("the link doesn't fail"),
             Ending::HandedOver,
             "holding all the other machine said, it may be released"
         );
-        assert_eq!(optimus.endings("lent", 0), 0, "a handover is no drop");
+        assert_eq!(skiff.endings("lent", 0), 0, "a handover is no drop");
     }
 
     #[tokio::test]
@@ -1877,7 +1866,7 @@ mod tests {
             home: dir.path().join(machine).join("home"),
             state: dir.path().join(machine).join("state"),
         };
-        let (home, lent) = (places("optimus"), places("lent"));
+        let (home, lent) = (places("skiff"), places("lent"));
         let quest = "QEST-20261013-4UHC5Q";
         std::fs::create_dir_all(lent.quests.join(quest)).expect("the quest made");
         std::fs::write(lent.quests.join(quest).join("README.md"), "# Shared\n")
@@ -1887,16 +1876,16 @@ mod tests {
             .expect("its ledger held")
             .keep()
             .expect("the quest shared");
-        let mut exchange = Exchange::new(lent, "lent".to_owned(), "optimus".to_owned());
+        let mut exchange = Exchange::new(lent, "lent".to_owned(), "skiff".to_owned());
 
-        let optimus = Memory::default();
-        let store = optimus.clone();
+        let skiff = Memory::default();
+        let store = skiff.clone();
         let (near, far) = tokio::io::duplex(1 << 16);
         let (reading, writing) = tokio::io::split(near);
-        let optimus_end = tokio::spawn(async move {
+        let skiff_end = tokio::spawn(async move {
             run(
                 store,
-                &realm("optimus"),
+                &realm("skiff"),
                 Connection {
                     releases: true,
                     ..connection(reading, writing)
@@ -1910,7 +1899,7 @@ mod tests {
         let mut lines = BufReader::new(far_reading).lines();
 
         // The lent machine offers its README and hands over at once, then
-        // says a message, which optimus keeps only once it has heard all
+        // says a message, which skiff keeps only once it has heard all
         // before it.
         let said = recent(0, "20KSI7", 0);
         let mut frames = vec![
@@ -1937,10 +1926,10 @@ mod tests {
                 .await
                 .expect("the lent machine speaks");
         }
-        until(&optimus, |store| store.message(&said).is_some()).await;
+        until(&skiff, |store| store.message(&said).is_some()).await;
         assert!(
-            !optimus_end.is_finished(),
-            "optimus keeps the link while the README it asked for is on its way"
+            !skiff_end.is_finished(),
+            "skiff keeps the link while the README it asked for is on its way"
         );
 
         for frame in files_asked_for(&mut lines, &mut exchange)
@@ -1953,10 +1942,10 @@ mod tests {
                 .await
                 .expect("the lent machine speaks");
         }
-        let ended = tokio::time::timeout(PATIENCE, optimus_end)
+        let ended = tokio::time::timeout(PATIENCE, skiff_end)
             .await
-            .expect("optimus's end ends")
-            .expect("optimus's end runs");
+            .expect("skiff's end ends")
+            .expect("skiff's end runs");
         assert_eq!(
             ended.expect("the link doesn't fail"),
             Ending::HandedOver,
