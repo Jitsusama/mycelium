@@ -635,11 +635,16 @@ pub fn network(mycelium: &Mycelium, asked: &str, look: &Look, all: bool) -> Resu
 pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -> String {
     let folding = Folding::unless(all);
     let mut lines = vec![summary(mycelium, look), String::new()];
-    let sessions = mycelium
+    let mut sessions = mycelium
         .cells
         .iter()
-        .filter(|cell| standing.is_empty() || cell.stands_as(standing));
-    lines.extend(cell_lines(look, 0, sessions, &folding));
+        .filter(|cell| standing.is_empty() || cell.stands_as(standing))
+        .peekable();
+    if sessions.peek().is_none() && !standing.is_empty() {
+        lines.push(nothing_standing(standing));
+    } else {
+        lines.extend(cell_lines(look, 0, sessions, &folding));
+    }
     let machines: Vec<&Cell> = mycelium
         .cells
         .iter()
@@ -682,6 +687,27 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
     }
     lines.extend(folding.hint(look, &command));
     lines.join("\n")
+}
+
+/// That no session stands as `standing` says, as a person would say it:
+/// `needs-you,stuck` is "Nothing needs you and nothing is stuck."
+fn nothing_standing(standing: &[String]) -> String {
+    let said: Vec<String> = standing
+        .iter()
+        .enumerate()
+        .map(|(at, each)| {
+            let nothing = if at == 0 { "Nothing" } else { "nothing" };
+            match each.as_str() {
+                "needs-you" => format!("{nothing} needs you"),
+                other => format!("{nothing} is {other}"),
+            }
+        })
+        .collect();
+    match said.split_last() {
+        Some((last, [])) => format!("{last}."),
+        Some((last, rest)) => format!("{} and {last}.", rest.join(", ")),
+        None => String::new(),
+    }
 }
 
 /// One session cell: how it stands and what it is doing, where it runs,

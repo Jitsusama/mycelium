@@ -67,7 +67,9 @@ The harness mesh's messages and presence, carried between machines:
   fits a screen: the worrying first, then the busiest few, then one row
   counting the rest; `--all` unfolds it, and a name opens any one.
   `mycelium cells --standing needs-you,stuck` lists only the cells
-  standing so. Both print JSON lines with `-o json`, networks first,
+  standing so. `-w` on either draws it again in place every two
+  seconds, as it changes, until stopped. Both print JSON lines with
+  `-o json`, networks first,
   then cells, the model a page draws the mycelium from: a session's
   cell also says its id, what it asks, its repository, its usage today
   and the orchestrations it leads. `mycelium networks -o json --counts`
