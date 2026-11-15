@@ -20,6 +20,7 @@
 //! Who may order one session's carry other than the person, its
 //! orchestrator by the quests' record, is [`ordered`]'s to say.
 
+pub mod chain;
 pub mod ordered;
 pub mod through;
 

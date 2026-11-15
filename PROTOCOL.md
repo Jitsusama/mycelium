@@ -398,23 +398,34 @@ session says of itself:
   the asker's own `PI_SESSION_ID`, read from its process, says which,
   and it must be one of them. Where the kernel can't say when a process
   started, as on a Mac, the ask is refused.
-- Who orchestrates is the quests' record the node serves as `quest`:
-  the session's quest is the one whose `sessions` holds its id, and the
-  asker must be among the `sessions` of that quest's `orchestrator`, by
-  address, or of one above it. A quest with no orchestrator is the
-  person's alone to carry. A presence's `quest`, `orchestratedBy` and a
-  pi's `PI_QUEST` are claims and count for nothing.
-- The chain is believed only where the mesh agrees: every running or
-  parked session of each quest in it has its orchestrator's
-  `#orchestration/<address>` among its presence's `groups`, at least one
-  does for each, and so does the asker for its own. A record rewritten
-  or gone stale is refused, saying where the two disagree. Pi works both
-  out from the quests' front matter, so an edit there reaches both in
-  time; the chain moves into the node's own state later.
+- Who orchestrates is the node's own record, `orchestrations.json` in
+  mycelium's folder, of what each orchestrator told it with
+  `{"Orchestrates": {"heads", "quests"}}`: the session asking, proved as
+  above, heads the orchestrating quest `heads` and orchestrates
+  `quests`, in place of what it said before. Pi says it as a session
+  loads an orchestrating quest and whenever the quests below it change,
+  and says it with neither as it unloads or concludes, which forgets
+  what that session held. A quest another session holds is refused:
+  only that session hands it on, by forgetting it, or by being
+  continued, as a session whose log's first line, `<time>_<id>.jsonl`
+  under pi's `sessions` folder, names it as `parentSession`. The
+  session's quest is the one whose `sessions` holds its id in the
+  quests' record the node serves as `quest`, and the asker must hold
+  that quest, or the quest the one holding it heads, and so on up. A
+  quest no orchestrator told the node of is the person's alone to carry.
+  A presence's `quest`, `orchestratedBy` and a pi's `PI_QUEST` are claims
+  and count for nothing.
+- The chain is believed only where the quests' record gives the same
+  one, by each quest's `orchestrator` address, and the mesh agrees:
+  every running or parked session of each quest in it has its
+  orchestrator's `#orchestration/<address>` among its presence's
+  `groups`, at least one does for each, and so does the asker for its
+  own. Pi works both out from the quests' front matter, so they check
+  the node's record and never prove it.
 
 A refusal says why and who could order it, as `OSPHT4 doesn't
-orchestrate QEST-... by the quests' record, so it can't order HARBOR's
-carry: only a session of WCJQSG could`. Taken, the steer names the
+orchestrate QEST-... by this node's record, so it can't order its
+carry: only WCJQSG's session could`. Taken, the steer names the
 orchestrator's address as `by` and `from`, whatever the client gave, so
 it never reads as the person's, and before it reaches the inbox it is
 kept as a JSON line in `carries.jsonl` in mycelium's folder: `at`, `by`,
@@ -425,7 +436,9 @@ the `source` that chain came from, so a forged one is traced. It is proved
 only where both sessions run: one on another machine is refused, and a
 node never takes one a link carries. As the person's own steers, this
 keeps an agent from ordering a carry by habit or mistake, not one set
-on it.
+on it: every record here is a file the person's account writes, so it
+holds against a fenced session only where the fence keeps it
+read-only.
 
 ## Realm Flows
 
@@ -494,6 +507,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"Start": {"work", "folder", "command", "may_cost"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine"}}`, where it was put |
+| `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |

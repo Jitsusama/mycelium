@@ -289,6 +289,24 @@ enum Action {
         /// The session's address.
         address: String,
     },
+    /// Records which quests a session orchestrates.
+    ///
+    /// Run by an orchestrator's session, from its own process, as it loads
+    /// the orchestrating quest HEADS and whenever the quests below it
+    /// change; the node proves which session runs it and records the
+    /// claim, refusing a quest another session holds. Without HEADS, it
+    /// forgets what the session claimed, as it unloads or concludes.
+    #[command(
+        after_help = "Example:\n  mycelium orchestrates --heads QEST-20261007-WCJQSG \
+                      QEST-20261108-OSPHT4 QEST-20261115-HARBOR\n  mycelium orchestrates"
+    )]
+    Orchestrates {
+        /// The orchestrating quest the session has loaded.
+        #[arg(long)]
+        heads: Option<String>,
+        /// The quests it orchestrates.
+        quests: Vec<String>,
+    },
     /// Lists the sessions held on this machine, or holds one.
     ///
     /// Bare, it prints every session held here, a JSON line each, or the
@@ -949,6 +967,9 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
             print_reply(&socket, &Request::Steer { address, steer })
         }
+        Action::Orchestrates { heads, quests } => {
+            print_reply(&socket, &Request::Orchestrates { heads, quests })
+        }
         Action::Messages { groups, limit } => {
             print_reply(&socket, &Request::Messages { groups, limit })
         }
@@ -1124,6 +1145,8 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         processes: node::Processes::here(),
         carries: state.join("carries.jsonl"),
         hosts: place::hosts(),
+        orchestrations: state.join("orchestrations.json"),
+        logs: place::logs(),
     };
     let runtime = runtime()?;
     let ran = runtime.block_on(async {
@@ -1920,7 +1943,10 @@ mod tests {
         }
         let said = Command::command().render_help().to_string();
         assert!(
-            said.contains("networks  Draws the networks as a tree, or one network\n"),
+            said.lines().any(|line| {
+                line.strip_prefix("  networks ").map(str::trim_start)
+                    == Some("Draws the networks as a tree, or one network")
+            }),
             "{said}"
         );
     }
