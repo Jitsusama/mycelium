@@ -476,7 +476,17 @@ struct NetworksAsked {
     #[arg(long)]
     counts: bool,
     #[command(flatten)]
+    watching: Watching,
+    #[command(flatten)]
     output: Output,
+}
+
+/// Whether what is asked is drawn once, or again as it changes.
+#[derive(clap::Args)]
+struct Watching {
+    /// Redraws it in place every two seconds, until stopped.
+    #[arg(short = 'w', long)]
+    watch: bool,
 }
 
 /// What is asked of the cells, by the words after `cells`.
@@ -494,6 +504,8 @@ struct CellsAsked {
         value_parser = clap::builder::PossibleValuesParser::new(mycelium::networks::STANDINGS)
     )]
     standing: Vec<String>,
+    #[command(flatten)]
+    watching: Watching,
     #[command(flatten)]
     output: Output,
 }
@@ -1308,9 +1320,12 @@ fn not_found(why: String) -> io::Error {
 /// cells after them.
 fn networks(socket: &Path, realm: &str, asked: &NetworksAsked) -> io::Result<()> {
     use mycelium::networks;
-    let mycelium = networks::read(socket, realm, SWARM_WITHIN)?;
-    let name = asked.words.join(" ");
+    if asked.watching.watch {
+        return watched(asked.output.json(), || drawn_networks(socket, realm, asked));
+    }
     if asked.output.json() {
+        let mycelium = networks::read(socket, realm, SWARM_WITHIN)?;
+        let name = asked.words.join(" ");
         if asked.counts {
             let counted = |network: &networks::Network| {
                 let mut line = serde_json::json!(network);
@@ -1337,42 +1352,113 @@ fn networks(socket: &Path, realm: &str, asked: &NetworksAsked) -> io::Result<()>
         let cells = network.cells.iter().filter_map(|cell| mycelium.cell(cell));
         return cells.into_iter().try_for_each(print_line);
     }
-    let look = look();
-    let shown = if name.is_empty() {
-        networks::overview(&mycelium, &look, asked.cells, asked.all)
-    } else {
-        networks::network(&mycelium, &name, &look, asked.all).map_err(not_found)?
-    };
+    let shown = drawn_networks(socket, realm, asked)?;
     writeln!(io::stdout().lock(), "{shown}")
+}
+
+/// Every network, or the one `asked` names, as [`mycelium::networks`]
+/// draws them to this terminal now.
+fn drawn_networks(socket: &Path, realm: &str, asked: &NetworksAsked) -> io::Result<String> {
+    use mycelium::networks;
+    let mycelium = networks::read(socket, realm, SWARM_WITHIN)?;
+    let name = asked.words.join(" ");
+    let look = look();
+    if name.is_empty() {
+        return Ok(networks::overview(&mycelium, &look, asked.cells, asked.all));
+    }
+    networks::network(&mycelium, &name, &look, asked.all).map_err(not_found)
 }
 
 /// Lists every cell, or says the one `asked` names, a machine as
 /// `machines NAME` says it, or prints each as a JSON line.
 fn cells(socket: &Path, realm: &str, asked: &CellsAsked) -> io::Result<()> {
     use mycelium::networks::{self, Is};
-    let mycelium = networks::read(socket, realm, SWARM_WITHIN)?;
-    let name = asked.words.join(" ");
-    if name.is_empty() {
-        if asked.output.json() {
+    if asked.watching.watch {
+        return watched(asked.output.json(), || drawn_cells(socket, realm, asked));
+    }
+    if asked.output.json() {
+        let mycelium = networks::read(socket, realm, SWARM_WITHIN)?;
+        let name = asked.words.join(" ");
+        if name.is_empty() {
             let cells = mycelium.cells.iter();
             let standing = &asked.standing;
             return cells
                 .filter(|cell| standing.is_empty() || cell.stands_as(standing))
                 .try_for_each(print_line);
         }
-        let shown = networks::cells(&mycelium, &look(), asked.all, &asked.standing);
-        return writeln!(io::stdout().lock(), "{shown}");
+        let cell = mycelium.named_cell(&name).map_err(not_found)?;
+        if cell.is == Is::Machine {
+            let machines = Client::connect(socket)?.ask(&Request::Machines)?;
+            return print_line(&one_machine(machines, &cell.name)?);
+        }
+        return print_line(cell);
+    }
+    let shown = drawn_cells(socket, realm, asked)?;
+    writeln!(io::stdout().lock(), "{shown}")
+}
+
+/// Every cell, or the one `asked` names, as [`mycelium::networks`] draws
+/// them to this terminal now; a machine as `machines NAME` says it.
+fn drawn_cells(socket: &Path, realm: &str, asked: &CellsAsked) -> io::Result<String> {
+    use mycelium::networks::{self, Is};
+    let mycelium = networks::read(socket, realm, SWARM_WITHIN)?;
+    let name = asked.words.join(" ");
+    if name.is_empty() {
+        return Ok(networks::cells(
+            &mycelium,
+            &look(),
+            asked.all,
+            &asked.standing,
+        ));
     }
     let cell = mycelium.named_cell(&name).map_err(not_found)?;
     if cell.is == Is::Machine {
         let machines = Client::connect(socket)?.ask(&Request::Machines)?;
-        return print_line(&one_machine(machines, &cell.name)?);
+        return serde_json::to_string(&one_machine(machines, &cell.name)?)
+            .map_err(io::Error::other);
     }
-    if asked.output.json() {
-        return print_line(cell);
+    Ok(networks::cell(&mycelium, cell, &look()))
+}
+
+/// How often `--watch` draws again.
+const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Draws what `draw` makes in place, again every [`WATCH_EVERY`], until
+/// stopped or the terminal goes; a drawing that fails says why where it
+/// would have been, and is tried again, as a node restarting comes back.
+/// JSON is refused, since a program asks again when it wants.
+fn watched(json: bool, mut draw: impl FnMut() -> io::Result<String>) -> io::Result<()> {
+    if json {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--watch redraws text for a person; a program asks -o json again",
+        ));
     }
-    let shown = networks::cell(&mycelium, cell, &look());
-    writeln!(io::stdout().lock(), "{shown}")
+    loop {
+        let shown = draw().unwrap_or_else(|why| format!("mycelium: {why}; trying again"));
+        let rows = rustix::termios::tcgetwinsize(io::stdout())
+            .ok()
+            .filter(|size| size.ws_row > 0)
+            .map_or(usize::MAX, |size| usize::from(size.ws_row));
+        let mut out = io::stdout().lock();
+        out.write_all(in_place(&shown, rows).as_bytes())?;
+        out.flush()?;
+        drop(out);
+        std::thread::sleep(WATCH_EVERY);
+    }
+}
+
+/// `shown` drawn over what the terminal shows, from its top: each line
+/// clears what was after it, and what was below the last is cleared, so
+/// nothing blinks. It's cut to `rows` less one, so it never scrolls.
+fn in_place(shown: &str, rows: usize) -> String {
+    let mut framed = String::from("\x1b[H");
+    for line in shown.lines().take(rows.saturating_sub(1).max(1)) {
+        framed.push_str(line);
+        framed.push_str("\x1b[K\n");
+    }
+    framed.push_str("\x1b[J");
+    framed
 }
 
 /// Does what `words` ask of the swarm: shows it or a team, steers one,
@@ -1683,7 +1769,21 @@ fn intent(name: &str) -> Result<Intent, String> {
 mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Action, Command, HELP_WIDTH, SwarmAsked, Tree, swarm_asked, tree};
+    use super::{Action, Command, HELP_WIDTH, SwarmAsked, Tree, in_place, swarm_asked, tree};
+
+    #[test]
+    fn a_watch_draws_over_the_last_drawing_and_never_scrolls() {
+        assert_eq!(
+            in_place("one\ntwo\nthree", 3),
+            "\x1b[Hone\x1b[K\ntwo\x1b[K\n\x1b[J",
+            "from the top, each line clearing its old tail, cut to the rows less one"
+        );
+        assert_eq!(
+            in_place("one", usize::MAX),
+            "\x1b[Hone\x1b[K\n\x1b[J",
+            "whole where there's no terminal height to cut to"
+        );
+    }
 
     #[test]
     fn every_command_s_help_fits_sixty_columns() {
