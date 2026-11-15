@@ -469,12 +469,7 @@ fn several<T>(asked: &str, many: &[&T], name: impl Fn(&T) -> &str) -> String {
 /// When no node answers, or it answers in a way it shouldn't, or holds no
 /// teams, as a node too old for them doesn't.
 pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium> {
-    // A node sends only the fields read, and an older one, which sends
-    // every field whatever is asked, is read for only those as it streams.
-    let fields = kept::paths(&kept::RECORD);
-    let asks = ["team", "session", "machine"]
-        .map(|kind| json!({"ask": "list", "kind": kind, "fields": fields}));
-    let reading = swarm::asking(socket, within, &asks)?;
+    let reading = swarm::asking(socket, within, &asks())?;
     // Teams and machines are few, but sessions are thousands, so each is
     // made its cell as it is read rather than all held first.
     let (mut teams, mut sessions, mut machines) = (Vec::new(), Sessions::default(), Vec::new());
@@ -492,6 +487,16 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
         )));
     }
     Ok(Mycelium::made(realm, &teams, sessions, &machines))
+}
+
+/// What the networks ask a node: its teams, sessions and machines, of
+/// only the fields read. A node sends only those, and an older one, which
+/// sends every field whatever is asked, is read for only those as it
+/// streams.
+fn asks() -> [Value; 3] {
+    let fields = kept::paths(&kept::RECORD);
+    ["team", "session", "machine"]
+        .map(|kind| json!({"ask": "list", "kind": kind, "fields": fields}))
 }
 
 /// What a node's sessions make, read one by one: their cells, the titles

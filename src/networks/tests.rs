@@ -3,9 +3,9 @@
 use serde_json::{Value, json};
 
 use super::kept::{RECORD, answered, paths, pruned};
-use super::{Is, Mycelium, Shape, cell, cells, network, overview};
+use super::{Is, Mycelium, Shape, asks, cell, cells, network, overview};
 use crate::daemon::fields::{MOST_FIELDS, projected};
-use crate::swarm::Look;
+use crate::swarm::{ASKS_FIT, Look, together};
 
 /// A look 80 columns wide, without colour, at 17:00 on Thursday
 /// 12 November 2026, in UTC.
@@ -605,5 +605,17 @@ fn every_cell_lists_worst_first_and_one_says_its_networks() {
         shown.lines().collect::<Vec<_>>(),
         expected,
         "one cell:\n{shown}"
+    );
+}
+
+#[test]
+fn the_networks_asks_fit_one_write_a_node_takes_whole() {
+    let asked = together(&asks());
+
+    assert!(
+        asked.len() <= ASKS_FIT,
+        "{} bytes asked, past {ASKS_FIT}: a node writing its first answer \
+         would leave the rest unread",
+        asked.len()
     );
 }

@@ -853,7 +853,31 @@ pub(crate) fn asking(
     let reading = BufReader::new(writing.try_clone()?);
     // Every ask goes in one write. Written a piece at a time, the later
     // asks wait on a node still writing its first answer, which waits on
-    // this reading it: neither moves until the timeout.
+    // this reading it: neither moves until the timeout. One write is
+    // taken whole only while it fits what the socket buffers, so asks
+    // together are held under `ASKS_FIT`.
+    let asked = together(asks);
+    if asked.len() > ASKS_FIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{} bytes of asks are past the {ASKS_FIT} a node takes in one write",
+                asked.len()
+            ),
+        ));
+    }
+    writing.write_all(asked.as_bytes())?;
+    Ok(reading)
+}
+
+/// The most bytes a connection's asks may hold together, so a node busy
+/// writing its first answer can't leave the rest unread: what a Unix
+/// stream buffers on macOS, the least of the systems a node runs on.
+pub(crate) const ASKS_FIT: usize = 8 * 1024;
+
+/// A hello and each of `asks`, a line each, as `asking` sends them: each
+/// by its place in `asks` counting from one.
+pub(crate) fn together(asks: &[Value]) -> String {
     let mut asked = format!("{}\n", json!({"id": 0, "ask": "hello"}));
     for (id, ask) in (1_u64..).zip(asks) {
         let mut ask = ask.clone();
@@ -861,8 +885,7 @@ pub(crate) fn asking(
         asked.push_str(&ask.to_string());
         asked.push('\n');
     }
-    writing.write_all(asked.as_bytes())?;
-    Ok(reading)
+    asked
 }
 
 #[cfg(test)]
