@@ -27,13 +27,23 @@ const CELLS: usize = 10_000;
 /// How many cells the time is first taken at, to see how it grows.
 const FEWER: usize = CELLS / 10;
 
-/// How many times longer ten times the cells may take: about ten for work
-/// that grows with them, and far more for any that grows with their square.
+/// How many times longer ten times the cells may take. Work that grows
+/// with them takes about ten times as long; work that grows with their
+/// square takes more once it is a third of the build at ten thousand, as
+/// a scan of every session for each repository once was.
+#[cfg(not(target_env = "musl"))]
 const GROWS_AT_MOST: u32 = 15;
 
-/// How many times each build is timed, the fastest taken, so another
-/// program's moment on the builder is not taken for the build's.
-const TIMINGS: usize = 3;
+/// How many times longer ten times the cells may take under musl, whose
+/// allocator slows as the heap grows: up to about thirty on a busy
+/// builder for work that grows with the cells, so only work that grows
+/// with their square and is most of the build, about a hundred, is told.
+#[cfg(target_env = "musl")]
+const GROWS_AT_MOST: u32 = 50;
+
+/// How many times each build is timed, the two sizes in turn so a busy
+/// moment on the builder slows both alike, and the fastest of each taken.
+const TIMINGS: usize = 5;
 
 /// The most memory the build may hold beyond what it was given, in bytes.
 const AT_MOST: usize = 30_000_000;
@@ -106,8 +116,7 @@ fn ten_thousand_cells_make_their_network_records_within_the_bar() {
     let peak = PEAK.load(Ordering::Relaxed) - before;
     drop(records);
 
-    let fewer = Realm::of(FEWER).fastest();
-    let all = realm.fastest();
+    let (fewer, all) = fastest(&Realm::of(FEWER), &realm);
     eprintln!("{FEWER} cells took {fewer:?}; {CELLS} took {all:?}, holding {peak} bytes at most");
 
     let records = realm.records();
@@ -150,17 +159,20 @@ impl Realm {
         node::network_records(&self.teams, &self.sessions, |_| None, &self.machines)
     }
 
-    /// The least time its records took, of a few builds.
-    fn fastest(&self) -> Duration {
-        (0..TIMINGS)
-            .map(|_| {
-                let begun = Instant::now();
-                drop(self.records());
-                begun.elapsed()
-            })
-            .min()
-            .unwrap_or_default()
+    /// How long its records took to make.
+    fn timed(&self) -> Duration {
+        let begun = Instant::now();
+        drop(self.records());
+        begun.elapsed()
     }
+}
+
+/// The least time the records of `fewer` and of `all` took, of a few
+/// builds each, made in turn.
+fn fastest(fewer: &Realm, all: &Realm) -> (Duration, Duration) {
+    (0..TIMINGS).fold((Duration::MAX, Duration::MAX), |(least, most), _| {
+        (least.min(fewer.timed()), most.min(all.timed()))
+    })
 }
 
 /// The teams of a realm of `cells`: one for every forty, some within
