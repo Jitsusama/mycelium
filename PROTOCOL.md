@@ -342,8 +342,8 @@ in order and says each step:
    harness puts every tree it holds and the session's file into the
    quest's scratch, under `handover/<this machine's short hostname>/`
    (up to its first dot), writes
-   `<session>.done.json` there saying what it put (at least `session` and
-   `cwd`, within its home), and ends. Once each has, `pi-carry QEST-...
+   `<session>.done.json` there saying what it put (at least `session`;
+   the harness adds its folder and trees, within its home), and ends. Once each has, `pi-carry QEST-...
    --to <machine>` carries what no session held.
 3. `share`: the quest is shared with `handover`, as `mycelium share
    --scratch handover` does.
@@ -351,7 +351,11 @@ in order and says each step:
    `mycelium start` starts one, running `pi-carry arrive QEST-... --from
    <this machine> --session <id>`, which waits for the handover, fetches
    or clones each tree at its path and places the session's file, and
-   then `pi --session <id>` in its folder there, its first prompt
+   then `pi --session <id>` in the folder `pi-carry where QEST-... --from
+   <this machine> --session <id>` prints: its own where a tree it brought
+   holds it, else its quest's scratch, so it never starts in a folder of
+   the person's that no tree brought. That folder is entered as it
+   stands, never made. Its first prompt
    saying where it came from and telling it to carry on where it left
    off, so it never waits to be woken. The quest's own done
    file, `<quest>.done.json`, holds the trees no session held; it
