@@ -347,7 +347,9 @@ in order and says each step:
    `mycelium start` starts one, running `pi-carry arrive QEST-... --from
    <this machine> --session <id>`, which waits for the handover, fetches
    or clones each tree at its path and places the session's file, and
-   then `pi --session <id>` in its folder there. The quest's own done
+   then `pi --session <id>` in its folder there, its first prompt
+   saying where it came from and telling it to carry on where it left
+   off, so it never waits to be woken. The quest's own done
    file, `<quest>.done.json`, holds the trees no session held; it
    arrives the same way, but no pi starts for it and it isn't among the
    sessions said.
