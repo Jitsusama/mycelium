@@ -611,6 +611,7 @@ impl<S: Store> End<S> {
                         Some(following) => following.deliver(&address, &steer, checked).map(|()| {
                             Response::Steered {
                                 machine: self.here.clone(),
+                                by: None,
                             }
                         }),
                         None => Err(format!("{} carries no steers over this link", self.here)),

@@ -118,6 +118,27 @@ pub struct Done {
     pub session: String,
 }
 
+/// A session's refusal of its carry, as it writes it beside where its
+/// done file would go: holding a lease, mid-push or mid-rebase, or with
+/// background work running.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Refused {
+    /// The session's id.
+    pub session: String,
+    /// Why, in one plain line.
+    pub why: String,
+}
+
+/// Who ordered a carry and why, which each session carried arrives as,
+/// so none reads as the person's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ordered {
+    /// The orchestrator's address, as the node proved it.
+    pub by: String,
+    /// Why it was ordered, as the orchestrator said.
+    pub why: String,
+}
+
 /// What a carry does to the world.
 pub trait Hands {
     /// The other machines of the realm this one reaches, by name.
@@ -135,12 +156,19 @@ pub trait Hands {
     /// This boot, which a parked session's owner names the boot it began
     /// in, where the machine says it.
     fn boot(&self) -> Option<String>;
-    /// Puts `steer` in the inbox of the session going by `address`.
+    /// Puts `steer` in the inbox of the session going by `address`, and
+    /// answers who the node proved ordered it, for an `ordered-carry`.
     ///
     /// # Errors
     ///
     /// When the node refuses it.
-    fn steer(&mut self, address: &str, steer: Value) -> Result<(), String>;
+    fn steer(&mut self, address: &str, steer: Value) -> Result<Option<String>, String>;
+    /// The sessions that refused this carry since it began.
+    ///
+    /// # Errors
+    ///
+    /// When a refusal can't be read.
+    fn refused(&mut self) -> Result<Vec<Refused>, String>;
     /// What has been carried into the quest's handover from here and not
     /// yet started on another machine.
     ///
@@ -180,7 +208,10 @@ pub trait Hands {
 
 /// Carries `quest` from `here` to the machine `to`, saying each step to
 /// `say` as it goes, and its last line once it has gone through, or
-/// `Err` once a step has failed and said why.
+/// `Err` once a step has failed and said why. Given `why`, an
+/// orchestrator orders it: each session is told with `ordered-carry`,
+/// which the node takes only from the session's orchestrator, and each
+/// arrives as carried by it for `why`.
 ///
 /// # Errors
 ///
@@ -190,6 +221,7 @@ pub fn carry(
     quest: &str,
     here: &str,
     to: &str,
+    why: Option<&str>,
     say: &mut impl FnMut(&Value),
 ) -> Result<Carried, Failed> {
     let mut said = Saying { say };
@@ -198,7 +230,7 @@ pub fn carry(
         Stood::Doing,
         format!("finding {quest}'s sessions here"),
     );
-    let sessions = said.or_failed(Step::Find, find(hands, quest, here, to))?;
+    let sessions = said.or_failed(Step::Find, find(hands, quest, here, to, why.is_some()))?;
     let names: Vec<&str> = sessions.iter().map(|one| one.address.as_str()).collect();
     said.line(
         Step::Find,
@@ -215,7 +247,7 @@ pub fn carry(
         Stood::Doing,
         "carrying each session's work".to_owned(),
     );
-    let done = said.or_failed(Step::Push, push(hands, quest, to, &sessions))?;
+    let (done, ordered) = said.or_failed(Step::Push, push(hands, quest, to, why, &sessions))?;
     let count = plural(done.len(), "session");
     said.line(
         Step::Push,
@@ -242,7 +274,7 @@ pub fn carry(
     );
     let arrived = said.or_failed(
         Step::Start,
-        start_each(hands, quest, here, to, &done, &sessions),
+        start_each(hands, quest, here, to, &done, &sessions, ordered.as_ref()),
     )?;
     let count = plural(arrived.len(), "session");
     said.line(
@@ -304,7 +336,8 @@ impl<F: FnMut(&Value)> Saying<'_, F> {
 /// as it goes, so neither a later carry nor this one taken again after a
 /// failure starts it twice. The quest's own
 /// done file, holding the trees no session held, arrives there too, but
-/// no session starts for it, so it isn't among those answered.
+/// no session starts for it, so it isn't among those answered. Each
+/// arrives as `ordered` says, where an orchestrator ordered it.
 fn start_each(
     hands: &mut impl Hands,
     quest: &str,
@@ -312,6 +345,7 @@ fn start_each(
     to: &str,
     done: &[Done],
     sessions: &[Session],
+    ordered: Option<&Ordered>,
 ) -> Result<Vec<Arrived>, String> {
     done.iter()
         .map(|one| {
@@ -320,7 +354,7 @@ fn start_each(
                 .find(|session| session_id(session) == Some(one.session.as_str()))
                 .map_or_else(|| one.session.clone(), |session| session.address.clone());
             let started = hands
-                .start(arriving(quest, here, to, one))
+                .start(arriving(quest, here, to, one, ordered))
                 .map_err(|why| format!("{address} didn't start on {to}: {why}"))?;
             hands.started(one).map_err(|why| {
                 format!("{address} started on {to}, but a later carry would start it again: {why}")
@@ -337,8 +371,15 @@ fn start_each(
 
 /// The quest's sessions on `here` that can carry their own work: those
 /// running, and those parked this boot, which wake for it; or why the
-/// carry can't go to `to`.
-fn find(hands: &mut impl Hands, quest: &str, here: &str, to: &str) -> Result<Vec<Session>, String> {
+/// carry can't go to `to`. An `ordered` carry needs one at least, since
+/// only the node's taking a session's steer proves who may order it.
+fn find(
+    hands: &mut impl Hands,
+    quest: &str,
+    here: &str,
+    to: &str,
+    ordered: bool,
+) -> Result<Vec<Session>, String> {
     if to == here {
         return Err(format!("{quest} is on {here} already"));
     }
@@ -354,32 +395,68 @@ fn find(hands: &mut impl Hands, quest: &str, here: &str, to: &str) -> Result<Vec
         ));
     }
     let boot = hands.boot();
-    Ok(hands
+    let sessions: Vec<Session> = hands
         .sessions()?
         .into_iter()
         .filter(|session| session.machine == here && session.quest.as_deref() == Some(quest))
         .filter(|session| runs(session) || parked(session, boot.as_deref()))
-        .collect())
+        .collect();
+    if ordered && sessions.is_empty() {
+        return Err(format!(
+            "no session runs {quest} here, so the node can't prove who orchestrates it: \
+             only the person carries what it left"
+        ));
+    }
+    Ok(sessions)
 }
 
-/// Tells each session to carry its work to `to`, waits until each has,
-/// then carries what none of them held, and answers everything carried.
+/// Tells each session to carry its work to `to`, as the person or, given
+/// `why`, as its orchestrator, waits until each has, then carries what
+/// none of them held, and answers everything carried, with who ordered
+/// it as the node proved. A session that refuses stops it at once.
 fn push(
     hands: &mut impl Hands,
     quest: &str,
     to: &str,
+    why: Option<&str>,
     sessions: &[Session],
-) -> Result<Vec<Done>, String> {
+) -> Result<(Vec<Done>, Option<Ordered>), String> {
+    let steer = why.map_or_else(
+        || json!({"act": "carry", "to": to, "from": "person"}),
+        |why| json!({"act": ordered::ACT, "to": to, "why": why}),
+    );
+    let mut by = None;
     for session in sessions {
-        hands
-            .steer(
-                &session.address,
-                json!({"act": "carry", "to": to, "from": "person"}),
-            )
+        let proved = hands
+            .steer(&session.address, steer.clone())
             .map_err(|why| format!("{} wasn't told: {why}", session.address))?;
+        if why.is_some() {
+            by = Some(proved.ok_or_else(|| {
+                format!(
+                    "the node didn't say who ordered {}'s carry, so it can't arrive as theirs",
+                    session.address
+                )
+            })?);
+        }
     }
+    let ordered = by.zip(why).map(|(by, why)| Ordered {
+        by,
+        why: why.to_owned(),
+    });
     let waiting: BTreeSet<&str> = sessions.iter().filter_map(session_id).collect();
     loop {
+        let refused = hands.refused()?;
+        let refusal = sessions.iter().find_map(|session| {
+            let id = session_id(session)?;
+            let refusal = refused.iter().find(|one| one.session == id)?;
+            Some((session, refusal))
+        });
+        if let Some((session, refusal)) = refusal {
+            return Err(format!(
+                "{} refused its carry: {}",
+                session.address, refusal.why
+            ));
+        }
         let done = hands.done()?;
         let carried: BTreeSet<&str> = done.iter().map(|one| one.session.as_str()).collect();
         let left: Vec<&str> = waiting.difference(&carried).copied().collect();
@@ -405,7 +482,7 @@ fn push(
             "nothing of {quest} was here to carry that hadn't started already"
         ));
     }
-    Ok(done)
+    Ok((done, ordered))
 }
 
 /// Waits until none of `sessions` runs on `here` any more.
@@ -437,9 +514,15 @@ fn closed(hands: &mut impl Hands, here: &str, sessions: &[Session]) -> Result<()
 /// its arrival ends with its trees in place. Its words go to the shell
 /// apart from the script, so none is read as the shell's. Pi is told
 /// first to carry on, as a reopened session is, since one taken up again
-/// with no first prompt sits idle until a message wakes it.
-fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
-    let arrive = r#"pi-carry arrive "$1" --from "$2" --session "$3""#;
+/// with no first prompt sits idle until a message wakes it. One an
+/// orchestrator ordered arrives as carried by it, for its reason, so it
+/// never reads as the person's own.
+fn arriving(quest: &str, from: &str, to: &str, one: &Done, ordered: Option<&Ordered>) -> Start {
+    let arrive = if ordered.is_some() {
+        r#"pi-carry arrive "$1" --from "$2" --session "$3" --by "$5" --why "$6""#
+    } else {
+        r#"pi-carry arrive "$1" --from "$2" --session "$3""#
+    };
     // The harness alone knows which trees came and where a quest's
     // scratch is, so it says the folder: the session's own where a tree
     // it brought holds it, else its quest's scratch, never a folder of
@@ -457,6 +540,21 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
         .concat()
     };
     let told = carry_on(from);
+    let mut command = [
+        "sh",
+        "-c",
+        &script,
+        PI_CARRY,
+        quest,
+        from,
+        &one.session,
+        &told,
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    if let Some(ordered) = ordered {
+        command.extend([ordered.by.clone(), ordered.why.clone()]);
+    }
     Start {
         work: Work {
             needs: vec![Need::Machine(to.to_owned())],
@@ -466,18 +564,7 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
             lasts: None,
         },
         folder: None,
-        command: [
-            "sh",
-            "-c",
-            &script,
-            PI_CARRY,
-            quest,
-            from,
-            &one.session,
-            &told,
-        ]
-        .map(str::to_owned)
-        .to_vec(),
+        command,
         may_cost: false,
     }
 }
@@ -533,7 +620,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{Carried, Done, Failed, Hands, PI_CARRY, Step, carry};
+    use super::{Carried, Done, Failed, Hands, PI_CARRY, Refused, Step, carry};
     use crate::placement::Need;
     use crate::record::{Session, State};
     use crate::wire::{Start, Started};
@@ -560,6 +647,12 @@ mod tests {
         handover: Vec<(Done, bool)>,
         /// The session, by id, whose start there fails.
         refuses: Option<String>,
+        /// Who the node proves ordered an `ordered-carry`.
+        by: Option<String>,
+        /// The sessions that refuse their carry once told, and why.
+        refusing: Vec<Refused>,
+        /// What each session told refused.
+        refused: Vec<Refused>,
         shared: Vec<String>,
         started: Vec<Start>,
     }
@@ -593,19 +686,28 @@ mod tests {
         fn boot(&self) -> Option<String> {
             self.boot.clone()
         }
-        fn steer(&mut self, address: &str, steer: Value) -> Result<(), String> {
+        fn steer(&mut self, address: &str, steer: Value) -> Result<Option<String>, String> {
+            let by = (steer["act"] == "ordered-carry")
+                .then(|| self.by.clone())
+                .flatten();
             self.steered.push((address.to_owned(), steer));
-            let carries = self
+            let id = self
                 .sessions
                 .iter()
                 .filter(|one| one.address == address)
-                .filter_map(|one| one.presence.get("session")?.as_str())
-                .find(|id| self.carries.contains(*id))
+                .find_map(|one| one.presence.get("session")?.as_str())
                 .map(str::to_owned);
-            if let Some(id) = carries {
-                self.write(&id);
+            if let Some(id) = id {
+                if self.carries.contains(&id) {
+                    self.write(&id);
+                }
+                let refusing = self.refusing.iter().find(|one| one.session == id);
+                self.refused.extend(refusing.cloned());
             }
-            Ok(())
+            Ok(by)
+        }
+        fn refused(&mut self) -> Result<Vec<Refused>, String> {
+            Ok(self.refused.clone())
         }
         fn done(&mut self) -> Result<Vec<Done>, String> {
             Ok(self
@@ -703,9 +805,24 @@ mod tests {
     /// Carries HARBOR from skiff to `to` in `realm`, with each line said.
     fn carried(realm: &mut Realm, to: &str) -> (Result<Carried, Failed>, Vec<Value>) {
         let mut lines = Vec::new();
-        let done = carry(realm, QUEST, "skiff", to, &mut |line: &Value| {
+        let done = carry(realm, QUEST, "skiff", to, None, &mut |line: &Value| {
             lines.push(line.clone());
         });
+        (done, lines)
+    }
+
+    /// Carries HARBOR from skiff to tern in `realm` as its
+    /// orchestrator orders it, for a camera, with each line said.
+    fn ordered(realm: &mut Realm) -> (Result<Carried, Failed>, Vec<Value>) {
+        let mut lines = Vec::new();
+        let done = carry(
+            realm,
+            QUEST,
+            "skiff",
+            "tern",
+            Some("it needs the camera"),
+            &mut |line: &Value| lines.push(line.clone()),
+        );
         (done, lines)
     }
 
@@ -858,7 +975,7 @@ mod tests {
         let one = Done {
             session: "s-busy01".to_owned(),
         };
-        let start = super::arriving(QUEST, "skiff", "tern", &one);
+        let start = super::arriving(QUEST, "skiff", "tern", &one, None);
         let path = format!(
             "{}:{}",
             bin.display(),
@@ -1000,6 +1117,102 @@ mod tests {
             realm.started.len(),
             4,
             "what started there, the quest's own trees' arrival too, stays started"
+        );
+    }
+
+    #[test]
+    fn an_ordered_carry_arrives_carried_by_its_orchestrator_for_its_reason() {
+        let mut unproved = realm();
+        let mut realm = Realm {
+            by: Some("WCJQSG".to_owned()),
+            ..realm()
+        };
+        let (done, lines) = ordered(&mut realm);
+        done.expect("carried");
+        assert_eq!(
+            realm.steered[0].1,
+            json!({"act": "ordered-carry", "to": "tern", "why": "it needs the camera"}),
+            "each session told by the act only its orchestrator may order, \
+             saying nothing of who, which the node stamps: {lines:?}"
+        );
+        for start in &realm.started {
+            assert_eq!(
+                &start.command[8..],
+                ["WCJQSG", "it needs the camera"],
+                "each arrival, the quest's own trees' too, carried by the orchestrator \
+                 the node proved, for its reason"
+            );
+            assert!(
+                start.command[2].contains(r#"--by "$5" --why "$6""#),
+                "which pi-carry arrive is told: {}",
+                start.command[2]
+            );
+        }
+        let (done, lines) = ordered(&mut unproved);
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Push }),
+            "a node that doesn't say who ordered it carries nothing"
+        );
+        assert!(
+            unproved.started.is_empty(),
+            "and nothing arrives as anyone's: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_carry_a_session_refuses_stops_at_once_with_its_reason() {
+        let mut realm = Realm {
+            by: Some("WCJQSG".to_owned()),
+            carries: ["s-busy01"].map(str::to_owned).into(),
+            refusing: vec![Refused {
+                session: "s-naps02".to_owned(),
+                why: "it holds a lease on src/node".to_owned(),
+            }],
+            ..realm()
+        };
+        let (done, lines) = ordered(&mut realm);
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Push }),
+            "it fails at the push"
+        );
+        assert_eq!(
+            last_said(&lines),
+            "NAPS02 refused its carry: it holds a lease on src/node",
+            "naming the session and its reason"
+        );
+        assert_eq!(realm.patience, 3, "without waiting out its patience");
+        assert!(
+            realm.rest.is_none() && realm.shared.is_empty() && realm.started.is_empty(),
+            "and nothing else is carried, shared or started"
+        );
+    }
+
+    #[test]
+    fn an_ordered_carry_with_no_session_here_is_refused() {
+        let mut realm = Realm {
+            by: Some("WCJQSG".to_owned()),
+            ..realm()
+        };
+        realm
+            .sessions
+            .retain(|one| one.machine != "skiff" || one.address == "OTHER4");
+        let (done, lines) = ordered(&mut realm);
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Find }),
+            "refused as it finds"
+        );
+        assert_eq!(
+            last_said(&lines),
+            "no session runs QEST-20261107-HARBOR here, so the node can't prove who \
+             orchestrates it: only the person carries what it left",
+            "since only a session's steer proves who may order it"
+        );
+        assert!(
+            realm.rest.is_none() && realm.shared.is_empty(),
+            "nothing moved"
         );
     }
 

@@ -227,6 +227,11 @@ pub enum Response {
     Steered {
         /// The machine the session runs on.
         machine: String,
+        /// Who the node proved ordered it, for an `ordered-carry`: the
+        /// orchestrator's address, which the carried session arrives as
+        /// carried by.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
     },
     /// The messages asked for.
     Messages(Vec<Message>),
