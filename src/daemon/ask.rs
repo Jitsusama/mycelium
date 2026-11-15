@@ -38,6 +38,9 @@ pub enum What {
         /// a record, is sent, with all that moved since the last send; or
         /// every change.
         when: Option<Vec<String>>,
+        /// Fields whose changes say only what moved inside them, of those
+        /// the kind's `hello` names `deep`; others come whole.
+        deep: Vec<String>,
     },
     /// The end of the watch asked with this id.
     Unwatch,
@@ -143,6 +146,7 @@ pub fn read(line: &str) -> Result<Ask, (Value, Refusal)> {
             kind: kind()?,
             keys: keys("keys"),
             when: keys("when"),
+            deep: keys("deep").unwrap_or_default(),
         },
         "unwatch" => What::Unwatch,
         "health" => What::Health,
@@ -196,6 +200,7 @@ mod tests {
                     kind: "session".to_owned(),
                     keys: Some(vec!["session:a".to_owned()]),
                     when: None,
+                    deep: Vec::new(),
                 },
             }),
             "a watch names its kind and keys"

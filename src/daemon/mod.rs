@@ -52,6 +52,12 @@ pub trait Holds: Send + Sync + 'static {
     fn built(&self) -> Option<&Built> {
         None
     }
+    /// The fields of `kind`'s records, each an object, whose changes a
+    /// watch may ask to say only what moved inside them; none, unless it
+    /// says.
+    fn deep(&self, _kind: &str) -> Vec<&'static str> {
+        Vec::new()
+    }
 }
 
 /// What a daemon does for its clients beyond reading: what the person says
@@ -165,13 +171,26 @@ fn answer<H: Holds + Steers>(
                 json!({"id": id, "records": records})
             })
             .ok_or(Refusal::UnknownKind(kind)),
-        What::Watch { kind, keys, when } => {
+        What::Watch {
+            kind,
+            keys,
+            when,
+            deep,
+        } => {
+            // Only the fields its kind offers deep go deep, as its hello
+            // says, so a client reads its changes as that told it to.
+            let offered = holds.deep(&kind);
+            let deep: Vec<String> = deep
+                .into_iter()
+                .filter(|field| offered.contains(&field.as_str()))
+                .collect();
             // Asked again for the same records, as a launcher opening asks
             // for every change where shut it asked for fewer, it sends what
             // it held back at once rather than everything whole.
             if let Some(running) = watches.get(&id.to_string())
                 && running.kind == kind
                 && running.keys == keys
+                && running.deep == deep
                 && !running.task.is_finished()
             {
                 running.when.send_replace(when);
@@ -183,7 +202,7 @@ fn answer<H: Holds + Steers>(
                     let task = tokio::spawn(keep_watching(
                         Arc::clone(holds),
                         id.clone(),
-                        (kind.clone(), keys.clone()),
+                        (kind.clone(), keys.clone(), deep.clone()),
                         told,
                         sent,
                         answering.clone(),
@@ -191,6 +210,7 @@ fn answer<H: Holds + Steers>(
                     let running = Watching {
                         kind,
                         keys,
+                        deep,
                         when: sends,
                         task,
                     };
@@ -262,7 +282,15 @@ fn hello(holds: &impl Holds, id: &Value) -> Value {
     let kinds: Map<String, Value> = holds
         .kinds()
         .into_iter()
-        .map(|(kind, live)| (kind, json!({"live": live})))
+        .map(|(kind, live)| {
+            let deep = holds.deep(&kind);
+            let said = if deep.is_empty() {
+                json!({"live": live})
+            } else {
+                json!({"live": live, "deep": deep})
+            };
+            (kind, said)
+        })
         .collect();
     json!({"id": id, "version": VERSION, "domain": "node", "state": "answering", "kinds": kinds})
 }

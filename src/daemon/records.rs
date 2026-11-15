@@ -107,15 +107,17 @@ pub fn key(kind: &str, id: &str) -> String {
 /// each record new or changed, with its key and only the fields that
 /// differ (a new one whole), and the keys gone. Nothing, when nothing
 /// changed. A record still the very one it was is unchanged without its
-/// fields being compared.
+/// fields being compared. A field `deep` names whose value is an object
+/// both before and after says only what differs inside it, in the same
+/// way, rather than all of it.
 #[must_use]
-pub fn changes(before: &Shared, after: &Shared) -> (Vec<Value>, Vec<String>) {
+pub fn changes(before: &Shared, after: &Shared, deep: &[String]) -> (Vec<Value>, Vec<String>) {
     let changed = after
         .iter()
         .filter_map(|(key, now)| match before.get(key) {
             None => Some(Value::clone(now)),
             Some(was) if Arc::ptr_eq(was, now) || was == now => None,
-            Some(was) => Some(differs(key, was, now)),
+            Some(was) => Some(differs(key, was, now, deep)),
         })
         .collect();
     let gone = before
@@ -127,21 +129,43 @@ pub fn changes(before: &Shared, after: &Shared) -> (Vec<Value>, Vec<String>) {
 }
 
 /// `now`'s fields that differ from `was`'s, with its key, and each field
-/// `was` had that `now` lacks, as null.
-fn differs(key: &str, was: &Value, now: &Value) -> Value {
+/// `was` had that `now` lacks, as null. A field `deep` names, an object
+/// both before and after, is said the same way, one level in.
+fn differs(key: &str, was: &Value, now: &Value, deep: &[String]) -> Value {
     let (Some(was), Some(now)) = (was.as_object(), now.as_object()) else {
         return now.clone();
     };
+    let mut changed = moved(was, now, |field, before, after| {
+        match (before.as_object(), after.as_object()) {
+            (Some(before), Some(after)) if deep.iter().any(|named| named == field) => {
+                Value::Object(moved(before, after, |_, _, inside| inside.clone()))
+            }
+            _ => after.clone(),
+        }
+    });
+    changed.insert("key".to_owned(), Value::String(key.to_owned()));
+    Value::Object(changed)
+}
+
+/// The fields of `now` that differ from `was`'s, each as `said` says it
+/// from both values, and each `was` had that `now` lacks, as null.
+fn moved(
+    was: &Map<String, Value>,
+    now: &Map<String, Value>,
+    said: impl Fn(&str, &Value, &Value) -> Value,
+) -> Map<String, Value> {
     let mut changed: Map<String, Value> = now
         .iter()
-        .filter(|(field, value)| was.get(*field) != Some(*value))
-        .map(|(field, value)| (field.clone(), value.clone()))
+        .filter_map(|(field, value)| match was.get(field) {
+            Some(before) if before == value => None,
+            Some(before) => Some((field.clone(), said(field, before, value))),
+            None => Some((field.clone(), value.clone())),
+        })
         .collect();
     for field in was.keys().filter(|field| !now.contains_key(*field)) {
         changed.insert(field.clone(), Value::Null);
     }
-    changed.insert("key".to_owned(), Value::String(key.to_owned()));
-    Value::Object(changed)
+    changed
 }
 
 #[cfg(test)]
@@ -215,7 +239,7 @@ mod tests {
             json!({"key": "session:c", "state": "idle"}),
         ]);
         assert_eq!(
-            changes(&before, &after),
+            changes(&before, &after, &[]),
             (
                 vec![
                     json!({"key": "session:a", "state": "busy", "step": null}),
@@ -226,9 +250,47 @@ mod tests {
             "a changed record names its key and what moved, a new one comes whole"
         );
         assert_eq!(
-            changes(&after, &after),
+            changes(&after, &after, &[]),
             (Vec::new(), Vec::new()),
             "nothing is said while nothing changes"
+        );
+    }
+
+    #[test]
+    fn a_field_asked_deep_says_only_what_moved_inside_it() {
+        let one = |record: Value| -> Shared {
+            Shared::from([("session:kestrel".to_owned(), Arc::new(record))])
+        };
+        let before = one(json!({
+            "key": "session:kestrel", "step": "read", "standing": "running",
+            "presence": {"at": 1, "cwd": "~/src/skiff", "owner": "kestrel",
+                "landings": [{"what": "Hear the Tide"}]},
+        }));
+        let after = one(json!({
+            "key": "session:kestrel", "step": "edit", "standing": 3,
+            "presence": {"at": 2, "cwd": "~/src/skiff",
+                "landings": [{"what": "Hear the Tide"}], "busy": true},
+        }));
+        let deep = ["presence".to_owned(), "standing".to_owned()];
+        assert_eq!(
+            changes(&before, &after, &deep),
+            (
+                vec![json!({
+                    "key": "session:kestrel", "step": "edit", "standing": 3,
+                    "presence": {"at": 2, "owner": null, "busy": true},
+                })],
+                Vec::new(),
+            ),
+            "inside a field asked deep, only what moved is said, one dropped as null, \
+             and a field asked deep that isn't an object both times comes whole"
+        );
+        assert_eq!(
+            changes(&before, &after, &[])
+                .0
+                .first()
+                .map(|record| record["presence"].clone()),
+            Some(after["session:kestrel"]["presence"].clone()),
+            "a field not asked deep comes whole, as before"
         );
     }
 

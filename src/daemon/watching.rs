@@ -17,6 +17,8 @@ pub(super) struct Watching {
     pub(super) kind: String,
     /// The keys it watches, or all of the kind.
     pub(super) keys: Option<Vec<String>>,
+    /// The fields whose changes say only what moved inside them.
+    pub(super) deep: Vec<String>,
     /// The fields whose moving it sends for, told to it as they change.
     pub(super) when: watch::Sender<Option<Vec<String>>>,
     /// What sends it.
@@ -28,11 +30,12 @@ pub(super) struct Watching {
 /// after the last, and nothing while nothing changes. While `when` names
 /// fields, a record's change moving none of them is held back, and sent
 /// with that record's next that does, or at once when `when` is changed
-/// to let it through.
+/// to let it through. A field `deep` names says only what moved inside it
+/// since it was last sent, held back or not.
 pub(super) async fn keep_watching<H: Holds>(
     holds: Arc<H>,
     id: Value,
-    (kind, keys): (String, Option<Vec<String>>),
+    (kind, keys, deep): (String, Option<Vec<String>>, Vec<String>),
     mut told: watch::Receiver<u64>,
     mut when: watch::Receiver<Option<Vec<String>>>,
     answering: mpsc::Sender<String>,
@@ -78,7 +81,7 @@ pub(super) async fn keep_watching<H: Holds>(
             }
         }
         let now = held(&holds, *told.borrow_and_update());
-        let Some((changed, gone)) = answer(when.borrow().as_deref(), &mut sent, &now) else {
+        let Some((changed, gone)) = answer(when.borrow().as_deref(), &deep, &mut sent, &now) else {
             continue;
         };
         if answering
@@ -113,10 +116,11 @@ fn whole(id: &Value, sent: &Shared) -> Option<String> {
 /// moved to match. Nothing, when there is nothing to send.
 fn answer(
     when: Option<&[String]>,
+    deep: &[String],
     sent: &mut Shared,
     now: &Shared,
 ) -> Option<(Vec<Value>, Vec<String>)> {
-    let (changed, gone) = changes(sent, now);
+    let (changed, gone) = changes(sent, now, deep);
     let changed = sends(when, sent, changed);
     if changed.is_empty() && gone.is_empty() {
         return None;
@@ -208,7 +212,7 @@ mod tests {
         let mut sent = first.clone();
         let mut answers = vec![whole(&json!(1), &sent).expect("records serialize")];
         for now in rest {
-            if let Some((changed, gone)) = answer(when, &mut sent, now) {
+            if let Some((changed, gone)) = answer(when, &[], &mut sent, now) {
                 answers.push(json!({"id": 1, "changed": changed, "gone": gone}).to_string());
             }
         }
@@ -257,6 +261,39 @@ mod tests {
             heard(None, &kept).len(),
             5,
             "every build that changed something sends, and the last, unchanged, doesn't"
+        );
+    }
+
+    #[test]
+    fn what_a_watch_held_back_comes_deep_once_let_through() {
+        let at = |at: u32, step: &str| -> Shared {
+            Shared::from([(
+                "session:skiff".to_owned(),
+                Arc::new(json!({
+                    "key": "session:skiff", "told": "1", "step": step,
+                    "presence": {"at": at, "step": step, "worksOn": ["kestrel"]},
+                })),
+            )])
+        };
+        let told = ["told".to_owned()];
+        let deep = ["presence".to_owned()];
+        let mut sent = at(1, "read");
+        assert_eq!(
+            answer(Some(&told), &deep, &mut sent, &at(2, "edit")),
+            None,
+            "shut, a tick and a step are held back"
+        );
+        assert_eq!(
+            answer(None, &deep, &mut sent, &at(3, "edit")),
+            Some((
+                vec![json!({
+                    "key": "session:skiff", "step": "edit",
+                    "presence": {"at": 3, "step": "edit"},
+                })],
+                Vec::new(),
+            )),
+            "let through, it says all that moved since it was sent, and inside its presence \
+             only that"
         );
     }
 

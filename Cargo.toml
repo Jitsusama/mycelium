@@ -71,6 +71,10 @@ harness = false
 name = "unanswered"
 harness = false
 
+[[bench]]
+name = "watched"
+harness = false
+
 [lints.rust]
 # Denied rather than forbidden, so the one place pty-process leaves no
 # other way, a held program started again on macOS, says why it may.
