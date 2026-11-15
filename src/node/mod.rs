@@ -3997,12 +3997,12 @@ mod tests {
             "a machine this realm doesn't know, as one of another realm"
         );
         store
-            .put_machine(&fenced("skiff", &["remote", "cloud"]))
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
             .expect("what it said is kept");
         assert_eq!(
-            to("skiff").await,
+            to("tern").await,
             Err(
-                "skiff's strictly fenced session opens builders cloud, which here's \
+                "tern's strictly fenced session opens builders cloud, which here's \
                  doesn't, so the session would land looser there"
                     .to_owned()
             ),

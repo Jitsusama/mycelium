@@ -122,7 +122,7 @@ mod tests {
         BTreeMap::from([(Kind::Strict, doors)])
     }
 
-    fn skiff(fence: Option<BTreeMap<Kind, Doors>>, state: Readiness) -> Machine {
+    fn tern(fence: Option<BTreeMap<Kind, Doors>>, state: Readiness) -> Machine {
         let nowhere = facts::Sources {
             home: "/".into(),
             queue: None,
@@ -134,7 +134,7 @@ mod tests {
         Machine {
             state,
             declared: Some(declaring(fence)),
-            ..facts::measure("skiff", &nowhere)
+            ..facts::measure("tern", &nowhere)
         }
     }
 
@@ -144,9 +144,9 @@ mod tests {
 
     #[test]
     fn a_session_lands_where_its_fence_is_as_shut() {
-        let there = skiff(Some(strict(doors(&["remote"], &[], &[]))), Readiness::Ready);
+        let there = tern(Some(strict(doors(&["remote"], &[], &[]))), Readiness::Ready);
         assert_eq!(
-            firm(Some(Kind::Strict), Some(&here()), "skiff", Some(&there)),
+            firm(Some(Kind::Strict), Some(&here()), "tern", Some(&there)),
             Ok(()),
             "the same fence with fewer doors is firm ground"
         );
@@ -162,19 +162,19 @@ mod tests {
             ),
             "a machine the realm doesn't know, as one of another realm"
         );
-        let away = skiff(Some(strict(doors(&[], &[], &[]))), Readiness::Unreachable);
+        let away = tern(Some(strict(doors(&[], &[], &[]))), Readiness::Unreachable);
         assert_eq!(
-            firm(Some(Kind::Strict), Some(&here()), "skiff", Some(&away)),
-            Err("skiff is out of reach, so nothing is carried there now".to_owned()),
+            firm(Some(Kind::Strict), Some(&here()), "tern", Some(&away)),
+            Err("tern is out of reach, so nothing is carried there now".to_owned()),
             "a machine no link reaches now"
         );
     }
 
     #[test]
     fn a_fence_that_cant_be_told_refuses_the_carry() {
-        let there = skiff(Some(strict(doors(&[], &[], &[]))), Readiness::Ready);
+        let there = tern(Some(strict(doors(&[], &[], &[]))), Readiness::Ready);
         assert_eq!(
-            firm(None, Some(&here()), "skiff", Some(&there)),
+            firm(None, Some(&here()), "tern", Some(&there)),
             Err(
                 "the session doesn't say which fence it runs in, so where it lands can't be \
                  judged"
@@ -182,11 +182,11 @@ mod tests {
             ),
             "a session whose presence says no fence"
         );
-        let bare = skiff(None, Readiness::Ready);
+        let bare = tern(None, Readiness::Ready);
         assert_eq!(
-            firm(Some(Kind::Strict), Some(&here()), "skiff", Some(&bare)),
+            firm(Some(Kind::Strict), Some(&here()), "tern", Some(&bare)),
             Err(
-                "skiff declares no fence, so the session can't be told to land as \
+                "tern declares no fence, so the session can't be told to land as \
                  strictly fenced there"
                     .to_owned()
             ),
@@ -196,11 +196,11 @@ mod tests {
             firm(
                 Some(Kind::Strict),
                 Some(&declaring(None)),
-                "skiff",
+                "tern",
                 Some(&there)
             ),
             Err(
-                "this machine declares no strictly fenced session, so skiff's can't be \
+                "this machine declares no strictly fenced session, so tern's can't be \
                  judged against it"
                     .to_owned()
             ),
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn a_fenced_session_never_lands_looser() {
-        let fenced_only = skiff(
+        let fenced_only = tern(
             Some(BTreeMap::from([(Kind::Fence, doors(&[], &[], &[]))])),
             Readiness::Ready,
         );
@@ -218,17 +218,17 @@ mod tests {
             firm(
                 Some(Kind::Strict),
                 Some(&here()),
-                "skiff",
+                "tern",
                 Some(&fenced_only)
             ),
             Err(
-                "skiff runs no strictly fenced session, so the session would land \
+                "tern runs no strictly fenced session, so the session would land \
                  looser there"
                     .to_owned()
             ),
             "a machine without the session's fence"
         );
-        let wide = skiff(
+        let wide = tern(
             Some(strict(doors(
                 &["remote", "big"],
                 &["github"],
@@ -237,9 +237,9 @@ mod tests {
             Readiness::Ready,
         );
         assert_eq!(
-            firm(Some(Kind::Strict), Some(&here()), "skiff", Some(&wide)),
+            firm(Some(Kind::Strict), Some(&here()), "tern", Some(&wide)),
             Err(
-                "skiff's strictly fenced session opens builders big and secrets cloud, \
+                "tern's strictly fenced session opens builders big and secrets cloud, \
                  which here's doesn't, so the session would land looser there"
                     .to_owned()
             ),

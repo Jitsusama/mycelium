@@ -443,7 +443,7 @@ session says of itself:
   of its `builders`, `forges` and `secrets` is one here's opens. A
   session that names no fence, or a machine that declares none for it,
   is refused, since where it lands can't be told. A refusal names the
-  doors that are wider, as `skiff's strictly fenced session opens
+  doors that are wider, as `tern's strictly fenced session opens
   builders cloud, which here's doesn't`.
 
 A refusal says why and who could order it, as `OSPHT4 doesn't
