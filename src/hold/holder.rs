@@ -7,14 +7,16 @@
 
 use std::fs;
 use std::io;
+use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use pty_process::{OwnedReadPty, OwnedWritePty};
+use pty_process::OwnedWritePty;
 use rustix::process::{Pid, kill_process};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
+use tokio::io::unix::AsyncFd;
 use tokio::net::UnixStream;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -324,7 +326,8 @@ pub async fn hold(
     let record = Arc::new(Record::write(holding.dir, &held)?);
     ready(&held)?;
 
-    let (reading, writing) = pty.into_split();
+    let reading = Reading::of(&pty)?;
+    let (_, writing) = pty.into_split();
     let (output, _) = broadcast::channel(OUTPUT_BACKLOG);
     let terminal = Arc::new(Terminal {
         writing: tokio::sync::Mutex::new(writing),
@@ -768,7 +771,7 @@ async fn typed(terminal: &Terminal, shown: &Shown, bytes: Vec<u8>) -> io::Result
 }
 
 /// Passes the program's output to every joined terminal until it ends.
-async fn read_output(mut reading: OwnedReadPty, shown: Arc<Shown>, starts: Arc<Starts>) {
+async fn read_output(mut reading: Reading, shown: Arc<Shown>, starts: Arc<Starts>) {
     let mut buffer = vec![0u8; 8192];
     // A terminal whose program has gone reads as an error on Linux and as
     // its end elsewhere; there is no more unless a start opens it again.
@@ -779,9 +782,76 @@ async fn read_output(mut reading: OwnedReadPty, shown: Arc<Shown>, starts: Arc<S
                 if !starts.again().await {
                     return;
                 }
+                reading.started();
             }
         }
     }
+}
+
+/// The terminal's parent end, as the program's output is read from it,
+/// watched afresh at each start. Once the child end closes, the parent
+/// end reads as ended to a watch begun before then, for good: a start
+/// that opens the child end again leaves such a watch finding it ready
+/// with nothing to read, at every turn. A watch begun after the start
+/// waits for what the program shows.
+struct Reading {
+    parent: OwnedFd,
+    watched: Option<AsyncFd<OwnedFd>>,
+}
+
+impl Reading {
+    fn of(pty: &pty_process::Pty) -> io::Result<Self> {
+        let parent = pty.as_fd().try_clone_to_owned()?;
+        let watched = Some(watching(&parent)?);
+        Ok(Self { parent, watched })
+    }
+
+    /// Watches the parent end afresh, as a start has opened its child end
+    /// again. One that can't be watched reads as ended until the next,
+    /// said on the holder's log, as output nobody sees is a gap worth
+    /// finding.
+    fn started(&mut self) {
+        // The old watch goes first, so the two never overlap.
+        self.watched = None;
+        self.watched = watching(&self.parent)
+            .inspect_err(|error| {
+                eprintln!(
+                    "mycelium: a holder can't watch its terminal, so what this start \
+                     shows goes unseen: {error}"
+                );
+            })
+            .ok();
+    }
+
+    /// Reads what the program shows into `buffer`, nothing once the
+    /// terminal reads as ended to this watch.
+    async fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        let Some(watched) = &self.watched else {
+            return Err(io::ErrorKind::NotConnected.into());
+        };
+        loop {
+            let mut ready = watched.readable().await?;
+            let ended = ready.ready().is_read_closed();
+            match ready.try_io(|fd| Ok(rustix::io::read(fd, &mut *buffer)?)) {
+                Ok(read) => return read,
+                // Ended with nothing to read, it stays ended to this watch,
+                // however long the program runs on an end opened again.
+                Err(_) if ended => return Ok(0),
+                Err(_) => {}
+            }
+        }
+    }
+}
+
+/// Watches a copy of the terminal's parent end, from now on.
+fn watching(parent: &OwnedFd) -> io::Result<AsyncFd<OwnedFd>> {
+    let copy = parent.try_clone()?;
+    // SAFETY: an `OwnedFd` is open, owned and the same descriptor for as
+    // long as it lives, and the watch owns this one until it is dropped,
+    // as `register` asks.
+    #[expect(unsafe_code, reason = "tokio watches a descriptor only by register")]
+    let watched = unsafe { AsyncFd::register(copy) };
+    watched.map_err(|refused| refused.into_parts().1)
 }
 
 /// The terminal's child end, which each start of the program is given.
@@ -864,11 +934,27 @@ impl ChildEnd {
     }
 }
 
+/// A Mac's end goes as the holder is done with its program, so the reader
+/// of its output is told no start is coming, rather than waiting out its
+/// last words for one.
+#[cfg(target_os = "macos")]
+impl Drop for ChildEnd {
+    fn drop(&mut self) {
+        self.starts
+            .over
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.starts.started.notify_one();
+    }
+}
+
 /// Each start of the program, as the reader of its output is told of it.
 #[derive(Default)]
 struct Starts {
     #[cfg(target_os = "macos")]
     started: tokio::sync::Notify,
+    /// Whether the holder is done starting the program.
+    #[cfg(target_os = "macos")]
+    over: std::sync::atomic::AtomicBool,
 }
 
 impl Starts {
@@ -882,11 +968,17 @@ impl Starts {
     }
 
     /// Whether output may come once the terminal has read as ended: on
-    /// macOS once the program starts again, on its end opened anew.
+    /// macOS once the program starts again, on its end opened anew, and
+    /// never once the holder is done starting it.
     #[cfg(target_os = "macos")]
     async fn again(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        if self.over.load(Ordering::SeqCst) {
+            return false;
+        }
+        // Being done tells it as a start does, so it's heard here too.
         self.started.notified().await;
-        true
+        !self.over.load(Ordering::SeqCst)
     }
 }
 
@@ -1181,6 +1273,84 @@ mod tests {
         };
         let held = ready.await.expect("the holder says it holds");
         (dir, held, holder)
+    }
+
+    /// A terminal whose child end has closed, read as ended, and opened
+    /// again by its name, as a Mac's holder does at each start, read
+    /// through a watch begun before the close, with what the opened end
+    /// writes to.
+    async fn reopened_terminal() -> (Reading, OwnedFd) {
+        use rustix::fs::{Mode, OFlags};
+        let (pty, pts) = pty_process::open().expect("a terminal");
+        let named = rustix::termios::ttyname(&pts, Vec::new()).expect("its child end's name");
+        let reading = Reading::of(&pty).expect("its parent end, watched");
+        drop(pts);
+        // Linux reads the end as an error and macOS as nothing.
+        let mut buffer = [0u8; 64];
+        let ended = tokio::time::timeout(PATIENCE, reading.read(&mut buffer))
+            .await
+            .expect("the closed end reads as ended");
+        assert!(
+            ended.as_ref().map_or(true, |read| *read == 0),
+            "nothing is read: {ended:?}"
+        );
+        let flags = OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC;
+        let opened = rustix::fs::open(named.as_c_str(), flags, Mode::empty())
+            .expect("the child end, opened again");
+        // The parent end goes on in the watch's own copy.
+        drop(pty);
+        (reading, opened)
+    }
+
+    /// Counts how often a read asks to be polled again.
+    struct Wakes(AtomicUsize);
+
+    impl std::task::Wake for Wakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Polls `reading` once for what it reads, and counts the wakes it asks
+    /// for: a read with nothing to read waits for the terminal to wake it.
+    fn read_once(reading: &Reading) -> (std::task::Poll<io::Result<usize>>, usize) {
+        let counted = Arc::new(Wakes(AtomicUsize::new(0)));
+        let waker = std::task::Waker::from(counted.clone());
+        let mut buffer = [0u8; 64];
+        let mut read = std::pin::pin!(reading.read(&mut buffer));
+        let polled = read
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(&waker));
+        (polled, counted.0.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn a_watch_from_before_a_start_reads_the_terminal_ended() {
+        let (reading, _opened) = reopened_terminal().await;
+        let mut buffer = [0u8; 64];
+        let read = tokio::time::timeout(PATIENCE, reading.read(&mut buffer))
+            .await
+            .expect("the old watch reads it ended, rather than ready with nothing");
+        assert_eq!(read.expect("the read succeeds"), 0, "nothing is read");
+    }
+
+    #[tokio::test]
+    async fn a_terminal_opened_again_waits_quietly_for_output() {
+        let (mut reading, opened) = reopened_terminal().await;
+        reading.started();
+        // Reading what it shows first lets the runtime hear all the
+        // terminal has said, its child end's close included.
+        rustix::io::write(&opened, b"shown").expect("the program shows something");
+        let mut buffer = [0u8; 64];
+        let read = tokio::time::timeout(PATIENCE, reading.read(&mut buffer))
+            .await
+            .expect("what it shows is read")
+            .expect("the read succeeds");
+        assert_eq!(&buffer[..read], b"shown");
+
+        let (polled, wakes) = read_once(&reading);
+        assert!(polled.is_pending(), "nothing more is shown: {polled:?}");
+        assert_eq!(wakes, 0, "an idle terminal never wakes its reader");
     }
 
     #[tokio::test]
