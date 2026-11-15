@@ -965,6 +965,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_try_a_stopping_host_drops_unread_is_made_again() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let path = dir.path().join("work-attended.sock");
+        // The stopped host's socket still listens while a copy of it is
+        // open, as one is in a child forked before it closed, until that
+        // child execs: the try is taken, and dropped unread, so the viewer
+        // reads that it was reset.
+        let stopping = UnixListener::bind(&path).expect("a socket");
+        let (_tell, mut sizes) = mpsc::unbounded_channel();
+        let mut shown = Vec::new();
+        let mut here = Script::typing(b"");
+        let back = async {
+            let (dropped, _) = stopping.accept().await.expect("the try");
+            dropped.readable().await.expect("its attach");
+            drop((dropped, stopping));
+            std::fs::remove_file(&path).expect("the stopped host's socket");
+            serve(&path, accepted(), vec![Step::Say(closed())])
+        };
+        let joining = join_again(
+            &path, "s-1", SIZE, &mut here, &mut shown, &mut sizes, PATIENT,
+        );
+        let (left, second) = tokio::join!(joining, back);
+        assert_eq!(
+            left.expect("joined again, not ended by the reset"),
+            Left::Detached("Conversation closed".to_owned())
+        );
+        second.await.expect("the restarted host ran");
+    }
+
+    #[tokio::test]
     async fn a_restarted_host_that_refuses_the_conversation_ends_the_wait() {
         let (_dir, path, _serving) = host(
             json!({"v": 1, "id": "attach", "ok": false,
