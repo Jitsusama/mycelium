@@ -879,7 +879,9 @@ fn main() -> ExitCode {
 /// Whether `error` is `out`'s reader having gone, as when `| head` has
 /// read all it wanted. The answer was taken as far as it was wanted, so
 /// nothing is said and the command succeeds. A broken pipe while `out`
-/// is still read is the node hanging up, and is said.
+/// is still read is the node hanging up, and is said. A platform whose
+/// gone reader polls as neither an error nor a hang-up, as macOS may,
+/// has the error said too, which errs on the safe side.
 fn reader_left(error: &io::Error, out: impl AsFd) -> bool {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     if error.kind() != io::ErrorKind::BrokenPipe {
