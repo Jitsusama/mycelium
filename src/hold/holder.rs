@@ -310,10 +310,7 @@ pub async fn hold(
     let mut told = Told::listening(holding.ending)?;
     let socket = node::bind(&socket(holding.dir, holding.id))?;
     let files = Files::fresh(holding.dir, holding.id);
-    let (pty, pts) = pty_process::open().map_err(io::Error::other)?;
-    pty.resize(size_of(FIRST_SIZE)).map_err(io::Error::other)?;
-    let starts = Arc::new(Starts::default());
-    let end = ChildEnd::of(pts, starts.clone())?;
+    let (pty, end, starts) = ChildEnd::open(FIRST_SIZE)?;
     // The holder keeps the terminal's other end, so a parked program's
     // terminal outlives it and the program starts again on the same one.
     let start =
@@ -840,7 +837,7 @@ async fn typed(terminal: &Terminal, shown: &Shown, bytes: Vec<u8>) -> io::Result
 }
 
 /// Passes the program's output to every joined terminal until it ends.
-async fn read_output(mut reading: Reading, shown: Arc<Shown>, starts: Arc<Starts>) {
+async fn read_output(mut reading: Reading, shown: Arc<Shown>, starts: impl Again) {
     let mut buffer = vec![0u8; 8192];
     // A terminal whose program has gone reads as an error on Linux and as
     // its end elsewhere; there is no more unless a start opens it again.
@@ -923,131 +920,168 @@ fn watching(parent: &OwnedFd) -> io::Result<AsyncFd<OwnedFd>> {
     watched.map_err(|refused| refused.into_parts().1)
 }
 
-/// The terminal's child end, which each start of the program is given.
-/// Linux starts a program on the same end again and again, and the holder
-/// keeping it open is what keeps a parked program's terminal. macOS takes
-/// a terminal away from whatever holds it once its session's leader ends,
-/// and pty-process starts on a borrowed end only elsewhere, so there each
-/// start opens the end again by its name, as `pty_process::open` opens it.
-struct ChildEnd {
-    #[cfg(not(target_os = "macos"))]
-    pts: pty_process::Pts,
-    #[cfg(target_os = "macos")]
-    named: std::ffi::CString,
-    #[cfg(target_os = "macos")]
-    starts: Arc<Starts>,
-}
-
-impl ChildEnd {
-    #[cfg(not(target_os = "macos"))]
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "macOS's names the end, which can fail"
-    )]
-    fn of(pts: pty_process::Pts, _starts: Arc<Starts>) -> io::Result<Self> {
-        Ok(Self { pts })
-    }
-
-    #[cfg(target_os = "macos")]
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the child end is closed once named, since macOS opens it anew at each start"
-    )]
-    fn of(pts: pty_process::Pts, starts: Arc<Starts>) -> io::Result<Self> {
-        let named = rustix::termios::ttyname(&pts, Vec::new())?;
-        Ok(Self { named, starts })
-    }
-
-    /// Starts `command` on the end at `size`, which Linux's end, never
-    /// closed, keeps from the last start.
-    #[cfg(not(target_os = "macos"))]
-    fn start(
-        &self,
-        mut command: pty_process::Command,
-        _size: Size,
-    ) -> io::Result<tokio::process::Child> {
-        command.spawn_borrowed(&self.pts).map_err(io::Error::other)
-    }
-
-    /// Starts `command` on the end opened anew at `size`, since macOS
-    /// forgets a terminal's size once nothing holds its child end.
-    #[cfg(target_os = "macos")]
-    fn start(
-        &self,
-        command: pty_process::Command,
-        size: Size,
-    ) -> io::Result<tokio::process::Child> {
-        use rustix::fs::{Mode, OFlags};
-        let flags = OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC;
-        let opened = rustix::fs::open(self.named.as_c_str(), flags, Mode::empty())?;
-        rustix::termios::tcsetwinsize(
-            &opened,
-            rustix::termios::Winsize {
-                ws_row: size.rows,
-                ws_col: size.cols,
-                ws_xpixel: 0,
-                ws_ypixel: 0,
-            },
-        )?;
-        // SAFETY: `opened` was just opened by this terminal's child end's own
-        // name, so it is valid, open and the child end of a pty, as
-        // `from_fd` asks.
-        #[expect(
-            unsafe_code,
-            reason = "pty-process makes a Pts of an end opened again only by from_fd"
-        )]
-        let pts = unsafe { pty_process::Pts::from_fd(opened) };
-        let child = command.spawn(pts).map_err(io::Error::other)?;
-        self.starts.started.notify_one();
-        Ok(child)
-    }
-}
-
-/// A Mac's end goes as the holder is done with its program, so the reader
-/// of its output is told no start is coming, rather than waiting out its
-/// last words for one.
+// The terminal's child end, which each start of the program is given,
+// kept as its platform keeps it: Linux's in `kept`, macOS's in
+// `reopened`. Each opens the terminal with its child end, answering what
+// tells the reader of the program's output of each start.
+#[cfg(not(target_os = "macos"))]
+use kept::ChildEnd;
 #[cfg(target_os = "macos")]
-impl Drop for ChildEnd {
-    fn drop(&mut self) {
-        self.starts
-            .over
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        self.starts.started.notify_one();
-    }
+use reopened::ChildEnd;
+
+/// What the reader of the program's output is told of each start by, as
+/// each platform's child end tells it.
+trait Again: Send + 'static {
+    /// Whether output may come once the terminal has read as ended.
+    fn again(&self) -> impl Future<Output = bool> + Send;
 }
 
-/// Each start of the program, as the reader of its output is told of it.
-#[derive(Default)]
-struct Starts {
-    #[cfg(target_os = "macos")]
-    started: tokio::sync::Notify,
-    /// Whether the holder is done starting the program.
-    #[cfg(target_os = "macos")]
-    over: std::sync::atomic::AtomicBool,
-}
+/// The child end as Linux has it: a program starts on the same end again
+/// and again, and the holder keeping it open is what keeps a parked
+/// program's terminal.
+#[cfg(not(target_os = "macos"))]
+mod kept {
+    use std::io;
 
-impl Starts {
-    /// Whether output may come once the terminal has read as ended: never
-    /// on Linux, where the holder keeps the child end open until the
-    /// program is done.
-    #[cfg(not(target_os = "macos"))]
-    #[expect(clippy::unused_self, reason = "macOS's waits on its own starts")]
-    fn again(&self) -> impl Future<Output = bool> {
-        std::future::ready(false)
+    use super::{Again, Size, size_of};
+
+    /// The terminal's child end, open for as long as the holder holds it.
+    pub(super) struct ChildEnd {
+        pts: pty_process::Pts,
     }
 
-    /// Whether output may come once the terminal has read as ended: on
-    /// macOS once the program starts again, on its end opened anew, and
-    /// never once the holder is done starting it.
-    #[cfg(target_os = "macos")]
-    async fn again(&self) -> bool {
-        use std::sync::atomic::Ordering;
-        if self.over.load(Ordering::SeqCst) {
-            return false;
+    impl ChildEnd {
+        /// Opens a terminal at `size`, answering its parent end, its child
+        /// end kept open for every start, and that output never comes once
+        /// it has read as ended.
+        pub(super) fn open(size: Size) -> io::Result<(pty_process::Pty, Self, Never)> {
+            let (pty, pts) = pty_process::open().map_err(io::Error::other)?;
+            pty.resize(size_of(size)).map_err(io::Error::other)?;
+            Ok((pty, Self { pts }, Never))
         }
-        // Being done tells it as a start does, so it's heard here too.
-        self.started.notified().await;
-        !self.over.load(Ordering::SeqCst)
+
+        /// Starts `command` on the end at `size`, which the end, never
+        /// closed, keeps from the last start.
+        pub(super) fn start(
+            &self,
+            mut command: pty_process::Command,
+            _size: Size,
+        ) -> io::Result<tokio::process::Child> {
+            command.spawn_borrowed(&self.pts).map_err(io::Error::other)
+        }
+    }
+
+    /// No start opens the terminal again, as its child end stays open
+    /// until the program is done.
+    pub(super) struct Never;
+
+    impl Again for Never {
+        /// Never: the terminal reads as ended only once the holder has let
+        /// the child end go.
+        fn again(&self) -> impl Future<Output = bool> + Send {
+            std::future::ready(false)
+        }
+    }
+}
+
+/// The child end as macOS has it: it takes a terminal away from whatever
+/// holds it once its session's leader ends, and pty-process starts on a
+/// borrowed end only elsewhere, so each start opens the end again by its
+/// name, as `pty_process::open` opens it.
+#[cfg(target_os = "macos")]
+mod reopened {
+    use std::io;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::{Again, Size, size_of};
+
+    /// The terminal's child end by its name, opened anew at each start.
+    pub(super) struct ChildEnd {
+        named: std::ffi::CString,
+        starts: Arc<Starts>,
+    }
+
+    impl ChildEnd {
+        /// Opens a terminal at `size`, answering its parent end, its child
+        /// end by name, closed until a start opens it anew, and each start
+        /// as the reader of its output is told of it.
+        pub(super) fn open(size: Size) -> io::Result<(pty_process::Pty, Self, Arc<Starts>)> {
+            let (pty, pts) = pty_process::open().map_err(io::Error::other)?;
+            // Sized while its child end is still open, as a start opens it
+            // anew at its own size.
+            pty.resize(size_of(size)).map_err(io::Error::other)?;
+            let named = rustix::termios::ttyname(&pts, Vec::new())?;
+            let starts = Arc::new(Starts::default());
+            let end = Self {
+                named,
+                starts: starts.clone(),
+            };
+            Ok((pty, end, starts))
+        }
+
+        /// Starts `command` on the end opened anew at `size`, since macOS
+        /// forgets a terminal's size once nothing holds its child end.
+        pub(super) fn start(
+            &self,
+            command: pty_process::Command,
+            size: Size,
+        ) -> io::Result<tokio::process::Child> {
+            use rustix::fs::{Mode, OFlags};
+            let flags = OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC;
+            let opened = rustix::fs::open(self.named.as_c_str(), flags, Mode::empty())?;
+            rustix::termios::tcsetwinsize(
+                &opened,
+                rustix::termios::Winsize {
+                    ws_row: size.rows,
+                    ws_col: size.cols,
+                    ws_xpixel: 0,
+                    ws_ypixel: 0,
+                },
+            )?;
+            // SAFETY: `opened` was just opened by this terminal's child end's
+            // own name, so it is valid, open and the child end of a pty, as
+            // `from_fd` asks.
+            #[expect(
+                unsafe_code,
+                reason = "pty-process makes a Pts of an end opened again only by from_fd"
+            )]
+            let pts = unsafe { pty_process::Pts::from_fd(opened) };
+            let child = command.spawn(pts).map_err(io::Error::other)?;
+            self.starts.started.notify_one();
+            Ok(child)
+        }
+    }
+
+    /// The end goes as the holder is done with its program, so the reader
+    /// of its output is told no start is coming, rather than waiting out
+    /// its last words for one.
+    impl Drop for ChildEnd {
+        fn drop(&mut self) {
+            self.starts.over.store(true, Ordering::SeqCst);
+            self.starts.started.notify_one();
+        }
+    }
+
+    /// Each start of the program, as the reader of its output is told of it.
+    #[derive(Default)]
+    pub(super) struct Starts {
+        started: tokio::sync::Notify,
+        /// Whether the holder is done starting the program.
+        over: AtomicBool,
+    }
+
+    impl Again for Arc<Starts> {
+        /// Once the program starts again, on its end opened anew, and never
+        /// once the holder is done starting it.
+        async fn again(&self) -> bool {
+            if self.over.load(Ordering::SeqCst) {
+                return false;
+            }
+            // Being done tells it as a start does, so it's heard here too.
+            self.started.notified().await;
+            !self.over.load(Ordering::SeqCst)
+        }
     }
 }
 
