@@ -73,11 +73,6 @@ const WATCH_BACKLOG: usize = 4096;
 /// lets it go.
 const WATCH_PATIENCE: Duration = Duration::from_secs(10);
 
-/// How often the turns are looked at while a holder waits for one, since
-/// what ends a turn is its session's record changing or its minute
-/// passing, and a second's wait is nothing beside a session's start.
-const TURN_LOOK: Duration = Duration::from_secs(1);
-
 /// A node's socket, bound and taken down when dropped.
 pub struct Socket {
     listener: UnixListener,
@@ -1484,11 +1479,16 @@ impl<S: Store> Shared<S> {
     }
 
     /// Ends the turns their sessions are done with and lets the next
-    /// through.
+    /// through, at most once each [`turns::LOOKS_EVERY`] however many
+    /// holders wait, since each look reads every session record.
     fn pass_turns(&self) {
+        let now = tokio::time::Instant::now();
         let mut inner = self.lock();
+        if !inner.turns.due(now) {
+            return;
+        }
         let sessions = inner.state.sessions();
-        inner.turns.pass(&sessions, tokio::time::Instant::now());
+        inner.turns.pass(&sessions, now);
     }
 
     /// Counts `pid` present through a new connection, which replaces any
@@ -1788,7 +1788,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
 }
 
 /// Answers a holder's ask for a turn once it may resume `session`,
-/// looking at the turns each [`TURN_LOOK`] while it waits. A holder that
+/// looking at the turns each [`turns::LOOKS_EVERY`] while it waits. A holder that
 /// hangs up first leaves the queue.
 async fn take_turn<S: Store>(
     shared: &Shared<S>,
@@ -1797,7 +1797,7 @@ async fn take_turn<S: Store>(
     mut writing: tokio::net::unix::OwnedWriteHalf,
 ) {
     if let Asked::Wait { ticket, mut go } = shared.ask_turn(session) {
-        let mut look = tokio::time::interval(TURN_LOOK);
+        let mut look = tokio::time::interval(turns::LOOKS_EVERY);
         loop {
             tokio::select! {
                 _ = &mut go => break,

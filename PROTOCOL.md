@@ -943,7 +943,8 @@ holding the connection open. The node answers `"Turn"` at once for a
 session no record names, which has nothing to resume, and otherwise
 once fewer than 4 resumed sessions are on their first turn. A turn
 ends when its session is heard idle or ended by its new process, one
-that was working only once heard working again, or after 60 seconds.
+that was working only once heard working again or idle for 10
+seconds, or after 60 seconds.
 Those waiting go in order: sessions whose record wants their person
 for a `question` or an `approval`, then those that were busy, then the
 rest, each in the order it asked. Every joined window says it is

@@ -32,6 +32,20 @@ pub const AT_ONCE: usize = 4;
 /// would send anyway.
 pub const LONGEST_TURN: Duration = Duration::from_secs(60);
 
+/// How long a resumed session that was working may sit idle before its
+/// turn ends unworked. One whose words are in its command starts work
+/// within a few seconds; one whose words come later, paced from
+/// elsewhere, would otherwise hold its place the whole minute.
+pub const IDLE_SETTLES: Duration = Duration::from_secs(10);
+
+/// How often the turns are looked at, for the whole queue however many
+/// wait, since what ends a turn is its session's record changing or its
+/// minute passing, and a second's wait is nothing beside a session's
+/// start. Each look reads every session record, so a hundred waiting
+/// holders looking each second on their own would read them all a
+/// hundred times a second, on a node just restarted.
+pub const LOOKS_EVERY: Duration = Duration::from_secs(1);
+
 /// Which sessions come back first, the first first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rank {
@@ -89,6 +103,8 @@ pub struct Turns {
     waiting: Vec<Waiting>,
     running: Vec<Running>,
     next: u64,
+    /// When the turns were last looked at.
+    looked: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -110,6 +126,8 @@ struct Running {
     /// turn, as one that was working resumes a turn once it has started.
     resumes_work: bool,
     heard_working: bool,
+    /// When its new process was first heard idle, not yet working.
+    idle_since: Option<Instant>,
 }
 
 impl Turns {
@@ -148,7 +166,16 @@ impl Turns {
     /// stands at `now`, then lets the next through while fewer than
     /// [`AT_ONCE`] run: those waiting on their person first, then those
     /// that were working, then the rest, each kind in the order it asked.
+    /// Whether the turns are due a look at `now`: not within
+    /// [`LOOKS_EVERY`] of the last, however many holders ask.
+    #[must_use]
+    pub fn due(&self, now: Instant) -> bool {
+        self.looked
+            .is_none_or(|looked| now.duration_since(looked) >= LOOKS_EVERY)
+    }
+
     pub fn pass(&mut self, sessions: &[Session], now: Instant) {
+        self.looked = Some(now);
         self.running
             .retain_mut(|running| !running.done(sessions, now));
         while self.running.len() < AT_ONCE {
@@ -171,6 +198,7 @@ impl Turns {
                     heard: known.map(|one| one.at.clone()),
                     resumes_work: waiting.rank != Rank::Rest,
                     heard_working: false,
+                    idle_since: None,
                 });
             }
         }
@@ -196,7 +224,13 @@ impl Running {
                 self.heard_working = true;
                 false
             }
-            State::Idle => self.heard_working || !self.resumes_work,
+            State::Idle if self.heard_working || !self.resumes_work => true,
+            // Its words may come later, paced from elsewhere, so one that
+            // stays idle once started gives its place up.
+            State::Idle => {
+                let since = *self.idle_since.get_or_insert(now);
+                now.duration_since(since) >= IDLE_SETTLES
+            }
             State::Ended => true,
             State::Unreachable => false,
         }
@@ -346,6 +380,47 @@ mod tests {
             last.last().map(String::as_str),
             Some("s22"),
             "and the one that wasn't working comes last"
+        );
+    }
+
+    #[test]
+    fn one_that_was_working_and_stays_idle_gives_up_its_turn() {
+        let mut sessions = taken_away();
+        let ids: Vec<String> = sessions.iter().map(|one| one.id.clone()).collect();
+        let mut turns = Turns::default();
+        let began = Instant::now();
+        let mut waits = asking(&mut turns, &ids[..5], &sessions, began);
+        let _ = let_through(&mut waits);
+        // Started without its words, as when they come paced from elsewhere.
+        sessions[0] = session("s00", State::Idle, "starting", false);
+        let heard = began + Duration::from_secs(2);
+        turns.pass(&sessions, heard);
+        turns.pass(&sessions, heard + IDLE_SETTLES - Duration::from_secs(1));
+        assert!(
+            let_through(&mut waits).is_empty(),
+            "not before it has stayed idle long enough to start no work itself"
+        );
+        turns.pass(&sessions, heard + IDLE_SETTLES);
+        assert_eq!(
+            let_through(&mut waits),
+            ["s04"],
+            "one that stays idle once started gives up its place long before a minute"
+        );
+    }
+
+    #[test]
+    fn the_turns_are_looked_at_once_a_second_however_many_wait() {
+        let mut turns = Turns::default();
+        let began = Instant::now();
+        assert!(turns.due(began), "the first look is due");
+        turns.pass(&[], began);
+        assert!(
+            !turns.due(began + LOOKS_EVERY - Duration::from_millis(1)),
+            "a second waiting holder's look within the second reads nothing"
+        );
+        assert!(
+            turns.due(began + LOOKS_EVERY),
+            "the next look is due a second on"
         );
     }
 
