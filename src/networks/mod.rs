@@ -15,7 +15,7 @@
 //! one model every view renders, the terminal's in `shown` and a page's or
 //! an agent's from the JSON lines of [`Mycelium::lines`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::path::Path;
 use std::time::Duration;
@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 
 use crate::swarm::{self, Standing};
 
+mod kept;
 mod shown;
 
 pub use shown::{cell, cells, network, overview};
@@ -41,6 +42,50 @@ pub struct Mycelium {
     pub networks: Vec<Network>,
     /// Every cell: the sessions running or dormant, then the machines.
     pub cells: Vec<Cell>,
+    /// Where each network and each cell is among them, by its name, so a
+    /// view of thousands finds each one at once.
+    #[serde(skip)]
+    places: Places,
+}
+
+/// Where each network and each cell of a mycelium is, by its name.
+#[derive(Debug, Default)]
+struct Places {
+    networks: HashMap<String, usize>,
+    cells: HashMap<String, usize>,
+}
+
+impl Places {
+    /// Where each of `networks` and `cells` is.
+    fn of(networks: &[Network], cells: &[Cell]) -> Self {
+        let placed = |names: Vec<&String>| {
+            names
+                .into_iter()
+                .enumerate()
+                .map(|(place, name)| (name.clone(), place))
+                .collect()
+        };
+        Self {
+            networks: placed(networks.iter().map(|each| &each.name).collect()),
+            cells: placed(cells.iter().map(|each| &each.name).collect()),
+        }
+    }
+}
+
+/// The one of `things` named `name`, where `places` says it is, or found
+/// by looking through them where it says wrong, as it would of things
+/// changed since.
+fn placed<'a, T>(
+    things: &'a [T],
+    places: &HashMap<String, usize>,
+    name: &str,
+    named: impl Fn(&T) -> &str,
+) -> Option<&'a T> {
+    places
+        .get(name)
+        .and_then(|place| things.get(*place))
+        .filter(|thing| named(thing) == name)
+        .or_else(|| things.iter().find(|thing| named(thing) == name))
 }
 
 /// What a network is for, which says where it comes from.
@@ -263,15 +308,39 @@ impl Cell {
             .into_iter()
             .find(|each| each.counted() == word)
     }
+
+    /// Whether it is a session standing as one of `standings` says, by
+    /// the words its counts go by, such as `needs-you`.
+    #[must_use]
+    pub fn stands_as(&self, standings: &[String]) -> bool {
+        self.standing
+            .is_some_and(|standing| standings.iter().any(|each| each == standing))
+    }
 }
+
+/// How a session may stand, by the words its counts go by, worst first.
+pub const STANDINGS: [&str; 5] = ["needs-you", "stuck", "moving", "quiet", "dormant"];
 
 impl Mycelium {
     /// The mycelium of `realm` that the node's `teams`, `sessions` and
     /// `machines` records make.
     #[must_use]
     pub fn of(realm: &str, teams: &[Value], sessions: &[Value], machines: &[Value]) -> Self {
-        let quests = quest_titles(sessions);
-        let renamed = renamed(sessions);
+        let mut read = Sessions::default();
+        for session in sessions {
+            read.add(session);
+        }
+        Self::made(realm, teams, read, machines)
+    }
+
+    /// The mycelium of `realm` that the node's `teams` and `machines`
+    /// records make, with what its sessions' records made as each was read.
+    fn made(realm: &str, teams: &[Value], sessions: Sessions, machines: &[Value]) -> Self {
+        let Sessions {
+            cells: mut sessions,
+            quests,
+            renamed,
+        } = sessions;
         // A team under an address its orchestrator was renamed from is one
         // a node too old to fold them still says; its sessions are drawn in
         // the orchestrator's own.
@@ -281,7 +350,6 @@ impl Mycelium {
             .cloned()
             .collect();
         let teams = teams.as_slice();
-        let mut sessions: Vec<Cell> = sessions.iter().filter_map(session_cell).collect();
         for cell in &mut sessions {
             let mut seen = BTreeSet::new();
             cell.networks = cell
@@ -302,11 +370,23 @@ impl Mycelium {
                 cell.leads.clone_from(led);
             }
         }
-        let machines = machines.iter().map(|one| machine_cell(one, &sessions));
-        let cells = sessions.iter().cloned().chain(machines).collect();
+        let mut runs: HashMap<&str, usize> = HashMap::new();
+        for machine in sessions.iter().filter_map(|cell| cell.machine.as_deref()) {
+            *runs.entry(machine).or_default() += 1;
+        }
+        let machines: Vec<Cell> = machines
+            .iter()
+            .map(|one| machine_cell(one, &runs))
+            .collect();
+        // Extended in place, since collecting a chain would hold a second
+        // copy of every cell while it is made.
+        let mut cells = sessions;
+        cells.extend(machines);
+        let networks = ordered(networks);
         Self {
             realm: realm.to_owned(),
-            networks: ordered(networks),
+            places: Places::of(&networks, &cells),
+            networks,
             cells,
         }
     }
@@ -324,13 +404,15 @@ impl Mycelium {
     /// The network of this name.
     #[must_use]
     pub fn network(&self, name: &str) -> Option<&Network> {
-        self.networks.iter().find(|each| each.name == name)
+        placed(&self.networks, &self.places.networks, name, |each| {
+            &each.name
+        })
     }
 
     /// The cell of this name.
     #[must_use]
     pub fn cell(&self, name: &str) -> Option<&Cell> {
-        self.cells.iter().find(|each| each.name == name)
+        placed(&self.cells, &self.places.cells, name, |each| &each.name)
     }
 
     /// The network `asked` names, by its name, its short name or a part of
@@ -387,26 +469,53 @@ fn several<T>(asked: &str, many: &[&T], name: impl Fn(&T) -> &str) -> String {
 /// When no node answers, or it answers in a way it shouldn't, or holds no
 /// teams, as a node too old for them doesn't.
 pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium> {
-    let mut answers = swarm::asked(
-        socket,
-        within,
-        &[
-            json!({"ask": "list", "kind": "team"}),
-            json!({"ask": "list", "kind": "session"}),
-            json!({"ask": "list", "kind": "machine"}),
-        ],
-    )?;
-    let mut records = |id: u64| -> io::Result<Vec<Value>> {
-        let answer = answers.remove(&id).unwrap_or_default();
-        if let Some(why) = answer["error"]["message"].as_str() {
-            return Err(io::Error::other(format!(
-                "the node can't say its networks ({why}); it may need updating"
-            )));
+    // A node sends only the fields read, and an older one, which sends
+    // every field whatever is asked, is read for only those as it streams.
+    let fields = kept::paths(&kept::RECORD);
+    let asks = ["team", "session", "machine"]
+        .map(|kind| json!({"ask": "list", "kind": kind, "fields": fields}));
+    let reading = swarm::asking(socket, within, &asks)?;
+    // Teams and machines are few, but sessions are thousands, so each is
+    // made its cell as it is read rather than all held first.
+    let (mut teams, mut sessions, mut machines) = (Vec::new(), Sessions::default(), Vec::new());
+    let answers = kept::answered(reading, 3, |id, record| match id {
+        1 => teams.push(record),
+        2 => sessions.add(&record),
+        _ => machines.push(record),
+    })?;
+    if let Some(why) = answers
+        .values()
+        .find_map(|answer| answer["error"]["message"].as_str())
+    {
+        return Err(io::Error::other(format!(
+            "the node can't say its networks ({why}); it may need updating"
+        )));
+    }
+    Ok(Mycelium::made(realm, &teams, sessions, &machines))
+}
+
+/// What a node's sessions make, read one by one: their cells, the titles
+/// of the quests they work on, and the addresses orchestrators were
+/// renamed from.
+#[derive(Default)]
+struct Sessions {
+    cells: Vec<Cell>,
+    quests: BTreeMap<String, String>,
+    renamed: BTreeMap<String, String>,
+}
+
+impl Sessions {
+    /// What `session` makes, added to what the sessions before it made.
+    fn add(&mut self, session: &Value) {
+        // Each quest's title by its short id in lower case, as the last
+        // session working on it says.
+        let quest = &session["presence"]["questInfo"];
+        if let (Some(short), Some(title)) = (quest["short"].as_str(), quest["title"].as_str()) {
+            self.quests.insert(short.to_lowercase(), title.to_owned());
         }
-        Ok(answer["records"].as_array().cloned().unwrap_or_default())
-    };
-    let (teams, sessions, machines) = (records(1)?, records(2)?, records(3)?);
-    Ok(Mycelium::of(realm, &teams, &sessions, &machines))
+        renamed_by(session, &mut self.renamed);
+        self.cells.extend(session_cell(session));
+    }
 }
 
 /// A session record as a cell, or none for one that has ended.
@@ -467,13 +576,10 @@ fn begun(id: &str) -> Option<String> {
     Some(at.to_string())
 }
 
-/// A machine record as a cell, with how many of `sessions` it runs.
-fn machine_cell(machine: &Value, sessions: &[Cell]) -> Cell {
+/// A machine record as a cell, with how many sessions it `runs` by name.
+fn machine_cell(machine: &Value, runs: &HashMap<&str, usize>) -> Cell {
     let name = machine["name"].as_str().unwrap_or_default().to_owned();
-    let runs = sessions
-        .iter()
-        .filter(|cell| cell.machine.as_deref() == Some(name.as_str()))
-        .count();
+    let runs = runs.get(name.as_str()).copied().unwrap_or_default();
     Cell {
         kind: "cell",
         title: machine["model_name"].as_str().map(str::to_owned),
@@ -561,32 +667,29 @@ fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>)
     networks
 }
 
-/// Each address a living session goes by beside its own, to its own, both
-/// in lower case, as the node's teams fold them (`node::team`): an
-/// orchestrator renamed keeps its old address, and the sessions it spawned
-/// before still hear the old one's group.
-fn renamed(sessions: &[Value]) -> BTreeMap<String, String> {
-    let mut renamed = BTreeMap::new();
-    let living = sessions
-        .iter()
-        .filter(|session| matches!(session["state"].as_str(), Some("busy" | "idle")));
-    for session in living {
-        let Some(own) = session["address"].as_str() else {
-            continue;
-        };
-        let others = session["presence"]["addresses"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .filter(|other| *other != own);
-        for other in others {
-            renamed
-                .entry(other.to_lowercase())
-                .or_insert_with(|| own.to_lowercase());
-        }
+/// Each address `session`, if living, goes by beside its own, to its own,
+/// both in lower case, added to `renamed` where an earlier session didn't
+/// claim it, as the node's teams fold them (`node::team`): an orchestrator
+/// renamed keeps its old address, and the sessions it spawned before still
+/// hear the old one's group.
+fn renamed_by(session: &Value, renamed: &mut BTreeMap<String, String>) {
+    if !matches!(session["state"].as_str(), Some("busy" | "idle")) {
+        return;
     }
-    renamed
+    let Some(own) = session["address"].as_str() else {
+        return;
+    };
+    let others = session["presence"]["addresses"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|other| *other != own);
+    for other in others {
+        renamed
+            .entry(other.to_lowercase())
+            .or_insert_with(|| own.to_lowercase());
+    }
 }
 
 /// The network `name`, under its orchestrator's own address where it
@@ -595,19 +698,6 @@ fn owned_network(name: &str, renamed: &BTreeMap<String, String>) -> String {
     name.strip_prefix("orchestration.")
         .and_then(|old| renamed.get(old))
         .map_or_else(|| name.to_owned(), |own| format!("orchestration.{own}"))
-}
-
-/// Each quest's title by its short id in lower case, as the sessions
-/// working on it say.
-fn quest_titles(sessions: &[Value]) -> BTreeMap<String, String> {
-    sessions
-        .iter()
-        .filter_map(|session| {
-            let quest = &session["presence"]["questInfo"];
-            let short = quest["short"].as_str()?.to_lowercase();
-            Some((short, quest["title"].as_str()?.to_owned()))
-        })
-        .collect()
 }
 
 /// Each orchestration's network titled, short-named and nested as the

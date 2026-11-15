@@ -6,7 +6,13 @@
 //! it, and a column for each way its sessions stand, a count of none left
 //! blank. A cell's line says how it stands first, so the eye runs down
 //! one column for what needs its person.
+//!
+//! A mycelium of thousands has lists no screen holds, so a long list
+//! folds: what needs its person or is stuck first, then the busiest few,
+//! then one row for the rest, counting them. A view asked for `all` folds
+//! nothing, and any one of what folded is seen by its name.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use super::{Cell, Is, MACHINES, Mycelium, Network, Shape};
@@ -102,6 +108,126 @@ fn machine_said(machine: &Cell) -> String {
     said
 }
 
+/// How a long list folds: past how many it folds at all, how many of
+/// those needing their person or stuck it shows then, and how many of the
+/// rest, the busiest, before one row counts what folded.
+struct Fold {
+    past: usize,
+    worrying: usize,
+    busiest: usize,
+}
+
+/// How the networks under a heading, or within a network, fold.
+const NETWORKS_FOLD: Fold = Fold {
+    past: 12,
+    worrying: 8,
+    busiest: 4,
+};
+
+/// How a list of cells, or of machines, folds.
+const CELLS_FOLD: Fold = Fold {
+    past: 30,
+    worrying: 20,
+    busiest: 5,
+};
+
+/// Whether a view's long lists fold, and whether any has.
+struct Folding {
+    all: bool,
+    any: std::cell::Cell<bool>,
+}
+
+impl Folding {
+    /// Folding unless `all` is asked.
+    const fn unless(all: bool) -> Self {
+        Self {
+            all,
+            any: std::cell::Cell::new(false),
+        }
+    }
+
+    /// `list`, in its order, split into what is shown and what folds, as
+    /// `fold` says, `worrying` saying which need their person or are
+    /// stuck.
+    fn split<T>(
+        &self,
+        fold: &Fold,
+        list: Vec<T>,
+        worrying: impl Fn(&T) -> bool,
+    ) -> (Vec<T>, Vec<T>) {
+        if self.all || list.len() <= fold.past {
+            return (list, Vec::new());
+        }
+        let (mut worried, mut others) = (0, 0);
+        let (shown, folded): (Vec<T>, Vec<T>) = list.into_iter().partition(|each| {
+            if worrying(each) {
+                worried += 1;
+                worried <= fold.worrying
+            } else {
+                others += 1;
+                others <= fold.busiest
+            }
+        });
+        if !folded.is_empty() {
+            self.any.set(true);
+        }
+        (shown, folded)
+    }
+
+    /// The line saying how to see what folded, if anything did, by the
+    /// `command` that drew it.
+    fn hint(&self, look: &Look, command: &str) -> Option<String> {
+        self.any.get().then(|| {
+            look.paint(
+                FAINT,
+                &format!("some lists folded; see every one with: {command} --all"),
+            )
+        })
+    }
+}
+
+/// Whether `network` holds a session needing its person or stuck.
+fn network_worrying(network: &Network) -> bool {
+    network.count(Standing::NeedsYou) + network.count(Standing::Stuck) > 0
+}
+
+/// Whether `cell` needs its person or is stuck.
+fn cell_worrying(cell: &Cell) -> bool {
+    matches!(cell.standing(), Some(Standing::NeedsYou | Standing::Stuck))
+}
+
+/// The counts of `networks` together, in the header's order.
+fn counts_of(networks: &[&Network]) -> Vec<(Standing, u64)> {
+    Standing::CELLS
+        .into_iter()
+        .map(|each| {
+            (
+                each,
+                networks.iter().map(|network| network.count(each)).sum(),
+            )
+        })
+        .collect()
+}
+
+/// The row counting `many` folded of what `kind` names, under rows whose
+/// short names are `width` wide.
+fn folded_row(
+    look: &Look,
+    depth: usize,
+    width: usize,
+    many: usize,
+    kind: &str,
+    counts: &[(Standing, u64)],
+) -> String {
+    let said = format!("and {many} more {kind}");
+    let label = Label {
+        short: Some(""),
+        width,
+        title: &said,
+    };
+    row(look, depth, &label, counts, false)
+}
+
 /// How the realm stands in a line: its cells, networks and machines, and
 /// how many sessions need their person or are stuck.
 fn summary(mycelium: &Mycelium, look: &Look) -> String {
@@ -130,16 +256,79 @@ fn summary(mycelium: &Mycelium, look: &Look) -> String {
     look.paint(BOLD, &head)
 }
 
-/// How a tree is drawn: by whom, how wide its short names are, and
-/// whether each network's cells go under it.
+/// How a tree is drawn: by whom, how wide its short names are, whether
+/// each network's cells go under it, and how its lists fold; with the
+/// networks within each network and the sessions each machine runs, found
+/// once for the whole tree.
 struct Drawing<'a> {
     mycelium: &'a Mycelium,
     look: &'a Look,
     width: usize,
     with_cells: bool,
+    folding: &'a Folding,
+    within: HashMap<&'a str, Vec<&'a Network>>,
+    runs: HashMap<&'a str, Vec<&'a Cell>>,
 }
 
-impl Drawing<'_> {
+impl<'a> Drawing<'a> {
+    /// A tree of `mycelium`'s, its short names `width` wide.
+    fn of(
+        mycelium: &'a Mycelium,
+        look: &'a Look,
+        width: usize,
+        with_cells: bool,
+        folding: &'a Folding,
+    ) -> Self {
+        let mut within: HashMap<&str, Vec<&Network>> = HashMap::new();
+        for network in &mycelium.networks {
+            if let Some(above) = network.within.as_deref() {
+                within.entry(above).or_default().push(network);
+            }
+        }
+        let mut runs: HashMap<&str, Vec<&Cell>> = HashMap::new();
+        for cell in &mycelium.cells {
+            if let Some(machine) = cell.machine.as_deref() {
+                runs.entry(machine).or_default().push(cell);
+            }
+        }
+        Self {
+            mycelium,
+            look,
+            width,
+            with_cells,
+            folding,
+            within,
+            runs,
+        }
+    }
+
+    /// The networks within the one named `name`, in their order.
+    fn within(&self, name: &str) -> Vec<&'a Network> {
+        self.within.get(name).cloned().unwrap_or_default()
+    }
+
+    /// The rows of `networks`, set in by `depth`, as many as fold, then a
+    /// row counting the rest.
+    fn networks(&self, lines: &mut Vec<String>, networks: Vec<&'a Network>, depth: usize) {
+        let (shown, folded) = self
+            .folding
+            .split(&NETWORKS_FOLD, networks, |each| network_worrying(each));
+        for network in shown {
+            self.network(lines, network, depth);
+        }
+        if !folded.is_empty() {
+            let counts = counts_of(&folded);
+            lines.push(folded_row(
+                self.look,
+                depth,
+                self.width,
+                folded.len(),
+                "networks",
+                &counts,
+            ));
+        }
+    }
+
     /// `network`'s row, set in by `depth`, then its cells where asked, then
     /// the networks within it.
     fn network(&self, lines: &mut Vec<String>, network: &Network, depth: usize) {
@@ -150,52 +339,70 @@ impl Drawing<'_> {
                 .cells
                 .iter()
                 .filter_map(|name| self.mycelium.cell(name));
-            lines.extend(cell_lines(self.look, depth + 1, cells));
+            lines.extend(cell_lines(self.look, depth + 1, cells, self.folding));
         }
-        let within = self
-            .mycelium
-            .networks
-            .iter()
-            .filter(|other| other.within.as_deref() == Some(&network.name));
-        for other in within {
-            self.network(lines, other, depth + 1);
-        }
+        self.networks(lines, self.within(&network.name), depth + 1);
     }
 
     /// Each machine's row, counting the sessions it runs, and those
-    /// sessions under it where asked.
+    /// sessions under it where asked, as many as fold.
     fn machines(&self, lines: &mut Vec<String>, depth: usize) {
-        for machine in self
+        let machines: Vec<(&Cell, &[&Cell])> = self
             .mycelium
             .cells
             .iter()
             .filter(|cell| cell.is == Is::Machine)
-        {
-            let runs = self
-                .mycelium
-                .cells
-                .iter()
-                .filter(|cell| cell.machine.as_deref() == Some(machine.name.as_str()))
-                .collect::<Vec<_>>();
+            .map(|machine| {
+                let runs = self.runs.get(machine.name.as_str());
+                (machine, runs.map_or(&[][..], Vec::as_slice))
+            })
+            .collect();
+        let (shown, folded) = self
+            .folding
+            .split(&CELLS_FOLD, machines, |(machine, runs)| {
+                machine.state.as_deref() != Some("ready")
+                    || runs.iter().any(|cell| cell_worrying(cell))
+            });
+        for (machine, runs) in shown {
             let said = machine_said(machine);
             let label = Label {
                 short: Some(&machine.name),
                 width: self.width,
                 title: &said,
             };
-            lines.push(row(self.look, depth, &label, &counts_among(&runs), false));
+            lines.push(row(self.look, depth, &label, &counts_among(runs), false));
             if self.with_cells {
-                lines.extend(cell_lines(self.look, depth + 1, runs.into_iter()));
+                lines.extend(cell_lines(
+                    self.look,
+                    depth + 1,
+                    runs.iter().copied(),
+                    self.folding,
+                ));
             }
+        }
+        if !folded.is_empty() {
+            let runs: Vec<&Cell> = folded
+                .iter()
+                .flat_map(|(_, runs)| runs.iter().copied())
+                .collect();
+            let counts = counts_among(&runs);
+            lines.push(folded_row(
+                self.look,
+                depth,
+                self.width,
+                folded.len(),
+                "machines",
+                &counts,
+            ));
         }
     }
 }
 
 /// Every network as a tree under its shape, nested as each branched from
 /// another, those needing their person first; with `with_cells`, each
-/// network's cells under it.
+/// network's cells under it. Each long list folds unless `all` is asked.
 #[must_use]
-pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool) -> String {
+pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -> String {
     let width = mycelium
         .cells
         .iter()
@@ -204,12 +411,8 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool) -> String {
         .chain([shorts_width(mycelium.networks.iter())])
         .max()
         .unwrap_or_default();
-    let drawing = Drawing {
-        mycelium,
-        look,
-        width,
-        with_cells,
-    };
+    let folding = Folding::unless(all);
+    let drawing = Drawing::of(mycelium, look, width, with_cells, &folding);
     let mut lines = vec![
         summary(mycelium, look),
         String::new(),
@@ -221,21 +424,14 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool) -> String {
             drawing.machines(&mut lines, 1);
             continue;
         }
-        let names: Vec<&str> = mycelium
-            .networks
-            .iter()
-            .map(|each| each.name.as_str())
-            .collect();
         let tops = mycelium.networks.iter().filter(|each| {
             each.shape == shape
                 && each
                     .within
                     .as_deref()
-                    .is_none_or(|above| !names.contains(&above))
+                    .is_none_or(|above| mycelium.network(above).is_none())
         });
-        for network in tops {
-            drawing.network(&mut lines, network, 1);
-        }
+        drawing.networks(&mut lines, tops.collect(), 1);
     }
     lines.push(String::new());
     let example = mycelium
@@ -249,25 +445,52 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool) -> String {
             mycelium.realm
         ),
     ));
+    let cells = if with_cells { " --cells" } else { "" };
+    let command = format!("mycelium --realm {} networks{cells}", mycelium.realm);
+    lines.extend(folding.hint(look, &command));
     lines.join("\n")
 }
 
 /// The lines of `cells`' sessions, set in by `depth`, worst first, then
-/// in the order they began.
-fn cell_lines<'a>(look: &Look, depth: usize, cells: impl Iterator<Item = &'a Cell>) -> Vec<String> {
+/// in the order they began, as many as fold, then a line counting the
+/// rest by how they stand.
+fn cell_lines<'a>(
+    look: &Look,
+    depth: usize,
+    cells: impl Iterator<Item = &'a Cell>,
+    folding: &Folding,
+) -> Vec<String> {
     let mut sessions: Vec<(Standing, &Cell)> = cells
         .filter_map(|cell| Some((cell.standing()?, cell)))
         .collect();
     sessions.sort_by(|(one, a), (other, b)| one.cmp(other).then_with(|| a.since.cmp(&b.since)));
+    let (sessions, folded) = folding.split(&CELLS_FOLD, sessions, |(standing, _)| {
+        matches!(standing, Standing::NeedsYou | Standing::Stuck)
+    });
     let name_width = sessions
         .iter()
         .map(|(_, cell)| cell.name.chars().count())
         .max()
         .unwrap_or_default();
-    sessions
+    let mut lines: Vec<String> = sessions
         .iter()
         .map(|(standing, cell)| cell_line(look, depth, *standing, cell, name_width))
-        .collect()
+        .collect();
+    if !folded.is_empty() {
+        let cells: Vec<&Cell> = folded.iter().map(|(_, cell)| *cell).collect();
+        let counted: Vec<String> = counts_among(&cells)
+            .into_iter()
+            .filter(|(_, many)| *many > 0)
+            .map(|(standing, many)| format!("{many} {}", standing.said()))
+            .collect();
+        let said = format!("and {} more: {}", folded.len(), counted.join(" · "));
+        lines.push(format!(
+            "{}{}",
+            " ".repeat(depth * 2),
+            look.paint(FAINT, &said)
+        ));
+    }
+    lines
 }
 
 /// One session's line: how it stands, its name, its title, and what it is
@@ -312,8 +535,9 @@ fn cell_line(
 ///
 /// # Errors
 ///
-/// When no network, or more than one, goes by what was asked.
-pub fn network(mycelium: &Mycelium, asked: &str, look: &Look) -> Result<String, String> {
+/// When no network, or more than one, goes by what was asked. Its long
+/// lists fold unless `all` is asked.
+pub fn network(mycelium: &Mycelium, asked: &str, look: &Look, all: bool) -> Result<String, String> {
     let network = mycelium.named_network(asked)?;
     let mut head = network
         .title
@@ -347,45 +571,64 @@ pub fn network(mycelium: &Mycelium, asked: &str, look: &Look) -> Result<String, 
         let cells = if many == 1 { "cell" } else { "cells" };
         lines.push(look.paint(FAINT, &format!("{many} {cells}{on}")));
     }
-    let within: Vec<&Network> = mycelium
-        .networks
-        .iter()
-        .filter(|other| other.within.as_deref() == Some(&network.name))
-        .collect();
-    let drawing = Drawing {
-        mycelium,
-        look,
-        width: shorts_width(within.iter().copied()),
-        with_cells: false,
-    };
+    let folding = Folding::unless(all);
+    let mut drawing = Drawing::of(mycelium, look, 0, false, &folding);
+    let within = drawing.within(&network.name);
+    drawing.width = shorts_width(within.iter().copied());
     if network.shape == Shape::Machines {
         lines.extend([String::new(), header(look, 0, &Standing::CELLS)]);
         drawing.machines(&mut lines, 0);
     } else if !within.is_empty() {
         lines.extend([String::new(), header(look, 0, &Standing::CELLS)]);
-        for other in within {
+        let (shown, folded) = folding.split(&NETWORKS_FOLD, within, |each| network_worrying(each));
+        for other in shown {
             let label = label(other, drawing.width);
             lines.push(row(look, 0, &label, &counts(other), false));
         }
+        if !folded.is_empty() {
+            let counts = counts_of(&folded);
+            lines.push(folded_row(
+                look,
+                0,
+                drawing.width,
+                folded.len(),
+                "networks",
+                &counts,
+            ));
+        }
     }
-    let cells = cell_lines(look, 0, sessions);
+    let cells = cell_lines(look, 0, sessions, &folding);
     if !cells.is_empty() {
         lines.push(String::new());
         lines.extend(cells);
     }
+    let command = format!("mycelium --realm {} networks {asked}", mycelium.realm);
+    if let Some(hint) = folding.hint(look, &command) {
+        lines.extend([String::new(), hint]);
+    }
     Ok(lines.join("\n"))
 }
 
-/// Every cell: each session, worst first, then each machine.
+/// Every cell: each session, worst first, then each machine; or, where
+/// `standing` names how some stand, only the sessions standing so. Its
+/// long lists fold unless `all` is asked.
 #[must_use]
-pub fn cells(mycelium: &Mycelium, look: &Look) -> String {
+pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -> String {
+    let folding = Folding::unless(all);
     let mut lines = vec![summary(mycelium, look), String::new()];
-    lines.extend(cell_lines(look, 0, mycelium.cells.iter()));
+    let sessions = mycelium
+        .cells
+        .iter()
+        .filter(|cell| standing.is_empty() || cell.stands_as(standing));
+    lines.extend(cell_lines(look, 0, sessions, &folding));
     let machines: Vec<&Cell> = mycelium
         .cells
         .iter()
-        .filter(|cell| cell.is == Is::Machine)
+        .filter(|cell| cell.is == Is::Machine && standing.is_empty())
         .collect();
+    let (machines, folded) = folding.split(&CELLS_FOLD, machines, |machine| {
+        machine.state.as_deref() != Some("ready")
+    });
     if !machines.is_empty() {
         lines.extend([String::new(), look.paint(BOLD, MACHINES)]);
         let width = machines
@@ -401,6 +644,10 @@ pub fn cells(mycelium: &Mycelium, look: &Look) -> String {
                 look.paint(FAINT, &format!("{} · runs {runs}", machine_said(machine)))
             ));
         }
+        if !folded.is_empty() {
+            let said = format!("and {} more machines", folded.len());
+            lines.push(format!("  {}", look.paint(FAINT, &said)));
+        }
     }
     lines.push(String::new());
     lines.push(look.paint(
@@ -410,6 +657,11 @@ pub fn cells(mycelium: &Mycelium, look: &Look) -> String {
             mycelium.realm
         ),
     ));
+    let mut command = format!("mycelium --realm {} cells", mycelium.realm);
+    if !standing.is_empty() {
+        let _ = write!(command, " --standing {}", standing.join(","));
+    }
+    lines.extend(folding.hint(look, &command));
     lines.join("\n")
 }
 
