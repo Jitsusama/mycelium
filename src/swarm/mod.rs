@@ -814,21 +814,7 @@ pub(crate) fn asked(
     within: Duration,
     asks: &[Value],
 ) -> io::Result<BTreeMap<u64, Value>> {
-    let mut writing = UnixStream::connect(socket).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("no node answers at {}: {error}", socket.display()),
-        )
-    })?;
-    writing.set_read_timeout(Some(within))?;
-    writing.set_write_timeout(Some(within))?;
-    let mut reading = BufReader::new(writing.try_clone()?);
-    writeln!(writing, "{}", json!({"id": 0, "ask": "hello"}))?;
-    for (id, ask) in (1_u64..).zip(asks) {
-        let mut ask = ask.clone();
-        ask["id"] = id.into();
-        writeln!(writing, "{ask}")?;
-    }
+    let mut reading = asking(socket, within, asks)?;
     let wanted = (1_u64..)
         .zip(asks)
         .map(|(id, _)| id)
@@ -846,6 +832,37 @@ pub(crate) fn asked(
         }
     }
     Ok(answers)
+}
+
+/// Asks the node at `socket` each of `asks` in the daemon interface,
+/// after its hello, each by its place in `asks` counting from one, and
+/// gives the connection its answers come back on.
+pub(crate) fn asking(
+    socket: &Path,
+    within: Duration,
+    asks: &[Value],
+) -> io::Result<BufReader<UnixStream>> {
+    let mut writing = UnixStream::connect(socket).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("no node answers at {}: {error}", socket.display()),
+        )
+    })?;
+    writing.set_read_timeout(Some(within))?;
+    writing.set_write_timeout(Some(within))?;
+    let reading = BufReader::new(writing.try_clone()?);
+    // Every ask goes in one write. Written a piece at a time, the later
+    // asks wait on a node still writing its first answer, which waits on
+    // this reading it: neither moves until the timeout.
+    let mut asked = format!("{}\n", json!({"id": 0, "ask": "hello"}));
+    for (id, ask) in (1_u64..).zip(asks) {
+        let mut ask = ask.clone();
+        ask["id"] = id.into();
+        asked.push_str(&ask.to_string());
+        asked.push('\n');
+    }
+    writing.write_all(asked.as_bytes())?;
+    Ok(reading)
 }
 
 #[cfg(test)]

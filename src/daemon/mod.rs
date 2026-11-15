@@ -21,6 +21,7 @@ use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, Lines};
 use tokio::sync::{mpsc, watch};
 
 mod ask;
+pub mod fields;
 mod records;
 mod watching;
 
@@ -146,12 +147,20 @@ fn answer<H: Holds + Steers>(
             Ok(Value::Object(health))
         }
         What::Get(keys) => Ok(json!({"id": id, "records": got(holds.as_ref(), &keys)})),
-        What::List { kind, limit } => holds
+        What::List {
+            kind,
+            limit,
+            fields,
+        } => holds
             .records(&kind)
             .map(|records| {
                 let records: Vec<Value> = records
                     .into_values()
                     .take(limit.unwrap_or(usize::MAX))
+                    .map(|record| match &fields {
+                        Some(paths) => fields::projected(record, paths),
+                        None => record,
+                    })
                     .collect();
                 json!({"id": id, "records": records})
             })

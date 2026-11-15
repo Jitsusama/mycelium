@@ -469,6 +469,12 @@ struct NetworksAsked {
     /// Puts each network's cells under it.
     #[arg(long)]
     cells: bool,
+    /// Shows every network and cell, folding no long list.
+    #[arg(long)]
+    all: bool,
+    /// With `-o json`, each network and its counts, without its cells.
+    #[arg(long)]
+    counts: bool,
     #[command(flatten)]
     output: Output,
 }
@@ -478,6 +484,16 @@ struct NetworksAsked {
 struct CellsAsked {
     /// The cell, such as `HARBOR` or `optimus`
     words: Vec<String>,
+    /// Shows every cell, folding no long list.
+    #[arg(long)]
+    all: bool,
+    /// Only the sessions standing so, such as `needs-you,stuck`.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_parser = clap::builder::PossibleValuesParser::new(mycelium::networks::STANDINGS)
+    )]
+    standing: Vec<String>,
     #[command(flatten)]
     output: Output,
 }
@@ -1294,6 +1310,24 @@ fn networks(socket: &Path, realm: &str, asked: &NetworksAsked) -> io::Result<()>
     let mycelium = networks::read(socket, realm, SWARM_WITHIN)?;
     let name = asked.words.join(" ");
     if asked.output.json() {
+        if asked.counts {
+            let counted = |network: &networks::Network| {
+                let mut line = serde_json::json!(network);
+                if let Some(fields) = line.as_object_mut() {
+                    fields.remove("cells");
+                }
+                line
+            };
+            if name.is_empty() {
+                return mycelium
+                    .networks
+                    .iter()
+                    .map(counted)
+                    .try_for_each(|line| print_line(&line));
+            }
+            let network = mycelium.named_network(&name).map_err(not_found)?;
+            return print_line(&counted(network));
+        }
         if name.is_empty() {
             return mycelium.lines().iter().try_for_each(print_line);
         }
@@ -1304,9 +1338,9 @@ fn networks(socket: &Path, realm: &str, asked: &NetworksAsked) -> io::Result<()>
     }
     let look = look();
     let shown = if name.is_empty() {
-        networks::overview(&mycelium, &look, asked.cells)
+        networks::overview(&mycelium, &look, asked.cells, asked.all)
     } else {
-        networks::network(&mycelium, &name, &look).map_err(not_found)?
+        networks::network(&mycelium, &name, &look, asked.all).map_err(not_found)?
     };
     writeln!(io::stdout().lock(), "{shown}")
 }
@@ -1319,9 +1353,13 @@ fn cells(socket: &Path, realm: &str, asked: &CellsAsked) -> io::Result<()> {
     let name = asked.words.join(" ");
     if name.is_empty() {
         if asked.output.json() {
-            return mycelium.cells.iter().try_for_each(print_line);
+            let cells = mycelium.cells.iter();
+            let standing = &asked.standing;
+            return cells
+                .filter(|cell| standing.is_empty() || cell.stands_as(standing))
+                .try_for_each(print_line);
         }
-        let shown = networks::cells(&mycelium, &look());
+        let shown = networks::cells(&mycelium, &look(), asked.all, &asked.standing);
         return writeln!(io::stdout().lock(), "{shown}");
     }
     let cell = mycelium.named_cell(&name).map_err(not_found)?;

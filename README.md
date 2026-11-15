@@ -63,10 +63,15 @@ The harness mesh's messages and presence, carried between machines:
   under it, and `mycelium networks <NAME>` draws one with its cells.
   `mycelium cells` lists every session worst first, then the machines,
   and `mycelium cells <NAME>` says what one is and which networks it
-  joined. Both print JSON lines with `-o json`, networks first, then
-  cells, the model a page draws the mycelium from: a session's cell
-  also says its id, what it asks, its repository, its usage today and
-  the orchestrations it leads.
+  joined. A long list folds, so a realm of thousands of sessions still
+  fits a screen: the worrying first, then the busiest few, then one row
+  counting the rest; `--all` unfolds it, and a name opens any one.
+  `mycelium cells --standing needs-you,stuck` lists only the cells
+  standing so. Both print JSON lines with `-o json`, networks first,
+  then cells, the model a page draws the mycelium from: a session's
+  cell also says its id, what it asks, its repository, its usage today
+  and the orchestrations it leads. `mycelium networks -o json --counts`
+  prints the networks alone, a summary for an agent to read.
 - `mycelium swarm say <NAME> <WORDS>` says something as the person to
   a team, which its lead hears, or to one session;
   `mycelium swarm pause|resume <NAME>` pauses or resumes every session

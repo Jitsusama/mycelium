@@ -2430,6 +2430,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_list_naming_fields_is_sent_only_those_and_one_naming_none_all() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        store
+            .put_machine(&equilibrius_at("2026-10-31T04:00:00Z"))
+            .expect("what it said is kept");
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+
+        client
+            .ask(json!({"id": 2, "ask": "list", "kind": "machine"}))
+            .await;
+        let whole = client.next().await;
+        let whole = whole["records"].as_array().expect("a list's records");
+        assert!(
+            whole.len() == 2
+                && whole
+                    .iter()
+                    .all(|record| record.as_object().is_some_and(|fields| fields.len() > 3)),
+            "an older client, naming no fields, is answered with records whole: {whole:?}"
+        );
+
+        client
+            .ask(json!({"id": 3, "ask": "list", "kind": "machine", "fields": ["name", "nothing.here"]}))
+            .await;
+        let projected = client.next().await;
+        let projected = projected["records"].as_array().expect("a list's records");
+        let expected: Vec<Value> = whole
+            .iter()
+            .map(|whole| json!({"key": whole["key"], "kind": whole["kind"], "name": whole["name"]}))
+            .collect();
+        assert_eq!(
+            projected, &expected,
+            "a list naming fields gets only those, with each record's key and kind"
+        );
+
+        client
+            .ask(json!({"id": 4, "ask": "list", "kind": "machine", "fields": ["name..x"]}))
+            .await;
+        let refused = client.next().await;
+        assert_eq!(
+            (&refused["id"], &refused["error"]["code"]),
+            (&json!(4), &json!("not-an-ask")),
+            "a field that isn't a path is refused: {refused}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_client_opening_with_hello_is_answered_in_the_daemon_interface() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("optimus").join("work.sock");

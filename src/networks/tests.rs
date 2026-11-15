@@ -2,7 +2,9 @@
 
 use serde_json::{Value, json};
 
+use super::kept::{RECORD, answered, paths, pruned};
 use super::{Is, Mycelium, Shape, cell, cells, network, overview};
+use crate::daemon::fields::{MOST_FIELDS, projected};
 use crate::swarm::Look;
 
 /// A look 80 columns wide, without colour, at 17:00 on Thursday
@@ -40,11 +42,137 @@ fn on_quest(mut session: Value, short: &str, title: &str) -> Value {
     session
 }
 
+/// A crowd of `many` sessions in repositories of two each, the first
+/// `asking` of them asking their person, the next few busy, the rest
+/// idle.
+fn crowd(many: u8, asking: u8) -> Mycelium {
+    let sessions: Vec<Value> = (0..many)
+        .map(|n| {
+            let address = format!("CROWD{n:02}");
+            let state = if n >= asking && n < asking + 3 {
+                "busy"
+            } else {
+                "idle"
+            };
+            let repo = format!("repo.r{:02}", n / 2);
+            let mut session = session(&address, n, &address, state, &[repo.as_str()]);
+            if n < asking {
+                session["wants"] = json!({"said": "Which way?"});
+            }
+            session
+        })
+        .collect();
+    Mycelium::of("work", &[], &sessions, &[])
+}
+
+#[test]
+fn a_long_list_of_cells_folds_to_who_needs_you_the_busiest_and_a_count() {
+    let crowd = crowd(40, 2);
+    let shown = cells(&crowd, &look(), false, &[]);
+    let lines: Vec<&str> = shown.lines().collect();
+    let asking = lines
+        .iter()
+        .filter(|line| line.starts_with("needs you"))
+        .count();
+    let moving = lines
+        .iter()
+        .filter(|line| line.starts_with("moving"))
+        .count();
+    let quiet = lines
+        .iter()
+        .filter(|line| line.starts_with("quiet"))
+        .count();
+    assert_eq!(
+        (asking, moving, quiet),
+        (2, 3, 2),
+        "each needing its person, then the busiest five:\n{shown}"
+    );
+    assert!(
+        lines.contains(&"and 33 more: 33 quiet"),
+        "the rest counted on one line:\n{shown}"
+    );
+    assert_eq!(
+        lines.last(),
+        Some(&"some lists folded; see every one with: mycelium --realm work cells --all"),
+        "and how to see them:\n{shown}"
+    );
+    let all = cells(&crowd, &look(), true, &[]);
+    assert_eq!(
+        all.lines().filter(|line| line.starts_with("quiet")).count(),
+        35,
+        "asked for all, nothing folds:\n{all}"
+    );
+    assert!(!all.contains("folded"), "{all}");
+}
+
+#[test]
+fn cells_by_standing_are_only_those_standing_so() {
+    let crowd = crowd(40, 2);
+    let shown = cells(&crowd, &look(), false, &["needs-you".to_owned()]);
+    let standings: Vec<&str> = shown
+        .lines()
+        .skip(2)
+        .take_while(|line| !line.is_empty())
+        .map(|line| line.split("  ").next().unwrap_or_default())
+        .collect();
+    assert_eq!(standings, ["needs you", "needs you"], "{shown}");
+    let quiet = ["quiet".to_owned()];
+    assert_eq!(
+        crowd
+            .cells
+            .iter()
+            .filter(|cell| cell.stands_as(&quiet))
+            .count(),
+        35
+    );
+}
+
+#[test]
+fn a_long_list_of_networks_folds_to_the_worrying_the_busiest_and_a_row_for_the_rest() {
+    let crowd = crowd(40, 2);
+    let shown = overview(&crowd, &look(), false, false);
+    let repositories: Vec<&str> = shown
+        .lines()
+        .skip_while(|line| *line != "repositories")
+        .skip(1)
+        .take_while(|line| line.starts_with("  "))
+        .collect();
+    let names: Vec<&str> = repositories
+        .iter()
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(
+        names,
+        ["r00", "r01", "r02", "r03", "r04", "and"],
+        "the one needing its person, the four busiest, then the rest:\n{shown}"
+    );
+    let folded = repositories.last().copied().unwrap_or_default();
+    assert!(
+        folded.trim_start().starts_with("and 15 more networks")
+            && folded.trim_end().ends_with("30"),
+        "the rest counted, their thirty quiet cells too:\n{shown}"
+    );
+    assert!(
+        shown.ends_with(
+            "some lists folded; see every one with: mycelium --realm work networks --all"
+        ),
+        "{shown}"
+    );
+    let all = overview(&crowd, &look(), false, true);
+    assert!(!all.contains("more networks"), "{all}");
+}
+
 /// The harbour: Harbour's orchestration with Kelp within it, three
 /// sessions of which one asks its person, one dormant, one ended, and
 /// two machines.
 fn mycelium() -> Mycelium {
-    let teams = [
+    let [teams, sessions, machines] = records();
+    Mycelium::of("work", &teams, &sessions, &machines)
+}
+
+/// The harbour's teams, sessions and machines, as the node lists them.
+fn records() -> [Vec<Value>; 3] {
+    let teams = vec![
         json!({"key": "team:HARBOR", "title": "Harbour Ships", "within": null,
                "lead": "01a1d045-d581-7000-8000-000000000000"}),
         json!({"key": "team:KELP01", "title": "Kelp: Tides", "within": "HARBOR"}),
@@ -98,12 +226,78 @@ fn mycelium() -> Mycelium {
     );
     parked["standing"] = json!("parked");
     let gone = session("GONE01", 4, "Gone", "ended", &["repo.skiff"]);
-    let machines = [
+    let machines = vec![
         json!({"name": "skiff", "state": "ready", "model_name": "Skiff 14",
                "room": {"pressure": {"cpu": 41.6}}}),
         json!({"name": "dinghy", "state": "ready"}),
     ];
-    Mycelium::of("work", &teams, &[asking, busy, parked, gone], &machines)
+    [teams, vec![asking, busy, parked, gone], machines]
+}
+
+#[test]
+fn answers_are_read_by_their_ask_as_they_stream_in_and_a_hang_up_is_said() {
+    let sent = concat!(
+        r#"{"id":0,"hello":{"version":1}}"#,
+        "\n",
+        r#"{"id":2,"records":[{"address":"BUSY01","landings":[1,2]}]}"#,
+        "\n",
+        r#"{"records":[{"address":"LATE01"}],"id":1,"error":null}"#,
+        "\n",
+        r#"{"id":3,"error":{"message":"no such kind"}}"#,
+        "\n",
+    );
+    let mut records = Vec::new();
+    let answers = answered(sent.as_bytes(), 3, |id, record| records.push((id, record)))
+        .expect("each answered");
+    assert_eq!(answers[&3]["error"]["message"], "no such kind");
+    assert_eq!(answers[&2].get("records"), None, "records aren't held");
+    assert_eq!(
+        records,
+        [
+            (2, json!({"address": "BUSY01"})),
+            (1, json!({"address": "LATE01"}))
+        ],
+        "each record is handed on, pruned, as answering its ask, even before its id"
+    );
+    let hung_up = answered(sent.as_bytes(), 4, |_, _| ()).expect_err("four never answers");
+    assert_eq!(hung_up.to_string(), "the node hung up before it answered");
+}
+
+#[test]
+fn reading_only_what_the_networks_read_makes_the_same_mycelium() {
+    let [teams, mut sessions, machines] = records();
+    sessions[1]["landings"] = json!([{"ref": "world#1", "what": "A landing"}]);
+    sessions[1]["presence"]["owner"] = json!({"pid": 1});
+    let kept = |records: &[Value]| -> Vec<Value> {
+        records.iter().map(|each| pruned(each, &RECORD)).collect()
+    };
+    let (lean, whole) = (kept(&sessions), mycelium());
+    assert_eq!(lean[1].get("landings"), None);
+    assert_eq!(lean[1]["presence"].get("owner"), None);
+    let read = Mycelium::of("work", &kept(&teams), &lean, &kept(&machines));
+    assert_eq!(read.lines(), whole.lines());
+
+    let fields = paths(&RECORD);
+    assert!(
+        fields.len() <= MOST_FIELDS,
+        "a node answers a list of {} fields: {fields:?}",
+        fields.len()
+    );
+    let projected = |records: &[Value]| -> Vec<Value> {
+        let each = records.iter().cloned();
+        each.map(|record| projected(record, &fields)).collect()
+    };
+    let sent = Mycelium::of(
+        "work",
+        &projected(&teams),
+        &projected(&sessions),
+        &projected(&machines),
+    );
+    assert_eq!(
+        sent.lines(),
+        whole.lines(),
+        "a node sending only those fields makes the same mycelium"
+    );
 }
 
 #[test]
@@ -223,7 +417,7 @@ fn json_lines_say_each_network_then_each_cell() {
 
 #[test]
 fn the_tree_draws_each_shape_its_networks_nested_and_the_machines() {
-    let shown = overview(&mycelium(), &look(), false);
+    let shown = overview(&mycelium(), &look(), false, false);
     let expected = [
         "work · 3 sessions in 6 networks on 2 machines · 1 needs you",
         "",
@@ -252,7 +446,7 @@ fn the_tree_draws_each_shape_its_networks_nested_and_the_machines() {
 
 #[test]
 fn with_cells_each_network_has_its_sessions_under_it() {
-    let shown = overview(&mycelium(), &look(), true);
+    let shown = overview(&mycelium(), &look(), true, false);
     let under_kelp = shown
         .lines()
         .skip_while(|line| !line.starts_with("    kelp "))
@@ -267,7 +461,7 @@ fn with_cells_each_network_has_its_sessions_under_it() {
 
 #[test]
 fn one_network_says_what_it_is_within_and_its_cells() {
-    let shown = network(&mycelium(), "kelp", &look()).expect("found by its short name");
+    let shown = network(&mycelium(), "kelp", &look(), false).expect("found by its short name");
     let expected = [
         "Kelp: Tides · orchestration kelp · within Harbour Ships",
         "1 cell on skiff",
@@ -280,7 +474,7 @@ fn one_network_says_what_it_is_within_and_its_cells() {
         "Kelp:\n{shown}"
     );
     let by_group =
-        network(&mycelium(), "#dock/crew", &look()).expect("found as the mesh spells it");
+        network(&mycelium(), "#dock/crew", &look(), false).expect("found as the mesh spells it");
     assert!(by_group.starts_with("dock/crew · group"), "{by_group}");
 }
 
@@ -376,7 +570,7 @@ fn a_name_matching_none_or_several_networks_is_said_plainly() {
 #[test]
 fn every_cell_lists_worst_first_and_one_says_its_networks() {
     let mycelium = mycelium();
-    let shown = cells(&mycelium, &look());
+    let shown = cells(&mycelium, &look(), false, &[]);
     let expected = [
         "work · 3 sessions in 6 networks on 2 machines · 1 needs you",
         "",
