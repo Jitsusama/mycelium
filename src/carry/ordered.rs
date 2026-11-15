@@ -2,9 +2,11 @@
 //! the steer act `ordered-carry`, which nothing that trusts the person's
 //! own `carry` trusts.
 //!
-//! Who may order one is read from the node's own record, never from what
-//! a session says of itself: the quests the node serves, each naming the
-//! sessions attached to it and the orchestrator above it. A session's
+//! Who may order one is read from the node's own record of who told it
+//! they orchestrate which quests (`carry::chain`), never from what a
+//! session says of itself, and checked here against the quests the node
+//! serves, each naming the sessions attached to it and the orchestrator
+//! above it, which must agree. A session's
 //! carry may be ordered by a session attached to its quest's orchestrator,
 //! or to that one's orchestrator, and so on up the chain; nobody else's
 //! word, a presence's or `PI_QUEST`'s, counts. Each carry ordered is kept
@@ -16,9 +18,8 @@
 //! `#orchestration/` group, as its presence gives the groups the mesh put
 //! it in, and so is the session asking. An index rewritten, or one gone
 //! stale, is then refused. Both are worked out by pi from the quests'
-//! own front matter, though, so an edit there reaches both in time: this
-//! fences habit and mistakes until the chain is kept in the node's own
-//! state as each orchestration is made.
+//! own front matter, so an edit there reaches both in time: they are a
+//! check on the node's own record, never proof.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -60,10 +61,6 @@ pub struct Link {
     /// The address of the orchestrator its record names.
     pub orchestrator: String,
 }
-
-/// Says where the chain an ordered carry was taken on came from, for its
-/// record, so a forged one can be traced.
-pub const SOURCE: &str = "the quests' record, checked against the mesh's orchestration groups";
 
 /// Whether the mesh agrees with `order`'s chain: every session of each
 /// quest in it that `running` holds, by its id, with the groups its
@@ -139,27 +136,7 @@ fn orchestration(address: &str) -> String {
 ///
 /// When the record doesn't prove the chain.
 pub fn ordered_by(asker: Known, session: Known, quests: &[Value]) -> Result<Order, String> {
-    let holding: Vec<&Value> = quests
-        .iter()
-        .filter(|quest| attaches(quest, session.session))
-        .collect();
-    let target = match holding.as_slice() {
-        [one] => *one,
-        [] => {
-            return Err(format!(
-                "no quest's record holds {}'s session, so who orchestrates it can't be told",
-                session.address
-            ));
-        }
-        many => {
-            let ids: Vec<&str> = many.iter().filter_map(|quest| id_of(quest)).collect();
-            return Err(format!(
-                "{}'s session is held by {}, so who orchestrates it can't be told",
-                session.address,
-                ids.join(" and ")
-            ));
-        }
-    };
+    let target = holding(session, quests)?;
     let quest = id_of(target).unwrap_or_default().to_owned();
     // Up the chain of orchestrators, each found by its address, until one
     // attaches the asker, the chain ends, or it comes round again.
@@ -208,6 +185,38 @@ pub fn ordered_by(asker: Known, session: Known, quests: &[Value]) -> Result<Orde
     let unrecorded = missing.map(|address| format!("{address} has no quest's record"));
     let said: Vec<String> = could.into_iter().chain(unrecorded).collect();
     Err(format!("{refused}: {}", said.join(", and ")))
+}
+
+/// The id of the one quest whose record, among `quests`, holds `session`.
+///
+/// # Errors
+///
+/// When none does, or more than one.
+pub fn quest_of(session: Known, quests: &[Value]) -> Result<String, String> {
+    holding(session, quests).map(|quest| id_of(quest).unwrap_or_default().to_owned())
+}
+
+/// The one quest's record among `quests` that holds `session`.
+fn holding<'a>(session: Known, quests: &'a [Value]) -> Result<&'a Value, String> {
+    let holding: Vec<&Value> = quests
+        .iter()
+        .filter(|quest| attaches(quest, session.session))
+        .collect();
+    match holding.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(format!(
+            "no quest's record holds {}'s session, so who orchestrates it can't be told",
+            session.address
+        )),
+        many => {
+            let ids: Vec<&str> = many.iter().filter_map(|quest| id_of(quest)).collect();
+            Err(format!(
+                "{}'s session is held by {}, so who orchestrates it can't be told",
+                session.address,
+                ids.join(" and ")
+            ))
+        }
+    }
 }
 
 /// Whether `quest`'s record attaches the session `session`.

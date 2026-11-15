@@ -355,6 +355,8 @@ mod tests {
             processes: crate::node::Processes::Folder("/nowhere/proc".into()),
             carries: "/nowhere/carries.jsonl".into(),
             hosts: "/nowhere/hosts".into(),
+            orchestrations: "/nowhere/orchestrations.json".into(),
+            logs: "/nowhere/sessions".into(),
         };
         let membership = Realm {
             name: realm.to_owned(),

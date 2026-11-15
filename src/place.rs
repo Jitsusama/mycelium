@@ -160,6 +160,23 @@ pub fn hosts() -> PathBuf {
         .join("hosts")
 }
 
+/// Where pi keeps each session's log, in a folder of its working folder's:
+/// under `PI_CODING_AGENT_DIR` where that is set, as pi reads it, else in
+/// the home's `.pi/agent`.
+pub fn logs() -> PathBuf {
+    env::var_os("PI_CODING_AGENT_DIR")
+        .map_or_else(
+            || {
+                env::home_dir()
+                    .unwrap_or_else(env::temp_dir)
+                    .join(".pi")
+                    .join("agent")
+            },
+            PathBuf::from,
+        )
+        .join("sessions")
+}
+
 /// Where the harness marks each session it parks on this machine, a file
 /// named by the session's id.
 pub fn parked() -> PathBuf {

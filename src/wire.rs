@@ -68,6 +68,19 @@ pub enum Request {
         /// The machine to update.
         machine: String,
     },
+    /// Records that the session asking, as the kernel and pi's records
+    /// prove it, heads the orchestrating quest `heads` and orchestrates
+    /// `quests`, in place of what it said before; with neither, forgets
+    /// what it said. Only that session hands a quest it holds on, so
+    /// another claiming it is refused.
+    Orchestrates {
+        /// The orchestrating quest it has loaded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heads: Option<String>,
+        /// The quests it orchestrates.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        quests: Vec<String>,
+    },
     /// Counts the connection's own process present for as long as it keeps
     /// the connection open, so a session it owns is judged ended the moment
     /// the connection closes, as the kernel closes it however the process
@@ -222,6 +235,8 @@ pub enum Response {
     /// one JSON object naming its `step`, such as `done` or `refused`, and
     /// the commit the machine runs after it.
     Updated(serde_json::Value),
+    /// The orchestrations asked for, recorded.
+    Orchestrated,
     /// Events follow, one per line.
     Watching,
     /// The process is counted present until it hangs up.

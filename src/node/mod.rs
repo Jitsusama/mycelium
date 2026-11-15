@@ -17,7 +17,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::awake::{self, Awake};
-use crate::carry::ordered;
+use crate::carry::{chain, ordered};
 use crate::daemon;
 use crate::facts::{self, Readiness};
 use crate::flow::{self, Flows};
@@ -284,6 +284,12 @@ pub struct Given {
     /// Where pi's hosts each keep their record of the sessions they hold,
     /// which proves who owns a session a host holds.
     pub hosts: PathBuf,
+    /// Where it keeps who orchestrates which quests, as each orchestrator
+    /// told it (`carry::chain`).
+    pub orchestrations: PathBuf,
+    /// Where pi keeps each session's log, whose first line says which
+    /// session it continues.
+    pub logs: PathBuf,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -669,6 +675,13 @@ struct Shared<S> {
     carries: PathBuf,
     /// Where pi's hosts keep their records of the sessions they hold.
     hosts: PathBuf,
+    /// Where it keeps who orchestrates which quests.
+    orchestrations: PathBuf,
+    /// Where pi keeps each session's log.
+    logs: PathBuf,
+    /// Held while the record of orchestrations is read and kept again, so
+    /// two claims at once never undo each other.
+    claiming: Arc<Mutex<()>>,
     /// The socket its machine's updater takes asks on.
     updater: PathBuf,
     starter: Option<Arc<Starter>>,
@@ -729,6 +742,9 @@ impl<S: Clone> Clone for Shared<S> {
             client: self.client,
             carries: self.carries.clone(),
             hosts: self.hosts.clone(),
+            orchestrations: self.orchestrations.clone(),
+            logs: self.logs.clone(),
+            claiming: self.claiming.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
             asks: self.asks.clone(),
@@ -993,11 +1009,16 @@ impl<S: Store> Shared<S> {
             processes,
             carries,
             hosts,
+            orchestrations,
+            logs,
         } = given;
         let shared = Self {
             processes: processes.into(),
             carries,
             hosts,
+            orchestrations,
+            logs,
+            claiming: Arc::default(),
             client: None,
             served: Arc::new(Served::start(serves)),
             providers: providers.into(),
@@ -1376,6 +1397,9 @@ impl<S: Store> Shared<S> {
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
+            Request::Orchestrates { .. } => {
+                Err("an orchestration is answered by `orchestrates`".to_owned())
+            }
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
             Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
             Request::Turn { .. } => Err("a turn is answered by `take_turn`".to_owned()),
@@ -1544,10 +1568,101 @@ impl<S: Store> Shared<S> {
         .map_err(|error| format!("who asks couldn't be told: {error}"))?
     }
 
+    /// The address the session `asker` goes by here, or its id where none
+    /// is known.
+    fn address_of<'a>(&self, sessions: &'a [Session], asker: &'a str) -> &'a str {
+        sessions
+            .iter()
+            .find(|session| {
+                session.machine == self.machine
+                    && session
+                        .presence
+                        .get("session")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(asker)
+            })
+            .map_or(asker, |session| session.address.as_str())
+    }
+
+    /// Records what the session asking orchestrates, as the kernel and
+    /// pi's records prove which session asks, or forgets it, where it
+    /// names nothing (`carry::chain`). A session its own log says it
+    /// continues hands it what it held.
+    async fn orchestrates(&self, heads: Option<String>, quests: Vec<String>) -> Reply {
+        let asker = self.asking_session().await?;
+        let sessions = self.lock().state.sessions();
+        let address = self.address_of(&sessions, &asker).to_owned();
+        let (file, logs, claiming) = (
+            self.orchestrations.clone(),
+            self.logs.clone(),
+            self.claiming.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            let _claiming = claiming
+                .lock()
+                .map_err(|_| "the record of orchestrations was left half kept".to_owned())?;
+            let mut record = chain::Orchestrations::read(&file).map_err(|error| {
+                format!("the record of orchestrations can't be read, so none is changed: {error}")
+            })?;
+            match heads {
+                None if quests.is_empty() => record.release(&asker),
+                None => {
+                    return Err("an orchestrator names the quest it heads".to_owned());
+                }
+                Some(heads) => {
+                    let known = ordered::Known {
+                        session: &asker,
+                        address: &address,
+                    };
+                    let continued = chain::continues(&logs, &asker);
+                    record.claim(
+                        known,
+                        &heads,
+                        &quests,
+                        continued.as_deref(),
+                        jiff::Timestamp::now(),
+                    )?;
+                }
+            }
+            record.keep(&file).map_err(|error| {
+                format!("the record of orchestrations couldn't be kept: {error}")
+            })?;
+            Ok(Response::Orchestrated)
+        })
+        .await
+        .map_err(|error| format!("the orchestration couldn't be recorded: {error}"))?
+    }
+
+    /// Who orders the carry of `carried` when `asking` asks, as this
+    /// node's record of orchestrations proves it, so long as the quests'
+    /// record and the mesh's groups agree.
+    fn ordered_by(
+        &self,
+        asking: ordered::Known,
+        carried: ordered::Known,
+        sessions: &[Session],
+    ) -> Result<ordered::Order, String> {
+        let quests: Vec<serde_json::Value> = self
+            .served
+            .records("quest")
+            .ok_or("this node serves no quests' record, so who orchestrates can't be told")?
+            .into_values()
+            .collect();
+        let quest = ordered::quest_of(carried, &quests)?;
+        let record = chain::Orchestrations::read(&self.orchestrations).map_err(|error| {
+            format!("this node's record of orchestrations can't be read, so no carry is ordered: {error}")
+        })?;
+        let order = record.chain(&quest, asking)?;
+        chain::agrees(&order, &ordered::ordered_by(asking, carried, &quests)?)?;
+        ordered::agreed(&order, asking, &quests, &grouped(sessions, &self.machine))?;
+        Ok(order)
+    }
+
     /// Puts a carry an orchestrator orders into the inbox of the session
     /// going by `address`, once the node has proved from its own record
     /// that the session asking orchestrates that session's quest: the
-    /// asker found by its process, the chain by the quests it serves
+    /// asker found by its process, the chain by what each orchestrator
+    /// told it (`carry::chain`), checked against the quests it serves
     /// (`carry::ordered`). The steer then names the orchestrator as who it
     /// is `by` and `from`, whatever the client said, so it never reads as
     /// the person's, and the carry is kept before it is delivered. It is
@@ -1576,41 +1691,20 @@ impl<S: Store> Shared<S> {
             _ => return Err(format!("{address} runs twice, so it isn't carried")),
         };
         let asker = self.asking_session().await?;
-        let asking = sessions
-            .iter()
-            .find(|session| {
-                session.machine == self.machine
-                    && session
-                        .presence
-                        .get("session")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(asker.as_str())
-            })
-            .map_or(asker.as_str(), |session| session.address.as_str());
         let session = target
             .presence
             .get("session")
             .and_then(serde_json::Value::as_str)
             .unwrap_or(&target.id);
-        let quests: Vec<serde_json::Value> = self
-            .served
-            .records("quest")
-            .ok_or("this node serves no quests' record, so who orchestrates can't be told")?
-            .into_values()
-            .collect();
         let asking = ordered::Known {
             session: &asker,
-            address: asking,
+            address: self.address_of(&sessions, &asker),
         };
-        let order = ordered::ordered_by(
-            asking,
-            ordered::Known {
-                session,
-                address: &address,
-            },
-            &quests,
-        )?;
-        ordered::agreed(&order, asking, &quests, &grouped(&sessions, &self.machine))?;
+        let carried = ordered::Known {
+            session,
+            address: &address,
+        };
+        let order = self.ordered_by(asking, carried, &sessions)?;
         let mut body = said.as_object().cloned().unwrap_or_default();
         body.insert("by".to_owned(), order.by.clone().into());
         body.insert("from".to_owned(), order.by.clone().into());
@@ -1626,7 +1720,7 @@ impl<S: Store> Shared<S> {
                 "quest": link.quest,
                 "orchestrator": link.orchestrator,
             })).collect::<Vec<_>>(),
-            "source": ordered::SOURCE,
+            "source": chain::SOURCE,
             "from": self.machine,
             "to": steer.body.get("to"),
             "why": steer.body.get("why"),
@@ -1971,6 +2065,9 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
         let reply: Answer = match request {
             Ok(Request::Start(asked)) => shared.start(asked).await.into(),
             Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
+            Ok(Request::Orchestrates { heads, quests }) => {
+                shared.orchestrates(heads, quests).await.into()
+            }
             Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
             Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
             Ok(Request::Send(draft))
@@ -2171,6 +2268,8 @@ mod tests {
             processes: Processes::Folder("/nowhere/proc".into()),
             carries: "/nowhere/carries.jsonl".into(),
             hosts: "/nowhere/hosts".into(),
+            orchestrations: "/nowhere/orchestrations.json".into(),
+            logs: "/nowhere/sessions".into(),
         }
     }
 
@@ -2213,6 +2312,8 @@ mod tests {
         let processes = Processes::Folder(procs_of(socket));
         let carries = socket.with_file_name("carries.jsonl");
         let hosts = socket.with_file_name("hosts");
+        let orchestrations = socket.with_file_name("orchestrations.json");
+        let logs = socket.with_file_name("sessions");
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -2229,6 +2330,8 @@ mod tests {
                 processes,
                 carries,
                 hosts,
+                orchestrations,
+                logs,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -3153,6 +3256,153 @@ mod tests {
         (stop, running, client)
     }
 
+    /// What the node at `socket` answers the session owned by pi `pid` as it
+    /// says it heads `heads` and orchestrates `quests`.
+    async fn claims(socket: &Path, pid: i32, heads: Option<&str>, quests: &[&str]) -> Reply {
+        asks_below(socket, pid);
+        ask(
+            socket.to_owned(),
+            Request::Orchestrates {
+                heads: heads.map(str::to_owned),
+                quests: quests.iter().map(|quest| (*quest).to_owned()).collect(),
+            },
+        )
+        .await
+    }
+
+    /// WCJQSG's session tells the node at `socket` it orchestrates OSPHT4's
+    /// quest and HARBOR's, as the quests' record says.
+    async fn steward_claims(socket: &Path) {
+        assert_eq!(
+            claims(
+                socket,
+                7001,
+                Some("QEST-20261007-WCJQSG"),
+                &["QEST-20261108-OSPHT4", "QEST-20261115-HARBOR"],
+            )
+            .await,
+            Ok(Response::Orchestrated),
+            "the steward's orchestration is recorded"
+        );
+    }
+
+    /// What `asker`'s pi answers as it orders HARBOR's carry to penelope.
+    async fn orders_harbour(socket: &Path, asker: i32) -> Reply {
+        asks_below(socket, asker);
+        ask(
+            socket.to_owned(),
+            Request::Steer {
+                address: "harbor".to_owned(),
+                steer: json!({"act": "ordered-carry", "to": "penelope",
+                              "why": "it needs the camera"}),
+            },
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_quest_no_orchestrator_told_the_node_of_orders_no_carry() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        assert_eq!(
+            orders_harbour(&socket, 7001).await,
+            Err(
+                "no orchestrator has told this node it orchestrates QEST-20261115-HARBOR, so \
+                 only the person carries it"
+                    .to_owned()
+            ),
+            "the quests' record and the mesh agreeing prove nothing alone"
+        );
+        assert_eq!(
+            held_in(&inboxes(&socket).join("HARBOR")),
+            Vec::<Value>::new(),
+            "nothing refused reaches the inbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_session_holding_an_orchestration_hands_it_on() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        assert_eq!(
+            claims(
+                &socket,
+                7002,
+                Some("QEST-20261108-OSPHT4"),
+                &["QEST-20261115-HARBOR"]
+            )
+            .await,
+            Err(
+                "WCJQSG's session already orchestrates QEST-20261115-HARBOR by this node's \
+                 record, so OSPHT4 can't: only that session hands it on, or the person"
+                    .to_owned()
+            ),
+            "a session taking another's quest is refused"
+        );
+        assert_eq!(
+            orders_harbour(&socket, 7002).await,
+            Err(
+                "OSPHT4 doesn't orchestrate QEST-20261115-HARBOR by this node's record, so it \
+                 can't order its carry: only WCJQSG's session could"
+                    .to_owned()
+            ),
+            "and orders nothing"
+        );
+        assert_eq!(
+            claims(&socket, 7001, None, &[]).await,
+            Ok(Response::Orchestrated),
+            "the steward releases what it held"
+        );
+        assert_eq!(
+            claims(
+                &socket,
+                7002,
+                Some("QEST-20261108-OSPHT4"),
+                &["QEST-20261115-HARBOR"]
+            )
+            .await,
+            Ok(Response::Orchestrated),
+            "and another session may take it up"
+        );
+        let kept = chain::Orchestrations::read(&socket.with_file_name("orchestrations.json"))
+            .expect("the record reads");
+        assert_eq!(
+            kept.sessions.keys().collect::<Vec<_>>(),
+            ["s-weigh"],
+            "the node keeps what it was told"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_log_continues_an_orchestrator_takes_on_its_quests() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        let quests = ["QEST-20261108-OSPHT4", "QEST-20261115-HARBOR"];
+        assert!(
+            claims(&socket, 7002, Some("QEST-20261007-WCJQSG"), &quests)
+                .await
+                .is_err(),
+            "a session that doesn't continue the steward takes nothing of its"
+        );
+        let logs = socket.with_file_name("sessions").join("--home-joel--");
+        fs::create_dir_all(&logs).expect("made");
+        fs::write(
+            logs.join("2026-11-15T17-00-00-000Z_s-weigh.jsonl"),
+            "{\"type\":\"session\",\"id\":\"s-weigh\",\"parentSession\":\"s-steward\"}\n",
+        )
+        .expect("written");
+        assert_eq!(
+            claims(&socket, 7002, Some("QEST-20261007-WCJQSG"), &quests).await,
+            Ok(Response::Orchestrated),
+            "one whose log continues it does"
+        );
+    }
+
     /// The steers waiting in `inbox`, as JSON.
     fn held_in(inbox: &Path) -> Vec<Value> {
         fs::read_dir(inbox)
@@ -3172,6 +3422,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("optimus").join("work.sock");
         let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
         let inbox = inboxes(&socket).join("HARBOR");
         let held = || held_in(&inbox);
         let kept = socket.with_file_name("carries.jsonl");
@@ -3191,8 +3442,8 @@ mod tests {
         assert_eq!(
             order(ordered.clone()).await,
             Err(
-                "OSPHT4 doesn't orchestrate QEST-20261115-HARBOR by the quests' record, so it \
-                 can't order HARBOR's carry: only a session of WCJQSG could"
+                "OSPHT4 doesn't orchestrate QEST-20261115-HARBOR by this node's record, so it \
+                 can't order its carry: only WCJQSG's session could"
                     .to_owned()
             ),
             "a session whose presence claims the orchestrator's quest is refused"
@@ -3262,7 +3513,7 @@ mod tests {
             (&line["chain"], &line["source"]),
             (
                 &json!([{"quest": "QEST-20261115-HARBOR", "orchestrator": "WCJQSG"}]),
-                &json!("the quests' record, checked against the mesh's orchestration groups"),
+                &json!(chain::SOURCE),
             ),
             "and the chain it was taken on, and where that came from, so a forged one is \
              traced: {line}"
@@ -3316,24 +3567,24 @@ mod tests {
         let mut forged = orchestrations();
         forged["quests"][2]["orchestrator"] = json!("OSPHT4");
         let (_stop, _node, _client) = orchestrated(&socket, &forged, &[]).await;
-        asks_below(&socket, 7002);
+        steward_claims(&socket).await;
         assert_eq!(
-            ask(
-                socket.clone(),
-                Request::Steer {
-                    address: "harbor".to_owned(),
-                    steer: json!({"act": "ordered-carry", "to": "penelope",
-                                  "why": "it needs the camera"}),
-                },
-            )
-            .await,
+            orders_harbour(&socket, 7002).await,
             Err(
-                "the mesh doesn't put HARBOR's session in #orchestration/ospht4, as the quests' \
-                 record says QEST-20261115-HARBOR's orchestrator is OSPHT4, so the chain isn't \
-                 believed"
+                "OSPHT4 doesn't orchestrate QEST-20261115-HARBOR by this node's record, so it \
+                 can't order its carry: only WCJQSG's session could"
                     .to_owned()
             ),
             "a forged orchestrator orders nothing"
+        );
+        assert_eq!(
+            orders_harbour(&socket, 7001).await,
+            Err(
+                "the quests' record gives QEST-20261115-HARBOR's chain as OSPHT4 then WCJQSG, \
+                 but this node's record gives it as WCJQSG, so the chain isn't believed"
+                    .to_owned()
+            ),
+            "nor does the true one while the quests' record disagrees"
         );
         assert_eq!(
             held_in(&inboxes(&socket).join("HARBOR")),
