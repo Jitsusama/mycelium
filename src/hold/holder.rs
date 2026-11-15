@@ -1,9 +1,9 @@
 //! The holder: one process keeping one program's terminal, and serving
 //! any terminal that joins it. Every joined terminal is given the modes
-//! the program asked for, then sees the program's output and types into
-//! it, and the program's size is the one the latest
-//! to join or resize gave. Leaving is closing the connection; the program
-//! runs on.
+//! the program asked for and the title it set last, then sees the
+//! program's output and types into it, and the program's size is the one
+//! the latest to join or resize gave. Leaving is closing the connection;
+//! the program runs on.
 
 use std::fs;
 use std::io;
@@ -26,6 +26,7 @@ use super::environment::{Environment, keeping_path};
 use super::journal::{Ended, How, Journal};
 use super::modes::Modes;
 use super::steering::{Heard, Steers, Watching};
+use super::title::Title;
 use super::{Held, Said, Size, again, next, socket, steers, turn, wake};
 use crate::node;
 use crate::record::Window;
@@ -352,6 +353,7 @@ pub async fn hold(
     });
     let shown = Arc::new(Shown {
         modes: Mutex::new(Modes::default()),
+        title: Mutex::new(Title::default()),
         output,
         over: watch::Sender::new(false),
         waiting: watch::Sender::new(false),
@@ -661,10 +663,12 @@ impl Terminal {
     }
 }
 
-/// What the program shows, and the modes it asked for in showing it, as
-/// every joined terminal takes them.
+/// What the program shows, and the modes it asked for and the title it
+/// set in showing it, as every joined terminal takes them.
 struct Shown {
     modes: Mutex<Modes>,
+    /// Only ever taken while `modes` is held, so the two are read as one.
+    title: Mutex<Title>,
     output: broadcast::Sender<Arc<[u8]>>,
     /// Whether the program has shown all it will, its last output read.
     over: watch::Sender<bool>,
@@ -680,10 +684,15 @@ impl Shown {
         self.over.send_replace(true);
     }
 
-    /// Passes `bytes` to every joined terminal, reading them for modes.
+    /// Passes `bytes` to every joined terminal, reading them for modes
+    /// and a title.
     fn show(&self, bytes: &[u8]) {
         let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         modes.saw(bytes);
+        self.title
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .saw(bytes);
         // With nobody joined there is nobody to show it to.
         let _ = self.output.send(Arc::from(bytes));
     }
@@ -699,10 +708,17 @@ impl Shown {
 
     /// What a terminal joining now is given first, and its share of all
     /// that is shown after. Both are had under the lock `show` takes, so
-    /// no mode is missed between them, or given twice.
+    /// no mode or title is missed between them, or given twice. The title
+    /// comes after the modes, as it is no mode.
     fn join(&self) -> (Vec<u8>, broadcast::Receiver<Arc<[u8]>>) {
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let mut first = modes.restored();
+        first.extend(
+            self.title
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .restored(),
+        );
         if *self.waiting.borrow() {
             first.extend_from_slice(WAITING_LINE);
         }
@@ -1602,6 +1618,27 @@ mod tests {
 
         let mut again = Joined::join(socket(&dir, &held.id), size, None);
         again.sees("\u{1b}[?1006h\u{1b}[?1049h").await;
+    }
+
+    #[tokio::test]
+    async fn a_terminal_joining_later_is_given_the_title_the_program_set() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let size = Size {
+            rows: 30,
+            cols: 100,
+        };
+        let mut first = Joined::join(socket(&dir, &held.id), size, None);
+        // Spelt out as typed, so only the program's own output sets it.
+        first
+            .types("printf '\\033]2;pi --session %s\\007%s\\n' far \"$((6 * 7)) set\"\r")
+            .await;
+        first.sees("42 set").await;
+        first.task.abort();
+        let _ = first.task.await;
+
+        let mut again = Joined::join(socket(&dir, &held.id), size, None);
+        again.sees("\u{1b}]2;pi --session far\u{7}").await;
     }
 
     #[tokio::test]

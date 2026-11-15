@@ -23,6 +23,7 @@
 //! - [`attach`]: a terminal joining a holder
 //! - [`start`]: starting a holder in a process of its own
 //! - [`modes`]: what the program asked of its terminal, for one joining
+//! - [`title`]: the window title the program set last, for one joining
 //! - [`environment`]: the person's environment as it is now, which each
 //!   start of a held program is given
 //! - [`journal`]: where a holder says how each run of its program ended
@@ -30,8 +31,8 @@
 //! - [`turn`]: a resuming program's wait for its node to give it a turn
 //!
 //! What a joined terminal sends its holder is framed, as [`Said`]; what
-//! the holder sends back is the modes the program asked for so far, then
-//! the program's output as it came.
+//! the holder sends back is the modes the program asked for so far and
+//! the title it set last, then the program's output as it came.
 
 pub mod attach;
 pub mod environment;
@@ -40,6 +41,7 @@ pub mod journal;
 pub mod modes;
 pub mod start;
 pub mod steering;
+pub mod title;
 pub mod turn;
 
 use std::fs;
