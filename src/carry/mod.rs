@@ -848,6 +848,20 @@ mod tests {
     }
 
     #[test]
+    fn a_carried_session_is_told_where_it_came_from_and_to_carry_on() {
+        let home = tempfile::tempdir().expect("a home");
+        let home = home.path().canonicalize().expect("its path");
+        let said = arrive(&home, "~", true).expect("pi started");
+        assert!(
+            said.ends_with(&format!(
+                "[Automated message, no human input: carried here from optimus.] \
+                 Carry on where you left off. for {QUEST}"
+            )),
+            "its first words, as the shell's reopen says them: {said}"
+        );
+    }
+
+    #[test]
     fn a_machine_out_of_reach_or_this_one_is_refused_before_anything_moves() {
         for to in ["lighthouse", "optimus"] {
             let mut realm = realm();
