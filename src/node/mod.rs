@@ -3708,7 +3708,7 @@ mod tests {
         // Once the node has started, as a link carries it, since a machine
         // no link claims as the node starts is marked out of reach.
         store
-            .put_machine(&fenced("penelope", &["remote"]))
+            .put_machine(&fenced("tern", &["remote"]))
             .expect("what it said is kept");
         client
             .ask(json!({"id": 2, "ask": "watch", "kind": "quest"}))
@@ -3721,7 +3721,7 @@ mod tests {
         for (pid, session) in [(7001, "s-steward"), (7002, "s-weigh"), (7003, "s-harbour")] {
             holds_log(socket, pid, session);
         }
-        let here = fenced("optimus", &["remote", "big"]).declared;
+        let here = fenced("skiff", &["remote", "big"]).declared;
         fs::write(
             socket.with_file_name("declared.json"),
             serde_json::to_vec(&here).expect("it is JSON"),
@@ -3962,7 +3962,7 @@ mod tests {
     #[tokio::test]
     async fn an_ordered_carry_never_lands_on_looser_ground() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
@@ -3984,8 +3984,8 @@ mod tests {
             }
         };
         assert_eq!(
-            to("optimus").await,
-            Err("HARBOR already runs on optimus".to_owned()),
+            to("skiff").await,
+            Err("HARBOR already runs on skiff".to_owned()),
             "a carry goes somewhere else"
         );
         assert_eq!(
