@@ -48,6 +48,8 @@ mod asker;
 pub use asker::Processes;
 mod crossing;
 mod glyph;
+mod network;
+pub use network::records as network_records;
 mod standing;
 mod team;
 mod turns;
@@ -248,7 +250,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 4] = ["session", "machine", "message", team::KIND];
+pub const HOLDS: [&str; 5] = ["session", "machine", "message", team::KIND, network::KIND];
 
 /// How many of each group's latest messages the daemon interface holds as
 /// `message` records: a conversation's recent tail, as a person reads it,
@@ -705,7 +707,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             .served
             .kinds()
             .map(|kind| (kind.to_owned(), Vec::new()));
-        let [sessions, machines, messages, teams] = HOLDS.map(str::to_owned);
+        let [sessions, machines, messages, teams, networks] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
                 sessions,
@@ -736,6 +738,10 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // A message is said once and never changes.
             (messages, Vec::new()),
             (teams, vec!["title", "worst", "counts", "members", "landed"]),
+            (
+                networks,
+                vec!["title", "glyph", "within", "cells", "machines", "counts"],
+            ),
         ])
         .into_iter()
         .chain(served)
@@ -754,21 +760,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                         .collect(),
                 )
             }
-            "machine" => Some(
-                self.known_machines()
-                    .into_iter()
-                    .map(|machine| {
-                        let heard = millis_at(&machine.measured_at);
-                        let name = machine.name.clone();
-                        let mut fields = json_of(&machine);
-                        if let Some(fields) = fields.as_object_mut() {
-                            fields.insert("here".to_owned(), (name == self.machine).into());
-                        }
-                        let record = daemon::record(kind, &name, heard, fields);
-                        (daemon::key(kind, &name), record)
-                    })
-                    .collect(),
-            ),
+            "machine" => Some(self.machine_records()),
             "message" => Some(
                 self.lock()
                     .state
@@ -783,6 +775,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     .collect(),
             ),
             team::KIND => Some(self.team_records()),
+            network::KIND => Some(self.network_records()),
             _ => self.served.records(kind),
         }
     }
@@ -790,8 +783,10 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
     fn told(&self, kind: &str) -> Option<watch::Receiver<u64>> {
         match kind {
             // A team changes only as its sessions do; a quest's new title
-            // shows with the next change to any.
-            "session" | team::KIND => Some(self.said.sessions.subscribe()),
+            // shows with the next change to any. A network also holds the
+            // machines, which come and go far more seldom than sessions
+            // change, so a machine come or gone shows with the next.
+            "session" | team::KIND | network::KIND => Some(self.said.sessions.subscribe()),
             "machine" => Some(self.said.machines.subscribe()),
             "message" => Some(self.said.messages.subscribe()),
             _ => self.served.told(kind),
@@ -1059,6 +1054,39 @@ impl<S: Store> Shared<S> {
                 (daemon::key(team::KIND, &id), record)
             })
             .collect()
+    }
+
+    /// Every machine of the realm as the daemon interface holds it, each
+    /// saying whether it is this one.
+    fn machine_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let kind = "machine";
+        self.known_machines()
+            .into_iter()
+            .map(|machine| {
+                let heard = millis_at(&machine.measured_at);
+                let name = machine.name.clone();
+                let mut fields = json_of(&machine);
+                if let Some(fields) = fields.as_object_mut() {
+                    fields.insert("here".to_owned(), (name == self.machine).into());
+                }
+                let record = daemon::record(kind, &name, heard, fields);
+                (daemon::key(kind, &name), record)
+            })
+            .collect()
+    }
+
+    /// The realm's networks as the daemon interface holds them, as the
+    /// networks view makes them of the node's teams, sessions and machines.
+    fn network_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let teams = self.team_records();
+        let machines = self.machine_records();
+        let parked = standing::parked(&self.parked);
+        let sessions = self.lock().state.sessions();
+        let standing = |session: &Session| {
+            let here = session.machine == self.machine;
+            standing::standing(session, here, &parked, &self.boot)
+        };
+        network::records(&teams, &sessions, standing, &machines)
     }
 
     /// A session as the daemon interface holds it: its fields, whether it
@@ -2987,6 +3015,113 @@ mod tests {
             ),
             (&json!(4), &json!("session:there"), &json!(false)),
             "a session arriving is sent, saying it runs elsewhere: {arrived}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_watch_of_networks_is_sent_each_network_as_the_networks_view_makes_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let at = jiff::Timestamp::now().to_string();
+        let put = |session: &str, groups: &[&str]| {
+            let presence = json!({
+                "session": session, "addresses": [session.to_uppercase()], "groups": groups,
+                "busy": true, "state": "busy", "at": at,
+            });
+            store
+                .put_presence(session, "equilibrius", &presence)
+                .expect("the presence is kept");
+        };
+        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert!(
+            hello["kinds"]["network"]["live"].is_array(),
+            "hello names networks among the kinds it holds: {hello}"
+        );
+
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "network"}))
+            .await;
+        let whole = client.next().await;
+        assert!(
+            whole["records"].is_array(),
+            "the records come whole first: {whole}"
+        );
+        put("reef01", &["#repo/skiff", "#peer/reef01"]);
+        put("kelp01", &["#repo/skiff", "#harbor"]);
+        let mut seen = std::collections::BTreeSet::new();
+        while !(seen.contains("network:repo.skiff") && seen.contains("network:harbor")) {
+            let changed = client.next().await;
+            let keys = changed["changed"].as_array().into_iter().flatten();
+            seen.extend(keys.filter_map(|one| one["key"].as_str().map(str::to_owned)));
+        }
+
+        let mut listed = Vec::new();
+        for (id, kind) in [(3, "team"), (4, "session"), (5, "machine"), (6, "network")] {
+            client
+                .ask(json!({"id": id, "ask": "list", "kind": kind}))
+                .await;
+            let answer = client.next().await;
+            listed.push(answer["records"].as_array().cloned().unwrap_or_default());
+        }
+        let made = crate::networks::Mycelium::of("work", &listed[0], &listed[1], &listed[2]);
+        // This machine's own measure may come between the lists, so the
+        // machines' network is left out of what is compared.
+        let expected: BTreeMap<String, Value> = made
+            .networks
+            .iter()
+            .filter(|network| network.name != crate::networks::MACHINES)
+            .map(|network| (format!("network:{}", network.name), json!(network)))
+            .collect();
+        assert!(
+            expected.contains_key("network:repo.skiff") && expected.contains_key("network:harbor"),
+            "the sessions share a repository and a named group: {expected:?}"
+        );
+
+        assert!(
+            listed[3]
+                .iter()
+                .all(|record| record["heard"].as_i64() > Some(0)),
+            "each network is heard as its cells last were: {:?}",
+            listed[3]
+        );
+        let served: BTreeMap<String, Value> = listed[3]
+            .iter()
+            .filter(|record| record["key"] != "network:machines")
+            .map(|record| {
+                let mut fields = record.clone();
+                let key = fields["key"].as_str().unwrap_or_default().to_owned();
+                if let Some(fields) = fields.as_object_mut() {
+                    fields.remove("key");
+                    fields.remove("heard");
+                }
+                (key, fields)
+            })
+            .collect();
+        assert_eq!(
+            served, expected,
+            "one record each, by its name, with the fields the networks view makes"
+        );
+
+        put("skiff01", &["#repo/skiff"]);
+        let mut changed = client.next().await;
+        let skiff = |changed: &Value| {
+            changed["changed"]
+                .as_array()
+                .and_then(|each| each.iter().find(|one| one["key"] == "network:repo.skiff"))
+                .cloned()
+        };
+        // The machines' network, counting every session, may be told first.
+        while skiff(&changed).is_none() {
+            changed = client.next().await;
+        }
+        assert_eq!(
+            skiff(&changed).map(|record| record["cells"].clone()),
+            Some(json!(["KELP01", "REEF01", "SKIFF01"])),
+            "a session joining a network is sent as what changed in it: {changed}"
         );
     }
 

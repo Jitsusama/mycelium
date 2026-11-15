@@ -770,7 +770,7 @@ in milliseconds.
 | `update` with `machine` | `updated`, the ending its updater said, as `Updated` gives it |
 
 A record carries `key` (`session:<id>`, `machine:<name>`,
-`message:<id>` or `team:<address>`), `kind`, `heard` (milliseconds
+`message:<id>`, `team:<address>` or `network:<name>`), `kind`, `heard` (milliseconds
 since the epoch) and the fields `Sessions`, `Machines` and `Messages`
 give it. A field its source named `key`, `kind` or `heard`, such as a
 job's own `kind`, is kept under `source` rather than lost beneath the
@@ -799,6 +799,19 @@ team within it. Its `bridges` are repositories another team's sessions
 work in too, its `liaisons` its sessions hearing another team's
 `orchestration.<address>` group, and `landed` its newest landing. A
 session answering to nobody and leading nothing is in no team.
+
+The `network` kind holds each network of the realm, keyed by its name
+as the mesh names its group, such as `repo.skiff` or `machines`, made
+by the very model `mycelium networks` draws, with its fields: its
+`shape` (`orchestration`, `project`, `repository`, `group` or
+`machines`), the `short` name a person types, its `title` and `glyph`
+where something says them, the network it is `within`, its `cells` and
+the `machines` they run on, and `counts` of its sessions as
+`needs-you`, `stuck`, `moving`, `quiet` and `dormant`. A network is
+heard when the latest of its cells was, or its team where its cells say
+nothing. Its records change as the sessions do, so a machine come or
+gone shows with the next change to a session. Ten thousand cells make
+their networks within 30 MB, in time that grows with them.
 
 A team's `glyph` is the shape every view draws it by: `square`,
 `triangle`, `plus`, `hexagon`, `circle`, `down-triangle` or `star`.
@@ -885,7 +898,7 @@ which is no trouble, and a folder not there is looked for again each
 minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine`,
-`message` or `team`, can't be served.
+`message`, `team` or `network`, can't be served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and

@@ -336,6 +336,23 @@ impl Mycelium {
         Self::made(realm, teams, read, machines)
     }
 
+    /// The mycelium of `realm` that the node's `teams`, `sessions` and
+    /// `machines` records make, each session's made its cell as it comes
+    /// and let go, so thousands are never all held at once.
+    #[must_use]
+    pub fn of_each(
+        realm: &str,
+        teams: &[Value],
+        sessions: impl IntoIterator<Item = Value>,
+        machines: &[Value],
+    ) -> Self {
+        let mut read = Sessions::default();
+        for session in sessions {
+            read.add(&session);
+        }
+        Self::made(realm, teams, read, machines)
+    }
+
     /// The mycelium of `realm` that the node's `teams` and `machines`
     /// records make, with what its sessions' records made as each was read.
     fn made(realm: &str, teams: &[Value], sessions: Sessions, machines: &[Value]) -> Self {
@@ -353,14 +370,25 @@ impl Mycelium {
             .cloned()
             .collect();
         let teams = teams.as_slice();
+        // Renamed in place, and the few a cell joins kept once each, as
+        // copying every name of thousands of cells took a good part of the
+        // build.
         for cell in &mut sessions {
-            let mut seen = BTreeSet::new();
-            cell.networks = cell
-                .networks
-                .iter()
-                .map(|name| owned_network(name, &renamed))
-                .filter(|name| seen.insert(name.clone()))
-                .collect();
+            if !renamed.is_empty() {
+                for name in &mut cell.networks {
+                    if let Some(own) = owned_network(name, &renamed) {
+                        *name = own;
+                    }
+                }
+            }
+            let mut kept = 0;
+            for at in 0..cell.networks.len() {
+                if !cell.networks[..kept].contains(&cell.networks[at]) {
+                    cell.networks.swap(kept, at);
+                    kept += 1;
+                }
+            }
+            cell.networks.truncate(kept);
         }
         sessions.sort_by(|one, other| one.since.cmp(&other.since).then(one.name.cmp(&other.name)));
         let mut networks = joined(teams, &sessions, &quests);
@@ -490,6 +518,13 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
         )));
     }
     Ok(Mycelium::made(realm, &teams, sessions, &machines))
+}
+
+/// A session's `presence` with only what the networks read of it, so a
+/// node making a session's record for them copies little of it.
+#[must_use]
+pub fn kept_presence(presence: &Value) -> Value {
+    kept::pruned(presence, &kept::PRESENCE)
 }
 
 /// What the networks ask a node: its teams, sessions and machines, of
@@ -702,12 +737,12 @@ fn renamed_by(session: &Value, renamed: &mut BTreeMap<String, String>) {
     }
 }
 
-/// The network `name`, under its orchestrator's own address where it
+/// The network `name` under its orchestrator's own address, where it
 /// names one the orchestrator was renamed from.
-fn owned_network(name: &str, renamed: &BTreeMap<String, String>) -> String {
+fn owned_network(name: &str, renamed: &BTreeMap<String, String>) -> Option<String> {
     name.strip_prefix("orchestration.")
         .and_then(|old| renamed.get(old))
-        .map_or_else(|| name.to_owned(), |own| format!("orchestration.{own}"))
+        .map(|own| format!("orchestration.{own}"))
 }
 
 /// Each orchestration's network titled, short-named and nested as the
@@ -767,15 +802,26 @@ fn titled_by_quests(networks: &mut [Network], quests: &BTreeMap<String, String>)
 /// `core.nix` for `repo.core-nix`. A name that reads as its short one
 /// does, `skiff` for `repo.skiff`, would only say it twice, so titles
 /// nothing.
+///
+/// A network's cells are in the order of `sessions`, so the first of them
+/// naming it is the first session that does; each is looked up by name
+/// rather than every session searched for each network, which at
+/// thousands of cells took most of a second.
 fn titled_by_repos(networks: &mut [Network], sessions: &[Cell]) {
+    let mut repos: HashMap<&str, &str> = HashMap::new();
+    for cell in sessions {
+        if let Some(repo) = cell.repo.as_deref() {
+            repos.entry(cell.name.as_str()).or_insert(repo);
+        }
+    }
     for each in networks
         .iter_mut()
         .filter(|each| each.shape == Shape::Repository)
     {
-        each.title = sessions
+        each.title = each
+            .cells
             .iter()
-            .filter(|cell| each.cells.contains(&cell.name))
-            .filter_map(|cell| cell.repo.as_deref())
+            .filter_map(|name| repos.get(name.as_str()).copied())
             .find(|repo| *repo != each.short && slug(repo) == each.short)
             .map(str::to_owned);
     }
