@@ -257,7 +257,13 @@ scratch, only the folders named cross, as `mycelium share QEST-...
 clones and data. A folder holding more than 10,000 files or 1 GiB, or a
 file over 64 MiB, is refused when named, and so are `tmp/` and build
 output. Within a named folder, hidden files, links, `target/` and
-`node_modules/` stay home. A folder once named stays shared.
+`node_modules/` stay home. A folder once named stays shared. The
+scratch's `handover/` crosses whenever it is there as the quest is
+shared, named or not, under the same limits, since a carry or a spawn
+leaves there what the other machine needs to start. Sharing a quest
+shares each quest above it too, up its README's `parent` while each is
+on this machine, as quests of their own with none of their scratch
+named, so a session on the other machine can tell what orchestrates it.
 
 A git clone, named or within a named folder, crosses as its `origin`
 and branch, never file by file, since two machines writing one `.git`
@@ -327,6 +333,36 @@ copy. Record text crosses with the home folder
 marked, so a path under `/home/jitsusama` reads `/Users/joel.gerber` on a
 Mac. Each write takes the quest's lock as the harness does and lands by
 rename, so a session never reads half a file.
+
+Each end keeps, in the quest's ledger as `theirs`, what the other said
+it holds in its `Holds`, and what it sent and was seen to take: an end
+that takes a file says `Holds` of it even when it now holds just what
+was sent, so the sender knows. Only files an end holds itself are kept
+there, so a file deleted drops out.
+
+`mycelium share QEST-... --to <machine> --wait` returns only once that
+machine's node holds the quest, so a session started there after finds
+all it needs. It counts every file of the record and of the named
+scratch this end holds, and the README of each quest above it, named by
+its quest as `QEST-.../record/README.md`, at the version its link's next
+look will say, from a copy of the ledger it never keeps, and holds once
+the machine holds each at that version or newer. A git clone and a deletion aren't
+waited on. It looks four times a second, as long as `--within` says (120
+seconds unless told), and prints one JSON line, as the harness's spawn
+reads it:
+
+- held, exiting 0: `{"quest", "machine", "held": true, "files",
+  "holding", "scratch", "waited"}`, `files` counting what this end
+  holds, `holding` what the machine holds of it, `scratch` the folders
+  shared and `waited` its seconds;
+- not held, exiting 1: the same with `"held": false`, up to 20 of the
+  files it lacks as `lacking`, and a `reason`, with `why` in words, also
+  said on stderr: `refused` when the quest couldn't be shared or the
+  machine is this one, `no-link` when no link has reached the machine
+  for 5 seconds, `not-shared` when its node hasn't said it shares the
+  quest within 5 seconds of a link reaching it, and `behind` when it
+  still lacks a file at the bound. An end older than `theirs` never says
+  it took a file, so a wait for it ends `behind`.
 
 ## Carrying a Quest
 

@@ -25,6 +25,7 @@ use mycelium::link::refused::Refusals;
 use mycelium::placement::{Need, Work};
 use mycelium::record::Intent;
 use mycelium::share::exchange::Places;
+use mycelium::share::reached::{self, Reached};
 use mycelium::ssh::Asked as KeyAsked;
 use mycelium::store::Store as _;
 use mycelium::store::folders::Folders;
@@ -92,9 +93,14 @@ enum Action {
     /// Shares a quest with every machine this one links with.
     ///
     /// Its record is kept the same on each and written on any, with the
-    /// folders of its scratch named. A machine that held its own copy of
-    /// either moves it aside first.
-    #[command(after_help = "Example:\n  mycelium share QEST-20261112-HARBOR --scratch notes")]
+    /// folders of its scratch named, and its handover whenever it is
+    /// there. A machine that held its own copy of either moves it aside
+    /// first. With `--to` and `--wait`, it returns once that machine holds
+    /// it, printing a JSON line, `{"quest", "machine", "held", ...}`.
+    #[command(
+        after_help = "Examples:\n  mycelium share QEST-20261112-HARBOR --scratch notes\n  \
+                            mycelium share QEST-20261112-HARBOR --to skiff --wait"
+    )]
     Share {
         #[command(flatten)]
         here: Here,
@@ -105,6 +111,16 @@ enum Action {
         /// files or 1 GiB is refused.
         #[arg(long)]
         scratch: Vec<String>,
+        /// The machine to wait for, by name.
+        #[arg(long, requires = "wait")]
+        to: Option<String>,
+        /// Waits until `--to` holds the quest's record and named scratch at
+        /// this machine's versions, failing past `--within`.
+        #[arg(long, requires = "to")]
+        wait: bool,
+        /// How many seconds to wait at most.
+        #[arg(long, requires = "wait", default_value_t = 120)]
+        within: u64,
     },
     /// Carries a quest and its sessions to another machine.
     ///
@@ -960,11 +976,15 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             here,
             quest,
             scratch,
-        } => {
-            let (_, _, shares) = open(here, realm)?;
-            println!("{}", shares.offer(&quest, &scratch)?);
-            Ok(())
-        }
+            to,
+            within,
+            ..
+        } => share(
+            here,
+            realm,
+            &socket,
+            (&quest, to.as_deref(), &scratch, within),
+        ),
         Action::Carry { here, quest, to } => {
             let (_, _, shares) = open(here, realm)?;
             carry(&socket, shares, &quest, &to)
@@ -1587,6 +1607,46 @@ fn steer_swarm(
 
 /// Carries `quest` to the machine `to`, a JSON line on standard output
 /// for each step as it goes and the last saying where each session went.
+/// Shares `quest`, and if told `to`, waits as long as `within` seconds for
+/// that machine to hold it, printing what it found as a JSON line whatever
+/// it was, and failing with why unless held.
+fn share(
+    here: Here,
+    realm: String,
+    socket: &Path,
+    (quest, to, scratch, within): (&str, Option<&str>, &[String], u64),
+) -> io::Result<()> {
+    let (_, membership, shares) = open(here, realm)?;
+    let Some(to) = to else {
+        println!("{}", shares.offer(quest, scratch)?);
+        return Ok(());
+    };
+    let machine = membership.machine;
+    let reached = if to == machine {
+        Ok(Reached::refused(
+            quest,
+            to,
+            format!("{to} is this machine, so {quest} is there already"),
+        ))
+    } else {
+        shares.offer(quest, scratch).and_then(|_| {
+            reached::reach(
+                &shares,
+                quest,
+                (&machine, to),
+                std::time::Duration::from_secs(within),
+                &mut reached::Node::new(socket.to_owned()),
+            )
+        })
+    };
+    let reached = reached.unwrap_or_else(|error| Reached::refused(quest, to, error.to_string()));
+    print_line(&reached)?;
+    match reached.why {
+        Some(why) if !reached.held => Err(io::Error::other(why)),
+        _ => Ok(()),
+    }
+}
+
 fn carry(socket: &Path, shares: Places, quest: &str, to: &str) -> io::Result<()> {
     let mut hands = Through::new(socket.to_owned(), shares, quest, carry::through::PATIENCE);
     let mut failed = None;

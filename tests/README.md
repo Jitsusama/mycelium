@@ -13,6 +13,8 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `networks.rs`: the node's network records built for ten thousand cells
   within 30 MB, in time that grows with the cells, the memory counted
   by an allocator of its own, which only a program of its own may hold
+- `shared.rs`: a quest shared and waited for, printing one JSON line
+  however the wait ends and failing unless the machine holds it
 - `spellings.rs`: each old spelling of a command, and each silent alias
   such as `network` or `--json`, saying byte for byte what the tree
   that took it in says
