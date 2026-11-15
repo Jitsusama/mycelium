@@ -272,6 +272,9 @@ leaves there what the other machine needs to start. Sharing a quest
 shares each quest above it too, up its README's `parent` while each is
 on this machine, as quests of their own with none of their scratch
 named, so a session on the other machine can tell what orchestrates it.
+One shared only so stops being shared, at both ends, once no quest
+either end shares names it above and the other end doesn't share it on
+its own; one shared on its own as well stays.
 
 A git clone, named or within a named folder, crosses as its `origin`
 and branch, never file by file, since two machines writing one `.git`
@@ -290,10 +293,12 @@ newly named, or when it can't be watched; a watch that fails or
 overflows has every record and folder walked. A change found while
 hearing the other end is said at the next look:
 
-- `{"Shares": {"quests", "scratch", "clones", "ended"}}`: every quest it
-  shares, the scratch folders named of each, by quest, the clones in
-  them, each `{"remote", "branch"}` by its path, and the quests whose
-  README says `concluded` or `retired`. The other end starts sharing
+- `{"Shares": {"quests", "scratch", "clones", "ended", "above"}}`: every
+  quest it shares, the scratch folders named of each, by quest, the
+  clones in them, each `{"remote", "branch"}` by its path, the quests
+  whose README says `concluded` or `retired`, and those it shares only
+  as quests above others, which the other end shares so too and doesn't
+  take up once none is under them. The other end starts sharing
   any quest or folder it didn't, first moving its own copy aside to
   `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. It is said
   before the files, so a folder's files are carried once heard of.

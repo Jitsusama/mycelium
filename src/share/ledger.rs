@@ -79,6 +79,10 @@ pub struct Ledger {
     /// said it shares the quest, even holding none of it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub theirs: BTreeMap<String, BTreeMap<String, State>>,
+    /// Whether the quest is shared only as one above another shared quest,
+    /// so it stops once no shared quest is under it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub above: bool,
 }
 
 /// A shared file's key in a ledger and on a link: its place and its path.
