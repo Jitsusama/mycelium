@@ -416,7 +416,9 @@ fn closed(hands: &mut impl Hands, here: &str, sessions: &[Session]) -> Result<()
 /// in place, and only then pi takes it up in its own folder. The quest's
 /// own done file names no session, so its arrival ends with its trees in
 /// place. Its words go to the shell apart from the script, so none is
-/// read as the shell's.
+/// read as the shell's. Pi is told first to carry on, as a reopened
+/// session is, since one taken up again with no first prompt sits idle
+/// until a message wakes it.
 fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
     let arrive = r#"pi-carry arrive "$1" --from "$2" --session "$3""#;
     // A folder within home (`~` or `~/...`) is found under home there,
@@ -432,10 +434,11 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
             arrive,
             r#" || exit; case "$4" in "~") folder="$HOME" ;; "~/"*) folder="$HOME/${4#"~/"}" ;; "#,
             r#"*) folder="$4" ;; esac; mkdir -p "$folder" && cd "$folder" && "#,
-            r#"QUEST_WORKFLOW_AUTOLOAD_ID="$1" exec pi --session "$3""#,
+            r#"QUEST_WORKFLOW_AUTOLOAD_ID="$1" exec pi --session "$3" -- "$5""#,
         ]
         .concat()
     };
+    let told = carry_on(from);
     Start {
         work: Work {
             needs: vec![Need::Machine(to.to_owned())],
@@ -454,11 +457,21 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done) -> Start {
             from,
             &one.session,
             &one.cwd,
+            &told,
         ]
         .map(str::to_owned)
         .to_vec(),
         may_cost: false,
     }
+}
+
+/// What a session carried from `from` is told as it starts, in the
+/// words the harness opens its own turns with, so it reads as one.
+fn carry_on(from: &str) -> String {
+    format!(
+        "[Automated message, no human input: {PI_CARRY} carried this session here from \
+         {from}.] Carry on from where you left off: your plan's next open item."
+    )
 }
 
 /// Whether a session's process runs.
@@ -738,8 +751,15 @@ mod tests {
         );
         assert_eq!(
             &first.command[3..],
-            [PI_CARRY, QUEST, "optimus", "s-busy01", "~/src/harbour"],
-            "arriving with its own session and folder"
+            [
+                PI_CARRY,
+                QUEST,
+                "optimus",
+                "s-busy01",
+                "~/src/harbour",
+                &super::carry_on("optimus")
+            ],
+            "arriving with its own session and folder, told to carry on"
         );
         assert!(
             first.command[2].starts_with("pi-carry arrive"),
@@ -766,7 +786,8 @@ mod tests {
     /// Runs a carried session's arrival as the shell there would, with
     /// `pi-carry` and `pi` stood in for under `home`: `pi-carry` exiting
     /// as `arrives` says, `pi` writing its folder, its words and the quest
-    /// it's told to load to `ran`.
+    /// it's told to load to `ran`, and its first prompt, the words after
+    /// `--`, to `told`.
     fn arrive(home: &std::path::Path, cwd: &str, arrives: bool) -> Option<String> {
         use std::os::unix::fs::PermissionsExt;
         let bin = home.join("bin");
@@ -782,8 +803,10 @@ mod tests {
         stand_in(
             "pi",
             &format!(
-                "echo \"$(pwd) $* for $QUEST_WORKFLOW_AUTOLOAD_ID\" > {}",
-                ran.display()
+                "echo \"$(pwd) $1 $2 for $QUEST_WORKFLOW_AUTOLOAD_ID\" > {}; \
+                 [ \"$3\" = -- ] && printf '%s' \"$4\" > {}",
+                ran.display(),
+                home.join("told").display()
             ),
         );
         let one = Done {
@@ -844,6 +867,21 @@ mod tests {
             arrive(&home, "~", false),
             None,
             "never once its arrival failed"
+        );
+    }
+
+    #[test]
+    fn a_carried_session_is_told_to_carry_on_where_it_left_off() {
+        let home = tempfile::tempdir().expect("a home");
+        let home = home.path().canonicalize().expect("its path");
+        arrive(&home, "~", true).expect("pi started");
+        let told = std::fs::read_to_string(home.join("told")).unwrap_or_default();
+        assert_eq!(
+            told,
+            "[Automated message, no human input: pi-carry carried this session here \
+             from optimus.] Carry on from where you left off: your plan's next open item.",
+            "its first prompt says where it came from and sets it to work, \
+             so it never sits idle until a message wakes it"
         );
     }
 
