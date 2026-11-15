@@ -3989,20 +3989,20 @@ mod tests {
             "a carry goes somewhere else"
         );
         assert_eq!(
-            to("equilibrius").await,
+            to("kestrel").await,
             Err(
-                "equilibrius isn't one of this realm's machines, so nothing is carried there"
+                "kestrel isn't one of this realm's machines, so nothing is carried there"
                     .to_owned()
             ),
             "a machine this realm doesn't know, as one of another realm"
         );
         store
-            .put_machine(&fenced("penelope", &["remote", "cloud"]))
+            .put_machine(&fenced("skiff", &["remote", "cloud"]))
             .expect("what it said is kept");
         assert_eq!(
-            to("penelope").await,
+            to("skiff").await,
             Err(
-                "penelope's strictly fenced session opens builders cloud, which here's \
+                "skiff's strictly fenced session opens builders cloud, which here's \
                  doesn't, so the session would land looser there"
                     .to_owned()
             ),
