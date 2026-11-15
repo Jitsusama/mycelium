@@ -26,7 +26,7 @@ use super::environment::{Environment, keeping_path};
 use super::journal::{Ended, How, Journal};
 use super::modes::Modes;
 use super::steering::{Heard, Steers, Watching};
-use super::{Held, Said, Size, again, next, socket, steers, wake};
+use super::{Held, Said, Size, again, next, socket, steers, turn, wake};
 use crate::node;
 use crate::record::Window;
 
@@ -140,6 +140,9 @@ pub struct Holding<'a> {
     pub journal: &'a dyn Journal,
     /// What tells the holder to end its program, and so itself.
     pub ending: Ending,
+    /// The node's socket, asked for a turn before a program that resumes
+    /// a session first starts ([`turn`]); none starts it at once.
+    pub node: Option<&'a Path>,
 }
 
 /// What tells a holder to end its program, and so itself.
@@ -288,6 +291,10 @@ fn starting(
 /// the one it named itself; one that wrote its wake file before it went is restarting,
 /// and starts again at once, never shown as parked. How each run ended,
 /// parked or not, is said to the holding's journal.
+#[expect(
+    clippy::too_many_lines,
+    reason = "a holder's one life, its first start to its end, reads best whole"
+)]
 pub async fn hold(
     holding: &Holding<'_>,
     ready: impl FnOnce(&Held) -> io::Result<()>,
@@ -312,14 +319,25 @@ pub async fn hold(
     let start =
         |command: &[String], size: Size| end.start(starting(holding, command, &files)?, size);
     let mut command = holding.command.to_vec();
-    let mut child = start(&command, FIRST_SIZE)?;
+    let waits = holding
+        .node
+        .and_then(|node| Some((node, turn::resumed(&command)?)));
+    let first = match waits {
+        Some(_) => None,
+        None => Some(start(&command, FIRST_SIZE)?),
+    };
     let held = Held {
         id: holding.id.to_owned(),
         command: holding.command.to_vec(),
         folder: holding.folder.to_owned(),
         holder: std::process::id(),
-        pid: child.id().unwrap_or_default(),
-        parked: false,
+        pid: first
+            .as_ref()
+            .and_then(tokio::process::Child::id)
+            .unwrap_or_default(),
+        // One waiting for its turn runs no process yet, and a key wakes
+        // it, as a parked one.
+        parked: first.is_none(),
         since: jiff::Timestamp::now().to_string(),
         windows: Vec::new(),
     };
@@ -339,53 +357,75 @@ pub async fn hold(
         modes: Mutex::new(Modes::default()),
         output,
         over: watch::Sender::new(false),
+        waiting: watch::Sender::new(false),
     });
     let mut reader = tokio::spawn(read_output(reading, shown.clone(), starts));
     let mut joined = JoinSet::new();
     // A terminal may join whether the program runs or is parked.
     let serving = |stream| serve(stream, terminal.clone(), shown.clone(), record.clone());
-    let status = 'held: loop {
-        let pid = child.id().unwrap_or_default();
-        let run = told.before(child.wait());
-        let (status, telling) = match joining_until(run, &socket, &mut joined, &serving).await {
-            Some(status) => (status?, false),
-            None => (ends(&mut child, pid).await?, true),
-        };
-        ended(holding, pid, &command, status);
-        // Told to end, a program that parked as it saved stays down.
-        if telling || status.code() != Some(PARKED) {
-            break status;
-        }
-        let mut restarting = restarting(&files.waking, &record, &shown);
-        // One that can't start again stays parked, saying why, rather than
-        // ending: its session, its window and its next wake are all still
-        // here, and a command named again may start.
-        child = loop {
-            if !std::mem::take(&mut restarting) {
-                let woke = told.before(woken(&terminal, &files.waking, &files.steering));
-                // A parked program has saved all it holds, so being told
-                // to end then ends only the holder.
-                if joining_until(woke, &socket, &mut joined, &serving)
-                    .await
-                    .is_none()
-                {
-                    break 'held status;
+    let first = match (first, waits) {
+        (Some(child), _) => Some(child),
+        (None, Some((node, session))) => {
+            let waited = told.before(its_turn(node, &session, &terminal, &shown, &files));
+            match joining_until(waited, &socket, &mut joined, &serving).await {
+                Some(()) => {
+                    let child = start(&command, terminal.size())?;
+                    record.runs(child.id().unwrap_or_default(), &command);
+                    Some(child)
                 }
-                shown.show(FOCUS_OFF);
+                None => None,
             }
-            // Where its steers land is said again at each park, so what
-            // this one said is spent whether a wake or a restart ends it.
-            let _ = fs::remove_file(&files.steering);
-            // Both are taken, so the program's own never waits for a
-            // later start; the one named for it wins.
-            let its_own = named(&files.naming);
-            command = named(&files.chosen).or(its_own).unwrap_or(command);
-            match start(&command, terminal.size()) {
-                Ok(child) => break child,
-                Err(error) => parks(&record, &shown, &unstarted(&error)),
+        }
+        (None, None) => None,
+    };
+    // Told to end as it waited, it ends having started nothing.
+    let code = if let Some(mut child) = first {
+        let status = 'held: loop {
+            let pid = child.id().unwrap_or_default();
+            let run = told.before(child.wait());
+            let (status, telling) = match joining_until(run, &socket, &mut joined, &serving).await {
+                Some(status) => (status?, false),
+                None => (ends(&mut child, pid).await?, true),
+            };
+            ended(holding, pid, &command, status);
+            // Told to end, a program that parked as it saved stays down.
+            if telling || status.code() != Some(PARKED) {
+                break status;
             }
+            let mut restarting = restarting(&files.waking, &record, &shown);
+            // One that can't start again stays parked, saying why, rather than
+            // ending: its session, its window and its next wake are all still
+            // here, and a command named again may start.
+            child = loop {
+                if !std::mem::take(&mut restarting) {
+                    let woke = told.before(woken(&terminal, &files.waking, &files.steering));
+                    // A parked program has saved all it holds, so being told
+                    // to end then ends only the holder.
+                    if joining_until(woke, &socket, &mut joined, &serving)
+                        .await
+                        .is_none()
+                    {
+                        break 'held status;
+                    }
+                    shown.show(FOCUS_OFF);
+                }
+                // Where its steers land is said again at each park, so what
+                // this one said is spent whether a wake or a restart ends it.
+                let _ = fs::remove_file(&files.steering);
+                // Both are taken, so the program's own never waits for a
+                // later start; the one named for it wins.
+                let its_own = named(&files.naming);
+                command = named(&files.chosen).or(its_own).unwrap_or(command);
+                match start(&command, terminal.size()) {
+                    Ok(child) => break child,
+                    Err(error) => parks(&record, &shown, &unstarted(&error)),
+                }
+            };
+            record.runs(child.id().unwrap_or_default(), &command);
         };
-        record.runs(child.id().unwrap_or_default(), &command);
+        status.code()
+    } else {
+        None
     };
     // The terminal's other end goes with the program, so its last output
     // ends as it did, then whoever is joined is let go.
@@ -405,7 +445,22 @@ pub async fn hold(
         while joined.join_next().await.is_some() {}
     })
     .await;
-    Ok(status.code())
+    Ok(code)
+}
+
+/// Waits until the node at `node` gives `session` its turn, or a key typed
+/// in a joined window starts it now, each window joining meanwhile told
+/// that it waits.
+async fn its_turn(node: &Path, session: &str, terminal: &Terminal, shown: &Shown, files: &Files) {
+    shown.waiting.send_replace(true);
+    shown.show(WAITING_LINE);
+    tokio::select! {
+        () = turn::wait(node, session) => {}
+        () = woken(terminal, &files.waking, &files.steering) => {}
+    }
+    // Its turn may have come while it watched for a key.
+    terminal.parked.send_replace(false);
+    shown.waiting.send_replace(false);
 }
 
 /// Says to the holding's journal that the run of `command` as `pid` ended
@@ -432,6 +487,13 @@ fn restarting(waking: &Path, record: &Record, shown: &Shown) -> bool {
     }
     restarting
 }
+
+/// What every joined window shows while its program waits for its turn
+/// to resume, a key starting it at once. Focus wakes nothing here, as it
+/// does a parked program: a restart opens every window, and each would
+/// take its turn as it came in front.
+const WAITING_LINE: &[u8] =
+    b"\r\nWaiting its turn: sessions come back a few at a time. A key starts it now.\r\n";
 
 /// What a parked program's windows say when it couldn't start again.
 fn unstarted(error: &io::Error) -> Vec<u8> {
@@ -609,6 +671,9 @@ struct Shown {
     output: broadcast::Sender<Arc<[u8]>>,
     /// Whether the program has shown all it will, its last output read.
     over: watch::Sender<bool>,
+    /// Whether the program waits for its turn, so a window joining is
+    /// told, as nothing else it is shown says so.
+    waiting: watch::Sender<bool>,
 }
 
 impl Shown {
@@ -640,7 +705,11 @@ impl Shown {
     /// no mode is missed between them, or given twice.
     fn join(&self) -> (Vec<u8>, broadcast::Receiver<Arc<[u8]>>) {
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
-        (modes.restored(), self.output.subscribe())
+        let mut first = modes.restored();
+        if *self.waiting.borrow() {
+            first.extend_from_slice(WAITING_LINE);
+        }
+        (first, self.output.subscribe())
     }
 }
 
@@ -1244,6 +1313,19 @@ mod tests {
         through: Vec<String>,
         environment: impl Environment + 'static,
     ) -> (PathBuf, Held, JoinHandle<io::Result<Option<i32>>>) {
+        holding_in(root, through, environment, vec!["sh".to_owned()], None).await
+    }
+
+    /// Holds `command` as [`holding_sh_in`] does `sh`, asking the node at
+    /// `node`, if any, for a turn before a command resuming a session
+    /// starts.
+    async fn holding_in(
+        root: &Path,
+        through: Vec<String>,
+        environment: impl Environment + 'static,
+        command: Vec<String>,
+        node: Option<PathBuf>,
+    ) -> (PathBuf, Held, JoinHandle<io::Result<Option<i32>>>) {
         let dir = root.join("held");
         let folder = root.to_owned();
         // Nothing listens here, so each end is said on standard error.
@@ -1252,7 +1334,6 @@ mod tests {
         let holder = {
             let dir = dir.clone();
             tokio::spawn(async move {
-                let command = vec!["sh".to_owned()];
                 let holding = Holding {
                     dir: &dir,
                     realm: "harbour",
@@ -1263,6 +1344,7 @@ mod tests {
                     environment: &environment,
                     journal: &SystemJournal::at(&root_journal),
                     ending: Ending::Unsignalled,
+                    node: node.as_deref(),
                 };
                 hold(&holding, |held| {
                     let _ = told.send(held.clone());
@@ -1593,6 +1675,101 @@ mod tests {
         window.types("stty size; echo again $((6 * 7))\r").await;
         window.sees("30 100").await;
         window.sees("again 42").await;
+    }
+
+    /// A command resuming the session `01a1-ab`, saying so as it starts.
+    fn resuming() -> Vec<String> {
+        [
+            "sh",
+            "-c",
+            "echo resumed-$1; exec sh",
+            "--session",
+            "01a1-ab",
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    }
+
+    /// A stand-in node at `socket`, answering the first ask it is sent
+    /// once `go` is told, and saying what it was asked.
+    fn stand_in_node(socket: &Path) -> (oneshot::Sender<()>, JoinHandle<String>) {
+        let listener = tokio::net::UnixListener::bind(socket).expect("the node's socket binds");
+        let (go, told) = oneshot::channel::<()>();
+        let node = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("a holder asks");
+            let (reading, mut writing) = stream.into_split();
+            let mut asked = String::new();
+            tokio::io::AsyncBufReadExt::read_line(
+                &mut tokio::io::BufReader::new(reading),
+                &mut asked,
+            )
+            .await
+            .expect("its ask is read");
+            if told.await.is_ok() {
+                let _ = writing.write_all(b"{\"Ok\":\"Turn\"}\n").await;
+            }
+            asked
+        });
+        (go, node)
+    }
+
+    #[tokio::test]
+    async fn a_resuming_program_waits_for_its_turn_from_the_node() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let node = root.path().join("work.sock");
+        let (go, asked) = stand_in_node(&node);
+        let (dir, held, _holder) = holding_in(
+            root.path(),
+            Vec::new(),
+            Given(Vec::new()),
+            resuming(),
+            Some(node),
+        )
+        .await;
+        assert!(
+            held.parked && held.pid == 0,
+            "it runs nothing while it waits: {held:?}"
+        );
+        let mut window = Joined::join(socket(&dir, &held.id), FIRST_SIZE, None);
+        window.sees("Waiting its turn").await;
+        assert!(
+            !window.seen.contains("resumed-"),
+            "nothing starts before its turn: {:?}",
+            window.seen
+        );
+        let _ = go.send(());
+        window.sees("resumed-01a1-ab").await;
+        let asked = asked.await.expect("the node was asked");
+        assert_eq!(
+            serde_json::from_str::<crate::wire::Request>(&asked).ok(),
+            Some(crate::wire::Request::Turn {
+                session: "01a1-ab".to_owned()
+            }),
+            "for the session it resumes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_typed_starts_a_waiting_program_at_once() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let node = root.path().join("work.sock");
+        // The node never answers, as one with every place taken.
+        let (_never, _node) = stand_in_node(&node);
+        let (dir, held, _holder) = holding_in(
+            root.path(),
+            Vec::new(),
+            Given(Vec::new()),
+            resuming(),
+            Some(node),
+        )
+        .await;
+        let mut window = Joined::join(socket(&dir, &held.id), FIRST_SIZE, None);
+        window.sees("Waiting its turn").await;
+        window.types("x").await;
+        window.sees("resumed-01a1-ab").await;
+        // The key that started it is spent, as a parked program's wake is.
+        window.types("echo typed $((6 * 7))\r").await;
+        window.sees("typed 42").await;
     }
 
     #[test]
@@ -2087,6 +2264,7 @@ mod tests {
                     environment: &Given(Vec::new()),
                     journal: &SystemJournal::at(&journal),
                     ending: Ending::Signalled,
+                    node: None,
                 };
                 hold(&holding, |held| {
                     let _ = told.send(held.clone());
@@ -2129,6 +2307,7 @@ mod tests {
             environment: &Given(Vec::new()),
             journal: &SystemJournal::at(&root.path().join("journal")),
             ending: Ending::Unsignalled,
+            node: None,
         };
         let refused = hold(&holding, |_| Ok(())).await;
         assert!(refused.is_err(), "holding nothing is refused");
@@ -2151,6 +2330,7 @@ mod tests {
             environment: &Given(Vec::new()),
             journal: &SystemJournal::at(&socket),
             ending: Ending::Unsignalled,
+            node: None,
         };
         let said = tokio::time::timeout(PATIENCE, hold(&holding, |_| Ok(())))
             .await

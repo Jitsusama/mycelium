@@ -26,7 +26,10 @@ The harness mesh's messages and presence, carried between machines:
   <ID> attach` takes one up again from any terminal on the machine. The
   older `hold`, `held`, `attach <ID>` and `again` still work. One that
   exits 75 is parked: its window stays, and a key or its wake file
-  starts it again. While one held there is at work (a turn, queued
+  starts it again. One that resumes a session waits its turn, so a
+  restart's sessions come back four at a time, those waiting on their
+  person first; a key typed in its window starts it now. While one
+  held there is at work (a turn, queued
   work, or a program that is no session), the node keeps it from
   sleeping when idle, until its battery drops below 20%. Shutting its
   lid or asking it to sleep always sleeps it.

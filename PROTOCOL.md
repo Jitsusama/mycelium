@@ -437,6 +437,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
 | `{"Carry": {"machine"}}` | `"Carrying"`, then what it asks of `machine` |
+| `{"Turn": {"session"}}` | `"Turn"`, once a holder may resume `session` (A Held Session) |
 
 A `Send` naming another realm, and a `Cross`, may be refused by a flow,
 answered `{"Refused": {"code", "why"}}` beside `Ok` and `Err`: `why` is
@@ -932,6 +933,24 @@ is held in, told in `MYCELIUM_REALM` after the login shell's profile
 runs, since a profile says the machine's own realm: a session started
 in another realm of a machine in two would otherwise join the wrong
 mesh.
+
+A program whose words resume a session, after `--session` or
+`--session-id`, whole or within a shell's words, waits for its turn
+before its first start, so a restart's sessions come back a few at a
+time. Its holder says `held` at once, records it `parked` with a
+`pid` of 0, and asks its realm's node `{"Turn": {"session"}}`,
+holding the connection open. The node answers `"Turn"` at once for a
+session no record names, which has nothing to resume, and otherwise
+once fewer than 4 resumed sessions are on their first turn. A turn
+ends when its session is heard idle or ended by its new process, one
+that was working only once heard working again, or after 60 seconds.
+Those waiting go in order: sessions whose record wants their person
+for a `question` or an `approval`, then those that were busy, then the
+rest, each in the order it asked. Every joined window says it is
+waiting, and a key typed in one starts it at once, leaving the queue.
+The queue is the node's memory only: a node that restarts, isn't
+there, or doesn't know turns answers or hangs up, and the program
+starts at once, as before.
 
 A program that exits with 75 (sysexits' `EX_TEMPFAIL`) is parked, not
 ended, so a session waiting idle can give its memory back. Its holder
