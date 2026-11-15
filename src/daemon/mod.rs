@@ -133,6 +133,15 @@ async fn say(writing: &mut (impl AsyncWrite + Unpin), answer: String) -> std::io
     writing.write_all(&line).await
 }
 
+/// Those of `deep` that `kind` offers deep, as its hello says, so a
+/// client reads its changes as that told it to; the rest go whole.
+fn offered(holds: &impl Holds, kind: &str, deep: Vec<String>) -> Vec<String> {
+    let offered = holds.deep(kind);
+    deep.into_iter()
+        .filter(|field| offered.contains(&field.as_str()))
+        .collect()
+}
+
 /// The answer to `ask`, now, or none for a watch, which answers through
 /// `answering` for as long as it lasts, a steer, which answers through it
 /// once its session's machine has it, or an unwatch, which answers not at
@@ -177,13 +186,7 @@ fn answer<H: Holds + Steers>(
             when,
             deep,
         } => {
-            // Only the fields its kind offers deep go deep, as its hello
-            // says, so a client reads its changes as that told it to.
-            let offered = holds.deep(&kind);
-            let deep: Vec<String> = deep
-                .into_iter()
-                .filter(|field| offered.contains(&field.as_str()))
-                .collect();
+            let deep = offered(holds.as_ref(), &kind, deep);
             // Asked again for the same records, as a launcher opening asks
             // for every change where shut it asked for fewer, it sends what
             // it held back at once rather than everything whole.

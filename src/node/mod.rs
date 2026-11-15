@@ -4750,7 +4750,7 @@ mod tests {
             let presence = json!({
                 "session": "kestrel", "addresses": ["KESTREL"], "groups": ["#quest/skiff"],
                 "busy": busy, "step": step, "at": at, "title": "Hear the Tide",
-                "worksOn": [{"repo": "skiff"}],
+                "worksOn": "charting the skiff's tides",
             });
             store
                 .put_presence("kestrel", "equilibrius", &presence)
