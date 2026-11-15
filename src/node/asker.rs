@@ -355,6 +355,26 @@ pub fn may_say(asker: Option<i32>, processes: &Processes, said: &Value) -> Resul
     }
 }
 
+/// Whether process `asker` is the person's own login, as `processes` tell
+/// it, as only the person frees a quest an orchestrator holds.
+///
+/// # Errors
+///
+/// When the asker is an agent's, or nothing can be told of it.
+pub fn persons_own(asker: Option<i32>, processes: &Processes) -> Result<(), String> {
+    let only = "so it can't free a quest: only the person's own login does";
+    let Some(pid) = asker else {
+        return Err(format!("nothing names the process that asks, {only}"));
+    };
+    match processes.tell(pid) {
+        Told::Person => Ok(()),
+        Told::Agent(unit) => Err(format!("this asks from {unit}, an agent's, {only}")),
+        Told::Untold => Err(format!(
+            "nothing could be read of the process that asks, {only}"
+        )),
+    }
+}
+
 /// The session that asks, by its own id, among `owners`, each session of
 /// this machine's that runs and the process that owns it, as [`proved`]
 /// proves them: the one whose process the asker is, or runs below. A pi host owns

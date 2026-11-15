@@ -145,6 +145,42 @@ impl Orchestrations {
         self.sessions.remove(session);
     }
 
+    /// Frees `quest` from whichever session holds it, as the person asks,
+    /// answering that session's address: one that heads it lets go of
+    /// everything it claimed, since what it orchestrates hangs from it,
+    /// and one that orchestrates it lets go of that quest alone.
+    ///
+    /// # Errors
+    ///
+    /// When no session holds `quest`, so nothing is freed.
+    pub fn free(&mut self, quest: &str) -> Result<String, String> {
+        if let Some(session) = self
+            .sessions
+            .iter()
+            .find(|(_, claim)| claim.heads == quest)
+            .map(|(session, _)| session.clone())
+        {
+            return Ok(self
+                .sessions
+                .remove(&session)
+                .map(|claim| claim.address)
+                .unwrap_or_default());
+        }
+        self.sessions
+            .values_mut()
+            .find_map(|claim| claim.quests.remove(quest).then(|| claim.address.clone()))
+            .ok_or_else(|| {
+                format!("no session holds {quest} by this node's record, so nothing is freed")
+            })
+    }
+
+    /// Forgets what each session claimed that `stands` says no longer
+    /// runs or waits parked, so an orchestrator started afresh, which
+    /// continues no session, may claim its quests again.
+    pub fn lapse(&mut self, stands: impl Fn(&str) -> bool) {
+        self.sessions.retain(|session, _| stands(session));
+    }
+
     /// Who orchestrates `quest` up to `asker`, by this record: the
     /// session that orchestrates it, then the one orchestrating the quest
     /// that session heads, and so on, until one is `asker`. Refused,
@@ -425,6 +461,52 @@ mod tests {
                 at(),
             )
             .expect("and another session may take it up");
+    }
+
+    #[test]
+    fn a_claim_lapses_once_its_session_has_ended() {
+        let mut record = nested();
+        record.lapse(|session| session == "s-weigh");
+        assert_eq!(
+            record.sessions.keys().collect::<Vec<_>>(),
+            ["s-weigh"],
+            "only what a standing session claimed is kept"
+        );
+    }
+
+    #[test]
+    fn the_person_frees_a_quest_whoever_holds_it() {
+        let mut record = nested();
+        assert_eq!(
+            record.free("QEST-20261115-HARBOR"),
+            Ok("OSPHT4".to_owned()),
+            "a quest orchestrated is freed from its orchestrator"
+        );
+        assert_eq!(
+            record
+                .sessions
+                .get("s-weigh")
+                .map(|claim| claim.quests.len()),
+            Some(0),
+            "which keeps heading its own"
+        );
+        assert_eq!(
+            record.free("QEST-20261007-WCJQSG"),
+            Ok("WCJQSG".to_owned()),
+            "and a quest headed frees all its session held"
+        );
+        assert!(
+            !record.sessions.contains_key("s-steward"),
+            "so its quests hang from nothing"
+        );
+        assert_eq!(
+            record.free("QEST-20261115-HARBOR"),
+            Err(
+                "no session holds QEST-20261115-HARBOR by this node's record, so nothing is \
+                 freed"
+                    .to_owned()
+            ),
+        );
     }
 
     #[test]
