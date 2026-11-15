@@ -6,9 +6,14 @@
 //! run, so a theme switch reaches the command without a rebuild: a shape
 //! named `down-triangle` is drawn by the theme's `shapeDownTriangle`. On
 //! the console, whose font draws none of them, it takes the theme's
-//! stand-in. A shape the theme has no mark for, or a machine with no
-//! theme, draws nothing, rather than a mark of mycelium's own that the
-//! other surfaces don't draw.
+//! stand-in. A mark the theme turns, as it draws the down triangle by the
+//! triangle turned a half turn, can't be turned in a terminal, so it's
+//! drawn by a down triangle the terminal's font has, never by the bare
+//! mark, which reads as the triangle.
+//!
+//! A shape the theme has no mark for, or a machine with no theme, draws
+//! nothing, rather than a mark of mycelium's own that the other surfaces
+//! don't draw.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,6 +24,9 @@ use crate::place;
 
 /// The prefix the theme names each shape's mark under.
 const MARK: &str = "shape";
+
+/// What a terminal draws for a mark the theme turns, which it can't turn.
+const TURNED: &str = "\u{25bc}";
 
 /// The theme's mark for each shape, by the name the node gives it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -50,8 +58,9 @@ impl Shapes {
             .flatten()
             .filter_map(|(name, mark)| {
                 let shape = shape(name.strip_prefix(MARK)?)?;
+                let turned = !console && mark["turned"].as_bool().unwrap_or_default();
                 let mark = mark[drawn].as_str().filter(|mark| !mark.is_empty())?;
-                Some((shape, mark.to_owned()))
+                Some((shape, if turned { TURNED } else { mark }.to_owned()))
             })
             .collect();
         Self { marks }
@@ -92,12 +101,12 @@ mod tests {
 
     use super::Shapes;
 
-    /// A theme with marks for a hexagon and a turned triangle, and one
-    /// that isn't a shape's.
+    /// A theme with marks for a hexagon and a square, and one that isn't
+    /// a shape's.
     fn theme() -> serde_json::Value {
         json!({"marks": {
             "shapeHexagon": {"glyph": "\u{f02d8}", "console": "H"},
-            "shapeDownTriangle": {"glyph": "\u{f0537}", "console": "v"},
+            "shapeSquare": {"glyph": "\u{f0764}", "console": "#"},
             "separator": {"glyph": "·", "console": "."},
         }})
     }
@@ -107,9 +116,25 @@ mod tests {
         let shapes = Shapes::of(&theme(), false);
 
         assert_eq!(
-            (shapes.mark("hexagon"), shapes.mark("down-triangle")),
-            (Some("\u{f02d8}"), Some("\u{f0537}")),
+            (shapes.mark("hexagon"), shapes.mark("square")),
+            (Some("\u{f02d8}"), Some("\u{f0764}")),
             "each shape takes the mark the theme names after it"
+        );
+    }
+
+    #[test]
+    fn a_mark_the_theme_turns_is_drawn_by_a_down_triangle_a_terminal_has() {
+        let theme = json!({"marks": {"shapeDownTriangle": {
+            "glyph": "\u{f0536}\u{fe0e}", "turned": true, "console": "v",
+        }}});
+
+        assert_eq!(
+            (
+                Shapes::of(&theme, false).mark("down-triangle"),
+                Shapes::of(&theme, true).mark("down-triangle"),
+            ),
+            (Some("\u{25bc}"), Some("v")),
+            "never the bare triangle, which reads as the one pointing up"
         );
     }
 
