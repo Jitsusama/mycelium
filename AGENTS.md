@@ -15,6 +15,7 @@ says what crosses between machines and how clients speak to a node.
   it measured
 - `tests/`: the `mycelium` command tested as its own process
 - `nix/`: the package, the checks and the tree's own rules
+- `scripts/`: the merge gate and its cases
 
 ## Rules
 
@@ -57,6 +58,10 @@ How this repository keeps Joel's repository standard:
   Where `nix-offload` can't reach a Mac, the same check is built on one
   with plain `nix build`. Where no Mac answers at all, the merge says so
   in its Validation, and the Mac build runs before core.nix takes it.
+  A merge goes only through `scripts/merge-gate.sh`, main's own copy,
+  which refuses a head that doesn't hold main as it is now, or that
+  lacks any Linux check kept as passed at that very commit. So rebase
+  onto main and build the checks there just before merging.
 - **Linters:** clippy with pedantic and rustc's own lints, as
   `Cargo.toml` sets them; rustfmt; nixfmt, deadnix and statix; taplo;
   rumdl, as `.rumdl.toml` sets it; shellcheck with every optional check.
