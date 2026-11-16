@@ -45,7 +45,8 @@ pub const REGRETFUL_OF: usize = 5;
 pub struct Hindsight {
     /// What these measures mean: [`MEASURES`].
     pub measures: String,
-    /// How many placements put work somewhere.
+    /// How many starts put work somewhere; an ask of where alone isn't
+    /// judged.
     pub placed: usize,
     /// How many of those had a balance reading to judge them by.
     pub judged: usize,
@@ -55,6 +56,10 @@ pub struct Hindsight {
     pub regret_share: Option<f64>,
     /// Each herd.
     pub herds: Vec<Herd>,
+    /// How many cores each busy session used, by machine, for placing's
+    /// estimate of what a start will take.
+    #[serde(default)]
+    pub bursts: Vec<Burst>,
     /// What is wrong.
     pub flags: Vec<Flag>,
 }
@@ -85,6 +90,21 @@ pub struct Herd {
     pub count: usize,
     /// A machine with more headroom beyond the dead band at one of them.
     pub roomier: String,
+}
+
+/// How many cores each busy session on a machine used, over the readings
+/// where any was busy: a session's processor share is not kept, so this
+/// is the machine's processor use over its busy sessions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Burst {
+    /// The machine.
+    pub machine: String,
+    /// How many readings it is over.
+    pub readings: usize,
+    /// The middle reading, to the hundredth.
+    pub median: f64,
+    /// The reading nine in ten fall at or below, to the hundredth.
+    pub high: f64,
 }
 
 /// Something wrong with how placement chose.
@@ -122,6 +142,7 @@ pub fn judge(records: &[Record], readings: &[Reading]) -> Hindsight {
     #[expect(clippy::cast_precision_loss, reason = "an hour's placements are few")]
     let regret_share = (judged > 0).then(|| regrets.len() as f64 / judged as f64);
     let herds = herds(&placed);
+    let bursts = bursts(&readings);
     let mut flags: Vec<Flag> = herds
         .iter()
         .map(|herd| Flag::Herded {
@@ -140,9 +161,67 @@ pub fn judge(records: &[Record], readings: &[Reading]) -> Hindsight {
         regrets,
         regret_share,
         herds,
+        bursts,
         flags,
     }
 }
+
+/// Each machine's [`Burst`] over `readings`.
+fn bursts(readings: &[(jiff::Timestamp, &Reading)]) -> Vec<Burst> {
+    let mut by_machine: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+    for (_, reading) in readings {
+        for load in &reading.machines {
+            let (Some(processor), Some(per_core)) = (load.processor, load.busy_per_core) else {
+                continue;
+            };
+            if per_core > 0.0 && processor.is_finite() {
+                by_machine
+                    .entry(&load.machine)
+                    .or_default()
+                    .push(processor / per_core);
+            }
+        }
+    }
+    by_machine
+        .into_iter()
+        .map(|(machine, mut cores)| {
+            cores.sort_by(f64::total_cmp);
+            Burst {
+                machine: machine.to_owned(),
+                readings: cores.len(),
+                median: hundredths(ranked(&cores, MEDIAN)),
+                high: hundredths(ranked(&cores, HIGH)),
+            }
+        })
+        .collect()
+}
+
+/// The share of readings at or below a burst's middle.
+const MEDIAN: f64 = 0.5;
+
+/// The share of readings at or below a burst's high.
+const HIGH: f64 = 0.9;
+
+/// The value of `sorted` (never empty) at or below which `share` of them
+/// fall, by nearest rank, so it is always one that was read.
+fn ranked(sorted: &[f64], share: f64) -> f64 {
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "an hour's readings are few, and the rank is a positive count"
+    )]
+    let rank = (share * sorted.len() as f64).ceil() as usize;
+    sorted[rank.clamp(1, sorted.len()) - 1]
+}
+
+/// `value` to the hundredth, so a line changes only when the use does.
+fn hundredths(value: f64) -> f64 {
+    (value * HUNDREDTHS).round() / HUNDREDTHS
+}
+
+/// How many parts of one a burst is said to.
+const HUNDREDTHS: f64 = 100.0;
 
 /// A placement that put work somewhere, when it did.
 struct Placed<'a> {
@@ -152,11 +231,16 @@ struct Placed<'a> {
 }
 
 impl<'a> Placed<'a> {
-    /// `record`, where it placed work and its time reads.
+    /// `record`, where it started work somewhere and its time reads. An
+    /// ask of where alone adds no load, and a spawn asks before it starts,
+    /// so only starts are judged.
     fn of(record: &'a Record) -> Option<Self> {
         let Placement::Placed { machine, .. } = &record.decision.placement else {
             return None;
         };
+        if !record.start {
+            return None;
+        }
         Some(Self {
             at: record.at.parse().ok()?,
             machine,
@@ -172,6 +256,17 @@ impl<'a> Placed<'a> {
             .judged
             .iter()
             .find(|judged| judged.machine == machine)
+    }
+
+    /// Whether `other` could have taken this work instead: it qualified,
+    /// and met as many of the work's preferences as the machine chosen,
+    /// so a choice made for a preference is never a mistake. A machine
+    /// not judged, as one that joined after, could have.
+    fn could_go_to(&self, other: &Judgement) -> bool {
+        let chosen = self
+            .judgement(self.machine)
+            .map_or(0, |chosen| chosen.preferred);
+        other.qualifies && other.preferred >= chosen
     }
 }
 
@@ -201,7 +296,10 @@ fn judged_by<'r>(
 /// band.
 fn regret(one: &Placed, reading: &Reading, load: f64) -> Option<Regret> {
     // A machine the work couldn't have gone to is no better choice.
-    let could = |machine: &str| one.judgement(machine).is_none_or(|judged| judged.qualifies);
+    let could = |machine: &str| {
+        one.judgement(machine)
+            .is_none_or(|judged| one.could_go_to(judged))
+    };
     let better = reading
         .machines
         .iter()
@@ -270,7 +368,7 @@ fn roomier<'a>(one: &Placed<'a>) -> Option<&'a str> {
         .judged
         .iter()
         .filter(|other| other.machine != one.machine)
-        .filter(|other| other.qualifies && !other.over && !other.unheard)
+        .filter(|other| one.could_go_to(other) && !other.over && !other.unheard)
         .find(|other| other.headroom > chosen + NEAR_BEST)
         .map(|other| other.machine.as_str())
 }
@@ -466,6 +564,93 @@ mod tests {
                 machine: "kestrel".to_owned()
             }]
         );
+    }
+
+    #[test]
+    fn bursts_say_the_cores_each_busy_session_used_in_the_middle_and_high() {
+        let readings: Vec<Reading> = (1..=10_u32)
+            .map(|minute| {
+                let mut one = reading(
+                    &format!("2026-11-16T03:{minute:02}:00Z"),
+                    &[("kestrel", 0.5), ("skiff", 0.5)],
+                );
+                // Kestrel's busy sessions take a tenth of a core more each
+                // minute: a fifth of its cores busy, over a fiftieth per
+                // core busy, is ten cores a session at the top.
+                let kestrel = &mut one.machines[0];
+                kestrel.processor = Some(0.2);
+                kestrel.busy_per_core = Some(0.2 / f64::from(minute));
+                // Skiff is busy but has no busy session to share it.
+                let skiff = &mut one.machines[1];
+                skiff.processor = Some(0.9);
+                skiff.busy_per_core = Some(0.0);
+                one
+            })
+            .collect();
+        assert_eq!(
+            judge(&[], &readings).bursts,
+            [Burst {
+                machine: "kestrel".to_owned(),
+                readings: 10,
+                median: 5.0,
+                high: 9.0,
+            }],
+            "the fifth and ninth of ten, and none where nobody was busy"
+        );
+    }
+
+    #[test]
+    fn asking_where_without_starting_is_neither_judged_nor_a_herd() {
+        // A spawn asks where, then starts, so an ask alone adds no load and
+        // counting both would make a herd of every start.
+        let records: Vec<Record> = ["00", "20", "40"]
+            .iter()
+            .map(|second| {
+                let mut asked = placed(
+                    &format!("2026-11-16T03:00:{second}Z"),
+                    "kestrel",
+                    &[("kestrel", 1.0), ("skiff", 9.0)],
+                );
+                asked.start = false;
+                asked
+            })
+            .collect();
+        let readings = [reading(
+            "2026-11-16T03:01:10Z",
+            &[("kestrel", 0.9), ("skiff", 0.1)],
+        )];
+        let hindsight = judge(&records, &readings);
+        assert_eq!((hindsight.placed, hindsight.judged), (0, 0));
+        assert_eq!(hindsight.herds, []);
+        assert_eq!(hindsight.regrets, []);
+    }
+
+    #[test]
+    fn a_machine_meeting_fewer_preferences_is_no_better_a_choice() {
+        let records: Vec<Record> = ["00", "20", "40"]
+            .iter()
+            .map(|second| {
+                let mut preferred = placed(
+                    &format!("2026-11-16T03:00:{second}Z"),
+                    "kestrel",
+                    &[("kestrel", 1.0), ("skiff", 9.0)],
+                );
+                preferred.decision.judged[0].preferred = 1;
+                preferred
+            })
+            .collect();
+        let readings = [reading(
+            "2026-11-16T03:01:10Z",
+            &[("kestrel", 0.9), ("skiff", 0.1)],
+        )];
+        let hindsight = judge(&records, &readings);
+        assert_eq!(hindsight.judged, 1, "the first, a minute before it");
+        assert_eq!(
+            hindsight.regrets,
+            [],
+            "placed where it was preferred, on purpose"
+        );
+        assert_eq!(hindsight.herds, []);
     }
 
     #[test]
