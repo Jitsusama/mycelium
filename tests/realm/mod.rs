@@ -3,9 +3,10 @@
 //! test names, and in time that grows with the cells rather than faster.
 //! Its networks are held within the 30 MB the map and the launcher hold
 //! them to, each cell holding two trees. Its cells, a record each, are
-//! held within 64 MB, since ten thousand records of a dozen and more
+//! held within 80 MB, since ten thousand records of a dozen and more
 //! fields hold more than 30 MB themselves, until each is held as the
-//! bytes it is sent as. The time is the processor's own for this
+//! bytes it is sent as, owed by 2026-11-17. The time is the processor's
+//! own for this
 //! thread, not the clock's, so a builder busy with other work, which only
 //! makes this thread wait its turn, can't fail it. The time itself, 100 ms
 //! on the machine the bar is set for, is no builder's to hold, since

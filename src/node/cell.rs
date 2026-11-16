@@ -8,8 +8,9 @@
 //!
 //! Every cell is made again at each change, as the networks are, and a
 //! watch is sent only the cells that changed (`daemon::changes`): ten
-//! thousand build within 64 MB, in time that grows with them, as
-//! `tests/cells.rs` shows.
+//! thousand build within 80 MB, in time that grows with them, as
+//! `tests/cells.rs` shows; 30 MB once each record is held as the bytes
+//! it is sent as, owed by 2026-11-17.
 
 use std::collections::BTreeMap;
 

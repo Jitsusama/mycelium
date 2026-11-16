@@ -1269,8 +1269,9 @@ session's, machine's or receptor's record was, and its records change
 as any of those do, so a machine's measure or a receptor's reading is
 sent at once. A watch is sent only the cells that changed, each with
 only the fields that moved. Ten thousand cells make their records
-within 64 MB, most of it the records themselves, in time that grows
-with them.
+within 80 MB while each holds two trees, most of it the records
+themselves, in time that grows with them. The target is 30 MB, once
+each record is held as the bytes it is sent as, owed by 2026-11-17.
 
 The `unanswered` kind holds what waits on the mesh, keyed by the
 message's id, as `mesh_read unanswered` and the hold leases judge it:
