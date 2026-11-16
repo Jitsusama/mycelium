@@ -507,9 +507,9 @@ mod here {
             // SAFETY: takes no arguments; the right it hands back is given
             // back below.
             let host = unsafe { mach_host_self() };
-            let mut processors = 0;
+            let mut processors: u32 = 0;
             let mut info: *mut c_int = ptr::null_mut();
-            let mut words = 0;
+            let mut words: u32 = 0;
             // SAFETY: each out pointer is to a live local of the type the
             // call writes.
             let said = unsafe {
@@ -527,13 +527,15 @@ mod here {
             if said != SUCCEEDED || info.is_null() {
                 return None;
             }
-            let words = usize::try_from(words).ok()?;
+            // Widened, never narrowed, on a Mac's 64 bits, so nothing from
+            // here returns before the array is given back.
+            let (words, processors) = (words as usize, processors as usize);
             // SAFETY: on success the kernel lent `words` ints at `info`,
             // read here before they are given back.
             let counts = unsafe { std::slice::from_raw_parts(info.cast::<u32>(), words) };
             let cores = counts
                 .chunks_exact(STATES)
-                .take(usize::try_from(processors).ok()?)
+                .take(processors)
                 .map(|core| [core[0], core[1], core[2], core[3]])
                 .collect();
             // SAFETY: gives back the whole array lent above, once, after
