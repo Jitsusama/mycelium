@@ -521,8 +521,21 @@ session says of itself:
   refused, as `HARBOR says it runs unfenced, but its process shows it
   fenced, so where it may land can't be told`; one naming a stricter
   stands, since the strict fence leaves nothing lasting to show. A
-  process that can't be read, or an owner that can't be proved, is
-  refused too.
+  process that can't be read, one that ends while it is read, or an
+  owner that can't be proved, is refused too, and so is a session a
+  pi host runs, since the host's environment says nothing of each
+  session's fence.
+- A fence missing from what a process shows proves nothing: a
+  `bwrap` lives only while a command it fences runs, and a session
+  may switch its fence on after its pi began. So the node looks at
+  its sessions' processes as their presences change, at most every
+  two seconds, and keeps the strictest fence each was ever seen in as
+  `fences.json` beside `carries.jsonl`, which no session lowers. A
+  carry is judged by the strictest of what the presence names, what
+  the process shows now and what was seen before, so a session once
+  seen strict that later names a looser fence is refused. Where that
+  file can't be read or kept, every ordered carry is refused. A
+  session here seen fenced says so in its record as `fence_shown`.
 
 A refusal says why and who could order it, as `OSPHT4 doesn't
 orchestrate QEST-... by this node's record, so it can't order its

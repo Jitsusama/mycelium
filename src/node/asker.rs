@@ -300,10 +300,67 @@ pub fn shown_fence(
         .iter()
         .find_map(|(owned, pid)| (owned == session).then_some(*pid))
         .ok_or_else(unproved)?;
+    // Proved, so claimed once, with when its process started.
+    let claim = claims
+        .iter()
+        .find(|claim| claim.session == session)
+        .ok_or_else(unproved)?;
+    if claim.host.is_some() {
+        return Err(format!(
+            "{session} runs in a pi host, whose environment says nothing of each session's \
+             fence, so the fence it runs in can't be told"
+        ));
+    }
+    let ticks = claim.start_ticks.ok_or_else(unproved)?;
+    shown_of(procs, &Tree::of(procs), pid, ticks, session)
+}
+
+/// The fence each session here shows it runs in, as [`shown_fence`] tells
+/// it, for every session whose owner is proved and holds no other, read
+/// with one look through the machine's processes. None where who owns
+/// what can't be told.
+pub fn shown_fences(
+    claims: &[Claim],
+    processes: &Processes,
+    hosts: &Path,
+    logs: &Path,
+) -> std::collections::BTreeMap<String, Kind> {
+    let Processes::Folder(procs) = processes else {
+        return std::collections::BTreeMap::new();
+    };
+    let Ok(owners) = proved(claims, processes, hosts, logs) else {
+        return std::collections::BTreeMap::new();
+    };
+    let tree = Tree::of(procs);
+    owners
+        .into_iter()
+        .filter_map(|(session, pid)| {
+            let claim = claims.iter().find(|claim| claim.session == session)?;
+            if claim.host.is_some() {
+                return None;
+            }
+            let shown = shown_of(procs, &tree, pid, claim.start_ticks?, &session).ok()?;
+            Some((session, shown))
+        })
+        .collect()
+}
+
+/// The fence pi `pid`, proved to own `session` alone as it started
+/// `ticks` after boot, shows: `PI_SANDBOX` as its environment began, and
+/// at least the ordinary fence where a bubblewrap runs below it in
+/// `tree`. Read only while `pid` is still that process, since the
+/// environment of a process that took its id after says nothing of it.
+fn shown_of(
+    procs: &Path,
+    tree: &Tree,
+    pid: i32,
+    ticks: u64,
+    session: &str,
+) -> Result<Kind, String> {
     let environ = fs::read(procs.join(pid.to_string()).join("environ")).map_err(|_| {
         format!("{session}'s process can't be read, so the fence it runs in can't be told")
     })?;
-    let started = environ
+    let began = environ
         .split(|byte| *byte == 0)
         .find_map(|pair| pair.strip_prefix(SANDBOX))
         .map_or(Kind::None, |value| match value.trim_ascii() {
@@ -311,45 +368,62 @@ pub fn shown_fence(
             b"fence" => Kind::Fence,
             _ => Kind::None,
         });
-    let alone = claims
-        .iter()
-        .any(|claim| claim.session == session && claim.host.is_none());
-    Ok(if alone && runs_below(procs, pid, BWRAP) {
-        started.max(Kind::Fence)
+    let fenced_below = tree.runs_below(pid, BWRAP);
+    // Read again last, so what was read before was that process's.
+    if started(procs, pid) != Some(ticks) {
+        return Err(format!(
+            "{session}'s process {pid} ended while it was read, so the fence it runs in can't \
+             be told"
+        ));
+    }
+    Ok(if fenced_below {
+        began.max(Kind::Fence)
     } else {
-        started
+        began
     })
 }
 
-/// Whether a process named `name` runs below process `pid` in `procs`, at
-/// any depth.
-fn runs_below(procs: &Path, pid: i32, name: &str) -> bool {
-    let Ok(entries) = fs::read_dir(procs) else {
-        return false;
-    };
-    let all: Vec<(i32, String, i32)> = entries
-        .flatten()
-        .take(LOOKED_THROUGH)
-        .filter_map(|entry| {
-            let child: i32 = entry.file_name().to_str()?.parse().ok()?;
-            let status = fs::read_to_string(entry.path().join("status")).ok()?;
-            let (named, parent) = named(&status)?;
-            Some((child, named.to_owned(), parent))
-        })
-        .collect();
-    let mut below = vec![pid];
-    let mut seen = std::collections::BTreeSet::from([pid]);
-    while let Some(parent) = below.pop() {
-        for (child, named, _) in all.iter().filter(|(_, _, of)| *of == parent) {
-            if named == name {
-                return true;
-            }
-            if seen.insert(*child) {
-                below.push(*child);
+/// The machine's processes, each by its id with its name and parent, as
+/// one look through them found them.
+struct Tree(Vec<(i32, String, i32)>);
+
+impl Tree {
+    /// The processes in `procs`, at most [`LOOKED_THROUGH`] of them.
+    fn of(procs: &Path) -> Self {
+        let Ok(entries) = fs::read_dir(procs) else {
+            return Self(Vec::new());
+        };
+        Self(
+            entries
+                .flatten()
+                .take(LOOKED_THROUGH)
+                .filter_map(|entry| {
+                    let child: i32 = entry.file_name().to_str()?.parse().ok()?;
+                    let status = fs::read_to_string(entry.path().join("status")).ok()?;
+                    let (named, parent) = named(&status)?;
+                    Some((child, named.to_owned(), parent))
+                })
+                .collect(),
+        )
+    }
+
+    /// Whether a process named `name` runs below process `pid`, at any
+    /// depth.
+    fn runs_below(&self, pid: i32, name: &str) -> bool {
+        let mut below = vec![pid];
+        let mut seen = std::collections::BTreeSet::from([pid]);
+        while let Some(parent) = below.pop() {
+            for (child, named, _) in self.0.iter().filter(|(_, _, of)| *of == parent) {
+                if named == name {
+                    return true;
+                }
+                if seen.insert(*child) {
+                    below.push(*child);
+                }
             }
         }
+        false
     }
-    false
 }
 
 /// Whether process `pid` in `procs` holds open the log pi keeps of
@@ -673,6 +747,7 @@ fn mounts_otherwise(procs: &Path, pid: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     use serde_json::json;
@@ -1229,6 +1304,87 @@ mod tests {
                     .to_owned()
             ),
             "a host whose record doesn't hold it owns it not"
+        );
+    }
+
+    /// Writes the record of the host `work-background`, run by pi 58, as
+    /// holding `sessions`.
+    fn hosts_in_58(hosts: &Path, sessions: &[&str]) {
+        let sessions: Vec<Value> = sessions
+            .iter()
+            .map(|id| json!({"id": id, "state": "running"}))
+            .collect();
+        fs::write(
+            hosts.join("58-500.json"),
+            json!({"key": "work-background",
+                   "owner": {"pid": 58, "startedAt": 1, "startTicks": 500},
+                   "sessions": sessions})
+            .to_string(),
+        )
+        .expect("its host's record is written");
+    }
+
+    #[test]
+    fn a_hosted_session_shows_no_fence_of_its_own() {
+        let hosted = fenced_pi("PI_SANDBOX=strict\0", &[(71, "bwrap", 58)]);
+        hosts_in_58(hosted.2.path(), &["s-own"]);
+        assert_eq!(
+            shown(&hosted, Some("work-background")),
+            Err(
+                "s-own runs in a pi host, whose environment says nothing of each session's \
+                 fence, so the fence it runs in can't be told"
+                    .to_owned()
+            ),
+            "a host's environment and commands are those of every session it holds"
+        );
+    }
+
+    #[test]
+    fn a_process_that_ends_while_it_is_read_shows_no_fence() {
+        let (procs, _logs, _hosts) = fenced_pi("PI_SANDBOX=strict\0", &[]);
+        let tree = Tree::of(procs.path());
+        assert_eq!(
+            shown_of(procs.path(), &tree, 58, 500, "s-own"),
+            Ok(Kind::Strict),
+            "while it runs as it was proved to"
+        );
+        started(procs.path(), 58, "pi", 900);
+        assert_eq!(
+            shown_of(procs.path(), &tree, 58, 500, "s-own"),
+            Err(
+                "s-own's process 58 ended while it was read, so the fence it runs in can't be \
+                 told"
+                    .to_owned()
+            ),
+            "an environment read once its id was another's says nothing of it"
+        );
+    }
+
+    #[test]
+    fn the_fences_shown_are_those_of_each_session_proved_to_run_alone() {
+        let (procs, logs, hosts) = fenced_pi("PI_SANDBOX=fence\0", &[]);
+        hosts_in_58(hosts.path(), &["s-hosted"]);
+        holds_log(procs.path(), 58, logs.path(), "s-hosted");
+        let claims = [
+            claim("s-own", 58, Some(500), None),
+            claim("s-hosted", 58, Some(500), Some("work-background")),
+            claim("s-ghost", 59, Some(1), None),
+        ];
+        let shown = |claims: &[Claim]| {
+            shown_fences(claims, &folder(procs.path()), hosts.path(), logs.path())
+        };
+        assert_eq!(
+            shown(&claims),
+            BTreeMap::from([("s-own".to_owned(), Kind::Fence)]),
+            "neither a hosted session nor one whose owner isn't proved"
+        );
+        let twice = [
+            claim("s-own", 58, Some(500), None),
+            claim("s-own", 58, Some(500), None),
+        ];
+        assert!(
+            shown(&twice).is_empty(),
+            "nor any where who owns a session can't be told"
         );
     }
 
