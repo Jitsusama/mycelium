@@ -861,7 +861,7 @@ fn reaches(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
@@ -1017,7 +1017,7 @@ mod tests {
     /// A machine as it might say itself: `system` on `x86_64` with eight
     /// cores, plugged in, idle, with `free` GiB of its 64 and half its
     /// disk free, and reaching `reach`.
-    fn machine(name: &str, system: &str, free: u64, reach: &[&str]) -> Machine {
+    pub(crate) fn machine(name: &str, system: &str, free: u64, reach: &[&str]) -> Machine {
         let nowhere = Sources {
             home: "/".into(),
             queue: None,
@@ -1081,7 +1081,7 @@ mod tests {
         }
     }
 
-    fn needing(needs: Vec<Need>) -> Work {
+    pub(crate) fn needing(needs: Vec<Need>) -> Work {
         Work {
             needs,
             prefers: Vec::new(),
@@ -1251,7 +1251,7 @@ mod tests {
 
     /// `machine` working as hard as `cpu` percent of the last ten seconds
     /// waited on a processor, as its queue says.
-    fn pressed(mut machine: Machine, cpu: f64) -> Machine {
+    pub(crate) fn pressed(mut machine: Machine, cpu: f64) -> Machine {
         machine.room.as_mut().expect("a room").pressure.cpu = cpu;
         machine
     }

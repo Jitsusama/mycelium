@@ -243,14 +243,12 @@ enum Action {
     /// minute, and says which placements its machine regretted a minute
     /// on, carrying more than another with room, and which herded onto
     /// one machine while another had more headroom, as a JSON line.
-    #[command(after_help = "Example:\n  mycelium placements --hours 24")]
-    Placements {
-        /// How many hours back to judge.
-        #[arg(long, default_value_t = 1)]
-        hours: u16,
-        #[command(flatten)]
-        here: Here,
-    },
+    ///
+    /// With `--replay`, places each kept start again under the weights in
+    /// a JSON file, any left out taking the starting ones, and says which
+    /// it would have placed elsewhere and hindsight on both.
+    #[command(after_help = "Example:\n  mycelium placements --hours 168 --replay weights.json")]
+    Placements(PlacementsAsked),
     /// Speaks in a quest's web of murmurs and ties.
     ///
     /// A web is what a quest's sessions on every machine share: this says
@@ -960,6 +958,18 @@ fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
 }
 
 #[derive(clap::Args)]
+struct PlacementsAsked {
+    /// How many hours back to judge.
+    #[arg(long, default_value_t = 1)]
+    hours: u16,
+    /// A JSON file of weights to place the kept starts again under.
+    #[arg(long, value_name = "WEIGHTS")]
+    replay: Option<PathBuf>,
+    #[command(flatten)]
+    here: Here,
+}
+
+#[derive(clap::Args)]
 struct WebAsked {
     /// The quest whose web it is, such as `QEST-20261112-HARBOR`.
     quest: String,
@@ -1202,7 +1212,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Said => print_records(&socket, mycelium::words::KIND),
         Action::Health { here } => health(&socket, here, realm),
         Action::Balance { follow, here } => balance(&socket, here, follow),
-        Action::Placements { hours, here } => placements(here, hours),
+        Action::Placements(asked) => placements(asked),
         Action::Swarm {
             words,
             output,
@@ -1666,8 +1676,18 @@ fn balance(socket: &Path, here: Here, follow: bool) -> io::Result<()> {
 }
 
 /// Prints what hindsight says of the placements kept over the last
-/// `hours`, judged by the balance kept beside them.
-fn placements(here: Here, hours: u16) -> io::Result<()> {
+/// `hours`, judged by the balance kept beside them, or, given a file of
+/// weights to `replay`, what placing them again under those says.
+fn placements(asked: PlacementsAsked) -> io::Result<()> {
+    let PlacementsAsked {
+        hours,
+        replay,
+        here,
+    } = asked;
+    let weights: Option<mycelium::placement::Weights> = replay
+        .as_deref()
+        .map(|path| serde_json::from_slice(&std::fs::read(path)?).map_err(io::Error::other))
+        .transpose()?;
     let state = here.state.unwrap_or_else(place::state);
     let now = jiff::Zoned::now();
     let since = now
@@ -1695,7 +1715,10 @@ fn placements(here: Here, hours: u16) -> io::Result<()> {
                     .is_ok_and(|at: jiff::Timestamp| at >= since)
         })
         .collect();
-    print_line(&mycelium::hindsight::judge(&records, &readings))
+    match weights {
+        Some(weights) => print_line(&mycelium::replay::replay(&records, &readings, &weights)),
+        None => print_line(&mycelium::hindsight::judge(&records, &readings)),
+    }
 }
 
 /// Every line of the day files in `folder` from `since` on that reads as
