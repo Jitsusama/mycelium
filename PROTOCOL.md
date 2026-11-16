@@ -873,8 +873,8 @@ reaches now, as of when one last did), `os`, `system` (`linux` or
 Mac's is its identifier, such as `Mac14,2`), `model_name`, its kind in
 words (`MacBook Air`, absent from a node too old to say it), `cpu`
 (`model`, `cores`, and `busy`, the share of its cores' time spent busy
-across the last five seconds or more, 0 to 1, absent where the node
-doesn't count it: a Mac's for now, or a node too old to say), `memory`
+across the last five seconds or more, 0 to 1, absent from a node too old
+to count it, which on a Mac is one older than its other facts), `memory`
 and `disk` in bytes (the disk holding its
 account's home), `disk_free`, how much of that disk its account may
 still write, in bytes (absent from a node too old to say), `disk_band`,

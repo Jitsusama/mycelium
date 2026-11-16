@@ -457,10 +457,90 @@ mod here {
         said("/usr/bin/pmset", &["-g", "batt"]).and_then(|said| macos::power(&said))
     }
 
-    /// Not counted yet: a Mac says it only through the Mach host's
-    /// processor info, which waits on its own change.
+    /// What the Mach host has counted of its cores' time.
     pub(super) fn ticks() -> Option<crate::busy::Ticks> {
-        None
+        mach::cores().map(|cores| crate::busy::mac(&cores))
+    }
+
+    mod mach {
+        //! The Mach host's count of each core's time. A Mac says it
+        //! nowhere else: no file holds it, and `top` or `iostat` would
+        //! have to watch for a second each time asked.
+
+        use std::ffi::c_int;
+        use std::ptr;
+
+        use crate::busy::MachCore;
+
+        /// `PROCESSOR_CPU_LOAD_INFO`: each core's ticks by state.
+        const CPU_LOAD_INFO: c_int = 2;
+        /// `KERN_SUCCESS`.
+        const SUCCEEDED: c_int = 0;
+        /// `CPU_STATE_MAX`: the states each core's ticks are kept in.
+        const STATES: usize = 4;
+
+        unsafe extern "C" {
+            static mach_task_self_: u32;
+            fn mach_host_self() -> u32;
+            fn mach_port_deallocate(task: u32, name: u32) -> c_int;
+            fn host_processor_info(
+                host: u32,
+                flavor: c_int,
+                processors: *mut u32,
+                info: *mut *mut c_int,
+                words: *mut u32,
+            ) -> c_int;
+            fn vm_deallocate(task: u32, address: usize, size: usize) -> c_int;
+        }
+
+        /// Each core's ticks, or none where the host won't say. The host
+        /// port it asks through is given back, and so is the array the
+        /// kernel lent the answer in, so asking every few seconds keeps
+        /// nothing.
+        #[expect(
+            unsafe_code,
+            reason = "Mach says a core's ticks only through these calls, and no crate here binds them"
+        )]
+        pub(in super::super) fn cores() -> Option<Vec<MachCore>> {
+            // SAFETY: a process's own task port, set before main runs.
+            let task = unsafe { mach_task_self_ };
+            // SAFETY: takes no arguments; the right it hands back is given
+            // back below.
+            let host = unsafe { mach_host_self() };
+            let mut processors = 0;
+            let mut info: *mut c_int = ptr::null_mut();
+            let mut words = 0;
+            // SAFETY: each out pointer is to a live local of the type the
+            // call writes.
+            let said = unsafe {
+                host_processor_info(
+                    host,
+                    CPU_LOAD_INFO,
+                    &raw mut processors,
+                    &raw mut info,
+                    &raw mut words,
+                )
+            };
+            // SAFETY: gives back the send right mach_host_self made. A
+            // failure leaves one right more, which nothing can mend.
+            unsafe { mach_port_deallocate(task, host) };
+            if said != SUCCEEDED || info.is_null() {
+                return None;
+            }
+            let words = usize::try_from(words).ok()?;
+            // SAFETY: on success the kernel lent `words` ints at `info`,
+            // read here before they are given back.
+            let counts = unsafe { std::slice::from_raw_parts(info.cast::<u32>(), words) };
+            let cores = counts
+                .chunks_exact(STATES)
+                .take(usize::try_from(processors).ok()?)
+                .map(|core| [core[0], core[1], core[2], core[3]])
+                .collect();
+            // SAFETY: gives back the whole array lent above, once, after
+            // its last read.
+            unsafe { vm_deallocate(task, info.addr(), words * size_of::<c_int>()) };
+            Some(cores)
+        }
     }
 
     pub(super) fn read() -> Read {

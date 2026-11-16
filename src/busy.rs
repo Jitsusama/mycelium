@@ -51,6 +51,27 @@ pub fn linux(stat: &str) -> Option<Ticks> {
     })
 }
 
+/// The counts a Mac's Mach host keeps of each core's time, in its
+/// `CPU_STATE_*` order: user, system, idle and nice.
+pub type MachCore = [u32; 4];
+
+/// The counts of every core a Mac's Mach host says, summed. Each core's
+/// count is its own 32 bits and wraps after about 490 days at 100 a
+/// second; a sum gone backwards starts the stretch again, as on Linux.
+#[must_use]
+pub fn mac(cores: &[MachCore]) -> Ticks {
+    cores.iter().fold(
+        Ticks { busy: 0, total: 0 },
+        |sum, &[user, system, idle, nice]| {
+            let busy = u64::from(user) + u64::from(system) + u64::from(nice);
+            Ticks {
+                busy: sum.busy + busy,
+                total: sum.total + busy + u64::from(idle),
+            }
+        },
+    )
+}
+
 /// How finely use is said: in hundredths.
 const HUNDREDTHS: f64 = 100.0;
 
@@ -125,6 +146,29 @@ mod tests {
         assert_eq!(linux("cpu  4705 356\n"), None, "too few counts");
         assert_eq!(linux("cpu  a b c d e f g h\n"), None, "not numbers");
         assert_eq!(linux("intr 1 2 3\n"), None, "no processor line");
+    }
+
+    #[test]
+    fn a_macs_cores_count_busy_and_idle_time() {
+        // User, system, idle and nice, for each of two cores.
+        let cores = [[10, 5, 80, 5], [20, 0, 70, 10]];
+        assert_eq!(
+            mac(&cores),
+            Ticks {
+                busy: 10 + 5 + 5 + 20 + 10,
+                total: 200,
+            },
+            "nice is busy, as on Linux"
+        );
+        assert_eq!(mac(&[]), Ticks { busy: 0, total: 0 }, "no cores said");
+        assert_eq!(
+            mac(&[[u32::MAX; 4]; 2]),
+            Ticks {
+                busy: 6 * u64::from(u32::MAX),
+                total: 8 * u64::from(u32::MAX),
+            },
+            "each core's 32 bits sum past 32 bits"
+        );
     }
 
     fn at(busy: u64, total: u64) -> Ticks {
