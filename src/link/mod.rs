@@ -2719,6 +2719,7 @@ mod tests {
             held: dir.join("held"),
             asking: None,
             steers: dir.join("inboxes"),
+            health: None,
         }
     }
 
