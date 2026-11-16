@@ -25,6 +25,10 @@ use serde::{Deserialize, Serialize};
 use crate::facts::{Machine, Readiness};
 use crate::record::{Session, State};
 
+mod shown;
+
+pub use shown::said;
+
 /// The name of these measures' definitions, said in every reading.
 pub const MEASURES: &str = "balance/2";
 

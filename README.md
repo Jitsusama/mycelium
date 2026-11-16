@@ -61,15 +61,17 @@ The harness mesh's messages and presence, carried between machines:
   saying which to update) while none reaches it, each machine's
   sessions, the presences still saying they run with their process gone,
   and how long the node took to answer.
-- `mycelium balance` prints how evenly the realm's machines carry its
-  work as one JSON line: each machine's load (the largest of the memory
-  it uses, how busy its processors are and how long its work stalls),
-  whether it is over or has room,
-  its busy and idle sessions, how far the loads spread, and flags for a
-  machine over while another has room, one resource spent while the
-  other idles, and facts too old to place by. `--follow` reads each
-  minute, says the flags seen in most of the last ten, and keeps each
-  line in the state folder's `balance`, one file a day.
+- `mycelium balance` says how evenly the realm's machines carry its
+  work: a row for each machine's load (the largest of the memory it
+  uses, how busy its processors are and how long its work stalls),
+  whether it is over or has room, and its busy and idle sessions; how
+  far the loads spread; and a sentence for each thing wrong, saying what
+  follows: a machine over while another has room, one resource spent
+  while the other idles, loads spread too far, or facts too old to
+  place by. `-o json` prints the same as one JSON line. `--follow` reads
+  each minute, says the flags seen in most of the last ten, and keeps
+  each reading as a JSON line in the state folder's `balance`, one file
+  a day.
 - `mycelium placements` judges in hindsight how well this node placed
   work over the last hour (`--hours` for more), from the placements it
   kept and the balance kept beside them, as one JSON line: each start

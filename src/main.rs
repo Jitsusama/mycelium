@@ -221,22 +221,18 @@ enum Action {
     },
     /// Prints how evenly the realm's machines carry its work.
     ///
-    /// One JSON line says each machine's load, the larger of the memory it
-    /// uses and how long its work stalls, whether it is over or has room,
-    /// its busy and idle sessions, how far the loads spread, and what is
-    /// wrong: a machine over while another has room, one resource spent
-    /// while the other idles, or facts too old to place by. With
-    /// `--follow`, a line each minute, each saying the flags seen in most
-    /// of the last ten, also kept in the state folder's `balance`, one file
-    /// a day.
+    /// Says each machine's load, the largest of the memory it uses, the
+    /// share of its processors it spends and how long its work stalls,
+    /// whether it is over or has room, its busy and idle sessions, how far
+    /// the loads spread, and what is wrong, each in a sentence saying what
+    /// follows: a machine over while another has room, one resource spent
+    /// while the other idles, loads spread too far, or facts too old to
+    /// place by. With `-o json`, the same as one JSON line. With
+    /// `--follow`, again each minute, each saying the flags seen in most
+    /// of the last ten, each kept as a JSON line in the state folder's
+    /// `balance`, one file a day.
     #[command(after_help = "Example:\n  mycelium balance --follow")]
-    Balance {
-        /// Reads each minute until stopped, keeping each line.
-        #[arg(long)]
-        follow: bool,
-        #[command(flatten)]
-        here: Here,
-    },
+    Balance(BalanceAsked),
     /// Says how well this node placed work, judged in hindsight.
     ///
     /// Reads the placements this node kept and the balance kept each
@@ -590,6 +586,18 @@ enum Format {
     Text,
     /// For a program, a JSON line each.
     Json,
+}
+
+/// What is asked of the realm's balance.
+#[derive(clap::Args)]
+struct BalanceAsked {
+    /// Reads each minute until stopped, keeping each line.
+    #[arg(long)]
+    follow: bool,
+    #[command(flatten)]
+    output: Output,
+    #[command(flatten)]
+    here: Here,
 }
 
 /// What is asked of the networks, by the words after `networks`.
@@ -1211,7 +1219,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Unanswered => print_records(&socket, mycelium::unanswered::KIND),
         Action::Said => print_records(&socket, mycelium::words::KIND),
         Action::Health { here } => health(&socket, here, realm),
-        Action::Balance { follow, here } => balance(&socket, here, follow),
+        Action::Balance(asked) => balance(&socket, &realm, asked),
         Action::Placements(asked) => placements(asked),
         Action::Swarm {
             words,
@@ -1645,10 +1653,24 @@ fn health(socket: &Path, here: Here, realm: String) -> io::Result<()> {
 const BALANCE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Prints how evenly the realm's machines carry its work, as
-/// [`mycelium::balance`] reads it, once or, following, each minute.
-fn balance(socket: &Path, here: Here, follow: bool) -> io::Result<()> {
+/// [`mycelium::balance`] reads it, for a person or as a JSON line, once
+/// or, following, each minute.
+fn balance(socket: &Path, realm: &str, asked: BalanceAsked) -> io::Result<()> {
+    let BalanceAsked {
+        follow,
+        output,
+        here,
+    } = asked;
+    let print = |reading: &mycelium::balance::Reading| {
+        if output.json() {
+            return print_line(reading);
+        }
+        let look = look();
+        let shown = mycelium::balance::said(reading, realm, look.width, look.colour);
+        writeln!(io::stdout().lock(), "{shown}")
+    };
     if !follow {
-        return print_line(&balance_read(socket)?);
+        return print(&balance_read(socket)?);
     }
     let kept = here.state.unwrap_or_else(place::state).join("balance");
     std::fs::create_dir_all(&kept)?;
@@ -1667,7 +1689,7 @@ fn balance(socket: &Path, here: Here, follow: bool) -> io::Result<()> {
                     .append(true)
                     .open(kept.join(format!("{day}.jsonl")))?
                     .write_all(line.as_bytes())?;
-                print_line(&reading)?;
+                print(&reading)?;
             }
             Err(error) => eprintln!("mycelium balance: couldn't read the node: {error}"),
         }
