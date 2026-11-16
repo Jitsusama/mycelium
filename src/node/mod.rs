@@ -8800,7 +8800,7 @@ mod tests {
             place: format!("{machine}-place"),
             machine: machine.to_owned(),
             until,
-            costs: crate::offer::Costs {
+            costs: offer::Costs {
                 hourly: "0.12".to_owned(),
                 currency: "USD".to_owned(),
             },
