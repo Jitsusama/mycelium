@@ -34,6 +34,7 @@ use crate::mesh;
 use crate::offer::{self, Offer};
 use crate::place;
 use crate::placement::{self, Miss, Need, Placement, Work};
+use crate::receptor;
 use crate::record::{Message, Session, State as SessionState};
 use crate::room;
 use crate::served::{self, Served};
@@ -296,6 +297,9 @@ pub struct Given {
     /// Where this machine's configuration declares it, whose fences say
     /// what ground a carry ordered from here may land on.
     pub declared: PathBuf,
+    /// The folder its receptors each say how they stand in, if it serves
+    /// any (`receptor`).
+    pub receptors: Option<PathBuf>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -304,7 +308,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 8] = [
+pub const HOLDS: [&str; 9] = [
     "session",
     "machine",
     "message",
@@ -313,6 +317,7 @@ pub const HOLDS: [&str; 8] = [
     unanswered::KIND,
     words::KIND,
     EVENT,
+    receptor::KIND,
 ];
 
 /// The kind of record that is one thing a session did, as its presence's
@@ -733,6 +738,8 @@ struct Shared<S> {
     /// The records its watches read, built once for each change and shared
     /// by every connection's.
     built: Arc<daemon::Built>,
+    /// Its receptors, as last judged.
+    receptors: receptor::Held,
 }
 
 /// What changes each time the node's sessions or the realm's machines may
@@ -741,6 +748,7 @@ struct Said {
     sessions: watch::Sender<u64>,
     machines: watch::Sender<u64>,
     messages: watch::Sender<u64>,
+    receptors: watch::Sender<u64>,
 }
 
 impl Default for Said {
@@ -749,6 +757,7 @@ impl Default for Said {
             sessions: watch::Sender::new(0),
             machines: watch::Sender::new(0),
             messages: watch::Sender::new(0),
+            receptors: watch::Sender::new(0),
         }
     }
 }
@@ -785,6 +794,7 @@ impl<S: Clone> Clone for Shared<S> {
             flows: self.flows.clone(),
             measured: self.measured.clone(),
             built: self.built.clone(),
+            receptors: self.receptors.clone(),
         }
     }
 }
@@ -808,6 +818,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             open,
             words,
             events,
+            receptors,
         ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
@@ -849,6 +860,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // A hold says nothing more until it ends, when it is gone.
             (open, vec!["waiting_on"]),
             (words, vec!["taken_up", "answered", "failed"]),
+            (receptors, vec!["state", "read_at", "counts"]),
         ])
         .into_iter()
         .chain(served)
@@ -898,6 +910,13 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             unanswered::KIND => Some(self.unanswered_records()),
             words::KIND => Some(self.word_records()),
             EVENT => Some(self.event_records()),
+            receptor::KIND => Some(receptor::records(
+                &self
+                    .receptors
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                &self.machine,
+            )),
             _ => self.served.records(kind),
         }
     }
@@ -919,6 +938,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // session takes its turn on them, which its presence says, and
             // a word kept tells its watchers too.
             words::KIND => Some(self.said.sessions.subscribe()),
+            receptor::KIND => Some(self.said.receptors.subscribe()),
             _ => self.served.told(kind),
         }
     }
@@ -1092,7 +1112,18 @@ impl<S: Store> Shared<S> {
             logs,
             words,
             declared,
+            receptors,
         } = given;
+        let said = Arc::<Said>::default();
+        let held = receptor::Held::default();
+        if let Some(folder) = receptors {
+            tokio::spawn(receptor::keep(
+                folder,
+                hello.realm.clone(),
+                Arc::clone(&held),
+                said.receptors.clone(),
+            ));
+        }
         let shared = Self {
             processes: processes.into(),
             carries,
@@ -1119,10 +1150,11 @@ impl<S: Store> Shared<S> {
             realm: hello.realm,
             starter: starter.map(Arc::new),
             asks: Asks::default(),
-            said: Arc::default(),
+            said,
             flows: Arc::new(flows),
             measured: Arc::default(),
             built: Arc::default(),
+            receptors: held,
         };
         let kept = Kept {
             sharing,
@@ -2576,6 +2608,7 @@ mod tests {
             logs: "/nowhere/sessions".into(),
             words: words::Book::at("/nowhere/said.jsonl".into()),
             declared: "/nowhere/declared.json".into(),
+            receptors: None,
         }
     }
 
@@ -2622,6 +2655,7 @@ mod tests {
         let logs = socket.with_file_name("sessions");
         let words = words::Book::at(socket.with_file_name("said.jsonl"));
         let declared = socket.with_file_name("declared.json");
+        let receptors = Some(socket.with_file_name("receptors"));
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -2642,6 +2676,7 @@ mod tests {
                 logs,
                 words,
                 declared,
+                receptors,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.

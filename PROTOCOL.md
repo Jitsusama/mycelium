@@ -968,7 +968,8 @@ in milliseconds.
 
 A record carries `key` (`session:<id>`, `machine:<name>`,
 `message:<id>`, `team:<address>`, `network:<name>`, `unanswered:<id>`,
-`said:<id>` or `event:<session>:<at>`), `kind`, `heard` (milliseconds
+`said:<id>`, `event:<session>:<at>` or `receptor:<source>`), `kind`,
+`heard` (milliseconds
 since the epoch) and the fields `Sessions`, `Machines` and `Messages`
 give it. A field its source named `key`, `kind` or `heard`, such as a
 job's own `kind`, is kept under `source` rather than lost beneath the
@@ -1001,8 +1002,8 @@ session answering to nobody and leading nothing is in no team.
 The `network` kind holds each network of the realm, keyed by its name
 as the mesh names its group, such as `repo.skiff` or `machines`, made
 by the very model `mycelium networks` draws, with its fields: its
-`shape` (`orchestration`, `project`, `repository`, `group` or
-`machines`), the `short` name a person types, its `title` and `glyph`
+`shape` (`orchestration`, `project`, `repository`, `group`,
+`machines` or `outside`), the `short` name a person types, its `title` and `glyph`
 where something says them, the network it is `within`, its `cells` and
 the `machines` they run on, and `counts` of its sessions as
 `needs-you`, `stuck`, `moving`, `quiet` and `dormant`. A network is
@@ -1060,6 +1061,10 @@ and never changes, and comes with its session's next presence. A page
 polling the realm reads the same events as lines of `mycelium networks
 -o json`; a watch of this kind is for a reader that wants each as it
 comes.
+
+The `receptor` kind holds each receptor of this machine, keyed by the
+source it senses, as [Receptors](#receptors) says; its live fields are
+`state`, `read_at` and `counts`.
 
 A team's `glyph` is the shape every view draws it by: `square`,
 `triangle`, `plus`, `hexagon`, `circle`, `down-triangle` or `star`.
@@ -1156,8 +1161,8 @@ which is no trouble, and a folder not there is looked for again each
 minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine`,
-`message`, `team`, `network`, `unanswered`, `said` or `event`, can't be
-served.
+`message`, `team`, `network`, `unanswered`, `said`, `event` or
+`receptor`, can't be served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and
@@ -1167,6 +1172,54 @@ its id `<ADDRESS>/<id>`, holding its `address`, its `id` and its
 being written left for the next read. Only each inbox's newest 20 talks
 are served. The inboxes are watched to any depth, so a talk is heard as
 its session writes each line, in an inbox made since.
+
+### Receptors
+
+A receptor senses one outside source for its person, such as Slack or
+mail, intake only: nothing it runs sends, replies, reacts or marks
+anything read. It says how it stands in a file of its own the node
+serves as the `receptor` kind, and the networks draw it as a cell of
+its source's `outside.<source>` network, beyond the machines.
+
+The file is `receptors/<source>.json` in the realm's state folder,
+written whole through a dot-file renamed into place, the folder `0700`
+and the file `0600`. `mycelium receptors say SOURCE --state STATE
+--every SECS --pid PID` writes it, with `--hour`, `--today` and
+`--addressed` for its counts, and takes nothing else. It holds counts
+and times alone, never what was read:
+
+| Field | What it is |
+| --- | --- |
+| `source` | `slack`, `mail`, `calendar`, `calls`, `reviews`, `github` or `messages` |
+| `realm` | the realm it senses for, which must be the node's |
+| `state` | `reading`, `quiet`, `failing` or `off` |
+| `since` | when the process keeping it began saying so |
+| `read_at` | when it last read its source |
+| `every` | how often it reads, from 1 second to a day |
+| `pid`, `started` | the process keeping it, and that process's start in clock ticks since boot |
+| `counts` | `hour`, `today`, and `addressed`, of today's those addressed to its person |
+
+The record is an allow-list: a file holding any other field, a word
+outside those listed, or a name that isn't its source's is malformed,
+and the node leaves it out, as it does a file of another realm. So a
+channel's name or a mail's subject can't reach the map by any field. No
+count may pass `today`, and these bounds hold as a file is read as well
+as written. A pid that isn't running is refused as it is written, so a
+pid used again later can't read as the receptor alive.
+
+The node reads only a regular file of at most 4 KiB, never following a
+link and never waiting on a pipe, and reads each off its runtime, so
+nothing planted in the folder can stall it. A receptors folder that is
+a link is refused as it is written and left unread, and a dot-file
+already standing where one is staged is removed rather than written
+through.
+
+The node judges each file rather than believing it, as it reads each
+change to the folder and every 30 seconds besides: a receptor whose
+process is gone, or whose pid now names a process that started at
+another time, is `off`, and one that read nothing for three of its
+rounds is `failing`. Each record is heard at its `read_at`, and says
+the `machine` it runs on.
 
 ## A Held Session
 

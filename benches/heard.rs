@@ -184,6 +184,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 logs: "/nowhere/sessions".into(),
                 words: mycelium::words::Book::at("/nowhere/said.jsonl".into()),
                 declared: "/nowhere/declared.json".into(),
+                receptors: None,
             },
             bound,
             until_stopped,

@@ -26,10 +26,12 @@ pub(super) enum Kept {
 
 use Kept::{Only, Whole};
 
-/// What the networks read of a record: a team's, a session's or a
-/// machine's fields, as `Mycelium::of` and the swarm's names read them.
+/// What the networks read of a record: a team's, a session's, a
+/// machine's or a receptor's fields, as `Mycelium::of`,
+/// `Mycelium::sensing` and the swarm's names read them.
 pub(super) const RECORD: Kept = Only(&[
     ("address", Whole),
+    ("counts", Whole),
     ("doing", Whole),
     ("events", Whole),
     ("glyph", Whole),
@@ -43,6 +45,8 @@ pub(super) const RECORD: Kept = Only(&[
     ("presence", PRESENCE),
     ("quest", Whole),
     ("room", Only(&[("pressure", Only(&[("cpu", Whole)]))])),
+    ("since", Whole),
+    ("source", Whole),
     ("standing", Whole),
     ("state", Whole),
     ("step", Whole),

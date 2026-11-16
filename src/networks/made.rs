@@ -1,6 +1,7 @@
 //! How the mycelium is made from the node's records: each session's cell
 //! as it is read, the networks its cells join, titled and nested as the
-//! swarm's teams, quests and repositories say, and the machines' own.
+//! swarm's teams, quests and repositories say, the machines' own, and an
+//! outside network for each source the receptors sense.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
@@ -10,6 +11,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::{Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Usage, kept};
+use crate::receptor::{self, Counts, Source};
 use crate::swarm::{self, Standing};
 
 impl Mycelium {
@@ -112,6 +114,66 @@ impl Mycelium {
             events,
         }
     }
+
+    /// This mycelium with the cells the node's `receptors` records make,
+    /// each on the outside network of the source it senses. A record that
+    /// names no source a receptor senses, or no machine, makes nothing.
+    #[must_use]
+    pub fn sensing(mut self, receptors: &[Value]) -> Self {
+        let cells: Vec<Cell> = receptors.iter().filter_map(receptor_cell).collect();
+        if cells.is_empty() {
+            return self;
+        }
+        let mut sensing: BTreeMap<&str, Vec<&Cell>> = BTreeMap::new();
+        for cell in &cells {
+            for name in &cell.networks {
+                sensing.entry(name).or_default().push(cell);
+            }
+        }
+        let outside = sensing.into_iter().map(|(name, cells)| {
+            let mut network = network_of(name, Shape::Outside, &cells);
+            network.title = cells.first().and_then(|cell| cell.title.clone());
+            network
+        });
+        let mut networks = std::mem::take(&mut self.networks);
+        networks.extend(outside);
+        self.networks = ordered(networks);
+        self.cells.extend(cells);
+        self.places = Places::of(&self.networks, &self.cells);
+        self
+    }
+}
+
+/// A receptor's record as a cell, named for its source and its machine,
+/// or none for one naming no source a receptor senses, or no machine.
+fn receptor_cell(record: &Value) -> Option<Cell> {
+    let source = Source::named(record["source"].as_str()?)?;
+    let machine = record["machine"].as_str()?.to_owned();
+    let text = |field: &str| record[field].as_str().map(str::to_owned);
+    Some(Cell {
+        kind: "cell",
+        name: format!("{}@{machine}", source.name()),
+        is: Is::Receptor,
+        title: Some(source.title().to_owned()),
+        id: None,
+        window: None,
+        standing: None,
+        doing: None,
+        asks: None,
+        repo: None,
+        usage: Usage::default(),
+        leads: Vec::new(),
+        machine: Some(machine),
+        since: text("since"),
+        quest: None,
+        plan: None,
+        cwd: None,
+        state: text("state"),
+        busy: None,
+        runs: None,
+        counts: serde_json::from_value::<Counts>(record["counts"].clone()).ok(),
+        networks: vec![source.network()],
+    })
 }
 
 /// Reads the mycelium from the node at `socket` in the daemon interface,
@@ -122,33 +184,43 @@ impl Mycelium {
 /// When no node answers, or it answers in a way it shouldn't, or holds no
 /// teams, as a node too old for them doesn't.
 pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium> {
-    let reading = swarm::asking(socket, within, &asks())?;
-    // Teams and machines are few, but sessions are thousands, so each is
-    // made its cell as it is read rather than all held first.
+    let asked = asks();
+    let reading = swarm::asking(socket, within, &asked)?;
+    // Teams, machines and receptors are few, but sessions are thousands,
+    // so each is made its cell as it is read rather than all held first.
     let (mut teams, mut sessions, mut machines) = (Vec::new(), Sessions::default(), Vec::new());
-    let answers = kept::answered(reading, 3, |id, record| match id {
+    let mut receptors = Vec::new();
+    let answers = kept::answered(reading, RECEPTORS_ASKED, |id, record| match id {
         1 => teams.push(record),
         2 => sessions.add(&record),
-        _ => machines.push(record),
+        3 => machines.push(record),
+        _ => receptors.push(record),
     })?;
+    // A node too old to hold receptors refuses their ask, and is read for
+    // the rest; its mycelium senses nothing outside.
     if let Some(why) = answers
-        .values()
-        .find_map(|answer| answer["error"]["message"].as_str())
+        .iter()
+        .filter(|(id, _)| **id != RECEPTORS_ASKED)
+        .find_map(|(_, answer)| answer["error"]["message"].as_str())
     {
         return Err(io::Error::other(format!(
             "the node can't say its networks ({why}); it may need updating"
         )));
     }
-    Ok(Mycelium::made(realm, &teams, sessions, &machines))
+    Ok(Mycelium::made(realm, &teams, sessions, &machines).sensing(&receptors))
 }
 
-/// What the networks ask a node: its teams, sessions and machines, of
-/// only the fields read. A node sends only those, and an older one, which
-/// sends every field whatever is asked, is read for only those as it
-/// streams.
-pub(super) fn asks() -> [Value; 3] {
+/// Which of the networks' asks is for the node's receptors: the last, so
+/// also how many there are.
+const RECEPTORS_ASKED: u64 = 4;
+
+/// What the networks ask a node: its teams, sessions, machines and
+/// receptors, of only the fields read. A node sends only those, and an
+/// older one, which sends every field whatever is asked, is read for only
+/// those as it streams.
+pub(super) fn asks() -> [Value; 4] {
     let fields = kept::paths(&kept::RECORD);
-    ["team", "session", "machine"]
+    ["team", "session", "machine", receptor::KIND]
         .map(|kind| json!({"ask": "list", "kind": kind, "fields": fields}))
 }
 
@@ -238,6 +310,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         state: None,
         busy: None,
         runs: None,
+        counts: None,
         networks,
     })
 }
@@ -288,6 +361,7 @@ fn machine_cell(machine: &Value, runs: &HashMap<&str, usize>) -> Cell {
         state: machine["state"].as_str().map(str::to_owned),
         busy: machine["room"]["pressure"]["cpu"].as_f64(),
         runs: Some(runs),
+        counts: None,
         networks: vec![MACHINES.to_owned()],
         name,
     }

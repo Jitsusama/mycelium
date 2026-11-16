@@ -33,6 +33,7 @@ impl Shape {
             Self::Repository => "repositories",
             Self::Group => "groups",
             Self::Machines => "machines",
+            Self::Outside => "outside",
         }
     }
 
@@ -44,6 +45,7 @@ impl Shape {
             Self::Repository => "repository",
             Self::Group => "group",
             Self::Machines => "the machines' network",
+            Self::Outside => "outside source",
         }
     }
 }
@@ -124,6 +126,23 @@ fn machine_said(machine: &Cell) -> String {
         .unwrap_or_else(|| "unheard".to_owned());
     if let Some(busy) = machine.busy {
         let _ = write!(said, " · {busy:.0}% busy");
+    }
+    said
+}
+
+/// How a receptor stands, and what it brought in today, as its line in
+/// the cells says it.
+fn receptor_said(receptor: &Cell) -> String {
+    let mut said = receptor
+        .state
+        .clone()
+        .unwrap_or_else(|| "unheard".to_owned());
+    if let Some(counts) = receptor.counts {
+        let _ = write!(
+            said,
+            " · {} this hour · {} today, {} to you",
+            counts.hour, counts.today, counts.addressed
+        );
     }
     said
 }
@@ -440,6 +459,11 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
         header(look, 0, &Standing::CELLS),
     ];
     for shape in Shape::EACH {
+        // A realm whose machines sense nothing outside says nothing of it.
+        let sensing = mycelium.networks.iter().any(|each| each.shape == shape);
+        if shape == Shape::Outside && !sensing {
+            continue;
+        }
         lines.push(look.paint(BOLD, shape.heading()));
         if shape == Shape::Machines {
             drawing.machines(&mut lines, 1);
@@ -673,6 +697,26 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
             lines.push(format!("  {}", look.paint(FAINT, &said)));
         }
     }
+    let receptors: Vec<&Cell> = mycelium
+        .cells
+        .iter()
+        .filter(|cell| cell.is == Is::Receptor && standing.is_empty())
+        .collect();
+    if !receptors.is_empty() {
+        lines.extend([String::new(), look.paint(BOLD, "receptors")]);
+        let width = receptors
+            .iter()
+            .map(|cell| cell.name.chars().count())
+            .max()
+            .unwrap_or_default();
+        for receptor in receptors {
+            lines.push(format!(
+                "  {}{GAP}{}",
+                padded(&receptor.name, width),
+                look.paint(FAINT, &receptor_said(receptor))
+            ));
+        }
+    }
     lines.push(String::new());
     lines.push(look.paint(
         FAINT,
@@ -722,6 +766,9 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
             let _ = write!(said, " · {doing}");
         }
         lines.push(said);
+    }
+    if cell.is == Is::Receptor {
+        lines.push(receptor_said(cell));
     }
     let mut place = Vec::new();
     if let Some(machine) = &cell.machine {
