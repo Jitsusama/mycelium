@@ -206,15 +206,90 @@ pub fn shares(state: &Path) -> Places {
     }
 }
 
-/// This machine's name, as the system gives it, up to its first dot.
-pub fn machine() -> String {
-    let name = rustix::system::uname()
+/// The name this machine's node goes by: `given`, as its `--machine`
+/// says it, else the system's ([`named`]).
+pub fn node_machine(given: Option<&str>) -> io::Result<String> {
+    named(given, None, &nodename()).map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))
+}
+
+/// The name a command on this machine goes by: `given`, as its
+/// `--machine` says it, else the one its node recorded in `state`, else
+/// the system's ([`named`]). A link the other end starts here is given
+/// no `--machine`, so the record is what names it as its node is named.
+pub fn machine(given: Option<&str>, state: &Path) -> io::Result<String> {
+    let recorded = recorded_machine(state)?;
+    named(given, recorded.as_deref(), &nodename())
+        .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))
+}
+
+/// The system's name for this machine, its nodename.
+fn nodename() -> String {
+    rustix::system::uname()
         .nodename()
         .to_string_lossy()
-        .into_owned();
-    match name.split_once('.') {
-        Some((short, _)) => short.to_owned(),
-        None => name,
+        .into_owned()
+}
+
+/// The name a machine goes by: `given`, as `--machine` says it, else
+/// `recorded`, as its node keeps it, else `system`'s, up to its first
+/// dot. Whichever it is must be a mesh name, since the store names files
+/// by it; one that isn't is refused with how to name the machine instead,
+/// as a guest whose system calls it `(none)` must be.
+fn named(given: Option<&str>, recorded: Option<&str>, system: &str) -> Result<String, String> {
+    let mesh_name = |name: &str| crate::store::folders::safe(name).is_ok();
+    if let Some(given) = given {
+        return if mesh_name(given) {
+            Ok(given.to_owned())
+        } else {
+            Err(format!(
+                "--machine {given:?} is not a mesh name: use letters, digits, -, _ and @"
+            ))
+        };
+    }
+    if let Some(recorded) = recorded {
+        return if mesh_name(recorded) {
+            Ok(recorded.to_owned())
+        } else {
+            Err(format!(
+                "this machine's node recorded its name as {recorded:?}, which is not a mesh \
+                 name: pass --machine to name it"
+            ))
+        };
+    }
+    let short = system.split_once('.').map_or(system, |(short, _)| short);
+    if mesh_name(short) {
+        Ok(short.to_owned())
+    } else {
+        Err(format!(
+            "this machine's system name, {short:?}, is not a mesh name, and nothing else \
+             names it: pass --machine to name it"
+        ))
+    }
+}
+
+/// Where this machine's node, keeping its things in `state`, records the
+/// name it goes by.
+fn machine_record(state: &Path) -> PathBuf {
+    state.join("machine")
+}
+
+/// Records in `state` that this machine's node goes by `name`, for every
+/// command on the machine to go by it too. It is written whole, beside
+/// its place and then moved there, so a command never reads half of it.
+pub fn record_machine(state: &Path, name: &str) -> io::Result<()> {
+    fs::create_dir_all(state)?;
+    let record = machine_record(state);
+    let staged = state.join(".machine.staged");
+    fs::write(&staged, format!("{name}\n"))?;
+    fs::rename(&staged, &record)
+}
+
+/// The name this machine's node recorded in `state`, if it has.
+pub fn recorded_machine(state: &Path) -> io::Result<Option<String>> {
+    match fs::read_to_string(machine_record(state)) {
+        Ok(held) => Ok(Some(held.trim().to_owned()).filter(|name| !name.is_empty())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -284,6 +359,65 @@ mod tests {
     fn a_mac_names_its_own_temporary_folder() {
         let dir = darwin_temporary().expect("getconf names it");
         assert!(dir.is_dir(), "{} is a folder", dir.display());
+    }
+
+    #[test]
+    fn a_machine_goes_by_the_name_given_then_its_nodes_then_the_systems() {
+        assert_eq!(
+            named(Some("kestrel"), Some("skiff"), "harbour.local"),
+            Ok("kestrel".to_owned()),
+            "the name given is taken over any other"
+        );
+        assert_eq!(
+            named(None, Some("skiff"), "harbour.local"),
+            Ok("skiff".to_owned()),
+            "with none given, the one its node recorded"
+        );
+        assert_eq!(
+            named(None, None, "skiff.local"),
+            Ok("skiff".to_owned()),
+            "with nothing naming it, the system's, up to its first dot"
+        );
+    }
+
+    #[test]
+    fn a_system_name_that_is_no_mesh_name_is_refused_saying_to_name_it() {
+        let refused = named(None, None, "(none)").expect_err("(none) names no machine");
+        assert!(
+            refused.contains("\"(none)\"") && refused.contains("--machine"),
+            "the refusal says which name and how to give one: {refused}"
+        );
+        assert_eq!(
+            named(Some("kestrel"), None, "(none)"),
+            Ok("kestrel".to_owned()),
+            "a machine named otherwise needs no system name"
+        );
+        let refused = named(Some("a/b"), None, "kestrel").expect_err("a/b names no machine");
+        assert!(
+            refused.contains("--machine") && refused.contains("\"a/b\""),
+            "a name given is held to the same: {refused}"
+        );
+        let refused = named(None, Some("a b"), "kestrel").expect_err("a b names no machine");
+        assert!(
+            refused.contains("--machine"),
+            "and so is one recorded: {refused}"
+        );
+    }
+
+    #[test]
+    fn a_node_records_its_name_for_every_command_on_its_machine() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        assert_eq!(
+            recorded_machine(dir.path()).expect("nothing recorded reads"),
+            None,
+            "before its node starts, nothing is recorded"
+        );
+        record_machine(dir.path(), "kestrel").expect("its name is recorded");
+        assert_eq!(
+            recorded_machine(dir.path()).expect("the record reads"),
+            Some("kestrel".to_owned()),
+            "after, the name its node goes by"
+        );
     }
 
     #[test]

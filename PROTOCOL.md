@@ -101,6 +101,14 @@ same code, each line a JSON value:
    end's machine can release that machine, as a provider's program can;
    only such an end is told the machine has handed over. `updates` says
    it carries update asks; an end older than it is asked none.
+   `machine` is the name the end's machine goes by, one name for every
+   command there: the node's `--machine`, else the system's name up to
+   its first dot, which the node records in its folder's `machine` file
+   as it starts. Any other command takes its own `--machine`, else that
+   record, else the system's name, so a link the other end starts with
+   no `--machine` goes by the node's name. A name that isn't a mesh name
+   (letters, digits, `-`, `_` and `@`), as a guest's `(none)` isn't, is
+   refused, saying to pass `--machine`.
 2. `{"Have": {"messages": [ids], "living": [sessions]}}`: every message
    the end holds within the link's reach, and its machine's living
    sessions. An end older than `living` names none, and every session of
