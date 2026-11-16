@@ -130,19 +130,25 @@ pub fn changes(before: &Shared, after: &Shared, deep: &[String]) -> (Vec<Value>,
 
 /// `now`'s fields that differ from `was`'s, with its key, and each field
 /// `was` had that `now` lacks, as null. A field `deep` names, an object
-/// both before and after, is said the same way, one level in.
+/// both before and after, is said the same way, one level in. A watch
+/// asking nothing deep takes the flat path alone, so it costs what it
+/// did before deep was offered.
 fn differs(key: &str, was: &Value, now: &Value, deep: &[String]) -> Value {
     let (Some(was), Some(now)) = (was.as_object(), now.as_object()) else {
         return now.clone();
     };
-    let mut changed = moved(was, now, |field, before, after| {
-        match (before.as_object(), after.as_object()) {
-            (Some(before), Some(after)) if deep.iter().any(|named| named == field) => {
-                Value::Object(moved(before, after, |_, _, inside| inside.clone()))
+    let mut changed = if deep.is_empty() {
+        moved(was, now, |_, _, after| after.clone())
+    } else {
+        moved(was, now, |field, before, after| {
+            match (before.as_object(), after.as_object()) {
+                (Some(before), Some(after)) if deep.iter().any(|named| named == field) => {
+                    Value::Object(moved(before, after, |_, _, inside| inside.clone()))
+                }
+                _ => after.clone(),
             }
-            _ => after.clone(),
-        }
-    });
+        })
+    };
     changed.insert("key".to_owned(), Value::String(key.to_owned()));
     Value::Object(changed)
 }
