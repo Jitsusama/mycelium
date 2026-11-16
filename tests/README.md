@@ -51,3 +51,5 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `ssh.rs`: what another machine's link key may run, as SSH runs it
 - `stopped.rs`: a node told to stop while a client watches it, letting
   go, taking its socket away and ending well
+- `unread.rs`: a command's failure said to a pipe nobody reads any more
+  ending as a failure, not a panic

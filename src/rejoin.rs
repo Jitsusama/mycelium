@@ -221,7 +221,9 @@ impl Joining for Over {
     }
 
     fn say(&mut self, line: &str) {
-        eprintln!("{line}");
+        // A terminal or pipe nobody reads any more has nothing to tell, and
+        // the join still ends with its own code rather than a panic.
+        let _ = writeln!(io::stderr().lock(), "{line}");
     }
 }
 
