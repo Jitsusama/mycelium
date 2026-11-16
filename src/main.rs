@@ -453,14 +453,15 @@ impl Node {
             .collect()
     }
 
-    /// The kinds it serves from files, as its `--serves` file names them.
-    fn serves(&self) -> io::Result<BTreeMap<String, served::Source>> {
+    /// The kinds it serves from files, as its `--serves` file names them,
+    /// on the machine named `machine`.
+    fn serves(&self, machine: &str) -> io::Result<BTreeMap<String, served::Source>> {
         match &self.serves {
             Some(file) => served::configured(
                 file,
                 &node::HOLDS,
                 &served::Here {
-                    machine: place::machine(),
+                    machine: machine.to_owned(),
                     runtime: place::login_runtime(),
                 },
             )
@@ -977,8 +978,8 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Ssh { here, from } => return run_asked(here, realm, socket, from),
         Action::Share(sharing) => share(sharing, realm, &socket),
         Action::Carry { here, quest, to } => {
-            let (_, _, shares) = open(here, realm)?;
-            carry(&socket, shares, &quest, &to)
+            let (_, membership, shares) = open(here, realm)?;
+            carry(&socket, shares, &quest, &membership.machine, &to)
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Unanswered => print_records(&socket, mycelium::unanswered::KIND),
@@ -1145,9 +1146,13 @@ fn checked(realms: Vec<String>) -> io::Result<BTreeSet<String>> {
 /// Runs this machine's node on `socket`, as `node` says, until it is asked
 /// to stop.
 fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
-    let (dials, serves) = (node.dials(), node.serves()?);
+    let mut here = node.here;
+    // The node names its machine for every command there: what it was
+    // given, else the system's, recorded once its realm is settled.
+    let machine = place::node_machine(here.machine.as_deref())?;
+    here.machine = Some(machine.clone());
+    let (dials, serves) = (node.dials(), node.serves(&machine)?);
     let providers = node.providers;
-    let here = node.here;
     let state = here.state.clone().unwrap_or_else(place::state);
     let (refused, book) = (state.join("refused"), state.join("made.jsonl"));
     let steers = here.steer.clone().unwrap_or_else(place::steer);
@@ -1158,6 +1163,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         log: state.join("crossings.jsonl"),
     };
     let (store, membership, shares) = open(here, realm)?;
+    place::record_machine(&state, &membership.machine)?;
     let given = node::Given {
         sharing: Some(shares),
         refusals: Refusals::kept_in(refused),
@@ -1309,7 +1315,7 @@ fn open(here: Here, realm: String) -> io::Result<(Folders, Realm, Places)> {
     )?;
     let membership = Realm {
         name: realm,
-        machine: here.machine.unwrap_or_else(place::machine),
+        machine: place::machine(here.machine.as_deref(), &state)?,
     };
     Ok((store, membership, place::shares(&state)))
 }
@@ -1643,10 +1649,10 @@ fn share(sharing: Sharing, realm: String, socket: &Path) -> io::Result<()> {
     }
 }
 
-fn carry(socket: &Path, shares: Places, quest: &str, to: &str) -> io::Result<()> {
+fn carry(socket: &Path, shares: Places, quest: &str, machine: &str, to: &str) -> io::Result<()> {
     let mut hands = Through::new(socket.to_owned(), shares, quest, carry::through::PATIENCE);
     let mut failed = None;
-    let carried = carry::carry(&mut hands, quest, &place::machine(), to, &mut |line| {
+    let carried = carry::carry(&mut hands, quest, machine, to, &mut |line| {
         if let Err(error) = print_line(line) {
             failed.get_or_insert(error);
         }
@@ -1856,7 +1862,7 @@ fn web(asked: WebAsked) -> io::Result<()> {
         .scratch
         .unwrap_or_else(|| place::shares(&place::state()).scratch);
     let web = mycelium::web::Web::of(&scratch, &asked.quest)?;
-    let writer = asked.machine.unwrap_or_else(place::machine);
+    let writer = place::machine(asked.machine.as_deref(), &place::state())?;
     let now = || jiff::Timestamp::now().as_second();
     let (by, said) = match asked.act {
         WebAct::Say { words, by } => (

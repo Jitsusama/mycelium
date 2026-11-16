@@ -174,6 +174,16 @@ impl Awake {
                 self.keeper = Some(keeper);
                 Kept::Began
             }
+            // A keeper that isn't installed never will be in this node's
+            // life, so it is said once and never asked for again.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!(
+                    "this machine can't be kept from sleeping here: {program} isn't installed, so \
+                     it may sleep while it holds work"
+                );
+                self.words = None;
+                Kept::Cannot
+            }
             Err(error) => {
                 eprintln!("this machine may sleep with work held: {program} didn't start: {error}");
                 self.failed = true;

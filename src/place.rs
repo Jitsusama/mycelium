@@ -206,38 +206,91 @@ pub fn shares(state: &Path) -> Places {
     }
 }
 
-/// This machine's name, as the system gives it, up to its first dot.
-pub fn machine() -> String {
-    let name = rustix::system::uname()
+/// The name this machine's node goes by: `given`, as its `--machine`
+/// says it, else the system's ([`named`]).
+pub fn node_machine(given: Option<&str>) -> io::Result<String> {
+    named(given, None, &nodename()).map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))
+}
+
+/// The name a command on this machine goes by: `given`, as its
+/// `--machine` says it, else the one its node recorded in `state`, else
+/// the system's ([`named`]). A link the other end starts here is given
+/// no `--machine`, so the record is what names it as its node is named.
+pub fn machine(given: Option<&str>, state: &Path) -> io::Result<String> {
+    let recorded = recorded_machine(state)?;
+    named(given, recorded.as_deref(), &nodename())
+        .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))
+}
+
+/// The system's name for this machine, its nodename.
+fn nodename() -> String {
+    rustix::system::uname()
         .nodename()
         .to_string_lossy()
-        .into_owned();
-    match name.split_once('.') {
-        Some((short, _)) => short.to_owned(),
-        None => name,
-    }
+        .into_owned()
 }
 
 /// The name a machine goes by: `given`, as `--machine` says it, else
 /// `recorded`, as its node keeps it, else `system`'s, up to its first
 /// dot. Whichever it is must be a mesh name, since the store names files
-/// by it; one that isn't is refused with how to name the machine instead.
+/// by it; one that isn't is refused with how to name the machine instead,
+/// as a guest whose system calls it `(none)` must be.
 fn named(given: Option<&str>, recorded: Option<&str>, system: &str) -> Result<String, String> {
-    let _ = (given, recorded);
-    Ok(system.to_owned())
+    let mesh_name = |name: &str| crate::store::folders::safe(name).is_ok();
+    if let Some(given) = given {
+        return if mesh_name(given) {
+            Ok(given.to_owned())
+        } else {
+            Err(format!(
+                "--machine {given:?} is not a mesh name: use letters, digits, -, _ and @"
+            ))
+        };
+    }
+    if let Some(recorded) = recorded {
+        return if mesh_name(recorded) {
+            Ok(recorded.to_owned())
+        } else {
+            Err(format!(
+                "this machine's node recorded its name as {recorded:?}, which is not a mesh \
+                 name: pass --machine to name it"
+            ))
+        };
+    }
+    let short = system.split_once('.').map_or(system, |(short, _)| short);
+    if mesh_name(short) {
+        Ok(short.to_owned())
+    } else {
+        Err(format!(
+            "this machine's system name, {short:?}, is not a mesh name, and nothing else \
+             names it: pass --machine to name it"
+        ))
+    }
+}
+
+/// Where this machine's node, keeping its things in `state`, records the
+/// name it goes by.
+fn machine_record(state: &Path) -> PathBuf {
+    state.join("machine")
 }
 
 /// Records in `state` that this machine's node goes by `name`, for every
-/// command on the machine to go by it too.
+/// command on the machine to go by it too. It is written whole, beside
+/// its place and then moved there, so a command never reads half of it.
 pub fn record_machine(state: &Path, name: &str) -> io::Result<()> {
-    let _ = (state, name);
-    Ok(())
+    fs::create_dir_all(state)?;
+    let record = machine_record(state);
+    let staged = state.join(".machine.staged");
+    fs::write(&staged, format!("{name}\n"))?;
+    fs::rename(&staged, &record)
 }
 
 /// The name this machine's node recorded in `state`, if it has.
 pub fn recorded_machine(state: &Path) -> io::Result<Option<String>> {
-    let _ = state;
-    Ok(None)
+    match fs::read_to_string(machine_record(state)) {
+        Ok(held) => Ok(Some(held.trim().to_owned()).filter(|name| !name.is_empty())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Settles that this machine belongs to `realm`, recording it in `state`

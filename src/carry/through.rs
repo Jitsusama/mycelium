@@ -42,6 +42,10 @@ impl Through {
     /// quest's share in `shares`, waiting no longer than `patience`.
     #[must_use]
     pub fn new(socket: PathBuf, shares: Places, quest: &str, patience: Duration) -> Self {
+        // The hostname, not the name the machine goes by in the realm:
+        // the harness writes and reads `handover/<hostname>/`, so a
+        // machine whose `--machine` differs would lose its carry's notes
+        // here until both read the node's record instead.
         let host = rustix::system::uname()
             .nodename()
             .to_string_lossy()
