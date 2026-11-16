@@ -250,7 +250,7 @@ same code, each line a JSON value:
     orchestration is proved only where both run; otherwise it refuses,
     saying why. It ends the hold itself, as `"End"` on the socket does.
     No time limits the answer, since the session has ten seconds to
-    save what it holds.
+    save what it holds and what is killed past them two more to go.
 
 Only one link joins two machines, and whichever dialled first holds it,
 so each end carries what its own node asks of the other machine: starts,

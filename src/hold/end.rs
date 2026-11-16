@@ -76,6 +76,8 @@ pub fn end(dir: &Path, id: &str, grace: Duration) -> io::Result<Ending> {
             format!("nothing is held as {id}; `mycelium holds` lists what is"),
         ));
     };
+    // The probe joins the holder as a window that sends nothing and
+    // leaves at once.
     if std::os::unix::net::UnixStream::connect(socket(dir, id)).is_err() {
         take_away(dir, id)?;
         return Err(io::Error::new(

@@ -5688,6 +5688,81 @@ mod tests {
         );
     }
 
+    // WCJQSG (2026-11-16): an orchestrator ends a session it orchestrates,
+    // held where both run, as this node's record of orchestrations proves.
+    #[tokio::test]
+    async fn an_orchestrator_ends_a_session_it_orchestrates_held_here() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        let held = held_of(&socket);
+        let (holder, program) = holds_for_real(&held, "e0d4");
+        // HARBOR's pi is a stand-in, so its presence names its hold by the
+        // file that wakes it rather than by the program's pid.
+        store.start_here(
+            "s-harbour",
+            json!({
+                "session": "s-harbour", "addresses": ["HARBOR"],
+                "groups": ["#orchestration/wcjqsg", "#repo/mycelium"],
+                "busy": false, "state": "listening",
+                "at": jiff::Timestamp::now().to_string(),
+                "quest": "QEST-20261115-HARBOR", "orchestratedBy": "WCJQSG",
+                "fence": "strict", "wake": held.join("e0d4.wake"),
+                "owner": {"pid": 7003, "startTicks": started_at(7003)},
+            }),
+            true,
+        );
+        let listing = socket.clone();
+        let listed = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&listing).expect("the client connects");
+            // Nothing tells a client when the node has read the hold, so it
+            // asks again every few milliseconds until it has.
+            loop {
+                let Ok(Ok(Response::Sessions(all))) = client.ask(&Request::Sessions) else {
+                    panic!("the node lists its sessions");
+                };
+                if all.iter().any(|one| one.held.as_deref() == Some("e0d4")) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        tokio::time::timeout(PATIENCE, listed)
+            .await
+            .expect("the node reads HARBOR's hold in time")
+            .expect("the client asks");
+        asks_below(&socket, 7001);
+
+        let ended = ask(
+            socket.clone(),
+            Request::End {
+                held: "e0d4".to_owned(),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            ended,
+            Ok(Response::Ended {
+                machine: "skiff".to_owned(),
+                held: "e0d4".to_owned(),
+                ending: hold::end::Ending::Gently,
+            }),
+            "WCJQSG ends HARBOR's session, which it orchestrates"
+        );
+        assert!(
+            !runs(holder) && !runs(program),
+            "its holder and program are gone"
+        );
+        assert!(
+            !held.join("e0d4.json").exists() && !held.join("e0d4.sock").exists(),
+            "its record and socket are taken away"
+        );
+    }
+
     /// What `asker`'s pi answers as it orders HARBOR's carry to tern.
     async fn orders_harbour(socket: &Path, asker: i32) -> Reply {
         asks_below(socket, asker);
