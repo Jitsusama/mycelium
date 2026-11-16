@@ -361,6 +361,18 @@ enum Action {
     /// its id and the words that attach to it.
     #[command(after_help = "Example:\n  mycelium start --need system=linux -- pi")]
     Start(Starting),
+    /// Starts a pi session on a piece of work: a link or words.
+    ///
+    /// It begins in the work's repository: the folder named, else the
+    /// link's repository checked out under ~/src, else this folder where
+    /// it is in one; never a home folder. The session is told to make the
+    /// work a quest at the top of the tree and to own all of it. It runs
+    /// held, in no window, and this says how to join it; with --join this
+    /// terminal becomes its window, and closing that leaves it running.
+    /// A link alone is its seed, and words after -- may start with a
+    /// dash.
+    #[command(after_help = "Example:\n  mycelium sprout --in ~/src/repo make the launcher faster")]
+    Sprout(Sprouting),
     /// Runs a command on the machine that suits it, and waits on it.
     ///
     /// The node runs it on the machine of the realm placement chooses,
@@ -905,6 +917,30 @@ struct Starting {
 }
 
 #[derive(clap::Args)]
+struct Sprouting {
+    /// The machine it starts on, by name; this one if none.
+    #[arg(long)]
+    on: Option<String>,
+    /// The repository's folder it works in.
+    #[arg(long = "in")]
+    folder: Option<PathBuf>,
+    /// The cell it comes from, by address, which its quest is tied to on
+    /// the map.
+    #[arg(long)]
+    from: Option<String>,
+    /// Joins it from this terminal once it starts, rather than leaving it
+    /// running in no window for Go To to open when it is wanted.
+    #[arg(long)]
+    join: bool,
+    #[command(flatten)]
+    output: Output,
+    /// The work: a link alone, or words. Options go before them or among
+    /// them; words that open with a dash go after `--`.
+    #[arg(required = true)]
+    words: Vec<String>,
+}
+
+#[derive(clap::Args)]
 struct Running {
     /// What the machine must be, as for `place`.
     #[command(flatten)]
@@ -1317,6 +1353,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
         Action::Update { machine } => print_reply(&socket, &Request::Update { machine }),
         Action::Start(asked) => start(&socket, asked),
+        Action::Sprout(asked) => sprout(&socket, asked),
         Action::Run(asked) => return run_there(&socket, asked),
         Action::Steer { address } => steer(&socket, address),
         Action::Orchestrates {
@@ -2267,6 +2304,83 @@ fn start(socket: &Path, asked: Starting) -> io::Result<()> {
     print_reply(socket, &Request::Start(start))
 }
 
+/// Starts pi on `asked`'s work in its repository, told to make it a quest
+/// of its own, in no window, saying where it runs and how to join it;
+/// with `--join`, at a terminal, it becomes that session's window.
+fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
+    use mycelium::sprout::{self, Asked as Where, Seed};
+    use std::io::IsTerminal as _;
+    let invalid = |why: String| io::Error::new(io::ErrorKind::InvalidInput, why);
+    let seed = Seed::of(&asked.words);
+    if seed.is_empty() {
+        return Err(invalid("say what the work is: a link or words".to_owned()));
+    }
+    let from = asked
+        .from
+        .as_deref()
+        .map(sprout::origin_cell)
+        .transpose()
+        .map_err(invalid)?;
+    let cwd = std::env::current_dir()?;
+    let home = std::env::home_dir().ok_or_else(|| io::Error::other("no home folder"))?;
+    let folder = sprout::folder(
+        Where {
+            folder: asked.folder.as_deref(),
+            cwd: &cwd,
+            home: &home,
+            here: asked.on.is_none(),
+        },
+        &seed,
+        &sprout::ThisDisk,
+    )
+    .map_err(invalid)?;
+    let machine = match asked.on {
+        Some(machine) => machine,
+        None => place::machine(None, &place::state())?,
+    };
+    let asked_folder = said_within_home(Some(folder))?;
+    let start = sprout::start(&machine, asked_folder.clone(), &seed, from);
+    let asked_folder = asked_folder.as_deref();
+    let reply = Client::connect(socket)?.ask(&Request::Start(start))?;
+    if asked.output.json() {
+        return print_line(&reply);
+    }
+    let started = match reply {
+        Ok(Response::Started(started)) => started,
+        Ok(other) => return Err(io::Error::other(format!("the node answered {other:?}"))),
+        Err(why) => return Err(io::Error::other(why)),
+    };
+    let joining = started.attach.join(" ");
+    if !asked_folder.is_some_and(|asked| started.folder.ends_with(asked)) {
+        tell!(
+            "mycelium sprout: {} began it in {}, not the folder asked; if that is its home, its guard ends it",
+            started.machine,
+            started.folder.display()
+        );
+    }
+    tell!(
+        "mycelium sprout: started on {} in {}; join it with: {joining}",
+        started.machine,
+        started.folder.display()
+    );
+    if asked.join && io::stdin().is_terminal() && io::stdout().is_terminal() {
+        join_started(&started.attach)
+            .map_err(|why| io::Error::other(format!("couldn't join it ({why}); it runs on")))
+    } else {
+        Ok(())
+    }
+}
+
+/// Becomes the words that join a session just started, so this terminal
+/// is that session's from here on; it returns only when it can't.
+fn join_started(words: &[String]) -> io::Result<()> {
+    use std::os::unix::process::CommandExt as _;
+    let [program, arguments @ ..] = words else {
+        return Err(io::Error::other("the node gave no words to join it by"));
+    };
+    Err(std::process::Command::new(program).args(arguments).exec())
+}
+
 /// `folder` as another machine can find it: within home when it is under
 /// this one's, since another machine's home is elsewhere: /home/joel here
 /// is /Users/joel on a Mac.
@@ -2830,6 +2944,36 @@ mod tests {
                     == Some("Draws the networks as a tree, or one network")
             }),
             "{said}"
+        );
+    }
+
+    #[test]
+    fn a_sprouts_options_are_read_among_its_words_and_dashed_words_after_two_dashes() {
+        let sprouting = |words: &str| {
+            let parsed = Command::try_parse_from(
+                ["mycelium", "--realm", "work", "sprout"]
+                    .into_iter()
+                    .chain(words.split(' ')),
+            )
+            .expect("it parses");
+            let Some(Action::Sprout(asked)) = parsed.action else {
+                panic!("{words} is a sprout");
+            };
+            asked
+        };
+        let late = sprouting("make tea --in src/skiff --join");
+        assert_eq!(late.words, ["make", "tea"]);
+        assert_eq!(late.folder, Some(std::path::PathBuf::from("src/skiff")));
+        assert!(late.join);
+        let dashed = sprouting("--from HARBOR -- -1 is wrong");
+        assert_eq!(dashed.words, ["-1", "is", "wrong"]);
+        assert_eq!(dashed.from.as_deref(), Some("HARBOR"));
+        assert!(!dashed.join, "it starts in no window unless asked");
+        let none = Command::try_parse_from(["mycelium", "--realm", "work", "sprout"]);
+        assert_eq!(
+            none.err().map(|error| error.kind()),
+            Some(clap::error::ErrorKind::MissingRequiredArgument),
+            "it asks for the work"
         );
     }
 

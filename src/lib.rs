@@ -109,6 +109,7 @@ pub mod room;
 pub mod run;
 pub mod served;
 pub mod share;
+pub mod sprout;
 pub mod ssh;
 #[cfg(test)]
 mod stand_in;
