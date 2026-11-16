@@ -149,6 +149,11 @@ The harness mesh's messages and presence, carried between machines:
   machine's into what the web says now, for a page to read. The node
   serves each murmur this machine's cells said in the last day as a
   `murmur` record, newest first, for a page to watch.
+- The node serves who talks with whom as the `tie` kind: a record for
+  each pair of cells that talked in the last day, with its messages
+  this hour and today, their intents, its groups and a strength that
+  halves every two hours, and one for each cell's own talk. They are
+  made from who sent each message, when and where, never its words.
 
 [PROTOCOL.md](PROTOCOL.md) says how, and what comes next: shared scratch,
 the node's own log, connections of its own and providers for machines
