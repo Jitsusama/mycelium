@@ -1063,11 +1063,14 @@ limit) and `disk-pressure` (its `disk_band` past
 it is in reach, leaves after the work ends (now, for work that doesn't
 say how long it lasts), is what each need asks (a fact it never said
 meets none), and carries no `never` taint the work doesn't tolerate. Of
-those, one that is over goes after every one that isn't: over, it
-carries a `memory-pressure` or `cpu-pressure` the work doesn't
-tolerate, or its `room` is unknown or was said more than three minutes
-ago (three of the minutes a link carries it in), which earns it no
-processor or memory headroom. Then the most preferences met goes first,
+those, they rank in three tiers. First is each heard and not over;
+then each over, carrying a `memory-pressure` the work doesn't
+tolerate; then each unheard, its `room` unknown or said more than three
+minutes ago (three of the minutes a link carries it in), which earns it
+no processor or memory headroom, so it goes last, though over. A
+`cpu-pressure` says only that its queue starts no build beside a VM
+test, and placement places sessions and runs, never builds, so it
+weighs as any other `prefer_not`. Then the most preferences met goes first,
 then the most headroom, then by name; of the first and each as good but
 for headroom within 0.05 of it (`NEAR_BEST`), one is chosen at random,
 so asks alike spread rather than herd. Headroom is one sum, its weights

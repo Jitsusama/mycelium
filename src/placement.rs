@@ -8,9 +8,10 @@
 //! conditions set while they last: running on its battery, running on it
 //! below the mark at which it is let sleep, which refuses all new work,
 //! being past its queue's memory or processor limit, or its disk filling.
-//! A taint that refuses keeps work off a machine. A machine past a limit of
-//! its queue's, or whose room hasn't been said lately, goes after every
-//! other that qualifies; the rest are ranked by the preferences each meets,
+//! A taint that refuses keeps work off a machine. A machine past its
+//! queue's memory limit goes after every other heard lately that
+//! qualifies, and one whose room hasn't been said lately after those;
+//! within each, machines are ranked by the preferences each meets,
 //! then by their [`headroom`], where each taint that would rather not is
 //! only a weight, and one of those near the best is chosen at random. A
 //! start this node placed counts against its machine
@@ -565,7 +566,7 @@ fn decide_at(
             judged
         })
         .collect();
-    // Machines that qualify, those not over first, then by how many
+    // Machines that qualify, by their tier first, then by how many
     // preferences each meets, earliest most, then by the headroom it has,
     // then by name. Of the best and those as good but for headroom within
     // the band, one at random, so asks alike spread rather than herd.
@@ -574,8 +575,8 @@ fn decide_at(
         .collect();
     ranked.sort_by(|&one, &other| {
         let (one, other) = (&judged[one], &judged[other]);
-        (one.over || one.unheard)
-            .cmp(&(other.over || other.unheard))
+        tier(one)
+            .cmp(&tier(other))
             .then_with(|| other.preferred.cmp(&one.preferred))
             .then_with(|| other.headroom.total_cmp(&one.headroom))
             .then_with(|| one.name.cmp(&other.name))
@@ -587,7 +588,7 @@ fn decide_at(
             .copied()
             .take_while(|&at| {
                 let one = &judged[at];
-                (one.over || one.unheard) == (best.over || best.unheard)
+                tier(one) == tier(best)
                     && one.preferred == best.preferred
                     && one.headroom >= best.headroom - weights.near_best
             })
@@ -613,6 +614,18 @@ fn decide_at(
         placement: placement(work, judged, chosen),
         judged: judgements,
         weights: *weights,
+    }
+}
+
+/// Which tier `one` ranks in, first first: heard and not over, heard and
+/// over, then unheard. A machine unheard goes last, though over, since a
+/// room nobody has said lately can't show it has any, and its headroom,
+/// from its disk alone, isn't comparable with a room's.
+const fn tier(one: &Judged) -> u8 {
+    match (one.unheard, one.over) {
+        (false, false) => 0,
+        (false, true) => 1,
+        (true, _) => 2,
     }
 }
 
@@ -929,9 +942,12 @@ fn judge(
             Effect::PreferNot => rather_not.push(taint),
         }
     }
-    let is_over = |taint: &&Taint| [MEMORY_PRESSURE, CPU_PRESSURE].contains(&taint.key.as_str());
-    // Over is read from the room even where it is unheard, and harmlessly:
-    // a machine unheard ranks with those over either way.
+    // Only memory makes a machine over. A processor its queue keeps from a
+    // build beside a VM test is room for what placement places, sessions
+    // and runs, which are never builds, so it weighs as any taint would
+    // rather not. Over is read from the room even where it is unheard, and
+    // harmlessly: a machine unheard ranks after those over either way.
+    let is_over = |taint: &&Taint| taint.key == MEMORY_PRESSURE;
     let over = rather_not.iter().any(|taint| is_over(&taint));
     let weighed = rather_not
         .iter()
@@ -1462,7 +1478,7 @@ pub(crate) mod tests {
     fn a_machine_over_a_limit_is_never_chosen_while_another_is_not() {
         let kestrel = over(
             pressed(machine("kestrel", "macos", 60, &[]), 90.0),
-            &[Limit::Cpu],
+            &[Limit::Memory],
         );
         let mut skiff = machine("skiff", "linux", 2, &[]);
         skiff.disk_band = Some(Band::Filling);
@@ -1480,13 +1496,12 @@ pub(crate) mod tests {
         };
         assert_eq!(
             chosen, "skiff",
-            "a disk filling and a battery weigh less than a processor over its queue's limit"
+            "a disk filling and a battery weigh less than memory past its queue's limit"
         );
         assert!(
-            passed[0]
-                .because
-                .iter()
-                .any(|why| matches!(why, Because::RatherNot(taint) if taint.key == CPU_PRESSURE)),
+            passed[0].because.iter().any(
+                |why| matches!(why, Because::RatherNot(taint) if taint.key == MEMORY_PRESSURE)
+            ),
             "kestrel says it is over: {passed:?}"
         );
 
@@ -1500,11 +1515,56 @@ pub(crate) mod tests {
             "of machines all over, the one with the most headroom"
         );
         let mut tolerant = needing(Vec::new());
-        tolerant.tolerates = vec![CPU_PRESSURE.to_owned()];
+        tolerant.tolerates = vec![MEMORY_PRESSURE.to_owned()];
         assert_eq!(
             placed(&place(&tolerant, &[osprey, kestrel])),
             Some("kestrel"),
-            "and work that doesn't mind a pressed processor sees no limit there"
+            "and work that doesn't mind short memory sees no limit there"
+        );
+    }
+
+    #[test]
+    fn a_machine_unheard_goes_after_one_heard_though_over() {
+        // Unheard, kestrel's disk alone gives it more headroom than
+        // osprey, which is out of memory and pressed to the full.
+        let mut kestrel = machine("kestrel", "linux", 60, &[]);
+        kestrel.room.as_mut().expect("a room").said_at = "2026-10-29T05:50:00Z".to_owned();
+        let mut osprey = over(
+            pressed(machine("osprey", "linux", 1, &[]), 100.0),
+            &[Limit::Memory],
+        );
+        osprey.disk_free = Some(1 << 30);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[kestrel, osprey])),
+            Some("osprey"),
+            "a machine heard from, though over, before one nobody has heard"
+        );
+    }
+
+    #[test]
+    fn a_queue_short_of_a_processor_only_weighs_against_what_isnt_a_build() {
+        // As equilibrius stood on 16 Nov: its queue said no build beside a
+        // VM test for want of a processor, while it was 43% busy.
+        let kestrel = over(
+            pressed(machine("kestrel", "macos", 40, &[]), 43.0),
+            &[Limit::Cpu],
+        );
+        let skiff = pressed(machine("skiff", "linux", 8, &[]), 95.0);
+        let Placement::Placed {
+            machine: chosen,
+            passed,
+        } = place(&needing(Vec::new()), &[skiff, kestrel])
+        else {
+            panic!("one takes it")
+        };
+        assert_eq!(
+            chosen, "kestrel",
+            "placement starts no builds, so a processor its queue keeps for one is room"
+        );
+        assert_eq!(
+            passed[0].because,
+            [Because::Ranked],
+            "skiff only ranked lower"
         );
     }
 
