@@ -200,9 +200,9 @@ fn said_by(events: &[web::Event], machine: &str) -> Vec<Said> {
 /// second, in the order its machine said them; each with its cell's
 /// purpose as `purposes` gives it by the cell's address, and heard when
 /// it was said.
-pub fn records<'a>(
+pub fn records<'a, S: std::hash::BuildHasher>(
     said: impl IntoIterator<Item = &'a Said>,
-    purposes: &HashMap<String, String>,
+    purposes: &HashMap<String, String, S>,
 ) -> BTreeMap<String, Value> {
     let mut said: Vec<&Said> = said.into_iter().collect();
     said.sort_by(|one, other| {
@@ -270,7 +270,11 @@ impl Murmurs {
     /// Every murmur said in the last day before `now`, in whole seconds,
     /// as records, each cell's purpose as `purposes` gives it.
     #[must_use]
-    pub fn records(&self, now: i64, purposes: &HashMap<String, String>) -> BTreeMap<String, Value> {
+    pub fn records<S: std::hash::BuildHasher>(
+        &self,
+        now: i64,
+        purposes: &HashMap<String, String, S>,
+    ) -> BTreeMap<String, Value> {
         records(self.lock().said_since(now - KEPT_FOR), purposes)
     }
 
@@ -330,7 +334,7 @@ async fn keep(held: Arc<Mutex<Webs>>, tell: watch::Sender<u64>) {
     let mut watching = BTreeSet::new();
     let mut was = now();
     loop {
-        let (read, watched, aged) = {
+        let (read, folders, aged) = {
             let mut webs = lock();
             let read = webs.read();
             let at = now();
@@ -342,17 +346,17 @@ async fn keep(held: Arc<Mutex<Webs>>, tell: watch::Sender<u64>) {
             tell.send_modify(|changes| *changes += 1);
         }
         if let Some(watcher) = &mut watcher {
-            for gone in watching.difference(&watched) {
+            for gone in watching.difference(&folders) {
                 let _ = watcher.unwatch(gone);
             }
-            for come in watched.difference(&watching) {
+            for come in folders.difference(&watching) {
                 let _ = watcher.watch(come, notify::RecursiveMode::NonRecursive);
             }
         }
         // A folder newly watched may have changed before its watch began,
         // so it is read again at once, until what is watched holds still.
-        if watching != watched {
-            watching = watched;
+        if watching != folders {
+            watching = folders;
             continue;
         }
         if let Ok(Some(())) = tokio::time::timeout(AGAIN_EVERY, changed.recv()).await {

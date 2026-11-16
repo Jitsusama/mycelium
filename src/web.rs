@@ -261,19 +261,18 @@ impl Reading {
             // any other is read whole.
             let grown =
                 kept.filter(|kept| kept.stamp.file == stamp.file && kept.stamp.size <= stamp.size);
-            changed |= match grown {
-                Some(kept) => read_on(&path, kept, stamp),
-                None => {
-                    let mut kept = Kept {
-                        stamp,
-                        read_to: 0,
-                        events: Vec::new(),
-                    };
-                    read_on(&path, &mut kept, stamp);
-                    self.files.insert(path, kept);
-                    true
-                }
-            };
+            if let Some(kept) = grown {
+                changed |= read_on(&path, kept, stamp);
+            } else {
+                let mut kept = Kept {
+                    stamp,
+                    read_to: 0,
+                    events: Vec::new(),
+                };
+                read_on(&path, &mut kept, stamp);
+                self.files.insert(path, kept);
+                changed = true;
+            }
         }
         let before = self.files.len();
         self.files.retain(|path, _| seen.contains(path));
