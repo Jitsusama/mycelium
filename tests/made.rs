@@ -196,6 +196,26 @@ fn start(home: &Path, may_cost: bool) -> serde_json::Value {
     serde_json::from_slice(&started.stdout).expect("the start says what it did")
 }
 
+/// The names of the machines skiff's node at `home` lists.
+fn machines(home: &Path) -> Vec<String> {
+    let listed = mycelium(home)
+        .args(["--realm", "work", "machines"])
+        .output()
+        .expect("machines runs");
+    let first = listed
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .next()
+        .unwrap_or_default();
+    let said: serde_json::Value = serde_json::from_slice(first).expect("the machines, as JSON");
+    said["Ok"]["Machines"]
+        .as_array()
+        .expect("a list of machines")
+        .iter()
+        .filter_map(|one| one["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
 /// The book at skiff's `home`, once it holds a make and a release.
 fn book(home: &Path, within: Duration) -> Vec<serde_json::Value> {
     let book = home.join("s").join("mycelium").join("made.jsonl");
@@ -314,6 +334,11 @@ fn a_machine_that_costs_nothing_is_made_for_any_start_and_let_go_after_its_work(
             &serde_json::json!("its work handed over")
         ),
         "made at no cost, and let go once its work was done: {lines:?}"
+    );
+    assert_eq!(
+        machines(&home),
+        ["skiff"],
+        "a machine let go leaves the realm's machines at once, not at its time"
     );
 }
 
