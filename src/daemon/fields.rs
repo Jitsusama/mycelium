@@ -12,12 +12,14 @@
 //!
 //! A record is cut down from the bytes it is held as: only the objects a
 //! path runs through are split into their fields, and what is kept is
-//! copied as its bytes, never parsed.
+//! copied as its bytes, never parsed. Bytes the split can't read, such
+//! as an object whose keys aren't sorted, are parsed and cut down
+//! instead, so no record loses what was asked of it.
 
 use std::borrow::Cow;
 
-use serde_json::Value;
 use serde_json::value::RawValue;
+use serde_json::{Map, Value};
 
 use super::split::{Piece, fields, object};
 
@@ -61,34 +63,79 @@ pub fn read(asked: &Value) -> Result<Vec<String>, String> {
 pub fn projected(record: &str, paths: &[String]) -> Box<RawValue> {
     let mut asked: Vec<&str> = paths.iter().map(String::as_str).collect();
     asked.extend(ALWAYS);
-    let kept = kept(record, &asked).unwrap_or_else(|| "{}".to_owned());
+    let kept = match kept(record, &asked) {
+        Ok(kept) => kept,
+        Err(Unsplit) => serde_json::from_str(record)
+            .ok()
+            .and_then(|value| parsed(value, &asked))
+            .map(|value| value.to_string()),
+    };
+    let kept = kept.unwrap_or_else(|| "{}".to_owned());
     // What is kept was read as JSON, so it is JSON written again.
     RawValue::from_string(kept).unwrap_or_else(|_| RawValue::NULL.to_owned())
 }
 
+/// The bytes of an object the split can't read, so it is parsed instead.
+struct Unsplit;
+
 /// What of the value whose bytes are `json` the `paths` under it name, as
 /// its bytes, or none where they name nothing it holds, an object of
-/// nothing included.
-fn kept(json: &str, paths: &[&str]) -> Option<String> {
-    let fields = fields(json)?;
-    let kept: Vec<Piece<'_, '_>> = fields
-        .iter()
-        .filter_map(|field| {
-            let name: &str = &field.name;
-            if paths.contains(&name) {
-                return Some(Piece::of(field, Cow::Borrowed(field.value)));
+/// nothing included; or [`Unsplit`] where an object on the way can't be
+/// split.
+fn kept(json: &str, paths: &[&str]) -> Result<Option<String>, Unsplit> {
+    let Some(fields) = fields(json) else {
+        // Held bytes are compact, so an object opens with its brace; what
+        // else isn't split names nothing under it.
+        return if json.starts_with('{') {
+            Err(Unsplit)
+        } else {
+            Ok(None)
+        };
+    };
+    let mut pieces: Vec<Piece<'_, '_>> = Vec::new();
+    for field in &fields {
+        let name: &str = &field.name;
+        if paths.contains(&name) {
+            pieces.push(Piece::of(field, Cow::Borrowed(field.value)));
+            continue;
+        }
+        let under: Vec<&str> = paths
+            .iter()
+            .filter_map(|path| path.strip_prefix(name)?.strip_prefix('.'))
+            .collect();
+        if under.is_empty() {
+            continue;
+        }
+        if let Some(inside) = kept(field.value, &under)? {
+            pieces.push(Piece::of(field, Cow::Owned(inside)));
+        }
+    }
+    Ok((!pieces.is_empty()).then(|| object(&pieces)))
+}
+
+/// What of the parsed `value` the `paths` under it name, or none where
+/// they name nothing it holds, an object of nothing included.
+fn parsed(value: Value, paths: &[&str]) -> Option<Value> {
+    let Value::Object(fields) = value else {
+        return None;
+    };
+    let kept: Map<String, Value> = fields
+        .into_iter()
+        .filter_map(|(key, value)| {
+            if paths.contains(&key.as_str()) {
+                return Some((key, value));
             }
             let under: Vec<&str> = paths
                 .iter()
-                .filter_map(|path| path.strip_prefix(name)?.strip_prefix('.'))
+                .filter_map(|path| path.strip_prefix(key.as_str())?.strip_prefix('.'))
                 .collect();
             if under.is_empty() {
                 return None;
             }
-            Some(Piece::of(field, Cow::Owned(kept(field.value, &under)?)))
+            Some((key, parsed(value, &under)?))
         })
         .collect();
-    (!kept.is_empty()).then(|| object(&kept))
+    (!kept.is_empty()).then_some(Value::Object(kept))
 }
 
 #[cfg(test)]
@@ -180,6 +227,37 @@ mod tests {
             }),
             "a key is matched as it reads, not as it is escaped"
         );
+    }
+
+    #[test]
+    fn a_record_the_split_cant_read_is_parsed_and_cut_down_all_the_same() {
+        let asked = ["address", "presence.repo"].map(str::to_owned);
+        for (record, why) in [
+            (
+                r#"{"kind":"session","key":"session:a","address":"AB12CD","presence":{"repo":"world"}}"#,
+                "its keys unsorted",
+            ),
+            (
+                r#"{"address":"AB12CD","key":"session:a","kind":"session","presence":{"title":"t","repo":"world"}}"#,
+                "an object inside it unsorted",
+            ),
+            (
+                r#"{ "address": "AB12CD", "key": "session:a", "kind": "session", "presence": {"repo": "world"} }"#,
+                "spaced out",
+            ),
+        ] {
+            let sent = super::projected(record, &asked);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(sent.get()).expect("JSON"),
+                json!({
+                    "key": "session:a",
+                    "kind": "session",
+                    "address": "AB12CD",
+                    "presence": {"repo": "world"},
+                }),
+                "a record written {why} keeps what was asked of it"
+            );
+        }
     }
 
     #[test]

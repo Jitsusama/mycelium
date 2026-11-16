@@ -6,7 +6,7 @@
 //! quotes, and its value to the comma or brace closing it at its own
 //! depth, strings skipped whole. Splitting the ten thousand sessions of a
 //! deep watch this way, and the presence inside each, took 52 ms where
-//! parsing them took 124 to 130 (17 November), since a parse checks every
+//! parsing them took 124 to 130 (16 November), since a parse checks every
 //! byte it reads where a split only looks for quotes, eight bytes at a
 //! time.
 //!
@@ -211,6 +211,16 @@ mod tests {
             .into_iter()
             .map(|field| (field.name.into_owned(), field.value.to_owned()))
             .collect()
+    }
+
+    #[test]
+    fn serde_json_writes_an_objects_keys_sorted() {
+        assert_eq!(
+            json!({"b": 1, "a": 2}).to_string(),
+            r#"{"a":2,"b":1}"#,
+            "the split and a watch's changes read held records as sorted: a dependency \
+             turning on serde_json's preserve_order would send every deep change whole"
+        );
     }
 
     #[test]
