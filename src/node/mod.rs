@@ -7142,6 +7142,14 @@ mod tests {
         assert_eq!(
             started.attach,
             [
+                "mycelium",
+                "--realm",
+                "work",
+                "attach",
+                "--on",
+                "skiff",
+                &started.held,
+                "--",
                 "ssh",
                 "-t",
                 "--",
@@ -7152,7 +7160,8 @@ mod tests {
                 "attach",
                 &started.held
             ],
-            "kestrel never dialled skiff, so its words join it over SSH by name"
+            "kestrel never dialled skiff, so its words join it over SSH by name, \
+             joining again here each time SSH drops"
         );
         let given = fs::read_to_string(&given).expect("skiff's holder was started");
         assert!(

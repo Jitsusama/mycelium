@@ -31,6 +31,9 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `realm/`: the realm of ten thousand cells both are built for, and the
   bar they are held to, with the counting allocator and thread time
   (`counting.rs`) that `ties.rs` shares
+- `rejoined.rs`: a window's join of a session on another machine, run
+  again each time SSH drops after saying it reconnects, ending as the
+  join there ends, once the node says the session has, or on Ctrl+C
 - `ties.rs`: the node's tie records made for a hundred, a thousand and
   ten thousand cells, five power-law ties a cell, within 70 MB (30 MB
   once records are held as bytes, by 2026-11-17), the time and memory

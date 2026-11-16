@@ -267,8 +267,11 @@ mod tests {
         );
         assert_eq!(
             asks.way("skiff")(&words),
-            ["ssh", "-t", "--", "skiff", "mycelium", "attach"],
-            "one it never dialled is reached over SSH by its name"
+            [
+                "mycelium", "attach", "--on", "skiff", "--", "ssh", "-t", "--", "skiff",
+                "mycelium", "attach"
+            ],
+            "one it never dialled is reached over SSH by its name, joined again as it drops"
         );
     }
 }

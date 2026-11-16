@@ -19,7 +19,8 @@
 //! are kept by content in [`share`]. Sessions whose terminals outlive their
 //! windows are kept by holders of their own, in [`hold`]; a conversation
 //! a pi host holds among many is joined through the host, in
-//! [`hosted_attach`]. What the person
+//! [`hosted_attach`]; one on another machine is joined from here again
+//! each time the way there drops, in [`rejoin`]. What the person
 //! says to a session from outside its window reaches its inbox through
 //! [`steer`], on whichever machine it runs. A machine that says when it
 //! leaves tells its own sessions the same way, before it does, and once
@@ -99,6 +100,7 @@ pub mod placements;
 pub mod reach;
 pub mod receptor;
 pub mod record;
+pub mod rejoin;
 pub mod replay;
 pub mod room;
 pub mod run;
