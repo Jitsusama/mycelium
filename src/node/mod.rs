@@ -57,6 +57,7 @@ use turns::{Asked, Turns};
 mod asker;
 pub use asker::Processes;
 mod crossing;
+mod fences;
 mod glyph;
 mod network;
 pub use network::records as network_records;
@@ -76,6 +77,11 @@ const SAID_WITHIN: Duration = Duration::from_secs(5);
 /// How often the node looks whether its machine leaves soon enough for its
 /// sessions to be told to hand over (`handover`).
 const LEAVING_EVERY: Duration = Duration::from_secs(60);
+
+/// How often at most the machine's processes are looked through for the
+/// fences its sessions show, as their presences change: each look reads
+/// every process's status, and presences change many times a second.
+const FENCES_SEEN_EVERY: Duration = Duration::from_secs(2);
 
 /// How many events a watch may fall behind by before the node lets it go;
 /// a client that can't keep up connects again and is sent the whole state.
@@ -409,6 +415,7 @@ where
     store::out_of_reach_of_unclaimed(&store)?;
     let (to_dial, mut made) = mpsc::unbounded_channel();
     let (shared, kept) = Shared::of(store.clone(), membership.hello(), given, to_dial);
+    let seeing_fences = tokio::spawn(shared.clone().see_fences());
     let Kept {
         sharing,
         refusals,
@@ -491,6 +498,7 @@ where
     // once every one has stopped and given up its claim, the node says so
     // for them.
     let stopping = std::time::Instant::now();
+    seeing_fences.abort();
     links.shutdown().await;
     let ended = stopping.elapsed();
     let letting_go = std::time::Instant::now();
@@ -753,6 +761,8 @@ struct Shared<S> {
     declared: PathBuf,
     /// Where it keeps each placement it makes, if it does.
     placements: Option<Arc<placements::Log>>,
+    /// The strictest fence each session here was seen to run in.
+    fences: Arc<fences::Seen>,
     /// Held while the record of orchestrations is read and kept again, so
     /// two claims at once never undo each other.
     claiming: Arc<Mutex<()>>,
@@ -837,6 +847,7 @@ impl<S: Clone> Clone for Shared<S> {
             talks: self.talks.clone(),
             declared: self.declared.clone(),
             placements: self.placements.clone(),
+            fences: self.fences.clone(),
             claiming: self.claiming.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
@@ -898,6 +909,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     "presence",
                     "standing",
                     "told",
+                    "fence_shown",
                 ],
             ),
             (
@@ -1264,6 +1276,8 @@ impl<S: Store> Shared<S> {
         }
         let shared = Self {
             processes: processes.into(),
+            // Beside the carries it judges, so it needs no place of its own.
+            fences: Arc::new(fences::Seen::at(carries.with_file_name("fences.json"))),
             carries,
             scratch: sharing.as_ref().map(|places| places.scratch.clone()),
             runs: Arc::new(runs),
@@ -1613,6 +1627,12 @@ impl<S: Store> Shared<S> {
             fields.insert("here".to_owned(), here.into());
             if let Some(stands) = standing::standing(session, here, parked, &self.boot) {
                 fields.insert("standing".to_owned(), stands.into());
+            }
+            if let Ok(kind) = self.fences.strictest(&session.id)
+                && here
+                && kind > crate::declared::Kind::None
+            {
+                fields.insert("fence_shown".to_owned(), serde_json::json!(kind));
             }
         }
         let told = standing::told(&fields);
@@ -2101,6 +2121,64 @@ impl<S: Store> Shared<S> {
         .map_err(|error| format!("who asks couldn't be told: {error}"))?
     }
 
+    /// The fence `session` shows it runs in, by its owner's process,
+    /// proved from the presences here as [`Self::asking_session`] proves
+    /// who asks.
+    async fn shown_fence(&self, session: &str) -> Result<crate::declared::Kind, String> {
+        let claims = self.claims();
+        let (processes, hosts, logs, session) = (
+            self.processes.clone(),
+            self.hosts.clone(),
+            self.logs.clone(),
+            session.to_owned(),
+        );
+        tokio::task::spawn_blocking(move || {
+            asker::shown_fence(&claims, &processes, &hosts, &logs, &session)
+        })
+        .await
+        .map_err(|error| format!("the fence it runs in couldn't be told: {error}"))?
+    }
+
+    /// What the presences of the sessions standing here claim of who owns
+    /// each.
+    fn claims(&self) -> Vec<asker::Claim> {
+        self.standing()
+            .iter()
+            .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
+            .collect()
+    }
+
+    /// Keeps the strictest fence each session here shows, looking again
+    /// as their presences change, at most every [`FENCES_SEEN_EVERY`], so
+    /// a fence shown only while a command runs, or switched on after a
+    /// session began, still counts when it is carried. Tells the sessions'
+    /// watches when one rose.
+    async fn see_fences(self) {
+        let mut told = self.said.sessions.subscribe();
+        loop {
+            let looked = tokio::time::Instant::now();
+            let (claims, processes, hosts, logs) = (
+                self.claims(),
+                self.processes.clone(),
+                self.hosts.clone(),
+                self.logs.clone(),
+            );
+            let shown = tokio::task::spawn_blocking(move || {
+                asker::shown_fences(&claims, &processes, &hosts, &logs)
+            })
+            .await
+            .unwrap_or_default();
+            if self.fences.raise(&shown) {
+                self.said.sessions.send_modify(|said| *said += 1);
+                told.mark_unchanged();
+            }
+            if told.changed().await.is_err() {
+                return;
+            }
+            tokio::time::sleep_until(looked + FENCES_SEEN_EVERY).await;
+        }
+    }
+
     /// The presences of this machine's sessions that run, or wait parked
     /// to run again.
     fn standing(&self) -> Vec<store::Presence> {
@@ -2298,10 +2376,17 @@ impl<S: Store> Shared<S> {
         if to == self.machine {
             return Err(format!("{address} already runs on {to}"));
         }
-        let kind = target
+        let claimed = target
             .presence
             .get("fence")
             .and_then(|kind| serde_json::from_value::<crate::declared::Kind>(kind.clone()).ok());
+        // Never looser than any it was seen in, since what a process
+        // shows comes and goes.
+        let shown = self
+            .shown_fence(session)
+            .await?
+            .max(self.fences.strictest(session)?);
+        let kind = ground::as_shown(claimed, shown, &address)?;
         let there = self.others().into_iter().find(|machine| machine.name == to);
         ground::firm(
             kind,
@@ -4349,14 +4434,9 @@ mod tests {
         let procs = procs_of(socket);
         let client = procs.join(std::process::id().to_string());
         let pi = procs.join(parent.to_string());
-        // Pi started when its presence says, by [`started_at`].
-        let zeros = "0 ".repeat(17);
-        fs::create_dir_all(&pi).expect("its folder is made");
-        fs::write(
-            pi.join("stat"),
-            format!("{parent} (pi) S 1 {zeros}{} 0 0\n", started_at(parent)),
-        )
-        .expect("its stat is written");
+        if !pi.join("stat").exists() {
+            pi_runs(socket, parent, "HOME=/home/jsama\0");
+        }
         for (folder, status) in [
             (&client, format!("Name:\tmycelium\nPPid:\t{parent}\n")),
             (&pi, "Name:\tpi\nPPid:\t1\n".to_owned()),
@@ -4370,6 +4450,41 @@ mod tests {
             )
             .expect("its group is written");
         }
+    }
+
+    /// Tells the stand-in for /proc beside `socket` that pi `pid` runs,
+    /// started when its presence says, by [`started_at`], with `environ`
+    /// the environment it began with.
+    fn pi_runs(socket: &Path, pid: i32, environ: &str) {
+        let pi = procs_of(socket).join(pid.to_string());
+        let zeros = "0 ".repeat(17);
+        fs::create_dir_all(&pi).expect("its folder is made");
+        fs::write(
+            pi.join("stat"),
+            format!("{pid} (pi) S 1 {zeros}{} 0 0\n", started_at(pid)),
+        )
+        .expect("its stat is written");
+        fs::write(pi.join("status"), "Name:\tpi\nPPid:\t1\n").expect("its status is written");
+        fs::write(pi.join("environ"), environ).expect("its environment is written");
+    }
+
+    /// The environment of a pi the harness started strictly fenced.
+    const STRICT: &str = "PI_SANDBOX=strict\0";
+
+    /// The environment of a pi started in no fence.
+    const UNFENCED: &str = "HOME=/home/jsama\0";
+
+    /// Tells the stand-in for /proc beside `socket` that a bubblewrap
+    /// `pid` runs below process `parent`, as the agent fence starts one
+    /// for each command it fences.
+    fn fences_below(socket: &Path, pid: i32, parent: i32) {
+        let bwrap = procs_of(socket).join(pid.to_string());
+        fs::create_dir_all(&bwrap).expect("its folder is made");
+        fs::write(
+            bwrap.join("status"),
+            format!("Name:\tbwrap\nPPid:\t{parent}\n"),
+        )
+        .expect("its status is written");
     }
 
     /// When the test's pi `pid` started, in clock ticks since boot.
@@ -4419,6 +4534,22 @@ mod tests {
         tokio::task::JoinHandle<io::Result<()>>,
         Speaking,
     ) {
+        harbour_claiming(store, socket, quests, also, ("strict", STRICT)).await
+    }
+
+    /// As [`orchestrated_in`], HARBOR's presence claiming it runs in the
+    /// fence `fence`, as each of the others claims the strict one.
+    async fn harbour_claiming(
+        store: &Memory,
+        socket: &Path,
+        quests: &Value,
+        also: &[Value],
+        (fence, began): (&str, &str),
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+        Speaking,
+    ) {
         let at = jiff::Timestamp::now().to_string();
         // The groups the mesh put each in, as WCJQSG orchestrates them.
         for (session, address, quest, pid, groups) in [
@@ -4447,7 +4578,8 @@ mod tests {
             let presence = json!({
                 "session": session, "addresses": [address], "groups": groups,
                 "busy": false, "state": "listening", "at": at, "quest": quest,
-                "orchestratedBy": "WCJQSG", "fence": "strict",
+                "orchestratedBy": "WCJQSG",
+                "fence": if session == "s-harbour" { fence } else { "strict" },
                 "owner": {"pid": pid, "startTicks": started_at(pid)},
             });
             store.start_here(session, presence, true);
@@ -4473,6 +4605,7 @@ mod tests {
         fs::rename(&beside, socket.with_file_name("quests.json")).expect("renamed into place");
         client.next().await;
         for (pid, session) in [(7001, "s-steward"), (7002, "s-weigh"), (7003, "s-harbour")] {
+            pi_runs(socket, pid, if pid == 7003 { began } else { STRICT });
             holds_log(socket, pid, session);
         }
         let here = fenced("skiff", &["remote", "big"]).declared;
@@ -4712,6 +4845,129 @@ mod tests {
             },
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn an_ordered_carry_takes_the_stricter_of_the_fence_claimed_and_shown() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            harbour_claiming(&store, &socket, &orchestrations(), &[], ("fence", STRICT)).await;
+        steward_claims(&socket).await;
+        assert_eq!(
+            orders_harbour(&socket, 7001).await,
+            Err(
+                "HARBOR says it runs fenced, but its process shows it strictly fenced, so where \
+                 it may land can't be told"
+                    .to_owned()
+            ),
+            "a session claiming a looser fence than its pi began in is refused"
+        );
+        assert!(
+            !socket.with_file_name("carries.jsonl").exists(),
+            "and nothing is kept of it"
+        );
+        fs::remove_file(procs_of(&socket).join("7003").join("environ")).expect("removed");
+        assert_eq!(
+            orders_harbour(&socket, 7001).await,
+            Err(
+                "s-harbour's process can't be read, so the fence it runs in can't be told"
+                    .to_owned()
+            ),
+            "nor where its process can't be read"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ordered_carry_counts_a_fenced_command_below_a_session_claiming_none() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            harbour_claiming(&store, &socket, &orchestrations(), &[], ("none", UNFENCED)).await;
+        steward_claims(&socket).await;
+        fences_below(&socket, 7100, 7003);
+        assert_eq!(
+            orders_harbour(&socket, 7001).await,
+            Err(
+                "HARBOR says it runs unfenced, but its process shows it fenced, so where it \
+                 may land can't be told"
+                    .to_owned()
+            ),
+            "a bubblewrap below its lone pi shows it fenced, whatever its environment says"
+        );
+        assert!(
+            !socket.with_file_name("carries.jsonl").exists(),
+            "and nothing is kept of it"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ordered_carry_of_a_session_whose_owner_isnt_proved_is_refused() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        fs::remove_dir_all(procs_of(&socket).join("7003").join("fd")).expect("removed");
+        assert_eq!(
+            orders_harbour(&socket, 7001).await,
+            Err(
+                "who owns s-harbour can't be proved here, so the fence it runs in can't be told"
+                    .to_owned()
+            ),
+            "a process that doesn't hold the session's log shows nothing of its fence"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ordered_carry_remembers_the_strictest_fence_its_session_was_seen_in() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, mut watching) =
+            harbour_claiming(&store, &socket, &orchestrations(), &[], ("none", UNFENCED)).await;
+        steward_claims(&socket).await;
+        watching
+            .ask(json!({"id": 3, "ask": "watch", "kind": "session"}))
+            .await;
+        assert!(
+            watching.next().await["records"].is_array(),
+            "the sessions are sent whole first"
+        );
+        fences_below(&socket, 7100, 7003);
+        // A presence changing has the node look at its sessions' processes.
+        let passing = json!({"session": "s-passing", "addresses": ["PASSNG"], "groups": [],
+                             "busy": false, "state": "listening",
+                             "at": jiff::Timestamp::now().to_string()});
+        store.start_here("s-passing", passing, true);
+        let seen = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let said = watching.next().await;
+                let fenced = said["changed"].as_array().is_some_and(|changed| {
+                    changed.iter().any(|record| {
+                        record["key"] == "session:s-harbour" && record["fence_shown"] == "fence"
+                    })
+                });
+                if fenced {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(seen.is_ok(), "the node sees the fenced command below it");
+        fs::remove_dir_all(procs_of(&socket).join("7100")).expect("its command ended");
+        assert_eq!(
+            orders_harbour(&socket, 7001).await,
+            Err(
+                "HARBOR says it runs unfenced, but its process shows it fenced, so where it \
+                 may land can't be told"
+                    .to_owned()
+            ),
+            "a fence seen once still counts once its command has ended"
+        );
     }
 
     #[tokio::test]
