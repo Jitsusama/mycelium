@@ -1254,13 +1254,14 @@ The `cell` kind holds each cell of the realm, keyed by its name: a
 session's address, a machine's name, or a receptor's source and machine,
 such as `slack@kestrel`. Each is the very cell that
 `mycelium networks -o json` prints, made by the same model from the
-same records as the `network` kind, less its `kind`: its `type` (`session`, `machine` or
-`receptor`), and where it says them its `title`, a session's `id`,
-`window`, `standing` (`needs-you`, `stuck`, `moving`, `quiet` or
-`dormant`), `doing`, `asks`, `repo`, `usage`, the networks it `leads`,
-`machine`, `since`, `quest`, `plan` and `cwd`, a machine's or a
-receptor's `state`, a machine's `busy` and the sessions it `runs`, a
-receptor's `counts`, and the `networks` it joined. A session's `quest`
+same records as the `network` kind, less its `kind`: its `type`
+(`session`, `machine` or `receptor`), and where it says them its
+`title`, a session's `id`, `window`, `standing` (`needs-you`, `stuck`,
+`moving`, `quiet` or `dormant`), `doing`, `asks`, `repo`, `usage`, the
+networks it `leads`, `machine`, `since`, `quest`, `plan`, `cwd` and the
+`trees` it holds, a machine's or a receptor's `state`, a machine's
+`busy` and the sessions it `runs`, a receptor's `counts`, and the
+`networks` it joined. A session's `quest`
 is the quest it works on, a field like any other; a cell is known by its
 name alone. A builder is no cell: the machines' network names it among
 its `builders`, and it is a `builder` record. A cell is heard when its

@@ -23,9 +23,9 @@ use crate::networks::Is;
 pub const KIND: &str = "cell";
 
 /// The fields of a cell that change while it lives.
-pub const LIVE: [&str; 17] = [
+pub const LIVE: [&str; 18] = [
     "title", "window", "standing", "doing", "asks", "repo", "usage", "leads", "machine", "quest",
-    "plan", "cwd", "state", "busy", "runs", "counts", "networks",
+    "plan", "cwd", "trees", "state", "busy", "runs", "counts", "networks",
 ];
 
 /// Every cell the node's records make, by key, each session standing as
