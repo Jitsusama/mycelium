@@ -5,7 +5,8 @@
 mod realm;
 
 /// Half the cells to all of them at most three times as long, and all of
-/// them within half a second of the processor's time. Ten thousand cells'
+/// them within a second of the processor's time, since a busy builder
+/// took 188 ms to 510 ms for the same records. Ten thousand cells'
 /// records are past any cache, a thousand's are not, so the time is first
 /// taken where both are: work growing with the cells takes twice as long,
 /// and with their square four times.
@@ -13,7 +14,7 @@ mod realm;
 const GROWTH: realm::Growth = realm::Growth {
     from: realm::CELLS / 2,
     times: 3,
-    within: Some(std::time::Duration::from_millis(500)),
+    within: Some(std::time::Duration::from_secs(1)),
 };
 
 /// Under musl, whose allocator slows as the heap grows, held as the
