@@ -817,6 +817,7 @@ impl<S: Store> End<S> {
             Frame::Start { ask, .. } => Some(self.refused(*ask, "starts nothing for")),
             Frame::Steer { ask, .. } => Some(self.refused(*ask, "takes no steers from")),
             Frame::Update { ask } => Some(self.refused(*ask, "updates nothing for")),
+            Frame::Carry { ask, .. } => Some(self.refused(*ask, "carries nothing for")),
             Frame::Run { ask, .. } => Some(Refused::Answered(Box::new(Frame::Ran {
                 ask: *ask,
                 ran: Ran::Failed(format!("{} runs nothing for a worker", self.here)),
@@ -2500,8 +2501,8 @@ mod tests {
 
     /// What a worker, tern, says to the machine that dialled it: its hello,
     /// an ask for a file of `quest`, a presence of its own and one naming
-    /// the dialler's, the message `message`, then a start, a steer and an
-    /// update, asked as 1, 2 and 3.
+    /// the dialler's, the message `message`, then a start, a steer, an
+    /// update, a run and a carry, asked as 1 to 5.
     fn a_workers_frames(quest: &str, message: &str) -> Vec<Frame> {
         let start: Start =
             serde_json::from_value(json!({"work": {}, "command": ["pi"]})).expect("a start");
@@ -2540,6 +2541,12 @@ mod tests {
                 ask: 4,
                 run: serde_json::from_value(json!({"work": {}, "command": ["true"]}))
                     .expect("a run"),
+            },
+            Frame::Carry {
+                ask: 5,
+                quest: quest.to_owned(),
+                to: "tern".to_owned(),
+                checked: true,
             },
         ]
     }
@@ -2594,7 +2601,7 @@ mod tests {
         let mut ran = None;
         let mut said = Vec::new();
         tokio::time::timeout(PATIENCE, async {
-            while answers.len() < 3 || ran.is_none() {
+            while answers.len() < 4 || ran.is_none() {
                 let line = lines
                     .next_line()
                     .await
@@ -2618,8 +2625,9 @@ mod tests {
                 (1, Err("skiff starts nothing for a worker".to_owned())),
                 (2, Err("skiff takes no steers from a worker".to_owned())),
                 (3, Err("skiff updates nothing for a worker".to_owned())),
+                (5, Err("skiff carries nothing for a worker".to_owned())),
             ]),
-            "a worker can't start, steer or update anything on the machine that dialled it"
+            "a worker can't start, steer, update or carry anything on the machine that dialled it"
         );
         assert_eq!(
             ran,
