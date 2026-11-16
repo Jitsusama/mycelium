@@ -57,7 +57,9 @@ mod counting;
 /// That the records `making` makes of ten thousand cells hold to the bar,
 /// more than `more_than` of them, as `formed` says they should be, the
 /// build holding at most `at_most` bytes beyond what it was given and
-/// taking as long as `growth` lets it.
+/// taking as long as `growth` lets it. Each cell's time at a tenth of the
+/// cells is told beside it, held or not, so a step at the cache's edge
+/// shows.
 pub fn holds_the_bar(
     more_than: usize,
     formed: &str,
@@ -74,10 +76,21 @@ pub fn holds_the_bar(
     drop(records);
 
     let from = growth.from;
-    let (fewer, all) = fastest(&Realm::of(from), &realm, &making);
+    let tenth = CELLS / 10;
+    let [least, fewer, all] = fastest([&Realm::of(tenth), &Realm::of(from), &realm], &making);
     eprintln!(
-        "{from} cells took {fewer:?}; {CELLS} took {all:?}, holding {peak} bytes at most, \
-         {kept} of them the records themselves"
+        "{tenth} cells took {least:?}; {from} took {fewer:?}; {CELLS} took {all:?}, holding \
+         {peak} bytes at most, {kept} of them the records themselves"
+    );
+    eprintln!(
+        "each cell took {} at {tenth}, {} at {from} and {} at {CELLS}: {CELLS} took {:.1} \
+         times as long as {tenth}, which is told, and {:.1} times as long as {from}, which \
+         is held",
+        per_cell(least, tenth),
+        per_cell(fewer, from),
+        per_cell(all, CELLS),
+        all.as_secs_f64() / least.as_secs_f64(),
+        all.as_secs_f64() / fewer.as_secs_f64(),
     );
 
     let records = making(&realm.holding());
@@ -147,16 +160,24 @@ impl Realm {
     }
 }
 
-/// The least time the records `making` makes of `fewer` and of `all`
-/// took, of a few builds each, made in turn.
-fn fastest(
-    fewer: &Realm,
-    all: &Realm,
+/// The least time the records `making` makes of each of `realms` took,
+/// of a few builds each, made in turn.
+fn fastest<const N: usize>(
+    realms: [&Realm; N],
     making: &impl Fn(&Holding<'_>) -> BTreeMap<String, Record>,
-) -> (Duration, Duration) {
-    (0..TIMINGS).fold((Duration::MAX, Duration::MAX), |(least, most), _| {
-        (least.min(fewer.timed(making)), most.min(all.timed(making)))
+) -> [Duration; N] {
+    (0..TIMINGS).fold([Duration::MAX; N], |mut least, _| {
+        for (fastest, realm) in least.iter_mut().zip(realms) {
+            *fastest = (*fastest).min(realm.timed(making));
+        }
+        least
     })
+}
+
+/// `took` for `cells`, said for one of them.
+fn per_cell(took: Duration, cells: usize) -> String {
+    let cells = u32::try_from(cells).unwrap_or(u32::MAX).max(1);
+    format!("{:?}", took / cells)
 }
 
 /// The teams of a realm of `cells`: one for every forty, some within

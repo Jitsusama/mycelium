@@ -10,7 +10,9 @@ mod realm;
 /// work that grows with them (2026-11-17), against 11.5 to 12.8 when
 /// quieter. From half, where both are past it, work growing with the
 /// cells takes twice as long and with their square four times, as a scan
-/// of every session for each repository once did.
+/// of every session for each repository once did. The step at the cache's
+/// edge is still told, each cell's time at a tenth beside the others, but
+/// not held.
 #[cfg(not(any(target_env = "musl", target_os = "macos")))]
 const GROWTH: realm::Growth = realm::Growth {
     from: realm::CELLS / 2,
