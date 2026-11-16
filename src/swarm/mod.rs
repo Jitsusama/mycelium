@@ -167,7 +167,7 @@ pub(crate) const BOLD: &str = "\x1b[1m";
 pub(crate) const FAINT: &str = "\x1b[2m";
 const RED: &str = "\x1b[31m";
 const YELLOW: &str = "\x1b[33m";
-const RESET: &str = "\x1b[0m";
+pub(crate) const RESET: &str = "\x1b[0m";
 
 /// The space between columns.
 pub(crate) const GAP: &str = "  ";
