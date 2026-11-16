@@ -2545,12 +2545,7 @@ impl<S: Store> Shared<S> {
             now,
         };
         let cells = easing::cells(&self.machine, &looked);
-        let here = ease::Here {
-            name: &self.machine,
-            declared: machines.first().and_then(|one| one.declared.as_ref()),
-            machines: &machines,
-            loads: &loads,
-        };
+        let here = ease::Here::of(&self.machine, &machines, &loads);
         let reading = crate::balance::read(&machines, &sessions, now);
         (easing.look(&here, reading, cells, &holds, now), sampler)
     }

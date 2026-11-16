@@ -212,6 +212,23 @@ pub struct Here<'a> {
     pub loads: &'a Loads,
 }
 
+impl<'a> Here<'a> {
+    /// The machine named `name` among the realm's `machines`, as its own
+    /// configuration says of it.
+    #[must_use]
+    pub fn of(name: &'a str, machines: &'a [Machine], loads: &'a Loads) -> Self {
+        Self {
+            name,
+            declared: machines
+                .iter()
+                .find(|one| one.name == name)
+                .and_then(|one| one.declared.as_ref()),
+            machines,
+            loads,
+        }
+    }
+}
+
 /// What a machine does to ease itself now.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "choice")]
@@ -611,6 +628,23 @@ pub(super) mod tests {
             why_not(&choose(&here, &[cell("s1")], &unwatched, &history, now())),
             "no watch follows skiff's readings, so whether it stays over can't be told"
         );
+    }
+
+    #[test]
+    fn a_machine_is_judged_by_what_its_own_configuration_says() {
+        let mut tern = machine("tern", 4.6);
+        tern.declared = Some(declaring(&[Kind::None]));
+        let mut skiff = machine("skiff", 4.6);
+        skiff.declared = Some(declaring(&[Kind::Fence]));
+        let machines = [tern, skiff];
+        let loads = Loads::new();
+        let here = Here::of("skiff", &machines, &loads);
+        assert_eq!(
+            here.declared,
+            machines[1].declared.as_ref(),
+            "skiff, listed second, by its own facts"
+        );
+        assert!(Here::of("osprey", &machines, &loads).declared.is_none());
     }
 
     #[test]
