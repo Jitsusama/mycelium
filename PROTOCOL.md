@@ -335,14 +335,22 @@ scratch, only the folders named cross, as `mycelium share QEST-...
 clones and data. A folder holding more than 10,000 files or 1 GiB, or a
 file over 64 MiB, is refused when named, and so are `tmp/` and build
 output. Within a named folder, hidden files, links, `target/` and
-`node_modules/` stay home. A folder once named stays shared. The
+`node_modules/` stay home, and anywhere in a quest nothing is read or
+written through a link, whether the file is one or a folder it is in:
+such a file reads as absent, and a write to one is refused. A folder
+once named stays shared. The
 scratch's `handover/` crosses whenever it is there as the quest is
 shared, named or not, under the same limits, since a carry or a spawn
 leaves there what the other machine needs to start. Sharing a quest
 shares each quest above it too, up its README's `parent` while each is
-on this machine, as quests of their own with none of their scratch
-named, so a session on the other machine can tell what orchestrates it.
-One shared only so stops being shared, at both ends, once no quest
+on this machine, so a session on the other machine can tell what
+orchestrates it. One shared only so carries its `README.md` alone, none
+of its attachments, journey, other documents or scratch, and no
+`Shares` names its scratch or clones; it carries its whole record once
+either end shares it on its own. Nothing above is carried to a worker,
+and an end is taken for one until its `Machine` frame declares it is
+not, so an end that takes no facts is never sent one. One shared only
+so stops being shared, at both ends, once no quest
 either end shares names it above and the other end doesn't share it on
 its own; one shared on its own as well stays. Only a quest shared in
 its own right keeps a quest above it, so parents naming each other

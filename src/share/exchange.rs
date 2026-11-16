@@ -182,10 +182,9 @@ impl Places {
 
     /// Shares `quest`, which must be here to share, with each of the
     /// folders of its scratch named in `scratch`, and its [`HANDOVER`]
-    /// whenever it is there, named or not, and the record of each quest
-    /// above it on this machine ([`Self::above`]), none of their scratch,
-    /// so a session there can tell what orchestrates it; and says what is
-    /// shared.
+    /// whenever it is there, named or not, and the README alone of each
+    /// quest above it on this machine ([`Self::above`]), so a session
+    /// there can tell what orchestrates it; and says what is shared.
     ///
     /// # Errors
     ///
@@ -232,7 +231,7 @@ impl Places {
         let with = if above.is_empty() {
             with
         } else {
-            format!("{with}, and the records of {}", above.join(", "))
+            format!("{with}, and the READMEs of {}", above.join(", "))
         };
         Ok(format!(
             "{quest} is shared, with {with}; each link carries it from its next look"
@@ -617,6 +616,17 @@ impl Exchange {
                 .is_some_and(|theirs| theirs.quests.contains(id) && !theirs.above.contains(id))
     }
 
+    /// Whether this link carries quest `id`, which this end shares, whole:
+    /// neither withheld from the other end nor its README alone.
+    fn carries_whole(&self, id: &str) -> io::Result<bool> {
+        let ledgers = self.places.ledgers();
+        if !ledgers.shares(id) {
+            return Ok(false);
+        }
+        let held = ledgers.hold(id)?;
+        Ok(!self.withholds(&held.ledger) && self.whole(id, &held.ledger))
+    }
+
     /// Where this machine keeps quest `id`, carrying what this link carries
     /// of it ([`Self::whole`]).
     fn quest(&self, id: &str, ledger: &Ledger) -> Quest {
@@ -847,11 +857,17 @@ impl Exchange {
                     files,
                 });
             }
+            // Of a quest whose README alone crosses, no scratch is named.
+            let (folders, clones) = if carried.readme_alone {
+                (BTreeSet::new(), BTreeMap::new())
+            } else {
+                (held.ledger.scratch.clone(), held.ledger.clones.clone())
+            };
             shares.insert(
                 id,
                 Told {
-                    folders: held.ledger.scratch.clone(),
-                    clones: held.ledger.clones.clone(),
+                    folders,
+                    clones,
                     ended,
                     above: held.ledger.above,
                 },
@@ -921,13 +937,17 @@ impl Exchange {
                         self.take_up(&id)?;
                     }
                 }
+                // Nothing said of the scratch of a quest this link carries
+                // only the README of, or withholds, is taken.
                 for (id, folders) in scratch {
-                    if !self.places.ended(&id) {
+                    if !self.places.ended(&id) && self.carries_whole(&id)? {
                         self.share_scratch(&id, &folders)?;
                     }
                 }
                 for (id, clones) in clones {
-                    self.clone_what(&id, &clones)?;
+                    if self.carries_whole(&id)? {
+                        self.clone_what(&id, &clones)?;
+                    }
                 }
                 Ok(Vec::new())
             }
@@ -1768,6 +1788,13 @@ mod tests {
         let tern = Machine::new("tern");
         let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
         under_top(&kestrel, top, child);
+        let in_top = || -> BTreeSet<std::ffi::OsString> {
+            fs::read_dir(kestrel.places.quests.join(top))
+                .expect("listed")
+                .map(|entry| entry.expect("an entry").file_name())
+                .collect()
+        };
+        let before = in_top();
         let (mut near, mut far) = (kestrel.exchange(&tern), tern.exchange(&kestrel));
         near.withhold_above(true);
         talk(&mut near, &mut far);
@@ -1797,6 +1824,7 @@ mod tests {
             Some(TOP_README),
             "nor writes over it"
         );
+        assert_eq!(in_top(), before, "nor writes anything beside it");
         assert!(
             near.hear(Say::Want {
                 quest: top.to_owned(),
@@ -1807,6 +1835,59 @@ mod tests {
             .is_empty(),
             "and asking for its README, it is sent nothing"
         );
+    }
+
+    #[test]
+    fn nothing_of_a_parent_s_scratch_is_said_or_taken_while_its_readme_alone_crosses() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        under_top(&kestrel, top, child);
+        put(&kestrel.places.scratch, &format!("{top}/notes/mine.md"), "mine\n");
+        {
+            let mut held = kestrel.places.ledgers().hold(top).expect("held");
+            held.ledger.scratch.insert("lab".to_owned());
+            held.keep().expect("kept");
+        }
+        let mut near = kestrel.exchange(&skiff);
+        let said = near.look().expect("kestrel looks");
+        let Some(Say::Shares { quests, scratch, .. }) = said.first() else {
+            panic!("kestrel says first what it shares: {said:?}");
+        };
+        assert!(quests.iter().any(|id| id == top), "the parent is named");
+        assert!(!scratch.contains_key(top), "but not its scratch, its README alone crossing");
+
+        let named = BTreeMap::from([(top.to_owned(), BTreeSet::from(["notes".to_owned()]))]);
+        for withheld in [true, false] {
+            near.withhold_above(withheld);
+            near.hear(Say::Shares {
+                quests: vec![top.to_owned(), child.to_owned()],
+                scratch: named.clone(),
+                clones: BTreeMap::new(),
+                ended: BTreeSet::new(),
+                above: BTreeSet::from([top.to_owned()]),
+            })
+            .expect("kestrel hears");
+            assert_eq!(
+                fs::read_to_string(kestrel.places.scratch.join(top).join("notes/mine.md"))
+                    .ok()
+                    .as_deref(),
+                Some("mine\n"),
+                "what skiff says of the parent's scratch moves none of kestrel's aside, \
+                 withheld or not"
+            );
+            assert!(
+                !kestrel
+                    .places
+                    .ledgers()
+                    .hold(top)
+                    .expect("held")
+                    .ledger
+                    .scratch
+                    .contains("notes"),
+                "nor names a folder of it shared"
+            );
+        }
     }
 
     #[test]

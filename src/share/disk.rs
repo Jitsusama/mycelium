@@ -428,14 +428,54 @@ mod tests {
             );
         }
         assert!(
+            quest
+                .write(&record("attachments/away/held.md"), None, None)
+                .is_err(),
+            "and so is a deletion through a linked folder"
+        );
+        assert!(
             !elsewhere.join("planted.md").exists(),
             "so nothing lands elsewhere"
         );
         assert_eq!(
             fs::read_to_string(elsewhere.join("held.md")).expect("read"),
             "held\n",
-            "nor is what a link leads to changed"
+            "nor is what a link leads to changed or removed"
         );
+    }
+
+    #[test]
+    fn nothing_is_read_through_a_link_in_the_record() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let quest = Quest::new(dir.path().join("record"), PathBuf::from("/home/jitsusama"));
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir_all(quest.record.join("attachments")).expect("the record made");
+        fs::create_dir_all(&elsewhere).expect("elsewhere made");
+        fs::write(elsewhere.join("held.md"), "held\n").expect("written");
+        std::os::unix::fs::symlink(&elsewhere, quest.record.join("attachments/away"))
+            .expect("a folder linked");
+        std::os::unix::fs::symlink(elsewhere.join("held.md"), quest.record.join("held.md"))
+            .expect("a file linked");
+        std::os::unix::fs::symlink(
+            elsewhere.join("held.md"),
+            quest.record.join("attachments/key.md"),
+        )
+        .expect("an attachment linked");
+
+        for path in ["held.md", "attachments/key.md", "attachments/away/held.md"] {
+            let shared = record(path);
+            assert_eq!(quest.read(&shared).expect("read"), None, "{path} isn't read");
+            assert_eq!(
+                quest.read_piece(&shared, 0).expect("read"),
+                None,
+                "nor a piece of {path}"
+            );
+            assert_eq!(quest.mode_of(&shared).expect("read"), None, "nor its mode");
+            assert!(
+                quest.seen_of(&shared).expect("read").is_none(),
+                "nor its size and time"
+            );
+        }
     }
 
     #[test]
