@@ -25,7 +25,7 @@
 //! fits work against the room a machine has: its room only ranks it.
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::hash::{BuildHasher, RandomState};
 
@@ -38,6 +38,10 @@ use crate::disk::Band;
 use crate::facts::{AcceleratorKind, Machine, Readiness};
 use crate::offer::Offer;
 use crate::room::Limit;
+
+/// The key a worker's refusal carries: a machine lent or paid for takes
+/// only work that names it.
+pub const WORKER: &str = "worker";
 
 /// Work to be placed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -546,11 +550,19 @@ fn decide_at(
     pick: &mut dyn FnMut(usize) -> usize,
     weights: &Weights,
 ) -> Decision {
+    let lasting = lasting_reach(machines);
     let judged: Vec<Judged> = machines
         .iter()
         .map(|one| {
             let load = loads.get(&one.name).copied().unwrap_or_default();
-            judge(work, one, load, now, weights)
+            let mut judged = judge(work, one, load, now, weights);
+            if one.declared.as_ref().is_some_and(Declared::is_worker)
+                && !names_network(work, &lasting)
+                && !work.needs.contains(&Need::Machine(one.name.clone()))
+            {
+                judged.hard.push(worker_refuses());
+            }
+            judged
         })
         .collect();
     // Machines that qualify, those not over first, then by how many
@@ -657,10 +669,25 @@ fn placement(work: &Work, mut judged: Vec<Judged>, chosen: Option<usize>) -> Pla
 /// # Errors
 ///
 /// When no offer would take the work, saying each one's reasons.
-pub fn to_make<'a>(work: &Work, offers: &'a [Offer]) -> Result<&'a Offer, Vec<Miss>> {
+///
+/// A machine made is a worker, lent or paid for and let go after its
+/// work, so one is made only for work that names it: work needing a
+/// network none of the person's own `machines` reach.
+pub fn to_make<'a>(
+    work: &Work,
+    offers: &'a [Offer],
+    machines: &[Machine],
+) -> Result<&'a Offer, Vec<Miss>> {
+    let named = names_network(work, &lasting_reach(machines));
     let judged: Vec<(Judged, &Offer)> = offers
         .iter()
-        .map(|offer| (judge_offer(work, offer), offer))
+        .map(|offer| {
+            let mut judged = judge_offer(work, offer);
+            if !named {
+                judged.hard.push(worker_refuses());
+            }
+            (judged, offer)
+        })
         .collect();
     let chosen = judged
         .iter()
@@ -804,6 +831,64 @@ struct Judged {
     over: bool,
     /// Whether its room hasn't been said lately.
     unheard: bool,
+}
+
+/// The networks the person's own lasting machines reach, always or by a
+/// probe: what a worker alone reaches is the worker's, so work needing it
+/// names the worker, and what one of the person's own reaches names none.
+fn lasting_reach(machines: &[Machine]) -> BTreeSet<&str> {
+    machines
+        .iter()
+        .filter_map(|one| one.declared.as_ref())
+        .filter(|declared| !declared.is_worker())
+        .flat_map(|declared| {
+            let always = declared.reach.iter().map(String::as_str);
+            always.chain(declared.probes.keys().map(String::as_str))
+        })
+        .collect()
+}
+
+/// Whether `work` needs a network none of the person's `lasting` machines
+/// reach, as `aquifer` is, which names the workers that do. Work names a
+/// worker otherwise only by needing it by name: tolerating its refusal
+/// isn't naming it, nor is needing a system, an architecture or an
+/// accelerator, so work that says nothing of where it goes never goes to
+/// a machine that costs money, leaves, or holds what only it was lent.
+fn names_network(work: &Work, lasting: &BTreeSet<&str>) -> bool {
+    work.needs
+        .iter()
+        .any(|need| matches!(need, Need::Reach(network) if !lasting.contains(network.as_str())))
+}
+
+/// A worker's refusal of work that doesn't name it, saying how to.
+fn worker_refuses() -> Because {
+    Because::Refuses(Taint {
+        key: WORKER.to_owned(),
+        effect: Effect::Never,
+        why: "it is lent or paid for, so it takes only work that names it, by machine or by \
+              a network only it reaches"
+            .to_owned(),
+    })
+}
+
+/// `work` asked on `here`, as it is to be placed: where `here` is a worker
+/// and the work names no worker of `machines`, it stays on `here`, so an
+/// agent on a machine lent for its work runs that work where it was lent,
+/// never on the person's own machines, which it was never given.
+#[must_use]
+pub fn asked_on(work: &Work, here: &Machine, machines: &[Machine]) -> Work {
+    let mut work = work.clone();
+    let is_worker = |one: &Machine| one.declared.as_ref().is_some_and(Declared::is_worker);
+    let names_one = names_network(&work, &lasting_reach(machines))
+        || work.needs.iter().any(|need| {
+            machines
+                .iter()
+                .any(|one| is_worker(one) && *need == Need::Machine(one.name.clone()))
+        });
+    if is_worker(here) && !names_one {
+        work.needs.push(Need::Machine(here.name.clone()));
+    }
+    work
 }
 
 fn judge(
@@ -1684,13 +1769,14 @@ pub(crate) mod tests {
         let leaves = now + jiff::SignedDuration::from_mins(40);
         sandbox.declared.as_mut().expect("declared").leaves_at = Some(leaves);
         let realm = [machine("skiff", "linux", 8, &[]), sandbox];
-        let mut work = needing(Vec::new());
+        let mut work = needing(vec![Need::Machine("sandbox".to_owned())]);
         assert_eq!(
             placed(&place_at(&work, &realm, &Loads::new(), now, &mut first)),
             Some("sandbox"),
-            "work that says nothing of how long it runs may go where there is room"
+            "work that says nothing of how long it runs may go where it names"
         );
 
+        work.needs = Vec::new();
         work.lasts = Some(jiff::SignedDuration::from_hours(1));
         let Placement::Placed { machine, passed } =
             place_at(&work, &realm, &Loads::new(), now, &mut first)
@@ -1702,7 +1788,7 @@ pub(crate) mod tests {
             passed,
             [Miss {
                 machine: "sandbox".to_owned(),
-                because: vec![Because::LeavesFirst(leaves)],
+                because: vec![Because::LeavesFirst(leaves), worker_refuses()],
             }],
             "saying when the sandbox leaves"
         );
@@ -1716,6 +1802,172 @@ pub(crate) mod tests {
                 Placement::Refused { .. }
             ),
             "once it has left, nothing goes there, and nothing waits for it"
+        );
+    }
+
+    #[test]
+    fn work_goes_to_a_worker_only_where_it_names_the_worker() {
+        let mut cloud = machine("cloud", "linux", 60, &["aquifer", "internet"]);
+        cloud.declared.as_mut().expect("declared").costs_money = true;
+        let mut lent = machine("lent", "linux", 60, &["lent-net", "internet"]);
+        let later = now() + jiff::SignedDuration::from_hours(8);
+        lent.declared.as_mut().expect("declared").leaves_at = Some(later);
+        let realm = [
+            machine("skiff", "linux", 2, &["home", "internet"]),
+            cloud,
+            lent,
+        ];
+        let Placement::Placed {
+            machine: chosen,
+            passed,
+        } = place(&needing(Vec::new()), &realm)
+        else {
+            panic!("work naming nothing goes to the person's own machine")
+        };
+        assert_eq!(
+            chosen, "skiff",
+            "never to a worker, however much room it has"
+        );
+        assert_eq!(
+            passed,
+            [
+                Miss {
+                    machine: "cloud".to_owned(),
+                    because: vec![worker_refuses()],
+                },
+                Miss {
+                    machine: "lent".to_owned(),
+                    because: vec![worker_refuses()],
+                },
+            ],
+            "each worker says it takes only work that names it"
+        );
+        let internet = needing(vec![Need::Reach("internet".to_owned())]);
+        assert_eq!(
+            placed(&place(&internet, &realm)),
+            Some("skiff"),
+            "a network the person's own machines reach doesn't name a worker"
+        );
+        for (need, worker) in [
+            (Need::Machine("cloud".to_owned()), "cloud"),
+            (Need::Reach("aquifer".to_owned()), "cloud"),
+            (Need::Reach("lent-net".to_owned()), "lent"),
+        ] {
+            assert_eq!(
+                placed(&place(&needing(vec![need.clone()]), &realm)),
+                Some(worker),
+                "work needing {need} names {worker}"
+            );
+        }
+        let mut tolerant = needing(Vec::new());
+        tolerant.tolerates = vec![WORKER.to_owned()];
+        assert_eq!(
+            placed(&place(&tolerant, &realm)),
+            Some("skiff"),
+            "tolerating isn't naming"
+        );
+        // A network the person's own machines reach now and then is theirs
+        // too, whether or not its probe answers this minute.
+        let mut laptop = machine("kestrel", "macos", 30, &[]);
+        let declared = laptop.declared.as_mut().expect("declared");
+        declared.probes.insert(
+            "lent-net".to_owned(),
+            Probe::Connect("192.0.2.1:22".to_owned()),
+        );
+        let with_laptop = [realm[0].clone(), realm[1].clone(), realm[2].clone(), laptop];
+        assert!(
+            matches!(
+                place(
+                    &needing(vec![Need::Reach("lent-net".to_owned())]),
+                    &with_laptop
+                ),
+                Placement::Refused { .. }
+            ),
+            "a network a laptop probes for doesn't name the worker that reaches it"
+        );
+        // A machine that declares nothing is taken as one of the person's
+        // own, as every machine was before workers were told apart.
+        let mut quiet = machine("osprey", "linux", 90, &[]);
+        quiet.declared = None;
+        let with_quiet = [realm[0].clone(), quiet];
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &with_quiet)),
+            Some("osprey"),
+            "a machine that says nothing of itself isn't told a worker"
+        );
+        let workers_only = [realm[1].clone(), realm[2].clone()];
+        assert!(
+            matches!(
+                place(&needing(Vec::new()), &workers_only),
+                Placement::Refused { .. }
+            ),
+            "where only workers are left, work naming none goes nowhere"
+        );
+    }
+
+    #[test]
+    fn work_asked_on_a_worker_stays_there_unless_it_names_another() {
+        let mut cloud = machine("cloud", "linux", 2, &["aquifer", "internet"]);
+        cloud.declared.as_mut().expect("declared").costs_money = true;
+        let mut lent = machine("lent", "linux", 60, &["lent-net"]);
+        lent.declared.as_mut().expect("declared").costs_money = true;
+        let realm = [
+            cloud.clone(),
+            machine("skiff", "linux", 60, &["home", "internet"]),
+            lent,
+        ];
+        for need in [Vec::new(), vec![Need::Reach("internet".to_owned())]] {
+            let work = asked_on(&needing(need.clone()), &cloud, &realm);
+            assert_eq!(
+                placed(&place(&work, &realm)),
+                Some("cloud"),
+                "work needing {need:?} asked on a worker runs there, never on the person's own"
+            );
+        }
+        let elsewhere = asked_on(
+            &needing(vec![Need::Reach("lent-net".to_owned())]),
+            &cloud,
+            &realm,
+        );
+        assert_eq!(
+            placed(&place(&elsewhere, &realm)),
+            Some("lent"),
+            "unless it names another worker"
+        );
+        let at_home = needing(Vec::new());
+        assert_eq!(
+            asked_on(&at_home, &realm[1], &realm),
+            at_home,
+            "work asked on the person's own machine is placed as asked"
+        );
+    }
+
+    #[test]
+    fn a_machine_is_made_only_for_work_that_names_a_worker() {
+        let offers = [offer("open", "0.0", None, &["aquifer"])];
+        let realm = [machine("skiff", "linux", 0, &["home", "internet"])];
+        let Err(misses) = to_make(&needing(Vec::new()), &offers, &realm) else {
+            panic!("work naming nothing has no worker made for it")
+        };
+        assert_eq!(misses[0].because, [worker_refuses()], "saying why");
+        assert!(
+            to_make(
+                &needing(vec![Need::Reach("internet".to_owned())]),
+                &offers,
+                &realm
+            )
+            .is_err(),
+            "nor for work needing what the person's own machines reach"
+        );
+        assert_eq!(
+            to_make(
+                &needing(vec![Need::Reach("aquifer".to_owned())]),
+                &offers,
+                &realm
+            )
+            .map(|chosen| chosen.shape.as_str()),
+            Ok("open"),
+            "but for work needing a network only workers reach"
         );
     }
 
@@ -1749,21 +2001,21 @@ pub(crate) mod tests {
         ];
         let mut work = needing(vec![Need::Reach("work".to_owned())]);
         assert_eq!(
-            to_make(&work, &offers).map(|chosen| chosen.shape.as_str()),
+            to_make(&work, &offers, &[]).map(|chosen| chosen.shape.as_str()),
             Ok("small"),
             "of the two that reach what it needs, the cheaper, by amount and not by how it is written"
         );
 
         work.lasts = Some(jiff::SignedDuration::from_hours(1));
         assert_eq!(
-            to_make(&work, &offers).map(|chosen| chosen.shape.as_str()),
+            to_make(&work, &offers, &[]).map(|chosen| chosen.shape.as_str()),
             Ok("large"),
             "not one that would end before the work does"
         );
 
         work.needs.push(Need::Accelerator(AcceleratorKind::Gpu));
         work.needs.push(Need::Machine("skiff".to_owned()));
-        let Err(misses) = to_make(&work, &offers) else {
+        let Err(misses) = to_make(&work, &offers, &[]) else {
             panic!("no offer promises a gpu, and none is a machine already named");
         };
         assert_eq!(
