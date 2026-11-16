@@ -1029,8 +1029,21 @@ mod tests {
     /// or failing where it names none; `pi` writing its folder, its words
     /// and the quest it's told to load to `ran`, and its first prompt, the
     /// words after `--`, to `told`. The session ran in `~/checkout/src`
-    /// where it left, which is here too, and no tree brought.
+    /// where it left, which is here too, and no tree brought; its done
+    /// file, as an older harness wrote it, names no fence.
     fn arrive(home: &std::path::Path, where_: Option<&str>, arrives: bool) -> Option<String> {
+        arrive_fenced(home, where_, arrives, Some(""))
+    }
+
+    /// The same, with `pi-carry fence` printing `fence`, or failing where
+    /// it's none, and `pi` writing the `PI_SANDBOX` it started under, or
+    /// `unset`, to `sandbox`.
+    fn arrive_fenced(
+        home: &std::path::Path,
+        where_: Option<&str>,
+        arrives: bool,
+        fence: Option<&str>,
+    ) -> Option<String> {
         use std::os::unix::fs::PermissionsExt;
         let bin = home.join("bin");
         std::fs::create_dir_all(&bin).expect("bin");
@@ -1045,17 +1058,20 @@ mod tests {
         stand_in(
             PI_CARRY,
             &format!(
-                "case \"$1\" in arrive) exit {} ;; where) {} ;; *) exit 2 ;; esac",
+                "case \"$1\" in arrive) exit {} ;; where) {} ;; fence) {} ;; *) exit 2 ;; esac",
                 if arrives { 0 } else { 3 },
                 where_.map_or_else(|| "exit 1".to_owned(), |at| format!("echo '{at}'")),
+                fence.map_or_else(|| "exit 1".to_owned(), |kind| format!("echo '{kind}'")),
             ),
         );
         stand_in(
             "pi",
             &format!(
                 "echo \"$(pwd) $1 $2 for $QUEST_WORKFLOW_AUTOLOAD_ID\" > {}; \
+                 echo \"${{PI_SANDBOX-unset}}\" > {}; \
                  [ \"$3\" = -- ] && printf '%s' \"$4\" > {}",
                 ran.display(),
+                home.join("sandbox").display(),
                 home.join("told").display()
             ),
         );
@@ -1072,6 +1088,7 @@ mod tests {
             .args(&start.command[1..])
             .env("HOME", home)
             .env("PATH", path)
+            .env_remove("PI_SANDBOX")
             .status()
             .expect("the shell runs");
         std::fs::read_to_string(ran)
@@ -1139,6 +1156,34 @@ mod tests {
              from skiff.] Carry on from where you left off: your plan's next open item.",
             "its first prompt says where it came from and sets it to work, \
              so it never sits idle until a message wakes it"
+        );
+    }
+
+    #[test]
+    fn a_carried_session_starts_in_the_fence_it_ran_in() {
+        let home = tempfile::tempdir().expect("a home");
+        let home = home.path().canonicalize().expect("its path");
+        let at = home.display().to_string();
+        let sandbox = || {
+            std::fs::read_to_string(home.join("sandbox"))
+                .map(|said| said.trim().to_owned())
+                .unwrap_or_default()
+        };
+        for kind in ["strict", "fence", "off"] {
+            arrive_fenced(&home, Some(&at), true, Some(kind)).expect("pi started");
+            assert_eq!(sandbox(), kind, "pi starts as the done file says it ran");
+        }
+        arrive_fenced(&home, Some(&at), true, Some("")).expect("pi started");
+        assert_eq!(
+            sandbox(),
+            "unset",
+            "a done file naming no fence leaves pi as the node starts it"
+        );
+        std::fs::remove_file(home.join("ran")).expect("forgotten");
+        assert_eq!(
+            arrive_fenced(&home, Some(&at), true, None),
+            None,
+            "and none starts where its fence can't be told, rather than start looser"
         );
     }
 
