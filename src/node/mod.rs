@@ -7206,6 +7206,20 @@ mod tests {
         );
     }
 
+    /// A message to `outside.slack` from `from`, written as the store holds
+    /// one: its id and its body.
+    fn to_outside_slack(from: &str, text: &str) -> (String, Value) {
+        let draft = Draft {
+            from: from.to_owned(),
+            groups: vec![Group::new("outside.slack").expect("a valid group")],
+            intent: Some(Intent::Fyi),
+            text: text.to_owned(),
+            re: None,
+            realm: None,
+        };
+        mesh::written(&draft, 1)
+    }
+
     #[tokio::test]
     async fn a_receptors_climb_the_table_names_is_said_as_its_cell_and_a_planted_one_isnt() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -7219,15 +7233,8 @@ mod tests {
         )
         .expect("the table is written");
         let store = Memory::default();
-        let planted = Draft {
-            from: "slack@skiff".to_owned(),
-            groups: vec![Group::new("outside.slack").expect("a valid group")],
-            intent: Some(Intent::Fyi),
-            text: "slack: 9 asked of you, up from 0; 9 today".to_owned(),
-            re: None,
-            realm: None,
-        };
-        let (planted, body) = mesh::written(&planted, 1);
+        let (planted, body) =
+            to_outside_slack("slack@skiff", "slack: 9 asked of you, up from 0; 9 today");
         store.send_here(&planted, body);
         let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let mut receptors = Speaking::to(&socket).await;
@@ -7249,35 +7256,27 @@ mod tests {
             json!([]),
             "a message planted in the store as a receptor was taken"
         );
-        let (late, body) = mesh::written(
-            &Draft {
-                from: "Slack@skiff".to_owned(),
-                groups: vec![Group::new("outside.slack").expect("a valid group")],
-                intent: Some(Intent::Fyi),
-                text: "slack: 8 asked of you, up from 0; 8 today".to_owned(),
-                re: None,
-                realm: None,
-            },
-            1,
-        );
+        let (late, body) =
+            to_outside_slack("Slack@skiff", "slack: 8 asked of you, up from 0; 8 today");
         store.send_here(&late, body);
-        let (after, body) = mesh::written(
-            &Draft {
-                from: "OSPR01".to_owned(),
-                groups: vec![Group::new("outside.slack").expect("a valid group")],
-                intent: Some(Intent::Fyi),
-                text: "heard after".to_owned(),
-                re: None,
-                realm: None,
-            },
-            1,
-        );
+        let (after, body) = to_outside_slack("OSPR01", "heard after");
         store.send_here(&after, body);
-        let changed = messages.next().await;
-        assert_eq!(
-            changed["changed"][0]["key"],
-            json!(format!("message:{after}")),
-            "one planted as a receptor while the node ran was taken: {changed}"
+        // The planted one went first, so it would be heard with the plain
+        // one or before it, never after.
+        let mut keys = Vec::new();
+        while !keys.contains(&json!(format!("message:{after}"))) {
+            let changed = messages.next().await;
+            keys.extend(
+                changed["changed"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|one| one["key"].clone()),
+            );
+        }
+        assert!(
+            !keys.contains(&json!(format!("message:{late}"))),
+            "one planted as a receptor while the node ran was taken: {keys:?}"
         );
 
         slack_asking_beside(&socket, 1);
