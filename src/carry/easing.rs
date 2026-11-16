@@ -368,7 +368,8 @@ impl Easing {
 
 /// Keeps `line`, said `at`, in `folder`'s file for its day, the folder
 /// and file each its owner's alone; let go, answering false, where the
-/// day's file would hold more than `holds` bytes with it.
+/// day's file would hold more than `holds` bytes with it. A new day's
+/// file lets go of the days a fortnight before it, as placements do.
 ///
 /// # Errors
 ///
@@ -379,7 +380,11 @@ pub fn keep(folder: &Path, at: Timestamp, line: &Value, holds: u64) -> io::Resul
         .mode(0o700)
         .create(folder)?;
     fs::set_permissions(folder, fs::Permissions::from_mode(0o700))?;
-    let file = folder.join(format!("{}.jsonl", at.strftime("%Y-%m-%d")));
+    let day = at.to_zoned(jiff::tz::TimeZone::UTC).date();
+    let file = folder.join(format!("{day}.jsonl"));
+    if !file.exists() {
+        crate::placements::let_go_before(folder, day);
+    }
     let mut text = serde_json::to_string(line)?;
     text.push('\n');
     let had = fs::metadata(&file).map_or(0, |meta| meta.len());
@@ -687,5 +692,33 @@ mod tests {
         assert_eq!(kept.lines().count(), 2, "{kept}");
         let mode = |path: &Path| fs::metadata(path).expect("there").mode() & 0o777;
         assert_eq!((mode(&folder), mode(&file)), (0o700, 0o600));
+    }
+
+    #[test]
+    fn a_new_day_lets_go_of_the_days_past_a_fortnight() {
+        let state = tempfile::tempdir().expect("the node's state");
+        let folder = state.path().join("eases");
+        fs::create_dir_all(&folder).expect("the folder");
+        for name in ["2026-11-01.jsonl", "2026-11-02.jsonl", "notes.jsonl"] {
+            fs::write(folder.join(name), b"{}\n").expect("an old day");
+        }
+        let line = json!({"at": NOW, "would": true, "choice": "nothing", "why": "cool"});
+        assert!(keep(&folder, now(), &line, 200).expect("kept"));
+        let mut left: Vec<String> = fs::read_dir(&folder)
+            .expect("read")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            ["2026-11-02.jsonl", "2026-11-16.jsonl", "notes.jsonl"],
+            "the day 15 days back goes; 14 days back and what isn't a day stay"
+        );
     }
 }

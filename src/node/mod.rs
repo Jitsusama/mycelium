@@ -778,6 +778,9 @@ struct Shared<S> {
     /// The quests' scratch folders, where each machine's sessions hand
     /// over as they leave or refuse, or none where it shares no quests.
     scratch: Option<PathBuf>,
+    /// This machine's hostname, read once at start, which names its
+    /// sessions' handover folder as the harness names it.
+    hostname: Arc<str>,
     /// Where it keeps each command it runs, and who may say how a fenced
     /// one runs.
     runs: Arc<run::Given>,
@@ -928,6 +931,7 @@ impl<S: Clone> Clone for Shared<S> {
             client: self.client,
             carries: self.carries.clone(),
             scratch: self.scratch.clone(),
+            hostname: Arc::clone(&self.hostname),
             runs: self.runs.clone(),
             hosts: self.hosts.clone(),
             orchestrations: self.orchestrations.clone(),
@@ -1410,6 +1414,7 @@ impl<S: Store> Shared<S> {
             fences: Arc::new(fences::Seen::at(carries.with_file_name("fences.json"))),
             carries,
             scratch: sharing.as_ref().map(|places| places.scratch.clone()),
+            hostname: rustix::system::uname().nodename().to_string_lossy().into(),
             runs: Arc::new(runs),
             hosts,
             orchestrations,
@@ -1586,10 +1591,6 @@ impl<S: Store> Shared<S> {
                 (id, session.machine)
             })
             .collect();
-        let host = rustix::system::uname()
-            .nodename()
-            .to_string_lossy()
-            .into_owned();
         carries
             .iter()
             .map(|carry| {
@@ -1597,11 +1598,11 @@ impl<S: Store> Shared<S> {
                 let handover = self
                     .scratch
                     .as_ref()
-                    .map(|scratch| through::handover(scratch, carry.said("quest"), &host));
+                    .map(|scratch| through::handover(scratch, carry.said("quest"), &self.hostname));
                 let seen = kept::Seen {
-                    refused: handover.as_ref().and_then(|handover| {
-                        through::refused(handover, session, carry.at).unwrap_or_else(Some)
-                    }),
+                    refused: handover
+                        .as_ref()
+                        .and_then(|handover| through::refused(handover, session, carry.at)),
                     left: handover
                         .as_ref()
                         .is_some_and(|handover| through::left(handover, session, carry.at)),
@@ -2544,12 +2545,7 @@ impl<S: Store> Shared<S> {
             now,
         };
         let cells = easing::cells(&self.machine, &looked);
-        let here = ease::Here {
-            name: &self.machine,
-            declared: machines.first().and_then(|one| one.declared.as_ref()),
-            machines: &machines,
-            loads: &loads,
-        };
+        let here = ease::Here::of(&self.machine, &machines, &loads);
         let reading = crate::balance::read(&machines, &sessions, now);
         (easing.look(&here, reading, cells, &holds, now), sampler)
     }
