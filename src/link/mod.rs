@@ -264,7 +264,9 @@ pub enum Ending {
 /// Any other end may be a worker too until it says what its machine is,
 /// which it does first of all when both ends take facts, so nothing above
 /// the quests shared crosses before then. An end that takes none can
-/// declare nothing, so it is no worker.
+/// declare nothing, so it is never sent a quest above, and this node logs
+/// so unless the link is a worker's, which is never sent one whatever its
+/// node.
 fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> Exchange {
     let exchange = Exchange::new(places, here.machine.clone(), there.machine.clone());
     let mut exchange = if worker {
@@ -272,7 +274,14 @@ fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> E
     } else {
         exchange
     };
-    exchange.withhold_above(here.facts && there.facts);
+    exchange.withhold_above(true);
+    if !there.facts && !worker {
+        eprintln!(
+            "{} takes no facts, so it is sent none of the quests above those shared; \
+             update its node to carry them",
+            there.machine
+        );
+    }
     exchange
 }
 
@@ -3677,6 +3686,15 @@ mod tests {
         tern
     }
 
+    /// A declaration of no reach, outliving nothing and tainted by nothing,
+    /// which makes its machine a worker when it `costs_money`.
+    fn declares(costs_money: bool) -> crate::declared::Declared {
+        serde_json::from_value(json!({
+            "reach": [], "outlives": [], "costs_money": costs_money, "taints": []
+        }))
+        .expect("a declaration")
+    }
+
     /// Asks for `quest`'s README from its start.
     fn want_readme(quest: &str) -> Frame {
         Frame::Share(Say::Want {
@@ -3735,15 +3753,12 @@ mod tests {
              nothing of the parent: {sent:?}"
         );
 
-        let declares = |costs_money: bool| {
-            serde_json::from_value(json!({
-                "reach": [], "outlives": [], "costs_money": costs_money, "taints": []
-            }))
-            .expect("a declaration")
-        };
+        // The parent asked for last, nothing asked is still to come once
+        // it is heard.
         tern.declared = Some(declares(false));
         says(&mut far_writing, &[Frame::Machine(Box::new(tern.clone()))]).await;
-        heard_until(&mut lines, |frame| names(frame, TOP)).await;
+        says(&mut far_writing, &[want_readme(CHILD), want_readme(TOP)]).await;
+        heard_until(&mut lines, |frame| carries_of(frame, TOP)).await;
 
         tern.declared = Some(declares(true));
         says(&mut far_writing, &[Frame::Machine(Box::new(tern))]).await;
@@ -3760,6 +3775,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let home = top_and_child(dir.path(), Some("tern"));
         let (mut lines, mut far_writing) = skiff_sharing(home, true);
+        let mut tern = tern_undeclared();
+        tern.declared = Some(declares(false));
         says(
             &mut far_writing,
             &[
@@ -3768,7 +3785,7 @@ mod tests {
                     messages: Vec::new(),
                     living: Some(Vec::new()),
                 },
-                Frame::Machine(Box::new(tern_undeclared())),
+                Frame::Machine(Box::new(tern)),
                 want_readme(TOP),
                 want_readme(CHILD),
             ],
@@ -3779,8 +3796,38 @@ mod tests {
             !sent
                 .iter()
                 .any(|frame| carries_of(frame, TOP) || names(frame, TOP)),
-            "tern, a worker, declares nothing of itself, and still hears nothing of the \
+            "tern, a worker, declares itself no worker, and still hears nothing of the \
              parent, though it was given it: {sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_end_that_takes_no_facts_is_never_sent_a_parent() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (mut lines, mut far_writing) = skiff_sharing(top_and_child(dir.path(), None), false);
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(Hello {
+                    facts: false,
+                    ..realm("tern").hello()
+                }),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                want_readme(TOP),
+                want_readme(CHILD),
+            ],
+        )
+        .await;
+        let sent = heard_until(&mut lines, |frame| carries_of(frame, CHILD)).await;
+        assert!(
+            !sent
+                .iter()
+                .any(|frame| carries_of(frame, TOP) || names(frame, TOP)),
+            "tern takes no facts, so it can't say it is no worker, and hears nothing of \
+             the parent: {sent:?}"
         );
     }
 

@@ -336,19 +336,31 @@ scratch, only the folders named cross, as `mycelium share QEST-...
 clones and data. A folder holding more than 10,000 files or 1 GiB, or a
 file over 64 MiB, is refused when named, and so are `tmp/` and build
 output. Within a named folder, hidden files, links, `target/` and
-`node_modules/` stay home. A folder once named stays shared. The
+`node_modules/` stay home, and below a quest's record or scratch folder
+the node follows no link it finds as it reads or writes a file, whether
+the file is one or a folder it is in: such a file reads as absent, and a
+write to one is refused. The node checks each path as it comes to it, so
+a link a process on this machine makes between that check and the read
+or write isn't caught. A folder once named stays shared. The
 scratch's `handover/` crosses whenever it is there as the quest is
 shared, named or not, under the same limits, since a carry or a spawn
 leaves there what the other machine needs to start. Sharing a quest
 shares each quest above it too, up its README's `parent` while each is
-on this machine, as quests of their own with none of their scratch
-named, so a session on the other machine can tell what orchestrates it.
-One shared only so stops being shared, at both ends, once no quest
-either end shares names it above and the other end doesn't share it on
-its own; one shared on its own as well stays. Only a quest shared in
-its own right keeps a quest above it, so parents naming each other
-can't keep each other. A parent shared before ends said `above` carries
-no mark, so it never stops.
+on this machine, so a session on the other machine can tell what
+orchestrates it. One shared only so carries its `README.md` alone, none
+of its attachments, journey, other documents or scratch, and no
+`Shares` names its scratch or clones; it carries its whole record once
+either end shares it on its own. Nothing above is carried to a worker,
+and an end is taken for one until its `Machine` frame declares it is
+not, so an end that takes no facts, saying no `Machine` frame, is sent
+none, and the node withholding logs so unless it links that end as a
+worker. A hold lifted takes up what the other end said of its scratch
+while withheld. One shared only so stops being shared, at both ends,
+once no quest either end shares names it above and the other end
+doesn't share it on its own; one shared on its own as well stays. Only
+a quest shared in its own right keeps a quest above it, so parents
+naming each other can't keep each other. A parent shared before ends
+said `above` carries no mark, so it never stops.
 
 A git clone, named or within a named folder, crosses as its `origin`
 and branch, never file by file, since two machines writing one `.git`
