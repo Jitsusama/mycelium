@@ -1202,3 +1202,18 @@ fn the_cells_say_each_receptor_and_what_it_brought_in() {
 fn a_mycelium_sensing_nothing_is_the_same_mycelium() {
     assert_eq!(mycelium().sensing(&[]).lines(), mycelium().lines());
 }
+
+#[test]
+fn a_receptor_cell_keeps_only_a_time_and_a_state_word_from_another_node() {
+    let mut planted = receptor("slack", "skiff", "reading", 4);
+    planted["since"] = json!("Re: your password reset code is 424242");
+    planted["state"] = json!("the subject of a mail");
+    let mycelium = mycelium().sensing(&[planted]);
+    let cell = mycelium.cell("slack@skiff").expect("Slack on skiff");
+    assert_eq!(
+        (cell.since.as_deref(), cell.state.as_deref()),
+        (None, None),
+        "a node's record crosses links, so a since that is no time and a state that is \
+         no state's word are left out rather than drawn"
+    );
+}
