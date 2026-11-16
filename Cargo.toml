@@ -54,6 +54,12 @@ tokio = { version = "1", features = [
   "time",
 ] }
 
+# When a process started on macOS, which only libproc's proc_pidinfo says:
+# `ps` is setuid and can't run inside a Nix build. Its bindings are written
+# by hand into libSystem, so nothing is generated and no library is added.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 # Paused time, so a test of a long wait waits on nothing.

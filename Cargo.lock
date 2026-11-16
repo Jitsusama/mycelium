@@ -393,6 +393,7 @@ dependencies = [
  "blake3",
  "clap",
  "jiff",
+ "libc",
  "notify",
  "pty-process",
  "rustix",

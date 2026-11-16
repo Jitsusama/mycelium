@@ -364,40 +364,54 @@ impl Living for Here {
 /// can't say. On Linux it's in clock ticks since boot, as its `stat`
 /// tells it: the twentieth field after its name, which is in brackets
 /// and may hold spaces or brackets itself. On macOS it's in seconds since
-/// the epoch, as `ps` tells it.
+/// the epoch, as libproc tells it.
 #[must_use]
 pub fn started_at(pid: u32) -> Option<u64> {
     if cfg!(target_os = "linux") {
         let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let (_, after) = stat.rsplit_once(')')?;
         after.split_whitespace().nth(19)?.parse().ok()
-    } else if cfg!(target_os = "macos") {
-        // In UTC and the C locale, so the hour the clocks go back can't
-        // read twice and the names are always English ones.
-        let listed = std::process::Command::new("/bin/ps")
-            .args(["-o", "lstart=", "-p", &pid.to_string()])
-            .env("LC_ALL", "C")
-            .env("TZ", "UTC0")
-            .output()
-            .ok()
-            .filter(|ran| ran.status.success())?;
-        lstart(&String::from_utf8_lossy(&listed.stdout))
     } else {
-        None
+        started_as_libproc_says(pid)
     }
 }
 
-/// The seconds since the epoch of a start as `ps -o lstart` lists it in
-/// UTC and the C locale, such as `Mon Nov  2 09:05:01 2026`, its day
-/// padded with a space.
-fn lstart(listed: &str) -> Option<u64> {
-    let at = jiff::civil::DateTime::strptime("%a %b %e %H:%M:%S %Y", listed.trim()).ok()?;
-    let seconds = at
-        .to_zoned(jiff::tz::TimeZone::UTC)
-        .ok()?
-        .timestamp()
-        .as_second();
-    u64::try_from(seconds).ok()
+/// When process `pid` started, in seconds since the epoch, as libproc's
+/// BSD information for it says, or None where it's gone. `ps` would say
+/// the same, but it is setuid and can't run inside a Nix build.
+#[cfg(target_os = "macos")]
+fn started_as_libproc_says(pid: u32) -> Option<u64> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    #[expect(
+        unsafe_code,
+        reason = "macOS says when a process started only through libproc"
+    )]
+    // SAFETY: the buffer is a proc_bsdinfo of exactly the size given, and
+    // it is read only once proc_pidinfo says it filled all of it.
+    let filled = unsafe {
+        let wrote = libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        );
+        if wrote == size {
+            Some(info.assume_init())
+        } else {
+            None
+        }
+    };
+    filled.map(|info| info.pbi_start_tvsec)
+}
+
+/// None: this system says nowhere when a process started, so its living
+/// is all that is known.
+#[cfg(not(target_os = "macos"))]
+fn started_as_libproc_says(_pid: u32) -> Option<u64> {
+    None
 }
 
 /// Every receptor `folder` holds for `realm`, by source, each judged as
@@ -852,18 +866,6 @@ mod tests {
         next.pid = 4343;
         write(&folder, "work", next).expect("written");
         assert_eq!(since(&folder), at("2026-11-15T19:15:00Z"));
-    }
-
-    #[test]
-    fn a_start_as_ps_lists_it_is_its_seconds_in_utc() {
-        assert_eq!(lstart("Mon Nov 16 15:08:03 2026\n"), Some(1_794_841_683));
-        assert_eq!(
-            lstart("Mon Nov  2 09:05:01 2026"),
-            Some(1_793_610_301),
-            "a day padded with a space"
-        );
-        assert_eq!(lstart(""), None, "a process ps doesn't list");
-        assert_eq!(lstart("16 Nov 2026"), None, "no start ps lists");
     }
 
     #[test]

@@ -1644,8 +1644,8 @@ count may pass `today`, and these bounds hold as a file is read as well
 as written. A pid that isn't running is refused as it is written. A
 process's start is kept as `started`, so a pid used again later can't
 read as the receptor alive: on Linux in clock ticks since boot, as its
-`stat` tells it, and on macOS in seconds since the epoch, as `ps` tells
-it in UTC. A record never leaves its machine, so the two never meet.
+`stat` tells it, and on macOS in seconds since the epoch, as libproc
+tells it. A record never leaves its machine, so the two never meet.
 Elsewhere `started` is absent and the pid alone is judged.
 
 The node reads only a regular file of at most 4 KiB, never following a
