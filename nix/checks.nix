@@ -42,6 +42,21 @@ let
     '';
 
   checks = {
+    # The dev shell's cargo, built over a stand-in that says its words, sends
+    # only an agent's through nix-offload (cargo-for-agents-test.sh says each
+    # case).
+    agents-cargo-goes-through-nix-offload =
+      let
+        cargo = pkgs.writeShellScriptBin "cargo" ''printf '%s\n' cargo "$@"'';
+        shim = pkgs.callPackage ./cargo-for-agents.nix { inherit cargo; };
+      in
+      pkgs.runCommand "agents-cargo-goes-through-nix-offload" { nativeBuildInputs = [ pkgs.shellcheck ]; }
+        ''
+          shellcheck --enable=all ${./cargo-for-agents.sh} ${./cargo-for-agents-test.sh}
+          bash ${./cargo-for-agents-test.sh} ${pkgs.lib.getExe shim} ${pkgs.lib.getExe cargo}
+          touch $out
+        '';
+
     # The crate builds and its tests pass.
     mycelium = package;
 
