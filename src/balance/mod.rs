@@ -19,6 +19,9 @@
 //! go only once it is seen in few, so a flag neither flickers nor lingers.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fs;
+use std::io::{self, Write};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -343,6 +346,57 @@ impl Watch {
     }
 }
 
+/// The file in the balance folder holding the latest reading whole, for a
+/// node to serve as a kind of its own.
+pub const NOW_FILE: &str = "now.json";
+
+/// Keeps `reading` in `folder` as a line of the day's file, `<day>.jsonl`,
+/// which hindsight reads.
+///
+/// # Errors
+///
+/// When the day's file can't be written.
+pub fn keep(folder: &Path, reading: &Reading, day: jiff::civil::Date) -> io::Result<()> {
+    let mut line = serde_json::to_vec(reading).map_err(io::Error::other)?;
+    line.push(b'\n');
+    // Appended in one write, so two writers' lines can't interleave.
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(folder.join(format!("{day}.jsonl")))?
+        .write_all(&line)
+}
+
+/// Keeps `reading` whole in `folder`'s [`NOW_FILE`], for a node to serve:
+/// written to a file of this process's own, made new so no link there is
+/// followed, synced, then renamed into place, so a reader never sees half
+/// a reading, even with two followers on one folder or a crash between.
+/// It stays once readings stop, so a reader judges how fresh it is by its
+/// `at`.
+///
+/// # Errors
+///
+/// When it can't be written; nothing is left beside it then.
+pub fn keep_latest(folder: &Path, reading: &Reading) -> io::Result<()> {
+    let whole = serde_json::to_vec(reading).map_err(io::Error::other)?;
+    let writing = folder.join(format!("{NOW_FILE}.{}.new", std::process::id()));
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&writing)
+        .and_then(|mut file| {
+            file.write_all(&whole)?;
+            file.sync_all()
+        })
+        .and_then(|()| fs::rename(&writing, folder.join(NOW_FILE)));
+    if written.is_err() {
+        // Best effort: what is left is only a staging file, and the error
+        // that made it is the one worth saying.
+        let _ = fs::remove_file(&writing);
+    }
+    written
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,5 +657,67 @@ mod tests {
         );
         held = watch.take(&read(&calm, &[], now()));
         assert!(held.is_empty(), "let go once seen in only {CLEARED_AT}");
+    }
+
+    #[test]
+    fn each_reading_is_a_line_of_its_day_and_the_latest_whole() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let day: jiff::civil::Date = "2026-11-16".parse().expect("a day");
+        let first = read(&[machine("kestrel", 16, 64, 40, 0.0, 0)], &[], now());
+        let mut second = read(&[machine("osprey", 12, 48, 40, 90.0, 0)], &[], now());
+        second.held = Some(vec![Flag::Imbalanced]);
+        for reading in [&first, &second] {
+            keep(folder.path(), reading, day).expect("a line is kept");
+            keep_latest(folder.path(), reading).expect("the latest is kept");
+        }
+        let lines =
+            fs::read_to_string(folder.path().join("2026-11-16.jsonl")).expect("the day's file");
+        let kept: Vec<Reading> = lines
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a reading a line"))
+            .collect();
+        assert_eq!(
+            kept,
+            [first, second.clone()],
+            "each reading a line, in order"
+        );
+        let latest: Reading =
+            serde_json::from_slice(&fs::read(folder.path().join(NOW_FILE)).expect("the latest"))
+                .expect("the latest is a reading");
+        assert_eq!(latest, second, "the latest is the last kept, whole");
+        let mut names: Vec<String> = fs::read_dir(folder.path())
+            .expect("the folder")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["2026-11-16.jsonl", NOW_FILE],
+            "nothing half-written left"
+        );
+    }
+
+    #[test]
+    fn a_link_where_the_latest_is_staged_is_never_written_through() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let elsewhere = folder.path().join("elsewhere");
+        fs::write(&elsewhere, "untouched").expect("a file elsewhere");
+        let staged = folder
+            .path()
+            .join(format!("{NOW_FILE}.{}.new", std::process::id()));
+        std::os::unix::fs::symlink(&elsewhere, &staged).expect("a link");
+        let reading = read(&[machine("kestrel", 16, 64, 40, 0.0, 0)], &[], now());
+        keep_latest(folder.path(), &reading).expect_err("refused");
+        assert_eq!(
+            fs::read_to_string(&elsewhere).expect("the file elsewhere"),
+            "untouched"
+        );
+        assert!(!folder.path().join(NOW_FILE).exists(), "nothing renamed");
     }
 }
