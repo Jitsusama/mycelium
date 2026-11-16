@@ -350,28 +350,51 @@ impl Watch {
 /// node to serve as a kind of its own.
 pub const NOW_FILE: &str = "now.json";
 
-/// Keeps `reading` in `folder`: appended as a line to the day's file,
-/// `<day>.jsonl`, which hindsight reads, and whole in [`NOW_FILE`],
-/// written beside it and renamed into place, so a reader watching it never
-/// sees half a reading.
+/// Keeps `reading` in `folder` as a line of the day's file, `<day>.jsonl`,
+/// which hindsight reads.
 ///
 /// # Errors
 ///
-/// When either file can't be written.
+/// When the day's file can't be written.
 pub fn keep(folder: &Path, reading: &Reading, day: jiff::civil::Date) -> io::Result<()> {
-    fs::create_dir_all(folder)?;
     let mut line = serde_json::to_vec(reading).map_err(io::Error::other)?;
     line.push(b'\n');
-    // One write of a whole line, so no reader sees part of one.
+    // Appended in one write, so two writers' lines can't interleave.
     fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(folder.join(format!("{day}.jsonl")))?
-        .write_all(&line)?;
-    let latest = folder.join(NOW_FILE);
-    let writing = latest.with_extension("json.new");
-    fs::write(&writing, &line[..line.len() - 1])?;
-    fs::rename(writing, latest)
+        .write_all(&line)
+}
+
+/// Keeps `reading` whole in `folder`'s [`NOW_FILE`], for a node to serve:
+/// written to a file of this process's own, made new so no link there is
+/// followed, synced, then renamed into place, so a reader never sees half
+/// a reading, even with two followers on one folder or a crash between.
+/// It stays once readings stop, so a reader judges how fresh it is by its
+/// `at`.
+///
+/// # Errors
+///
+/// When it can't be written; nothing is left beside it then.
+pub fn keep_latest(folder: &Path, reading: &Reading) -> io::Result<()> {
+    let whole = serde_json::to_vec(reading).map_err(io::Error::other)?;
+    let writing = folder.join(format!("{NOW_FILE}.{}.new", std::process::id()));
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&writing)
+        .and_then(|mut file| {
+            file.write_all(&whole)?;
+            file.sync_all()
+        })
+        .and_then(|()| fs::rename(&writing, folder.join(NOW_FILE)));
+    if written.is_err() {
+        // Best effort: what is left is only a staging file, and the error
+        // that made it is the one worth saying.
+        let _ = fs::remove_file(&writing);
+    }
+    written
 }
 
 #[cfg(test)]
@@ -643,8 +666,10 @@ mod tests {
         let first = read(&[machine("kestrel", 16, 64, 40, 0.0, 0)], &[], now());
         let mut second = read(&[machine("osprey", 12, 48, 40, 90.0, 0)], &[], now());
         second.held = Some(vec![Flag::Imbalanced]);
-        keep(folder.path(), &first, day).expect("the first is kept");
-        keep(folder.path(), &second, day).expect("the second is kept");
+        for reading in [&first, &second] {
+            keep(folder.path(), reading, day).expect("a line is kept");
+            keep_latest(folder.path(), reading).expect("the latest is kept");
+        }
         let lines =
             fs::read_to_string(folder.path().join("2026-11-16.jsonl")).expect("the day's file");
         let kept: Vec<Reading> = lines
@@ -676,5 +701,23 @@ mod tests {
             ["2026-11-16.jsonl", NOW_FILE],
             "nothing half-written left"
         );
+    }
+
+    #[test]
+    fn a_link_where_the_latest_is_staged_is_never_written_through() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let elsewhere = folder.path().join("elsewhere");
+        fs::write(&elsewhere, "untouched").expect("a file elsewhere");
+        let staged = folder
+            .path()
+            .join(format!("{NOW_FILE}.{}.new", std::process::id()));
+        std::os::unix::fs::symlink(&elsewhere, &staged).expect("a link");
+        let reading = read(&[machine("kestrel", 16, 64, 40, 0.0, 0)], &[], now());
+        keep_latest(folder.path(), &reading).expect_err("refused");
+        assert_eq!(
+            fs::read_to_string(&elsewhere).expect("the file elsewhere"),
+            "untouched"
+        );
+        assert!(!folder.path().join(NOW_FILE).exists(), "nothing renamed");
     }
 }

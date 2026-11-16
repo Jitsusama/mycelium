@@ -1722,6 +1722,7 @@ fn balance(socket: &Path, realm: &str, asked: BalanceAsked) -> io::Result<()> {
         return print(&balance_read(socket)?);
     }
     let kept = here.state.unwrap_or_else(place::state).join("balance");
+    std::fs::create_dir_all(&kept)?;
     let mut watch = mycelium::balance::Watch::default();
     loop {
         // A node restarting or slow to answer misses a minute, not the
@@ -1730,6 +1731,11 @@ fn balance(socket: &Path, realm: &str, asked: BalanceAsked) -> io::Result<()> {
             Ok(mut reading) => {
                 reading.held = Some(watch.take(&reading));
                 mycelium::balance::keep(&kept, &reading, jiff::Zoned::now().date())?;
+                // The latest whole is for a node to serve; missing it a
+                // minute loses nothing the day's line doesn't keep.
+                if let Err(error) = mycelium::balance::keep_latest(&kept, &reading) {
+                    eprintln!("mycelium balance: couldn't keep the latest reading: {error}");
+                }
                 print(&reading)?;
             }
             Err(error) => eprintln!("mycelium balance: couldn't read the node: {error}"),
