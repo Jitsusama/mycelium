@@ -10,7 +10,11 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Builds, Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Usage, kept};
+use serde::Deserialize as _;
+
+use super::{
+    Builds, Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Tree, Usage, kept,
+};
 use crate::receptor::{self, Counts, Source};
 use crate::swarm::{self, Standing};
 
@@ -195,6 +199,7 @@ fn receptor_cell(record: &Value) -> Option<Cell> {
         runs: None,
         counts: serde_json::from_value::<Counts>(record["counts"].clone()).ok(),
         builds: None,
+        trees: Vec::new(),
         networks: vec![source.network()],
     })
 }
@@ -300,6 +305,7 @@ fn builder_cell(builder: &Value) -> Option<Cell> {
             said: builder["said"].as_str().map(str::to_owned),
         })),
         counts: None,
+        trees: Vec::new(),
         networks: vec![MACHINES.to_owned()],
     })
 }
@@ -357,6 +363,15 @@ fn events_of<'a>(session: &'a Value, cell: &'a Cell) -> impl Iterator<Item = Eve
 fn session_cell(session: &Value) -> Option<Cell> {
     let standing = Standing::of_cell(session)?;
     let text = |field: &str| session[field].as_str().map(str::to_owned);
+    // A tree saying no repository, or neither branch nor commit, is passed
+    // over, as nothing could name the network it shares.
+    let trees: Vec<Tree> = session["presence"]["trees"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tree| Tree::deserialize(tree).ok())
+        .filter(|tree| tree.network().is_some())
+        .collect();
     let networks = session["groups"]
         .as_array()
         .into_iter()
@@ -364,6 +379,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         .filter_map(Value::as_str)
         .filter(|group| Shape::of_group(group).is_some())
         .map(str::to_owned)
+        .chain(trees.iter().filter_map(Tree::network))
         .collect();
     let title = swarm::title(session).to_owned();
     Some(Cell {
@@ -392,6 +408,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         runs: None,
         counts: None,
         builds: None,
+        trees,
         networks,
     })
 }
@@ -444,6 +461,7 @@ fn machine_cell(machine: &Value, runs: &HashMap<&str, usize>) -> Cell {
         runs: Some(runs),
         counts: None,
         builds: None,
+        trees: Vec::new(),
         networks: vec![MACHINES.to_owned()],
         name,
     }
@@ -487,8 +505,8 @@ fn network_of(name: &str, shape: Shape, cells: &[&Cell]) -> Network {
 }
 
 /// The networks `sessions` joined, each team of the swarm's one among
-/// them, with or without a cell, and a project's or a repository's only
-/// where two cells share it: one cell's own is no network.
+/// them, with or without a cell, and a project's, a repository's or a
+/// tree's only where two cells share it: one cell's own is no network.
 fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>) -> Vec<Network> {
     let mut holding: BTreeMap<&str, Vec<&Cell>> = BTreeMap::new();
     for cell in sessions {
@@ -506,14 +524,33 @@ fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>)
         .iter()
         .filter_map(|(name, cells)| {
             let shape = Shape::of_group(name)?;
-            let shared = !matches!(shape, Shape::Project | Shape::Repository) || cells.len() > 1;
+            let shared = !matches!(shape, Shape::Project | Shape::Repository | Shape::Tree)
+                || cells.len() > 1;
             shared.then(|| network_of(name, shape, cells))
         })
         .collect();
     titled_by_teams(&mut networks, teams);
     titled_by_quests(&mut networks, quests);
     titled_by_repos(&mut networks, sessions);
+    shortened_trees(&mut networks, sessions);
     networks
+}
+
+/// Each tree's network's short name as its tree says it, such as
+/// `oars@jsama/tides`, since a repository's name may hold a dot and its
+/// branch a slash, so the network's name can't be cut into them.
+fn shortened_trees(networks: &mut [Network], sessions: &[Cell]) {
+    let mut shorts: HashMap<String, String> = HashMap::new();
+    for tree in sessions.iter().flat_map(|cell| &cell.trees) {
+        if let (Some(name), Some(short)) = (tree.network(), tree.short()) {
+            shorts.entry(name).or_insert(short);
+        }
+    }
+    for each in networks.iter_mut().filter(|each| each.shape == Shape::Tree) {
+        if let Some(short) = shorts.remove(&each.name) {
+            each.short = short;
+        }
+    }
 }
 
 /// Each address `session`, if living, goes by beside its own, to its own,

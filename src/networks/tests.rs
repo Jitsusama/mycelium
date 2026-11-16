@@ -394,6 +394,104 @@ fn every_group_but_an_address_is_a_network_and_a_lone_quest_or_repo_is_not() {
 }
 
 #[test]
+fn a_tree_two_cells_hold_is_a_network_and_one_cells_own_is_on_the_cell() {
+    let holding = |address: &str, n: u8, trees: Value| {
+        let mut held = session(address, n, "", "busy", &[]);
+        held["presence"] = json!({ "trees": trees });
+        held
+    };
+    let tides = json!({
+        "key": "worktree-github-harbour-oars-jsama-tides",
+        "repo": "github:harbour/oars",
+        "branch": "jsama/tides",
+    });
+    let pinned = json!({
+        "key": "snapshot-local-skiff-6b881064c2f1",
+        "repo": "local:skiff",
+        "commit": "6b881064c2f1",
+    });
+    let sessions = [
+        holding("ROWS01", 1, json!([tides, pinned])),
+        holding("OARS01", 2, json!([tides])),
+        holding(
+            "KELP01",
+            3,
+            json!([pinned, {"key": "a tree saying nothing else"}]),
+        ),
+        holding(
+            "NAPS01",
+            4,
+            json!([{
+                "key": "snapshot-local-skiff-0226ece3409c",
+                "repo": "local:skiff",
+                "commit": "0226ece3409ce7f303fd08f070dc4fba6a288334",
+            }]),
+        ),
+    ];
+    let mycelium = Mycelium::of("home", &[], &sessions, &[]);
+    let trees: Vec<(&str, &str, Vec<String>)> = mycelium
+        .networks
+        .iter()
+        .filter(|each| each.shape == Shape::Tree)
+        .map(|each| (each.name.as_str(), each.short.as_str(), each.cells.clone()))
+        .collect();
+    assert_eq!(
+        trees,
+        [
+            (
+                "tree.oars.jsama/tides",
+                "oars@jsama/tides",
+                vec!["ROWS01".to_owned(), "OARS01".to_owned()]
+            ),
+            (
+                "tree.skiff.6b881064c2f1",
+                "skiff@6b88106",
+                vec!["ROWS01".to_owned(), "KELP01".to_owned()]
+            ),
+        ],
+        "a worktree or a snapshot two cells hold is a network, named by repo and branch \
+         or short commit; one cell's own is none"
+    );
+    let naps = mycelium.cell("NAPS01").expect("Naps");
+    assert_eq!(
+        (
+            serde_json::to_value(&naps.trees).expect("trees"),
+            naps.networks.clone()
+        ),
+        (
+            json!([{
+                "key": "snapshot-local-skiff-0226ece3409c",
+                "repo": "local:skiff",
+                "commit": "0226ece3409ce7f303fd08f070dc4fba6a288334",
+            }]),
+            Vec::<String>::new()
+        ),
+        "a tree one cell holds alone is shown on the cell, in no network"
+    );
+    let kelp = mycelium.cell("KELP01").expect("Kelp");
+    assert_eq!(
+        (kelp.trees.len(), kelp.networks.clone()),
+        (1, vec!["tree.skiff.6b881064c2f1".to_owned()]),
+        "a tree saying no repo is passed over, and a shared one names its network"
+    );
+    let drawn = overview(&mycelium, &look(), false, true);
+    assert!(
+        drawn.contains("trees") && drawn.contains("oars@jsama/tides"),
+        "the tree heads its shared trees: {drawn}"
+    );
+    let rows = cell(&mycelium, mycelium.cell("ROWS01").expect("Rows"), &look());
+    assert!(
+        rows.contains("oars@jsama/tides") && !rows.contains("its own trees"),
+        "a cell's shared trees are among its networks: {rows}"
+    );
+    let naps = cell(&mycelium, naps, &look());
+    assert!(
+        naps.ends_with("its own trees\n  skiff@0226ece"),
+        "a cell lists the trees it holds alone as its own: {naps}"
+    );
+}
+
+#[test]
 fn cells_are_the_living_and_dormant_sessions_then_the_machines() {
     let mycelium = mycelium();
     let cells: Vec<(&str, Is, Option<&str>)> = mycelium

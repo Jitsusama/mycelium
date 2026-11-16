@@ -19,7 +19,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::swarm::{self, Standing};
@@ -107,6 +107,8 @@ pub enum Shape {
     Project,
     /// A repository its cells work in.
     Repository,
+    /// A work tree two cells or more hold at once.
+    Tree,
     /// A group its cells named and joined.
     Group,
     /// The realm's machines.
@@ -117,22 +119,25 @@ pub enum Shape {
 
 impl Shape {
     /// Each, in the order the tree draws them.
-    pub const EACH: [Self; 6] = [
+    pub const EACH: [Self; 7] = [
         Self::Orchestration,
         Self::Project,
         Self::Repository,
+        Self::Tree,
         Self::Group,
         Self::Machines,
         Self::Outside,
     ];
 
-    /// The shape a group's name says, or none for a peer's own address.
+    /// The shape a network's name says, as a group's or a tree's
+    /// (`tree.<repo>.<branch>`), or none for a peer's own address.
     fn of_group(group: &str) -> Option<Self> {
         match group.split_once('.').map_or(group, |(first, _)| first) {
             "peer" => None,
             "orchestration" => Some(Self::Orchestration),
             "quest" => Some(Self::Project),
             "repo" => Some(Self::Repository),
+            "tree" => Some(Self::Tree),
             _ => Some(Self::Group),
         }
     }
@@ -307,8 +312,56 @@ pub struct Cell {
     /// none and ten thousand of them would hold its room for nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub builds: Option<Box<Builds>>,
+    /// The work trees a session holds now, as its presence says.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub trees: Vec<Tree>,
     /// The networks it joined, by name.
     pub networks: Vec<String>,
+}
+
+/// A work tree a session holds now, as its presence says: a worktree
+/// checked out at a branch, or a snapshot pinned at a commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tree {
+    /// Its key, as its machine's work broker names it.
+    pub key: String,
+    /// The repository it is a tree of, by its key, such as
+    /// `github:owner/name` or `local:name`.
+    pub repo: String,
+    /// The branch a worktree is checked out at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The commit a snapshot is pinned at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+}
+
+impl Tree {
+    /// Its repository's name: its key's last part, such as `oars` of
+    /// `github:harbour/oars`.
+    fn repo_name(&self) -> &str {
+        self.repo.rsplit([':', '/']).next().unwrap_or(&self.repo)
+    }
+
+    /// The network it is while two cells or more hold it, such as
+    /// `tree.oars.jsama/tides`, or none for one saying neither its branch
+    /// nor its commit.
+    fn network(&self) -> Option<String> {
+        let at = self.branch.as_deref().or(self.commit.as_deref())?;
+        Some(format!("tree.{}.{at}", self.repo_name()))
+    }
+
+    /// What a person types to reach that network: its repository's name
+    /// and branch, such as `oars@jsama/tides`, or a snapshot's commit cut
+    /// to seven, such as `skiff@6b88106`.
+    fn short(&self) -> Option<String> {
+        let at = match (&self.branch, &self.commit) {
+            (Some(branch), _) => branch.as_str(),
+            (None, Some(commit)) => commit.get(..7).unwrap_or(commit),
+            (None, None) => return None,
+        };
+        Some(format!("{}@{at}", self.repo_name()))
+    }
 }
 
 /// One thing a session drawn says it did, as a line of its own.

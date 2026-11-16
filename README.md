@@ -78,15 +78,16 @@ The harness mesh's messages and presence, carried between machines:
   shows one team's sessions and where it meets the others, and
   `--json` prints each team's record.
 - `mycelium networks` draws the realm's networks as a tree under their
-  shapes (orchestrations, projects, repositories, groups and the
-  machines), with how many of each one's sessions need you, are stuck,
-  move, wait or lie dormant; `--cells` puts each network's sessions
-  under it, and `mycelium networks <NAME>` draws one with its cells.
+  shapes (orchestrations, projects, repositories, trees two cells or
+  more hold at once, groups and the machines), with how many of each
+  one's sessions need you, are stuck, move, wait or lie dormant;
+  `--cells` puts each network's sessions under it, and
+  `mycelium networks <NAME>` draws one with its cells.
   `mycelium cells` lists every session worst first, then the machines
-  and the builders,
-  and `mycelium cells <NAME>` says what one is and which networks it
-  joined. A long list folds, so a realm of thousands of sessions still
-  fits a screen: the worrying first, then the busiest few, then one row
+  and the builders, and `mycelium cells <NAME>` says what one is, which
+  networks it joined and the trees it holds alone. A long list folds,
+  so a realm of thousands of sessions still fits a screen: the
+  worrying first, then the busiest few, then one row
   counting the rest; `--all` unfolds it, and a name opens any one.
   `mycelium cells --standing needs-you,stuck` lists only the cells
   standing so. `-w` on either draws it again in place every two
