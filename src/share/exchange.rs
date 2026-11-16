@@ -473,6 +473,33 @@ struct Told {
     above: bool,
 }
 
+/// What a look says of the quests `shares` holds, as told.
+fn shares_said(shares: &BTreeMap<String, Told>) -> Say {
+    Say::Shares {
+        quests: shares.keys().cloned().collect(),
+        scratch: shares
+            .iter()
+            .filter(|(_, told)| !told.folders.is_empty())
+            .map(|(id, told)| (id.clone(), told.folders.clone()))
+            .collect(),
+        clones: shares
+            .iter()
+            .filter(|(_, told)| !told.clones.is_empty())
+            .map(|(id, told)| (id.clone(), told.clones.clone()))
+            .collect(),
+        ended: shares
+            .iter()
+            .filter(|(_, told)| told.ended)
+            .map(|(id, _)| id.clone())
+            .collect(),
+        above: shares
+            .iter()
+            .filter(|(_, told)| told.above)
+            .map(|(id, _)| id.clone())
+            .collect(),
+    }
+}
+
 impl Exchange {
     /// `machine`'s end of the talk with `other`, clearing any crossing an
     /// earlier link to `other` left unfinished, since nothing goes on with
@@ -780,29 +807,7 @@ impl Exchange {
         // a newly named folder's files by the time it hears of them.
         let mut says = Vec::new();
         if shares != self.told {
-            says.push(Say::Shares {
-                quests: shares.keys().cloned().collect(),
-                scratch: shares
-                    .iter()
-                    .filter(|(_, told)| !told.folders.is_empty())
-                    .map(|(id, told)| (id.clone(), told.folders.clone()))
-                    .collect(),
-                clones: shares
-                    .iter()
-                    .filter(|(_, told)| !told.clones.is_empty())
-                    .map(|(id, told)| (id.clone(), told.clones.clone()))
-                    .collect(),
-                ended: shares
-                    .iter()
-                    .filter(|(_, told)| told.ended)
-                    .map(|(id, _)| id.clone())
-                    .collect(),
-                above: shares
-                    .iter()
-                    .filter(|(_, told)| told.above)
-                    .map(|(id, _)| id.clone())
-                    .collect(),
-            });
+            says.push(shares_said(&shares));
         }
         says.extend(holds);
         self.told = shares;

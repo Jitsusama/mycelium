@@ -245,21 +245,24 @@ pub enum Ending {
     HandedOver,
 }
 
-/// This machine's end of sharing quests with `other`. A worker is sent and
-/// served only the quests it was given, and those it began, which this
-/// machine held none of.
-fn exchange_with(
-    places: Places,
-    membership: &impl Membership,
-    other: &str,
-    worker: bool,
-) -> Exchange {
-    let exchange = Exchange::new(places, membership.hello().machine, other.to_owned());
-    if worker {
+/// The exchange of what `places` shares between this end, which said
+/// `here`, and the other, which said `there`. A worker is sent and served
+/// only the quests it was given, and those it began, which this machine
+/// held none of.
+///
+/// Any other end may be a worker too until it says what its machine is,
+/// which it does first of all when both ends take facts, so nothing above
+/// the quests shared crosses before then. An end that takes none can
+/// declare nothing, so it is no worker.
+fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> Exchange {
+    let exchange = Exchange::new(places, here.machine.clone(), there.machine.clone());
+    let mut exchange = if worker {
         exchange.for_worker()
     } else {
         exchange
-    }
+    };
+    exchange.withhold_above(here.facts && there.facts);
+    exchange
 }
 
 /// Runs this end of a link until the other end leaves, then marks every
@@ -303,15 +306,7 @@ pub async fn run(
     let claim = claimed(&store, &other.machine)?;
     let reach = reach_start(&store, &other.machine);
     admitted(&store, &other.machine)?;
-    let exchange = shares.map(|places| {
-        let mut exchange = exchange_with(places, membership, &other.machine, worker);
-        // The other end may be a worker until it says what its machine is,
-        // which it does first of all when both ends take facts, so nothing
-        // above the quests shared crosses before then. An end that takes
-        // none can declare nothing, so it is no worker.
-        exchange.withhold_above(membership.hello().facts && other.facts);
-        exchange
-    });
+    let exchange = shares.map(|places| exchange_with(places, &membership.hello(), &other, worker));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
     let (answering, mut answered) = mpsc::unbounded_channel();
     let (runs, mut run_said) = Runs::new();
