@@ -1,11 +1,11 @@
-use std::os::unix::fs::PermissionsExt;
-
 use tokio::io::AsyncWriteExt;
 
 use super::*;
 
-/// How long a test waits for the builders to be heard.
-const PATIENCE: Duration = Duration::from_secs(10);
+/// How long a test waits for the builders to be heard: past the time a
+/// stand-in for SSH may take to start on a loaded Mac, which scans a
+/// program written a moment ago before it first runs.
+const PATIENCE: Duration = Duration::from_secs(60);
 
 fn file(name: &str, path: &Path, lent: bool) -> File {
     File {
@@ -132,15 +132,13 @@ fn a_builder_says_nothing_of_its_keys_or_its_address() {
 /// `asked` and says each is at `port` here.
 fn ssh_keeping(folder: &Path, port: u16) -> (String, PathBuf) {
     let (program, asked) = (folder.join("ssh"), folder.join("asked"));
-    std::fs::write(
+    crate::stand_in::program(
         &program,
-        format!(
+        &format!(
             "#!/bin/sh\nfor host; do :; done\necho \"$host\" >> {}\nprintf 'hostname 127.0.0.1\\nport {port}\\n'\n",
             asked.display()
         ),
-    )
-    .expect("it is written");
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("it runs");
+    );
     (program.display().to_string(), asked)
 }
 

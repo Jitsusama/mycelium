@@ -53,6 +53,11 @@ const GROWS_AT_MOST: u32 = 50;
 /// How many times each is timed, the two sizes in turn, the fastest taken.
 const TIMINGS: usize = 5;
 
+/// How many times each may be timed while the growth misses the bar, as
+/// a loaded machine's turns are slow at random and a few more find its
+/// quiet ones (a Mac at a high load took 51 times, 2026-11-16).
+const MOST_TIMINGS: usize = 25;
+
 /// The most memory the records and what was read for them may hold, in
 /// bytes.
 const AT_MOST: usize = 64_000_000;
@@ -156,16 +161,22 @@ fn ten_thousand_cells_make_their_forage_records_within_the_bar() {
 }
 
 /// The least time the records of `fewer` and of `all` took, of a few
-/// made in turn.
+/// made in turn, and more while the growth misses the bar.
 fn fastest(shelf: &mut Shelf, fewer: &[Cell], all: &[Cell]) -> (Duration, Duration) {
     let mut timed = |cells: &[Cell]| {
         let begun = Instant::now();
         drop(forage::records(shelf, cells, "kestrel"));
         begun.elapsed()
     };
-    (0..TIMINGS).fold((Duration::MAX, Duration::MAX), |(least, most), _| {
-        (least.min(timed(fewer)), most.min(timed(all)))
-    })
+    let (mut least_fewer, mut least_all) = (Duration::MAX, Duration::MAX);
+    for turn in 1..=MOST_TIMINGS {
+        least_fewer = least_fewer.min(timed(fewer));
+        least_all = least_all.min(timed(all));
+        if turn >= TIMINGS && least_all < least_fewer * GROWS_AT_MOST {
+            break;
+        }
+    }
+    (least_fewer, least_all)
 }
 
 /// The `n`th quest's id.
