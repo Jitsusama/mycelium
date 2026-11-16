@@ -22,6 +22,7 @@ use crate::carry::{chain, ground, kept, ordered, through};
 use crate::daemon;
 use crate::facts::{self, Readiness};
 use crate::flow::{self, Flows};
+use crate::forage;
 use crate::group::{Pattern, Routes};
 use crate::handover::{self, Sleeping, Told};
 use crate::hold::{self, start, start::Starter};
@@ -316,7 +317,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 11] = [
+pub const HOLDS: [&str; 12] = [
     "session",
     "machine",
     "message",
@@ -328,6 +329,7 @@ pub const HOLDS: [&str; 11] = [
     receptor::KIND,
     BUILDER,
     kept::KIND,
+    forage::KIND,
 ];
 
 /// The kind of record that is one thing a session did, as its presence's
@@ -771,6 +773,11 @@ struct Shared<S> {
     built: Arc<daemon::Built>,
     /// Its receptors, as last judged.
     receptors: receptor::Held,
+    /// Its cells' forages, as last read from the quest store.
+    forages: forage::Held,
+    /// Asks for a quest a cell works on to be read, when it hasn't been;
+    /// none when the node has no quest store.
+    to_read: Option<mpsc::UnboundedSender<String>>,
 }
 
 /// What changes each time the node's sessions or the realm's machines may
@@ -780,6 +787,7 @@ struct Said {
     machines: watch::Sender<u64>,
     messages: watch::Sender<u64>,
     receptors: watch::Sender<u64>,
+    forages: watch::Sender<u64>,
 }
 
 impl Default for Said {
@@ -789,6 +797,7 @@ impl Default for Said {
             machines: watch::Sender::new(0),
             messages: watch::Sender::new(0),
             receptors: watch::Sender::new(0),
+            forages: watch::Sender::new(0),
         }
     }
 }
@@ -829,6 +838,8 @@ impl<S: Clone> Clone for Shared<S> {
             measured: self.measured.clone(),
             built: self.built.clone(),
             receptors: self.receptors.clone(),
+            forages: self.forages.clone(),
+            to_read: self.to_read.clone(),
         }
     }
 }
@@ -855,6 +866,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             receptors,
             builders,
             carries,
+            forages,
         ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
@@ -900,6 +912,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (builders, vec!["state", "said", "heard_at"]),
             // What was kept of a carry never changes; how it stands does.
             (carries, vec!["state", "refused"]),
+            (forages, vec!["purpose", "status", "documents", "lineage"]),
         ])
         .into_iter()
         .chain(served)
@@ -958,6 +971,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             )),
             BUILDER => Some(self.builder_records()),
             kept::KIND => Some(self.carry_records()),
+            forage::KIND => Some(self.forage_records()),
             _ => self.served.records(kind),
         }
     }
@@ -984,6 +998,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             words::KIND | kept::KIND => Some(self.said.sessions.subscribe()),
             receptor::KIND => Some(self.said.receptors.subscribe()),
             BUILDER => Some(self.builders.told()),
+            forage::KIND => Some(self.said.forages.subscribe()),
             _ => self.served.told(kind),
         }
     }
@@ -1163,6 +1178,18 @@ impl<S: Store> Shared<S> {
             placements,
         } = given;
         let said = Arc::<Said>::default();
+        let forages = forage::Held::default();
+        let to_read = sharing.as_ref().map(|places| {
+            let (to_read, wanted) = mpsc::unbounded_channel();
+            tokio::spawn(forage::keep(
+                places.quests.clone(),
+                Arc::clone(&forages),
+                wanted,
+                said.sessions.subscribe(),
+                said.forages.clone(),
+            ));
+            to_read
+        });
         let held = receptor::Held::default();
         if let Some(folder) = receptors {
             tokio::spawn(receptor::keep(
@@ -1206,6 +1233,8 @@ impl<S: Store> Shared<S> {
             measured: Arc::default(),
             built: Arc::default(),
             receptors: held,
+            forages,
+            to_read,
         };
         let kept = Kept {
             sharing,
@@ -1532,6 +1561,42 @@ impl<S: Store> Shared<S> {
 
     /// Each event the realm's sessions say, keyed by its session and its
     /// time, with the session's address as its cell.
+    /// The forage of each of this machine's cells that works on a quest,
+    /// asking for each quest not yet read to be read, which tells the
+    /// forages' watchers once it is.
+    fn forage_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let cells: Vec<forage::Cell> = self
+            .lock()
+            .state
+            .sessions()
+            .into_iter()
+            .filter(|session| session.machine == self.machine)
+            .filter_map(|session| {
+                Some(forage::Cell {
+                    quest: session.quest?,
+                    address: session.address,
+                    session: session.id,
+                    started_by: session.orchestrated_by,
+                })
+            })
+            .collect();
+        let (records, unread) = forage::records(
+            &mut self
+                .forages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &cells,
+            &self.machine,
+        );
+        if let Some(to_read) = &self.to_read {
+            for quest in unread {
+                // Nothing reads quests once the node has stopped.
+                let _ = to_read.send(quest);
+            }
+        }
+        records
+    }
+
     fn event_records(&self) -> BTreeMap<String, serde_json::Value> {
         let sessions = self.lock().state.sessions();
         sessions
@@ -2831,6 +2896,21 @@ mod tests {
         tokio::sync::oneshot::Sender<()>,
         tokio::task::JoinHandle<io::Result<()>>,
     ) {
+        node_sharing(store, machine, dials, starter, socket, None)
+    }
+
+    /// Runs a node as [`node`] does, sharing the quests of `sharing`.
+    fn node_sharing<D: Dial + Clone>(
+        store: &Memory,
+        machine: &str,
+        dials: Vec<D>,
+        starter: Option<Starter>,
+        socket: &Path,
+        sharing: Option<Places>,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
         let membership = Realm {
             name: "work".to_owned(),
             machine: machine.to_owned(),
@@ -2855,7 +2935,7 @@ mod tests {
         let builders = builders_of(socket);
         let node = tokio::spawn(async move {
             let given = Given {
-                sharing: None,
+                sharing,
                 starter,
                 refusals: Refusals::default(),
                 steers,
@@ -5026,6 +5106,103 @@ mod tests {
             ),
             "an event arrives with its session's presence, as its cell: {arrived}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_cell_working_on_a_quest_is_served_its_forage_as_it_changes() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let quests = dir.path().join("quests");
+        let quest = quests.join("QEST-20261116-SKIFFS");
+        fs::create_dir_all(quest.join("plans")).expect("its folders");
+        fs::write(
+            quest.join("README.md"),
+            "---\nid: QEST-20261116-SKIFFS\nstatus: active\n---\n# Row\n\n## Summary\n\nSkiff rows to tern. Then back.\n",
+        )
+        .expect("its README");
+        let plan = quest.join("plans").join("PLAN-20261116-ROWING.md");
+        let written = |steps: &str| {
+            fs::write(
+                &plan,
+                format!("---\nid: PLAN-20261116-ROWING\nkind: plan\nstage: build\n---\n# Row to Tern\n\n{steps}"),
+            )
+            .expect("its plan");
+        };
+        written("- [x] push off\n- [ ] row\n");
+        let places = Places {
+            quests,
+            scratch: dir.path().join("scratch"),
+            home: dir.path().to_owned(),
+            state: dir.path().join("state"),
+        };
+        let store = Memory::default();
+        let (_stop, _node) = node_sharing(
+            &store,
+            "skiff",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+            Some(places),
+        );
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert!(
+            hello["kinds"]["forage"]["live"].is_array(),
+            "hello names forages among the kinds it holds: {hello}"
+        );
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "forage"}))
+            .await;
+        assert_eq!(
+            client.next().await,
+            json!({"id": 2, "records": []}),
+            "no cell works on a quest yet"
+        );
+        let presence = json!({
+            "session": "rower", "addresses": ["ROWER1"], "groups": [],
+            "state": "busy", "at": jiff::Timestamp::now().to_string(),
+            "quest": "QEST-20261116-SKIFFS", "orchestratedBy": "TERN01",
+        });
+        store
+            .put_presence("rower", "skiff", &presence)
+            .expect("the presence is kept");
+        let forage = loop {
+            let arrived = client.next().await;
+            let changed = arrived["changed"].as_array().cloned().unwrap_or_default();
+            if let Some(forage) = changed
+                .into_iter()
+                .find(|one| one["key"] == "forage:ROWER1")
+            {
+                break forage;
+            }
+        };
+        assert_eq!(
+            (
+                &forage["quest"],
+                &forage["purpose"],
+                &forage["lineage"]["started_by"],
+                &forage["documents"][0]["ticked"],
+            ),
+            (
+                &json!("QEST-20261116-SKIFFS"),
+                &json!("Skiff rows to tern."),
+                &json!("TERN01"),
+                &json!(1),
+            ),
+            "the cell's forage is read from its quest: {forage}"
+        );
+        written("- [x] push off\n- [x] row\n");
+        loop {
+            let arrived = client.next().await;
+            let changed = arrived["changed"].as_array().cloned().unwrap_or_default();
+            if changed
+                .iter()
+                .any(|one| one["key"] == "forage:ROWER1" && one["documents"][0]["ticked"] == 2)
+            {
+                break;
+            }
+        }
     }
 
     #[tokio::test]

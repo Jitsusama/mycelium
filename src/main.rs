@@ -188,6 +188,14 @@ enum Action {
     /// `cell` is the same.
     #[command(alias = "cell", after_help = "Example:\n  mycelium cells HARBOR")]
     Cells(CellsAsked),
+    /// Says what each cell is for: its forage.
+    ///
+    /// Each cell working on a quest, by its address, with its purpose, the
+    /// first sentence of its quest's Summary, and each of its documents:
+    /// kind, stage, how many steps are ticked, and title. Named by its
+    /// address or its quest's id, one cell's forage.
+    #[command(after_help = "Example:\n  mycelium forage HARBOR")]
+    Forage(ForageAsked),
     /// Says how a receptor stands, as the receptor.
     ///
     /// A receptor senses one outside source, intake only, and says how it
@@ -604,6 +612,15 @@ struct CellsAsked {
     standing: Vec<String>,
     #[command(flatten)]
     watching: Watching,
+    #[command(flatten)]
+    output: Output,
+}
+
+/// What is asked of the forages, by the words after `forage`.
+#[derive(clap::Args)]
+struct ForageAsked {
+    /// The cell, by its address such as `HARBOR`, or its quest's id
+    cell: Option<String>,
     #[command(flatten)]
     output: Output,
 }
@@ -1152,6 +1169,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         } => in_swarm(&socket, &realm, &words, output.json(), names),
         Action::Networks(asked) => networks(&socket, &realm, &asked),
         Action::Cells(asked) => cells(&socket, &realm, &asked),
+        Action::Forage(asked) => forage(&socket, &asked),
         Action::Receptors(ReceptorsAsked {
             act: ReceptorAct::Say(said),
         }) => receptor_said(said, realm),
@@ -2152,6 +2170,22 @@ fn web(asked: WebAsked) -> io::Result<()> {
         },
     };
     print_line(&web.say(&writer, by.as_deref(), said, now())?)
+}
+
+/// Says each cell's forage the realm's nodes serve, or the one `asked`
+/// names, drawn for a person or a JSON line each.
+fn forage(socket: &Path, asked: &ForageAsked) -> io::Result<()> {
+    use mycelium::forage;
+    let records = mycelium::swarm::records(socket, forage::KIND, SWARM_WITHIN)?;
+    let chosen = forage::chosen(records, asked.cell.as_deref());
+    if asked.output.json() {
+        return chosen.iter().try_for_each(print_line);
+    }
+    write!(
+        io::stdout().lock(),
+        "{}",
+        forage::draw(&chosen, asked.cell.as_deref())
+    )
 }
 
 /// Prints each record of `kind` the node holds, a JSON line each, oldest
