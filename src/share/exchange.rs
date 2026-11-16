@@ -1601,11 +1601,7 @@ mod tests {
     /// it, and shares `child`, which shares `top` only for it.
     fn under_top(machine: &Machine, top: &str, child: &str) {
         let quests = &machine.places.quests;
-        put(
-            quests,
-            &format!("{top}/README.md"),
-            "---\nparent: null\n---\n# Top\n",
-        );
+        put(quests, &format!("{top}/README.md"), TOP_README);
         put(quests, &format!("{top}/JOURNEY.md"), "# Journey\n");
         put(
             quests,
@@ -1621,6 +1617,11 @@ mod tests {
         put(quests, &format!("{child}/JOURNEY.md"), "# The child's\n");
         machine.places.offer(child, &[]).expect("shared");
     }
+
+    /// The README [`under_top`] puts in the quest above, which links to
+    /// what is beside it.
+    const TOP_README: &str =
+        "---\nparent: null\n---\n# Top\n\nSee [the map](attachments/map.png).\n";
 
     /// The files of `top`'s record beside its README that [`under_top`]
     /// puts there.
@@ -1645,14 +1646,14 @@ mod tests {
         );
         assert_eq!(
             there(&skiff, top, "README.md").as_deref(),
-            Some("---\nparent: null\n---\n# Top\n"),
+            Some(TOP_README),
             "its parent's README crosses"
         );
         for path in BESIDE_ITS_README {
             assert_eq!(
                 there(&skiff, top, path),
                 None,
-                "but not its parent's {path}"
+                "but not its parent's {path}, though its README links to the map"
             );
         }
         let said: Vec<String> = kestrel
@@ -1739,7 +1740,7 @@ mod tests {
         );
         assert_eq!(
             there(&kestrel, top, "README.md").as_deref(),
-            Some("---\nparent: null\n---\n# Top\n"),
+            Some(TOP_README),
             "nor writes over it"
         );
         assert!(
@@ -1776,6 +1777,70 @@ mod tests {
             None,
             "and still nothing more of it"
         );
+    }
+
+    #[test]
+    fn a_parent_whose_readme_is_a_link_crosses_nothing_through_it() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        under_top(&kestrel, top, child);
+        let readme = kestrel.places.quests.join(top).join("README.md");
+        fs::remove_file(&readme).expect("removed");
+        std::os::unix::fs::symlink("JOURNEY.md", &readme).expect("linked");
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        assert!(
+            kestrel.places.ledgers().shares(top) && there(&skiff, child, "README.md").is_some(),
+            "the quest crosses, its parent shared for it"
+        );
+        assert!(
+            !skiff.places.quests.join(top).exists(),
+            "but nothing of its parent, whose README is a link to its journey"
+        );
+        assert!(
+            near.hear(Say::Want {
+                quest: top.to_owned(),
+                file: README.to_owned(),
+                at: None,
+            })
+            .expect("kestrel hears")
+            .is_empty(),
+            "nor is the link read through when asked for"
+        );
+    }
+
+    #[test]
+    fn a_link_in_a_record_is_never_read_through_even_when_asked_for() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        kestrel.write("README.md", "# Shared\n");
+        let elsewhere = kestrel.places.home.join("elsewhere");
+        put(&elsewhere, "secret.md", "not the quest's\n");
+        let attachments = kestrel.places.quests.join(QUEST).join("attachments");
+        fs::create_dir_all(&attachments).expect("made");
+        std::os::unix::fs::symlink(elsewhere.join("secret.md"), attachments.join("key.md"))
+            .expect("a file linked");
+        std::os::unix::fs::symlink(&elsewhere, attachments.join("away")).expect("a folder linked");
+        share(&kestrel, QUEST);
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        assert_eq!(skiff.read("README.md").as_deref(), Some("# Shared\n"));
+        for file in ["attachments/key.md", "attachments/away/secret.md"] {
+            assert_eq!(skiff.read(file), None, "{file} is no file of the quest's");
+            for at in [None, Some(0)] {
+                assert!(
+                    near.hear(Say::Want {
+                        quest: QUEST.to_owned(),
+                        file: format!("record/{file}"),
+                        at,
+                    })
+                    .expect("kestrel hears")
+                    .is_empty(),
+                    "and asked for, {file} isn't read through"
+                );
+            }
+        }
     }
 
     #[test]

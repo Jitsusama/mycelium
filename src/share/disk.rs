@@ -44,9 +44,40 @@ const LOCK_RETRY: Duration = Duration::from_millis(25);
 const LOCK_STALE: Duration = Duration::from_secs(30);
 
 impl Quest {
-    /// What a shared file holds as it crosses, or `None` if it isn't here.
+    /// Where shared file `shared` is, so long as nothing on the way there
+    /// from the quest's own folder is a link: neither the file nor a folder
+    /// it is in. A link may lead anywhere on this machine, so nothing that
+    /// crosses is read or written through one, as a walk never follows one.
+    fn unlinked(&self, shared: &Shared) -> io::Result<Option<PathBuf>> {
+        let path = self.path_of(shared)?;
+        let mut at = path.clone();
+        for _ in Path::new(&shared.path).components() {
+            match fs::symlink_metadata(&at) {
+                Ok(found) if found.file_type().is_symlink() => return Ok(None),
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
+            at.pop();
+        }
+        Ok(Some(path))
+    }
+
+    /// What a shared file's size and time are as the ledger sees them, or
+    /// `None` if it isn't here or is reached through a link.
+    pub fn seen_of(&self, shared: &Shared) -> io::Result<Option<Seen>> {
+        match self.unlinked(shared)? {
+            Some(path) => seen(&path),
+            None => Ok(None),
+        }
+    }
+
+    /// What a shared file holds as it crosses, or `None` if it isn't here
+    /// or is reached through a link.
     pub fn read(&self, shared: &Shared) -> io::Result<Option<Vec<u8>>> {
-        match fs::read(self.path_of(shared)?) {
+        let Some(path) = self.unlinked(shared)? else {
+            return Ok(None);
+        };
+        match fs::read(path) {
             Ok(bytes) if translates(shared) => Ok(Some(portable(&bytes, &self.home))),
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -64,7 +95,10 @@ impl Quest {
                 (piece_of(&bytes, at).to_vec(), len)
             }));
         }
-        let mut file = match fs::File::open(self.path_of(shared)?) {
+        let Some(path) = self.unlinked(shared)? else {
+            return Ok(None);
+        };
+        let mut file = match fs::File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
@@ -85,9 +119,12 @@ impl Quest {
     }
 
     /// Who may read, write and run a shared file, as its mode's permission
-    /// bits, or nothing once it is gone.
+    /// bits, or nothing once it is gone or reached through a link.
     pub fn mode_of(&self, shared: &Shared) -> io::Result<Option<u32>> {
-        match fs::metadata(self.path_of(shared)?) {
+        let Some(path) = self.unlinked(shared)? else {
+            return Ok(None);
+        };
+        match fs::metadata(path) {
             Ok(metadata) => Ok(Some(metadata.permissions().mode() & PERMISSIONS)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
@@ -96,14 +133,20 @@ impl Quest {
 
     /// Writes what crossed into a shared file at `mode`, or at the mode it
     /// has already without one, or deletes it for `None`, answering what
-    /// the file holds as the ledger sees it, or nothing once deleted.
+    /// the file holds as the ledger sees it, or nothing once deleted. One
+    /// reached through a link is refused, since it would land elsewhere.
     pub fn write(
         &self,
         shared: &Shared,
         body: Option<&[u8]>,
         mode: Option<u32>,
     ) -> io::Result<Option<Seen>> {
-        let path = self.path_of(shared)?;
+        let Some(path) = self.unlinked(shared)? else {
+            return Err(io::Error::other(format!(
+                "{} is reached through a link here, so nothing is written there",
+                shared.path
+            )));
+        };
         let _lock = match shared.place {
             Place::Record => {
                 fs::create_dir_all(&self.record)?;
@@ -360,6 +403,36 @@ mod tests {
             quest.read(&readme).expect("read"),
             None,
             "a deletion removes it"
+        );
+    }
+
+    #[test]
+    fn nothing_is_written_through_a_link_in_the_record() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let quest = Quest::new(dir.path().join("record"), PathBuf::from("/home/jitsusama"));
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir_all(quest.record.join("attachments")).expect("the record made");
+        fs::create_dir_all(&elsewhere).expect("elsewhere made");
+        fs::write(elsewhere.join("held.md"), "held\n").expect("written");
+        std::os::unix::fs::symlink(&elsewhere, quest.record.join("attachments/away"))
+            .expect("a folder linked");
+        std::os::unix::fs::symlink(elsewhere.join("held.md"), quest.record.join("held.md"))
+            .expect("a file linked");
+
+        for path in ["attachments/away/planted.md", "held.md"] {
+            assert!(
+                quest.write(&record(path), Some(b"crossed\n"), None).is_err(),
+                "{path}, reached through a link, is refused"
+            );
+        }
+        assert!(
+            !elsewhere.join("planted.md").exists(),
+            "so nothing lands elsewhere"
+        );
+        assert_eq!(
+            fs::read_to_string(elsewhere.join("held.md")).expect("read"),
+            "held\n",
+            "nor is what a link leads to changed"
         );
     }
 
