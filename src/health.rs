@@ -1,8 +1,8 @@
 //! How a realm's network stands, as `mycelium health` prints it for a
 //! daily read: one JSON line saying each link and how often it dropped in
-//! the last day, the sessions on each machine, the presences that still
-//! say they run with their process gone, and how long the node took to
-//! answer.
+//! the last day, the sessions on each machine, the presences written in
+//! the last day that still say they run with their process gone, and how
+//! long the node took to answer.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -71,7 +71,11 @@ pub fn line(
         });
         *counts.entry(named(session.state)).or_default() += 1;
     }
-    let dead = read.sessions.iter().filter(|one| dead(one)).count();
+    let dead = read
+        .sessions
+        .iter()
+        .filter(|one| dead(one) && lately(one, read.at))
+        .count();
     // Whole seconds, as the day's other figures are, rounded so a 7.9 s
     // answer reads as the 8 it nearly was.
     let slowest = (read.slowest.as_millis() + 500) / 1000;
@@ -83,6 +87,22 @@ pub fn line(
         "deadPresences": dead,
         "slowestAsk": u64::try_from(slowest).unwrap_or(u64::MAX),
     })
+}
+
+/// How long a presence left saying it runs is counted: a day, as the
+/// links' endings are, since a daily read wants what is new, and the
+/// node keeps an ended session's record long after.
+const DEAD_FOR: i64 = 24 * 60 * 60;
+
+/// Whether `session`'s presence was last written within [`DEAD_FOR`] of
+/// `at`, in seconds since the epoch. One whose time can't be read counts,
+/// so a record gone wrong is seen rather than hidden.
+fn lately(session: &Session, at: i64) -> bool {
+    session
+        .at
+        .parse::<jiff::Timestamp>()
+        .ok()
+        .is_none_or(|written| at - written.as_second() < DEAD_FOR)
 }
 
 /// A session's state, as the line counts it.
