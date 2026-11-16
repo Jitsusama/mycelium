@@ -1633,7 +1633,7 @@ and times alone, never what was read:
 | `since` | when the process keeping it began saying so |
 | `read_at` | when it last read its source |
 | `every` | how often it reads, from 1 second to a day |
-| `pid`, `started` | the process keeping it, and that process's start in clock ticks since boot |
+| `pid`, `started` | the process keeping it, and that process's start, as below |
 | `counts` | `hour`, `today`, and `addressed`, of today's those addressed to its person |
 
 The record is an allow-list: a file holding any other field, a word
@@ -1657,9 +1657,10 @@ through.
 
 The node judges each file rather than believing it, as it reads each
 change to the folder and every 30 seconds besides: a receptor whose
-process is gone, or, on Linux, whose pid now names a process that
-started at another time, is `off`, and one that read nothing for three of its
-rounds is `failing`. Each record is heard at its `read_at`, and says
+process is gone, whose pid now names a process that started at another
+time, or whose start was kept but can't be read now, as macOS keeps
+some processes' starts from other accounts, is `off`, and one that read
+nothing for three of its rounds is `failing`. Each record is heard at its `read_at`, and says
 the `machine` it runs on.
 
 ### Forages

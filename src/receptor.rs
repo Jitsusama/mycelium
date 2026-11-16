@@ -351,12 +351,21 @@ impl Living for Here {
         if rustix::process::test_kill_process(id) == Err(rustix::io::Errno::SRCH) {
             return false;
         }
-        match (started, started_at(pid)) {
-            (Some(said), Some(is)) => said == is,
-            // Where the system can't say when a process started, its
-            // living is all that is known.
-            _ => true,
-        }
+        same_start(started, started_at(pid))
+    }
+}
+
+/// Whether a living process whose start is `is` now, where that can be
+/// read, is the one a receptor said started at `said`. A start said but
+/// unreadable now may be another account's process holding the pid, as
+/// macOS keeps some processes' starts from other accounts, so it isn't
+/// taken as the receptor. Where no start was said, as on a system that
+/// can't say one, its living is all that is known.
+fn same_start(said: Option<u64>, is: Option<u64>) -> bool {
+    match (said, is) {
+        (Some(said), Some(is)) => said == is,
+        (Some(_), None) => false,
+        (None, _) => true,
     }
 }
 
@@ -435,11 +444,9 @@ pub fn judged(
         .flatten()
         .filter_map(|entry| entry.file_name().to_str().ok().map(str::to_owned))
         .filter(|name| {
-            // A receptor's own file only: its name is its source's, in
-            // lower case, and a dot-name is one being staged.
-            name.strip_suffix(".json")
-                .is_some_and(|stem| !stem.is_empty())
-                && !name.starts_with('.')
+            // A JSON file not being staged under a dot-name; each read
+            // holds its name to its record's source.
+            name.strip_suffix(".json").is_some() && !name.starts_with('.')
         })
         .filter_map(|name| read_at(&opened, &name))
         .filter(|record| record.realm == realm)
@@ -890,5 +897,19 @@ mod tests {
         if let Some(started) = started_at(me) {
             assert!(!Here.lives(me, Some(started + 1)), "a pid used again");
         }
+    }
+
+    #[test]
+    fn a_start_said_is_held_to_the_start_read_and_one_unreadable_isnt_the_receptor() {
+        assert!(same_start(Some(700), Some(700)), "the same start");
+        assert!(!same_start(Some(700), Some(701)), "another start");
+        assert!(
+            !same_start(Some(700), None),
+            "a start said but unreadable now may be another account's process"
+        );
+        assert!(
+            same_start(None, Some(700)) && same_start(None, None),
+            "no start said leaves living all that is known"
+        );
     }
 }
