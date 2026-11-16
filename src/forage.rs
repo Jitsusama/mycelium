@@ -185,7 +185,9 @@ fn is_quest_id(id: &str) -> bool {
 }
 
 /// The front matter of `lines`, as key and value, up to its closing
-/// `---`; none when it opens without one.
+/// `---`; none when it opens without one. A key whose value is YAML's
+/// null, a bare `null` or `~`, says nothing, as one left empty does; a
+/// quoted `"null"` is the word.
 fn front_matter(lines: &mut impl Iterator<Item = String>) -> HashMap<String, String> {
     let mut said = HashMap::new();
     if lines.next().as_deref().map(str::trim_end) != Some("---") {
@@ -200,7 +202,11 @@ fn front_matter(lines: &mut impl Iterator<Item = String>) -> HashMap<String, Str
             continue;
         }
         if let Some((key, value)) = line.split_once(':') {
-            let value = value.trim().trim_matches(['"', '\'']);
+            let raw = value.trim();
+            if raw == "null" || raw == "~" {
+                continue;
+            }
+            let value = raw.trim_matches(['"', '\'']);
             if !value.is_empty() {
                 said.insert(key.trim().to_owned(), value.to_owned());
             }
@@ -679,6 +685,45 @@ mod tests {
             quest: quest.to_owned(),
             started_by: Some("OSPREY".to_owned()),
         }
+    }
+
+    #[test]
+    fn a_quest_whose_parent_is_null_has_none() {
+        let store = Store::new("null-parent");
+        let unquoted = README.replace("parent: QEST-20261101-OSPREY", "parent: null");
+        store.write("QEST-20261116-KESTRL/README.md", &unquoted);
+        store.write(
+            "QEST-20261116-SKIFFS/README.md",
+            &README.replace("parent: QEST-20261101-OSPREY", "parent: ~"),
+        );
+        store.write(
+            "QEST-20261116-OSPREY/README.md",
+            &README.replace("parent: QEST-20261101-OSPREY", "parent: \"null\""),
+        );
+        let mut shelf = Shelf::default();
+        for quest in [
+            "QEST-20261116-KESTRL",
+            "QEST-20261116-SKIFFS",
+            "QEST-20261116-OSPREY",
+        ] {
+            assert!(shelf.read(&store.0, quest), "{quest} is read");
+        }
+        let mut parent = |quest: &str| shelf.quest(quest).expect("read").parent.clone();
+        assert_eq!(
+            parent("QEST-20261116-KESTRL"),
+            None,
+            "YAML's null is no parent"
+        );
+        assert_eq!(
+            parent("QEST-20261116-SKIFFS"),
+            None,
+            "YAML's ~ is no parent"
+        );
+        assert_eq!(
+            parent("QEST-20261116-OSPREY").as_deref(),
+            Some("null"),
+            "a quoted null is the word"
+        );
     }
 
     #[test]
