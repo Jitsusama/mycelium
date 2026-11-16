@@ -231,12 +231,56 @@ pub const RATHER_NOT_WEIGHT: f64 = 1.0;
 /// waited a while is no reason to keep work off.
 pub const FILLING_WEIGHT: f64 = 0.25;
 
+/// What each part of a machine's room is worth to placing, and how near
+/// the best a machine may be and still be drawn: the one set of knobs a
+/// replay of kept placements varies to tune placing. A set read from JSON
+/// takes the starting weight for each it leaves out, so a candidate names
+/// only the knob it turns.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Weights {
+    /// What a processor's whole headroom is worth.
+    pub cpu: f64,
+    /// What a machine's whole memory free is worth.
+    pub memory: f64,
+    /// What a machine's whole disk free is worth.
+    pub disk: f64,
+    /// What each session or start a core carries costs.
+    pub session: f64,
+    /// What each taint that would rather not costs.
+    pub rather_not: f64,
+    /// What a disk filling costs.
+    pub filling: f64,
+    /// How far below the best headroom a machine may be and still be drawn.
+    pub near_best: f64,
+}
+
+impl Weights {
+    /// The weights placing starts from, chosen by judgement until kept
+    /// placements say better.
+    pub const STARTING: Self = Self {
+        cpu: CPU_WEIGHT,
+        memory: MEMORY_WEIGHT,
+        disk: DISK_WEIGHT,
+        session: SESSION_WEIGHT,
+        rather_not: RATHER_NOT_WEIGHT,
+        filling: FILLING_WEIGHT,
+        near_best: NEAR_BEST,
+    };
+}
+
+impl Default for Weights {
+    fn default() -> Self {
+        Self::STARTING
+    }
+}
+
 /// What `taint`, which would rather not have the work, costs `machine`.
-fn costs(machine: &Machine, taint: &Taint) -> f64 {
+fn costs(machine: &Machine, taint: &Taint, weights: &Weights) -> f64 {
     if taint.key == DISK_PRESSURE && machine.disk_band == Some(Band::Filling) {
-        FILLING_WEIGHT
+        weights.filling
     } else {
-        RATHER_NOT_WEIGHT
+        weights.rather_not
     }
 }
 
@@ -251,7 +295,13 @@ fn costs(machine: &Machine, taint: &Taint) -> f64 {
 /// counts as none. This is the one place placement weighs a
 /// machine's room, to be tuned.
 #[must_use]
-pub fn headroom(machine: &Machine, load: Load, rather_not: f64, heard: bool) -> f64 {
+pub fn headroom(
+    machine: &Machine,
+    load: Load,
+    rather_not: f64,
+    heard: bool,
+    weights: &Weights,
+) -> f64 {
     #[expect(
         clippy::cast_precision_loss,
         reason = "a share needs no more precision than a double gives bytes"
@@ -285,8 +335,8 @@ pub fn headroom(machine: &Machine, load: Load, rather_not: f64, heard: bool) -> 
         .unwrap_or(1)
         .max(1);
     let carried = f64::from(load.sessions.saturating_add(load.placed)) / f64::from(cores);
-    CPU_WEIGHT * cpu + MEMORY_WEIGHT * memory + DISK_WEIGHT * disk
-        - SESSION_WEIGHT * carried
+    weights.cpu * cpu + weights.memory * memory + weights.disk * disk
+        - weights.session * carried
         - rather_not
 }
 
@@ -370,6 +420,10 @@ pub struct Decision {
     pub placement: Placement,
     /// Each machine, in the order given.
     pub judged: Vec<Judgement>,
+    /// What weighed them; the starting weights where a kept decision
+    /// predates saying so.
+    #[serde(default)]
+    pub weights: Weights,
 }
 
 /// How one machine was judged for work.
@@ -402,12 +456,14 @@ pub fn place(work: &Work, machines: &[Machine], loads: &Loads) -> Placement {
 /// each was judged.
 #[must_use]
 pub fn decide(work: &Work, machines: &[Machine], loads: &Loads) -> Decision {
-    decide_at(work, machines, loads, jiff::Timestamp::now(), &mut |many| {
+    let mut draw = |many: usize| {
         // Each `RandomState` is seeded afresh, so its hash of nothing is a
         // fresh draw.
         let draw = RandomState::new().hash_one(());
         usize::try_from(draw % u64::try_from(many.max(1)).unwrap_or(1)).unwrap_or(0)
-    })
+    };
+    let now = jiff::Timestamp::now();
+    decide_at(work, machines, loads, now, &mut draw, &Weights::STARTING)
 }
 
 /// Places `work` among `machines` as of `now`, with `pick` choosing which
@@ -420,23 +476,39 @@ fn place_at(
     now: jiff::Timestamp,
     pick: &mut dyn FnMut(usize) -> usize,
 ) -> Placement {
-    decide_at(work, machines, loads, now, pick).placement
+    decide_at(work, machines, loads, now, pick, &Weights::STARTING).placement
 }
 
-/// Decides where `work` goes among `machines` as of `now`, with `pick`
-/// choosing which of the machines near the best, given how many, takes it.
+/// Decides where `work` would go among `machines` as of `now`, weighed by
+/// `weights`, choosing the best of those near it rather than at random, so
+/// replaying a kept placement says the same each time.
+#[must_use]
+pub fn decide_as(
+    work: &Work,
+    machines: &[Machine],
+    loads: &Loads,
+    now: jiff::Timestamp,
+    weights: &Weights,
+) -> Decision {
+    decide_at(work, machines, loads, now, &mut |_| 0, weights)
+}
+
+/// Decides where `work` goes among `machines` as of `now`, weighed by
+/// `weights`, with `pick` choosing which of the machines near the best,
+/// given how many, takes it.
 fn decide_at(
     work: &Work,
     machines: &[Machine],
     loads: &Loads,
     now: jiff::Timestamp,
     pick: &mut dyn FnMut(usize) -> usize,
+    weights: &Weights,
 ) -> Decision {
     let judged: Vec<Judged> = machines
         .iter()
         .map(|one| {
             let load = loads.get(&one.name).copied().unwrap_or_default();
-            judge(work, one, load, now)
+            judge(work, one, load, now, weights)
         })
         .collect();
     // Machines that qualify, those not over first, then by how many
@@ -463,7 +535,7 @@ fn decide_at(
                 let one = &judged[at];
                 (one.over || one.unheard) == (best.over || best.unheard)
                     && one.preferred == best.preferred
-                    && one.headroom >= best.headroom - NEAR_BEST
+                    && one.headroom >= best.headroom - weights.near_best
             })
             .collect()
     });
@@ -486,6 +558,7 @@ fn decide_at(
     Decision {
         placement: placement(work, judged, chosen),
         judged: judgements,
+        weights: *weights,
     }
 }
 
@@ -691,7 +764,13 @@ struct Judged {
     unheard: bool,
 }
 
-fn judge(work: &Work, machine: &Machine, load: Load, now: jiff::Timestamp) -> Judged {
+fn judge(
+    work: &Work,
+    machine: &Machine,
+    load: Load,
+    now: jiff::Timestamp,
+    weights: &Weights,
+) -> Judged {
     let mut hard = Vec::new();
     if machine.state == Readiness::Unreachable {
         hard.push(Because::Unreachable);
@@ -730,7 +809,7 @@ fn judge(work: &Work, machine: &Machine, load: Load, now: jiff::Timestamp) -> Ju
     let weighed = rather_not
         .iter()
         .filter(|taint| !is_over(taint))
-        .map(|taint| costs(machine, taint))
+        .map(|taint| costs(machine, taint, weights))
         .sum();
     let lately = heard(machine, now);
     Judged {
@@ -742,7 +821,7 @@ fn judge(work: &Work, machine: &Machine, load: Load, now: jiff::Timestamp) -> Ju
             .iter()
             .map(|need| is(machine, need) == Some(true))
             .collect(),
-        headroom: headroom(machine, load, weighed, lately),
+        headroom: headroom(machine, load, weighed, lately, weights),
         over,
         unheard: !lately,
     }
@@ -815,7 +894,14 @@ mod tests {
             machine("osprey", "macos", 32, &[]),
         ];
         let work = needing(vec![Need::System("linux".to_owned())]);
-        let decision = decide_at(&work, &realm, &Loads::new(), now(), &mut first);
+        let decision = decide_at(
+            &work,
+            &realm,
+            &Loads::new(),
+            now(),
+            &mut first,
+            &Weights::STARTING,
+        );
         assert_eq!(placed(&decision.placement), Some("kestrel"));
         let judged: Vec<(&str, bool, f64)> = decision
             .judged
@@ -842,6 +928,56 @@ mod tests {
         assert!(
             headroom("tern") < headroom("kestrel"),
             "a machine waiting on its processors has less headroom"
+        );
+    }
+
+    #[test]
+    fn a_set_of_weights_decides_as_its_weights_say() {
+        // Kestrel's processor is 0.6 free and it carries nothing; skiff's is
+        // all free and it carries four sessions on its eight cores.
+        let realm = [
+            pressed(machine("kestrel", "linux", 32, &[]), 40.0),
+            machine("skiff", "linux", 32, &[]),
+        ];
+        let loads = Loads::from([(
+            "skiff".to_owned(),
+            Load {
+                sessions: 4,
+                placed: 0,
+            },
+        )]);
+        let work = needing(Vec::new());
+        let starting = decide_as(&work, &realm, &loads, now(), &Weights::STARTING);
+        assert_eq!(placed(&starting.placement), Some("skiff"));
+        assert_eq!(starting.weights, Weights::STARTING);
+        let heavier = Weights {
+            session: 1.0,
+            ..Weights::STARTING
+        };
+        let decided = decide_as(&work, &realm, &loads, now(), &heavier);
+        assert_eq!(
+            placed(&decided.placement),
+            Some("kestrel"),
+            "sessions costing twice as much outweigh the busier processor"
+        );
+        assert_eq!(decided.weights, heavier, "a decision says what weighed it");
+    }
+
+    #[test]
+    fn weights_read_as_json_start_from_the_starting_ones() {
+        let read: Weights = serde_json::from_str(r#"{"session": 1.0}"#).expect("weights");
+        assert_eq!(
+            read,
+            Weights {
+                session: 1.0,
+                ..Weights::STARTING
+            }
+        );
+        let kept = serde_json::json!({"placement": {"refused": {"misses": []}}, "judged": []});
+        let decision: Result<Decision, _> = serde_json::from_value(kept);
+        assert!(
+            decision.is_ok_and(|decision| decision.weights == Weights::STARTING),
+            "a decision kept before weights were said was weighed by the starting ones"
         );
     }
 
@@ -1284,6 +1420,7 @@ mod tests {
             &Loads::new(),
             now(),
             &mut first,
+            &Weights::STARTING,
         );
         assert!(
             decision

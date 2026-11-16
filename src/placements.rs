@@ -132,6 +132,7 @@ mod tests {
                     headroom: 2.25,
                     chance: 1.0,
                 }],
+                weights: crate::placement::Weights::STARTING,
             },
         }
     }

@@ -410,6 +410,7 @@ mod tests {
                         chance: 0.0,
                     })
                     .collect(),
+                weights: crate::placement::Weights::STARTING,
             },
         }
     }
