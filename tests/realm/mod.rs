@@ -4,8 +4,9 @@
 //! Its networks are held within the 30 MB the map and the launcher hold
 //! them to, each cell holding two trees. Its cells, a record each held
 //! as the bytes it is sent as, are held within 30 MB too. The time is the
-//! processor's own for this thread, not the clock's, so a builder busy with other work, which only
-//! makes this thread wait its turn, can't fail it. The time itself, 100 ms
+//! processor's own for this thread, not the clock's, so a builder busy
+//! with other work, which only makes this thread wait its turn, can't
+//! fail it. The time itself, 100 ms
 //! on the machine the bar is set for, is no builder's to hold, since
 //! builders run it several times slower, so each test says it, and holds
 //! it only to a ceiling a builder meets, where the test names one:

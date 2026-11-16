@@ -138,7 +138,7 @@ impl Build {
         found(sent, after, &self.records, |key, was, now| {
             let as_before = match (was, before.get(key)) {
                 (None, None) => true,
-                (Some(was), Some(then)) => Arc::ptr_eq(was, then) || was == then,
+                (Some(was), Some(then)) => std::ptr::eq(was, &**then) || *was == **then,
                 _ => false,
             };
             match moved.get(key) {
