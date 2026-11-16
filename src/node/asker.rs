@@ -256,6 +256,102 @@ pub fn proved(
         .collect())
 }
 
+/// What the harness names a session's fence by, in the environment its
+/// pi starts with.
+const SANDBOX: &[u8] = b"PI_SANDBOX=";
+
+/// The name the agent fence's bubblewrap runs as, below the pi whose
+/// command it fences.
+const BWRAP: &str = "bwrap";
+
+/// How many processes are looked through at most for those below a pi,
+/// so a machine running a great many can't hold a carry up for long.
+const LOOKED_THROUGH: usize = 65_536;
+
+/// The fence `session` shows it runs in, by what its owner's process
+/// holds, proved as [`proved`] proves it, and never by the session's own
+/// presence: `PI_SANDBOX` in the environment that process began with,
+/// which pi never changes there and no command it fences can reach; and,
+/// where that pi owns this session alone, a bubblewrap running below it,
+/// which only the agent fence starts. The harness fences each command
+/// rather than pi itself, so pi's own seccomp, `no_new_privs` and mount
+/// namespace say nothing of it, and the strict fence's Landlock leaves
+/// nothing past each command it runs.
+///
+/// # Errors
+///
+/// Where who owns `session` can't be proved, or its process read, as on a
+/// Mac, since then the fence it runs in can't be told.
+pub fn shown_fence(
+    claims: &[Claim],
+    processes: &Processes,
+    hosts: &Path,
+    logs: &Path,
+    session: &str,
+) -> Result<Kind, String> {
+    let unproved = || {
+        format!("who owns {session} can't be proved here, so the fence it runs in can't be told")
+    };
+    let Processes::Folder(procs) = processes else {
+        return Err(unproved());
+    };
+    let owners = proved(claims, processes, hosts, logs)?;
+    let pid = owners
+        .iter()
+        .find_map(|(owned, pid)| (owned == session).then_some(*pid))
+        .ok_or_else(unproved)?;
+    let environ = fs::read(procs.join(pid.to_string()).join("environ")).map_err(|_| {
+        format!("{session}'s process can't be read, so the fence it runs in can't be told")
+    })?;
+    let started = environ
+        .split(|byte| *byte == 0)
+        .find_map(|pair| pair.strip_prefix(SANDBOX))
+        .map_or(Kind::None, |value| match value.trim_ascii() {
+            b"strict" => Kind::Strict,
+            b"fence" => Kind::Fence,
+            _ => Kind::None,
+        });
+    let alone = claims
+        .iter()
+        .any(|claim| claim.session == session && claim.host.is_none());
+    Ok(if alone && runs_below(procs, pid, BWRAP) {
+        started.max(Kind::Fence)
+    } else {
+        started
+    })
+}
+
+/// Whether a process named `name` runs below process `pid` in `procs`, at
+/// any depth.
+fn runs_below(procs: &Path, pid: i32, name: &str) -> bool {
+    let Ok(entries) = fs::read_dir(procs) else {
+        return false;
+    };
+    let all: Vec<(i32, String, i32)> = entries
+        .flatten()
+        .take(LOOKED_THROUGH)
+        .filter_map(|entry| {
+            let child: i32 = entry.file_name().to_str()?.parse().ok()?;
+            let status = fs::read_to_string(entry.path().join("status")).ok()?;
+            let (named, parent) = named(&status)?;
+            Some((child, named.to_owned(), parent))
+        })
+        .collect();
+    let mut below = vec![pid];
+    let mut seen = std::collections::BTreeSet::from([pid]);
+    while let Some(parent) = below.pop() {
+        for (child, named, _) in all.iter().filter(|(_, _, of)| *of == parent) {
+            if named == name {
+                return true;
+            }
+            if seen.insert(*child) {
+                below.push(*child);
+            }
+        }
+    }
+    false
+}
+
 /// Whether process `pid` in `procs` holds open the log pi keeps of
 /// `session` in `logs`, `<folder>/<time>_<session>.jsonl`, as the kernel
 /// gives each open file's real path in its `fd` folder. Pi holds its
@@ -1036,6 +1132,103 @@ mod tests {
                     .to_owned()
             ),
             "as on a Mac"
+        );
+    }
+
+    /// A stand-in for `/proc` where pi 58 owns `s-own` and began with
+    /// `environ`, with the processes `below` it, each `(pid, name,
+    /// parent)`, answering it with pi's logs and its hosts' records.
+    fn fenced_pi(
+        environ: &str,
+        below: &[(i32, &str, i32)],
+    ) -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir) {
+        let mut processes = vec![(58, "pi", 1, "agents.slice/mycelium-pi-f3d9.scope")];
+        processes.extend(below.iter().map(|(pid, name, parent)| {
+            (*pid, *name, *parent, "agents.slice/mycelium-pi-f3d9.scope")
+        }));
+        let procs = procs(&processes);
+        started(procs.path(), 58, "pi", 500);
+        fs::write(procs.path().join("58").join("environ"), environ)
+            .expect("its environment is written");
+        let logs = tempfile::tempdir().expect("pi's logs");
+        holds_log(procs.path(), 58, logs.path(), "s-own");
+        let hosts = tempfile::tempdir().expect("no hosts");
+        (procs, logs, hosts)
+    }
+
+    /// The fence `s-own` shows it runs in, as pi 58 owns it alone or, with
+    /// `host`, for the host keyed so.
+    fn shown(
+        (procs, logs, hosts): &(tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
+        host: Option<&str>,
+    ) -> Result<Kind, String> {
+        shown_fence(
+            &[claim("s-own", 58, Some(500), host)],
+            &folder(procs.path()),
+            hosts.path(),
+            logs.path(),
+            "s-own",
+        )
+    }
+
+    #[test]
+    fn a_session_shows_the_fence_its_pi_was_started_in() {
+        for (environ, kind) in [
+            ("HOME=/home/jsama\0PI_SANDBOX=strict\0", Kind::Strict),
+            ("PI_SANDBOX=fence\0PATH=/bin\0", Kind::Fence),
+            ("PI_SANDBOX=off\0", Kind::None),
+            ("HOME=/home/jsama\0", Kind::None),
+        ] {
+            assert_eq!(
+                shown(&fenced_pi(environ, &[]), None),
+                Ok(kind),
+                "as its environment began: {environ:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bubblewrap_below_a_lone_pi_shows_it_fenced() {
+        let running = fenced_pi(
+            "HOME=/home/jsama\0",
+            &[(70, "bash", 58), (71, "bwrap", 70), (72, "cargo", 71)],
+        );
+        assert_eq!(
+            shown(&running, None),
+            Ok(Kind::Fence),
+            "a command fenced below it, at any depth"
+        );
+        let strict = fenced_pi("PI_SANDBOX=strict\0", &[(71, "bwrap", 58)]);
+        assert_eq!(
+            shown(&strict, None),
+            Ok(Kind::Strict),
+            "never looser than it began"
+        );
+        let beside = fenced_pi("HOME=/home/jsama\0", &[(71, "bwrap", 1)]);
+        assert_eq!(
+            shown(&beside, None),
+            Ok(Kind::None),
+            "a bubblewrap of another's says nothing of it"
+        );
+    }
+
+    #[test]
+    fn a_session_whose_fence_cant_be_read_shows_none() {
+        let unread = fenced_pi("PI_SANDBOX=strict\0", &[]);
+        fs::remove_file(unread.0.path().join("58").join("environ")).expect("removed");
+        assert_eq!(
+            shown(&unread, None),
+            Err("s-own's process can't be read, so the fence it runs in can't be told".to_owned()),
+            "never guessed unfenced"
+        );
+        let unowned = fenced_pi("PI_SANDBOX=strict\0", &[]);
+        assert_eq!(
+            shown(&unowned, Some("work-background")),
+            Err(
+                "who owns s-own can't be proved here, so the fence it runs in can't be told"
+                    .to_owned()
+            ),
+            "a host whose record doesn't hold it owns it not"
         );
     }
 

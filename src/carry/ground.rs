@@ -11,6 +11,26 @@ use std::collections::BTreeSet;
 use crate::declared::{Declared, Doors, Kind};
 use crate::facts::{Machine, Readiness};
 
+/// The fence the session `address` is judged to run in: the one its
+/// presence `claimed`, refused where its process `shown` it stricter,
+/// since a session saying a looser fence than it runs in would be carried
+/// as one, onto looser ground. A claim stricter than what is shown stands,
+/// as the stricter of the two, since the strict fence leaves nothing
+/// lasting to show. A session claiming none is left for [`firm`] to refuse.
+///
+/// # Errors
+///
+/// When `claimed` is looser than `shown`.
+pub fn as_shown(claimed: Option<Kind>, shown: Kind, address: &str) -> Result<Option<Kind>, String> {
+    match claimed {
+        Some(kind) if kind < shown => Err(format!(
+            "{address} says it runs {kind}, but its process shows it {shown}, so where it may \
+             land can't be told"
+        )),
+        _ => Ok(claimed),
+    }
+}
+
 /// Whether a session running in the fence `kind`, as its presence says,
 /// may be carried from here, as this machine declares itself, to `to`,
 /// as `there` last said itself where the realm knows it. Refused, saying
@@ -92,6 +112,45 @@ mod tests {
 
     use super::*;
     use crate::facts;
+
+    #[test]
+    fn a_session_claiming_a_looser_fence_than_its_process_shows_is_refused() {
+        assert_eq!(
+            as_shown(Some(Kind::None), Kind::Fence, "HARBOR"),
+            Err(
+                "HARBOR says it runs unfenced, but its process shows it fenced, so where it \
+                 may land can't be told"
+                    .to_owned()
+            ),
+            "never carried as looser than it runs"
+        );
+        assert_eq!(
+            as_shown(Some(Kind::Fence), Kind::Strict, "HARBOR"),
+            Err(
+                "HARBOR says it runs fenced, but its process shows it strictly fenced, so \
+                 where it may land can't be told"
+                    .to_owned()
+            ),
+            "nor fenced where it runs strictly"
+        );
+        for (claimed, shown) in [
+            (Kind::Strict, Kind::None),
+            (Kind::Strict, Kind::Strict),
+            (Kind::Fence, Kind::Fence),
+            (Kind::None, Kind::None),
+        ] {
+            assert_eq!(
+                as_shown(Some(claimed), shown, "HARBOR"),
+                Ok(Some(claimed)),
+                "the stricter of the two, claimed {claimed} and shown {shown}"
+            );
+        }
+        assert_eq!(
+            as_shown(None, Kind::Strict, "HARBOR"),
+            Ok(None),
+            "no claim is left for the ground to refuse"
+        );
+    }
 
     fn doors(builders: &[&str], forges: &[&str], secrets: &[&str]) -> Doors {
         let names = |all: &[&str]| all.iter().map(|&one| one.to_owned()).collect();

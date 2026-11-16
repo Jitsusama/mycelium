@@ -2071,6 +2071,28 @@ impl<S: Store> Shared<S> {
         .map_err(|error| format!("who asks couldn't be told: {error}"))?
     }
 
+    /// The fence `session` shows it runs in, by its owner's process,
+    /// proved from the presences here as [`Self::asking_session`] proves
+    /// who asks.
+    async fn shown_fence(&self, session: &str) -> Result<crate::declared::Kind, String> {
+        let claims: Vec<asker::Claim> = self
+            .standing()
+            .iter()
+            .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
+            .collect();
+        let (processes, hosts, logs, session) = (
+            self.processes.clone(),
+            self.hosts.clone(),
+            self.logs.clone(),
+            session.to_owned(),
+        );
+        tokio::task::spawn_blocking(move || {
+            asker::shown_fence(&claims, &processes, &hosts, &logs, &session)
+        })
+        .await
+        .map_err(|error| format!("the fence it runs in couldn't be told: {error}"))?
+    }
+
     /// The presences of this machine's sessions that run, or wait parked
     /// to run again.
     fn standing(&self) -> Vec<store::Presence> {
@@ -2268,10 +2290,11 @@ impl<S: Store> Shared<S> {
         if to == self.machine {
             return Err(format!("{address} already runs on {to}"));
         }
-        let kind = target
+        let claimed = target
             .presence
             .get("fence")
             .and_then(|kind| serde_json::from_value::<crate::declared::Kind>(kind.clone()).ok());
+        let kind = ground::as_shown(claimed, self.shown_fence(session).await?, &address)?;
         let there = self.others().into_iter().find(|machine| machine.name == to);
         ground::firm(
             kind,
@@ -4319,14 +4342,9 @@ mod tests {
         let procs = procs_of(socket);
         let client = procs.join(std::process::id().to_string());
         let pi = procs.join(parent.to_string());
-        // Pi started when its presence says, by [`started_at`].
-        let zeros = "0 ".repeat(17);
-        fs::create_dir_all(&pi).expect("its folder is made");
-        fs::write(
-            pi.join("stat"),
-            format!("{parent} (pi) S 1 {zeros}{} 0 0\n", started_at(parent)),
-        )
-        .expect("its stat is written");
+        if !pi.join("stat").exists() {
+            pi_runs(socket, parent, "HOME=/home/jsama\0");
+        }
         for (folder, status) in [
             (&client, format!("Name:\tmycelium\nPPid:\t{parent}\n")),
             (&pi, "Name:\tpi\nPPid:\t1\n".to_owned()),
@@ -4340,6 +4358,22 @@ mod tests {
             )
             .expect("its group is written");
         }
+    }
+
+    /// Tells the stand-in for /proc beside `socket` that pi `pid` runs,
+    /// started when its presence says, by [`started_at`], with `environ`
+    /// the environment it began with.
+    fn pi_runs(socket: &Path, pid: i32, environ: &str) {
+        let pi = procs_of(socket).join(pid.to_string());
+        let zeros = "0 ".repeat(17);
+        fs::create_dir_all(&pi).expect("its folder is made");
+        fs::write(
+            pi.join("stat"),
+            format!("{pid} (pi) S 1 {zeros}{} 0 0\n", started_at(pid)),
+        )
+        .expect("its stat is written");
+        fs::write(pi.join("status"), "Name:\tpi\nPPid:\t1\n").expect("its status is written");
+        fs::write(pi.join("environ"), environ).expect("its environment is written");
     }
 
     /// When the test's pi `pid` started, in clock ticks since boot.
@@ -4389,6 +4423,22 @@ mod tests {
         tokio::task::JoinHandle<io::Result<()>>,
         Speaking,
     ) {
+        harbour_claiming(store, socket, quests, also, "strict").await
+    }
+
+    /// As [`orchestrated_in`], HARBOR's presence claiming it runs in the
+    /// fence `fence`, as each of the others claims the strict one.
+    async fn harbour_claiming(
+        store: &Memory,
+        socket: &Path,
+        quests: &Value,
+        also: &[Value],
+        fence: &str,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+        Speaking,
+    ) {
         let at = jiff::Timestamp::now().to_string();
         // The groups the mesh put each in, as WCJQSG orchestrates them.
         for (session, address, quest, pid, groups) in [
@@ -4417,7 +4467,8 @@ mod tests {
             let presence = json!({
                 "session": session, "addresses": [address], "groups": groups,
                 "busy": false, "state": "listening", "at": at, "quest": quest,
-                "orchestratedBy": "WCJQSG", "fence": "strict",
+                "orchestratedBy": "WCJQSG",
+                "fence": if session == "s-harbour" { fence } else { "strict" },
                 "owner": {"pid": pid, "startTicks": started_at(pid)},
             });
             store.start_here(session, presence, true);
@@ -4443,6 +4494,7 @@ mod tests {
         fs::rename(&beside, socket.with_file_name("quests.json")).expect("renamed into place");
         client.next().await;
         for (pid, session) in [(7001, "s-steward"), (7002, "s-weigh"), (7003, "s-harbour")] {
+            pi_runs(socket, pid, "PI_SANDBOX=strict\0");
             holds_log(socket, pid, session);
         }
         let here = fenced("skiff", &["remote", "big"]).declared;
@@ -4682,6 +4734,38 @@ mod tests {
             },
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn an_ordered_carry_takes_the_stricter_of_the_fence_claimed_and_shown() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("optimus").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            harbour_claiming(&store, &socket, &orchestrations(), &[], "fence").await;
+        steward_claims(&socket).await;
+        assert_eq!(
+            orders_harbour(&socket, 7001).await,
+            Err(
+                "HARBOR says it runs fenced, but its process shows it strictly fenced, so where \
+                 it may land can't be told"
+                    .to_owned()
+            ),
+            "a session claiming a looser fence than its pi began in is refused"
+        );
+        assert!(
+            !socket.with_file_name("carries.jsonl").exists(),
+            "and nothing is kept of it"
+        );
+        fs::remove_file(procs_of(&socket).join("7003").join("environ")).expect("removed");
+        assert_eq!(
+            orders_harbour(&socket, 7001).await,
+            Err(
+                "s-harbour's process can't be read, so the fence it runs in can't be told"
+                    .to_owned()
+            ),
+            "nor where its process can't be read"
+        );
     }
 
     #[tokio::test]

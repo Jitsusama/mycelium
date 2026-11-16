@@ -513,6 +513,16 @@ session says of itself:
   is refused, since where it lands can't be told. A refusal names the
   doors that are wider, as `tern's strictly fenced session opens
   builders cloud, which here's doesn't`.
+- The fence it names is never looser than its process shows. The
+  node reads the proved owner's process: `PI_SANDBOX` in the
+  environment it began with (`strict` or `fence`), and, for a pi that
+  owns its session alone, a `bwrap` running anywhere below it, which
+  shows it fenced. A presence naming a looser fence than that is
+  refused, as `HARBOR says it runs unfenced, but its process shows it
+  fenced, so where it may land can't be told`; one naming a stricter
+  stands, since the strict fence leaves nothing lasting to show. A
+  process that can't be read, or an owner that can't be proved, is
+  refused too.
 
 A refusal says why and who could order it, as `OSPHT4 doesn't
 orchestrate QEST-... by this node's record, so it can't order its
