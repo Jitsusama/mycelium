@@ -25,7 +25,8 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use notify::Watcher as _;
-use rustix::fs::{Mode, OFlags};
+use rustix::fd::{AsFd, OwnedFd};
+use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -215,23 +216,26 @@ fn sound(record: &Record) -> io::Result<()> {
     Ok(())
 }
 
-/// `folder` made where it isn't there and opened as itself, never through
-/// a link, so its mode is set on it and on nothing a link points at.
-fn owned(folder: &Path) -> io::Result<()> {
-    fs::create_dir_all(folder)?;
-    let opened = rustix::fs::open(
+/// `folder` opened as itself, never through a link, or an error where it
+/// isn't a folder of its own.
+fn opened_folder(folder: &Path) -> io::Result<OwnedFd> {
+    rustix::fs::open(
         folder,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|_| refused(format!("{} isn't a folder of its own", folder.display())))?;
-    rustix::fs::fchmod(&opened, Mode::from_raw_mode(FOLDER_MODE))?;
-    Ok(())
+    .map_err(|_| refused(format!("{} isn't a folder of its own", folder.display())))
 }
 
-/// Whether `folder` is a folder itself rather than a link to one.
-fn is_own_folder(folder: &Path) -> bool {
-    fs::symlink_metadata(folder).is_ok_and(|meta| meta.file_type().is_dir())
+/// `folder` made where it isn't there and opened as itself, its mode set
+/// on it and on nothing a link points at. What is done in it after is
+/// done through the handle, so a folder swapped for a link meanwhile
+/// takes nothing.
+fn owned(folder: &Path) -> io::Result<OwnedFd> {
+    fs::create_dir_all(folder)?;
+    let opened = opened_folder(folder)?;
+    rustix::fs::fchmod(&opened, Mode::from_raw_mode(FOLDER_MODE))?;
+    Ok(opened)
 }
 
 /// `record` written whole to its file in `folder`, for `realm`, under a
@@ -263,23 +267,24 @@ pub fn write(
             record.pid
         )));
     }
-    owned(folder)?;
-    let path = file(folder, record.source);
-    if let Some(was) = read_file(&path)
+    let opened = owned(folder)?;
+    let name = format!("{}.json", record.source.name());
+    if let Some(was) = read_at(&opened, &name)
         && was.pid == record.pid
         && was.started == record.started
     {
         record.since = was.since;
     }
-    let staged = folder.join(format!(".{}.{}", record.source.name(), std::process::id()));
+    let staged = format!(".{}.{}", record.source.name(), std::process::id());
     // Whatever stands at the staged name, a link among them, is removed
     // rather than written through, and the file is made new or not at
     // all, so nothing a link points at is ever truncated.
-    match fs::remove_file(&staged) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-        _ => {}
+    match rustix::fs::unlinkat(&opened, &staged, AtFlags::empty()) {
+        Err(rustix::io::Errno::NOENT) | Ok(()) => {}
+        Err(error) => return Err(error.into()),
     }
-    let mut out = fs::File::from(rustix::fs::open(
+    let mut out = fs::File::from(rustix::fs::openat(
+        &opened,
         &staged,
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::from_raw_mode(FILE_MODE),
@@ -287,19 +292,25 @@ pub fn write(
     out.write_all(&serde_json::to_vec(&record).map_err(io::Error::other)?)?;
     out.sync_all()?;
     drop(out);
-    fs::rename(&staged, &path)?;
-    Ok(path)
+    rustix::fs::renameat(&opened, &staged, &opened, &name)?;
+    Ok(file(folder, record.source))
 }
 
-/// The record `path` holds, or none where it holds none or a malformed
-/// one: a field it doesn't name, a word a field doesn't take, a bound
-/// broken, or a file named for another source. Only a regular file of at
-/// most [`LARGEST_FILE`] is read, never through a link, and a pipe is
-/// opened without waiting on a writer and then left, so nothing planted in
-/// the folder can hold or flood its reader.
-fn read_file(path: &Path) -> Option<Record> {
-    let opened = rustix::fs::open(
-        path,
+/// The record the file `name` in the folder `opened` holds, or none where
+/// it holds none or a malformed one: a field it doesn't name, a word a
+/// field doesn't take, a bound broken, or a file named for another
+/// source. Only a regular file of at most [`LARGEST_FILE`] is read: its
+/// type is asked before it is opened, never through a link, and asked
+/// again of what was opened, which is opened without waiting on a writer,
+/// so nothing planted in the folder can hold or flood its reader.
+fn read_at(opened: impl AsFd, name: &str) -> Option<Record> {
+    let stat = rustix::fs::statat(&opened, name, AtFlags::SYMLINK_NOFOLLOW).ok()?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return None;
+    }
+    let opened = rustix::fs::openat(
+        &opened,
+        name,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
         Mode::empty(),
     )
@@ -315,7 +326,7 @@ fn read_file(path: &Path) -> Option<Record> {
     }
     let record: Record = serde_json::from_slice(&text).ok()?;
     sound(&record).ok()?;
-    let named = path.file_stem()?.to_str()?;
+    let named = name.strip_suffix(".json")?;
     (named == record.source.name()).then_some(record)
 }
 
@@ -370,23 +381,23 @@ pub fn judged(
     now: Timestamp,
     living: &impl Living,
 ) -> BTreeMap<Source, Record> {
-    if !is_own_folder(folder) {
+    let Ok(opened) = opened_folder(folder) else {
         return BTreeMap::new();
-    }
-    let Ok(files) = fs::read_dir(folder) else {
+    };
+    let Ok(files) = rustix::fs::Dir::read_from(&opened) else {
         return BTreeMap::new();
     };
     files
         .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension().is_some_and(|ext| ext == "json")
-                && !path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with('.'))
+        .filter_map(|entry| entry.file_name().to_str().ok().map(str::to_owned))
+        .filter(|name| {
+            // A receptor's own file only: its name is its source's, in
+            // lower case, and a dot-name is one being staged.
+            name.strip_suffix(".json")
+                .is_some_and(|stem| !stem.is_empty())
+                && !name.starts_with('.')
         })
-        .filter_map(|path| read_file(&path))
+        .filter_map(|name| read_at(&opened, &name))
         .filter(|record| record.realm == realm)
         .map(|mut record| {
             record.state = judged_state(&record, now, living);
@@ -432,7 +443,10 @@ const SETTLED_AFTER: Duration = Duration::from_millis(20);
 /// judging reads the disk off the runtime, so a slow disk holds only
 /// this.
 pub async fn keep(folder: PathBuf, realm: String, held: Held, tell: impl Fn() + Send + 'static) {
-    let made = owned(&folder);
+    let making = folder.clone();
+    let made = tokio::task::spawn_blocking(move || owned(&making).map(drop))
+        .await
+        .unwrap_or_else(|_| Err(io::Error::other("making the folder panicked")));
     let (heard, mut changed) = mpsc::unbounded_channel();
     // Without a watch, as on a folder that can't be made, the receptors
     // are still judged each round. The watch lasts as long as this does.
