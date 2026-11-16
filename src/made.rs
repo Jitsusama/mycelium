@@ -142,6 +142,38 @@ impl Book {
         }))
     }
 
+    /// The machines made and not yet released whose end is after `now`,
+    /// oldest first: those a node started again still has to link. A
+    /// line it can't read, as one cut short by a crash, is passed over.
+    ///
+    /// # Errors
+    ///
+    /// When the book is there but can't be read.
+    pub fn standing(&self, now: jiff::Timestamp) -> io::Result<Vec<Made>> {
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let mut standing: Vec<Made> = Vec::new();
+        for line in text.lines() {
+            match serde_json::from_str(line) {
+                Ok(Kept {
+                    made: Some(made), ..
+                }) => standing.push(made),
+                Ok(Kept {
+                    released: Some(released),
+                    ..
+                }) => standing.retain(|made| {
+                    made.machine != released.machine || made.place != released.place
+                }),
+                _ => {}
+            }
+        }
+        standing.retain(|made| made.until > now);
+        Ok(standing)
+    }
+
     fn keep(&self, line: &serde_json::Value) -> io::Result<()> {
         if let Some(folder) = self.path.parent() {
             std::fs::create_dir_all(folder)?;
@@ -154,6 +186,20 @@ impl Book {
         // once don't interleave.
         book.write_all(format!("{line}\n").as_bytes())
     }
+}
+
+/// A line of the book, as [`Book::standing`] reads it.
+#[derive(Deserialize)]
+struct Kept {
+    made: Option<Made>,
+    released: Option<Released>,
+}
+
+/// Which machine a release let go.
+#[derive(Deserialize)]
+struct Released {
+    machine: String,
+    place: String,
 }
 
 #[cfg(test)]
@@ -270,6 +316,54 @@ mod tests {
             .filter(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
             .count();
         assert_eq!(whole, 400, "every line is whole, none run into another");
+    }
+
+    fn made_at(machine: &str, place: &str, until: jiff::Timestamp) -> Made {
+        Made {
+            provider: "provider".to_owned(),
+            shape: "scratch".to_owned(),
+            place: place.to_owned(),
+            machine: machine.to_owned(),
+            until,
+            costs: offer_of(String::new()).costs,
+        }
+    }
+
+    #[test]
+    fn the_book_stands_by_each_machine_made_not_released_and_not_yet_ended() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone());
+        let now = jiff::Timestamp::now();
+        let later = now + jiff::SignedDuration::from_hours(1);
+        assert_eq!(
+            book.standing(now).expect("a book not yet kept reads"),
+            Vec::new(),
+            "a book never kept holds nothing"
+        );
+        let (kept, gone, ended, again) = (
+            made_at("tern", "p1", later),
+            made_at("osprey", "p2", later),
+            made_at("kestrel", "p3", now - jiff::SignedDuration::from_secs(1)),
+            made_at("osprey", "p4", later),
+        );
+        for made in [&kept, &gone, &ended] {
+            book.made(made).expect("a make is kept");
+        }
+        book.released(&gone, "its time was up")
+            .expect("a release is kept");
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("the book opens");
+        file.write_all(b"{\"at\": \"cut sh\n")
+            .expect("a line cut short is written");
+        book.made(&again).expect("a make is kept");
+        assert_eq!(
+            book.standing(now).expect("the book reads"),
+            vec![kept, again],
+            "the machines still made, oldest first, past a line it can't read"
+        );
     }
 
     #[tokio::test]

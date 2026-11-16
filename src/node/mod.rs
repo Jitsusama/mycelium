@@ -435,6 +435,7 @@ where
 {
     store::out_of_reach_of_unclaimed(&store)?;
     let (to_dial, mut made) = mpsc::unbounded_channel();
+    redial_standing(&given.book, &to_dial);
     let eases = given.eases.clone();
     let (shared, kept) = Shared::of(
         store.clone(),
@@ -643,6 +644,28 @@ struct Keeping<S> {
 /// once made, or its time is up, when it is released. Keeps in the book
 /// that it was let go, and why, and has it leave the realm's machines at
 /// once, so nothing lists a machine that is gone.
+/// Tells `to_dial` of each machine `book` says is made and not yet let go
+/// or ended, so a node started again links what it made before, as it
+/// would one it made now. Nothing ever finds one of these unwanted, so it
+/// is let go at its time or once its work hands over.
+fn redial_standing(book: &Book, to_dial: &mpsc::UnboundedSender<(Made, Arc<Notify>)>) {
+    let standing = match book.standing(jiff::Timestamp::now()) {
+        Ok(standing) => standing,
+        Err(error) => {
+            eprintln!("the book of machines made can't be read, so none is linked again: {error}");
+            return;
+        }
+    };
+    for made in standing {
+        eprintln!(
+            "{} was made before this node started, so it is linked again",
+            made.machine
+        );
+        // The loop that reads it hasn't started, so it holds the sender.
+        let _ = to_dial.send((made, Arc::new(Notify::new())));
+    }
+}
+
 async fn keep_made(
     dial: Arc<Program>,
     made: Made,
