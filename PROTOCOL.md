@@ -1641,8 +1641,10 @@ outside those listed, or a name that isn't its source's is malformed,
 and the node leaves it out, as it does a file of another realm. So a
 channel's name or a mail's subject can't reach the map by any field. No
 count may pass `today`, and these bounds hold as a file is read as well
-as written. A pid that isn't running is refused as it is written, so a
-pid used again later can't read as the receptor alive.
+as written. A pid that isn't running is refused as it is written. On
+Linux, where a process's start is known and kept as `started`, a pid
+used again later can't read as the receptor alive; elsewhere `started`
+is absent and the pid alone is judged.
 
 The node reads only a regular file of at most 4 KiB, never following a
 link and never waiting on a pipe, and reads each off its runtime, so
@@ -1653,8 +1655,8 @@ through.
 
 The node judges each file rather than believing it, as it reads each
 change to the folder and every 30 seconds besides: a receptor whose
-process is gone, or whose pid now names a process that started at
-another time, is `off`, and one that read nothing for three of its
+process is gone, or, on Linux, whose pid now names a process that
+started at another time, is `off`, and one that read nothing for three of its
 rounds is `failing`. Each record is heard at its `read_at`, and says
 the `machine` it runs on.
 

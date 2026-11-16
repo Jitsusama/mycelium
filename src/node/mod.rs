@@ -448,6 +448,7 @@ where
         sharing,
         refusals,
         mut awake,
+        receptors: keeping_receptors,
     } = kept;
     let mut changes = store.changes()?;
     let (_watching_held, mut held) = watch(&shared.held, "what is held");
@@ -531,6 +532,9 @@ where
     seeing_fences.abort();
     if let Some(easing) = easing {
         easing.abort();
+    }
+    if let Some(keeping) = &keeping_receptors {
+        keeping.abort();
     }
     links.shutdown().await;
     let ended = stopping.elapsed();
@@ -750,6 +754,9 @@ struct Kept {
     sharing: Option<Places>,
     refusals: Refusals,
     awake: Awake,
+    /// What keeps the receptors, where the node has a folder of them,
+    /// ended as the node stops.
+    receptors: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// What the node's loop and every client share.
@@ -1402,15 +1409,15 @@ impl<S: Store> Shared<S> {
             .as_ref()
             .map(|places| keep_forages(places, &forages, &said, &inner, &hello.machine));
         let held = receptor::Held::default();
-        if let Some(folder) = receptors {
+        let keeping_receptors = receptors.map(|folder| {
             let telling = Arc::clone(&said);
             tokio::spawn(receptor::keep(
                 folder,
                 hello.realm.clone(),
                 Arc::clone(&held),
                 move || telling.receptors_moved(),
-            ));
-        }
+            ))
+        });
         let shared = Self {
             processes: processes.into(),
             // Beside the carries it judges, so it needs no place of its own.
@@ -1461,6 +1468,7 @@ impl<S: Store> Shared<S> {
             sharing,
             refusals,
             awake,
+            receptors: keeping_receptors,
         };
         (shared, kept)
     }
