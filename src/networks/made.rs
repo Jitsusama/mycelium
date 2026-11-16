@@ -568,7 +568,7 @@ fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>)
             shared.then(|| network_of(name, shape, cells))
         })
         .collect();
-    titled_by_teams(&mut networks, teams);
+    titled_by_teams(&mut networks, teams, quests);
     titled_by_quests(&mut networks, quests);
     titled_by_repos(&mut networks, sessions);
     networks.extend(shared_trees(sessions));
@@ -663,18 +663,51 @@ fn owned_network(name: &str, renamed: &BTreeMap<String, String>) -> Option<Strin
 }
 
 /// Each orchestration's network titled, short-named and nested as the
-/// swarm's team of its address is.
-fn titled_by_teams(networks: &mut [Network], teams: &[Value]) {
-    let shorts = swarm::short_names(teams);
-    let by_name: BTreeMap<String, &Value> = teams
+/// swarm's team of its address is. One no team leads, as when its cells
+/// hear its group while none answers to it, is still a network: titled
+/// as its quest is among `quests`, and short-named as a team of that
+/// title would be where that takes no real team's short name. A team's
+/// own short name is the swarm's, which a network with no leader never
+/// changes, so the name typed to steer it is the one shown.
+fn titled_by_teams(networks: &mut [Network], teams: &[Value], quests: &BTreeMap<String, String>) {
+    let leaderless: Vec<Value> = networks
         .iter()
-        .map(|team| (swarm::address(team).to_lowercase(), team))
+        .filter(|each| each.shape == Shape::Orchestration)
+        .filter(|each| {
+            !teams
+                .iter()
+                .any(|team| swarm::address(team).eq_ignore_ascii_case(&each.short))
+        })
+        .filter_map(|each| {
+            let title = quests.get(&each.short)?;
+            Some(json!({
+                "key": format!("team:{}", each.short.to_ascii_uppercase()),
+                "title": title,
+            }))
+        })
+        .collect();
+    let mut shorts = swarm::short_names(teams);
+    let taken: BTreeSet<String> = shorts.values().cloned().collect();
+    let all: Vec<Value> = teams.iter().chain(&leaderless).cloned().collect();
+    let mut beside = swarm::short_names(&all);
+    for stand_in in &leaderless {
+        let address = swarm::address(stand_in);
+        if let Some(short) = beside
+            .remove(address)
+            .filter(|short| !taken.contains(short))
+        {
+            shorts.insert(address.to_owned(), short);
+        }
+    }
+    let by_name: BTreeMap<String, &Value> = all
+        .iter()
+        .map(|team| (swarm::address(team).to_ascii_lowercase(), team))
         .collect();
     for each in networks
         .iter_mut()
         .filter(|each| each.shape == Shape::Orchestration)
     {
-        let Some(team) = by_name.get(&each.short) else {
+        let Some(team) = by_name.get(&each.short.to_ascii_lowercase()) else {
             continue;
         };
         each.title = Some(swarm::title(team).to_owned());
@@ -684,7 +717,7 @@ fn titled_by_teams(networks: &mut [Network], teams: &[Value]) {
         }
         each.within = team["within"]
             .as_str()
-            .map(str::to_lowercase)
+            .map(str::to_ascii_lowercase)
             .filter(|above| by_name.contains_key(above))
             .map(|above| format!("orchestration.{above}"));
     }

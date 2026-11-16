@@ -958,6 +958,120 @@ fn an_orchestrator_renamed_draws_one_network_under_its_own_address() {
 }
 
 #[test]
+fn an_orchestration_no_team_leads_is_named_as_its_quest_and_holds_its_cells() {
+    // Two sessions of one quest hear its orchestration's group, while none
+    // answers to it, so the node says no team of it.
+    let sessions = [
+        on_quest(
+            session(
+                "OSPREY",
+                1,
+                "Ship the Dive From the Cache",
+                "busy",
+                &["orchestration.osprey", "quest.osprey"],
+            ),
+            "OSPREY",
+            "Ship the Dive From the Cache",
+        ),
+        on_quest(
+            session(
+                "TERN01",
+                2,
+                "Ship the Dive From the Cache",
+                "busy",
+                &["orchestration.osprey", "quest.osprey"],
+            ),
+            "OSPREY",
+            "Ship the Dive From the Cache",
+        ),
+    ];
+    let teams = [json!({"key": "team:KELP01", "title": "Kelp Beds"})];
+    let mycelium = Mycelium::of("work", &teams, &sessions, &[]);
+    let named: Vec<(&str, &str, Option<&str>, &[String])> = mycelium
+        .networks
+        .iter()
+        .filter(|each| matches!(each.shape, Shape::Orchestration | Shape::Project))
+        .map(|each| {
+            (
+                each.name.as_str(),
+                each.short.as_str(),
+                each.title.as_deref(),
+                each.cells.as_slice(),
+            )
+        })
+        .collect();
+    let both = ["OSPREY".to_owned(), "TERN01".to_owned()];
+    assert_eq!(
+        named,
+        [
+            (
+                "orchestration.osprey",
+                "ship",
+                Some("Ship the Dive From the Cache"),
+                both.as_slice()
+            ),
+            (
+                "orchestration.kelp01",
+                "kelp-beds",
+                Some("Kelp Beds"),
+                &[][..]
+            ),
+            (
+                "quest.osprey",
+                "osprey",
+                Some("Ship the Dive From the Cache"),
+                both.as_slice()
+            ),
+        ],
+        "the leaderless orchestration is still a network, named as its quest is"
+    );
+}
+
+#[test]
+fn a_network_with_no_leader_never_changes_a_teams_short_name() {
+    // The real team's title shares its first word with the leaderless
+    // quest's, so handing out short names together would move the team's.
+    let teams = [json!({"key": "team:KELP01", "title": "Ship the Kelp Beds"})];
+    let sessions = [
+        on_quest(
+            session(
+                "OSPREY",
+                1,
+                "Ship the Dive",
+                "busy",
+                &["orchestration.osprey"],
+            ),
+            "OSPREY",
+            "Ship the Dive From the Cache",
+        ),
+        // No quest of its address is known, so it has nothing truer to go by.
+        session("SKIFFS", 2, "Skiff", "busy", &["orchestration.ternss"]),
+    ];
+    let mycelium = Mycelium::of("work", &teams, &sessions, &[]);
+    let network = |name: &str| {
+        mycelium
+            .networks
+            .iter()
+            .find(|each| each.name == name)
+            .map(|each| (each.short.clone(), each.title.clone()))
+    };
+    let swarm = crate::swarm::short_names(&teams);
+    assert_eq!(
+        network("orchestration.kelp01").map(|(short, _)| short),
+        swarm.get("KELP01").cloned(),
+        "the team keeps the short name the swarm steers it by"
+    );
+    let (short, title) = network("orchestration.osprey").expect("a network with no leader");
+    assert_eq!(title.as_deref(), Some("Ship the Dive From the Cache"));
+    assert_ne!(Some(&short), swarm.get("KELP01"), "never the team's name");
+    assert_eq!(
+        network("orchestration.ternss"),
+        Some(("ternss".to_owned(), None)),
+        "with no quest known, it goes by its address"
+    );
+}
+
+#[test]
 fn a_name_matching_none_or_several_networks_is_said_plainly() {
     let mycelium = mycelium();
     assert_eq!(
