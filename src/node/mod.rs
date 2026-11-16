@@ -69,7 +69,7 @@ mod signals;
 mod standing;
 mod team;
 mod tie;
-pub use tie::{Talk, aliases as tie_aliases, records as tie_records, talk};
+pub use tie::{KIND as TIE_KIND, Talk, aliases as tie_aliases, records as tie_records, talk};
 mod turns;
 
 /// How long a link waits before dialling again after it dropped, at first

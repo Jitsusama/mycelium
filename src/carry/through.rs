@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use super::cell::{self, Brought};
 use super::{Done, Hands, PI_CARRY, Refused};
 use crate::client::Client;
 use crate::record::Session;
@@ -22,6 +23,9 @@ use crate::wire::{Request, Response, Start, Started};
 
 /// How long between looks at what a carry waits for.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
+
+/// How long the node may take to list its ties.
+const TIES_WITHIN: Duration = Duration::from_secs(30);
 
 /// How long a carry waits, all told, for the sessions to carry and then
 /// to end: time for a busy one to finish its turn and push.
@@ -119,6 +123,19 @@ impl Hands for Through {
 
     fn started(&mut self, one: &Done) -> Result<(), String> {
         mark_started(&self.handover, &one.session)
+    }
+
+    fn ties(&mut self) -> Result<Vec<Value>, String> {
+        crate::swarm::records(&self.socket, crate::node::TIE_KIND, TIES_WITHIN)
+            .map_err(|error| error.to_string())
+    }
+
+    fn bring(&mut self, brought: &Brought) -> Result<(), String> {
+        put_brought(&self.handover, brought)
+    }
+
+    fn forget(&mut self, keeping: &BTreeSet<String>) -> Result<Vec<String>, String> {
+        forget_stale(&self.handover, keeping)
     }
 
     fn carry_rest(&mut self, quest: &str, to: &str) -> Result<(), String> {
@@ -373,6 +390,78 @@ fn mark_started(handover: &Path, session: &str) -> Result<(), String> {
     fs::write(&mark, format!("{session}\n")).map_err(|error| format!("{}: {error}", mark.display()))
 }
 
+/// Puts what `brought` says of its session's cell in `handover`, beside
+/// its done file, whole: written aside and renamed into place, so the
+/// share never carries half of it, and replacing what an earlier carry
+/// of the session put there rather than adding to it.
+fn put_brought(handover: &Path, brought: &Brought) -> Result<(), String> {
+    let session = brought.session.as_str();
+    if Path::new(session).file_name() != Some(OsStr::new(session)) {
+        return Err(format!("{session:?} can't name a file in the handover"));
+    }
+    let said = serde_json::to_vec(brought).map_err(|error| error.to_string())?;
+    // Written before any session is told, so before the harness makes
+    // the handover where this is the quest's first carry from here.
+    fs::create_dir_all(handover).map_err(|error| format!("{}: {error}", handover.display()))?;
+    let aside = handover.join(format!(".{session}{}.part", cell::FILE));
+    // The handover is the sessions' to write too, so whatever stands at
+    // the aside name, a link planted there included, is taken away and
+    // the file made new rather than written through it.
+    let _ = fs::remove_file(&aside);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&aside)
+        .and_then(|mut file| io::Write::write_all(&mut file, &said))
+        .and_then(|()| fs::rename(&aside, handover.join(format!("{session}{}", cell::FILE))))
+        .map_err(|error| {
+            let _ = fs::remove_file(&aside);
+            format!(
+                "{session}'s cell wasn't put in {}: {error}",
+                handover.display()
+            )
+        })
+}
+
+/// Takes away each cell in `handover` but those of `keeping` whose done
+/// file is gone or started: an earlier carry's, which its session
+/// refused or which finished. A cell beside a done file not yet started
+/// is the one the carry that wrote that done file brought, as a failed
+/// carry leaves it, so a carry taken again keeps it. Answers the sessions
+/// whose cells it took away, by id.
+fn forget_stale(handover: &Path, keeping: &BTreeSet<String>) -> Result<Vec<String>, String> {
+    let entries = match fs::read_dir(handover) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("{}: {error}", handover.display())),
+    };
+    let mut forgotten = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let named = path.file_name().and_then(OsStr::to_str).unwrap_or("");
+        let Some(session) = named.strip_suffix(cell::FILE) else {
+            continue;
+        };
+        // Only a file is a cell: anything else planted under its name is
+        // passed over, so it can't stop every later carry.
+        if keeping.contains(session) || entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let done = handover.join(format!("{session}{DONE}"));
+        if done.exists() && !marked(&done, &handover.join(format!("{session}{STARTED}"))) {
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                return Err(format!("{}: {error}", path.display()));
+            }
+            _ => forgotten.push(session.to_owned()),
+        }
+    }
+    forgotten.sort();
+    Ok(forgotten)
+}
+
 /// Whether `mark` says the done file at `done` started: a mark no older
 /// than it, since a session carried again writes its done file afresh.
 fn marked(done: &Path, mark: &Path) -> bool {
@@ -413,15 +502,19 @@ fn failed_why(output: &[u8], errors: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
     use std::path::Path;
     use std::time::{Duration, SystemTime};
 
+    use serde_json::{Value, json};
+
     use super::{
-        UNREADABLE_REFUSAL, Unreadable, failed_why, handover, left, mark_started, refusals,
-        refused, short_host, unstarted,
+        UNREADABLE_REFUSAL, Unreadable, failed_why, forget_stale, handover, left, mark_started,
+        put_brought, refusals, refused, short_host, unstarted,
     };
     use crate::carry::Refused;
+    use crate::carry::cell::Brought;
 
     /// Writes `session`'s done file in `handover`, as the harness does.
     fn write_done(handover: &Path, session: &str) {
@@ -477,6 +570,131 @@ mod tests {
             sessions(handover),
             ["s-first"],
             "a done file newer than its mark is a carry of its own"
+        );
+    }
+
+    /// What `session`'s cell brings, with one tie.
+    fn brought(session: &str, strength: f64) -> Brought {
+        Brought {
+            session: session.to_owned(),
+            cell: "BUSY01".to_owned(),
+            ties: vec![json!({"key": "tie:BUSY01~KESTRL", "kind": "tie", "strength": strength})],
+            talk: None,
+        }
+    }
+
+    #[test]
+    fn a_cells_ties_go_whole_beside_its_done_file() {
+        let dir = tempfile::tempdir().expect("a handover");
+        let handover = &dir.path().join("skiff");
+        put_brought(handover, &brought("s-busy01", 1.0)).expect("put, its handover made");
+        write_done(handover, "s-busy01");
+        let read = || -> Value {
+            let file = fs::read_to_string(handover.join("s-busy01.cell.json")).expect("written");
+            serde_json::from_str(&file).expect("whole")
+        };
+        put_brought(handover, &brought("s-busy01", 2.5)).expect("put");
+        assert_eq!(
+            read(),
+            json!({
+                "session": "s-busy01",
+                "cell": "BUSY01",
+                "ties": [{"key": "tie:BUSY01~KESTRL", "kind": "tie", "strength": 2.5}],
+                "talk": null,
+            }),
+            "beside its done file, saying its four fields"
+        );
+        put_brought(handover, &brought("s-busy01", 3.0)).expect("put again");
+        assert_eq!(
+            read()["ties"],
+            json!([{"key": "tie:BUSY01~KESTRL", "kind": "tie", "strength": 3.0}]),
+            "a carry taken again replaces it rather than adding to it"
+        );
+        assert_eq!(
+            fs::read_dir(handover).expect("listed").count(),
+            2,
+            "and nothing but it and the done file is left there"
+        );
+        // Where its aside file could be written, an id climbing out would
+        // put its cell above the handover, but for being refused.
+        fs::create_dir(handover.join("...")).expect("a folder named for a climb");
+        for odd in ["../s-elsewhere", "..", ""] {
+            assert!(
+                put_brought(handover, &brought(odd, 1.0)).is_err(),
+                "{odd:?} is refused"
+            );
+        }
+        assert!(
+            !dir.path().join("s-elsewhere.cell.json").exists(),
+            "and nothing is put above the handover"
+        );
+    }
+
+    #[test]
+    fn a_planted_link_at_the_aside_name_is_never_written_through() {
+        let dir = tempfile::tempdir().expect("a handover");
+        let handover = &dir.path().join("skiff");
+        fs::create_dir(handover).expect("made");
+        let target = dir.path().join("elsewhere");
+        fs::write(&target, "kept").expect("written");
+        std::os::unix::fs::symlink(&target, handover.join(".s-busy01.cell.json.part"))
+            .expect("a link planted at the aside name");
+        put_brought(handover, &brought("s-busy01", 1.0)).expect("put");
+        assert_eq!(
+            fs::read_to_string(&target).expect("read"),
+            "kept",
+            "what the link pointed at is untouched"
+        );
+        assert!(
+            handover.join("s-busy01.cell.json").is_file(),
+            "and the cell is put"
+        );
+    }
+
+    #[test]
+    fn only_the_cells_of_done_files_started_or_gone_are_taken_away_but_those_kept() {
+        let dir = tempfile::tempdir().expect("a handover");
+        let handover = &dir.path().join("skiff");
+        let cell = |session: &str| {
+            put_brought(handover, &brought(session, 1.0)).expect("put");
+        };
+        // An earlier carry's, which finished: its done file started.
+        cell("s-busy01");
+        write_done(handover, "s-busy01");
+        mark_started(handover, "s-busy01").expect("marked");
+        // A session that refused an earlier carry: no done file.
+        cell("s-refuse");
+        // A failed attempt's, its done file not yet started.
+        cell("s-naps02");
+        write_done(handover, "s-naps02");
+        // One this carry brings afresh, though its done file started.
+        cell("s-there3");
+        write_done(handover, "s-there3");
+        mark_started(handover, "s-there3").expect("marked");
+        // Planted by something that writes the handover: no cell.
+        fs::create_dir(handover.join("s-plant.cell.json")).expect("a folder");
+        let keeping = BTreeSet::from(["s-there3".to_owned()]);
+        assert_eq!(
+            forget_stale(handover, &keeping),
+            Ok(vec!["s-busy01".to_owned(), "s-refuse".to_owned()]),
+            "the cells an earlier carry left, finished or refused, go"
+        );
+        let cells = |session: &str| handover.join(format!("{session}.cell.json")).exists();
+        assert!(
+            cells("s-naps02") && cells("s-there3") && cells("s-plant"),
+            "a failed attempt's cell beside its work stays, one kept stays, and a folder \
+             planted under a cell's name is passed over"
+        );
+        assert!(
+            ["s-busy01", "s-naps02", "s-there3"]
+                .iter()
+                .all(|one| handover.join(format!("{one}.done.json")).exists()),
+            "and every done file stays"
+        );
+        assert_eq!(
+            forget_stale(&dir.path().join("tern"), &keeping),
+            Ok(Vec::new()),
+            "a handover not made yet holds nothing to take away"
         );
     }
 
