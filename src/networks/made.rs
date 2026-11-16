@@ -46,7 +46,10 @@ impl Mycelium {
         builders: &[Value],
     ) -> Self {
         let sessions = sessions.into_iter();
-        let mut read = Sessions::room_for(sessions.size_hint().0 + machines.len());
+        // Room for every cell the records make, receptors' and builders'
+        // too, since adding one to a full list copies all of it.
+        let room = sessions.size_hint().0 + machines.len() + receptors.len() + builders.len();
+        let mut read = Sessions::room_for(room);
         for session in sessions {
             read.add(&session);
         }
