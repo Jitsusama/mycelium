@@ -388,20 +388,53 @@ fn a_node_started_again_links_the_machine_it_made_before() {
         "the work starts on the machine made for it: {said}"
     );
     let linked = root.join("linked");
-    heard(root, &linked, PATIENCE, |text| text.lines().count() == 1);
+    heard(root, &linked, PATIENCE, |text| !text.is_empty());
 
     drop(first);
     let again = skiff(mycelium(&home), &program);
-    let asked = heard(root, &linked, PATIENCE, |text| text.lines().count() == 2);
-    assert_eq!(
-        asked.lines().nth(1),
-        Some(again.0.id().to_string().as_str()),
-        "the node started again dialled the machine its book holds: {asked:?}"
-    );
+    let pid = again.0.id().to_string();
+    heard(root, &linked, PATIENCE, |text| {
+        text.lines().any(|line| line == pid)
+    });
+    ready(root, &home, "lent");
     assert!(
         !root.join("released").exists(),
-        "a machine still made isn't released by the node starting again"
+        "a machine still made, and linked again, isn't released"
     );
+}
+
+/// Waits until skiff's node at `home` says `name` is ready, hearing each
+/// change under `root`.
+fn ready(root: &Path, home: &Path, name: &str) {
+    let (telling, told) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(telling).expect("a watcher");
+    watcher
+        .watch(root, RecursiveMode::Recursive)
+        .expect("the folder is watched");
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let listed = mycelium(home)
+            .args(["--realm", "work", "machines"])
+            .output()
+            .expect("machines runs");
+        let first = listed
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .next()
+            .unwrap_or_default();
+        let said: serde_json::Value = serde_json::from_slice(first).unwrap_or_default();
+        let state = said["Ok"]["Machines"]
+            .as_array()
+            .and_then(|all| all.iter().find(|one| one["name"] == name))
+            .map(|one| one["state"].clone());
+        if state == Some(serde_json::json!("ready")) {
+            return;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(!left.is_zero(), "{name} never came to be ready: {said}");
+        // A watch that fails or times out has the machines asked again.
+        let _ = told.recv_timeout(left);
+    }
 }
 
 /// The secret planted where a carry starts, which never reaches where it

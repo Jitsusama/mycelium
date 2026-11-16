@@ -435,7 +435,7 @@ where
 {
     store::out_of_reach_of_unclaimed(&store)?;
     let (to_dial, mut made) = mpsc::unbounded_channel();
-    redial_standing(&given.book, &to_dial);
+    redial_standing(&given, &store, &to_dial);
     let eases = given.eases.clone();
     let (shared, kept) = Shared::of(
         store.clone(),
@@ -639,33 +639,65 @@ struct Keeping<S> {
     store: S,
 }
 
-/// Keeps a machine made from an offer `linked` until it is done with:
-/// until its work has handed over and it was released, it isn't wanted
-/// once made, or its time is up, when it is released. Keeps in the book
-/// that it was let go, and why, and has it leave the realm's machines at
-/// once, so nothing lists a machine that is gone.
-/// Tells `to_dial` of each machine `book` says is made and not yet let go
-/// or ended, so a node started again links what it made before, as it
-/// would one it made now. Nothing ever finds one of these unwanted, so it
-/// is let go at its time or once its work hands over.
-fn redial_standing(book: &Book, to_dial: &mpsc::UnboundedSender<(Made, Arc<Notify>)>) {
-    let standing = match book.standing(jiff::Timestamp::now()) {
+/// Tells `to_dial` of each machine `given`'s book says this node made
+/// before it started and hasn't let go, so it links each, as it would one
+/// it made now. Nothing ever finds one of these unwanted, so it is let go
+/// at its time or once its work hands over. One whose time passed while
+/// the node was down was ended by its provider, so it is booked as let go
+/// and leaves the realm's machines; one whose provider the node no longer
+/// asks is left to end at its time, since the node runs only the programs
+/// it was given.
+fn redial_standing(
+    given: &Given,
+    store: &impl Store,
+    to_dial: &mpsc::UnboundedSender<(Made, Arc<Notify>)>,
+) {
+    let standing = match given.book.standing() {
         Ok(standing) => standing,
         Err(error) => {
             eprintln!("the book of machines made can't be read, so none is linked again: {error}");
             return;
         }
     };
-    for made in standing {
+    if standing.unread > 0 {
         eprintln!(
-            "{} was made before this node started, so it is linked again",
-            made.machine
+            "{} lines of the book of machines made can't be read, so what they kept isn't linked again",
+            standing.unread
         );
-        // The loop that reads it hasn't started, so it holds the sender.
-        let _ = to_dial.send((made, Arc::new(Notify::new())));
+    }
+    let now = jiff::Timestamp::now();
+    for made in standing.made {
+        if made.until <= now {
+            let why = "its time was up while its node was down";
+            eprintln!("{} was let go: {why}", made.machine);
+            store::left(store, &made.machine, now);
+            if let Err(error) = given.book.released(&made, why) {
+                eprintln!(
+                    "{} was let go, but the book doesn't say so: {error}",
+                    made.machine
+                );
+            }
+        } else if !given.providers.contains(&made.provider) {
+            eprintln!(
+                "{} was made by {}, which this node no longer asks, so it ends at its time",
+                made.machine, made.provider
+            );
+        } else {
+            eprintln!(
+                "{} was made before this node started, so it is linked again",
+                made.machine
+            );
+            // The loop that reads it hasn't started, so it holds the sender.
+            let _ = to_dial.send((made, Arc::new(Notify::new())));
+        }
     }
 }
 
+/// Keeps a machine made from an offer `linked` until it is done with:
+/// until its work has handed over and it was released, it isn't wanted
+/// once made, or its time is up, when it is released. Keeps in the book
+/// that it was let go, and why, and has it leave the realm's machines at
+/// once, so nothing lists a machine that is gone.
 async fn keep_made(
     dial: Arc<Program>,
     made: Made,

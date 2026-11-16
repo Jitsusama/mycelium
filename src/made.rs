@@ -108,17 +108,38 @@ pub async fn make(offer: &Offer, lasting: Duration) -> Result<Made, String> {
 }
 
 /// Where a node keeps each make and release, a JSON line each, newest
-/// last.
+/// last. Every realm's node on a machine keeps the same book, so each
+/// make names the realm whose node made it.
 #[derive(Debug, Clone)]
 pub struct Book {
     path: PathBuf,
+    realm: Option<String>,
+}
+
+/// The machines a book says are made and not yet released, and how many
+/// of its lines it couldn't read.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Standing {
+    /// Each machine, oldest first.
+    pub made: Vec<Made>,
+    /// The lines passed over.
+    pub unread: usize,
 }
 
 impl Book {
-    /// A book kept at `path`.
+    /// A book kept at `path`, its makes naming no realm.
     #[must_use]
     pub fn at(path: PathBuf) -> Self {
-        Self { path }
+        Self { path, realm: None }
+    }
+
+    /// The same book, kept by `realm`'s node.
+    #[must_use]
+    pub fn of_realm(self, realm: &str) -> Self {
+        Self {
+            realm: Some(realm.to_owned()),
+            ..self
+        }
     }
 
     /// Keeps that `made` was made.
@@ -127,7 +148,11 @@ impl Book {
     ///
     /// When the book can't be written.
     pub fn made(&self, made: &Made) -> io::Result<()> {
-        self.keep(&json!({ "at": jiff::Timestamp::now(), "made": made }))
+        let mut line = json!({ "at": jiff::Timestamp::now(), "made": made });
+        if let Some(realm) = &self.realm {
+            line["realm"] = json!(realm);
+        }
+        self.keep(&line)
     }
 
     /// Keeps that `made` was released, or let end, and why.
@@ -142,35 +167,40 @@ impl Book {
         }))
     }
 
-    /// The machines made and not yet released whose end is after `now`,
-    /// oldest first: those a node started again still has to link. A
-    /// line it can't read, as one cut short by a crash, is passed over.
+    /// The machines this realm's node made and hasn't yet released, ended
+    /// or not: those a node started again still has to link or let go.
+    /// A make that names no realm, as those kept before makes named one,
+    /// is taken as this node's. A line it can't read is passed over and
+    /// counted; one cut short by a crash, with the next kept straight
+    /// after it, still gives up that next one.
     ///
     /// # Errors
     ///
     /// When the book is there but can't be read.
-    pub fn standing(&self, now: jiff::Timestamp) -> io::Result<Vec<Made>> {
-        let text = match std::fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+    pub fn standing(&self) -> io::Result<Standing> {
+        let bytes = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Standing::default());
+            }
             Err(error) => return Err(error),
         };
-        let mut standing: Vec<Made> = Vec::new();
-        for line in text.lines() {
-            match serde_json::from_str(line) {
-                Ok(Kept {
-                    made: Some(made), ..
-                }) => standing.push(made),
-                Ok(Kept {
-                    released: Some(released),
-                    ..
-                }) => standing.retain(|made| {
+        let mut standing = Standing::default();
+        for line in String::from_utf8_lossy(&bytes).lines() {
+            let Some(kept) = kept(line) else {
+                standing.unread += 1;
+                continue;
+            };
+            if let Some(made) = kept.made {
+                if kept.realm.is_none() || kept.realm == self.realm {
+                    standing.made.push(made);
+                }
+            } else if let Some(released) = kept.released {
+                standing.made.retain(|made| {
                     made.machine != released.machine || made.place != released.place
-                }),
-                _ => {}
+                });
             }
         }
-        standing.retain(|made| made.until > now);
         Ok(standing)
     }
 
@@ -191,8 +221,19 @@ impl Book {
 /// A line of the book, as [`Book::standing`] reads it.
 #[derive(Deserialize)]
 struct Kept {
+    realm: Option<String>,
     made: Option<Made>,
     released: Option<Released>,
+}
+
+/// What `line` keeps; or, where it can't be read whole, what the last line
+/// kept within it does, since a line cut short by a crash has the next
+/// written straight after it.
+fn kept(line: &str) -> Option<Kept> {
+    serde_json::from_str(line).ok().or_else(|| {
+        let next = line.rfind(r#"{"at""#).filter(|at| *at > 0)?;
+        serde_json::from_str(&line[next..]).ok()
+    })
 }
 
 /// Which machine a release let go.
@@ -330,39 +371,57 @@ mod tests {
     }
 
     #[test]
-    fn the_book_stands_by_each_machine_made_not_released_and_not_yet_ended() {
+    fn the_book_stands_by_each_machine_its_realm_made_and_has_not_released() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let path = dir.path().join("made.jsonl");
-        let book = Book::at(path.clone());
+        let book = Book::at(path.clone()).of_realm("work");
         let now = jiff::Timestamp::now();
         let later = now + jiff::SignedDuration::from_hours(1);
         assert_eq!(
-            book.standing(now).expect("a book not yet kept reads"),
-            Vec::new(),
+            book.standing().expect("a book not yet kept reads"),
+            Standing::default(),
             "a book never kept holds nothing"
         );
-        let (kept, gone, ended, again) = (
+        let older = made_at("skiff", "p0", later);
+        Book::at(path.clone())
+            .made(&older)
+            .expect("a make naming no realm is kept");
+        let (kept, gone, its_place, its_name, ended, again) = (
             made_at("tern", "p1", later),
             made_at("osprey", "p2", later),
-            made_at("kestrel", "p3", now - jiff::SignedDuration::from_secs(1)),
-            made_at("osprey", "p4", later),
+            made_at("osprey", "p3", later),
+            made_at("kestrel", "p2", later),
+            made_at("kestrel", "p4", now - jiff::SignedDuration::from_secs(1)),
+            made_at("osprey", "p5", later),
         );
-        for made in [&kept, &gone, &ended] {
+        for made in [&kept, &gone, &its_place, &its_name, &ended] {
             book.made(made).expect("a make is kept");
         }
+        Book::at(path.clone())
+            .of_realm("home")
+            .made(&made_at("tern", "p6", later))
+            .expect("another realm's make is kept");
         book.released(&gone, "its time was up")
             .expect("a release is kept");
         let mut file = OpenOptions::new()
             .append(true)
             .open(&path)
             .expect("the book opens");
-        file.write_all(b"{\"at\": \"cut sh\n")
+        // Cut short by a crash, so the next is kept on the same line.
+        file.write_all(b"{\"at\": \"cut \xff sh")
             .expect("a line cut short is written");
         book.made(&again).expect("a make is kept");
+        file.write_all(b"not a line of the book\n")
+            .expect("a line it can't read is written");
         assert_eq!(
-            book.standing(now).expect("the book reads"),
-            vec![kept, again],
-            "the machines still made, oldest first, past a line it can't read"
+            book.standing().expect("the book reads"),
+            Standing {
+                made: vec![older, kept, its_place, its_name, ended, again],
+                unread: 1,
+            },
+            "each machine made and not released, oldest first, ended or not, \
+             a release taking only the machine of its name at its place, \
+             and another realm's makes left to it"
         );
     }
 
