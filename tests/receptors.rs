@@ -67,12 +67,12 @@ fn a_receptor_says_how_it_stands_in_a_file_its_owners_alone() {
         .map(String::as_str)
         .collect();
     fields.sort_unstable();
-    // A process's start is known only where /proc tells it, on Linux, so
-    // only there is it kept; elsewhere the pid alone is judged.
+    // A process's start is known where /proc or ps tells it, on Linux and
+    // macOS, so only there is it kept; elsewhere the pid alone is judged.
     let mut expected = vec![
         "counts", "every", "pid", "read_at", "realm", "since", "source", "state",
     ];
-    if cfg!(target_os = "linux") {
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
         expected.insert(7, "started");
     }
     assert_eq!(fields, expected, "counts and times alone");

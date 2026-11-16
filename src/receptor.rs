@@ -172,8 +172,8 @@ pub struct Record {
     /// The process that keeps it, so the node marks it off once that's
     /// gone.
     pub pid: u32,
-    /// When that process started, in clock ticks since boot, where the
-    /// system says (Linux), so a pid used again isn't taken for it.
+    /// When that process started, as [`started_at`] tells it where the
+    /// system says, so a pid used again isn't taken for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<u64>,
     /// What it brought in.
@@ -360,14 +360,44 @@ impl Living for Here {
     }
 }
 
-/// When process `pid` started, in clock ticks since boot, as its `stat`
-/// tells it on Linux: the twentieth field after its name, which is in
-/// brackets and may hold spaces or brackets itself. None elsewhere.
+/// When process `pid` started, or None where it's gone or the system
+/// can't say. On Linux it's in clock ticks since boot, as its `stat`
+/// tells it: the twentieth field after its name, which is in brackets
+/// and may hold spaces or brackets itself. On macOS it's in seconds since
+/// the epoch, as `ps` tells it.
 #[must_use]
 pub fn started_at(pid: u32) -> Option<u64> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (_, after) = stat.rsplit_once(')')?;
-    after.split_whitespace().nth(19)?.parse().ok()
+    if cfg!(target_os = "linux") {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, after) = stat.rsplit_once(')')?;
+        after.split_whitespace().nth(19)?.parse().ok()
+    } else if cfg!(target_os = "macos") {
+        // In UTC and the C locale, so the hour the clocks go back can't
+        // read twice and the names are always English ones.
+        let listed = std::process::Command::new("/bin/ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC0")
+            .output()
+            .ok()
+            .filter(|ran| ran.status.success())?;
+        lstart(&String::from_utf8_lossy(&listed.stdout))
+    } else {
+        None
+    }
+}
+
+/// The seconds since the epoch of a start as `ps -o lstart` lists it in
+/// UTC and the C locale, such as `Mon Nov  2 09:05:01 2026`, its day
+/// padded with a space.
+fn lstart(listed: &str) -> Option<u64> {
+    let at = jiff::civil::DateTime::strptime("%a %b %e %H:%M:%S %Y", listed.trim()).ok()?;
+    let seconds = at
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .ok()?
+        .timestamp()
+        .as_second();
+    u64::try_from(seconds).ok()
 }
 
 /// Every receptor `folder` holds for `realm`, by source, each judged as
@@ -825,7 +855,35 @@ mod tests {
     }
 
     #[test]
+    fn a_start_as_ps_lists_it_is_its_seconds_in_utc() {
+        assert_eq!(lstart("Mon Nov 16 15:08:03 2026\n"), Some(1_794_841_683));
+        assert_eq!(
+            lstart("Mon Nov  2 09:05:01 2026"),
+            Some(1_793_610_301),
+            "a day padded with a space"
+        );
+        assert_eq!(lstart(""), None, "a process ps doesn't list");
+        assert_eq!(lstart("16 Nov 2026"), None, "no start ps lists");
+    }
+
+    #[test]
+    fn a_process_gone_has_no_start_and_lives_no_more() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("a process to end");
+        let pid = child.id();
+        let started = started_at(pid);
+        child.wait().expect("it ends");
+        assert_eq!(started_at(pid), None, "a pid gone has no start");
+        assert!(!Here.lives(pid, started), "a pid gone lives no more");
+    }
+
+    #[test]
     fn this_process_lives_here_and_one_started_otherwise_doesnt() {
+        let me = std::process::id();
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
+            assert!(started_at(me).is_some(), "this process's start is known");
+        }
         let me = std::process::id();
         assert!(Here.lives(me, started_at(me)));
         if let Some(started) = started_at(me) {

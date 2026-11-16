@@ -1641,10 +1641,12 @@ outside those listed, or a name that isn't its source's is malformed,
 and the node leaves it out, as it does a file of another realm. So a
 channel's name or a mail's subject can't reach the map by any field. No
 count may pass `today`, and these bounds hold as a file is read as well
-as written. A pid that isn't running is refused as it is written. On
-Linux, where a process's start is known and kept as `started`, a pid
-used again later can't read as the receptor alive; elsewhere `started`
-is absent and the pid alone is judged.
+as written. A pid that isn't running is refused as it is written. A
+process's start is kept as `started`, so a pid used again later can't
+read as the receptor alive: on Linux in clock ticks since boot, as its
+`stat` tells it, and on macOS in seconds since the epoch, as `ps` tells
+it in UTC. A record never leaves its machine, so the two never meet.
+Elsewhere `started` is absent and the pid alone is judged.
 
 The node reads only a regular file of at most 4 KiB, never following a
 link and never waiting on a pipe, and reads each off its runtime, so
