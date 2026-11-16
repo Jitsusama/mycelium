@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::busy;
 use crate::declared::{self, Declared};
 use crate::disk::{self, Band};
+use crate::own_health::{self, Health};
 use crate::place;
 use crate::reach;
 use crate::room::{self, Room};
@@ -83,6 +84,15 @@ pub struct Machine {
     /// one, as since the machine last started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated: Option<serde_json::Value>,
+    /// How it stands, as its own health daemon says ([`own_health`]):
+    /// unknown where its node asks none, none answers, or the node is too
+    /// old to say.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "own_health::cleaned"
+    )]
+    pub health: Option<Health>,
 }
 
 /// Where a machine's facts are read from, beyond the machine itself.
@@ -252,6 +262,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         declared,
         reached: reach::read(&sources.reached, now.as_second()),
         updated: update::last(&sources.updated),
+        health: own_health::said(),
     }
 }
 

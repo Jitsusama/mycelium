@@ -47,7 +47,10 @@ The harness mesh's messages and presence, carried between machines:
   placed by. Beside them it says the builders this machine sends Nix
   builds to, read from Nix machines files given as `--builders` and
   `--lent-builders`: what each builds and whether it answers, a lent one
-  never dialled so as not to wake what costs to run. A client that opens
+  never dialled so as not to wake what costs to run. Given its machine's
+  own health daemon's socket as `--health-socket`, it carries in its
+  machine the words that daemon says of the whole machine and each
+  part, so every machine reads how every other stands. A client that opens
   with `hello` is answered in the daemon interface every daemon on the machine
   speaks, and watches the realm's sessions, machines, messages, teams
   and networks change, each network made as `mycelium networks` makes

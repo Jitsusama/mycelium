@@ -362,6 +362,7 @@ mod tests {
             receptors: None,
             builders: crate::builders::Given::default(),
             placements: None,
+            health: None,
         };
         let membership = Realm {
             name: realm.to_owned(),
