@@ -5,11 +5,13 @@
 mod realm;
 
 /// Half the cells to all of them at most three times as long, and all of
-/// them within a second of the processor's time, since a busy builder
-/// took 188 ms to 510 ms for the same records. Ten thousand cells'
-/// records are past any cache, a thousand's are not, so the time is first
-/// taken where both are: work growing with the cells takes twice as long,
-/// and with their square four times.
+/// them within a second of the processor's time, a stop for the worst
+/// only, since a busy builder took 188 ms to 510 ms for the same records.
+/// The target, 100 ms on the machine the bar is set for, is said, not
+/// held: the growth is what holds the time to the cells. Ten thousand
+/// cells' records are past any cache, a thousand's are not, so the time
+/// is first taken where both are: work growing with the cells takes twice
+/// as long, and with their square four times.
 #[cfg(not(target_env = "musl"))]
 const GROWTH: realm::Growth = realm::Growth {
     from: realm::CELLS / 2,

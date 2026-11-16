@@ -8,10 +8,21 @@ mod realm;
 /// Work that grows with them takes about ten times as long; work that
 /// grows with their square takes more once it is a third of the build at
 /// ten thousand, as a scan of every session for each repository once was.
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(any(target_env = "musl", target_os = "macos")))]
 const GROWTH: realm::Growth = realm::Growth {
     from: realm::CELLS / 10,
     times: 15,
+    within: None,
+};
+
+/// On macOS, whose allocator and a Mac lent to builds took 15.5 times as
+/// long at a load of 95 to 130 (2026-11-16), at most twenty-five times.
+/// Work that grows with the square of the cells and is a third of the
+/// build takes about forty, so this still tells it.
+#[cfg(target_os = "macos")]
+const GROWTH: realm::Growth = realm::Growth {
+    from: realm::CELLS / 10,
+    times: 25,
     within: None,
 };
 
