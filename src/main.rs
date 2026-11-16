@@ -1220,11 +1220,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Update { machine } => print_reply(&socket, &Request::Update { machine }),
         Action::Start(asked) => start(&socket, asked),
         Action::Run(asked) => return run_there(&socket, asked),
-        Action::Steer { address } => {
-            let steer = serde_json::from_reader(io::stdin().lock())
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-            print_reply(&socket, &Request::Steer { address, steer })
-        }
+        Action::Steer { address } => steer(&socket, address),
         Action::Orchestrates {
             free: Some(quest), ..
         } => print_reply(&socket, &Request::Free { quest }),
@@ -1272,6 +1268,13 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         | Action::Again { .. } => unreachable!("each is read as its tree above"),
     };
     ran.map(|()| ExitCode::SUCCESS)
+}
+
+/// Steers the session going by `address` with what standard input says.
+fn steer(socket: &Path, address: String) -> io::Result<()> {
+    let steer = serde_json::from_reader(io::stdin().lock())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    print_reply(socket, &Request::Steer { address, steer })
 }
 
 /// Does what `asked` asks of the machines, through the node at `socket`,
