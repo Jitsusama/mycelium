@@ -387,9 +387,11 @@ pub fn headroom(
         - rather_not
 }
 
-/// Whether `machine`'s room was said within [`ROOM_HEARD_WITHIN`] of `now`.
+/// Whether `machine`'s room was said within [`ROOM_HEARD_WITHIN`] of `now`,
+/// either way: a room dated further ahead than that is no more heard than
+/// one as far behind, or a clock set wrong would keep it heard for good.
 fn heard(machine: &Machine, now: jiff::Timestamp) -> bool {
-    said_at(machine).is_some_and(|said| now.duration_since(said) <= ROOM_HEARD_WITHIN)
+    said_at(machine).is_some_and(|said| now.duration_since(said).abs() <= ROOM_HEARD_WITHIN)
 }
 
 /// When `machine` last said its room, where it has and the time reads.
@@ -480,7 +482,7 @@ pub struct Judgement {
     pub machine: String,
     /// Whether it could take the work at all.
     pub qualifies: bool,
-    /// Whether it was past a limit of its queue's the work minds.
+    /// Whether it was past its queue's memory limit, which the work minds.
     pub over: bool,
     /// Whether its room hadn't been said lately.
     pub unheard: bool,
@@ -840,7 +842,7 @@ struct Judged {
     preferred: Vec<bool>,
     /// The room it has for more work, as [`headroom`] weighs it.
     headroom: f64,
-    /// Whether it is past a limit of its queue's the work minds.
+    /// Whether it is past its queue's memory limit, which the work minds.
     over: bool,
     /// Whether its room hasn't been said lately.
     unheard: bool,
@@ -1475,7 +1477,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_machine_over_a_limit_is_never_chosen_while_another_is_not() {
+    fn a_machine_past_its_memory_limit_is_never_chosen_while_another_is_not() {
         let kestrel = over(
             pressed(machine("kestrel", "macos", 60, &[]), 90.0),
             &[Limit::Memory],
@@ -1514,10 +1516,19 @@ pub(crate) mod tests {
             Some("kestrel"),
             "of machines all over, the one with the most headroom"
         );
+        let tern = pressed(machine("tern", "linux", 1, &[]), 95.0);
+        assert_eq!(
+            placed(&place(
+                &needing(Vec::new()),
+                &[kestrel.clone(), tern.clone()]
+            )),
+            Some("tern"),
+            "a machine with hardly any room before one past its memory limit"
+        );
         let mut tolerant = needing(Vec::new());
         tolerant.tolerates = vec![MEMORY_PRESSURE.to_owned()];
         assert_eq!(
-            placed(&place(&tolerant, &[osprey, kestrel])),
+            placed(&place(&tolerant, &[osprey, kestrel, tern])),
             Some("kestrel"),
             "and work that doesn't mind short memory sees no limit there"
         );
@@ -1535,9 +1546,52 @@ pub(crate) mod tests {
         );
         osprey.disk_free = Some(1 << 30);
         assert_eq!(
-            placed(&place(&needing(Vec::new()), &[kestrel, osprey])),
+            placed(&place(
+                &needing(Vec::new()),
+                &[kestrel.clone(), osprey.clone()]
+            )),
             Some("osprey"),
             "a machine heard from, though over, before one nobody has heard"
+        );
+        let kestrel = over(kestrel, &[Limit::Memory]);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[kestrel, osprey.clone()])),
+            Some("osprey"),
+            "and one unheard and over too ranks with the unheard, not the over"
+        );
+        let mut ahead = machine("kestrel", "linux", 60, &[]);
+        ahead.room.as_mut().expect("a room").said_at = "2026-10-29T06:10:00Z".to_owned();
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[ahead, osprey])),
+            Some("osprey"),
+            "a room dated ten minutes ahead is no more heard than one ten behind"
+        );
+    }
+
+    #[test]
+    fn none_but_the_best_tier_is_drawn_from_however_near_its_headroom() {
+        let kestrel = pressed(machine("kestrel", "linux", 32, &[]), 50.0);
+        let osprey = over(
+            pressed(machine("osprey", "linux", 32, &[]), 48.0),
+            &[Limit::Memory],
+        );
+        let decision = decide_at(
+            &needing(Vec::new()),
+            &[kestrel, osprey],
+            &Loads::new(),
+            now(),
+            &mut first,
+            &Weights::STARTING,
+        );
+        let chances: Vec<(&str, f64)> = decision
+            .judged
+            .iter()
+            .map(|one| (one.machine.as_str(), one.chance))
+            .collect();
+        assert_eq!(
+            chances,
+            [("kestrel", 1.0), ("osprey", 0.0)],
+            "osprey, over, has more headroom by less than the band, yet no chance"
         );
     }
 
@@ -1549,7 +1603,11 @@ pub(crate) mod tests {
             pressed(machine("kestrel", "macos", 40, &[]), 43.0),
             &[Limit::Cpu],
         );
-        let skiff = pressed(machine("skiff", "linux", 8, &[]), 95.0);
+        // Kestrel's headroom is 0.445 and skiff's 0.33, apart by more than
+        // the band, so the choice isn't a draw. The taint still costs it as
+        // much as an idle processor earns, so it decides only where the rest
+        // of the room tells the machines apart.
+        let skiff = pressed(machine("skiff", "linux", 2, &[]), 95.0);
         let Placement::Placed {
             machine: chosen,
             passed,
