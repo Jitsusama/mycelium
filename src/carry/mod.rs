@@ -550,12 +550,19 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done, ordered: Option<&Orde
     // the person's that no tree brought. That folder is entered as it
     // stands, never made here. A session taken up again loads its quest
     // only when told, as the shell's starts tell it, so pi is told which.
+    // It starts in the fence it ran in, as its done file says it, since
+    // the node's own environment names none: a move never loosens a
+    // session. One whose fence can't be told, as from a harness that
+    // can't say it, doesn't start, rather than start looser; one whose
+    // done file names none, from an older harness, starts as before.
     let script = if one.session == quest {
         arrive.to_owned()
     } else {
         [
             arrive,
             r#" || exit; folder=$(pi-carry where "$1" --from "$2" --session "$3") || exit; "#,
+            r#"fence=$(pi-carry fence "$1" --from "$2" --session "$3") || exit; "#,
+            r#"if [ -n "$fence" ]; then export PI_SANDBOX="$fence"; fi; "#,
             r#"cd "$folder" && QUEST_WORKFLOW_AUTOLOAD_ID="$1" exec pi --session "$3" -- "$4""#,
         ]
         .concat()
