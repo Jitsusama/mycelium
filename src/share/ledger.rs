@@ -185,7 +185,7 @@ impl Ledger {
         quest.each_file(&mut |shared| {
             let key = key_of(&shared);
             present.insert(key.clone());
-            if let Some(now) = seen(&quest.path_of(&shared)?)? {
+            if let Some(now) = quest.seen_of(&shared)? {
                 let sight = self.saw(quest, &shared, &key, now, machine)?;
                 scan.is_new |= sight.is_new();
                 if sight == Sight::Changed {
@@ -214,7 +214,7 @@ impl Ledger {
             return Ok(Sight::Same);
         }
         let key = key_of(shared);
-        match seen(&quest.path_of(shared)?)? {
+        match quest.seen_of(shared)? {
             Some(now) => self.saw(quest, shared, &key, now, machine),
             None if quest.may_be_removed(shared)
                 && self

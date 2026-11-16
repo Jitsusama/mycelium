@@ -70,6 +70,8 @@ pub struct Quest {
     /// The account's home folder on this machine, which paths in the
     /// record are written against ([`super::disk`]).
     pub home: PathBuf,
+    /// Whether its README alone crosses ([`Self::readme_alone`]).
+    pub readme_alone: bool,
 }
 
 impl Quest {
@@ -82,6 +84,21 @@ impl Quest {
             scratch: None,
             folders: BTreeSet::new(),
             home,
+            readme_alone: false,
+        }
+    }
+
+    /// The same quest, carrying its README alone and none of its scratch,
+    /// as a quest shared only for the quests under it does: its README
+    /// says what orchestrates them, and the rest is its own work, which
+    /// no machine needs for theirs.
+    #[must_use]
+    pub fn readme_alone(self) -> Self {
+        Self {
+            scratch: None,
+            folders: BTreeSet::new(),
+            readme_alone: true,
+            ..self
         }
     }
 
@@ -112,7 +129,7 @@ impl Quest {
     pub fn carries(&self, shared: &Shared) -> bool {
         crosses(shared)
             && match shared.place {
-                Place::Record => true,
+                Place::Record => !self.readme_alone || shared.path == "README.md",
                 Place::Scratch => {
                     self.scratch.is_some()
                         && shared

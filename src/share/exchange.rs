@@ -431,6 +431,14 @@ pub struct Exchange {
     /// Whether the other end is a worker, which shares only the quests it
     /// was given and those it began.
     worker: bool,
+    /// Whether every quest shared only for those under it is withheld
+    /// from the other end, as from a worker ([`Self::withhold_above`]).
+    above_withheld: bool,
+    /// The quests whose whole record was last said, rather than their
+    /// README alone ([`Self::whole`]).
+    whole: BTreeSet<String>,
+    /// The quests the last look withheld from the other end.
+    passed_over: BTreeSet<String>,
 }
 
 /// A shared quest's README, as its ledger keys it.
@@ -465,6 +473,33 @@ struct Told {
     above: bool,
 }
 
+/// What a look says of the quests `shares` holds, as told.
+fn shares_said(shares: &BTreeMap<String, Told>) -> Say {
+    Say::Shares {
+        quests: shares.keys().cloned().collect(),
+        scratch: shares
+            .iter()
+            .filter(|(_, told)| !told.folders.is_empty())
+            .map(|(id, told)| (id.clone(), told.folders.clone()))
+            .collect(),
+        clones: shares
+            .iter()
+            .filter(|(_, told)| !told.clones.is_empty())
+            .map(|(id, told)| (id.clone(), told.clones.clone()))
+            .collect(),
+        ended: shares
+            .iter()
+            .filter(|(_, told)| told.ended)
+            .map(|(id, _)| id.clone())
+            .collect(),
+        above: shares
+            .iter()
+            .filter(|(_, told)| told.above)
+            .map(|(id, _)| id.clone())
+            .collect(),
+    }
+}
+
 impl Exchange {
     /// `machine`'s end of the talk with `other`, clearing any crossing an
     /// earlier link to `other` left unfinished, since nothing goes on with
@@ -491,6 +526,55 @@ impl Exchange {
             sweep_again: BTreeMap::new(),
             above_again: true,
             worker: false,
+            above_withheld: false,
+            whole: BTreeSet::new(),
+            passed_over: BTreeSet::new(),
+        }
+    }
+
+    /// Withholds from the other end every quest shared only for those under
+    /// it, as from a worker, or carries them again. A worker isn't one of
+    /// the person's own machines, so nothing travels there but the work:
+    /// none of what orchestrates it, not even a README. A worker's
+    /// ([`Self::for_worker`]) are withheld for good, whatever its machine
+    /// says of itself.
+    pub fn withhold_above(&mut self, withheld: bool) {
+        self.above_withheld = withheld || self.worker;
+    }
+
+    /// Whether the quest `ledger` keeps is withheld from the other end: one
+    /// shared only for those under it, while those are withheld.
+    fn withholds(&self, ledger: &Ledger) -> bool {
+        self.above_withheld && ledger.above
+    }
+
+    /// Whether quest `id`, which this end shares, is withheld from the
+    /// other end, as [`Self::withholds`] says.
+    fn withholds_quest(&self, id: &str) -> io::Result<bool> {
+        let ledgers = self.places.ledgers();
+        Ok(self.above_withheld && ledgers.shares(id) && self.withholds(&ledgers.hold(id)?.ledger))
+    }
+
+    /// Whether this link carries quest `id`'s whole record, as `ledger`
+    /// holds it, rather than its README alone: a quest shared in its own
+    /// right does, at either end, and one shared only for the quests under
+    /// it at both carries only what says what orchestrates them.
+    fn whole(&self, id: &str, ledger: &Ledger) -> bool {
+        !ledger.above
+            || self
+                .theirs
+                .as_ref()
+                .is_some_and(|theirs| theirs.quests.contains(id) && !theirs.above.contains(id))
+    }
+
+    /// Where this machine keeps quest `id`, carrying what this link carries
+    /// of it ([`Self::whole`]).
+    fn quest(&self, id: &str, ledger: &Ledger) -> Quest {
+        let quest = self.places.quest(id, ledger);
+        if self.whole(id, ledger) {
+            quest
+        } else {
+            quest.readme_alone()
         }
     }
 
@@ -504,11 +588,13 @@ impl Exchange {
     /// given to it ([`Places::give`]), and takes from it only those and the
     /// quests it began, which this machine held none of, so a worker can
     /// neither read nor write over a quest of this machine's it wasn't
-    /// given.
+    /// given. Every quest shared only for those under it is withheld from
+    /// it for good ([`Self::withhold_above`]), given or not.
     #[must_use]
     pub fn for_worker(self) -> Self {
         Self {
             worker: true,
+            above_withheld: true,
             ..self
         }
     }
@@ -641,11 +727,14 @@ impl Exchange {
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
         let mut holds = Vec::new();
+        let mut whole = BTreeSet::new();
         let mut quests = ledgers.quests()?;
         quests.retain(|id| self.serves(id));
+        let looked: BTreeSet<&String> = self.told.keys().chain(&self.passed_over).collect();
         let decide = std::mem::take(&mut self.above_again)
-            || quests.len() != self.told.len()
-            || quests.iter().any(|id| !self.told.contains_key(id));
+            || quests.len() != looked.len()
+            || quests.iter().any(|id| !looked.contains(id));
+        let mut passed_over = BTreeSet::new();
         for id in quests {
             let ended = self.places.ended(&id);
             if ended && self.has_ended_there(&id) && self.swept(&id) {
@@ -659,9 +748,22 @@ impl Exchange {
                 continue;
             }
             let mut held = ledgers.hold(&id)?;
+            if self.withholds(&held.ledger) {
+                passed_over.insert(id);
+                continue;
+            }
+            // A quest newly said, or whose whole record this link carries
+            // now where it carried only its README, or the other way, is
+            // walked and said whole.
+            let carried = self.quest(&id, &held.ledger);
+            let anew =
+                !self.told.contains_key(&id) || self.whole.contains(&id) == carried.readme_alone;
+            if !carried.readme_alone {
+                whole.insert(id.clone());
+            }
             let walk = self.watch.to_walk(&id, &held.ledger.scratch);
-            let record = self.watch.record_to_walk(&id);
-            let quest = self.places.quest(&id, &held.ledger).walking(&walk);
+            let record = self.watch.record_to_walk(&id) || anew;
+            let quest = carried.clone().walking(&walk);
             // A quest nothing was heard to change in isn't walked, so an
             // idle look reads no file's size and time.
             let scan = if record || !walk.is_empty() {
@@ -680,16 +782,16 @@ impl Exchange {
             }
             changed.extend(self.unsaid.remove(&id).unwrap_or_default());
             self.above_again |= changed.contains(README);
-            let states = held.ledger.states();
-            let files: BTreeMap<String, State> = if self.told.contains_key(&id) {
-                states
-                    .into_iter()
-                    .filter(|(key, _)| changed.contains(key))
-                    .collect()
-            } else {
-                states
-            };
-            if !files.is_empty() || !self.told.contains_key(&id) {
+            // A file this link no longer carries, such as a parent's
+            // journey once its README alone crosses, is left unsaid.
+            let files: BTreeMap<String, State> = held
+                .ledger
+                .states()
+                .into_iter()
+                .filter(|(key, _)| anew || changed.contains(key))
+                .filter(|(key, _)| shared_of(key).is_some_and(|shared| carried.carries(&shared)))
+                .collect();
+            if !files.is_empty() || anew {
                 holds.push(Say::Holds {
                     quest: id.clone(),
                     files,
@@ -709,32 +811,12 @@ impl Exchange {
         // a newly named folder's files by the time it hears of them.
         let mut says = Vec::new();
         if shares != self.told {
-            says.push(Say::Shares {
-                quests: shares.keys().cloned().collect(),
-                scratch: shares
-                    .iter()
-                    .filter(|(_, told)| !told.folders.is_empty())
-                    .map(|(id, told)| (id.clone(), told.folders.clone()))
-                    .collect(),
-                clones: shares
-                    .iter()
-                    .filter(|(_, told)| !told.clones.is_empty())
-                    .map(|(id, told)| (id.clone(), told.clones.clone()))
-                    .collect(),
-                ended: shares
-                    .iter()
-                    .filter(|(_, told)| told.ended)
-                    .map(|(id, _)| id.clone())
-                    .collect(),
-                above: shares
-                    .iter()
-                    .filter(|(_, told)| told.above)
-                    .map(|(id, _)| id.clone())
-                    .collect(),
-            });
+            says.push(shares_said(&shares));
         }
         says.extend(holds);
         self.told = shares;
+        self.whole = whole;
+        self.passed_over = passed_over;
         Ok(says)
     }
 
@@ -809,6 +891,16 @@ impl Exchange {
                     "{} asked for a file of {quest}, a quest it wasn't given, so it isn't sent",
                     self.other
                 );
+                Ok(Vec::new())
+            }
+            // What a worker says of a quest withheld from it is let be, as
+            // is what it asks: it never holds such a quest of this end's.
+            Say::Holds { quest, .. }
+            | Say::Want { quest, .. }
+            | Say::Piece { quest, .. }
+            | Say::File { quest, .. }
+                if self.withholds_quest(&quest)? =>
+            {
                 Ok(Vec::new())
             }
             Say::Holds { quest, files } => {
@@ -933,7 +1025,7 @@ impl Exchange {
             return Ok(());
         }
         let held = self.places.ledgers().hold(id)?;
-        let quest = self.places.quest(id, &held.ledger);
+        let quest = self.quest(id, &held.ledger);
         drop(held);
         for (path, clone) in clones {
             let shared = Shared {
@@ -987,7 +1079,7 @@ impl Exchange {
     /// Asks for each file the other end holds that this end should take.
     fn held(&mut self, id: &str, files: BTreeMap<String, State>) -> io::Result<Vec<Say>> {
         let mut held = self.places.ledgers().hold(id)?;
-        let quest = self.places.quest(id, &held.ledger);
+        let quest = self.quest(id, &held.ledger);
         let mut wants = Vec::new();
         for (key, theirs) in files {
             let Some(shared) = shared_of(&key).filter(|shared| quest.carries(shared)) else {
@@ -1043,7 +1135,7 @@ impl Exchange {
             return Ok(Vec::new());
         }
         let mut held = self.places.ledgers().hold(id)?;
-        let quest = self.places.quest(id, &held.ledger);
+        let quest = self.quest(id, &held.ledger);
         let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
             return Ok(Vec::new());
         };
@@ -1156,7 +1248,7 @@ impl Exchange {
             ));
         }
         let mut held = self.places.ledgers().hold(id)?;
-        let quest = self.places.quest(id, &held.ledger);
+        let quest = self.quest(id, &held.ledger);
         let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
             return Ok(Vec::new());
         };
@@ -1397,13 +1489,7 @@ mod tests {
         skiff.write("README.md", "# Shared\n");
         skiff.write("plans/PLAN-20261026-IZH11J.md", "plan\n");
         kestrel.write("README.md", "# Stale\n");
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
 
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
@@ -1446,13 +1532,7 @@ mod tests {
         let plan = "plans/PLAN-20261115-AAAAAA.md";
         kestrel.write("README.md", "# Shared\n");
         kestrel.write(plan, "plan\n");
-        kestrel
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&kestrel, QUEST);
         let ledger = |machine: &Machine| machine.places.ledgers().hold(QUEST).expect("held").ledger;
         let own = |ledger: &Ledger, key: &str| ledger.files[key].state();
 
@@ -1497,17 +1577,282 @@ mod tests {
         );
     }
 
+    /// Writes `text` at `path` within `root`, making the folders it is in.
+    fn put(root: &std::path::Path, path: &str, text: &str) {
+        let at = root.join(path);
+        fs::create_dir_all(at.parent().expect("a file has a folder")).expect("made");
+        fs::write(at, text).expect("written");
+    }
+
+    /// Shares quest `id` on `machine` on its own, as a ledger kept for it
+    /// says.
+    fn share(machine: &Machine, id: &str) {
+        machine
+            .places
+            .ledgers()
+            .hold(id)
+            .expect("held")
+            .keep()
+            .expect("shared");
+    }
+
+    /// Quest `id`'s file at `path` on `machine`, if it is there.
+    fn there(machine: &Machine, id: &str, path: &str) -> Option<String> {
+        fs::read_to_string(machine.places.quests.join(id).join(path)).ok()
+    }
+
+    /// Puts `top`'s whole record on `machine`, and `child`'s README under
+    /// it, and shares `child`, which shares `top` only for it.
+    fn under_top(machine: &Machine, top: &str, child: &str) {
+        let quests = &machine.places.quests;
+        put(quests, &format!("{top}/README.md"), TOP_README);
+        put(quests, &format!("{top}/JOURNEY.md"), "# Journey\n");
+        put(
+            quests,
+            &format!("{top}/plans/PLAN-20261007-AAAAAA.md"),
+            "plan\n",
+        );
+        put(quests, &format!("{top}/attachments/map.png"), "a picture\n");
+        put(
+            quests,
+            &format!("{child}/README.md"),
+            &format!("---\nparent: {top}\n---\n# Child\n"),
+        );
+        put(quests, &format!("{child}/JOURNEY.md"), "# The child's\n");
+        machine.places.offer(child, &[]).expect("shared");
+    }
+
+    /// The README [`under_top`] puts in the quest above, which links to
+    /// what is beside it.
+    const TOP_README: &str =
+        "---\nparent: null\n---\n# Top\n\nSee [the map](attachments/map.png).\n";
+
+    /// The files of `top`'s record beside its README that [`under_top`]
+    /// puts there.
+    const BESIDE_ITS_README: [&str; 3] = [
+        "JOURNEY.md",
+        "plans/PLAN-20261007-AAAAAA.md",
+        "attachments/map.png",
+    ];
+
     #[test]
-    fn a_quest_shared_carries_the_records_of_the_quests_above_it() {
+    fn a_quest_shared_for_those_under_it_carries_its_readme_alone_until_shared_itself() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        under_top(&kestrel, top, child);
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        assert_eq!(
+            there(&skiff, child, "JOURNEY.md").as_deref(),
+            Some("# The child's\n"),
+            "the quest shared crosses whole"
+        );
+        assert_eq!(
+            there(&skiff, top, "README.md").as_deref(),
+            Some(TOP_README),
+            "its parent's README crosses"
+        );
+        for path in BESIDE_ITS_README {
+            assert_eq!(
+                there(&skiff, top, path),
+                None,
+                "but not its parent's {path}, though its README links to the map"
+            );
+        }
+        let said: Vec<String> = kestrel
+            .places
+            .ledgers()
+            .hold(top)
+            .expect("held")
+            .ledger
+            .theirs["skiff"]
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(said, [README], "and skiff holds its README alone");
+
+        kestrel.places.offer(top, &[]).expect("shared on its own");
+        talk(&mut near, &mut far);
+        for path in BESIDE_ITS_README {
+            assert!(
+                there(&skiff, top, path).is_some(),
+                "shared on its own, the parent's {path} crosses"
+            );
+        }
+    }
+
+    #[test]
+    fn a_parent_the_other_end_shares_on_its_own_crosses_whole_on_that_link() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        under_top(&kestrel, top, child);
+        put(
+            &skiff.places.quests,
+            &format!("{top}/attachments/notes.md"),
+            "skiff's notes\n",
+        );
+        share(&skiff, top);
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        // Kestrel learns at the first that skiff shares it on its own, and
+        // says it whole at the next.
+        talk(&mut near, &mut far);
+        talk(&mut near, &mut far);
+        assert_eq!(
+            there(&kestrel, top, "attachments/notes.md").as_deref(),
+            Some("skiff's notes\n"),
+            "what skiff, sharing it on its own, holds of it crosses"
+        );
+        for path in BESIDE_ITS_README {
+            assert!(
+                there(&skiff, top, path).is_some(),
+                "and so does kestrel's {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_above_reaches_a_worker_even_one_naming_it_its_own() {
+        let kestrel = Machine::new("kestrel");
+        let tern = Machine::new("tern");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        under_top(&kestrel, top, child);
+        let (mut near, mut far) = (kestrel.exchange(&tern), tern.exchange(&kestrel));
+        near.withhold_above(true);
+        talk(&mut near, &mut far);
+        assert!(
+            there(&tern, child, "README.md").is_some(),
+            "the quest shared reaches the worker"
+        );
+        assert!(
+            !tern.places.quests.join(top).exists() && !tern.places.ledgers().shares(top),
+            "but nothing of its parent does"
+        );
+
+        put(
+            &tern.places.quests,
+            &format!("{top}/README.md"),
+            "---\nparent: null\n---\n# The worker's\n",
+        );
+        share(&tern, top);
+        talk(&mut near, &mut far);
+        assert_eq!(
+            there(&tern, top, "README.md").as_deref(),
+            Some("---\nparent: null\n---\n# The worker's\n"),
+            "a worker naming the parent its own is still sent none of it"
+        );
+        assert_eq!(
+            there(&kestrel, top, "README.md").as_deref(),
+            Some(TOP_README),
+            "nor writes over it"
+        );
+        assert!(
+            near.hear(Say::Want {
+                quest: top.to_owned(),
+                file: README.to_owned(),
+                at: Some(0),
+            })
+            .expect("kestrel hears")
+            .is_empty(),
+            "and asking for its README, it is sent nothing"
+        );
+    }
+
+    #[test]
+    fn a_parent_withheld_crosses_once_the_other_end_is_known_no_worker() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        under_top(&kestrel, top, child);
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        near.withhold_above(true);
+        talk(&mut near, &mut far);
+        assert_eq!(there(&skiff, top, "README.md"), None, "withheld, it waits");
+
+        near.withhold_above(false);
+        talk(&mut near, &mut far);
+        assert!(
+            there(&skiff, top, "README.md").is_some(),
+            "known to be no worker, the parent's README crosses"
+        );
+        assert_eq!(
+            there(&skiff, top, "JOURNEY.md"),
+            None,
+            "and still nothing more of it"
+        );
+    }
+
+    #[test]
+    fn a_parent_whose_readme_is_a_link_crosses_nothing_through_it() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        under_top(&kestrel, top, child);
+        let readme = kestrel.places.quests.join(top).join("README.md");
+        fs::remove_file(&readme).expect("removed");
+        std::os::unix::fs::symlink("JOURNEY.md", &readme).expect("linked");
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        assert!(
+            kestrel.places.ledgers().shares(top) && there(&skiff, child, "README.md").is_some(),
+            "the quest crosses, its parent shared for it"
+        );
+        assert!(
+            !skiff.places.quests.join(top).exists(),
+            "but nothing of its parent, whose README is a link to its journey"
+        );
+        assert!(
+            near.hear(Say::Want {
+                quest: top.to_owned(),
+                file: README.to_owned(),
+                at: None,
+            })
+            .expect("kestrel hears")
+            .is_empty(),
+            "nor is the link read through when asked for"
+        );
+    }
+
+    #[test]
+    fn a_link_in_a_record_is_never_read_through_even_when_asked_for() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        kestrel.write("README.md", "# Shared\n");
+        let elsewhere = kestrel.places.home.join("elsewhere");
+        put(&elsewhere, "secret.md", "not the quest's\n");
+        let attachments = kestrel.places.quests.join(QUEST).join("attachments");
+        fs::create_dir_all(&attachments).expect("made");
+        std::os::unix::fs::symlink(elsewhere.join("secret.md"), attachments.join("key.md"))
+            .expect("a file linked");
+        std::os::unix::fs::symlink(&elsewhere, attachments.join("away")).expect("a folder linked");
+        share(&kestrel, QUEST);
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        assert_eq!(skiff.read("README.md").as_deref(), Some("# Shared\n"));
+        for file in ["attachments/key.md", "attachments/away/secret.md"] {
+            assert_eq!(skiff.read(file), None, "{file} is no file of the quest's");
+            for at in [None, Some(0)] {
+                assert!(
+                    near.hear(Say::Want {
+                        quest: QUEST.to_owned(),
+                        file: format!("record/{file}"),
+                        at,
+                    })
+                    .expect("kestrel hears")
+                    .is_empty(),
+                    "and asked for, {file} isn't read through"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_quest_shared_carries_the_readmes_of_the_quests_above_it() {
         let kestrel = Machine::new("kestrel");
         let skiff = Machine::new("skiff");
         let (top, middle) = ("QEST-20261007-WCJQSG", "QEST-20261013-4UHC5Q");
         let grandchild = "QEST-20261115-5XF89V";
-        let put = |root: &std::path::Path, path: &str, text: &str| {
-            let at = root.join(path);
-            fs::create_dir_all(at.parent().expect("a file has a folder")).expect("made");
-            fs::write(at, text).expect("written");
-        };
         let quests = &kestrel.places.quests;
         put(
             quests,
@@ -1544,12 +1889,17 @@ mod tests {
         assert_eq!(
             there(&format!("{middle}/README.md")).as_deref(),
             Some(format!("---\nparent: {top}\n---\n# Middle\n").as_str()),
-            "the parent's record arrived"
+            "the parent's README arrived"
         );
         assert_eq!(
-            there(&format!("{top}/JOURNEY.md")).as_deref(),
-            Some("# Journey\n"),
-            "and its parent's, whole"
+            there(&format!("{top}/README.md")).as_deref(),
+            Some("---\nparent: null\n---\n# Top\n"),
+            "and its parent's"
+        );
+        assert_eq!(
+            there(&format!("{top}/JOURNEY.md")),
+            None,
+            "but none of their journeys"
         );
         assert!(
             skiff
@@ -1727,13 +2077,7 @@ mod tests {
         let skiff = Machine::new("skiff");
         let kestrel = Machine::new("kestrel");
         skiff.write("README.md", "# Shared\n");
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         let seen = || {
             skiff
                 .places
@@ -1778,13 +2122,7 @@ mod tests {
         let skiff = Machine::new("skiff");
         let kestrel = Machine::new("kestrel");
         skiff.write("README.md", "# Shared\n");
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
 
         let mut wants = Vec::new();
@@ -1816,13 +2154,7 @@ mod tests {
         let skiff = Machine::new("skiff");
         let kestrel = Machine::new("kestrel");
         skiff.write("JOURNEY.md", "# Journey\n\n- **2026-10-26**: began\n");
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
 
@@ -1863,13 +2195,7 @@ mod tests {
             fs::create_dir_all(&above).expect("made");
             fs::write(above.join("README.md"), "---\nparent: null\n---\n").expect("written");
         }
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
 
@@ -1927,13 +2253,7 @@ mod tests {
         let skiff = Machine::new("skiff");
         let kestrel = Machine::new("kestrel");
         skiff.write("attachments/map.md", "map\n");
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
         assert!(
@@ -1967,13 +2287,7 @@ mod tests {
         put(&skiff, "hub-home/big.bin", "bulk\n");
         put(&skiff, "tmp/session.log", "a session's own\n");
         put(&kestrel, "notes/old.md", "the Mac's own notes\n");
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         skiff
             .places
             .name_scratch(QUEST, "notes")
@@ -2045,13 +2359,7 @@ mod tests {
         let kestrel = Machine::new("kestrel");
         skiff.write("attachments/a.md", "a\n");
         skiff.write("attachments/b.md", "b\n");
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
 
@@ -2089,13 +2397,7 @@ mod tests {
             .collect();
         fs::create_dir_all(at(&skiff).parent().expect("a folder")).expect("made");
         fs::write(at(&skiff), &bytes).expect("written");
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         skiff
             .places
             .name_scratch(QUEST, "bench")
@@ -2198,13 +2500,7 @@ mod tests {
         let notes = scratch(&skiff, "notes/plan.md");
         fs::create_dir_all(notes.parent().expect("a file has a folder")).expect("made");
         fs::write(&notes, "notes\n").expect("written");
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         skiff.places.name_scratch(QUEST, "notes").expect("named");
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
@@ -2264,13 +2560,7 @@ mod tests {
         let shares = |machine: &Machine| machine.places.ledgers().shares(QUEST);
         let notes = kestrel.places.scratch.join(QUEST).join("notes/plan.md");
         skiff.write("README.md", &readme("active"));
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         let working = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         far.users = Box::new(Working(working.clone()));
@@ -2329,13 +2619,7 @@ mod tests {
         skiff.write("README.md", "# Shared\n");
         put("notes/plan.md", "notes\n");
         put("notes/old.md", "old notes\n");
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         skiff.places.name_scratch(QUEST, "notes").expect("named");
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
@@ -2403,13 +2687,7 @@ mod tests {
             "crash/.git/HEAD",
             "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n",
         );
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         for folder in ["notes", "crash"] {
             skiff.places.name_scratch(QUEST, folder).expect("named");
         }
@@ -2454,13 +2732,7 @@ mod tests {
             fs::Permissions::from_mode(0o600),
         )
         .expect("made the owner's alone");
-        skiff
-            .places
-            .ledgers()
-            .hold(QUEST)
-            .expect("held")
-            .keep()
-            .expect("shared");
+        share(&skiff, QUEST);
         let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
         assert_eq!(

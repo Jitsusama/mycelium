@@ -363,7 +363,7 @@ fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> V
             machine
                 .declared
                 .as_ref()
-                .is_some_and(|declared| !declared.costs_money && declared.leaves_at.is_none())
+                .is_some_and(|declared| !declared.is_worker())
         })
         .filter(|machine| !history.came_from(here.name, &machine.name, now))
         .cloned()
