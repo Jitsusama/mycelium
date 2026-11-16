@@ -25,7 +25,7 @@
 //! fits work against the room a machine has: its room only ranks it.
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::hash::{BuildHasher, RandomState};
 
@@ -550,11 +550,21 @@ fn decide_at(
     pick: &mut dyn FnMut(usize) -> usize,
     weights: &Weights,
 ) -> Decision {
+    let lasting = lasting_reach(machines);
     let judged: Vec<Judged> = machines
         .iter()
         .map(|one| {
             let load = loads.get(&one.name).copied().unwrap_or_default();
-            judge(work, one, load, now, weights)
+            let mut judged = judge(work, one, load, now, weights);
+            if one.declared.as_ref().is_some_and(Declared::is_worker) && !names(work, one, &lasting)
+            {
+                judged.hard.push(Because::Refuses(Taint {
+                    key: WORKER.to_owned(),
+                    effect: Effect::Never,
+                    why: "it is lent or paid for, so it takes only work that names it".to_owned(),
+                }));
+            }
+            judged
         })
         .collect();
     // Machines that qualify, those not over first, then by how many
@@ -808,6 +818,34 @@ struct Judged {
     over: bool,
     /// Whether its room hasn't been said lately.
     unheard: bool,
+}
+
+/// The networks the person's own lasting machines reach, always or by a
+/// probe: what a worker alone reaches is the worker's, so work needing it
+/// names the worker, and what one of the person's own reaches names none.
+fn lasting_reach(machines: &[Machine]) -> BTreeSet<&str> {
+    machines
+        .iter()
+        .filter_map(|one| one.declared.as_ref())
+        .filter(|declared| !declared.is_worker())
+        .flat_map(|declared| {
+            let always = declared.reach.iter().map(String::as_str);
+            always.chain(declared.probes.keys().map(String::as_str))
+        })
+        .collect()
+}
+
+/// Whether `work` names `worker`: needs it by name, or needs a network
+/// none of the person's `lasting` machines reach, as `aquifer` is. Telling
+/// a worker's taint to be tolerated isn't naming it, nor is any other
+/// need, so work that says nothing of where it goes never goes to a
+/// machine that costs money, leaves, or holds what only it was lent.
+fn names(work: &Work, worker: &Machine, lasting: &BTreeSet<&str>) -> bool {
+    work.needs.iter().any(|need| match need {
+        Need::Machine(name) => *name == worker.name,
+        Need::Reach(network) => !lasting.contains(network.as_str()),
+        Need::System(_) | Need::Arch(_) | Need::Accelerator(_) => false,
+    })
 }
 
 fn judge(
