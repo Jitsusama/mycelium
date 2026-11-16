@@ -2,13 +2,11 @@
 //! bar what the node makes of them is held to: within the memory each
 //! test names, and in time that grows with the cells rather than faster.
 //! Its networks are held within the 30 MB the map and the launcher hold
-//! them to, each cell holding two trees. Its cells, a record each, are
-//! held within 80 MB, since ten thousand records of a dozen and more
-//! fields hold more than 30 MB themselves, until each is held as the
-//! bytes it is sent as, owed by 2026-11-17. The time is the processor's
-//! own for this
-//! thread, not the clock's, so a builder busy with other work, which only
-//! makes this thread wait its turn, can't fail it. The time itself, 100 ms
+//! them to, each cell holding two trees. Its cells, a record each held
+//! as the bytes it is sent as, are held within 30 MB too. The time is the
+//! processor's own for this thread, not the clock's, so a builder busy
+//! with other work, which only makes this thread wait its turn, can't
+//! fail it. The time itself, 100 ms
 //! on the machine the bar is set for, is no builder's to hold, since
 //! builders run it several times slower, so each test says it, and holds
 //! it only to a ceiling a builder meets, where the test names one:
@@ -25,6 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use mycelium::daemon::Record;
 use mycelium::node::Holding;
 use mycelium::record::Session;
 use serde_json::{Value, json};
@@ -58,13 +57,15 @@ mod counting;
 /// That the records `making` makes of ten thousand cells hold to the bar,
 /// more than `more_than` of them, as `formed` says they should be, the
 /// build holding at most `at_most` bytes beyond what it was given and
-/// taking as long as `growth` lets it.
+/// taking as long as `growth` lets it. Each cell's time at a tenth of the
+/// cells is told beside it, held or not, so a step at the cache's edge
+/// shows.
 pub fn holds_the_bar(
     more_than: usize,
     formed: &str,
     at_most: usize,
     growth: &Growth,
-    making: impl Fn(&Holding<'_>) -> BTreeMap<String, Value>,
+    making: impl Fn(&Holding<'_>) -> BTreeMap<String, Record>,
 ) {
     let realm = Realm::of(CELLS);
     let before = HELD.load(Ordering::Relaxed);
@@ -75,10 +76,21 @@ pub fn holds_the_bar(
     drop(records);
 
     let from = growth.from;
-    let (fewer, all) = fastest(&Realm::of(from), &realm, &making);
+    let tenth = CELLS / 10;
+    let [least, fewer, all] = fastest([&Realm::of(tenth), &Realm::of(from), &realm], &making);
     eprintln!(
-        "{from} cells took {fewer:?}; {CELLS} took {all:?}, holding {peak} bytes at most, \
-         {kept} of them the records themselves"
+        "{tenth} cells took {least:?}; {from} took {fewer:?}; {CELLS} took {all:?}, holding \
+         {peak} bytes at most, {kept} of them the records themselves"
+    );
+    eprintln!(
+        "each cell took {} at {tenth}, {} at {from} and {} at {CELLS}: {CELLS} took {:.1} \
+         times as long as {tenth}, which is told, and {:.1} times as long as {from}, which \
+         is held",
+        per_cell(least, tenth),
+        per_cell(fewer, from),
+        per_cell(all, CELLS),
+        all.as_secs_f64() / least.as_secs_f64(),
+        all.as_secs_f64() / fewer.as_secs_f64(),
     );
 
     let records = making(&realm.holding());
@@ -140,7 +152,7 @@ impl Realm {
 
     /// How long the processor took making the records `making` makes of
     /// it, on this thread.
-    fn timed(&self, making: &impl Fn(&Holding<'_>) -> BTreeMap<String, Value>) -> Duration {
+    fn timed(&self, making: &impl Fn(&Holding<'_>) -> BTreeMap<String, Record>) -> Duration {
         let holding = self.holding();
         let begun = thread_time();
         drop(making(&holding));
@@ -148,16 +160,24 @@ impl Realm {
     }
 }
 
-/// The least time the records `making` makes of `fewer` and of `all`
-/// took, of a few builds each, made in turn.
-fn fastest(
-    fewer: &Realm,
-    all: &Realm,
-    making: &impl Fn(&Holding<'_>) -> BTreeMap<String, Value>,
-) -> (Duration, Duration) {
-    (0..TIMINGS).fold((Duration::MAX, Duration::MAX), |(least, most), _| {
-        (least.min(fewer.timed(making)), most.min(all.timed(making)))
+/// The least time the records `making` makes of each of `realms` took,
+/// of a few builds each, made in turn.
+fn fastest<const N: usize>(
+    realms: [&Realm; N],
+    making: &impl Fn(&Holding<'_>) -> BTreeMap<String, Record>,
+) -> [Duration; N] {
+    (0..TIMINGS).fold([Duration::MAX; N], |mut least, _| {
+        for (fastest, realm) in least.iter_mut().zip(realms) {
+            *fastest = (*fastest).min(realm.timed(making));
+        }
+        least
     })
+}
+
+/// `took` for `cells`, said for one of them.
+fn per_cell(took: Duration, cells: usize) -> String {
+    let cells = u32::try_from(cells).unwrap_or(u32::MAX).max(1);
+    format!("{:?}", took / cells)
 }
 
 /// The teams of a realm of `cells`: one for every forty, some within

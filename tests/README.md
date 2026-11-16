@@ -23,9 +23,8 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `named.rs`: a node given `--machine` recording the name, and a command
   with none going by it rather than the system's
 - `networks.rs` and `cells.rs`: the node's network and cell records each
-  built for ten thousand cells within 30 MB and 80 MB, each cell holding
-  two trees (the cells' records held as bytes, back to 30 MB, by
-  2026-11-17), in time that grows with the cells, the memory counted by
+  built for ten thousand cells within 30 MB, each cell holding two
+  trees, in time that grows with the cells, the memory counted by
   an allocator of its own, which only a program of its own may hold
 - `realm/`: the realm of ten thousand cells both are built for, and the
   bar they are held to, with the counting allocator and thread time

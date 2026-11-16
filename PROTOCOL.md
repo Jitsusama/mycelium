@@ -1322,10 +1322,10 @@ its `builders`, and it is a `builder` record. A cell is heard when its
 session's, machine's or receptor's record was, and its records change
 as any of those do, so a machine's measure or a receptor's reading is
 sent at once. A watch is sent only the cells that changed, each with
-only the fields that moved. Ten thousand cells make their records
-within 80 MB while each holds two trees, most of it the records
-themselves, in time that grows with them. The target is 30 MB, once
-each record is held as the bytes it is sent as, owed by 2026-11-17.
+only the fields that moved. A node holds each record of every kind as
+the bytes it is sent as, and reads only the fields that moved, so ten
+thousand cells make their records within 30 MB while each holds two
+trees, in time that grows with them.
 
 The `tie` kind holds who talked with whom in the last day, made from the
 messages the node holds: never what a message said, nor its id, only

@@ -48,7 +48,7 @@ pub type Standing<'a> = dyn Fn(&Session) -> Option<&'static str> + 'a;
 /// as `standing` says. Each record carries the fields of the network the
 /// networks view makes, and is heard when the latest of its cells was, or
 /// its team where its cells say nothing.
-pub fn records(held: &Holding<'_>, standing: &Standing<'_>) -> BTreeMap<String, Value> {
+pub fn records(held: &Holding<'_>, standing: &Standing<'_>) -> BTreeMap<String, daemon::Record> {
     let Made {
         mut mycelium,
         heard,
@@ -130,15 +130,20 @@ pub(super) fn made(held: &Holding<'_>, standing: &Standing<'_>) -> Made {
 }
 
 /// The record of `kind` keyed `name`, heard at `heard`, holding `made`'s
-/// fields as the networks view says them. Its own `kind` is the
-/// interface's, so is said once, not kept again under `source` as
+/// fields as the networks view says them, as its bytes. Its own `kind` is
+/// the interface's, so is said once, not kept again under `source` as
 /// another's would be.
-pub(super) fn record(kind: &str, name: &str, heard: i64, made: &impl serde::Serialize) -> Value {
+pub(super) fn record(
+    kind: &str,
+    name: &str,
+    heard: i64,
+    made: &impl serde::Serialize,
+) -> daemon::Record {
     let mut fields = json_of(made);
     if let Some(fields) = fields.as_object_mut() {
         fields.remove("kind");
     }
-    daemon::record(kind, name, heard, fields)
+    daemon::Record::from(daemon::record(kind, name, heard, fields))
 }
 
 /// `session`'s record as the networks read it, `standing` as it does:

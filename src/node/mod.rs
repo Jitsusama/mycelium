@@ -1061,8 +1061,10 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
         kind == murmur::KIND
     }
 
-    fn records(&self, kind: &str) -> Option<BTreeMap<String, serde_json::Value>> {
-        match kind {
+    fn records(&self, kind: &str) -> Option<BTreeMap<String, daemon::Record>> {
+        let made = match kind {
+            network::KIND => return Some(self.network_records()),
+            cell::KIND => return Some(self.cell_records()),
             "session" => {
                 let parked = standing::parked(&self.parked);
                 let sessions = self.lock().state.sessions();
@@ -1088,8 +1090,6 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     .collect(),
             ),
             team::KIND => Some(self.team_records()),
-            network::KIND => Some(self.network_records()),
-            cell::KIND => Some(self.cell_records()),
             unanswered::KIND => Some(self.unanswered_records()),
             words::KIND => Some(self.word_records()),
             EVENT => Some(self.event_records()),
@@ -1100,7 +1100,14 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             murmur::KIND => Some(self.murmur_records()),
             tie::KIND => Some(self.tie_records()),
             _ => self.served.records(kind),
-        }
+        }?;
+        // Each held as its bytes as soon as it is made, so the kind is never
+        // held whole twice.
+        Some(
+            made.into_iter()
+                .map(|(key, record)| (key, daemon::Record::from(record)))
+                .collect(),
+        )
     }
 
     fn told(&self, kind: &str) -> Option<watch::Receiver<u64>> {
@@ -1729,13 +1736,13 @@ impl<S: Store> Shared<S> {
     /// The realm's networks as the daemon interface holds them, as the
     /// networks view makes them of the node's teams, sessions, machines,
     /// receptors and builders.
-    fn network_records(&self) -> BTreeMap<String, serde_json::Value> {
+    fn network_records(&self) -> BTreeMap<String, daemon::Record> {
         self.made_records(network::records)
     }
 
     /// The realm's cells as the daemon interface holds them, as the
     /// networks view makes them of the same records as its networks.
-    fn cell_records(&self) -> BTreeMap<String, serde_json::Value> {
+    fn cell_records(&self) -> BTreeMap<String, daemon::Record> {
         self.made_records(cell::records)
     }
 
@@ -1756,8 +1763,8 @@ impl<S: Store> Shared<S> {
     /// view reads it, each session standing as it does here.
     fn made_records(
         &self,
-        making: fn(&Holding<'_>, &Standing<'_>) -> BTreeMap<String, serde_json::Value>,
-    ) -> BTreeMap<String, serde_json::Value> {
+        making: fn(&Holding<'_>, &Standing<'_>) -> BTreeMap<String, daemon::Record>,
+    ) -> BTreeMap<String, daemon::Record> {
         let teams = self.team_records();
         let machines = self.machine_records();
         let receptors = self.receptor_records();

@@ -9,11 +9,13 @@
 //! so its presence's time moves; most take a step and use more, and a
 //! few stop working, as Joel's did over 90 s on 2026-11-15.
 //!
-//! The changes are found as a watch finds them, a few times each, and the
-//! median time said, with the bytes they serialize to.
+//! The changes are found as each of a number of watches finds them from
+//! one build, which works each moved record's change out once for all of
+//! them, a few times each, and the median time for all of them said, with
+//! the bytes one watch's serialize to.
 //!
 //! ```sh
-//! nix develop -c cargo bench --bench watched -- --cells 1000,10000
+//! nix develop -c cargo bench --bench watched -- --cells 1000,10000 --watchers 1,50
 //! ```
 
 use std::collections::BTreeMap;
@@ -22,7 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use mycelium::daemon::{changes, record};
+use mycelium::daemon::{Build, Record, record};
 use serde_json::{Value, json};
 
 /// What to measure.
@@ -31,6 +33,9 @@ struct Asked {
     /// How many cells each mycelium measured holds, apart by commas.
     #[arg(long, value_delimiter = ',', default_value = "1000,10000")]
     cells: Vec<usize>,
+    /// How many watches find each change, apart by commas.
+    #[arg(long, value_delimiter = ',', default_value = "1,50")]
+    watchers: Vec<usize>,
     /// How many times the changes are found.
     #[arg(long, default_value_t = 5)]
     runs: usize,
@@ -43,45 +48,53 @@ fn main() {
     let asked = Asked::parse();
     println!("{}", load());
     println!(
-        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "cells", "changed", "flat KB", "deep KB", "flat ms", "deep ms"
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "cells", "watches", "changed", "flat KB", "deep KB", "flat ms", "deep ms"
     );
     for cells in asked.cells {
         let (before, after) = made(cells);
-        let (flat, flat_took) = found(&before, &after, &[], asked.runs);
-        let deep = ["presence".to_owned()];
-        let (deep_said, deep_took) = found(&before, &after, &deep, asked.runs);
-        println!(
-            "{cells:>6} {:>8} {:>8.1} {:>8.1} {:>8.2} {:>8.2}",
-            flat.0,
-            kb(flat.1),
-            kb(deep_said.1),
-            millis(flat_took),
-            millis(deep_took),
-        );
+        for &watchers in &asked.watchers {
+            let (flat, flat_took) = found(&before, &after, &[], watchers, asked.runs);
+            let deep = ["presence".to_owned()];
+            let (deep_said, deep_took) = found(&before, &after, &deep, watchers, asked.runs);
+            println!(
+                "{cells:>6} {watchers:>8} {:>8} {:>8.1} {:>8.1} {:>8.2} {:>8.2}",
+                flat.0,
+                kb(flat.1),
+                kb(deep_said.1),
+                millis(flat_took),
+                millis(deep_took),
+            );
+        }
     }
 }
 
 /// A kind's records by key, each shared, as a watch holds them.
-type Shared = BTreeMap<String, Arc<Value>>;
+type Shared = BTreeMap<String, Arc<Record>>;
 
 /// How many records changed from `before` to `after` asked `deep`, and
-/// the bytes they serialize to, with the median time over `runs` to find
-/// them.
+/// the bytes they serialize to, with the median time over `runs` for
+/// `watchers` watches, each holding `before`, to find them from one build.
 fn found(
     before: &Shared,
     after: &Shared,
     deep: &[String],
+    watchers: usize,
     runs: usize,
 ) -> ((usize, usize), Duration) {
     let mut took = Vec::new();
     let mut said = (0, 0);
+    let held = Arc::new(before.clone());
     for _ in 0..runs.max(1) {
+        let build = Build::after(after.clone(), Some(Arc::clone(&held)));
         let finding = Instant::now();
-        let (changed, _) = changes(before, after, deep);
+        let mut found = Vec::new();
+        for _ in 0..watchers.max(1) {
+            found = build.changes(before, None, deep).0;
+        }
         took.push(finding.elapsed());
-        let bytes = serde_json::to_vec(&changed).map_or(0, |bytes| bytes.len());
-        said = (changed.len(), bytes);
+        let bytes = serde_json::to_vec(&found).map_or(0, |bytes| bytes.len());
+        said = (found.len(), bytes);
     }
     took.sort();
     (said, took[took.len() / 2])
@@ -116,8 +129,8 @@ fn made(cells: usize) -> (Shared, Shared) {
         let working = if random.below(20) == 0 { !busy } else { busy };
         let is = session(&id, beat, working, stepped, more, quest);
         let key = mycelium::daemon::key("session", &id);
-        before.insert(key.clone(), Arc::new(was));
-        after.insert(key, Arc::new(is));
+        before.insert(key.clone(), Arc::new(Record::from(was)));
+        after.insert(key, Arc::new(Record::from(is)));
     }
     (before, after)
 }
