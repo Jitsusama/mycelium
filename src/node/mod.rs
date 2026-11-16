@@ -1471,6 +1471,26 @@ impl Inner {
     }
 }
 
+/// The receptors the node judges in `folder`, if it has one, kept as each
+/// changes and telling `said` so.
+fn keep_receptors(
+    folder: Option<PathBuf>,
+    realm: &str,
+    said: &Arc<Said>,
+) -> (receptor::Held, Option<tokio::task::JoinHandle<()>>) {
+    let held = receptor::Held::default();
+    let keeping = folder.map(|folder| {
+        let telling = Arc::clone(said);
+        tokio::spawn(receptor::keep(
+            folder,
+            realm.to_owned(),
+            Arc::clone(&held),
+            move || telling.receptors_moved(),
+        ))
+    });
+    (held, keeping)
+}
+
 impl<S: Store> Shared<S> {
     /// What a node of `hello`'s machine and realm shares, from what it was
     /// `given`, telling `to_dial` of each machine it makes, with what its
@@ -1520,16 +1540,7 @@ impl<S: Store> Shared<S> {
         let to_read = sharing
             .as_ref()
             .map(|places| keep_forages(places, &forages, &said, &inner, &hello.machine));
-        let held = receptor::Held::default();
-        let keeping_receptors = receptors.map(|folder| {
-            let telling = Arc::clone(&said);
-            tokio::spawn(receptor::keep(
-                folder,
-                hello.realm.clone(),
-                Arc::clone(&held),
-                move || telling.receptors_moved(),
-            ))
-        });
+        let (held, keeping_receptors) = keep_receptors(receptors, &hello.realm, &said);
         let shared = Self {
             processes: processes.into(),
             // Beside the carries it judges, so it needs no place of its own.
@@ -7189,8 +7200,11 @@ mod tests {
         fs::create_dir_all(dir.path().join("skiff")).expect("the node's folder");
         fs::set_permissions(dir.path().join("skiff"), fs::Permissions::from_mode(0o700))
             .expect("the node's folder is its own");
-        fs::write(socket.with_file_name("stimuli.json"), r#"{"say": ["slack"]}"#)
-            .expect("the table is written");
+        fs::write(
+            socket.with_file_name("stimuli.json"),
+            r#"{"say": ["slack"]}"#,
+        )
+        .expect("the table is written");
         let store = Memory::default();
         let planted = Draft {
             from: "slack@skiff".to_owned(),
@@ -7229,7 +7243,12 @@ mod tests {
         let changed = messages.next().await;
         let said = &changed["changed"][0];
         assert_eq!(
-            (&said["from"], &said["groups"], &said["intent"], &said["text"]),
+            (
+                &said["from"],
+                &said["groups"],
+                &said["intent"],
+                &said["text"]
+            ),
             (
                 &json!("slack@skiff"),
                 &json!(["outside.slack"]),

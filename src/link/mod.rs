@@ -847,6 +847,26 @@ impl<S: Store> End<S> {
         self.kept(&record, self.store.put_told_carries(&self.other, carries));
     }
 
+    /// Keeps a message the other end sent, unless its body names another
+    /// id or it speaks as a receptor, which only its own machine's node
+    /// does.
+    fn hear_message(&mut self, id: &str, body: &Value) {
+        self.has.insert(id.to_owned());
+        let as_receptor = body
+            .get("from")
+            .and_then(Value::as_str)
+            .is_some_and(stimuli::speaks_as_receptor);
+        let refused = if as_receptor {
+            "only its own machine's node speaks as a receptor"
+        } else if body.get("id").and_then(Value::as_str) == Some(id) {
+            let kept = self.store.put_message(id, body);
+            return self.kept(id, kept);
+        } else {
+            "its body names another id"
+        };
+        self.kept(id, Err(io::Error::new(io::ErrorKind::InvalidData, refused)));
+    }
+
     async fn take(
         &mut self,
         frame: Frame,
@@ -876,32 +896,7 @@ impl<S: Store> End<S> {
                 self.has.extend(messages);
                 self.catch_up(writing).await?;
             }
-            Frame::Message { id, body } => {
-                self.has.insert(id.clone());
-                let as_receptor = body
-                    .get("from")
-                    .and_then(Value::as_str)
-                    .is_some_and(stimuli::speaks_as_receptor);
-                if as_receptor {
-                    self.kept(
-                        &id,
-                        Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "only its own machine's node speaks as a receptor",
-                        )),
-                    );
-                } else if body.get("id").and_then(Value::as_str) == Some(id.as_str()) {
-                    self.kept(&id, self.store.put_message(&id, &body));
-                } else {
-                    self.kept(
-                        &id,
-                        Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "its body names another id",
-                        )),
-                    );
-                }
-            }
+            Frame::Message { id, body } => self.hear_message(&id, &body),
             Frame::Presence {
                 session,
                 body,

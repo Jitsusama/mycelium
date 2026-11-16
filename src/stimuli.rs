@@ -208,7 +208,9 @@ mod tests {
         let mut signals = Signals::default();
         let now = at("2026-11-16T14:05:00Z");
         assert!(
-            signals.after(&github(1), &loud(), "kestrel", now).is_empty(),
+            signals
+                .after(&github(1), &loud(), "kestrel", now)
+                .is_empty(),
             "a receptor first seen says nothing"
         );
         let said = signals.after(&github(2), &loud(), "kestrel", now);
@@ -240,11 +242,15 @@ mod tests {
         let now = at("2026-11-16T14:05:00Z");
         signals.after(&github(2), &loud(), "kestrel", now);
         assert!(
-            signals.after(&github(2), &loud(), "kestrel", now).is_empty(),
+            signals
+                .after(&github(2), &loud(), "kestrel", now)
+                .is_empty(),
             "a count that holds says nothing"
         );
         assert!(
-            signals.after(&github(1), &loud(), "kestrel", now).is_empty(),
+            signals
+                .after(&github(1), &loud(), "kestrel", now)
+                .is_empty(),
             "a count that falls says nothing"
         );
         assert_eq!(
@@ -272,10 +278,15 @@ mod tests {
         let mut signals = Signals::default();
         let first = at("2026-11-16T14:05:00Z");
         signals.after(&github(1), &loud(), "kestrel", first);
-        assert_eq!(signals.after(&github(2), &loud(), "kestrel", first).len(), 1);
+        assert_eq!(
+            signals.after(&github(2), &loud(), "kestrel", first).len(),
+            1
+        );
         let soon = at("2026-11-16T14:14:59Z");
         assert!(
-            signals.after(&github(3), &loud(), "kestrel", soon).is_empty(),
+            signals
+                .after(&github(3), &loud(), "kestrel", soon)
+                .is_empty(),
             "within ten minutes, a climb waits"
         );
         let later = at("2026-11-16T14:15:00Z");
