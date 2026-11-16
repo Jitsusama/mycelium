@@ -441,6 +441,9 @@ where
     // before anything can ask, so the first reader of the machines finds
     // this one among them.
     let mut power = shared.keep_measured(&shared.measure());
+    // A word of this machine's own health moving is said at once rather
+    // than with the next minute's measure.
+    let mut health = shared.health.subscribe();
     tokio::pin!(stop);
     let result = loop {
         tokio::select! {
@@ -473,6 +476,8 @@ where
             // A park's marker says nothing of the session itself, so only
             // how it stands, which records read from the markers, moves.
             Some(()) = parks.recv() => shared.said.sessions.send_modify(|said| *said += 1),
+            // The slot lives as long as the node, so it never closes.
+            Ok(()) = health.changed() => shared.keep_health(health.borrow_and_update().clone()),
             // A holder that ended without letting its session go says
             // nothing, so what is held is looked at each minute too.
             _ = leaving.tick() => {
@@ -798,6 +803,9 @@ struct Shared<S> {
     /// daemon interface says beside the others rather than measuring it
     /// again for each reader, since a measure reads every part.
     measured: Arc<Mutex<Option<facts::Machine>>>,
+    /// This machine's own health, as its health daemon last said it, which
+    /// each measure and each link it keeps carries (`own_health`).
+    health: own_health::Slot,
     /// The records its watches read, built once for each change and shared
     /// by every connection's.
     built: Arc<daemon::Built>,
@@ -869,6 +877,7 @@ impl<S: Clone> Clone for Shared<S> {
             to_dial: self.to_dial.clone(),
             flows: self.flows.clone(),
             measured: self.measured.clone(),
+            health: self.health.clone(),
             built: self.built.clone(),
             receptors: self.receptors.clone(),
             forages: self.forages.clone(),
@@ -1276,8 +1285,9 @@ impl<S: Store> Shared<S> {
             health,
             scratch,
         } = given;
+        let own = own_health::Slot::new(None);
         if let Some(socket) = health {
-            tokio::spawn(own_health::keep(socket, own_health::here()));
+            tokio::spawn(own_health::keep(socket, own.clone()));
         }
         let said = Arc::<Said>::default();
         let inner = Arc::new(Mutex::new(Inner::after(&flows, &hello.realm)));
@@ -1330,6 +1340,7 @@ impl<S: Store> Shared<S> {
             said,
             flows: Arc::new(flows),
             measured: Arc::default(),
+            health: own,
             built: Arc::default(),
             receptors: held,
             forages,
@@ -1785,7 +1796,25 @@ impl<S: Store> Shared<S> {
     /// This machine as it is now, as its realm hears it: a handful of small
     /// files read, or one sysctl on a Mac, quick enough to answer in place.
     fn measure(&self) -> facts::Machine {
-        facts::measure_in(&self.machine, &self.realm, &facts::Sources::here())
+        let mut here = facts::measure_in(&self.machine, &self.realm, &facts::Sources::here());
+        here.health.clone_from(&self.health.borrow());
+        here
+    }
+
+    /// Keeps this machine's own `health`, just moved, in its last measure
+    /// and tells its readers the machines changed, without measuring the
+    /// rest again: a word moving is no reason to read the battery.
+    fn keep_health(&self, health: Option<own_health::Health>) {
+        let mut measured = self
+            .measured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(here) = measured.as_mut() else {
+            return;
+        };
+        here.health = health;
+        drop(measured);
+        self.said.machines.send_modify(|said| *said += 1);
     }
 
     /// Keeps this machine awake while what it holds is at work and it has
@@ -1972,6 +2001,7 @@ impl<S: Store> Shared<S> {
             Request::Free { .. } => Err("freeing a quest is answered by `frees`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
             Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
+            Request::Health => Err("health is answered by `own_health::tell`".to_owned()),
             Request::Turn { .. } => Err("a turn is answered by `take_turn`".to_owned()),
         }
     }
@@ -1988,6 +2018,7 @@ impl<S: Store> Shared<S> {
                 Arc::new(move |words: &[String]| dial.there(words))
             })),
             steers: self.steers.clone(),
+            health: Some(self.health.subscribe()),
         }
     }
 
@@ -2917,6 +2948,10 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             link::carried::to_link(&shared.asks, &machine, lines, writing).await;
             return;
         }
+        if let Ok(Request::Health) = request {
+            own_health::tell(shared.health.subscribe(), lines, &mut writing).await;
+            return;
+        }
         if let Ok(Request::Run(asked)) = request {
             hand_on_run(&shared, asked, lines, writing).await;
             return;
@@ -3340,6 +3375,7 @@ mod tests {
                     held: held_here,
                     asking,
                     steers,
+                    health: None,
                 };
                 // The test judges the link by what crosses it.
                 let _ = if proven {
@@ -3570,6 +3606,7 @@ mod tests {
             held: dir.path().join("work.held"),
             asking: None,
             steers: dir.path().join("steer"),
+            health: None,
         };
         let membership = Realm {
             name: "work".to_owned(),
@@ -7527,5 +7564,117 @@ mod tests {
         drop(stop);
         let stopped = node.await.expect("the node runs to its end");
         assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    /// The next line `lines` holds, read in time.
+    async fn next_line(
+        lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    ) -> String {
+        tokio::time::timeout(PATIENCE, lines.next_line())
+            .await
+            .expect("a line in time")
+            .expect("read")
+            .expect("a line")
+    }
+
+    #[tokio::test]
+    async fn a_node_says_its_own_health_to_whoever_watches_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let daemon = dir.path().join("system.sock");
+        let listener = UnixListener::bind(&daemon).expect("the stand-in daemon listens");
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let bound = bind(&socket).expect("the socket binds");
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let steers = dir.path().join("steer");
+        let node = tokio::spawn(async move {
+            let given = Given {
+                health: Some(daemon),
+                ..bare(steers, None)
+            };
+            let stopped = async {
+                let _ = stopped.await;
+            };
+            let nobody = Listed::<Ssh>(Vec::new());
+            run(Memory::default(), membership, nobody, given, bound, stopped).await
+        });
+
+        let (reading, mut writing) = UnixStream::connect(&socket)
+            .await
+            .expect("the watcher connects")
+            .into_split();
+        let mut watched = BufReader::new(reading).lines();
+        writing
+            .write_all(b"\"Health\"\n")
+            .await
+            .expect("the watcher asks");
+        let first: Reply = serde_json::from_str(&next_line(&mut watched).await).expect("a reply");
+        assert_eq!(first, Ok(Response::Health(None)), "unknown until said");
+
+        let (stream, _) = tokio::time::timeout(PATIENCE, listener.accept())
+            .await
+            .expect("the node asks its daemon in time")
+            .expect("the node connects");
+        let (asks, mut says) = stream.into_split();
+        let mut asks = BufReader::new(asks).lines();
+        for _ in 0..3 {
+            next_line(&mut asks).await;
+        }
+        let said = json!({"id": 1, "records": [
+            {"key": "summary", "kind": "summary", "health": "watch"},
+            {"key": "part:code", "kind": "part", "part": "code", "health": "watch"},
+        ]});
+        says.write_all(format!("{said}\n").as_bytes())
+            .await
+            .expect("the node reads");
+        let moved: Reply = serde_json::from_str(&next_line(&mut watched).await).expect("a reply");
+        let Ok(Response::Health(Some(health))) = moved else {
+            panic!("a health: {moved:?}");
+        };
+        assert_eq!(health.health, "watch");
+        assert_eq!(health.parts["code"], "watch");
+
+        let Ok(Response::Machines(machines)) = ask(socket.clone(), Request::Machines).await else {
+            panic!("the machines");
+        };
+        assert_eq!(
+            machines[0].health.as_ref(),
+            Some(&health),
+            "its measure carries it"
+        );
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    #[tokio::test]
+    async fn a_word_moving_is_kept_in_the_last_measure_at_once() {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            membership.hello(),
+            bare("/nowhere/steer".into(), None),
+            to_dial,
+        );
+        shared.keep_measured(&shared.measure());
+        let mut machines = shared.said.machines.subscribe();
+        machines.borrow_and_update();
+        let health = own_health::Health {
+            health: "bad".to_owned(),
+            parts: BTreeMap::from([("code".to_owned(), "bad".to_owned())]),
+        };
+        shared.keep_health(Some(health.clone()));
+        assert!(
+            machines.has_changed().expect("still kept"),
+            "its readers are told"
+        );
+        assert_eq!(shared.known_machines()[0].health, Some(health));
     }
 }

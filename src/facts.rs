@@ -86,7 +86,8 @@ pub struct Machine {
     pub updated: Option<serde_json::Value>,
     /// How it stands, as its own health daemon says ([`own_health`]):
     /// unknown where its node asks none, none answers, or the node is too
-    /// old to say.
+    /// old to say. Measuring leaves it unknown; the node and its links set
+    /// it from the health they keep.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -262,7 +263,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         declared,
         reached: reach::read(&sources.reached, now.as_second()),
         updated: update::last(&sources.updated),
-        health: own_health::said(),
+        health: None,
     }
 }
 

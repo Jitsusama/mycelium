@@ -45,6 +45,11 @@ pub struct Starting {
     /// end carries is written into, and whose talks' replies are carried
     /// back.
     pub steers: PathBuf,
+    /// This machine's own health as the node keeps it, which the link
+    /// carries in this machine's facts and says again each time it moves.
+    /// None for a link another machine dialled, which watches it over the
+    /// node's socket instead.
+    pub health: Option<crate::own_health::Told>,
 }
 
 /// How a link carries what this machine's node asks of the other machine.
