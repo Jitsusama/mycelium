@@ -298,6 +298,17 @@ mod tests {
             Some(after["session:kestrel"]["presence"].clone()),
             "a field not asked deep comes whole, as before"
         );
+        let nulled = one(json!({
+            "key": "session:kestrel", "step": "read", "standing": "running",
+            "presence": {"at": 1, "cwd": null, "owner": "kestrel",
+                "landings": [{"what": "Hear the Tide"}]},
+        }));
+        assert_eq!(
+            changes(&before, &nulled, &deep).0,
+            vec![json!({"key": "session:kestrel", "presence": {"cwd": null}})],
+            "a field inside one asked deep that becomes null is said as null, as one dropped \
+             is, so a reader takes null for either"
+        );
     }
 
     /// A daemon holding one session, which counts how often its records

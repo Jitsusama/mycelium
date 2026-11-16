@@ -5047,10 +5047,11 @@ mod tests {
         );
 
         put(false, "look", &at(3));
+        // The same deep in another order, and said twice, is the same watch.
         client
             .ask(json!({
                 "id": 4, "ask": "watch", "kind": "session",
-                "deep": ["presence", "standing"],
+                "deep": ["standing", "presence", "presence"],
             }))
             .await;
         let opened = client.next().await;
@@ -5061,7 +5062,8 @@ mod tests {
                 &opened["changed"][0]["presence"]["step"]
             ),
             (None, None, &json!("look")),
-            "asked again under the same deep watch, what it held back comes deep too: {opened}"
+            "asked again with the same deep, in any order, what it held back comes deep too, \
+             not every record whole: {opened}"
         );
     }
 
