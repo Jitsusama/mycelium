@@ -15,7 +15,15 @@ use tokio::io::AsyncReadExt;
 const ANSWERED_WITHIN: Duration = Duration::from_secs(3);
 
 /// How long SSH may take to say where a host is.
+#[cfg(not(test))]
 const RESOLVED_WITHIN: Duration = Duration::from_secs(3);
+
+/// How long a test's stand-in for SSH may take to say where a host is.
+/// A Mac scans a program written a moment ago the first time it runs,
+/// which on a loaded Mac takes longer than SSH ever does to read its
+/// configuration, so a stand-in is given the time a slow start needs.
+#[cfg(test)]
+const RESOLVED_WITHIN: Duration = Duration::from_secs(30);
 
 /// Where SSH reaches a host, as its configuration says.
 #[derive(Debug, Clone, PartialEq, Eq)]
