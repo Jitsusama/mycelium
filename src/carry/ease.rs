@@ -457,8 +457,6 @@ fn why(here: &str, to: &str, reading: &Reading, history: &History) -> String {
 
 #[cfg(test)]
 pub(super) mod tests {
-    use std::collections::BTreeMap;
-
     use serde_json::json;
 
     use super::*;
@@ -485,32 +483,15 @@ pub(super) mod tests {
             runs: Vec::new(),
         };
         Declared {
-            reach: Vec::new(),
-            probes: BTreeMap::new(),
-            outlives: Vec::new(),
-            costs_money: false,
-            taints: Vec::new(),
-            cores: None,
-            agents: BTreeMap::new(),
-            leaves_at: None,
-            within: None,
-            hosts: Vec::new(),
             fence: Some(kinds.iter().map(|&kind| (kind, open.clone())).collect()),
+            ..Declared::default()
         }
     }
 
     /// A ready machine of 16 cores and 64 GiB, with processor pressure
     /// `cpu`, declaring a session fenced.
     fn machine(name: &str, cpu: f64) -> Machine {
-        let nowhere = Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
-        let mut machine = facts::measure(name, &nowhere);
+        let mut machine = facts::measure(name, &Sources::nowhere());
         machine.state = Readiness::Ready;
         machine.cpu.cores = Some(16);
         machine.cpu.busy = None;

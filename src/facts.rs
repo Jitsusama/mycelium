@@ -127,6 +127,21 @@ impl Sources {
             updated: place::updated(),
         }
     }
+
+    /// Nothing beyond the machine itself: no queue, guard, declaration,
+    /// reached networks or update, and the root's disk. A machine
+    /// measured from them still says its own processors and memory.
+    #[cfg(test)]
+    pub(crate) fn nowhere() -> Self {
+        Self {
+            home: "/".into(),
+            queue: None,
+            disk_guard: None,
+            declared: None,
+            reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
+        }
+    }
 }
 
 /// Whether a machine takes work. A node answering for itself is ready,
@@ -777,17 +792,9 @@ mod tests {
 
     #[test]
     fn a_machine_naming_a_band_this_build_doesnt_know_keeps_the_rest() {
-        let nowhere = Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
         let mut said = serde_json::to_value(Machine {
             disk_band: Some(Band::Filling),
-            ..measure("osprey", &nowhere)
+            ..measure("osprey", &Sources::nowhere())
         })
         .expect("a machine says itself");
         assert_eq!(said["disk_band"], "filling", "its band is said");

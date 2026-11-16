@@ -164,17 +164,8 @@ mod tests {
 
     fn declaring(fence: Option<BTreeMap<Kind, Doors>>) -> Declared {
         Declared {
-            reach: Vec::new(),
-            probes: BTreeMap::new(),
-            outlives: Vec::new(),
-            costs_money: false,
-            taints: Vec::new(),
-            cores: None,
-            agents: BTreeMap::new(),
-            leaves_at: None,
-            within: None,
-            hosts: Vec::new(),
             fence,
+            ..Declared::default()
         }
     }
 
@@ -183,18 +174,10 @@ mod tests {
     }
 
     fn tern(fence: Option<BTreeMap<Kind, Doors>>, state: Readiness) -> Machine {
-        let nowhere = facts::Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
         Machine {
             state,
             declared: Some(declaring(fence)),
-            ..facts::measure("tern", &nowhere)
+            ..facts::measure("tern", &facts::Sources::nowhere())
         }
     }
 

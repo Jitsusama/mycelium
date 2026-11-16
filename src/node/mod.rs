@@ -4655,29 +4655,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let nowhere = facts::Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
         let lent = |name: &str, leaves: jiff::Timestamp| facts::Machine {
             declared: Some(crate::declared::Declared {
-                reach: Vec::new(),
-                probes: BTreeMap::new(),
-                outlives: Vec::new(),
                 costs_money: true,
-                taints: Vec::new(),
-                cores: None,
-                agents: BTreeMap::new(),
                 leaves_at: Some(leaves),
-                within: None,
-                hosts: Vec::new(),
-                fence: None,
+                ..crate::declared::Declared::default()
             }),
-            ..facts::measure(name, &nowhere)
+            ..facts::measure(name, &facts::Sources::nowhere())
         };
         let now = jiff::Timestamp::now();
         let minute = jiff::SignedDuration::from_mins(1);
@@ -4741,17 +4725,9 @@ mod tests {
 
     /// What kestrel says of itself, as measured at `at`.
     fn kestrel_at(at: &str) -> facts::Machine {
-        let nowhere = facts::Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
         facts::Machine {
             measured_at: at.to_owned(),
-            ..facts::measure("kestrel", &nowhere)
+            ..facts::measure("kestrel", &facts::Sources::nowhere())
         }
     }
 
@@ -5528,14 +5504,6 @@ mod tests {
     /// building only on `builders`, reaching no forge and released no
     /// secret.
     fn fenced(name: &str, builders: &[&str]) -> facts::Machine {
-        let nowhere = facts::Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
         let strict = crate::declared::Doors {
             builders: builders.iter().map(|&one| one.to_owned()).collect(),
             forges: std::collections::BTreeSet::new(),
@@ -5544,19 +5512,10 @@ mod tests {
         };
         facts::Machine {
             declared: Some(crate::declared::Declared {
-                reach: Vec::new(),
-                probes: BTreeMap::new(),
-                outlives: Vec::new(),
-                costs_money: false,
-                taints: Vec::new(),
-                cores: None,
-                agents: BTreeMap::new(),
-                leaves_at: None,
-                within: None,
-                hosts: Vec::new(),
                 fence: Some(BTreeMap::from([(crate::declared::Kind::Strict, strict)])),
+                ..crate::declared::Declared::default()
             }),
-            ..facts::measure(name, &nowhere)
+            ..facts::measure(name, &facts::Sources::nowhere())
         }
     }
 
@@ -9502,14 +9461,6 @@ mod tests {
         }
         let providers = ["/usr/bin/lend".to_owned(), format!("{new}-hire-1/bin/hire")];
         let store = Memory::default();
-        let nowhere = facts::Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
         store
             .put_machine(&facts::Machine {
                 declared: Some(crate::declared::Declared {
@@ -9525,7 +9476,7 @@ mod tests {
                     hosts: Vec::new(),
                     fence: None,
                 }),
-                ..facts::measure("kestrel", &nowhere)
+                ..facts::measure("kestrel", &facts::Sources::nowhere())
             })
             .expect("what it said is kept");
         let (to_dial, mut dialled) = mpsc::unbounded_channel();

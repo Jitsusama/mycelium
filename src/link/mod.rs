@@ -1851,6 +1851,34 @@ mod tests {
         }
     }
 
+    /// Skiff's end of a link run over a pipe, on `store`, its connection
+    /// as `shaped` makes it, sharing `shares`, and the far end's halves of
+    /// the pipe.
+    fn skiff_over(
+        store: Memory,
+        shaped: impl FnOnce(Connection) -> Connection + Send + 'static,
+        shares: Option<Places>,
+    ) -> (
+        tokio::task::JoinHandle<io::Result<Ending>>,
+        ReadHalf<DuplexStream>,
+        WriteHalf<DuplexStream>,
+    ) {
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        let skiff_end = tokio::spawn(async move {
+            run(
+                store,
+                &realm("skiff"),
+                shaped(connection(reading, writing)),
+                shares,
+                None,
+            )
+            .await
+        });
+        let (far_reading, far_writing) = tokio::io::split(far);
+        (skiff_end, far_reading, far_writing)
+    }
+
     fn connection(reading: ReadHalf<DuplexStream>, writing: WriteHalf<DuplexStream>) -> Connection {
         Connection {
             reading: Box::new(reading),
@@ -2339,12 +2367,8 @@ mod tests {
                     continue;
                 }
                 let sources = facts::Sources {
-                    home: "/".into(),
-                    queue: None,
-                    disk_guard: None,
                     declared: Some(declared.clone()),
-                    reached: "/nowhere".into(),
-                    updated: "/nowhere".into(),
+                    ..facts::Sources::nowhere()
                 };
                 let measured = facts::measure_in("kestrel", "work", &sources);
                 let reply: Reply = Ok(Response::Machine(Box::new(measured)));
@@ -2391,15 +2415,7 @@ mod tests {
             "an end that doesn't say it knows of machines hears none: {heard:?}"
         );
 
-        let nowhere = facts::Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
-        let mut tern = facts::measure("tern", &nowhere);
+        let mut tern = facts::measure("tern", &facts::Sources::nowhere());
         tern.state = Readiness::Ready;
         for frame in [
             Frame::Have {
@@ -2966,22 +2982,14 @@ mod tests {
     async fn a_link_that_can_release_ends_once_the_other_machine_hands_over() {
         let skiff = Memory::default();
         let store = skiff.clone();
-        let (near, far) = tokio::io::duplex(1 << 16);
-        let (reading, writing) = tokio::io::split(near);
-        let skiff_end = tokio::spawn(async move {
-            run(
-                store,
-                &realm("skiff"),
-                Connection {
-                    releases: true,
-                    ..connection(reading, writing)
-                },
-                None,
-                None,
-            )
-            .await
-        });
-        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let (skiff_end, far_reading, mut far_writing) = skiff_over(
+            store,
+            |connection| Connection {
+                releases: true,
+                ..connection
+            },
+            None,
+        );
         let mut lines = BufReader::new(far_reading).lines();
         let first = lines
             .next_line()
@@ -3091,22 +3099,14 @@ mod tests {
 
         let skiff = Memory::default();
         let store = skiff.clone();
-        let (near, far) = tokio::io::duplex(1 << 16);
-        let (reading, writing) = tokio::io::split(near);
-        let _skiff_end = tokio::spawn(async move {
-            run(
-                store,
-                &realm("skiff"),
-                Connection {
-                    worker: true,
-                    ..connection(reading, writing)
-                },
-                Some(here),
-                None,
-            )
-            .await
-        });
-        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let (_skiff_end, far_reading, mut far_writing) = skiff_over(
+            store,
+            |connection| Connection {
+                worker: true,
+                ..connection
+            },
+            Some(here),
+        );
         let mut lines = BufReader::new(far_reading).lines();
 
         let message = recent(0, "SAK9FZ", 0);
@@ -3231,22 +3231,14 @@ mod tests {
             json!({"id": held, "to": ["@SAK9FZ"], "text": "ours"}),
         );
         let store = skiff.clone();
-        let (near, far) = tokio::io::duplex(1 << 16);
-        let (reading, writing) = tokio::io::split(near);
-        let _skiff_end = tokio::spawn(async move {
-            run(
-                store,
-                &realm("skiff"),
-                Connection {
-                    worker: true,
-                    ..connection(reading, writing)
-                },
-                None,
-                None,
-            )
-            .await
-        });
-        let (_far_reading, mut far_writing) = tokio::io::split(far);
+        let (_skiff_end, _far_reading, mut far_writing) = skiff_over(
+            store,
+            |connection| Connection {
+                worker: true,
+                ..connection
+            },
+            None,
+        );
 
         let (posing, own) = (recent(0, "OSPR01", 1), recent(0, "SAK9FZ", 2));
         let message = |id: &str, from: &str, text: &str| Frame::Message {
@@ -3476,22 +3468,14 @@ mod tests {
 
         let skiff = Memory::default();
         let store = skiff.clone();
-        let (near, far) = tokio::io::duplex(1 << 16);
-        let (reading, writing) = tokio::io::split(near);
-        let skiff_end = tokio::spawn(async move {
-            run(
-                store,
-                &realm("skiff"),
-                Connection {
-                    releases: true,
-                    ..connection(reading, writing)
-                },
-                Some(home),
-                None,
-            )
-            .await
-        });
-        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let (skiff_end, far_reading, mut far_writing) = skiff_over(
+            store,
+            |connection| Connection {
+                releases: true,
+                ..connection
+            },
+            Some(home),
+        );
         let mut lines = BufReader::new(far_reading).lines();
 
         // The lent machine offers its README and hands over at once, then
@@ -3636,15 +3620,7 @@ mod tests {
 
     /// tern as it measures itself, ready, declaring nothing of itself.
     fn tern_undeclared() -> Machine {
-        let nowhere = facts::Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
-        let mut tern = facts::measure("tern", &nowhere);
+        let mut tern = facts::measure("tern", &facts::Sources::nowhere());
         tern.state = Readiness::Ready;
         tern
     }

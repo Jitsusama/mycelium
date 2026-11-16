@@ -413,15 +413,7 @@ mod tests {
     /// A ready machine of `cores` and `gib` GiB, with `free` GiB available
     /// and processor pressure `cpu`, measured `age` seconds ago.
     fn machine(name: &str, cores: u32, gib: u64, free: u64, cpu: f64, age: i64) -> Machine {
-        let nowhere = Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
-        let mut machine = facts::measure(name, &nowhere);
+        let mut machine = facts::measure(name, &Sources::nowhere());
         machine.state = Readiness::Ready;
         machine.cpu.cores = Some(cores);
         // As this machine's own cores are, never: a test reads the same
