@@ -415,7 +415,7 @@ enum Action {
     /// as the join there does, with its code; with 0 once this machine's
     /// node says the session has ended; and with 130 on Ctrl+C.
     #[command(
-        after_help = "Example:\n  mycelium attach --host work-attended \\\n    --session 01a1d045-d580-7000-8000-000000000000\n  mycelium attach --on kestrel 5e551011"
+        after_help = "Example:\n  mycelium attach --host work-attended \\\n    --session 01a1d045-d580-7000-8000-000000000000"
     )]
     Attach(Attaching),
     /// `holds`, as it was spelt before.
