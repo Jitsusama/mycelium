@@ -535,9 +535,11 @@ impl Exchange {
     /// Withholds from the other end every quest shared only for those under
     /// it, as from a worker, or carries them again. A worker isn't one of
     /// the person's own machines, so nothing travels there but the work:
-    /// none of what orchestrates it, not even a README.
+    /// none of what orchestrates it, not even a README. A worker's
+    /// ([`Self::for_worker`]) are withheld for good, whatever its machine
+    /// says of itself.
     pub fn withhold_above(&mut self, withheld: bool) {
-        self.above_withheld = withheld;
+        self.above_withheld = withheld || self.worker;
     }
 
     /// Whether the quest `ledger` keeps is withheld from the other end: one
@@ -586,11 +588,13 @@ impl Exchange {
     /// given to it ([`Places::give`]), and takes from it only those and the
     /// quests it began, which this machine held none of, so a worker can
     /// neither read nor write over a quest of this machine's it wasn't
-    /// given.
+    /// given. Every quest shared only for those under it is withheld from
+    /// it for good ([`Self::withhold_above`]), given or not.
     #[must_use]
     pub fn for_worker(self) -> Self {
         Self {
             worker: true,
+            above_withheld: true,
             ..self
         }
     }
