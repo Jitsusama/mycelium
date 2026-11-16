@@ -205,6 +205,37 @@ impl Mycelium {
     }
 }
 
+/// A cell called `name` that is `is`, saying nothing more: what a
+/// machine, a receptor or a builder fills in of its own.
+fn bare(name: String, is: Is) -> Cell {
+    Cell {
+        kind: "cell",
+        name,
+        is,
+        title: None,
+        id: None,
+        window: None,
+        standing: None,
+        doing: None,
+        asks: None,
+        repo: None,
+        usage: Usage::default(),
+        leads: Vec::new(),
+        machine: None,
+        since: None,
+        quest: None,
+        plan: None,
+        cwd: None,
+        state: None,
+        busy: None,
+        runs: None,
+        counts: None,
+        builds: None,
+        trees: Vec::new(),
+        networks: Vec::new(),
+    }
+}
+
 /// A receptor's record as a cell, named for its source and its machine,
 /// or none for one naming no source a receptor senses, or no machine.
 fn receptor_cell(record: &Value) -> Option<Cell> {
@@ -222,31 +253,15 @@ fn receptor_cell(record: &Value) -> Option<Cell> {
         .ok()
         .and_then(|state| serde_json::to_value(state).ok())
         .and_then(|word| word.as_str().map(str::to_owned));
+    let name = format!("{}@{machine}", source.name());
     Some(Cell {
-        kind: "cell",
-        name: format!("{}@{machine}", source.name()),
-        is: Is::Receptor,
         title: Some(source.title().to_owned()),
-        id: None,
-        window: None,
-        standing: None,
-        doing: None,
-        asks: None,
-        repo: None,
-        usage: Usage::default(),
-        leads: Vec::new(),
         machine: Some(machine),
         since,
-        quest: None,
-        plan: None,
-        cwd: None,
         state,
-        busy: None,
-        runs: None,
         counts: serde_json::from_value::<Counts>(record["counts"].clone()).ok(),
-        builds: None,
-        trees: Vec::new(),
         networks: vec![source.network()],
+        ..bare(name, Is::Receptor)
     })
 }
 
@@ -323,26 +338,8 @@ fn builder_cell(builder: &Value) -> Option<Cell> {
             .collect()
     };
     Some(Cell {
-        kind: "cell",
-        name: name.to_owned(),
-        is: Is::Builder,
         title: Some("builder".to_owned()),
-        id: None,
-        window: None,
-        standing: None,
-        doing: None,
-        asks: None,
-        repo: None,
-        usage: Usage::default(),
-        leads: Vec::new(),
-        machine: None,
-        since: None,
-        quest: None,
-        plan: None,
-        cwd: None,
         state: builder["state"].as_str().map(str::to_owned),
-        busy: None,
-        runs: None,
         builds: Some(Box::new(Builds {
             systems: words("systems"),
             jobs: builder["jobs"].as_u64().unwrap_or_default(),
@@ -350,9 +347,8 @@ fn builder_cell(builder: &Value) -> Option<Cell> {
             lent: builder["lent"].as_bool().unwrap_or_default(),
             said: builder["said"].as_str().map(str::to_owned),
         })),
-        counts: None,
-        trees: Vec::new(),
         networks: vec![MACHINES.to_owned()],
+        ..bare(name.to_owned(), Is::Builder)
     })
 }
 
@@ -501,30 +497,12 @@ fn machine_cell(machine: &Value, runs: &HashMap<&str, usize>) -> Cell {
     let name = machine["name"].as_str().unwrap_or_default().to_owned();
     let runs = runs.get(name.as_str()).copied().unwrap_or_default();
     Cell {
-        kind: "cell",
         title: machine["model_name"].as_str().map(str::to_owned),
-        is: Is::Machine,
-        id: None,
-        window: None,
-        standing: None,
-        doing: None,
-        asks: None,
-        repo: None,
-        usage: Usage::default(),
-        leads: Vec::new(),
-        machine: None,
-        since: None,
-        quest: None,
-        plan: None,
-        cwd: None,
         state: machine["state"].as_str().map(str::to_owned),
         busy: machine["room"]["pressure"]["cpu"].as_f64(),
         runs: Some(runs),
-        counts: None,
-        builds: None,
-        trees: Vec::new(),
         networks: vec![MACHINES.to_owned()],
-        name,
+        ..bare(name, Is::Machine)
     }
 }
 

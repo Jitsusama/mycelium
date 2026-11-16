@@ -684,6 +684,13 @@ fn json_lines_say_each_network_then_each_cell() {
         "a session cell whole"
     );
     assert_eq!(
+        lines[9],
+        json!({"kind": "cell", "name": "skiff", "type": "machine",
+               "title": "Skiff 14", "state": "ready", "busy": 41.6, "runs": 3,
+               "networks": ["machines"]}),
+        "a machine cell whole"
+    );
+    assert_eq!(
         (&lines[6]["leads"], &lines[6]["repo"], &lines[6]["usage"]),
         (
             &json!(["orchestration.harbor"]),
