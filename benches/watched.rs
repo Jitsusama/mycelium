@@ -163,7 +163,7 @@ fn session(id: &str, at: i64, busy: bool, step: usize, used: usize, quest: usize
             "plan": "PLAN-20261112-TIDE00",
         },
         "owns": ["skiff's tide tables", "kestrel's charts", "harbour's bells"],
-        "owner": {"bootId": "0f3c-skiff-kestrel-boot", "pid": 4_242, "host": "equilibrius",
+        "owner": {"bootId": "0f3c-skiff-kestrel-boot", "pid": 4_242, "host": "osprey",
                   "cwd": "/home/kestrel/src/skiff"},
         "usage": {
             "input": used,

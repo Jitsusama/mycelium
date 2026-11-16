@@ -4732,9 +4732,9 @@ mod tests {
     #[tokio::test]
     async fn a_watch_asked_deep_hears_only_what_moved_in_a_presence() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         let hello = client.next().await;
@@ -4753,7 +4753,7 @@ mod tests {
                 "worksOn": "charting the skiff's tides",
             });
             store
-                .put_presence("kestrel", "equilibrius", &presence)
+                .put_presence("kestrel", "osprey", &presence)
                 .expect("the presence is kept");
         };
         let at = |seconds: i64| {
