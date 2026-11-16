@@ -937,8 +937,12 @@ the machine's own built configuration writes it, as
 the machine enforces its own taints. A node started with
 `--declared <file>` reads that file instead, for everything it and the
 links in its process say and run, and never the account's own, which
-anything running as the account could rewrite. It is `null` where nothing is
-declared, or where the file isn't in this shape, which the node logs.
+anything running as the account could rewrite. An end of a link another
+machine dialled runs apart from the node, so it asks the node for
+`Machine` and says that; while no node answers within 5 seconds, it
+says only what it measures, with nothing declared. It is `null` where
+nothing is declared, or where the file isn't in this shape, which the
+node logs.
 
 Its `reached` says whether each probed network answered, by name. The
 node tries each probe every 30 seconds, giving each 3 to answer (a
