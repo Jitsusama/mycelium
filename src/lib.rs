@@ -77,6 +77,7 @@ pub mod flow;
 pub mod group;
 pub mod handover;
 pub mod health;
+pub mod hindsight;
 pub mod hold;
 pub mod hosted_attach;
 pub mod install;

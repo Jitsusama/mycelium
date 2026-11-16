@@ -67,6 +67,13 @@ The harness mesh's messages and presence, carried between machines:
   other idles, and facts too old to place by. `--follow` reads each
   minute, says the flags seen in most of the last ten, and keeps each
   line in the state folder's `balance`, one file a day.
+- `mycelium placements` judges in hindsight how well this node placed
+  work over the last hour (`--hours` for more), from the placements it
+  kept and the balance kept beside them, as one JSON line: each
+  placement whose machine, a minute on, carried more than another with
+  room by more than the dead band, each herd of three or more onto one
+  machine within a minute while another had more headroom, and flags
+  for regrets past a tenth and for herds.
 - `mycelium unanswered` prints what holds the mesh up as JSON lines,
   oldest first: each question of the last two hours still waiting on a
   peer it was put to, and each hold still standing. `mycelium said`
