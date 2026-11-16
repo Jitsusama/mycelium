@@ -1263,6 +1263,13 @@ mod tests {
     /// (2026-11-16).
     const PATIENCE: Duration = Duration::from_secs(60);
 
+    /// The size of the window each test joins with. The tests that ask
+    /// `stty size` look for its "30 100", so change them with it.
+    const WINDOW: Size = Size {
+        rows: 30,
+        cols: 100,
+    };
+
     /// A terminal joined to a holder: what it types, and what it shows.
     struct Joined {
         typing: DuplexStream,
@@ -1332,6 +1339,16 @@ mod tests {
         })
         .await;
         assert!(found.is_ok(), "{} never appeared", path.display());
+    }
+
+    /// What the program `holder` held exited with, once the holder ends
+    /// with it.
+    async fn exited(holder: JoinHandle<io::Result<Option<i32>>>) -> Option<i32> {
+        tokio::time::timeout(PATIENCE, holder)
+            .await
+            .expect("the holder ends with its program")
+            .expect("the holder's task ran")
+            .expect("it held")
     }
 
     /// Holds `sh` in a new folder of held sessions, answering the folder,
@@ -1495,10 +1512,7 @@ mod tests {
         let (dir, held, holder) = holding_sh(root.path()).await;
         assert_eq!(listed(&dir), vec![held.clone()], "what is held is listed");
 
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut first = Joined::join(socket(&dir, &held.id), size, None);
         first
             .types("echo \"[$MYCELIUM_HELD in $MYCELIUM_REALM] $((40 + 2))\"\r")
@@ -1522,15 +1536,8 @@ mod tests {
         again.sees("40 120").await;
 
         again.types("exit 3\r").await;
-        let ended = tokio::time::timeout(PATIENCE, holder)
-            .await
-            .expect("the holder ends with its program")
-            .expect("the holder's task ran");
-        assert_eq!(
-            ended.expect("it held"),
-            Some(3),
-            "it answers the program's exit code"
-        );
+        let ended = exited(holder).await;
+        assert_eq!(ended, Some(3), "it answers the program's exit code");
         let left = tokio::time::timeout(PATIENCE, again.task)
             .await
             .expect("the terminal is let go");
@@ -1549,10 +1556,7 @@ mod tests {
     async fn a_program_joined_at_the_size_it_has_is_told_its_size_changed() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut first = Joined::join(socket(&dir, &held.id), size, None);
         // It reads its size only when told, after the sleep it is in, as a
         // program busy drawing reads it after its frame. A shell of its
@@ -1576,10 +1580,7 @@ mod tests {
     async fn a_window_that_falls_behind_a_flood_is_drawn_whole_again() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         // It draws itself whole whenever it's told its size changed, as pi
         // does, and floods far past what a window may fall behind by, as a
         // build's output can while the window can't keep up.
@@ -1606,10 +1607,7 @@ mod tests {
     async fn a_terminal_joining_later_is_given_the_modes_the_program_asked_for() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut first = Joined::join(socket(&dir, &held.id), size, None);
         // What is typed comes back as typed, its escapes spelt out, so only
         // the program's own output carries the modes themselves.
@@ -1628,10 +1626,7 @@ mod tests {
     async fn a_terminal_joining_later_is_given_the_title_the_program_set() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut first = Joined::join(socket(&dir, &held.id), size, None);
         // Spelt out as typed, so only the program's own output sets it.
         first
@@ -1674,10 +1669,7 @@ mod tests {
                 app_id: None,
             })
         };
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
 
         let mut first = Joined::join(socket(&dir, &held.id), size, kitty("13"));
         first.types("echo one-$((0 + 1))\r").await;
@@ -1728,10 +1720,7 @@ mod tests {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window.types("echo first $((40 + 2)); exit 75\r").await;
         window.sees("first 42").await;
@@ -1872,10 +1861,7 @@ mod tests {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window.types("echo first $((40 + 2)); exit 75\r").await;
         window.sees("first 42").await;
@@ -1902,10 +1888,7 @@ mod tests {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, holder) = holding_sh(root.path()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window.types("echo \"[$MYCELIUM_WAKE]\"; exit 75\r").await;
         let waking = wake(&dir, &held.id);
@@ -1920,11 +1903,8 @@ mod tests {
         );
         window.types("echo woken $((6 * 7)); exit 4\r").await;
         window.sees("woken 42").await;
-        let ended = tokio::time::timeout(PATIENCE, holder)
-            .await
-            .expect("the holder ends with its program")
-            .expect("the holder's task ran");
-        assert_eq!(ended.expect("it held"), Some(4), "any other exit ends it");
+        let ended = exited(holder).await;
+        assert_eq!(ended, Some(4), "any other exit ends it");
     }
 
     /// Lands `body` in `inbox` as the mesh writes a steer: under another
@@ -1944,10 +1924,7 @@ mod tests {
         fs::create_dir_all(&inbox).expect("the inbox is made");
         let (dir, held, _holder) = holding_sh(root.path()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         let said = format!(
             r#"{{"inboxes":["{}"],"wakes":{{"acts":["close"],"talk":true,"resumeWithWords":true}}}}"#,
@@ -1991,10 +1968,7 @@ mod tests {
     async fn a_program_that_wakes_itself_as_it_parks_restarts_at_once_with_no_parked_line() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, holder) = holding_sh(root.path()).await;
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window
             .types(concat!(
@@ -2013,15 +1987,8 @@ mod tests {
         );
         // The first key typed after it went is the program's, never a wake.
         window.types("\r").await;
-        let ended = tokio::time::timeout(PATIENCE, holder)
-            .await
-            .expect("the holder ends with its program")
-            .expect("the holder's task ran");
-        assert_eq!(
-            ended.expect("it held"),
-            Some(3),
-            "the key reached the restarted command"
-        );
+        let ended = exited(holder).await;
+        assert_eq!(ended, Some(3), "the key reached the restarted command");
     }
 
     #[tokio::test]
@@ -2029,10 +1996,7 @@ mod tests {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, holder) = holding_sh(root.path()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window
             .types(concat!(
@@ -2058,11 +2022,8 @@ mod tests {
         // when looked for: one that ended at once left its listing gone
         // before a busy builder looked (twice in three runs, 2026-11-08).
         window.types("\r").await;
-        let ended = tokio::time::timeout(PATIENCE, holder)
-            .await
-            .expect("the holder ends with its program")
-            .expect("the holder's task ran");
-        assert_eq!(ended.expect("it held"), Some(3), "the named command ran");
+        let ended = exited(holder).await;
+        assert_eq!(ended, Some(3), "the named command ran");
     }
 
     // A pi on an old conversation, woken in its window, named itself as it
@@ -2073,10 +2034,7 @@ mod tests {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, holder) = holding_sh(root.path()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         let chosen = ["sh", "-c", "echo chosen $((6 * 7)); read -r _; exit 3"].map(str::to_owned);
         assert!(
@@ -2103,15 +2061,8 @@ mod tests {
             "both commands are taken once read"
         );
         window.types("\r").await;
-        let ended = tokio::time::timeout(PATIENCE, holder)
-            .await
-            .expect("the holder ends with its program")
-            .expect("the holder's task ran");
-        assert_eq!(
-            ended.expect("it held"),
-            Some(3),
-            "the command named for it ran"
-        );
+        let ended = exited(holder).await;
+        assert_eq!(ended, Some(3), "the command named for it ran");
     }
 
     #[tokio::test]
@@ -2119,10 +2070,7 @@ mod tests {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, holder) = holding_sh(root.path()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         let named = ["sh", "-c", "echo named $((6 * 7)); read -r _; exit 5"].map(str::to_owned);
         assert_eq!(
@@ -2145,15 +2093,8 @@ mod tests {
         listed_parked(&dir, &mut changes, false).await;
         window.sees("named 42").await;
         window.types("\r").await;
-        let ended = tokio::time::timeout(PATIENCE, holder)
-            .await
-            .expect("the holder ends with its program")
-            .expect("the holder's task ran");
-        assert_eq!(
-            ended.expect("it held"),
-            Some(5),
-            "the command named for it ran"
-        );
+        let ended = exited(holder).await;
+        assert_eq!(ended, Some(5), "the command named for it ran");
     }
 
     #[tokio::test]
@@ -2178,10 +2119,7 @@ mod tests {
             ["sh"],
             "the record says the program, not its shell"
         );
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window.types("\r").await;
         window.sees("through 42").await;
@@ -2200,11 +2138,8 @@ mod tests {
         window.sees("through 42").await;
         window.sees("resumed 42").await;
         window.types("\r").await;
-        let ended = tokio::time::timeout(PATIENCE, holder)
-            .await
-            .expect("the holder ends with its program")
-            .expect("the holder's task ran");
-        assert_eq!(ended.expect("it held"), Some(3), "the named command ran");
+        let ended = exited(holder).await;
+        assert_eq!(ended, Some(3), "the named command ran");
     }
 
     #[tokio::test]
@@ -2212,10 +2147,7 @@ mod tests {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, holder) = holding_sh(root.path()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window
             .types(concat!(
@@ -2245,11 +2177,8 @@ mod tests {
         listed_parked(&dir, &mut changes, false).await;
         window.sees("mended 42").await;
         window.types("\r").await;
-        let ended = tokio::time::timeout(PATIENCE, holder)
-            .await
-            .expect("the holder ends with its program")
-            .expect("the holder's task ran");
-        assert_eq!(ended.expect("it held"), Some(5), "the mended command ran");
+        let ended = exited(holder).await;
+        assert_eq!(ended, Some(5), "the mended command ran");
     }
 
     #[tokio::test]
@@ -2261,10 +2190,7 @@ mod tests {
             ("KITTY_PID", "1"),
         ]);
         let (dir, held, _holder) = holding_sh_in(root.path(), Vec::new(), person).await;
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window
             .types("echo \"[$TRIAL_MODEL in $MYCELIUM_REALM, ${KITTY_PID:-no} window]\"\r")
@@ -2278,10 +2204,7 @@ mod tests {
         let (dir, held, _holder) =
             holding_sh_in(root.path(), Vec::new(), Changing::default()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window
             .types("echo \"[start $TRIAL_START]\"; exit 75\r")
@@ -2303,10 +2226,7 @@ mod tests {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) =
             holding_sh_in(root.path(), Vec::new(), Given(vec![("PATH", "/nowhere")])).await;
-        let size = Size {
-            rows: 30,
-            cols: 100,
-        };
+        let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window.types("echo \"[last ${PATH##*:}]\"\r").await;
         window.sees("[last /nowhere]").await;
