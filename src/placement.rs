@@ -267,6 +267,40 @@ impl Weights {
         filling: FILLING_WEIGHT,
         near_best: NEAR_BEST,
     };
+
+    /// Reads weights `said` as a JSON object, each left out taking its
+    /// starting weight. A field that isn't a weight, or a weight that isn't
+    /// a finite number, is refused by name, so a misspelt knob is never
+    /// quietly the starting one.
+    ///
+    /// # Errors
+    ///
+    /// Why `said` isn't a set of weights, in a line for a person.
+    pub fn read(said: &str) -> Result<Self, String> {
+        let serde_json::Value::Object(fields) =
+            serde_json::from_str(said).map_err(|error| error.to_string())?
+        else {
+            return Err("weights are a JSON object, such as {\"session\": 1.0}".to_owned());
+        };
+        let serde_json::Value::Object(known) =
+            serde_json::to_value(Self::STARTING).map_err(|error| error.to_string())?
+        else {
+            return Err("the starting weights didn't say themselves as an object".to_owned());
+        };
+        for (name, weight) in &fields {
+            if !known.contains_key(name) {
+                let names: Vec<&str> = known.keys().map(String::as_str).collect();
+                return Err(format!(
+                    "{name} isn't a weight; the weights are {}",
+                    names.join(", ")
+                ));
+            }
+            if !weight.as_f64().is_some_and(f64::is_finite) {
+                return Err(format!("{name} is {weight}, not a number"));
+            }
+        }
+        serde_json::from_value(serde_json::Value::Object(fields)).map_err(|error| error.to_string())
+    }
 }
 
 impl Default for Weights {
@@ -979,6 +1013,26 @@ pub(crate) mod tests {
             decision.is_ok_and(|decision| decision.weights == Weights::STARTING),
             "a decision kept before weights were said was weighed by the starting ones"
         );
+    }
+
+    #[test]
+    fn weights_read_refuse_what_isnt_a_weight_by_name() {
+        assert_eq!(
+            Weights::read(r#"{"session": 1.0}"#),
+            Ok(Weights {
+                session: 1.0,
+                ..Weights::STARTING
+            })
+        );
+        let misspelt = Weights::read(r#"{"sesion": 1.0}"#).expect_err("a misspelt weight");
+        assert!(
+            misspelt.contains("sesion") && misspelt.contains("session"),
+            "names what was said and what the weights are: {misspelt}"
+        );
+        let worded = Weights::read(r#"{"cpu": "high"}"#).expect_err("a word for a weight");
+        assert!(worded.contains("cpu"), "names the weight: {worded}");
+        let listed = Weights::read("[1.0]").expect_err("a list");
+        assert!(listed.contains("object"), "says what weights are: {listed}");
     }
 
     #[test]
