@@ -18,7 +18,7 @@ use tokio::task::JoinSet;
 
 use crate::awake::{self, Awake};
 use crate::builders::{self, Builders};
-use crate::carry::{chain, ground, ordered};
+use crate::carry::{chain, ground, kept, ordered, through};
 use crate::daemon;
 use crate::facts::{self, Readiness};
 use crate::flow::{self, Flows};
@@ -312,7 +312,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 10] = [
+pub const HOLDS: [&str; 11] = [
     "session",
     "machine",
     "message",
@@ -323,6 +323,7 @@ pub const HOLDS: [&str; 10] = [
     EVENT,
     receptor::KIND,
     BUILDER,
+    kept::KIND,
 ];
 
 /// The kind of record that is one thing a session did, as its presence's
@@ -705,6 +706,9 @@ struct Shared<S> {
     client: Option<i32>,
     /// Where it keeps each carry an orchestrator ordered.
     carries: PathBuf,
+    /// The quests' scratch folders, where each machine's sessions hand
+    /// over as they leave or refuse, or none where it shares no quests.
+    scratch: Option<PathBuf>,
     /// Where pi's hosts keep their records of the sessions they hold.
     hosts: PathBuf,
     /// Where it keeps who orchestrates which quests.
@@ -785,6 +789,7 @@ impl<S: Clone> Clone for Shared<S> {
             processes: self.processes.clone(),
             client: self.client,
             carries: self.carries.clone(),
+            scratch: self.scratch.clone(),
             hosts: self.hosts.clone(),
             orchestrations: self.orchestrations.clone(),
             logs: self.logs.clone(),
@@ -831,6 +836,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             events,
             receptors,
             builders,
+            carries,
         ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
@@ -874,6 +880,8 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (words, vec!["taken_up", "answered", "failed"]),
             (receptors, vec!["state", "read_at", "counts"]),
             (builders, vec!["state", "said", "heard_at"]),
+            // What was kept of a carry never changes; how it stands does.
+            (carries, vec!["state", "refused"]),
         ])
         .into_iter()
         .chain(served)
@@ -931,6 +939,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                 &self.machine,
             )),
             BUILDER => Some(self.builder_records()),
+            kept::KIND => Some(self.carry_records()),
             _ => self.served.records(kind),
         }
     }
@@ -950,8 +959,11 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             "message" | unanswered::KIND => Some(self.said.messages.subscribe()),
             // The person's words are taken up and answered as their
             // session takes its turn on them, which its presence says, and
-            // a word kept tells its watchers too.
-            words::KIND => Some(self.said.sessions.subscribe()),
+            // a word kept tells its watchers too. A carry stands as its
+            // session is seen, so it changes as sessions do, and a carry
+            // kept tells its watchers too. A refusal comes as its session
+            // ends the turn that wrote it, which its presence says.
+            words::KIND | kept::KIND => Some(self.said.sessions.subscribe()),
             receptor::KIND => Some(self.said.receptors.subscribe()),
             BUILDER => Some(self.builders.told()),
             _ => self.served.told(kind),
@@ -1144,6 +1156,7 @@ impl<S: Store> Shared<S> {
         let shared = Self {
             processes: processes.into(),
             carries,
+            scratch: sharing.as_ref().map(|places| places.scratch.clone()),
             hosts,
             orchestrations,
             logs,
@@ -1278,6 +1291,65 @@ impl<S: Store> Shared<S> {
                 let heard = millis_at(&open.message.at);
                 let record = daemon::record(unanswered::KIND, &id, heard, fields);
                 (daemon::key(unanswered::KIND, &id), record)
+            })
+            .collect()
+    }
+
+    /// The carries this node ordered over the last day, as the daemon
+    /// interface holds them, each standing as `kept::judged` says from
+    /// what is seen of its session: where it runs now, by the node's
+    /// state, and what it wrote in its quest's handover here since.
+    /// Nothing is shown when the file can't be read, since a carry's
+    /// line is never guessed at.
+    fn carry_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let now = jiff::Timestamp::now();
+        let since = now.checked_sub(kept::SHOWN_FOR).unwrap_or(now);
+        let Ok(carries) = kept::read(&self.carries, since) else {
+            return BTreeMap::new();
+        };
+        let runs =
+            |session: &Session| matches!(session.state, SessionState::Busy | SessionState::Idle);
+        let runs_on: HashMap<String, String> = self
+            .lock()
+            .state
+            .sessions()
+            .into_iter()
+            .filter(|session| runs(session) || parked_presence(session))
+            .map(|session| {
+                let id = session
+                    .presence
+                    .get("session")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&session.id)
+                    .to_owned();
+                (id, session.machine)
+            })
+            .collect();
+        let host = rustix::system::uname()
+            .nodename()
+            .to_string_lossy()
+            .into_owned();
+        carries
+            .iter()
+            .map(|carry| {
+                let session = carry.said("session");
+                let handover = self
+                    .scratch
+                    .as_ref()
+                    .map(|scratch| through::handover(scratch, carry.said("quest"), &host));
+                let seen = kept::Seen {
+                    refused: handover.as_ref().and_then(|handover| {
+                        through::refused(handover, session, carry.at).unwrap_or_else(Some)
+                    }),
+                    left: handover
+                        .as_ref()
+                        .is_some_and(|handover| through::left(handover, session, carry.at)),
+                    runs_on: runs_on.get(session).cloned(),
+                };
+                let fields = kept::fields(carry, &kept::judged(carry, &seen));
+                let record =
+                    daemon::record(kept::KIND, &carry.id, carry.at.as_millisecond(), fields);
+                (daemon::key(kept::KIND, &carry.id), record)
             })
             .collect()
     }
@@ -2101,6 +2173,7 @@ impl<S: Store> Shared<S> {
         });
         ordered::keep(&self.carries, &kept)
             .map_err(|error| format!("the carry couldn't be kept, so it isn't ordered: {error}"))?;
+        self.said.sessions.send_modify(|said| *said += 1);
         self.steer_here(&steer, std::slice::from_ref(target))?;
         Ok(Response::Steered {
             machine: self.machine.clone(),
@@ -4411,6 +4484,69 @@ mod tests {
                     .expect("it is JSON")
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn a_carry_ordered_is_shown_standing_as_its_session_is_seen() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, mut client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        client
+            .ask(json!({"id": 3, "ask": "watch", "kind": "carry"}))
+            .await;
+        assert_eq!(
+            client.next().await["records"],
+            json!([]),
+            "none ordered yet"
+        );
+        let stands = |said: &Value| said["changed"][0]["state"].clone();
+
+        assert!(
+            orders_harbour(&socket, 7001).await.is_ok(),
+            "WCJQSG orders HARBOR's carry"
+        );
+        let ordered = client.next().await;
+        let record = &ordered["changed"][0];
+        assert_eq!(
+            (
+                &record["by"],
+                &record["address"],
+                &record["to"],
+                &record["why"]
+            ),
+            (
+                &json!("WCJQSG"),
+                &json!("HARBOR"),
+                &json!("tern"),
+                &json!("it needs the camera")
+            ),
+            "the carry as kept: {ordered}"
+        );
+        assert_eq!(stands(&ordered), json!("ordered"), "not gone yet");
+
+        let presence = |busy: bool| {
+            json!({"session": "s-harbour", "addresses": ["HARBOR"], "groups": [],
+                   "busy": busy, "state": "listening",
+                   "at": jiff::Timestamp::now().to_string(),
+                   "quest": "QEST-20261115-HARBOR"})
+        };
+        store.start_here("s-harbour", presence(false), false);
+        assert_eq!(
+            stands(&client.next().await),
+            json!("carrying"),
+            "its session ended here"
+        );
+        store
+            .put_presence("s-harbour", "tern", &presence(true))
+            .expect("the presence is kept");
+        assert_eq!(
+            stands(&client.next().await),
+            json!("arrived"),
+            "its session runs on tern"
+        );
     }
 
     #[tokio::test]

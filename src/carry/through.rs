@@ -53,11 +53,7 @@ impl Through {
             .nodename()
             .to_string_lossy()
             .into_owned();
-        let handover = shares
-            .scratch
-            .join(quest)
-            .join("handover")
-            .join(short_host(&host));
+        let handover = handover(&shares.scratch, quest, &host);
         Self {
             socket,
             shares,
@@ -202,35 +198,78 @@ fn refusals(handover: &Path, since: jiff::Timestamp) -> Result<Vec<Refused>, Str
         let Some(session) = named.strip_suffix(REFUSED) else {
             continue;
         };
-        let changed = fs::metadata(&path)
-            .and_then(|file| file.modified())
-            .ok()
-            .and_then(|changed| jiff::Timestamp::try_from(changed).ok());
-        if changed.is_none_or(|changed| changed < since) {
-            continue;
-        }
-        let Some(one) = fs::read_to_string(&path)
-            .ok()
-            .and_then(|read| serde_json::from_str::<Refusal>(&read).ok())
-        else {
-            continue;
-        };
-        if one.session != session {
-            return Err(format!(
-                "{} names {}, not its own session, so whose refusal it is can't be told",
-                path.display(),
-                one.session
-            ));
-        }
-        if one.at >= since {
+        if let Some(why) = refusal(&path, session, since)? {
             refused.push(Refused {
-                session: one.session,
-                why: one.why,
+                session: session.to_owned(),
+                why,
             });
         }
     }
     refused.sort_by(|one, other| one.session.cmp(&other.session));
     Ok(refused)
+}
+
+/// Why the refusal at `path`, named for `session`, says it refused since
+/// `since`, as [`refusals`] reads each: nothing when it changed before,
+/// can't be read yet or says a time before.
+fn refusal(path: &Path, session: &str, since: jiff::Timestamp) -> Result<Option<String>, String> {
+    let changed = fs::metadata(path)
+        .and_then(|file| file.modified())
+        .ok()
+        .and_then(|changed| jiff::Timestamp::try_from(changed).ok());
+    if changed.is_none_or(|changed| changed < since) {
+        return Ok(None);
+    }
+    let Some(one) = fs::read_to_string(path)
+        .ok()
+        .and_then(|read| serde_json::from_str::<Refusal>(&read).ok())
+    else {
+        return Ok(None);
+    };
+    if one.session != session {
+        return Err(format!(
+            "{} names {}, not its own session, so whose refusal it is can't be told",
+            path.display(),
+            one.session
+        ));
+    }
+    Ok((one.at >= since).then_some(one.why))
+}
+
+/// Where `host`'s sessions of `quest` hand over, under the quests'
+/// `scratch`.
+#[must_use]
+pub fn handover(scratch: &Path, quest: &str, host: &str) -> PathBuf {
+    scratch.join(quest).join("handover").join(short_host(host))
+}
+
+/// Why `session` refused a carry in `handover` since `since`, when it
+/// did.
+///
+/// # Errors
+///
+/// When a refusal there can't be read, since its session meant one.
+pub fn refused(
+    handover: &Path,
+    session: &str,
+    since: jiff::Timestamp,
+) -> Result<Option<String>, String> {
+    refusal(
+        &handover.join(format!("{session}{REFUSED}")),
+        session,
+        since,
+    )
+}
+
+/// Whether `session` wrote its done file in `handover` since `since`, as
+/// a session leaving does.
+#[must_use]
+pub fn left(handover: &Path, session: &str, since: jiff::Timestamp) -> bool {
+    fs::metadata(handover.join(format!("{session}{DONE}")))
+        .and_then(|file| file.modified())
+        .ok()
+        .and_then(|changed| jiff::Timestamp::try_from(changed).ok())
+        .is_some_and(|changed| changed >= since)
 }
 
 /// The done files in `handover` whose sessions haven't started on another
@@ -319,7 +358,9 @@ mod tests {
     use std::path::Path;
     use std::time::{Duration, SystemTime};
 
-    use super::{failed_why, mark_started, refusals, short_host, unstarted};
+    use super::{
+        failed_why, handover, left, mark_started, refusals, refused, short_host, unstarted,
+    };
     use crate::carry::Refused;
 
     /// Writes `session`'s done file in `handover`, as the harness does.
@@ -476,6 +517,64 @@ mod tests {
         assert!(
             refusals(handover, began).is_err(),
             "one naming another session than its file stops the carry"
+        );
+    }
+
+    #[test]
+    fn a_session_is_seen_refusing_or_leaving_only_since_the_carry() {
+        let handover = tempfile::tempdir().expect("a handover");
+        let handover = handover.path();
+        let before: jiff::Timestamp = "2026-11-15T16:00:00Z".parse().expect("a time");
+        assert_eq!(
+            (
+                refused(handover, "s-since", before),
+                left(handover, "s-done", before)
+            ),
+            (Ok(None), false),
+            "nothing written, nothing seen"
+        );
+        fs::write(
+            handover.join("s-since.refused.json"),
+            r#"{"session": "s-since", "why": "it holds a lease", "at": "2026-11-15T16:00:01Z"}"#,
+        )
+        .expect("a refusal");
+        write_done(handover, "s-done");
+        assert_eq!(
+            refused(handover, "s-since", before),
+            Ok(Some("it holds a lease".to_owned())),
+            "its refusal since"
+        );
+        assert_eq!(
+            refused(handover, "s-done", before),
+            Ok(None),
+            "another's refusal isn't its"
+        );
+        assert!(left(handover, "s-done", before), "its done file since");
+        assert!(
+            !left(handover, "s-since", before),
+            "another's done file isn't its"
+        );
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_secs(60);
+        assert_eq!(
+            (
+                refused(handover, "s-since", later),
+                left(handover, "s-done", later)
+            ),
+            (Ok(None), false),
+            "neither counts for a carry ordered after"
+        );
+    }
+
+    #[test]
+    fn a_quests_handover_is_its_machines_folder_in_the_scratch() {
+        assert_eq!(
+            handover(
+                Path::new("/scratch"),
+                "QEST-20261115-HARBOR",
+                "lantern.local"
+            ),
+            Path::new("/scratch/QEST-20261115-HARBOR/handover/lantern"),
+            "by its short hostname"
         );
     }
 
