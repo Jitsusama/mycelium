@@ -37,8 +37,9 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `ties.rs`: the node's tie records made for a hundred, a thousand and
   ten thousand cells, five power-law ties a cell, within 30 MB, the
   memory a cell growing within a ceiling of three times from a
-  thousand and the time within five, against a target of 1.2; and the node's lock held
-  within 5 ms to take the 50,000 messages it keeps for the fold
+  thousand and the time within five, against a target of 1.2; and the
+  node's lock held within 5 ms to take the 50,000 messages it keeps
+  for the fold
 - `shared.rs`: a quest shared and waited for, printing one JSON line
   however the wait ends and failing unless the machine holds it
 - `receptors.rs`: what `mycelium receptors say` leaves on disk, its
