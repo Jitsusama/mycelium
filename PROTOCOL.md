@@ -445,7 +445,10 @@ in order and says each step:
    <this machine> --session <id>` prints: its own where a tree it brought
    holds it, else its quest's scratch, so it never starts in a folder of
    the person's that no tree brought. That folder is entered as it
-   stands, never made. Its first prompt
+   stands, never made. Pi starts with `PI_SANDBOX` set to what
+   `pi-carry fence` prints from the done file, so it arrives in the
+   fence it ran in; it doesn't start where that fails, and starts as
+   the node runs where an older done file names none. Its first prompt
    saying where it came from and telling it to carry on where it left
    off, so it never waits to be woken. The quest's own done
    file, `<quest>.done.json`, holds the trees no session held; it
