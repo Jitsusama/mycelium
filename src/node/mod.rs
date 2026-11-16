@@ -2192,32 +2192,71 @@ impl<S: Store> Shared<S> {
 
     /// Starts a program held on the machine placement chooses, answering
     /// where and how to join it, or why it didn't start. Where none of the
-    /// realm's machines takes it and it may cost money, on a machine made
-    /// for it.
+    /// realm's machines takes it, on a machine made for it: one that costs
+    /// nothing for any start, and one that costs only for a start that
+    /// says it may.
     async fn start(&self, asked: Start) -> Reply {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        match self.place(&asked.work, true) {
-            Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
-            Placement::Pending { misses } | Placement::Refused { misses } if asked.may_cost => {
-                self.start_on_made(asked, &misses).await
+        let (misses, nowhere) = match self.place(&asked.work, true) {
+            Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
+            Placement::Pending { misses } => {
+                let nowhere = format!(
+                    "nowhere now, though a machine out of reach would do: {}",
+                    placement::said(&misses)
+                );
+                (misses, nowhere)
             }
-            Placement::Pending { misses } => Err(format!(
-                "nowhere now, though a machine out of reach would do: {}",
-                placement::said(&misses)
-            )),
-            Placement::Refused { misses } => Err(format!("nowhere: {}", placement::said(&misses))),
+            Placement::Refused { misses } => {
+                let nowhere = format!("nowhere: {}", placement::said(&misses));
+                (misses, nowhere)
+            }
+        };
+        if asked.may_cost {
+            return self.start_on_made(asked, &misses).await;
         }
+        self.start_on_free(asked, nowhere).await
     }
 
     /// Makes a machine for `asked`, which `misses` say no machine of the
     /// realm takes, from the cheapest offer that would, and starts it there
-    /// once it links. A machine made that nothing starts on is let go.
+    /// once it links.
     async fn start_on_made(&self, asked: Start, misses: &[Miss]) -> Reply {
         let offers = self.offers().await;
         let offer = placement::to_make(&asked.work, &offers.offers)
-            .map_err(|offered| nothing_offered(misses, &offered, &offers.unanswered))?;
+            .map_err(|offered| nothing_offered(misses, &offered, &offers.unanswered))?
+            .clone();
+        self.start_made_of(asked, &offer).await
+    }
+
+    /// Makes a machine for `asked`, which never said it may cost, from an
+    /// offer that costs nothing, as any machine of the realm would take it.
+    /// Where none would, answers `nowhere`, saying so where one that costs
+    /// would have done, so the asker knows to say it may cost.
+    async fn start_on_free(&self, asked: Start, nowhere: String) -> Reply {
+        let offers = self.offers().await.offers;
+        let free: Vec<Offer> = offers
+            .iter()
+            .filter(|offer| offer.costs.free())
+            .cloned()
+            .collect();
+        if let Ok(offer) = placement::to_make(&asked.work, &free) {
+            let offer = offer.clone();
+            return self.start_made_of(asked, &offer).await;
+        }
+        match placement::to_make(&asked.work, &offers) {
+            Ok(costs) => Err(format!(
+                "{nowhere}; and {} from {} would, but costs {} {} an hour, so say it may cost",
+                costs.shape, costs.provider, costs.costs.hourly, costs.costs.currency
+            )),
+            Err(_) => Err(nowhere),
+        }
+    }
+
+    /// Makes a machine of `offer` for `asked` and starts it there once it
+    /// links. A machine made that nothing starts on is let go.
+    async fn start_made_of(&self, asked: Start, offer: &Offer) -> Reply {
         let made = made::make(offer, lasting(&asked.work, offer)?).await?;
         if let Err(error) = self.book.made(&made) {
             eprintln!(

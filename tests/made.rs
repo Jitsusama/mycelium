@@ -305,8 +305,14 @@ fn a_machine_that_costs_nothing_is_made_for_any_start_and_let_go_after_its_work(
     );
     let lines = book(&home, HANDS_OVER);
     assert_eq!(
-        (&lines[0]["made"]["costs"]["hourly"], &lines[1]["released"]["why"]),
-        (&serde_json::json!(FREE), &serde_json::json!("its work handed over")),
+        (
+            &lines[0]["made"]["costs"]["hourly"],
+            &lines[1]["released"]["why"]
+        ),
+        (
+            &serde_json::json!(FREE),
+            &serde_json::json!("its work handed over")
+        ),
         "made at no cost, and let go once its work was done: {lines:?}"
     );
 }

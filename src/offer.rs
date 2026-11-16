@@ -84,6 +84,14 @@ impl Costs {
             part.trim_end_matches('0').to_owned(),
         )
     }
+
+    /// Whether a machine at this cost costs nothing, however many zeros
+    /// the provider writes it with, so one may be made for a start that
+    /// never said it may cost.
+    #[must_use]
+    pub fn free(&self) -> bool {
+        self.hourly.bytes().all(|byte| byte == b'0' || byte == b'.')
+    }
 }
 
 /// One line of what a program says it offers, before it is known to be
@@ -228,6 +236,23 @@ mod tests {
                 lasts: Some(7200),
             }],
             "one offer a line, what it leaves out unknown, blank lines let be"
+        );
+    }
+
+    #[test]
+    fn a_cost_of_nothing_is_free_however_it_is_written() {
+        let costs = |hourly: &str| Costs {
+            hourly: hourly.to_owned(),
+            currency: "USD".to_owned(),
+        };
+        let free: Vec<bool> = ["0", "0.000", "00.0", "0.001", "10", "0.12"]
+            .iter()
+            .map(|hourly| costs(hourly).free())
+            .collect();
+        assert_eq!(
+            free,
+            [true, true, true, false, false, false],
+            "only nothing, written any way, is free"
         );
     }
 
