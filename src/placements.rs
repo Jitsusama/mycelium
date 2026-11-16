@@ -8,7 +8,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -63,7 +63,7 @@ impl Log {
         fs::create_dir_all(&self.folder)?;
         let file = self.folder.join(format!("{day}.jsonl"));
         if !file.exists() {
-            self.let_go_before(day.saturating_sub(jiff::Span::new().days(KEPT_DAYS)));
+            let_go_before(&self.folder, day);
         }
         let mut line = serde_json::to_vec(record)?;
         line.push(b'\n');
@@ -75,27 +75,28 @@ impl Log {
             .open(file)?
             .write_all(&line)
     }
+}
 
-    /// Removes each day's file from before `oldest`, leaving anything not
-    /// named as a day.
-    fn let_go_before(&self, oldest: jiff::civil::Date) {
-        let Ok(entries) = fs::read_dir(&self.folder) else {
-            // Unread, nothing is let go; the next new day tries again.
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let day = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.strip_suffix(".jsonl"))
-                .and_then(|stem| stem.parse::<jiff::civil::Date>().ok());
-            if day.is_some_and(|day| day < oldest)
-                && let Err(error) = fs::remove_file(&path)
-            {
-                // An old day left costs disk, never a placement.
-                eprintln!("{} wasn't let go: {error}", path.display());
-            }
+/// Removes each `<date>.jsonl` file in `folder` from more than
+/// [`KEPT_DAYS`] before `day`, leaving anything not named as a day.
+pub(crate) fn let_go_before(folder: &Path, day: jiff::civil::Date) {
+    let oldest = day.saturating_sub(jiff::Span::new().days(KEPT_DAYS));
+    let Ok(entries) = fs::read_dir(folder) else {
+        // Unread, nothing is let go; the next new day tries again.
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let named = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".jsonl"))
+            .and_then(|stem| stem.parse::<jiff::civil::Date>().ok());
+        if named.is_some_and(|named| named < oldest)
+            && let Err(error) = fs::remove_file(&path)
+        {
+            // An old day left costs disk, never what the day keeps.
+            eprintln!("{} wasn't let go: {error}", path.display());
         }
     }
 }
