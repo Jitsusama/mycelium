@@ -2,7 +2,7 @@ use serde_json::json;
 
 use super::*;
 
-/// When the tests stand: 17 November 2026, 12:00 UTC.
+/// When the tests stand: 23 November 2026, 12:00 UTC.
 const NOW: i64 = 1_795_435_200_000;
 
 /// A minute, in milliseconds.
@@ -47,7 +47,34 @@ fn answering(re: &str, message: Message) -> Message {
 /// The records `messages` make as now stands, no session going by
 /// another address.
 fn made(messages: &[Message]) -> BTreeMap<String, Value> {
-    records(talk(messages, &HashMap::new(), NOW))
+    read(talk(messages, &HashMap::new(), NOW))
+}
+
+/// The records of `talk`, each parsed to read its fields.
+fn read(talk: Talk) -> BTreeMap<String, Value> {
+    records(talk)
+        .into_iter()
+        .map(|(key, record)| (key, record.value()))
+        .collect()
+}
+
+#[test]
+fn a_message_of_the_day_written_with_an_offset_still_ties() {
+    let mut state = crate::state::State::default();
+    state.add_messages(vec![
+        said("m1", "OSPREY", 25 * HOUR, &["peer.tern"], None),
+        Message {
+            at: "2026-11-22T10:00:00-12:00".to_owned(),
+            ..said("m2", "KP0L6A", 14 * HOUR, &["peer.hnp07b"], None)
+        },
+        said("m3", "HNP07B", MINUTE, &["quest.x"], None),
+    ]);
+    let records = read(talk(state.messages(), &HashMap::new(), NOW));
+    assert_eq!(
+        records["tie:HNP07B~KP0L6A"]["heard"],
+        json!(NOW - 14 * HOUR),
+        "sent 14 hours ago, though its words sort before a day ago's: {records:?}"
+    );
 }
 
 #[test]
@@ -142,9 +169,25 @@ fn a_session_going_by_several_addresses_is_one_cell() {
         said("m2", "KP0L6A", MINUTE, &["peer.4c3144b7"], None),
         said("m3", "KP0L6A", MINUTE, &["peer.hnp07b"], None),
     ];
-    let records = records(talk(&messages, &aliases([&session]), NOW));
+    let records = read(talk(&messages, &aliases([&session]), NOW));
     assert_eq!(records.len(), 3, "one tie and two cells: {records:?}");
     assert_eq!(records["tie:HNP07B~KP0L6A"]["today"], json!([1, 2]));
+}
+
+#[test]
+fn a_name_holding_the_key_separator_is_no_cell() {
+    let messages = [
+        said("m1", "KP0L6A~HNP07B", MINUTE, &["peer.tern"], None),
+        answering("m1", said("m2", "OSPREY", MINUTE, &["quest.x"], None)),
+    ];
+    let records = made(&messages);
+    let keys: Vec<&str> = records.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        ["tie:OSPREY"],
+        "a cell named with `~` would read as a tie, so it neither talks nor is tied"
+    );
+    assert_eq!(records["tie:OSPREY"]["ties"], json!(0));
 }
 
 #[test]

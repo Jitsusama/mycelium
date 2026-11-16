@@ -28,6 +28,7 @@ fn gave(bytes: usize) {
 }
 
 // SAFETY: each call is the system allocator's own, only counted.
+#[expect(unsafe_code, reason = "an allocator is unsafe to implement")]
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: the caller keeps `alloc`'s contract, which this passes on.

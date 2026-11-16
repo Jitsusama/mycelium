@@ -35,10 +35,11 @@ The rest of the tests sit beside the code they prove, in `src/`.
   again each time SSH drops after saying it reconnects, ending as the
   join there ends, once the node says the session has, or on Ctrl+C
 - `ties.rs`: the node's tie records made for a hundred, a thousand and
-  ten thousand cells, five power-law ties a cell, within 70 MB (30 MB
-  once records are held as bytes, by 2026-11-17), the time and memory
-  a cell each growing within a ceiling of three times from a thousand,
-  against a target of 1.2
+  ten thousand cells, five power-law ties a cell, within 30 MB, the
+  memory a cell growing within a ceiling of three times from a
+  thousand and the time within five, against a target of 1.2; and the
+  node's lock held within 5 ms to take the 50,000 messages it keeps
+  for the fold
 - `shared.rs`: a quest shared and waited for, printing one JSON line
   however the wait ends and failing unless the machine holds it
 - `receptors.rs`: what `mycelium receptors say` leaves on disk, its

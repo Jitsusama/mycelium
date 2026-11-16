@@ -1313,7 +1313,11 @@ reads. The `machine` kind holds every machine of the
 realm, this one as its last minute's measure found it, each saying
 whether it is `here`. The `message` kind holds each group's latest 100
 messages, so a quiet group's last words stay beside a busy one's, and a
-message is heard when it was sent and never changes. The `team` kind
+message is heard when it was sent and never changes. The node holds
+each message's `at` in UTC to the millisecond, as
+`2026-11-16T17:00:00.000Z`, whatever offset or precision it came with,
+so the order of the words is the order sent; an `at` that is no time
+is held as when the node heard it. The `team` kind
 holds each orchestrator's team, keyed by its address: the living
 sessions answering to it as `members`, its `lead` working on its quest,
 its `title` as a served `quest` names it (else its lead's), the name it
@@ -1388,7 +1392,9 @@ the message it answers (`re`), where that is held, each once, and no
 one to themself; one only to named groups, answering nothing, ties no
 one. A cell is named by its session's own address wherever it goes by
 another, and otherwise as said, uppercase. A tie is keyed by its two
-ends sorted and joined, `tie:<A>~<B>`, which alone names them, and
+ends sorted and joined, `tie:<A>~<B>`, which alone names them, so a
+cell whose name holds a `~` is no cell: its messages are passed over
+and no one is tied to it. A group's name never holds one. A tie
 says each end's messages on it in the last hour as `hour` and in the
 last day as `today`, in the order of its key, the `intents` and
 `groups` its messages had, sorted, and its `strength`, and is heard at
@@ -1401,9 +1407,10 @@ sent in the last `hour` and `today`, to any group, and how many `ties`
 it has, heard when it last sent or was talked to. A tie or a cell with
 no message in a day is gone. The kind is told as each message comes
 and each minute, as a message leaves an hour or a day. Ten thousand
-cells with fifty thousand ties make their records within 70 MB, in
-time that grows with them. The target is 30 MB, once each record is held as the
-bytes it is sent as, owed by 2026-11-17.
+cells with fifty thousand ties make their records within 30 MB, each
+held as the bytes it is sent as, in time that grows with them. The
+node folds the messages it holds once it lets them go, so a watch
+holds it only to take them.
 
 The `unanswered` kind holds what waits on the mesh, keyed by the
 message's id, as `mesh_read unanswered` and the hold leases judge it:

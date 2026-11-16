@@ -96,7 +96,8 @@ pub fn target_for(group: &Group) -> String {
 
 /// A draft written as a mesh message, sent now by process `pid`: its id,
 /// and its file's contents. The id is the mesh's own shape, the time first
-/// so ids sort as they were sent, and a random tail keeps two apart.
+/// so ids sort as they were sent, and a random tail keeps two apart. Its
+/// time is said in UTC to the millisecond, the one form a node holds.
 pub fn written(draft: &Draft, pid: u32) -> (String, Value) {
     let now = jiff::Timestamp::now();
     // Each `RandomState` is seeded afresh, so its hash of nothing is a
@@ -106,7 +107,7 @@ pub fn written(draft: &Draft, pid: u32) -> (String, Value) {
     let mut body = json!({
         "v": 1,
         "id": id,
-        "at": now.to_string(),
+        "at": format!("{now:.3}"),
         "from": draft.from,
         "to": draft.groups.iter().map(target_for).collect::<Vec<_>>(),
         "text": draft.text,

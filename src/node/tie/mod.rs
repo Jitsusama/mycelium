@@ -18,13 +18,19 @@
 //! or as a message leaves its hour or its day; a reader fades it to now.
 //! A tie or a cell with no message in a day is gone.
 //!
+//! A tie's key joins its ends' names with [`SEPARATOR`], so a cell whose
+//! name holds one would read as a tie: its messages are passed over, and
+//! no one is tied to it. A group's name never holds one, so no peer it
+//! names does either; only a sender's own word, or an address a session
+//! says, can.
+//!
 //! The talk is folded from the messages first ([`talk`]), cheaply enough
 //! to be done while the messages are held, each cell and group kept once
 //! and known by its number, and made records after ([`records`]), as
 //! `tests/ties.rs` measures.
 
-use std::collections::{BTreeMap, HashMap};
-use std::hash::BuildHasher;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
 
 use serde_json::{Map, Value};
 
@@ -32,6 +38,10 @@ use super::millis_at;
 use crate::daemon;
 use crate::group::Group;
 use crate::record::{Intent, Message, Session};
+
+/// What joins a tie's ends' names in its key, which no cell's name may
+/// hold.
+const SEPARATOR: char = '~';
 
 /// The kind of a tie's records, and of a cell's talk.
 pub const KIND: &str = "tie";
@@ -143,14 +153,11 @@ struct Cell {
     at: i64,
 }
 
-/// What strength is left of one after `since` milliseconds.
+/// What strength is left of one after `since` milliseconds: none past
+/// the 24 days an `i32` counts, a fade of thousands of halvings.
 fn faded(since: i64) -> f64 {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "a fade needs no more than a double's 52 bits of a day"
-    )]
-    let halves = since as f64 / HALF_LIFE as f64;
-    (-halves).exp2()
+    let half_life = f64::from(i32::try_from(HALF_LIFE).unwrap_or(i32::MAX));
+    i32::try_from(since).map_or(0.0, |since| (-f64::from(since) / half_life).exp2())
 }
 
 /// The cell each of `sessions`' addresses names, uppercase, by the
@@ -176,28 +183,35 @@ pub fn aliases<'a>(sessions: impl IntoIterator<Item = &'a Session>) -> HashMap<S
 /// the epoch, each cell named as `aliases` says it is, and otherwise as
 /// said, uppercase. A message older than a day still names who it
 /// answers.
+///
+/// `messages` come in the order they were sent, as the node holds them,
+/// each time in one form so its words sort as it was sent, so only the
+/// last day's are read through, found by halving, and of the older ones
+/// only those an answer names, since each message a watched realm
+/// sends folds them again.
 pub fn talk<'a, S: BuildHasher>(
     messages: impl IntoIterator<Item = &'a Message>,
     aliases: &HashMap<String, String, S>,
     now: i64,
 ) -> Talk {
     let messages: Vec<&Message> = messages.into_iter().collect();
-    let senders: HashMap<&str, &str> = messages
-        .iter()
-        .map(|message| (message.id.as_str(), message.from.as_str()))
-        .collect();
+    let first = messages.partition_point(|message| now - millis_at(&message.at) >= DAY);
+    let (before, today) = messages.split_at(first);
+    let senders = senders(before, today);
     let mut names = Names::new(aliases);
-    let mut numbered: HashMap<&Group, u32> = HashMap::new();
+    let mut numbered: HashMap<&Group, u32, Quick> = HashMap::default();
     let mut groups: Vec<Group> = Vec::new();
-    let mut ties: HashMap<(u32, u32), Tie> = HashMap::new();
+    let mut ties: HashMap<(u32, u32), Tie, Quick> = HashMap::default();
     let mut others: Vec<u32> = Vec::new();
     let mut went: Vec<u32> = Vec::new();
-    for message in messages {
+    for message in today.iter().copied() {
         let sent = millis_at(&message.at).min(now);
         if now - sent >= DAY {
             continue;
         }
-        let from = names.of(&message.from);
+        let Some(from) = names.of(&message.from) else {
+            continue;
+        };
         names.said(from, sent, now);
         others.clear();
         let peers = message
@@ -209,7 +223,9 @@ pub fn talk<'a, S: BuildHasher>(
             .as_deref()
             .and_then(|re| senders.get(re).copied());
         for other in peers.chain(answered) {
-            let other = names.of(other);
+            let Some(other) = names.of(other) else {
+                continue;
+            };
             if other != from && !others.contains(&other) {
                 others.push(other);
             }
@@ -245,28 +261,113 @@ pub fn talk<'a, S: BuildHasher>(
     }
 }
 
+/// The sender of each message `today` answers, by its id: today's own,
+/// then the older ones, newest first, until each answered is found, as
+/// most answer what was said lately.
+fn senders<'m>(before: &[&'m Message], today: &[&'m Message]) -> HashMap<&'m str, &'m str, Quick> {
+    let mut senders: HashMap<&str, &str, Quick> = today
+        .iter()
+        .map(|message| (message.id.as_str(), message.from.as_str()))
+        .collect();
+    let mut unfound: HashSet<&str, Quick> = today
+        .iter()
+        .filter_map(|message| message.re.as_deref())
+        .filter(|re| !senders.contains_key(re))
+        .collect();
+    for message in before.iter().rev() {
+        if unfound.is_empty() {
+            break;
+        }
+        if unfound.remove(message.id.as_str()) {
+            senders.insert(&message.id, &message.from);
+        }
+    }
+    senders
+}
+
+/// How the fold's own maps hash, by its names, ids and numbers: a
+/// multiply and a rotate a word, as rustc's own maps do, rather than the
+/// standard library's `SipHash`, whose guard against a crafted key the
+/// fold has little need of: names and ids come from peers over links,
+/// but a crafted collision costs only the fold's own time, once the
+/// node's lock is let go.
+type Quick = BuildHasherDefault<Quickly>;
+
+/// A hash as [`Quick`] makes it.
+#[derive(Default)]
+struct Quickly(u64);
+
+impl Quickly {
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl Hasher for Quickly {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let (words, rest) = bytes.as_chunks::<8>();
+        for word in words {
+            self.add(u64::from_le_bytes(*word));
+        }
+        let mut last = [0; 8];
+        last[..rest.len()].copy_from_slice(rest);
+        self.add(u64::from_le_bytes(last));
+    }
+
+    fn write_u8(&mut self, byte: u8) {
+        self.add(u64::from(byte));
+    }
+
+    fn write_u32(&mut self, number: u32) {
+        self.add(u64::from(number));
+    }
+
+    fn write_u64(&mut self, number: u64) {
+        self.add(number);
+    }
+}
+
 /// The cells a fold meets, each held once and known by its number.
-struct Names<'a, S> {
+struct Names<'m, 'a, S> {
     aliases: &'a HashMap<String, String, S>,
-    numbers: HashMap<String, u32>,
+    numbers: HashMap<String, u32, Quick>,
+    /// Each name as a message says it, and the cell it names, so a
+    /// name said again is looked up once.
+    said: HashMap<&'m str, Option<u32>, Quick>,
     cells: Vec<Cell>,
     /// A name as said, uppercase, kept to look up without making one
     /// for each message.
     upper: String,
 }
 
-impl<'a, S: BuildHasher> Names<'a, S> {
+impl<'m, 'a, S: BuildHasher> Names<'m, 'a, S> {
     fn new(aliases: &'a HashMap<String, String, S>) -> Self {
         Self {
             aliases,
-            numbers: HashMap::new(),
+            numbers: HashMap::default(),
+            said: HashMap::default(),
             cells: Vec::new(),
             upper: String::new(),
         }
     }
 
-    /// The number of the cell `said` names.
-    fn of(&mut self, said: &str) -> u32 {
+    /// The number of the cell `said` names, or none where its name holds
+    /// [`SEPARATOR`].
+    fn of(&mut self, said: &'m str) -> Option<u32> {
+        if let Some(&number) = self.said.get(said) {
+            return number;
+        }
+        let number = self.named(said);
+        self.said.insert(said, number);
+        number
+    }
+
+    /// The number of the cell `said` names, made where it is new.
+    fn named(&mut self, said: &str) -> Option<u32> {
         self.upper.clear();
         self.upper.push_str(said);
         self.upper.make_ascii_uppercase();
@@ -274,8 +375,11 @@ impl<'a, S: BuildHasher> Names<'a, S> {
             .aliases
             .get(&self.upper)
             .map_or(self.upper.as_str(), String::as_str);
+        if name.contains(SEPARATOR) {
+            return None;
+        }
         if let Some(&number) = self.numbers.get(name) {
-            return number;
+            return Some(number);
         }
         let number = u32::try_from(self.cells.len()).unwrap_or(u32::MAX);
         self.cells.push(Cell {
@@ -286,7 +390,7 @@ impl<'a, S: BuildHasher> Names<'a, S> {
             at: 0,
         });
         self.numbers.insert(name.to_owned(), number);
-        number
+        Some(number)
     }
 
     /// That the cell numbered `cell` sent a message at `sent`, as `now`
@@ -330,7 +434,9 @@ impl<'a, S: BuildHasher> Names<'a, S> {
 /// The records of `talk`, by key, each heard at its last message: a tie
 /// keyed by its ends joined, `tie:<A>~<B>`, and a cell's talk by its
 /// name, `tie:<A>`. The key alone names them, as no field need again.
-pub fn records(talk: Talk) -> BTreeMap<String, Value> {
+/// Each is held as its bytes as soon as it is made, so the kind is never
+/// held whole parsed.
+pub fn records(talk: Talk) -> BTreeMap<String, daemon::Record> {
     let Talk {
         ties,
         cells,
@@ -338,7 +444,7 @@ pub fn records(talk: Talk) -> BTreeMap<String, Value> {
     } = talk;
     let made = ties.into_iter().map(|mut tie| {
         let [first, second] = tie.ends.map(|end| cells[end as usize].name.as_str());
-        let id = format!("{first}~{second}");
+        let id = format!("{first}{SEPARATOR}{second}");
         let strength = (tie.strength * 1000.0).round() / 1000.0;
         let intents: Vec<Value> = INTENTS
             .iter()
@@ -361,7 +467,7 @@ pub fn records(talk: Talk) -> BTreeMap<String, Value> {
         ]);
         record(&id, tie.at, fields)
     });
-    let mut records: BTreeMap<String, Value> = made.collect();
+    let mut records: BTreeMap<String, daemon::Record> = made.collect();
     records.extend(cells.into_iter().map(|cell| {
         let fields = Map::from_iter([
             ("hour".to_owned(), Value::from(cell.hour)),
@@ -373,10 +479,11 @@ pub fn records(talk: Talk) -> BTreeMap<String, Value> {
     records
 }
 
-/// The record keyed `id`, heard at `heard`, holding `fields`.
-fn record(id: &str, heard: i64, fields: Map<String, Value>) -> (String, Value) {
+/// The record keyed `id`, heard at `heard`, holding `fields`, as its
+/// bytes.
+fn record(id: &str, heard: i64, fields: Map<String, Value>) -> (String, daemon::Record) {
     let record = daemon::record(KIND, id, heard, Value::Object(fields));
-    (daemon::key(KIND, id), record)
+    (daemon::key(KIND, id), daemon::Record::from(record))
 }
 
 #[cfg(test)]
