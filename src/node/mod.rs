@@ -8137,7 +8137,7 @@ mod tests {
         };
         let (shared, _) = Shared::of(
             Memory::default(),
-            membership.hello(),
+            (membership.hello(), "/nowhere/node".into()),
             bare("/nowhere/steer".into(), None),
             to_dial,
         );
