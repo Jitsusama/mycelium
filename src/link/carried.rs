@@ -4,6 +4,10 @@
 //! started, not in the node, so it asks the node over the node's socket for
 //! what the node would ask of that machine, and answers each as the other
 //! end does. The node then reaches that machine whichever end dialled.
+//!
+//! A run isn't carried: its output would hold up every other ask of that
+//! machine behind a reader that has stopped reading, so a command runs
+//! only on a machine this one's node dialled.
 
 use std::collections::HashMap;
 use std::io;
@@ -38,9 +42,11 @@ enum Carried {
     Update,
 }
 
-impl From<Asked> for Carried {
-    fn from(asked: Asked) -> Self {
-        match asked {
+impl TryFrom<Asked> for Carried {
+    type Error = String;
+
+    fn try_from(asked: Asked) -> Result<Self, String> {
+        Ok(match asked {
             Asked::Start(start) => Self::Start(start),
             Asked::Steer(steer) => Self::Steer {
                 address: steer.address,
@@ -48,7 +54,12 @@ impl From<Asked> for Carried {
                 checked: steer.checked,
             },
             Asked::Update => Self::Update,
-        }
+            Asked::Run(..) => {
+                return Err("it dialled this machine, and a run goes only where this \
+                            machine dialled"
+                    .to_owned());
+            }
+        })
     }
 }
 
@@ -108,7 +119,15 @@ where
                 // None once another link reaching the machine has taken
                 // this one's place.
                 let Some(Ask { asked, answer }) = ask else { return };
-                let handed = Handed { ask: next, asked: asked.into() };
+                let asked = match Carried::try_from(asked) {
+                    Ok(asked) => asked,
+                    Err(why) => {
+                        // The asker may have given up waiting.
+                        let _ = answer.send(Err(format!("{machine} isn't asked that: {why}")));
+                        continue;
+                    }
+                };
+                let handed = Handed { ask: next, asked };
                 if write(&mut writing, &handed).await.is_err() {
                     return;
                 }

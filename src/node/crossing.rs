@@ -354,6 +354,7 @@ mod tests {
             parked: "/nowhere/parked".into(),
             processes: crate::node::Processes::Folder("/nowhere/proc".into()),
             carries: "/nowhere/carries.jsonl".into(),
+            runs: run::Given::default(),
             hosts: "/nowhere/hosts".into(),
             orchestrations: "/nowhere/orchestrations.json".into(),
             logs: "/nowhere/sessions".into(),

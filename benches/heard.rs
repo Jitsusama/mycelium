@@ -179,6 +179,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 parked: "/nowhere/parked".into(),
                 processes: node::Processes::Folder("/nowhere/proc".into()),
                 carries: "/nowhere/carries.jsonl".into(),
+                runs: mycelium::run::Given::default(),
                 hosts: "/nowhere/hosts".into(),
                 orchestrations: "/nowhere/orchestrations.json".into(),
                 logs: "/nowhere/sessions".into(),

@@ -56,6 +56,15 @@ impl Client {
 
     /// The next event of a watch, or nothing once the node has gone.
     pub fn next_event(&mut self) -> io::Result<Option<Event>> {
+        self.next()
+    }
+
+    /// The next of what a run says, or nothing once the node has gone.
+    pub fn next_ran(&mut self) -> io::Result<Option<crate::wire::Ran>> {
+        self.next()
+    }
+
+    fn next<T: for<'de> serde::Deserialize<'de>>(&mut self) -> io::Result<Option<T>> {
         let mut line = String::new();
         if self.reading.read_line(&mut line)? == 0 {
             return Ok(None);

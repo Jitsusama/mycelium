@@ -12,13 +12,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use crate::client::Client;
 use crate::link::dial::{Dial, Ssh};
 use crate::placement::Need;
 use crate::steer::Steer;
-use crate::wire::{Reply, Request, Response, Start, Started};
+use crate::wire::{Ran, Reply, Request, Response, Run, Start, Started};
 
 /// How long a start asked of another machine has to be answered: its
 /// holder has ten seconds to hold, and the link carries the rest.
@@ -66,6 +67,9 @@ pub(super) enum Asked {
     Steer(Steer),
     /// Update that machine to its configuration's main.
     Update,
+    /// Run a command there, handing what it says to the sender as it
+    /// comes; answered once the run is asked of the other end.
+    Run(Run, mpsc::Sender<Ran>),
 }
 
 /// Something asked of another machine, and where its answer goes.
@@ -113,6 +117,15 @@ impl Asks {
             })),
             other => other,
         }
+    }
+
+    /// Asks `machine` to run `run`, through the link reaching it, answering
+    /// what it says as it goes, or why it can't be asked.
+    pub async fn run(&self, machine: &str, run: Run) -> Result<mpsc::Receiver<Ran>, String> {
+        let (ran, said) = mpsc::channel(crate::run::BACKLOG);
+        self.send(machine, Asked::Run(run, ran), Some(ANSWERED_WITHIN))
+            .await??;
+        Ok(said)
     }
 
     /// Asks `machine` to put `steer` into its session's inbox, through the
@@ -249,6 +262,97 @@ pub(super) async fn answer(node: PathBuf, here: String, mut start: Start) -> Rep
         Ok(Err(error)) => Err(format!("its node didn't answer: {error}")),
         Err(error) => Err(format!("its start stopped: {error}")),
     }
+}
+
+/// How many pieces of a run's output the end running it sends before the
+/// asking end says it has taken one, so a run writing faster than its
+/// asker reads waits rather than filling the link.
+pub(super) const RUN_WINDOW: usize = 8;
+
+/// What a link's runs tell its loop, to be sent to the other end.
+pub(super) enum RunSaid {
+    /// What a run asked of this machine says.
+    Ran(u64, Ran),
+    /// A piece of a run asked of the other machine has been taken.
+    Taken(u64),
+    /// A run asked of the other machine has been let go.
+    Unrun(u64),
+}
+
+/// A run the other end asked of this machine, while it runs.
+pub(super) struct RunningHere {
+    /// How many more pieces of its output may be sent before the other
+    /// end takes one.
+    pub(super) window: Arc<Semaphore>,
+    /// Dropped to stop it.
+    pub(super) _stop: oneshot::Sender<()>,
+}
+
+/// Hands a run the other end asks of `here` to this machine's node at
+/// `node`, pinned to this machine, and sends what it says to `back` as
+/// `ask`'s, a piece of output only once `window` lets it, until it ends or
+/// `stop` is dropped, which hangs up on the node and so stops it.
+pub(super) async fn run(
+    (node, here): (PathBuf, String),
+    mut run: Run,
+    (ask, back): (u64, mpsc::UnboundedSender<RunSaid>),
+    window: Arc<Semaphore>,
+    mut stop: oneshot::Receiver<()>,
+) {
+    run.work.needs.push(Need::Machine(here));
+    let running = async {
+        let (reading, mut writing) = tokio::net::UnixStream::connect(&node)
+            .await
+            .map_err(|error| format!("its node didn't answer: {error}"))?
+            .into_split();
+        let mut line =
+            serde_json::to_string(&Request::Run(run)).map_err(|error| error.to_string())?;
+        line.push('\n');
+        writing
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|error| format!("its node didn't answer: {error}"))?;
+        let mut lines = BufReader::new(reading).lines();
+        match serde_json::from_str::<Reply>(&said(&mut lines).await?) {
+            Ok(Ok(Response::Running { .. })) => {}
+            Ok(Err(why)) => return Err(why),
+            other => return Err(format!("its node answered {other:?}")),
+        }
+        loop {
+            let ran = serde_json::from_str::<Ran>(&said(&mut lines).await?)
+                .map_err(|error| format!("its node said what isn't a run's: {error}"))?;
+            if !ran.ends() {
+                // The window is never closed while the run holds it.
+                if let Ok(piece) = window.acquire().await {
+                    piece.forget();
+                }
+            }
+            let ends = ran.ends();
+            if back.send(RunSaid::Ran(ask, ran)).is_err() || ends {
+                return Ok(());
+            }
+        }
+    };
+    tokio::select! {
+        ran = running => if let Err(why) = ran {
+            // A link that dropped meanwhile has nobody to tell.
+            let _ = back.send(RunSaid::Ran(ask, Ran::Failed(why)));
+        },
+        // Hanging up on the node stops the run.
+        _ = &mut stop => {}
+    }
+}
+
+/// The next line a node says, or that it stopped answering.
+async fn said(
+    lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+) -> Result<String, String> {
+    lines
+        .next_line()
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| "its node stopped answering".to_owned())
 }
 
 /// Hands an update the other end asks of `here` to this machine's node at

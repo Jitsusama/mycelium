@@ -99,6 +99,7 @@ mod tests {
             builders: names(builders),
             forges: names(forges),
             secrets: names(secrets),
+            runs: Vec::new(),
         }
     }
 

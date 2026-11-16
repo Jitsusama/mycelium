@@ -97,6 +97,12 @@ pub struct Doors {
     pub forges: BTreeSet<String>,
     /// The secrets it may be released.
     pub secrets: BTreeSet<String>,
+    /// The words a command is put after to run in this fence there, the
+    /// first a program the Nix store holds; none where nothing runs in it
+    /// for another machine or a command line, which refuses an agent's
+    /// run (`launcher`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<String>,
 }
 
 /// A fence as declared, or none where it isn't in the shape this build
@@ -204,9 +210,168 @@ pub fn read(file: &Path) -> Option<Declared> {
         .ok()
 }
 
+/// Where Nix keeps what it builds, which only Nix writes.
+const STORE: &str = "/nix/store";
+
+/// The words that run a command in this machine's fence `kind`, as the
+/// configuration at `file` declares them. They are taken only from a file
+/// the agents can't write, since they say what the fence is: one in the
+/// Nix store, or one that only `declarers` own, with nothing on its way
+/// down from the root another may write. The first word must be a
+/// program in the store too, so no agent can put another in its place.
+///
+/// # Errors
+///
+/// When the file isn't sealed so, declares no words for `kind`, or names
+/// a program outside the store.
+pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String>, String> {
+    sealed(file, declarers).map_err(|why| {
+        format!(
+            "what {} declares can't say how a {kind} command runs: {why}",
+            file.display()
+        )
+    })?;
+    let runs = read(file)
+        .and_then(|declared| declared.fence)
+        .and_then(|mut fences| fences.remove(&kind))
+        .map(|doors| doors.runs)
+        .unwrap_or_default();
+    let Some(program) = runs.first() else {
+        return Err(format!(
+            "this machine declares no way to run a command as its {kind} sessions run"
+        ));
+    };
+    let found = fs::canonicalize(program)
+        .map_err(|error| format!("its {kind} sessions' launcher {program} isn't there: {error}"))?;
+    if !found.starts_with(STORE) {
+        return Err(format!(
+            "its {kind} sessions' launcher {program} isn't in the Nix store, so it isn't \
+             trusted to fence"
+        ));
+    }
+    Ok(runs)
+}
+
+/// Whether no account but `declarers` can change `file`: it is in the Nix
+/// store, or it and each folder above it belongs to one of them and lets
+/// no other write, but for a sticky folder, where nobody else may move
+/// what isn't theirs.
+fn sealed(file: &Path, declarers: &[u32]) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let found = fs::canonicalize(file).map_err(|error| format!("it isn't there: {error}"))?;
+    if found.starts_with(STORE) {
+        return Ok(());
+    }
+    for entry in found.ancestors() {
+        let said = fs::metadata(entry)
+            .map_err(|error| format!("{} can't be looked at: {error}", entry.display()))?;
+        if !declarers.contains(&said.uid()) {
+            return Err(format!(
+                "{} belongs to account {}, which isn't trusted to declare it",
+                entry.display(),
+                said.uid()
+            ));
+        }
+        let sticky = said.is_dir() && said.mode() & 0o1000 != 0;
+        if said.mode() & 0o022 != 0 && !sticky {
+            return Err(format!(
+                "{} may be written by others than its owner",
+                entry.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
+
+    /// The accounts a test trusts to declare: root, its own, and the one a
+    /// build's sandbox shows root as.
+    fn declarers() -> Vec<u32> {
+        vec![0, 65534, rustix::process::getuid().as_raw()]
+    }
+
+    /// Where `name` is found on the path, as the store holds it.
+    fn stored(name: &str) -> PathBuf {
+        std::env::split_paths(&std::env::var_os("PATH").expect("a path"))
+            .map(|folder| folder.join(name))
+            .find(|program| program.exists())
+            .expect("the program is on the path")
+    }
+
+    /// A configuration whose `kind` fence runs a command after `runs`.
+    fn runs_through(file: &Path, runs: &[&str]) {
+        let declared = serde_json::json!({
+            "reach": [], "outlives": [], "costs_money": false, "taints": [],
+            "fence": {"strict": {"builders": [], "forges": [], "secrets": [],
+                                  "runs": runs}}
+        });
+        fs::write(file, declared.to_string()).expect("the configuration is written");
+    }
+
+    #[test]
+    fn a_fence_runs_a_command_only_as_a_sealed_file_says() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        let env = stored("env");
+        let env = env.to_str().expect("a path in words");
+        runs_through(&file, &[env, "FENCED=1"]);
+        assert_eq!(
+            launcher(&file, Kind::Strict, &declarers()),
+            Ok(vec![env.to_owned(), "FENCED=1".to_owned()]),
+            "a file only trusted accounts write says it"
+        );
+        assert_eq!(
+            launcher(&file, Kind::Fence, &declarers()),
+            Err(
+                "this machine declares no way to run a command as its fenced sessions run"
+                    .to_owned()
+            ),
+            "a fence it doesn't declare runs nothing"
+        );
+        let own = rustix::process::getuid().as_raw();
+        let refused = launcher(&file, Kind::Strict, &[0, 65534]);
+        assert!(
+            refused.as_ref().is_err_and(|why| why.ends_with(&format!(
+                "belongs to account {own}, which isn't trusted to declare it"
+            ))),
+            "a file the agents' own account writes says nothing: {refused:?}"
+        );
+        let shared = folder.path().join("shared");
+        fs::create_dir(&shared).expect("a folder is made");
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o775)).expect("it is shared");
+        let file = shared.join("declared.json");
+        runs_through(&file, &[env]);
+        let refused = launcher(&file, Kind::Strict, &declarers());
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.ends_with("may be written by others than its owner")),
+            "a file in a folder others write says nothing: {refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_fence_runs_a_command_only_through_a_program_the_store_holds() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        let program = folder.path().join("fence");
+        fs::write(&program, "#!/bin/sh\nexec \"$@\"\n").expect("the program is written");
+        let program = program.to_str().expect("a path in words");
+        runs_through(&file, &[program]);
+        assert_eq!(
+            launcher(&file, Kind::Strict, &declarers()),
+            Err(format!(
+                "its strictly fenced sessions' launcher {program} isn't in the Nix store, so \
+                 it isn't trusted to fence"
+            ))
+        );
+    }
 
     #[test]
     fn a_configuration_declares_what_cant_be_measured() {
@@ -259,6 +424,7 @@ mod tests {
             builders: BTreeSet::from(["remote".to_owned()]),
             forges: BTreeSet::new(),
             secrets: BTreeSet::new(),
+            runs: Vec::new(),
         };
         assert_eq!(
             read(&file).and_then(|declared| declared.fence),

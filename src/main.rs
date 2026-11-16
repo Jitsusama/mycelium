@@ -31,7 +31,7 @@ use mycelium::ssh::Asked as KeyAsked;
 use mycelium::store::Store as _;
 use mycelium::store::folders::Folders;
 use mycelium::web::Said;
-use mycelium::wire::{Draft, Reply, Request, Response, Start};
+use mycelium::wire::{Draft, Ran, Reply, Request, Response, Run, Start};
 use mycelium::{carry, hold, hosted_attach, install, link, node, place, served};
 
 /// The widest a line of any command's help is drawn, so it reads in a
@@ -345,6 +345,14 @@ enum Action {
     /// its id and the words that attach to it.
     #[command(after_help = "Example:\n  mycelium start --need system=linux -- pi")]
     Start(Starting),
+    /// Runs a command on the machine that suits it, and waits on it.
+    ///
+    /// The node runs it on the machine of the realm placement chooses,
+    /// through that person's login shell, with nothing on its input. What
+    /// it writes comes back as it writes it, and this ends with its exit
+    /// code, or 255 when it couldn't run. Stopping this stops it.
+    #[command(after_help = "Example:\n  mycelium run --need machine=kestrel -- nix flake check")]
+    Run(Running),
     /// Steers a session by its address, from standard input.
     ///
     /// What is said goes into the steer inbox of the session going by
@@ -812,6 +820,19 @@ struct Starting {
     command: Vec<String>,
 }
 
+#[derive(clap::Args)]
+struct Running {
+    /// What the machine must be, as for `place`.
+    #[command(flatten)]
+    work: Asked,
+    /// The folder it runs in, found as for `start`.
+    #[arg(long)]
+    folder: Option<PathBuf>,
+    /// The command and its arguments, after `--`.
+    #[arg(last = true, required = true)]
+    command: Vec<String>,
+}
+
 /// Work to be placed, as its flags say it.
 #[derive(clap::Args)]
 struct Asked {
@@ -1198,11 +1219,8 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
         Action::Update { machine } => print_reply(&socket, &Request::Update { machine }),
         Action::Start(asked) => start(&socket, asked),
-        Action::Steer { address } => {
-            let steer = serde_json::from_reader(io::stdin().lock())
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-            print_reply(&socket, &Request::Steer { address, steer })
-        }
+        Action::Run(asked) => return run_there(&socket, asked),
+        Action::Steer { address } => steer(&socket, address),
         Action::Orchestrates {
             free: Some(quest), ..
         } => print_reply(&socket, &Request::Free { quest }),
@@ -1250,6 +1268,13 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         | Action::Again { .. } => unreachable!("each is read as its tree above"),
     };
     ran.map(|()| ExitCode::SUCCESS)
+}
+
+/// Steers the session going by `address` with what standard input says.
+fn steer(socket: &Path, address: String) -> io::Result<()> {
+    let steer = serde_json::from_reader(io::stdin().lock())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    print_reply(socket, &Request::Steer { address, steer })
 }
 
 /// Does what `asked` asks of the machines, through the node at `socket`,
@@ -1421,6 +1446,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         parked: place::parked(),
         processes: node::Processes::here(),
         carries: state.join("carries.jsonl"),
+        runs: mycelium::run::Given::at(&state),
         hosts: place::hosts(),
         orchestrations: state.join("orchestrations.json"),
         logs: place::logs(),
@@ -2045,23 +2071,78 @@ fn carry(
 /// Asks the node to start `command` where placement says `work` should
 /// go, in `folder` as it stands under home there, or in home.
 fn start(socket: &Path, asked: Starting) -> io::Result<()> {
-    let folder = asked.folder.map(std::path::absolute).transpose()?;
-    // A folder under home is said within it, since another machine's
-    // home is elsewhere: /home/joel here is /Users/joel on a Mac.
-    let folder = match (folder, std::env::home_dir()) {
+    let start = Start {
+        work: asked.work.into(),
+        folder: said_within_home(asked.folder)?,
+        command: asked.command,
+        may_cost: asked.may_cost,
+    };
+    print_reply(socket, &Request::Start(start))
+}
+
+/// `folder` as another machine can find it: within home when it is under
+/// this one's, since another machine's home is elsewhere: /home/joel here
+/// is /Users/joel on a Mac.
+fn said_within_home(folder: Option<PathBuf>) -> io::Result<Option<PathBuf>> {
+    let folder = folder.map(std::path::absolute).transpose()?;
+    Ok(match (folder, std::env::home_dir()) {
         (Some(folder), Some(home)) => match folder.strip_prefix(&home) {
             Ok(within) => Some(within.to_owned()),
             Err(_) => Some(folder),
         },
         (folder, _) => folder,
-    };
-    let start = Start {
+    })
+}
+
+/// What `mycelium run` ends with when its command couldn't run, as SSH
+/// does.
+const DIDNT_RUN: u8 = 255;
+
+/// Asks the node to run `command` where placement says `work` should go,
+/// writing what it writes as it comes, and ends as it ended.
+fn run_there(socket: &Path, asked: Running) -> io::Result<ExitCode> {
+    let run = Run {
         work: asked.work.into(),
-        folder,
+        folder: said_within_home(asked.folder)?,
         command: asked.command,
-        may_cost: asked.may_cost,
+        // The node judges who asks, and where from.
+        by: None,
+        from: None,
     };
-    print_reply(socket, &Request::Start(start))
+    let mut client = Client::connect(socket)?;
+    match client.ask(&Request::Run(run))? {
+        Ok(Response::Running { .. }) => {}
+        Ok(other) => return Err(io::Error::other(format!("the node answered {other:?}"))),
+        Err(why) => {
+            eprintln!("mycelium: {why}");
+            return Ok(ExitCode::from(DIDNT_RUN));
+        }
+    }
+    let piece = |said: &str| {
+        mycelium::run::bytes(said)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    };
+    loop {
+        match client.next_ran()? {
+            Some(Ran::Out(said)) => {
+                let mut out = io::stdout().lock();
+                out.write_all(&piece(&said)?)?;
+                out.flush()?;
+            }
+            Some(Ran::Err(said)) => io::stderr().lock().write_all(&piece(&said)?)?,
+            Some(Ran::Exited(code)) => {
+                return Ok(ExitCode::from(u8::try_from(code).unwrap_or(DIDNT_RUN)));
+            }
+            Some(Ran::Failed(why)) => {
+                eprintln!("mycelium: {why}");
+                return Ok(ExitCode::from(DIDNT_RUN));
+            }
+            None => {
+                eprintln!("mycelium: the node hung up before the run ended");
+                return Ok(ExitCode::from(DIDNT_RUN));
+            }
+        }
+    }
 }
 
 /// Holds `command`, started in `folder` or this one, and joins it from

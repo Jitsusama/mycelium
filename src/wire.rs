@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::declared::Kind;
 use crate::facts::Machine;
 use crate::flow::{Crossing, Refusal};
 use crate::group::{Group, Pattern};
@@ -37,6 +38,11 @@ pub enum Request {
     Place(Work),
     /// Start a program held where placement chooses.
     Start(Start),
+    /// Run a command where placement chooses, as the node's own: answered
+    /// with [`Response::Running`], then a [`Ran`] a line for as long as it
+    /// runs, ending with its exit or why it couldn't run. A client that
+    /// hangs up stops it.
+    Run(Run),
     /// Put what the person says into a session's steer inbox, on the one
     /// machine running the session that goes by `address`, in the
     /// harness's own shape: text, act, at, from and id.
@@ -143,6 +149,69 @@ pub struct Start {
     pub may_cost: bool,
 }
 
+/// A command to run, and where. It never makes a machine, since a run
+/// is over long before one would link.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Run {
+    /// What the machine it runs on must be.
+    pub work: Work,
+    /// The folder it runs in there, as for [`Start`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
+    /// The command and its arguments, run through the login shell there,
+    /// with nothing on its standard input.
+    pub command: Vec<String>,
+    /// Who asks it, as the machine it was asked of judged them. A node
+    /// takes what is said here only as stricter than what it judges, and
+    /// a run from another machine that says nothing as a strictly fenced
+    /// agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<By>,
+    /// The machine it was asked of, for the record of runs alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+/// Who asks a run: the person, or an agent and the fence it runs in.
+/// Ordered from loosest to strictest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum By {
+    /// The person's own login.
+    Person,
+    /// An agent, in this fence.
+    Agent(Kind),
+}
+
+impl std::fmt::Display for By {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            By::Person => f.write_str("the person"),
+            By::Agent(kind) => write!(f, "a {kind} agent"),
+        }
+    }
+}
+
+/// What a run says as it goes: its output as it comes, then how it ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Ran {
+    /// Bytes it wrote to its standard output, in base64.
+    Out(String),
+    /// Bytes it wrote to its standard error, in base64.
+    Err(String),
+    /// It ended with this exit code, or 128 and the signal that ended it.
+    Exited(i32),
+    /// It couldn't run, or its machine stopped answering, and why.
+    Failed(String),
+}
+
+impl Ran {
+    /// Whether nothing follows it.
+    #[must_use]
+    pub fn ends(&self) -> bool {
+        matches!(self, Self::Exited(_) | Self::Failed(_))
+    }
+}
+
 /// A program started held.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Started {
@@ -226,6 +295,11 @@ pub enum Response {
     Placement(Placement),
     /// The program asked for, started.
     Started(Started),
+    /// The command asked for is running on `machine`; [`Ran`] lines follow.
+    Running {
+        /// The machine it runs on.
+        machine: String,
+    },
     /// The steer asked for, in its session's inbox on `machine`. A talk's
     /// replies follow in its replies file on this machine, as they would
     /// for a session here.

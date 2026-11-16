@@ -70,10 +70,10 @@ use crate::hold;
 use crate::mesh;
 use crate::share::exchange::{Exchange, Places, Say};
 use crate::store::{self, Change, Claim, Store};
-use crate::wire::{Reply, Response, Start};
+use crate::wire::{Ran, Reply, Response, Run, Start};
 use dial::Connection;
 use membership::{Hello, Membership};
-use starts::{Ask, Asked, Asking, Starting};
+use starts::{Ask, Asked, Asking, RunSaid, RunningHere, Starting};
 use steers::{Following, Replies};
 
 /// How far back a link reaches for messages at most: the mesh's own week,
@@ -170,6 +170,33 @@ pub enum Frame {
     },
     /// Lines a session on this end's machine added to a talk.
     Replies(Replies),
+    /// Run a command on the other end's machine, if this end's key proved
+    /// which machine asks.
+    Run {
+        /// Which ask, so what it says finds it.
+        ask: u64,
+        /// What to run.
+        run: Run,
+    },
+    /// What a run asked of this end's machine says as it goes, its end
+    /// last.
+    Ran {
+        /// Which ask.
+        ask: u64,
+        /// What it says.
+        ran: Ran,
+    },
+    /// The asker of a run has taken a piece of its output, so one more
+    /// may be sent.
+    Taken {
+        /// Which ask.
+        ask: u64,
+    },
+    /// The asker of a run has let go of it, so it is stopped.
+    Unrun {
+        /// Which ask.
+        ask: u64,
+    },
     /// The other end's machine's answer to an ask, a start's or a steer's.
     Started {
         /// Which ask.
@@ -240,6 +267,7 @@ pub async fn run(
         .map(|places| Exchange::new(places, membership.hello().machine, other.machine.clone()));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
     let (answering, mut answered) = mpsc::unbounded_channel();
+    let (runs, mut run_said) = Runs::new();
     let inboxes = starting.as_ref().map(|starting| starting.steers.clone());
     let mut end = End {
         store,
@@ -260,6 +288,7 @@ pub async fn run(
         node: starting.map(|starting| starting.node),
         answering,
         asks: HashMap::new(),
+        runs,
         next_ask: 0,
         other: other.machine.clone(),
         said: other,
@@ -292,6 +321,7 @@ pub async fn run(
                 end.handover.ran |= matches!(reply, Ok(Response::Started(_)));
                 send(&mut writing, &Frame::Started { ask, reply }).await
             }
+            Some(said) = run_said.recv() => end.run_said(said, &mut writing).await,
             _ = looking.tick() => end.look(&mut writing).await,
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => end.send_messages(vec![id], &mut writing).await,
@@ -475,6 +505,8 @@ struct End<S> {
     answering: mpsc::UnboundedSender<(u64, Reply)>,
     /// Starts asked of the other machine and not yet answered.
     asks: HashMap<u64, oneshot::Sender<Reply>>,
+    /// The runs this end carries, either way.
+    runs: Runs,
     next_ask: u64,
     other: String,
     /// What the other end said of itself in its hello: what it hears of
@@ -490,6 +522,50 @@ struct End<S> {
     carried: HashSet<String>,
     exchange: Option<Exchange>,
     _claim: Claim,
+}
+
+/// The runs an end carries: those it asked of the other machine, and those
+/// the other end asked of this one.
+struct Runs {
+    /// Where what each run asked of the other machine says goes, by ask.
+    asked: HashMap<u64, mpsc::UnboundedSender<Ran>>,
+    /// Each run the other end asked of this machine, by its ask.
+    here: HashMap<u64, RunningHere>,
+    /// Where runs tell the link's loop what to send.
+    saying: mpsc::UnboundedSender<RunSaid>,
+}
+
+impl Runs {
+    /// None yet, and where what runs tell the link's loop comes out.
+    fn new() -> (Self, mpsc::UnboundedReceiver<RunSaid>) {
+        let (saying, said) = mpsc::unbounded_channel();
+        let runs = Self {
+            asked: HashMap::new(),
+            here: HashMap::new(),
+            saying,
+        };
+        (runs, said)
+    }
+
+    /// Hands what the run asked as `ask` of the other machine said on to
+    /// its asker, letting go of it once it ends.
+    fn ran(&mut self, ask: u64, ran: Ran) {
+        let ends = ran.ends();
+        // A run its asker let go of has nobody to hear it.
+        if let Some(asker) = self.asked.get(&ask) {
+            let _ = asker.send(ran);
+        }
+        if ends {
+            self.asked.remove(&ask);
+        }
+    }
+
+    /// Lets the run asked as `ask` of this machine send one more piece.
+    fn taken(&self, ask: u64) {
+        if let Some(running) = self.here.get(&ask) {
+            running.window.add_permits(1);
+        }
+    }
 }
 
 /// Where a machine's handover stands, at one end of a link.
@@ -619,6 +695,11 @@ impl<S: Store> End<S> {
                 send(writing, &Frame::Started { ask, reply }).await?;
             }
             Frame::Update { ask } => self.update(ask),
+            Frame::Run { ask, run } => self.run_here(ask, run),
+            Frame::Ran { ask, ran } => self.runs.ran(ask, ran),
+            Frame::Taken { ask } => self.runs.taken(ask),
+            // Dropping it stops it.
+            Frame::Unrun { ask } => drop(self.runs.here.remove(&ask)),
             Frame::Follow { talks } => {
                 if let Some(following) = self.following.as_mut() {
                     following.follow(talks);
@@ -647,6 +728,7 @@ impl<S: Store> End<S> {
             Asked::Start(_) => self.said.starts.then_some(()).ok_or("start sessions"),
             Asked::Steer(_) => self.said.steers.then_some(()).ok_or("carry steers"),
             Asked::Update => self.said.updates.then_some(()).ok_or("be asked to update"),
+            Asked::Run(..) => self.said.runs.then_some(()).ok_or("run commands"),
         };
         if let Err(cannot) = carried {
             // The asker may have given up; then nobody hears it.
@@ -658,6 +740,14 @@ impl<S: Store> End<S> {
         }
         let id = self.next_ask;
         self.next_ask += 1;
+        if let Asked::Run(run, asker) = ask.asked {
+            self.runs.asked.insert(id, self.follow_run(id, asker));
+            // The asker may have given up; then the run is let go.
+            let _ = ask.answer.send(Ok(Response::Running {
+                machine: self.other.clone(),
+            }));
+            return send(writing, &Frame::Run { ask: id, run }).await;
+        }
         self.asks.insert(id, ask.answer);
         let frame = match ask.asked {
             Asked::Start(start) => Frame::Start { ask: id, start },
@@ -668,6 +758,101 @@ impl<S: Store> End<S> {
                 checked: steer.checked,
             },
             Asked::Update => Frame::Update { ask: id },
+            Asked::Run(..) => unreachable!("a run is sent above"),
+        };
+        send(writing, &frame).await
+    }
+
+    /// Hands what the run asked of the other machine as `ask` says on to
+    /// `asker`, telling the other end each time a piece is taken, so it
+    /// sends one more, and once `asker` lets go, so it stops the run.
+    /// Answers where the link puts what the run says.
+    fn follow_run(&self, ask: u64, asker: mpsc::Sender<Ran>) -> mpsc::UnboundedSender<Ran> {
+        let (said, mut saying) = mpsc::unbounded_channel::<Ran>();
+        let (loop_, other) = (self.runs.saying.clone(), self.other.clone());
+        tokio::spawn(async move {
+            loop {
+                let ran = tokio::select! {
+                    ran = saying.recv() => ran.unwrap_or_else(|| {
+                        Ran::Failed(format!("the link to {other} dropped before the run ended"))
+                    }),
+                    () = asker.closed() => break,
+                };
+                let ends = ran.ends();
+                if asker.send(ran).await.is_err() {
+                    break;
+                }
+                if ends {
+                    return;
+                }
+                // The link outlives what it carries, or nobody needs this.
+                let _ = loop_.send(RunSaid::Taken(ask));
+            }
+            let _ = loop_.send(RunSaid::Unrun(ask));
+        });
+        said
+    }
+
+    /// Hands a run the other end asks of this machine to its node, only
+    /// when the other end is proven to be its machine, as for an update.
+    fn run_here(&mut self, ask: u64, run: Run) {
+        let run = arrived(run, &self.other);
+        let node = if self.proven {
+            self.node
+                .clone()
+                .ok_or_else(|| format!("{} runs nothing over this link", self.here))
+        } else {
+            Err(format!(
+                "{} runs only what is asked over a link its key proved, which this one isn't",
+                self.here
+            ))
+        };
+        let node = match node {
+            Ok(node) => node,
+            Err(why) => {
+                eprintln!("{} asked {} to run, refused: {why}", self.other, self.here);
+                // The link outlives this call, so its loop is there to send it.
+                let _ = self.runs.saying.send(RunSaid::Ran(ask, Ran::Failed(why)));
+                return;
+            }
+        };
+        let window = Arc::new(tokio::sync::Semaphore::new(starts::RUN_WINDOW));
+        let (stop, stopped) = oneshot::channel();
+        self.runs.here.insert(
+            ask,
+            RunningHere {
+                window: window.clone(),
+                _stop: stop,
+            },
+        );
+        self.handover.ran = true;
+        tokio::spawn(starts::run(
+            (node, self.here.clone()),
+            run,
+            (ask, self.runs.saying.clone()),
+            window,
+            stopped,
+        ));
+    }
+
+    /// Sends the other end what a run said.
+    async fn run_said(
+        &mut self,
+        said: RunSaid,
+        writing: &mut (impl AsyncWrite + Unpin),
+    ) -> io::Result<()> {
+        let frame = match said {
+            RunSaid::Ran(ask, ran) => {
+                if ran.ends() {
+                    self.runs.here.remove(&ask);
+                }
+                Frame::Ran { ask, ran }
+            }
+            RunSaid::Taken(ask) => Frame::Taken { ask },
+            RunSaid::Unrun(ask) => {
+                self.runs.asked.remove(&ask);
+                Frame::Unrun { ask }
+            }
         };
         send(writing, &frame).await
     }
@@ -1048,14 +1233,56 @@ fn refusal(reason: String) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, reason)
 }
 
+/// `run`, asked over the link from `from`, as this end hands it to its
+/// node: one that doesn't say who asks is taken as a strictly fenced
+/// agent's, and the machine it came from is the one at the other end,
+/// whatever it says.
+fn arrived(mut run: Run, from: &str) -> Run {
+    run.by
+        .get_or_insert(crate::wire::By::Agent(crate::declared::Kind::Strict));
+    run.from = Some(from.to_owned());
+    run
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
     use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 
     use super::*;
+    use crate::declared::Kind;
     use crate::link::membership::{Realm, VERSION};
     use crate::store::memory::Memory;
+    use crate::wire::By;
+
+    #[test]
+    fn a_run_from_another_machine_that_doesnt_say_who_asks_runs_strictly_fenced() {
+        let said: Run = serde_json::from_value(json!({
+            "work": {"needs": [], "prefers": [], "tolerates": [], "may_wait": false},
+            "command": ["true"],
+            "from": "tern"
+        }))
+        .expect("a run as an older node says it");
+        let run = arrived(said.clone(), "skiff");
+        assert_eq!(run.by, Some(By::Agent(Kind::Strict)));
+        assert_eq!(
+            run.from.as_deref(),
+            Some("skiff"),
+            "it came from the machine at the other end"
+        );
+        let person = arrived(
+            Run {
+                by: Some(By::Person),
+                ..said
+            },
+            "skiff",
+        );
+        assert_eq!(
+            person.by,
+            Some(By::Person),
+            "as the asking machine judged it"
+        );
+    }
 
     /// How long a test waits for a link to carry something before failing.
     /// Each waits on what it waits for, so this only bounds how long a
@@ -1654,6 +1881,7 @@ mod tests {
             steers: true,
             releases: false,
             updates: true,
+            runs: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await

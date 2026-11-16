@@ -51,6 +51,12 @@ pub struct Hello {
     /// end older than this does neither, and would end a link that asked.
     #[serde(default)]
     pub updates: bool,
+    /// Whether it carries runs, handing one to its node when its key
+    /// proved who asked and refusing it otherwise, and streaming back what
+    /// it says; an end older than this does neither, and would end a link
+    /// that asked.
+    #[serde(default)]
+    pub runs: bool,
 }
 
 /// Which machines a node links with.
@@ -90,6 +96,7 @@ impl Membership for Realm {
             steers: true,
             releases: false,
             updates: true,
+            runs: true,
         }
     }
 

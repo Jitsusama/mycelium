@@ -41,12 +41,15 @@ use crate::placements;
 use crate::receptor;
 use crate::record::{Message, Session, State as SessionState};
 use crate::room;
+use crate::run;
 use crate::served::{self, Served};
 use crate::share::exchange::Places;
 use crate::state::State;
 use crate::steer::{self, Steer};
 use crate::store::{self, Change, Store};
-use crate::wire::{Answer, Draft, Event, Offers, Reply, Request, Response, Start, Started};
+use crate::wire::{
+    Answer, By, Draft, Event, Offers, Ran, Reply, Request, Response, Run, Start, Started,
+};
 use crate::within;
 use crate::{unanswered, words};
 use turns::{Asked, Turns};
@@ -287,6 +290,9 @@ pub struct Given {
     pub processes: Processes,
     /// Where it keeps each carry an orchestrator ordered, a line each.
     pub carries: PathBuf,
+    /// Where it keeps each command it runs, and who may say how a fenced
+    /// one runs.
+    pub runs: run::Given,
     /// Where pi's hosts each keep their record of the sessions they hold,
     /// which proves who owns a session a host holds.
     pub hosts: PathBuf,
@@ -730,6 +736,9 @@ struct Shared<S> {
     /// The quests' scratch folders, where each machine's sessions hand
     /// over as they leave or refuse, or none where it shares no quests.
     scratch: Option<PathBuf>,
+    /// Where it keeps each command it runs, and who may say how a fenced
+    /// one runs.
+    runs: Arc<run::Given>,
     /// Where pi's hosts keep their records of the sessions they hold.
     hosts: PathBuf,
     /// Where it keeps who orchestrates which quests.
@@ -820,6 +829,7 @@ impl<S: Clone> Clone for Shared<S> {
             client: self.client,
             carries: self.carries.clone(),
             scratch: self.scratch.clone(),
+            runs: self.runs.clone(),
             hosts: self.hosts.clone(),
             orchestrations: self.orchestrations.clone(),
             logs: self.logs.clone(),
@@ -1172,6 +1182,7 @@ impl<S: Store> Shared<S> {
             parked,
             processes,
             carries,
+            runs,
             hosts,
             orchestrations,
             logs,
@@ -1211,6 +1222,7 @@ impl<S: Store> Shared<S> {
             processes: processes.into(),
             carries,
             scratch: sharing.as_ref().map(|places| places.scratch.clone()),
+            runs: Arc::new(runs),
             hosts,
             orchestrations,
             logs,
@@ -1871,6 +1883,7 @@ impl<S: Store> Shared<S> {
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
             Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
+            Request::Run(_) => Err("a run is answered by `run`".to_owned()),
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
             Request::Orchestrates { .. } => {
@@ -2542,6 +2555,125 @@ impl<S: Store> Shared<S> {
         }))
     }
 
+    /// Runs `asked` on the machine placement chooses, answering where, and
+    /// what it says as it goes, or why it doesn't run: this machine runs
+    /// it as its own, another through the link reaching it. An agent
+    /// asking runs it only where it would stand on ground as firm as
+    /// here, as an ordered carry would, and there only through the
+    /// launcher that machine declares for its fence. Each run is kept in
+    /// the record of runs.
+    async fn run(&self, mut asked: Run) -> Result<(String, mpsc::Receiver<Ran>), String> {
+        if asked.command.is_empty() {
+            return Err("nothing to run: name a command".to_owned());
+        }
+        let (judged, sessions) = self.judged().await?;
+        // What it says of who asks only ever makes it stricter, and an
+        // agent runs fenced at least.
+        let by = match judged.max(asked.by.unwrap_or(By::Person)) {
+            By::Agent(kind) => By::Agent(kind.max(crate::declared::Kind::Fence)),
+            By::Person => By::Person,
+        };
+        asked.by = Some(by);
+        // A run ends when its asker stops waiting, so it isn't kept as a
+        // start the machine's room has yet to show.
+        let machine = match self.place(&asked.work, false) {
+            Placement::Placed { machine, .. } => machine,
+            Placement::Pending { misses } => {
+                return Err(format!(
+                    "nowhere now, though a machine out of reach would do: {}",
+                    placement::said(&misses)
+                ));
+            }
+            Placement::Refused { misses } => {
+                return Err(format!("nowhere: {}", placement::said(&misses)));
+            }
+        };
+        // Here, an agent's run stands on this machine's own ground, in the
+        // fence its launcher sets.
+        if let By::Agent(kind) = by
+            && machine != self.machine
+        {
+            let there = self.others().into_iter().find(|one| one.name == machine);
+            let here = crate::declared::read(&self.declared);
+            ground::firm(Some(kind), here.as_ref(), &machine, there.as_ref()).map_err(|why| {
+                format!("this asks as {by}, so it runs nothing on looser ground: {why}")
+            })?;
+        }
+        let from = asked.from.clone().unwrap_or_else(|| self.machine.clone());
+        let id = format!(
+            "{}.{}",
+            self.machine,
+            jiff::Timestamp::now().as_nanosecond()
+        );
+        let started = serde_json::json!({
+            "run": id,
+            "at": jiff::Timestamp::now().to_string(),
+            "by": by,
+            "sessions": sessions,
+            "from": from,
+            "on": machine,
+            "folder": asked.folder,
+            "command": asked.command,
+        });
+        let said = if machine == self.machine {
+            let home =
+                std::env::home_dir().ok_or_else(|| format!("{machine} has no home to run in"))?;
+            let folder = start::begins_in(asked.folder.as_deref(), &home);
+            let mut words = match by {
+                By::Person => Vec::new(),
+                By::Agent(kind) => {
+                    crate::declared::launcher(&self.declared, kind, &self.runs.declarers).map_err(
+                        |why| {
+                            format!("this asks as {by}, so it runs here only in that fence: {why}")
+                        },
+                    )?
+                }
+            };
+            words.extend(start::login_run(&self.realm));
+            words.extend(asked.command);
+            let (ran, said) = mpsc::channel(run::BACKLOG);
+            tokio::spawn(run::here(words, folder, ran));
+            said
+        } else {
+            self.asks.run(&machine, asked).await?
+        };
+        run::journal(&self.runs.journal, &started);
+        Ok((machine, run::journaled(self.runs.journal.clone(), id, said)))
+    }
+
+    /// Who asks a run, as [`asker::judge`] tells it, and the sessions
+    /// claiming the process that asks, nearest first, each of whose
+    /// presence says which fence it runs in.
+    async fn judged(&self) -> Result<(By, Vec<String>), String> {
+        let standing = self.standing();
+        let claims: Vec<asker::Claim> = standing
+            .iter()
+            .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
+            .collect();
+        // A fence this node doesn't know is none it can read.
+        let fences: HashMap<String, Option<crate::declared::Kind>> = standing
+            .into_iter()
+            .map(|presence| {
+                let fence = presence
+                    .body
+                    .get("fence")
+                    .and_then(|said| serde_json::from_value(said.clone()).ok());
+                (presence.session, fence)
+            })
+            .collect();
+        let (client, processes) = (self.client, self.processes.clone());
+        tokio::task::spawn_blocking(move || {
+            let above = asker::claimed_above(client, &processes, &claims);
+            let kinds: Vec<_> = above
+                .iter()
+                .map(|session| fences.get(session).copied().flatten())
+                .collect();
+            (asker::judge(client, &processes, &kinds), above)
+        })
+        .await
+        .map_err(|error| format!("who asks couldn't be told: {error}"))
+    }
+
     /// Starts a watch: its first events are the whole state, taken under
     /// the same lock as every later change, so none is missed or doubled.
     fn watch(&self, groups: Option<&Pattern>, recent: usize) -> (u64, mpsc::Receiver<Event>) {
@@ -2640,6 +2772,10 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             link::carried::to_link(&shared.asks, &machine, lines, writing).await;
             return;
         }
+        if let Ok(Request::Run(asked)) = request {
+            hand_on_run(&shared, asked, lines, writing).await;
+            return;
+        }
         if let Ok(Request::Watch { groups, recent }) = request {
             if write(&mut writing, &Reply::Ok(Response::Watching))
                 .await
@@ -2686,6 +2822,45 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
         };
         if write(&mut writing, &reply).await.is_err() {
             return;
+        }
+    }
+}
+
+/// Runs what a client asks, writing where it runs and then what it says as
+/// it goes, each line written before the next is taken, so a client that
+/// reads slowly slows the run. A client that hangs up, or says anything
+/// more, stops it.
+async fn hand_on_run<S: Store>(
+    shared: &Shared<S>,
+    asked: Run,
+    mut lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    mut writing: tokio::net::unix::OwnedWriteHalf,
+) {
+    let (machine, mut said) = match shared.run(asked).await {
+        Ok(running) => running,
+        Err(why) => {
+            // A client that hung up hears nothing.
+            let _ = write(&mut writing, &Reply::Err(why)).await;
+            return;
+        }
+    };
+    if write(&mut writing, &Reply::Ok(Response::Running { machine }))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    loop {
+        tokio::select! {
+            ran = said.recv() => {
+                let ran = ran.unwrap_or_else(|| Ran::Failed("the run ended without saying how".to_owned()));
+                let ends = ran.ends();
+                if write(&mut writing, &ran).await.is_err() || ends {
+                    return;
+                }
+            }
+            // Dropping what it says stops the run.
+            _ = lines.next_line() => return,
         }
     }
 }
@@ -2870,6 +3045,7 @@ mod tests {
             parked: "/nowhere/parked".into(),
             processes: Processes::Folder("/nowhere/proc".into()),
             carries: "/nowhere/carries.jsonl".into(),
+            runs: run::Given::default(),
             hosts: "/nowhere/hosts".into(),
             orchestrations: "/nowhere/orchestrations.json".into(),
             logs: "/nowhere/sessions".into(),
@@ -2935,6 +3111,7 @@ mod tests {
         let parked = parks_of(socket);
         let processes = Processes::Folder(procs_of(socket));
         let carries = socket.with_file_name("carries.jsonl");
+        let runs = runs_of(socket);
         let hosts = socket.with_file_name("hosts");
         let orchestrations = socket.with_file_name("orchestrations.json");
         let logs = socket.with_file_name("sessions");
@@ -2957,6 +3134,7 @@ mod tests {
                 parked,
                 processes,
                 carries,
+                runs,
                 hosts,
                 orchestrations,
                 logs,
@@ -3138,6 +3316,29 @@ mod tests {
     /// own would refuse every steer they make as the person.
     fn procs_of(socket: &Path) -> PathBuf {
         socket.with_file_name("proc")
+    }
+
+    /// Where a node on `socket` keeps its runs, beside it, trusting this
+    /// account and root to say how a fenced run starts. A build's sandbox
+    /// shows root as nobody, 65534.
+    fn runs_of(socket: &Path) -> run::Given {
+        run::Given {
+            journal: socket.with_file_name("runs.jsonl"),
+            declarers: vec![0, 65534, rustix::process::getuid().as_raw()],
+        }
+    }
+
+    /// Tells the stand-in for /proc beside `socket` that the client, this
+    /// process, is a shell in the person's terminal.
+    fn asks_as_person(socket: &Path) {
+        let client = procs_of(socket).join(std::process::id().to_string());
+        fs::create_dir_all(&client).expect("its folder is made");
+        fs::write(client.join("status"), "Name:\tsh\nPPid:\t1\n").expect("its status is written");
+        fs::write(
+            client.join("cgroup"),
+            "0::/user.slice/user-1000.slice/user@1000.service/session.slice/kitty.scope\n",
+        )
+        .expect("its group is written");
     }
 
     /// Where the updater of a node on `socket` is asked, beside it.
@@ -4269,6 +4470,7 @@ mod tests {
             builders: builders.iter().map(|&one| one.to_owned()).collect(),
             forges: std::collections::BTreeSet::new(),
             secrets: std::collections::BTreeSet::new(),
+            runs: Vec::new(),
         };
         facts::Machine {
             declared: Some(crate::declared::Declared {
@@ -5850,6 +6052,15 @@ mod tests {
     /// Runs kestrel's node and skiff's, linked, kestrel's end
     /// `proven` or not, once skiff has heard what kestrel is.
     async fn linked_to_kestrel(dir: &Path, proven: bool) -> (PathBuf, [Running; 2]) {
+        linked_to_kestrel_in(&Memory::default(), dir, proven).await
+    }
+
+    /// As [`linked_to_kestrel`], keeping what skiff knows in `near_store`.
+    async fn linked_to_kestrel_in(
+        near_store: &Memory,
+        dir: &Path,
+        proven: bool,
+    ) -> (PathBuf, [Running; 2]) {
         let far_socket = dir.join("kestrel").join("work.sock");
         let near_socket = dir.join("skiff").join("work.sock");
         let far_store = Memory::default();
@@ -5860,7 +6071,6 @@ mod tests {
             None,
             &far_socket,
         );
-        let near_store = Memory::default();
         let dial = Piped {
             store: far_store,
             socket: far_socket,
@@ -5868,7 +6078,7 @@ mod tests {
             proven,
             asks_back: false,
         };
-        let near = node(&near_store, "skiff", vec![dial], None, &near_socket);
+        let near = node(near_store, "skiff", vec![dial], None, &near_socket);
         // Nothing tells the test when the link has said what kestrel
         // is, so it looks again every few milliseconds until it has.
         tokio::time::timeout(PATIENCE, async {
@@ -5882,6 +6092,9 @@ mod tests {
         })
         .await
         .expect("the link says what kestrel is");
+        // The test asks both nodes, as the person would.
+        asks_as_person(&near_socket);
+        asks_as_person(&dir.join("kestrel").join("work.sock"));
         (near_socket, [near, far])
     }
 
@@ -5925,6 +6138,463 @@ mod tests {
             ),
             "a link nothing proved can't ask"
         );
+        stop(nodes).await;
+    }
+
+    /// What a run asked of the node at `socket` came to: the node's first
+    /// answer, then all it wrote to its output and its errors, and how it
+    /// ended, if it ran.
+    #[derive(Debug, Default)]
+    struct Came {
+        out: Vec<u8>,
+        err: Vec<u8>,
+        ended: Option<Ran>,
+    }
+
+    /// A run of `script` through `/bin/sh` on `machine`.
+    fn run_of(machine: &str, script: &str) -> Run {
+        Run {
+            work: Work {
+                needs: vec![Need::Machine(machine.to_owned())],
+                prefers: Vec::new(),
+                tolerates: Vec::new(),
+                may_wait: false,
+                lasts: None,
+            },
+            // A full path, since a build's home is no folder at all.
+            folder: Some(std::env::temp_dir()),
+            command: ["/bin/sh", "-c", script].map(str::to_owned).to_vec(),
+            by: None,
+            from: None,
+        }
+    }
+
+    /// Asks the node at `socket` for `run` and reads all it says, or why
+    /// it won't run.
+    async fn run_through(socket: PathBuf, run: Run) -> Result<Came, String> {
+        let asked = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            client.ask(&Request::Run(run)).expect("the node answers")?;
+            let mut came = Came::default();
+            while let Some(ran) = client.next_ran().expect("the node says more") {
+                match ran {
+                    Ran::Out(piece) => came.out.extend(run::bytes(&piece).expect("base64")),
+                    Ran::Err(piece) => came.err.extend(run::bytes(&piece).expect("base64")),
+                    ended => {
+                        came.ended = Some(ended);
+                        break;
+                    }
+                }
+            }
+            Ok(came)
+        });
+        tokio::time::timeout(PATIENCE, asked)
+            .await
+            .expect("the run ends in time")
+            .expect("the client asks")
+    }
+
+    #[tokio::test]
+    async fn a_run_here_hands_back_what_it_writes_and_its_own_exit_code() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let running = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        asks_as_person(&socket);
+        let came = run_through(
+            socket.clone(),
+            run_of("skiff", "echo out; echo err >&2; exit 7"),
+        )
+        .await
+        .expect("it runs here");
+        assert_eq!(came.out, b"out\n");
+        assert_eq!(came.err, b"err\n");
+        assert_eq!(came.ended, Some(Ran::Exited(7)));
+        let nowhere = run_through(socket.clone(), run_of("kestrel", "true")).await;
+        assert!(
+            nowhere
+                .as_ref()
+                .is_err_and(|why| why.starts_with("nowhere")),
+            "a machine the realm doesn't have takes nothing: {nowhere:?}"
+        );
+        let nothing = run_through(
+            socket,
+            Run {
+                command: Vec::new(),
+                ..run_of("skiff", "")
+            },
+        )
+        .await;
+        assert_eq!(
+            nothing.err(),
+            Some("nothing to run: name a command".to_owned())
+        );
+        let (stop, node) = running;
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    #[tokio::test]
+    async fn a_run_on_another_machine_streams_back_over_a_link_its_key_proved_and_only_then() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (near_socket, nodes) = linked_to_kestrel(dir.path(), true).await;
+        let came = run_through(
+            near_socket.clone(),
+            run_of("kestrel", "echo out; echo err >&2; exit 7"),
+        )
+        .await
+        .expect("it runs on kestrel");
+        assert_eq!(came.out, b"out\n");
+        assert_eq!(came.err, b"err\n");
+        assert_eq!(came.ended, Some(Ran::Exited(7)), "its exit code is its own");
+
+        // Far more than the link's window and every channel's backlog hold.
+        let flood = run_through(near_socket, run_of("kestrel", "head -c 4194304 /dev/zero"))
+            .await
+            .expect("a flood runs");
+        assert_eq!(flood.out.len(), 4 * 1024 * 1024, "all of it comes back");
+        assert_eq!(flood.ended, Some(Ran::Exited(0)));
+        stop(nodes).await;
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (near_socket, nodes) = linked_to_kestrel(dir.path(), false).await;
+        let refused = run_through(near_socket, run_of("kestrel", "echo ran"))
+            .await
+            .expect("skiff asks it of kestrel");
+        assert_eq!(refused.out, b"", "nothing ran");
+        assert_eq!(
+            refused.ended,
+            Some(Ran::Failed(
+                "kestrel runs only what is asked over a link its key proved, which this one isn't"
+                    .to_owned()
+            )),
+            "a link nothing proved can't ask"
+        );
+        stop(nodes).await;
+    }
+
+    #[tokio::test]
+    async fn a_run_isnt_asked_of_the_machine_that_dialled() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let far_socket = dir.path().join("kestrel").join("work.sock");
+        let near_socket = dir.path().join("skiff").join("work.sock");
+        let far_store = Memory::default();
+        let far = node(
+            &far_store,
+            "kestrel",
+            Vec::<Piped>::new(),
+            None,
+            &far_socket,
+        );
+        let dial = Piped {
+            store: far_store.clone(),
+            socket: far_socket.clone(),
+            held: dir.path().join("held"),
+            proven: true,
+            asks_back: true,
+        };
+        let near = node(&Memory::default(), "skiff", vec![dial], None, &near_socket);
+        asks_as_person(&far_socket);
+        // Nothing tells the test when kestrel's link has taken up what its
+        // node asks of skiff, so it asks again every few milliseconds
+        // until the link answers rather than the node.
+        let why = tokio::time::timeout(PATIENCE, async {
+            loop {
+                let asked = run_through(far_socket.clone(), run_of("skiff", "echo ran")).await;
+                if let Err(why) = asked
+                    && why.contains("a run goes only where this machine dialled")
+                {
+                    break why;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("kestrel's ask of skiff is refused at the link skiff dialled");
+        assert!(why.contains("skiff"), "{why}");
+        stop([near, far]).await;
+    }
+
+    #[tokio::test]
+    async fn an_asker_that_hangs_up_stops_a_run_on_another_machine() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (near_socket, nodes) = linked_to_kestrel(dir.path(), true).await;
+        let mark = dir.path().join("pid");
+        let script = format!(
+            "sleep 600 & echo $! > {}; echo started; wait",
+            mark.display()
+        );
+        let asked = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&near_socket).expect("the client connects");
+            let running = client.ask(&Request::Run(run_of("kestrel", &script)));
+            let first = client.next_ran().expect("the node says more");
+            // Dropping the client hangs up.
+            (running.expect("the node answers"), first)
+        });
+        let (running, first) = tokio::time::timeout(PATIENCE, asked)
+            .await
+            .expect("the run starts in time")
+            .expect("the client asks");
+        assert_eq!(
+            running,
+            Ok(Response::Running {
+                machine: "kestrel".to_owned()
+            })
+        );
+        assert!(matches!(first, Some(Ran::Out(_))), "{first:?}");
+        let pid: i32 = fs::read_to_string(&mark)
+            .expect("its child said its pid")
+            .trim()
+            .parse()
+            .expect("a pid");
+        let pid = rustix::process::Pid::from_raw(pid).expect("a real pid");
+        // Nothing says when the far end has stopped it, so this looks
+        // again every few milliseconds.
+        tokio::time::timeout(PATIENCE, async {
+            while rustix::process::test_kill_process(pid).is_ok() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("what it ran on kestrel is stopped");
+        stop(nodes).await;
+    }
+
+    #[tokio::test]
+    async fn a_fenced_session_runs_nothing_on_looser_ground() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        let unlinked = Some("no link reaches tern now".to_owned());
+        asks_as_person(&socket);
+        assert_eq!(
+            run_through(socket.clone(), run_of("tern", "true"))
+                .await
+                .err(),
+            unlinked.clone(),
+            "the person asks, so it goes as far as the link"
+        );
+        let looser = Some(
+            "this asks as a strictly fenced agent, so it runs nothing on looser ground: \
+             tern's strictly fenced session opens builders cloud, which here's doesn't, so \
+             the session would land looser there"
+                .to_owned(),
+        );
+        assert_eq!(
+            run_through(
+                socket.clone(),
+                Run {
+                    by: Some(By::Agent(crate::declared::Kind::Strict)),
+                    ..run_of("tern", "true")
+                }
+            )
+            .await
+            .err(),
+            looser.clone(),
+            "what it says of who asks makes it stricter"
+        );
+        asks_below(&socket, 7001);
+        assert_eq!(
+            run_through(socket.clone(), run_of("tern", "true"))
+                .await
+                .err(),
+            looser.clone(),
+            "a machine whose fence opens a builder here's doesn't"
+        );
+        assert_eq!(
+            run_through(
+                socket.clone(),
+                Run {
+                    by: Some(By::Person),
+                    ..run_of("tern", "true")
+                }
+            )
+            .await
+            .err(),
+            looser,
+            "an agent saying it is the person is still an agent"
+        );
+        store
+            .put_machine(&fenced("tern", &["remote"]))
+            .expect("what it said is kept");
+        assert_eq!(
+            run_through(socket, run_of("tern", "true")).await.err(),
+            unlinked,
+            "a machine as firm as here's goes as far as the link"
+        );
+    }
+
+    /// Declares, beside `socket`, that its machine runs its sessions
+    /// strictly fenced, building only remotely, and starts a strictly
+    /// fenced command through `runs`. The test's stand-in for a fence's
+    /// launcher is `env`, which says `FENCED=strict` to what it starts.
+    fn declares_runs(socket: &Path, runs: bool) {
+        let folder = socket.parent().expect("its folder");
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(folder)
+            .expect("its folder is made");
+        let mut said = fenced("skiff", &["remote"]).declared.expect("it declares");
+        let launcher = if runs {
+            let env = std::env::split_paths(&std::env::var_os("PATH").expect("a PATH"))
+                .map(|folder| folder.join("env"))
+                .find(|env| env.is_file())
+                .expect("env is on the PATH");
+            vec![env.display().to_string(), "FENCED=strict".to_owned()]
+        } else {
+            Vec::new()
+        };
+        for doors in said.fence.iter_mut().flat_map(BTreeMap::values_mut) {
+            doors.runs.clone_from(&launcher);
+        }
+        fs::write(
+            socket.with_file_name("declared.json"),
+            serde_json::to_vec(&said).expect("it is JSON"),
+        )
+        .expect("this machine's declaration is written");
+    }
+
+    /// What it ran says as it goes, "unfenced" where no fence started it.
+    const SAYS_ITS_FENCE: &str = "echo ${FENCED:-unfenced}";
+
+    #[tokio::test]
+    async fn an_agents_run_here_runs_only_as_its_fence_says() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let running = node(
+            &Memory::default(),
+            "skiff",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+        );
+        asks_as_person(&socket);
+        declares_runs(&socket, true);
+        let person = run_through(socket.clone(), run_of("skiff", SAYS_ITS_FENCE))
+            .await
+            .expect("the person's runs here");
+        assert_eq!(person.out, b"unfenced\n", "the person runs as themself");
+        asks_below(&socket, 7001);
+        let agent = run_through(socket.clone(), run_of("skiff", SAYS_ITS_FENCE))
+            .await
+            .expect("an agent's runs here");
+        assert_eq!(agent.out, b"strict\n", "through its fence's launcher");
+        assert_eq!(agent.ended, Some(Ran::Exited(0)));
+        declares_runs(&socket, false);
+        assert_eq!(
+            run_through(socket, run_of("skiff", SAYS_ITS_FENCE))
+                .await
+                .err(),
+            Some(
+                "this asks as a strictly fenced agent, so it runs here only in that fence: \
+                 this machine declares no way to run a command as its strictly fenced \
+                 sessions run"
+                    .to_owned()
+            ),
+            "with no launcher declared, an agent runs nothing"
+        );
+        let (stop, node) = running;
+        drop(stop);
+        node.await
+            .expect("the node runs to its end")
+            .expect("it stops cleanly");
+    }
+
+    #[tokio::test]
+    async fn an_agents_run_on_another_machine_runs_there_as_that_machines_fence_says() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let far_socket = dir.path().join("kestrel").join("work.sock");
+        declares_runs(&dir.path().join("skiff").join("work.sock"), false);
+        declares_runs(&far_socket, false);
+        let near_store = Memory::default();
+        let (near_socket, nodes) = linked_to_kestrel_in(&near_store, dir.path(), true).await;
+        // kestrel says what it declares as its own account's configuration
+        // says it, which the test can't write, and says it again only a
+        // minute on, so skiff is told it here.
+        let mut kestrel = near_store
+            .machines()
+            .into_iter()
+            .find(|one| one.name == "kestrel")
+            .expect("skiff knows kestrel");
+        kestrel.declared = fenced("kestrel", &["remote"]).declared;
+        near_store
+            .put_machine(&kestrel)
+            .expect("what it said is kept");
+        // On kestrel the test asks as the person, so only what skiff says
+        // of who asks fences it.
+        asks_below(&near_socket, 7001);
+        let refused = run_through(near_socket.clone(), run_of("kestrel", SAYS_ITS_FENCE))
+            .await
+            .expect("skiff asks it of kestrel");
+        assert_eq!(refused.out, b"", "nothing ran");
+        assert_eq!(
+            refused.ended,
+            Some(Ran::Failed(
+                "this asks as a strictly fenced agent, so it runs here only in that fence: \
+                 this machine declares no way to run a command as its strictly fenced \
+                 sessions run"
+                    .to_owned()
+            )),
+            "kestrel runs an agent's command only as its fence says"
+        );
+        declares_runs(&far_socket, true);
+        let fenced = run_through(near_socket, run_of("kestrel", SAYS_ITS_FENCE))
+            .await
+            .expect("skiff asks it of kestrel");
+        assert_eq!(fenced.out, b"strict\n", "through kestrel's launcher");
+        assert_eq!(fenced.ended, Some(Ran::Exited(0)));
+        stop(nodes).await;
+    }
+
+    #[tokio::test]
+    async fn each_machine_a_run_crosses_keeps_it_in_its_record_of_runs() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (near_socket, nodes) = linked_to_kestrel(dir.path(), true).await;
+        let came = run_through(near_socket, run_of("kestrel", "exit 3"))
+            .await
+            .expect("it runs on kestrel");
+        assert_eq!(came.ended, Some(Ran::Exited(3)));
+        for machine in ["skiff", "kestrel"] {
+            let record = dir.path().join(machine).join("runs.jsonl");
+            // Each end keeps how the run ended once it has handed that
+            // on, and nothing says when, so this looks again every few
+            // milliseconds.
+            let lines = tokio::time::timeout(PATIENCE, async {
+                loop {
+                    let lines: Vec<Value> = fs::read_to_string(&record)
+                        .unwrap_or_default()
+                        .lines()
+                        .map(|line| serde_json::from_str(line).expect("a line is JSON"))
+                        .collect();
+                    if lines.len() >= 2 {
+                        break lines;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{machine} keeps the run's start and end"));
+            let [started, ended] = lines.as_slice() else {
+                panic!("{machine} keeps one run: {lines:?}");
+            };
+            assert_eq!(started["by"], json!("Person"), "{machine}: {started}");
+            assert_eq!(started["from"], json!("skiff"), "{machine}: {started}");
+            assert_eq!(started["on"], json!("kestrel"), "{machine}: {started}");
+            assert_eq!(
+                started["command"],
+                json!(["/bin/sh", "-c", "exit 3"]),
+                "{machine}: {started}"
+            );
+            assert_eq!(ended["run"], started["run"], "{machine}");
+            assert_eq!(ended["ended"], json!({"Exited": 3}), "{machine}: {ended}");
+        }
         stop(nodes).await;
     }
 
