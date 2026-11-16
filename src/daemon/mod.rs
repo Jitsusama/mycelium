@@ -75,10 +75,14 @@ fn in_order<'a>(
 ) -> Vec<&'a Value> {
     let mut records: Vec<&Value> = records.collect();
     if holds.newest_first(kind) {
-        let heard = |record: &Value| record.get("heard").and_then(Value::as_i64).unwrap_or(0);
         records.sort_by_key(|record| std::cmp::Reverse(heard(record)));
     }
     records
+}
+
+/// When `record` was heard, or the epoch where it says not.
+fn heard(record: &Value) -> i64 {
+    record.get("heard").and_then(Value::as_i64).unwrap_or(0)
 }
 
 /// What a daemon does for its clients beyond reading: what the person says
@@ -196,12 +200,22 @@ fn answer<H: Holds + Steers>(
         } => holds
             .records(&kind)
             .map(|records| {
-                let records: Vec<Value> = in_order(holds.as_ref(), &kind, records.values())
+                let limit = limit.unwrap_or(usize::MAX);
+                // The records are moved out, never copied; only a kind
+                // listed newest first is gathered whole to be sorted.
+                let listed: Vec<Value> = if holds.newest_first(&kind) {
+                    let mut all: Vec<Value> = records.into_values().collect();
+                    all.sort_by_key(|record| std::cmp::Reverse(heard(record)));
+                    all.truncate(limit);
+                    all
+                } else {
+                    records.into_values().take(limit).collect()
+                };
+                let records: Vec<Value> = listed
                     .into_iter()
-                    .take(limit.unwrap_or(usize::MAX))
                     .map(|record| match &fields {
-                        Some(paths) => fields::projected(record.clone(), paths),
-                        None => record.clone(),
+                        Some(paths) => fields::projected(record, paths),
+                        None => record,
                     })
                     .collect();
                 json!({"id": id, "records": records})
