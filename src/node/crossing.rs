@@ -352,6 +352,7 @@ mod tests {
                 log: log.clone(),
             },
             parked: "/nowhere/parked".into(),
+            held: "/nowhere/held".into(),
             processes: crate::node::Processes::Folder("/nowhere/proc".into()),
             carries: "/nowhere/carries.jsonl".into(),
             runs: run::Given::default(),

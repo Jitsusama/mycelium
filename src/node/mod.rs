@@ -303,6 +303,8 @@ pub struct Given {
     pub flows: Flows,
     /// Where the harness marks each session it parks here.
     pub parked: PathBuf,
+    /// The realm's folder of held sessions on this machine.
+    pub held: PathBuf,
     /// Where the machine tells who runs its processes, which says whether
     /// a client asking to steer as the person is an agent's.
     pub processes: Processes,
@@ -1376,6 +1378,7 @@ impl<S: Store> Shared<S> {
             book,
             flows,
             parked,
+            held: held_here,
             processes,
             carries,
             runs,
@@ -1437,7 +1440,7 @@ impl<S: Store> Shared<S> {
             providers: providers.into(),
             book,
             to_dial,
-            held: place::held(&hello.realm),
+            held: held_here,
             parked,
             boot: Arc::new(standing::Boot::this()),
             steers,
@@ -2248,6 +2251,7 @@ impl<S: Store> Shared<S> {
             Request::Run(_) => Err("a run is answered by `run`".to_owned()),
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
+            Request::End { .. } => Err("an end is answered by `end`".to_owned()),
             Request::Orchestrates { .. } => {
                 Err("an orchestration is answered by `orchestrates`".to_owned())
             }
@@ -2438,6 +2442,116 @@ impl<S: Store> Shared<S> {
             self.keep_word(&steer, &machine);
         }
         Ok(Response::Steered { machine, by: None })
+    }
+
+    /// Ends the session held as `held` for good, on the one machine
+    /// holding it: here, or through the link reaching that machine. The
+    /// person's own login ends any, here or across a link. A session ends
+    /// one only here, where both run, and only once this node's record of
+    /// orchestrations proves it orchestrates the held one's quest, as an
+    /// ordered carry is proved; a presence naming its orchestrator proves
+    /// nothing, since a session writes its own. Its presence leaves the
+    /// sessions as its program's ends, and its hold's record goes with its
+    /// holder.
+    async fn end(&self, held: &str) -> Reply {
+        let (asker, asking) = self.ender().await?;
+        let sessions = self.lock().state.sessions();
+        let folder = self.held.clone();
+        if hold::held(&folder).iter().any(|one| one.id == held) {
+            if let (hold::end::Asker::Session(address), Some(asking)) = (&asker, &asking) {
+                let target = sessions
+                    .iter()
+                    .find(|session| {
+                        session.machine == self.machine && session.held.as_deref() == Some(held)
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "no session here runs in {held}, so {address} isn't proved to \
+                             orchestrate it: only the person ends it"
+                        )
+                    })?;
+                let session = target
+                    .presence
+                    .get("session")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&target.id);
+                let asking_known = ordered::Known {
+                    session: asking,
+                    address,
+                };
+                let carried = ordered::Known {
+                    session,
+                    address: &target.address,
+                };
+                self.ordered_by(asking_known, carried, &sessions)
+                    .map_err(|why| {
+                        format!(
+                            "{address} isn't proved to orchestrate the session held as {held}, \
+                             so it can't end it: {why}"
+                        )
+                    })?;
+            }
+            let id = held.to_owned();
+            let ending =
+                tokio::task::spawn_blocking(move || hold::end::end(&folder, &id, hold::end::GRACE))
+                    .await
+                    .map_err(|error| format!("its end stopped: {error}"))?
+                    .map_err(|error| format!("{held} didn't end: {error}"))?;
+            eprintln!("ended {held}, held here, for {asker}");
+            return Ok(Response::Ended {
+                machine: self.machine.clone(),
+                held: held.to_owned(),
+                ending,
+            });
+        }
+        let mut machines: Vec<&str> = sessions
+            .iter()
+            .filter(|session| {
+                session.machine != self.machine && session.held.as_deref() == Some(held)
+            })
+            .map(|session| session.machine.as_str())
+            .collect();
+        machines.sort_unstable();
+        machines.dedup();
+        match machines.as_slice() {
+            [] => Err(format!(
+                "nothing is held as {held} here, nor on any machine in reach"
+            )),
+            [machine] => match asker {
+                hold::end::Asker::Person => self.asks.end(machine, held, asker).await,
+                hold::end::Asker::Session(address) => Err(format!(
+                    "{held} is held on {machine}, and {address}'s end is proved only where \
+                     both run: only the person ends it from here"
+                )),
+            },
+            many => Err(format!(
+                "{held} is held on {}, so it isn't ended",
+                many.join(" and ")
+            )),
+        }
+    }
+
+    /// Who asks an end: the person, where their own login asks, else the
+    /// session asking, by its address here, with its id.
+    async fn ender(&self) -> Result<(hold::end::Asker, Option<String>), String> {
+        let (client, processes) = (self.client, self.processes.clone());
+        let person = tokio::task::spawn_blocking(move || {
+            asker::persons_own(client, &processes, "end a held session as the person")
+        })
+        .await
+        .map_err(|error| format!("who asks couldn't be told: {error}"))?;
+        if person.is_ok() {
+            return Ok((hold::end::Asker::Person, None));
+        }
+        let session = self.asking_session().await.map_err(|why| {
+            format!(
+                "only the person or the orchestrator of the session it holds ends a hold, \
+                 and neither asks: {why}"
+            )
+        })?;
+        let sessions = self.lock().state.sessions();
+        let address = self.address_of(&sessions, &session).to_owned();
+        Ok((hold::end::Asker::Session(address), Some(session)))
     }
 
     /// The id of the session this connection's client asks for. Each
@@ -3412,6 +3526,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
         let reply: Answer = match request {
             Ok(Request::Start(asked)) => shared.start(asked).await.into(),
             Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
+            Ok(Request::End { held }) => shared.end(&held).await.into(),
             Ok(Request::Orchestrates { heads, quests }) => {
                 shared.orchestrates(heads, quests).await.into()
             }
@@ -3652,6 +3767,7 @@ mod tests {
             book: Book::at("/nowhere/made.jsonl".into()),
             flows: Flows::default(),
             parked: "/nowhere/parked".into(),
+            held: "/nowhere/held".into(),
             processes: Processes::Folder("/nowhere/proc".into()),
             carries: "/nowhere/carries.jsonl".into(),
             runs: run::Given::default(),
@@ -3720,6 +3836,7 @@ mod tests {
         let providers = providers_of(socket);
         let book = Book::at(socket.with_file_name("made.jsonl"));
         let parked = parks_of(socket);
+        let held = held_of(socket);
         let processes = Processes::Folder(procs_of(socket));
         let carries = socket.with_file_name("carries.jsonl");
         let runs = runs_of(socket);
@@ -3744,6 +3861,7 @@ mod tests {
                 book,
                 flows: Flows::default(),
                 parked,
+                held,
                 processes,
                 carries,
                 runs,
@@ -3925,6 +4043,11 @@ mod tests {
     /// `socket`, beside it.
     fn parks_of(socket: &Path) -> PathBuf {
         socket.with_file_name("parked")
+    }
+
+    /// The held sessions' folder of a node on `socket`, beside it.
+    fn held_of(socket: &Path) -> PathBuf {
+        socket.with_file_name("work.held")
     }
 
     /// Where a node on `socket` is told who its clients are, a stand-in
@@ -5562,6 +5685,81 @@ mod tests {
                     .to_owned()
             ),
             "so it orders that quest's carry no more"
+        );
+    }
+
+    // WCJQSG (2026-11-16): an orchestrator ends a session it orchestrates,
+    // held where both run, as this node's record of orchestrations proves.
+    #[tokio::test]
+    async fn an_orchestrator_ends_a_session_it_orchestrates_held_here() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        let held = held_of(&socket);
+        let (holder, program) = holds_for_real(&held, "e0d4");
+        // HARBOR's pi is a stand-in, so its presence names its hold by the
+        // file that wakes it rather than by the program's pid.
+        store.start_here(
+            "s-harbour",
+            json!({
+                "session": "s-harbour", "addresses": ["HARBOR"],
+                "groups": ["#orchestration/wcjqsg", "#repo/mycelium"],
+                "busy": false, "state": "listening",
+                "at": jiff::Timestamp::now().to_string(),
+                "quest": "QEST-20261115-HARBOR", "orchestratedBy": "WCJQSG",
+                "fence": "strict", "wake": held.join("e0d4.wake"),
+                "owner": {"pid": 7003, "startTicks": started_at(7003)},
+            }),
+            true,
+        );
+        let listing = socket.clone();
+        let listed = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&listing).expect("the client connects");
+            // Nothing tells a client when the node has read the hold, so it
+            // asks again every few milliseconds until it has.
+            loop {
+                let Ok(Ok(Response::Sessions(all))) = client.ask(&Request::Sessions) else {
+                    panic!("the node lists its sessions");
+                };
+                if all.iter().any(|one| one.held.as_deref() == Some("e0d4")) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        tokio::time::timeout(PATIENCE, listed)
+            .await
+            .expect("the node reads HARBOR's hold in time")
+            .expect("the client asks");
+        asks_below(&socket, 7001);
+
+        let ended = ask(
+            socket.clone(),
+            Request::End {
+                held: "e0d4".to_owned(),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            ended,
+            Ok(Response::Ended {
+                machine: "skiff".to_owned(),
+                held: "e0d4".to_owned(),
+                ending: hold::end::Ending::Gently,
+            }),
+            "WCJQSG ends HARBOR's session, which it orchestrates"
+        );
+        assert!(
+            !runs(holder) && !runs(program),
+            "its holder and program are gone"
+        );
+        assert!(
+            !held.join("e0d4.json").exists() && !held.join("e0d4.sock").exists(),
+            "its record and socket are taken away"
         );
     }
 
@@ -7489,6 +7687,283 @@ mod tests {
             ),
             "a link nothing proved can't ask"
         );
+        stop(nodes).await;
+    }
+
+    /// A process that is waited on as it ends, as a holder's parent waits
+    /// on it, so it never lingers as a zombie that still seems to run.
+    fn reaped(mut child: std::process::Child) -> u32 {
+        let pid = child.id();
+        std::thread::spawn(move || child.wait());
+        pid
+    }
+
+    /// Whether process `pid` still runs.
+    fn runs(pid: u32) -> bool {
+        i32::try_from(pid)
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+            .is_some_and(|it| rustix::process::test_kill_process(it).is_ok())
+    }
+
+    /// Holds a session in `folder` as `id`, its holder and its program
+    /// each a process that ends as it's told to, answering their pids.
+    fn holds_for_real(folder: &Path, id: &str) -> (u32, u32) {
+        use std::os::unix::process::CommandExt;
+        let sleeps = || {
+            let mut sleep = std::process::Command::new("sleep");
+            sleep.arg("1000");
+            sleep
+        };
+        let holder = reaped(sleeps().spawn().expect("the holder starts"));
+        let program = reaped(
+            sleeps()
+                .process_group(0)
+                .spawn()
+                .expect("the program starts"),
+        );
+        fs::create_dir_all(folder).expect("the held folder is made");
+        let record = hold::Held {
+            id: id.to_owned(),
+            command: vec!["pi".to_owned()],
+            folder: folder.to_owned(),
+            holder,
+            pid: program,
+            parked: false,
+            since: "2026-11-16T15:00:00Z".to_owned(),
+            windows: Vec::new(),
+        };
+        let record = serde_json::to_vec(&record).expect("a record");
+        fs::write(folder.join(format!("{id}.json")), record).expect("the record is written");
+        let answers = std::os::unix::net::UnixListener::bind(folder.join(format!("{id}.sock")))
+            .expect("its socket answers");
+        // It answers for as long as the test runs, as a live holder's does.
+        std::mem::forget(answers);
+        (holder, program)
+    }
+
+    // Joel (2026-11-16): a held session its owner couldn't end, KQL3KB,
+    // is ended from here by the person, or by its orchestrator.
+    #[tokio::test]
+    async fn the_person_ends_a_session_held_here() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (_stop, _node) = node(
+            &Memory::default(),
+            "skiff",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+        );
+        let (holder, program) = holds_for_real(&held_of(&socket), "e0d1");
+        asks_as_person(&socket);
+
+        let ended = ask(
+            socket.clone(),
+            Request::End {
+                held: "e0d1".to_owned(),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            ended,
+            Ok(Response::Ended {
+                machine: "skiff".to_owned(),
+                held: "e0d1".to_owned(),
+                ending: hold::end::Ending::Gently,
+            }),
+            "it ends when told to"
+        );
+        assert!(
+            !runs(holder) && !runs(program),
+            "its holder and program are gone"
+        );
+        assert!(
+            hold::held(&held_of(&socket)).is_empty(),
+            "and nothing says it's held"
+        );
+        let again = ask(
+            socket,
+            Request::End {
+                held: "e0d1".to_owned(),
+            },
+        )
+        .await;
+        assert_eq!(
+            again,
+            Err("nothing is held as e0d1 here, nor on any machine in reach".to_owned()),
+            "what isn't held isn't ended"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_end_is_refused_to_a_stranger_saying_why() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (_stop, _node) = node(
+            &Memory::default(),
+            "skiff",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+        );
+        let (holder, program) = holds_for_real(&held_of(&socket), "e0d2");
+        // The client runs in this process, which the stand-in for /proc
+        // tells as an agent of no session this node knows.
+        let asker = procs_of(&socket).join(std::process::id().to_string());
+        fs::create_dir_all(&asker).expect("its folder is made");
+        fs::write(
+            asker.join("cgroup"),
+            "0::/user.slice/user-1000.slice/user@1000.service/agents.slice/\
+             pi-host-work-background.service\n",
+        )
+        .expect("its group is written");
+
+        let refused = ask(
+            socket.clone(),
+            Request::End {
+                held: "e0d2".to_owned(),
+            },
+        )
+        .await;
+
+        assert!(
+            refused.as_ref().is_err_and(|why| why.starts_with(
+                "only the person or the orchestrator of the session it holds ends a hold, and \
+                 neither asks: "
+            )),
+            "a stranger is refused, saying why: {refused:?}"
+        );
+        assert!(
+            runs(holder) && runs(program),
+            "what it asked to end runs on"
+        );
+        assert_eq!(hold::held(&held_of(&socket)).len(), 1, "and is still held");
+        for pid in [holder, program] {
+            let _ = rustix::process::kill_process(
+                rustix::process::Pid::from_raw(i32::try_from(pid).expect("a pid")).expect("a pid"),
+                rustix::process::Signal::KILL,
+            );
+        }
+    }
+
+    /// Runs kestrel's node and skiff's, linked, kestrel's end `proven` or
+    /// not, with a session held on kestrel as `e0d3`, once skiff lists it
+    /// as held there; answering skiff's socket, kestrel's held folder, and
+    /// the hold's holder and program.
+    async fn held_on_kestrel(
+        dir: &Path,
+        proven: bool,
+    ) -> (PathBuf, PathBuf, (u32, u32), [Running; 2]) {
+        let far_socket = dir.join("kestrel").join("work.sock");
+        let near_socket = dir.join("skiff").join("work.sock");
+        let far_held = dir.join("held");
+        let pids = holds_for_real(&far_held, "e0d3");
+        let far_store = Memory::default();
+        let presence = json!({
+            "session": "0e53",
+            "addresses": ["SAK9FZ"],
+            "at": jiff::Timestamp::now().to_string(),
+            "owner": {"pid": pids.1},
+        });
+        far_store.start_here("0e53", presence, true);
+        let far = node(
+            &far_store,
+            "kestrel",
+            Vec::<Piped>::new(),
+            None,
+            &far_socket,
+        );
+        let dial = Piped {
+            store: far_store,
+            socket: far_socket,
+            held: far_held.clone(),
+            proven,
+            asks_back: false,
+        };
+        let near = node(&Memory::default(), "skiff", vec![dial], None, &near_socket);
+        let socket = near_socket.clone();
+        let listed = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            // Nothing tells a client when the link has said what kestrel
+            // holds, so it asks again every few milliseconds until it has.
+            loop {
+                let Ok(Ok(Response::Sessions(all))) = client.ask(&Request::Sessions) else {
+                    panic!("the node lists its sessions");
+                };
+                if all.iter().any(|one| one.held.as_deref() == Some("e0d3")) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        tokio::time::timeout(PATIENCE, listed)
+            .await
+            .expect("skiff hears what kestrel holds in time")
+            .expect("the client asks");
+        asks_as_person(&near_socket);
+        (near_socket, far_held, pids, [near, far])
+    }
+
+    #[tokio::test]
+    async fn an_end_asked_here_ends_the_session_held_on_the_machine_holding_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (socket, far_held, (holder, program), nodes) = held_on_kestrel(dir.path(), true).await;
+
+        let ended = ask(
+            socket,
+            Request::End {
+                held: "e0d3".to_owned(),
+            },
+        )
+        .await;
+
+        assert_eq!(
+            ended,
+            Ok(Response::Ended {
+                machine: "kestrel".to_owned(),
+                held: "e0d3".to_owned(),
+                ending: hold::end::Ending::Gently,
+            }),
+            "kestrel ends it, and says so"
+        );
+        assert!(
+            !runs(holder) && !runs(program),
+            "its holder and program are gone"
+        );
+        assert!(
+            hold::held(&far_held).is_empty(),
+            "and nothing says it's held there"
+        );
+        stop(nodes).await;
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (socket, far_held, (holder, program), nodes) = held_on_kestrel(dir.path(), false).await;
+        let refused = ask(
+            socket,
+            Request::End {
+                held: "e0d3".to_owned(),
+            },
+        )
+        .await;
+        assert_eq!(
+            refused,
+            Err(
+                "kestrel ends a held session only when asked over a link its key proved, which \
+                 this one isn't"
+                    .to_owned()
+            ),
+            "a link nothing proved can't end it"
+        );
+        assert!(runs(holder) && runs(program), "so it runs on");
+        assert_eq!(hold::held(&far_held).len(), 1, "held as it was");
+        for pid in [holder, program] {
+            let _ = rustix::process::kill_process(
+                rustix::process::Pid::from_raw(i32::try_from(pid).expect("a pid")).expect("a pid"),
+                rustix::process::Signal::KILL,
+            );
+        }
         stop(nodes).await;
     }
 

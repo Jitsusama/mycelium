@@ -585,7 +585,7 @@ pub fn session_of(
         (!sessions.is_empty()).then_some(sessions)
     });
     let Some(sessions) = owning else {
-        return Err("this asks from no session this node knows, so it orders no carry".to_owned());
+        return Err("this asks from no session this node knows".to_owned());
     };
     if let [one] = sessions.as_slice() {
         return Ok((*one).to_owned());
@@ -937,7 +937,7 @@ mod tests {
         );
         assert_eq!(
             session_of(Some(61), &folder(procs.path()), &owners),
-            Err("this asks from no session this node knows, so it orders no carry".to_owned()),
+            Err("this asks from no session this node knows".to_owned()),
             "the person's own process is no session's"
         );
         assert_eq!(

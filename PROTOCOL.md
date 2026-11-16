@@ -92,7 +92,8 @@ messages, being a union, reach every machine linked by any path.
 same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
-   "steers", "releases", "updates", "runs", "carries", "shows"}}`, first,
+   "steers", "releases", "updates", "runs", "carries", "shows",
+   "ends"}}`, first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -104,7 +105,8 @@ same code, each line a JSON value:
    it carries update asks, `runs` runs and `carries` carry asks; an end
    older than any of them is asked none of it. `shows` says it tells of
    the carries its node ordered and keeps those the other end tells of;
-   an end older than it is told none.
+   an end older than it is told none. `ends` says it carries an end of a
+   session held there; an end older than it is asked none.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -239,10 +241,20 @@ same code, each line a JSON value:
     refused. Each end
     sends only its own node's: one it was told it never passes on, and
     none is taken as an order.
+18. `{"End": {"ask", "held", "by"}}`: end the session held on the
+    other end's machine as `held` for good, answered by `Started` with
+    `Ended`. `by` is who this end's node judged asks: `"Person"` for the
+    person's own login, or `{"Session": address}` for the session asking.
+    The other end takes it only if its membership proved which machine
+    asked, as for an update, and `by` is the person, since a session's
+    orchestration is proved only where both run; otherwise it refuses,
+    saying why. It ends the hold itself, as `"End"` on the socket does.
+    No time limits the answer, since the session has ten seconds to
+    save what it holds and what is killed past them two more to go.
 
 Only one link joins two machines, and whichever dialled first holds it,
 so each end carries what its own node asks of the other machine: starts,
-steers, updates and carries, and runs from the dialling end only. The
+steers, updates, carries and ends, and runs from the dialling end only. The
 dialling end runs in its node and takes them there. The dialled end runs
 in a process SSH started, outside its node, so it holds a `Carry`
 connection to its node's socket (see The Socket), asked again every
@@ -745,6 +757,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
+| `{"End": {"held"}}` | `{"Ended": {"machine", "held", "ending"}}`, `ending` `gently` or `killed` (A Held Session) |
 | `{"Run": {"work", "folder", "command", "by", "from"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
@@ -1711,6 +1724,21 @@ machine. `hold` is the same as `holds`, and the older spellings,
 work. The holder is its own process, in a session of its own, rather
 than the node's: restarting the node's service stops everything the node
 started, and a closing window hangs up on its own session only.
+
+`mycelium holds <id> end` asks the node `{"End": {"held"}}` to end a
+held session for good, on whichever machine holds it: here, or over the
+link reaching that machine (`End` above), never by SSH. The person's
+own login ends any. A session ends one only on the machine where both
+run, once that node's record of orchestrations proves it orchestrates
+the held session's quest, as an ordered carry is proved; a presence
+naming its orchestrator proves nothing. Anyone else is refused, saying
+why. An id held here is ended here; one held on more than one other
+machine is refused. A holder that no longer answers on its socket has
+its stale record taken away, and nothing it names is signalled. The
+program's process group is told to end (`TERM`) and has ten seconds,
+then its holder is told; what still runs is killed, and the answer's
+`ending` says which, `gently` or `killed`. Its record and socket go,
+and its presence leaves the sessions as its program's ends.
 
 Each holder serves `<id>.sock` in `<runtime>/mycelium/<realm>.held`,
 reachable only by its account, beside

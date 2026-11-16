@@ -703,8 +703,9 @@ struct Holds {
     /// A held session's id, as bare `holds` lists them; or `add`, to
     /// hold the program after `--`.
     id: Option<String>,
-    /// What is done to it: `attach` joins it from this terminal, and
-    /// `again` names the program after `--` as its next start.
+    /// What is done to it: `attach` joins it from this terminal, `again`
+    /// names the program after `--` as its next start, and `end` ends it
+    /// for good, on whichever machine holds it.
     #[arg(requires = "id")]
     act: Option<HoldAct>,
     /// For `add`: the folder it starts in, if not this one.
@@ -725,6 +726,10 @@ enum HoldAct {
     Attach,
     /// Names the program its next start runs.
     Again,
+    /// Ends it for good, here or on the machine holding it: its program
+    /// is told to end, given ten seconds, then killed. Only the person
+    /// may, or the session's orchestrator on the machine where both run.
+    End,
 }
 
 /// What a line asks of the machines or of what is held here, read the same
@@ -751,6 +756,8 @@ enum Tree {
     Attach(String),
     /// The program the session held as `id` runs at its next start.
     Again { id: String, command: Vec<String> },
+    /// The session held by this id, here or elsewhere, ended for good.
+    End(String),
 }
 
 /// What `action` asks of the machines or the holds, its old spellings
@@ -818,6 +825,7 @@ fn holds_asked(holds: &Holds) -> Result<Tree, String> {
             Err("a program after -- is for holds add and holds ID again".to_owned())
         }
         (Some(id), Some(HoldAct::Attach)) => Ok(Tree::Attach(id.clone())),
+        (Some(id), Some(HoldAct::End)) => Ok(Tree::End(id.clone())),
         (Some(id), None) => Ok(Tree::Held(id.clone())),
         (None, _) => Ok(Tree::Holds),
     }
@@ -1363,6 +1371,7 @@ fn in_tree(socket: &Path, realm: &str, asked: Tree) -> io::Result<ExitCode> {
             command,
         } => hold(realm, folder, detached, &command),
         Tree::Attach(id) => attach(&held, &id),
+        Tree::End(id) => print_reply(socket, &Request::End { held: id }),
         Tree::Again { id, command } => hold::name_next(&held, &id, &command)
             .and_then(|woke| print_line(&serde_json::json!({"id": id, "woke": woke}))),
     }
@@ -1477,6 +1486,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         sockets: place::runtime(),
         log: state.join("crossings.jsonl"),
     };
+    let held = place::held(&realm);
     let (store, membership, shares) = open(here, realm)?;
     place::record_machine(&state, &membership.machine)?;
     let scratch = Some(shares.scratch.clone());
@@ -1501,6 +1511,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         book: mycelium::made::Book::at(book),
         flows,
         parked: place::parked(),
+        held,
         processes: node::Processes::here(),
         carries: state.join("carries.jsonl"),
         runs: mycelium::run::Given::at(&state),
@@ -2848,6 +2859,11 @@ mod tests {
             asked("holds h0"),
             Ok(Tree::Held("h0".to_owned())),
             "one held"
+        );
+        assert_eq!(
+            asked("holds h0 end"),
+            Ok(Tree::End("h0".to_owned())),
+            "one held, ended"
         );
         assert_eq!(
             asked("hold h0 attach"),
