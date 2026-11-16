@@ -129,6 +129,7 @@ mod tests {
                     qualifies: true,
                     over: false,
                     unheard: false,
+                    saturated: false,
                     preferred: 0,
                     headroom: 2.25,
                     chance: 1.0,

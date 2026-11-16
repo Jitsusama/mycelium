@@ -1182,17 +1182,23 @@ out of reach; and how long it `lasts`, as an ISO 8601 duration such as
 `PT2H` (`2h` reads too). A machine carries the taints its configuration
 declares, and while they last, `on-battery`, `memory-pressure` (past
 its queue's memory limit), `cpu-pressure` (past its queue's processor
-limit) and `disk-pressure` (its `disk_band` past
+limit), `cpu-saturated` (its `room` at processor pressure 80 or more)
+and `disk-pressure` (its `disk_band` past
 `healthy`), each `prefer_not`, and `low-battery` (on its battery below
 20%, when it is let sleep), which is `never`. A machine qualifies when
 it is in reach, leaves after the work ends (now, for work that doesn't
 say how long it lasts), is what each need asks (a fact it never said
-meets none), and carries no `never` taint the work doesn't tolerate. Of
-those, one that is over goes after every one that isn't: over, it
-carries a `memory-pressure` or `cpu-pressure` the work doesn't
-tolerate, or its `room` is unknown or was said more than three minutes
-ago (three of the minutes a link carries it in), which earns it no
-processor or memory headroom. Then the most preferences met goes first,
+meets none), and carries no `never` taint the work doesn't tolerate.
+Those rank in four tiers, each after the one before: heard and neither
+over nor saturated; heard and over; heard and saturated; then unheard.
+Heard, its `room` was said within three minutes either way (three of
+the minutes a link carries it in); an unheard room earns no processor
+or memory headroom. Over, it carries a `memory-pressure` or
+`cpu-pressure` the work doesn't tolerate. Saturated, it carries a
+`cpu-saturated` the work doesn't tolerate, so work starts where it runs
+at once, and still goes to the roomiest where every machine is
+saturated, never refused; an unheard room is never saturated, nor
+passed for it. Within a tier, the most preferences met goes first,
 then the most headroom, then by name; of the first and each as good but
 for headroom within 0.05 of it (`NEAR_BEST`), one is chosen at random,
 so asks alike spread rather than herd. Headroom is one sum, its weights

@@ -368,7 +368,7 @@ fn roomier<'a>(one: &Placed<'a>) -> Option<&'a str> {
         .judged
         .iter()
         .filter(|other| other.machine != one.machine)
-        .filter(|other| one.could_go_to(other) && !other.over && !other.unheard)
+        .filter(|other| one.could_go_to(other) && !other.over && !other.unheard && !other.saturated)
         .find(|other| other.headroom > chosen + NEAR_BEST)
         .map(|other| other.machine.as_str())
 }
@@ -405,6 +405,7 @@ mod tests {
                         qualifies: true,
                         over: false,
                         unheard: false,
+                        saturated: false,
                         preferred: 0,
                         headroom,
                         chance: 0.0,
@@ -510,6 +511,27 @@ mod tests {
             hindsight.flags,
             [Flag::Regretful],
             "one in five is past a tenth"
+        );
+    }
+
+    #[test]
+    fn placements_kept_off_a_roomier_machine_saturated_are_no_herd() {
+        let records: Vec<Record> = ["03:00:00", "03:00:20", "03:00:50"]
+            .iter()
+            .map(|at| {
+                let mut record = placed(
+                    &format!("2026-11-16T{at}Z"),
+                    "kestrel",
+                    &[("kestrel", 1.0), ("skiff", 2.0)],
+                );
+                record.decision.judged[1].saturated = true;
+                record
+            })
+            .collect();
+        assert_eq!(
+            judge(&records, &[]).herds,
+            [],
+            "a saturated machine's room is no room placement passed over"
         );
     }
 
