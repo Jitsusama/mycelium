@@ -78,6 +78,9 @@ impl Serialize for Record {
 /// build is the very record every watch of it already holds.
 pub type Shared = BTreeMap<String, Arc<Record>>;
 
+/// What changed of each moved record, by its key.
+type Moved = HashMap<String, Value>;
+
 /// A kind's records as built at one change, beside those of the build
 /// before it, so each record moved between them is parsed and its change
 /// worked out once, for every watch that sent the build before (KP0L6A,
@@ -92,7 +95,7 @@ pub struct Build {
     /// What changed of each record moved since `before`, by its key, for
     /// each set of fields asked deep, worked out the first time a watch
     /// asks.
-    moved: Mutex<HashMap<Vec<String>, Arc<HashMap<String, Value>>>>,
+    moved: Mutex<HashMap<Vec<String>, Arc<Moved>>>,
 }
 
 impl Build {
@@ -138,7 +141,7 @@ impl Build {
         found(sent, after, &self.records, |key, was, now| {
             let as_before = match (was, before.get(key)) {
                 (None, None) => true,
-                (Some(was), Some(then)) => std::ptr::eq(was, &**then) || *was == **then,
+                (Some(was), Some(then)) => std::ptr::eq(was, Arc::as_ptr(then)) || *was == **then,
                 _ => false,
             };
             match moved.get(key) {
@@ -151,7 +154,7 @@ impl Build {
     /// What changed of each record moved from `before` to this build's,
     /// asked `deep`, worked out by the first watch to ask while the rest
     /// wait for it.
-    fn moved(&self, before: &Shared, deep: &[String]) -> Arc<HashMap<String, Value>> {
+    fn moved(&self, before: &Shared, deep: &[String]) -> Arc<Moved> {
         let mut moved = self.moved.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(said) = moved.get(deep) {
             return Arc::clone(said);
