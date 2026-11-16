@@ -4,7 +4,8 @@
 //! the program, starts the work there, and lets it go at its time, or once
 //! it has handed over after its work, keeping each make and release in its
 //! book. An offer that costs is never made for a start that didn't say it
-//! may cost. Each
+//! may cost. Nothing of the asker's environment, or its node's, reaches
+//! the work there, as nothing of a carried session's does. Each
 //! node, and the made machine's end of the link, is a `mycelium` process of
 //! its own, each machine in folders of its own.
 
@@ -151,14 +152,31 @@ fn provider(root: &Path, lent: &Path, until: jiff::Timestamp, hourly: &str) -> P
 
 /// Two nodes, skiff's asking `program` and lent's, until dropped.
 fn nodes(home: &Path, lent: &Path, program: &Path) -> (Running, Running) {
+    nodes_with(home, lent, program, [("", ""); 2])
+}
+
+/// As [`nodes`], lent's node and skiff's each with one variable more in
+/// their environments, `planted`, none where its name is empty.
+fn nodes_with(
+    home: &Path,
+    lent: &Path,
+    program: &Path,
+    planted: [(&str, &str); 2],
+) -> (Running, Running) {
+    let with = |mut command: Command, (name, value): (&str, &str)| {
+        if !name.is_empty() {
+            command.env(name, value);
+        }
+        command
+    };
     let lent_node = Running(
-        mycelium(lent)
+        with(mycelium(lent), planted[0])
             .args(["--realm", "work", "node", "--machine", "lent"])
             .spawn()
             .expect("lent's node starts"),
     );
     let node = Running(
-        mycelium(home)
+        with(mycelium(home), planted[1])
             .args([
                 "--realm",
                 "work",
@@ -339,6 +357,71 @@ fn a_machine_that_costs_nothing_is_made_for_any_start_and_let_go_after_its_work(
         machines(&home),
         ["skiff"],
         "a machine let go leaves the realm's machines at once, not at its time"
+    );
+}
+
+/// The secret planted where a carry starts, which never reaches where it
+/// lands.
+const SECRET: &str = "planted-7c1e4b";
+
+#[test]
+fn nothing_of_the_askers_environment_reaches_the_work_on_another_machine() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let root = dir.path();
+    let (home, lent) = (root.join("o"), root.join("l"));
+    let until = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+    machine(&home, None);
+    machine(
+        &lent,
+        Some(&format!(
+            r#"{{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": [], "leaves_at": "{until}"}}"#
+        )),
+    );
+    let program = provider(root, &lent, until, FREE);
+    // Lent's own node holds a mark, which its work should have, and
+    // skiff's holds the secret, as the session's machine might.
+    let _nodes = nodes_with(
+        &home,
+        &lent,
+        &program,
+        [("LENT_OWN", "lent-mark"), ("SKIFF_SECRET", SECRET)],
+    );
+    let out = root.join("environment");
+    // A full path, since a sandbox's search path may hold no shell.
+    let shell = std::env::var("BASH").unwrap_or_else(|_| "/bin/sh".to_owned());
+    let (answered, answer) = mpsc::channel();
+    let mut starting = mycelium(&home);
+    // The asker holds it as a carry run from inside a session does, since
+    // `mycelium carry` is that session's child.
+    starting
+        .env("SESSION_SECRET", SECRET)
+        .args(["--realm", "work", "start", "--need", "reach=lent-net", "--"])
+        .args([&shell, "-c", r#"env > "$0.new" && mv "$0.new" "$0""#])
+        .arg(&out);
+    std::thread::spawn(move || answered.send(starting.output()));
+    let started = answer
+        .recv_timeout(PATIENCE)
+        .expect("the start answers in time")
+        .expect("the start runs");
+    let said: serde_json::Value =
+        serde_json::from_slice(&started.stdout).expect("the start says what it did");
+    assert_eq!(
+        said["Ok"]["Started"]["machine"], "lent",
+        "the work starts on the other machine: {said}"
+    );
+    let environment = heard(root, &out, PATIENCE, |_| true);
+    assert!(
+        environment.lines().any(|line| line == "LENT_OWN=lent-mark"),
+        "the work has its own machine's environment: {environment}"
+    );
+    let arrived: Vec<&str> = environment
+        .lines()
+        .filter(|line| line.contains(SECRET) || line.contains("_SECRET="))
+        .collect();
+    assert_eq!(
+        arrived,
+        Vec::<&str>::new(),
+        "nothing planted in the asker's or skiff's environment arrives"
     );
 }
 
