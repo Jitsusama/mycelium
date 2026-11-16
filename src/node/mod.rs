@@ -434,8 +434,8 @@ where
                 });
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
                 let linked = keep_linked(dial.clone(), store.clone(), membership.clone(), carries);
-                let kept = Kept { book: shared.book.clone(), store: store.clone() };
-                links.spawn(keep_made(dial, made, kept, unwanted, linked));
+                let keeping = Keeping { book: shared.book.clone(), store: store.clone() };
+                links.spawn(keep_made(dial, made, keeping, unwanted, linked));
             }
             Some(()) = held.recv() => {
                 shared.read_sessions();
@@ -575,7 +575,7 @@ async fn keep_linked(
 /// Where a machine made from an offer is kept: the book of what was made
 /// and let go, and the store of the realm's machines it leaves once let
 /// go.
-struct Kept<S> {
+struct Keeping<S> {
     book: Book,
     store: S,
 }
@@ -588,7 +588,7 @@ struct Kept<S> {
 async fn keep_made(
     dial: Arc<Program>,
     made: Made,
-    Kept { book, store }: Kept<impl Store>,
+    Keeping { book, store }: Keeping<impl Store>,
     unwanted: Arc<Notify>,
     linked: impl Future<Output = ()>,
 ) {
