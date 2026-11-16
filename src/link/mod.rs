@@ -1557,6 +1557,7 @@ mod tests {
     use super::*;
     use crate::declared::Kind;
     use crate::link::membership::{Proven, Realm, VERSION};
+    use crate::steer;
     use crate::store::memory::Memory;
     use crate::wire::By;
 
@@ -2707,6 +2708,133 @@ mod tests {
                 .and_then(|body| body["text"].as_str().map(str::to_owned)),
             Some("ours".to_owned()),
             "nor is a message skiff holds written over"
+        );
+    }
+
+    /// Starts as skiff's are carried, with its sessions' inboxes in
+    /// `dir`, and no node to start them.
+    fn steering(dir: &std::path::Path) -> Starting {
+        Starting {
+            node: dir.join("node.sock"),
+            held: dir.join("held"),
+            asking: None,
+            steers: dir.join("inboxes"),
+        }
+    }
+
+    /// Skiff's end of a link a worker dialled, carrying steers into the
+    /// inboxes in `dir`, and the worker's end of it.
+    fn a_worker_steering(
+        skiff: &Memory,
+        dir: &std::path::Path,
+    ) -> (ReadHalf<DuplexStream>, WriteHalf<DuplexStream>) {
+        let store = skiff.clone();
+        let starting = steering(dir);
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        tokio::spawn(async move {
+            run(
+                store,
+                &realm("skiff"),
+                Connection {
+                    worker: true,
+                    ..connection(reading, writing)
+                },
+                None,
+                Some(starting),
+            )
+            .await
+        });
+        tokio::io::split(far)
+    }
+
+    #[tokio::test]
+    async fn a_workers_replies_reach_only_its_own_sessions_talks() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let inboxes = dir.path().join("inboxes");
+        for address in ["SAK9FZ", "OSPR01"] {
+            steer::open_talk(&inboxes, address, "t1").expect("its talk opened");
+        }
+        let skiff = Memory::default();
+        skiff
+            .put_presence("ospr01", "osprey", &json!({"session": "ospr01"}))
+            .expect("osprey's session kept");
+        let (_far_reading, mut far_writing) = a_worker_steering(&skiff, dir.path());
+
+        let replies = |address: &str, lines: &str| {
+            Frame::Replies(Replies {
+                address: address.to_owned(),
+                id: "t1".to_owned(),
+                from: 0,
+                lines: lines.to_owned(),
+            })
+        };
+        for frame in [
+            Frame::Hello(realm("tern").hello()),
+            Frame::Have {
+                messages: Vec::new(),
+                living: Some(Vec::new()),
+            },
+            Frame::Presence {
+                session: "sak9fz".to_owned(),
+                body: json!({"session": "sak9fz"}),
+                leases: None,
+                held: None,
+            },
+            replies("OSPR01", "{\"posing\":true}\n"),
+            replies("SAK9FZ", "{\"done\":true}\n"),
+        ] {
+            send(&mut far_writing, &frame)
+                .await
+                .expect("the worker speaks");
+        }
+
+        let talk = |address: &str| steer::replies(&inboxes, address, "t1").expect("a talk");
+        until_file(&talk("SAK9FZ"), "{\"done\":true}\n").await;
+        assert_eq!(
+            std::fs::read_to_string(talk("OSPR01")).expect("osprey's talk reads"),
+            "",
+            "a worker's replies in a talk of a session osprey holds aren't kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worker_following_this_machines_talks_hears_nothing_of_them() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let inboxes = dir.path().join("inboxes");
+        steer::open_talk(&inboxes, "WCJQSG", "t1").expect("skiff's talk opened");
+        let talk = steer::replies(&inboxes, "WCJQSG", "t1").expect("a talk");
+        std::fs::write(&talk, "{\"said\":\"ours\"}\n").expect("skiff's session says something");
+        let skiff = Memory::default();
+        let (far_reading, mut far_writing) = a_worker_steering(&skiff, dir.path());
+
+        for frame in [
+            Frame::Hello(realm("tern").hello()),
+            Frame::Follow {
+                talks: vec![steer::Talk {
+                    address: "WCJQSG".to_owned(),
+                    id: "t1".to_owned(),
+                    has: 0,
+                }],
+            },
+        ] {
+            send(&mut far_writing, &frame)
+                .await
+                .expect("the worker speaks");
+        }
+
+        // Skiff looks at what it follows every second, so three looks pass.
+        let mut heard = Vec::new();
+        let mut lines = BufReader::new(far_reading).lines();
+        let _ = tokio::time::timeout(3 * LOOK_EVERY, async {
+            while let Ok(Some(line)) = lines.next_line().await {
+                heard.push(serde_json::from_str::<Frame>(&line).expect("a frame"));
+            }
+        })
+        .await;
+        assert!(
+            !heard.iter().any(|frame| matches!(frame, Frame::Replies(_))),
+            "a worker hears nothing of a talk of skiff's own: {heard:?}"
         );
     }
 
