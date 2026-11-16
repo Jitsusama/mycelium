@@ -248,9 +248,15 @@ impl Reading {
             if path.extension().is_none_or(|kind| kind != "jsonl") {
                 continue;
             }
-            let Ok(metadata) = fs::metadata(&path) else {
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
                 continue;
             };
+            // Only a writer's own plain file is read: a pipe or a device
+            // would hold the read up until something wrote to it, and a
+            // link may lead out of the web.
+            if !metadata.is_file() {
+                continue;
+            }
             let stamp = Stamp::of(&metadata);
             seen.push(path.clone());
             let kept = self.files.get_mut(&path);
@@ -305,7 +311,7 @@ impl Reading {
 /// change.
 fn read_on(path: &Path, kept: &mut Kept, stamp: Stamp) -> bool {
     let mut added = String::new();
-    let read = fs::File::open(path).and_then(|mut file| {
+    let read = open_plain(path).and_then(|mut file| {
         file.seek(io::SeekFrom::Start(kept.read_to))?;
         file.read_to_string(&mut added)
     });
@@ -324,6 +330,24 @@ fn read_on(path: &Path, kept: &mut Kept, stamp: Stamp) -> bool {
             .filter_map(|line| serde_json::from_str(line).ok()),
     );
     kept.events.len() != before
+}
+
+/// The plain file at `path`, opened never through a link and never to
+/// wait on a writer, so one swapped for a pipe since it was looked at is
+/// refused rather than read.
+fn open_plain(path: &Path) -> io::Result<fs::File> {
+    use rustix::fs::{Mode, OFlags};
+    let opened = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let file = fs::File::from(opened);
+    if file.metadata()?.is_file() {
+        Ok(file)
+    } else {
+        Err(io::ErrorKind::InvalidInput.into())
+    }
 }
 
 /// A murmur as its web says it now: what was said, what it is tied to and
