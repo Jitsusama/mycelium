@@ -218,11 +218,8 @@ mod tests {
 
     /// A stand-in for SSH that prints `said` for `-G`, in `folder`.
     fn ssh_saying(folder: &std::path::Path, said: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
         let program = folder.join("ssh");
-        std::fs::write(&program, format!("#!/bin/sh\nprintf '{said}'\n")).expect("it is written");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-            .expect("it runs");
+        crate::stand_in::program(&program, &format!("#!/bin/sh\nprintf '{said}'\n"));
         program.display().to_string()
     }
 

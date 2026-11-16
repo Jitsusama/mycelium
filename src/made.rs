@@ -163,19 +163,10 @@ mod tests {
     use super::*;
     use crate::offer::Shape;
 
-    /// A program at `dir`'s `provider` running `body`, put in place by a
-    /// child so no test's fork holds it open.
+    /// A program at `dir`'s `provider` running `body`.
     fn provider(dir: &std::path::Path, body: &str) -> String {
-        let text = dir.join("provider.sh");
-        fs::write(&text, format!("#!/bin/sh\n{body}\n")).expect("the provider is written");
         let program = dir.join("provider");
-        let put = std::process::Command::new("install")
-            .args(["-m", "755"])
-            .arg(&text)
-            .arg(&program)
-            .status()
-            .expect("install runs");
-        assert!(put.success(), "the provider is put in place");
+        crate::stand_in::program(&program, &format!("#!/bin/sh\n{body}\n"));
         program.display().to_string()
     }
 

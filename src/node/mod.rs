@@ -3567,23 +3567,14 @@ mod tests {
     /// for writing would keep it from running.
     fn stand_in_holder(dir: &Path) -> (PathBuf, PathBuf) {
         let given = dir.join("given");
-        let text = dir.join("holder.sh");
         let holder = dir.join("holder");
-        fs::write(
-            &text,
-            format!(
+        crate::stand_in::program(
+            &holder,
+            &format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\necho held\n",
                 given.display()
             ),
-        )
-        .expect("the stand-in holder is written");
-        let put = std::process::Command::new("install")
-            .args(["-m", "755"])
-            .arg(&text)
-            .arg(&holder)
-            .status()
-            .expect("install runs");
-        assert!(put.success(), "the stand-in holder is put in place");
+        );
         (holder, given)
     }
 
@@ -4350,20 +4341,10 @@ mod tests {
             None,
             &socket,
         );
-        let text = socket.with_file_name("provider.sh");
-        fs::write(
-            &text,
+        crate::stand_in::program(
+            &socket.with_file_name("provider"),
             "#!/bin/sh\necho '{\"shape\": \"scratch\", \"costs\": {\"hourly\": \"0.12\", \"currency\": \"USD\"}}'\n",
-        )
-        .expect("the provider is written");
-        // Put in place by a child, so no test's fork holds it open.
-        let put = std::process::Command::new("install")
-            .args(["-m", "755"])
-            .arg(&text)
-            .arg(socket.with_file_name("provider"))
-            .status()
-            .expect("install runs");
-        assert!(put.success(), "the provider is put in place");
+        );
 
         let Ok(Response::Offers(offers)) = ask(socket.clone(), Request::Offers).await else {
             panic!("the node says what is offered");

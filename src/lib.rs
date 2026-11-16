@@ -107,6 +107,8 @@ pub mod run;
 pub mod served;
 pub mod share;
 pub mod ssh;
+#[cfg(test)]
+mod stand_in;
 pub mod state;
 pub mod steer;
 pub mod store;

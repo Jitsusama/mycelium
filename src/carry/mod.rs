@@ -1051,15 +1051,11 @@ mod tests {
         arrives: bool,
         fence: Option<&str>,
     ) -> Option<String> {
-        use std::os::unix::fs::PermissionsExt;
         let bin = home.join("bin");
         std::fs::create_dir_all(&bin).expect("bin");
         let ran = home.join("ran");
         let stand_in = |name: &str, body: &str| {
-            let path = bin.join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("a stand-in");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("runnable");
+            crate::stand_in::program(&bin.join(name), &format!("#!/bin/sh\n{body}\n"));
         };
         std::fs::create_dir_all(home.join("checkout/src")).expect("a checkout");
         stand_in(
@@ -1314,17 +1310,14 @@ mod tests {
             })
             .expect("a shell");
         let fake = dir.path().join("pi-carry");
-        std::fs::write(
+        crate::stand_in::program(
             &fake,
-            format!(
+            &format!(
                 "#!{}\nprintf '%s\\n' \"$@\" > {}\n",
                 shell.display(),
                 said.display()
             ),
-        )
-        .expect("a stand-in pi-carry");
-        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .expect("it runs");
+        );
         let one = Done {
             session: QUEST.to_owned(),
         };
