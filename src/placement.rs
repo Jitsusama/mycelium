@@ -1214,14 +1214,6 @@ pub(crate) mod tests {
     /// cores, plugged in, idle, with `free` GiB of its 64 and half its
     /// disk free, and reaching `reach`.
     pub(crate) fn machine(name: &str, system: &str, free: u64, reach: &[&str]) -> Machine {
-        let nowhere = Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
         Machine {
             system: Some(system.to_owned()),
             arch: "x86_64".to_owned(),
@@ -1255,18 +1247,9 @@ pub(crate) mod tests {
             }),
             declared: Some(Declared {
                 reach: reach.iter().map(|&one| one.to_owned()).collect(),
-                probes: BTreeMap::new(),
-                outlives: Vec::new(),
-                costs_money: false,
-                taints: Vec::new(),
-                cores: None,
-                agents: BTreeMap::new(),
-                leaves_at: None,
-                within: None,
-                hosts: Vec::new(),
-                fence: None,
+                ..Declared::default()
             }),
-            ..facts::measure(name, &nowhere)
+            ..facts::measure(name, &Sources::nowhere())
         }
     }
 

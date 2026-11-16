@@ -18,8 +18,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// What a machine's configuration says of it.
+/// What a machine's configuration says of it. Tests alone have a
+/// default, declaring nothing at all: no reach, no taints, no fence,
+/// which as a real machine's word would read as looser ground.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Default))]
 pub struct Declared {
     /// The networks work there always reaches, such as `internet`.
     pub reach: Vec<String>,

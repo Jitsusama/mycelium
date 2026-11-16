@@ -2339,12 +2339,8 @@ mod tests {
                     continue;
                 }
                 let sources = facts::Sources {
-                    home: "/".into(),
-                    queue: None,
-                    disk_guard: None,
                     declared: Some(declared.clone()),
-                    reached: "/nowhere".into(),
-                    updated: "/nowhere".into(),
+                    ..facts::Sources::nowhere()
                 };
                 let measured = facts::measure_in("kestrel", "work", &sources);
                 let reply: Reply = Ok(Response::Machine(Box::new(measured)));
@@ -2391,15 +2387,7 @@ mod tests {
             "an end that doesn't say it knows of machines hears none: {heard:?}"
         );
 
-        let nowhere = facts::Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
-        let mut tern = facts::measure("tern", &nowhere);
+        let mut tern = facts::measure("tern", &facts::Sources::nowhere());
         tern.state = Readiness::Ready;
         for frame in [
             Frame::Have {
@@ -3636,15 +3624,7 @@ mod tests {
 
     /// tern as it measures itself, ready, declaring nothing of itself.
     fn tern_undeclared() -> Machine {
-        let nowhere = facts::Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: None,
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
-        let mut tern = facts::measure("tern", &nowhere);
+        let mut tern = facts::measure("tern", &facts::Sources::nowhere());
         tern.state = Readiness::Ready;
         tern
     }
