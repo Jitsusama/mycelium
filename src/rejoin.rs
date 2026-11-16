@@ -290,13 +290,13 @@ mod tests {
             Ok(code)
         }
 
-        async fn still(&mut self) -> Still {
+        fn still(&mut self) -> impl Future<Output = Still> {
             self.asked += 1;
-            if Some(self.asked) == self.ends_at {
+            std::future::ready(if Some(self.asked) == self.ends_at {
                 Still::Ended("Harbour work".to_owned())
             } else {
                 Still::Runs
-            }
+            })
         }
 
         fn say(&mut self, line: &str) {
@@ -443,7 +443,7 @@ mod tests {
         );
     }
 
-    fn session(said: &serde_json::Value) -> Session {
+    fn session(said: &Value) -> Session {
         let mut session = serde_json::json!({
             "id": "0e50",
             "address": "HARBOR",

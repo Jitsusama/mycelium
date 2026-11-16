@@ -417,27 +417,7 @@ enum Action {
     #[command(
         after_help = "Example:\n  mycelium attach --host work-attended \\\n    --session 01a1d045-d580-7000-8000-000000000000\n  mycelium attach --on kestrel 5e551011"
     )]
-    Attach {
-        /// A held session's id, as `holds` lists it.
-        #[arg(required_unless_present = "host", conflicts_with = "host")]
-        id: Option<String>,
-        /// The pi host holding the conversation, by its key, such as
-        /// `work-attended`.
-        #[arg(long, requires = "session")]
-        host: Option<String>,
-        /// The conversation's pi session id within that host.
-        #[arg(long, requires = "host")]
-        session: Option<String>,
-        /// The machine it runs on, when it isn't this one.
-        #[arg(long)]
-        on: Option<String>,
-        /// With `--on`, the words that join it from here, after `--`.
-        #[arg(last = true, requires = "on")]
-        words: Vec<String>,
-        /// With `--on`, the first wait to join again, in milliseconds.
-        #[arg(long, hide = true, requires = "on", default_value_t = 1000)]
-        first_wait: u64,
-    },
+    Attach(Attaching),
     /// `holds`, as it was spelt before.
     #[command(hide = true)]
     Held,
@@ -691,6 +671,30 @@ struct ForageAsked {
     output: Output,
 }
 
+/// Which session `attach` joins, and where.
+#[derive(clap::Args)]
+struct Attaching {
+    /// A held session's id, as `holds` lists it.
+    #[arg(required_unless_present = "host", conflicts_with = "host")]
+    id: Option<String>,
+    /// The pi host holding the conversation, by its key, such as
+    /// `work-attended`.
+    #[arg(long, requires = "session")]
+    host: Option<String>,
+    /// The conversation's pi session id within that host.
+    #[arg(long, requires = "host")]
+    session: Option<String>,
+    /// The machine it runs on, when it isn't this one.
+    #[arg(long)]
+    on: Option<String>,
+    /// With `--on`, the words that join it from here, after `--`.
+    #[arg(last = true, requires = "on")]
+    words: Vec<String>,
+    /// With `--on`, the first wait to join again, in milliseconds.
+    #[arg(long, hide = true, requires = "on")]
+    first_wait: Option<u64>,
+}
+
 /// What is asked of the sessions held on this machine, by the words after
 /// `holds`.
 #[derive(clap::Args)]
@@ -760,11 +764,11 @@ fn tree(action: &Action) -> Option<Result<Tree, String>> {
         }
         Action::Holds(holds) => return Some(holds_asked(holds)),
         Action::Held => Tree::Holds,
-        Action::Attach {
+        Action::Attach(Attaching {
             id: Some(id),
             on: None,
             ..
-        } => Tree::Attach(id.clone()),
+        }) => Tree::Attach(id.clone()),
         Action::Again { id, command } => Tree::Again {
             id: id.clone(),
             command: command.clone(),
@@ -1303,32 +1307,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             }),
         ),
         Action::Flows => print_reply(&socket, &Request::Flows),
-        Action::Attach {
-            id,
-            host,
-            session,
-            on: Some(on),
-            words,
-            first_wait,
-        } => {
-            let target = match (id, host, session) {
-                (Some(id), _, _) => rejoin::Target::Held(id),
-                (None, Some(host), Some(conversation)) => {
-                    rejoin::Target::Hosted { host, conversation }
-                }
-                _ => unreachable!("an attach names a held id or a host and a session"),
-            };
-            let waits = rejoin::Waits {
-                first: std::time::Duration::from_millis(first_wait),
-                ..rejoin::Waits::default()
-            };
-            return attach_on(&realm, &socket, on, target, words, waits);
-        }
-        Action::Attach {
-            host: Some(host),
-            session: Some(session),
-            ..
-        } => return attach_hosted(&realm, &host, &session),
+        Action::Attach(asked) => return attach_asked(&realm, &socket, asked),
         Action::Holder {
             id,
             folder,
@@ -1340,7 +1319,6 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         | Action::Machine { .. }
         | Action::Holds(_)
         | Action::Held
-        | Action::Attach { .. }
         | Action::Again { .. } => unreachable!("each is read as its tree above"),
     };
     ran.map(|()| ExitCode::SUCCESS)
@@ -2399,13 +2377,47 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
     Ok(ExitCode::from(left.exit_code()))
 }
 
+/// Joins what `asked` names, on another machine or through a pi host
+/// here, asking the node at `socket` whether one elsewhere has ended; a
+/// session held here is read as its tree instead.
+fn attach_asked(realm: &str, socket: &Path, asked: Attaching) -> io::Result<ExitCode> {
+    let Attaching {
+        id,
+        host,
+        session,
+        on,
+        words,
+        first_wait,
+    } = asked;
+    let target = match (id, host, session) {
+        (Some(id), _, _) => rejoin::Target::Held(id),
+        (None, Some(host), Some(conversation)) => rejoin::Target::Hosted { host, conversation },
+        _ => unreachable!("an attach names a held id or a host and a session"),
+    };
+    match (on, target) {
+        (Some(on), target) => {
+            let waits = rejoin::Waits {
+                first: first_wait.map_or(rejoin::Waits::default().first, |first| {
+                    std::time::Duration::from_millis(first)
+                }),
+                ..rejoin::Waits::default()
+            };
+            attach_on(realm, socket, &on, target, words, waits)
+        }
+        (None, rejoin::Target::Hosted { host, conversation }) => {
+            attach_hosted(realm, &host, &conversation)
+        }
+        (None, rejoin::Target::Held(_)) => unreachable!("a held session here is read as its tree"),
+    }
+}
+
 /// Joins `target` on the machine `on` from this terminal by `words`, or
 /// else SSH to it by its name, again each time its way drops, asking the
 /// node at `socket` whether it has ended, until it ends otherwise.
 fn attach_on(
     realm: &str,
     socket: &Path,
-    on: String,
+    on: &str,
     target: rejoin::Target,
     words: Vec<String>,
     waits: rejoin::Waits,
@@ -2418,7 +2430,7 @@ fn attach_on(
             }
         };
         let ssh = Ssh {
-            destination: on.clone(),
+            destination: on.to_owned(),
             options: Vec::new(),
             command: "mycelium".to_owned(),
         };
@@ -2429,7 +2441,7 @@ fn attach_on(
     let mut over = rejoin::Over {
         words,
         node: socket.to_owned(),
-        on: on.clone(),
+        on: on.to_owned(),
         target,
     };
     let runtime = runtime()?;
@@ -2440,7 +2452,7 @@ fn attach_on(
         let interrupted = async move {
             interrupt.recv().await;
         };
-        rejoin::rejoin(&on, &mut over, waits, interrupted).await
+        rejoin::rejoin(on, &mut over, waits, interrupted).await
     })?;
     Ok(ExitCode::from(ended))
 }
@@ -2846,6 +2858,18 @@ mod tests {
                 Ok(None)
             ),
             "a pi host's conversation is joined outside the tree"
+        );
+        assert!(
+            matches!(
+                Command::try_parse_from(["m", "attach", "--on", "skiff", "h0"])
+                    .map(|line| line.action.as_ref().and_then(tree)),
+                Ok(None)
+            ),
+            "and a session elsewhere is joined there"
+        );
+        assert!(
+            Command::try_parse_from(["m", "attach", "h0", "--", "ssh"]).is_err(),
+            "words to join by are for a session elsewhere"
         );
     }
 
