@@ -1936,7 +1936,7 @@ impl<S: Store> Shared<S> {
             return Some(words);
         }
         let there = self.asks.there(&session.machine)?;
-        Some(there(&words))
+        Some(there(&session.machine, &words))
     }
 
     /// This machine as it is now, as its realm hears it: a handful of small
@@ -2165,7 +2165,7 @@ impl<S: Store> Shared<S> {
             held: self.held.clone(),
             asking: Some(Asking::Kept(self.asks.clone(), {
                 let dial = dial.clone();
-                Arc::new(move |words: &[String]| dial.there(words))
+                Arc::new(move |machine: &str, words: &[String]| dial.joins(machine, words))
             })),
             steers: self.steers.clone(),
             health: Some(self.health.subscribe()),
@@ -7142,6 +7142,14 @@ mod tests {
         assert_eq!(
             started.attach,
             [
+                "mycelium",
+                "--realm",
+                "work",
+                "attach",
+                "--on",
+                "skiff",
+                &started.held,
+                "--",
                 "ssh",
                 "-t",
                 "--",
@@ -7152,7 +7160,8 @@ mod tests {
                 "attach",
                 &started.held
             ],
-            "kestrel never dialled skiff, so its words join it over SSH by name"
+            "kestrel never dialled skiff, so its words join it over SSH by name, \
+             joining again here each time SSH drops"
         );
         let given = fs::read_to_string(&given).expect("skiff's holder was started");
         assert!(

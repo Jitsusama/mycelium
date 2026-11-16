@@ -39,6 +39,16 @@ The harness mesh's messages and presence, carried between machines:
   next can carry on as that pi, and 69 when the host stayed gone past
   its two minutes for a restart, so it can wait for the host to come
   back; any other leaving exits 0.
+- A session on another machine linked over SSH is joined with
+  `mycelium attach --on <MACHINE>`, the words the node serves for it,
+  which runs SSH there and runs it again each time the link drops,
+  putting back the terminal modes the program there left set and
+  saying `Reconnecting to <MACHINE>.` and waiting a second, then twice
+  as long each time up to 30. It ends as the join there ends, with its
+  code; with 0 once the node says the session has ended; and with 130
+  on Ctrl+C, so a window outlives a dropped link rather than closing.
+  A machine reached through a provider's program is joined by the
+  program's own words, which aren't run again.
 - Links run over SSH, so a machine needs nothing but the `mycelium`
   command and an SSH login.
 - Each node serves a local socket in niri's shape, which pi, Quickshell
