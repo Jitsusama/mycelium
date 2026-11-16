@@ -28,8 +28,9 @@ notify = "9.0.0-rc.7"
 # it starts, which needs code the crate's own rules forbid here.
 pty-process = { version = "0.5", features = ["async"] }
 # Whether a session's process still lives, the moment it ends, the
-# machine's name, and a joined terminal's raw mode and size, without a C
-# binding of our own.
+# machine's name, a joined terminal's raw mode and size, and, for the
+# networks test, the processor time a thread took, without a C binding of
+# our own.
 rustix = { version = "1", features = [
   "event",
   "fs",
@@ -37,6 +38,7 @@ rustix = { version = "1", features = [
   "stdio",
   "system",
   "termios",
+  "time",
 ] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"

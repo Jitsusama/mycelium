@@ -1,8 +1,11 @@
 //! The node's network records built for ten thousand cells, within the
 //! memory the map and the launcher hold it to, 30 MB, and in time that
-//! grows with the cells rather than faster. The time itself, 100 ms on the
-//! machine the bar is set for, is no builder's to hold, since builders run
-//! it several times slower, so the test says it rather than holds it:
+//! grows with the cells rather than faster. The time is the processor's
+//! own for this thread, not the clock's, so a builder busy with other work,
+//! which only makes this thread wait its turn, can't fail it. The time
+//! itself, 100 ms on the machine the bar is set for, is no builder's to
+//! hold, since builders run it several times slower, so the test says it
+//! rather than holds it:
 //!
 //! ```sh
 //! nix develop -c cargo test --release --test networks -- --nocapture
@@ -13,7 +16,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use mycelium::node;
 use mycelium::record::Session;
@@ -159,12 +162,22 @@ impl Realm {
         node::network_records(&self.teams, &self.sessions, |_| None, &self.machines)
     }
 
-    /// How long its records took to make.
+    /// How long the processor took making its records, on this thread.
     fn timed(&self) -> Duration {
-        let begun = Instant::now();
+        let begun = thread_time();
         drop(self.records());
-        begun.elapsed()
+        thread_time().saturating_sub(begun)
     }
+}
+
+/// How long the processor has run this thread, which waiting for it
+/// doesn't count towards.
+fn thread_time() -> Duration {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    Duration::new(
+        u64::try_from(now.tv_sec).unwrap_or(0),
+        u32::try_from(now.tv_nsec).unwrap_or(0),
+    )
 }
 
 /// The least time the records of `fewer` and of `all` took, of a few
