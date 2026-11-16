@@ -33,6 +33,34 @@ fn share(home: &Path, args: &[&str]) -> (Output, Value) {
 }
 
 #[test]
+fn a_share_to_a_machine_gives_it_the_quest_and_to_no_name_is_refused() {
+    let home = tempfile::tempdir().expect("a home");
+    let home = home.path();
+    let record = home
+        .join("d/pi/agentic-harness.pi/quest-workflow/quests")
+        .join(QUEST);
+    fs::create_dir_all(&record).expect("its record made");
+    fs::write(record.join("README.md"), "# Shared\n").expect("its README written");
+    let given = home.join("s/mycelium/given");
+
+    let (ran, line) = share(home, &["--to", "skiff", "--wait", "--within", "1"]);
+    assert_eq!(line["reason"], "no-link", "with no node: {line}");
+    assert!(!ran.status.success(), "and so not held");
+    assert!(
+        given.join("skiff").join(QUEST).exists(),
+        "a share to skiff gives it the quest, so a worker there is served it"
+    );
+
+    let (ran, line) = share(home, &["--to", "../tern", "--wait", "--within", "1"]);
+    assert!(!ran.status.success(), "a share to no machine's name fails");
+    assert_eq!(line["reason"], "refused", "{line}");
+    assert!(
+        !home.join("s/mycelium/tern").exists(),
+        "and writes nothing outside the gifts' folder"
+    );
+}
+
+#[test]
 fn a_wait_says_why_in_a_json_line_and_fails_unless_held() {
     let home = tempfile::tempdir().expect("a home");
     let home = home.path();

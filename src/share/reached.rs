@@ -102,6 +102,10 @@ impl Reached {
 pub trait Watching {
     /// Whether a link reaches `machine` now.
     fn linked(&mut self, machine: &str) -> bool;
+    /// Whether the link withholds the quests above a shared one from
+    /// `machine`, as it does from a worker, or from a machine that
+    /// declares nothing of itself, so a wait counts none of their READMEs.
+    fn withholds_above(&mut self, machine: &str) -> bool;
     /// How long since the wait began.
     fn waited(&self) -> Duration;
     /// Lets a moment pass before the next look.
@@ -152,6 +156,7 @@ fn held_there(
     places: &Places,
     quest: &str,
     to: &str,
+    above: bool,
 ) -> io::Result<Option<BTreeMap<String, State>>> {
     let theirs = |id: &str| -> io::Result<Option<BTreeMap<String, State>>> {
         Ok(places.ledgers().hold(id)?.ledger.theirs.remove(to))
@@ -159,6 +164,9 @@ fn held_there(
     let Some(mut files) = theirs(quest)? else {
         return Ok(None);
     };
+    if !above {
+        return Ok(Some(files));
+    }
     for parent in places.above(quest) {
         if let Some(readme) = theirs(&parent)?.and_then(|mut held| held.remove(README)) {
             files.insert(format!("{parent}/{README}"), readme);
@@ -185,7 +193,9 @@ pub fn lacking(here: &BTreeMap<String, State>, there: &BTreeMap<String, State>) 
 
 /// Waits, as long as `within`, for `quest`, shared from `machine`, to
 /// reach `to`, saying so within [`SAYS_WITHIN`] when no link reaches it
-/// or it doesn't take the quest up.
+/// or it doesn't take the quest up. The READMEs of the quests above it
+/// are waited for only while the link serves them to `to`, so a worker,
+/// served the quest alone, holds it once it holds the quest's own files.
 pub fn reach(
     places: &Places,
     quest: &str,
@@ -193,7 +203,8 @@ pub fn reach(
     within: Duration,
     watching: &mut impl Watching,
 ) -> io::Result<Reached> {
-    let here = awaited(places, quest, machine)?;
+    let whole = awaited(places, quest, machine)?;
+    let own = holds_here(places, quest, machine)?;
     let scratch: Vec<String> = places
         .ledgers()
         .hold(quest)?
@@ -206,8 +217,10 @@ pub fn reach(
     let mut linked_since = None;
     loop {
         let waited = watching.waited();
-        let theirs = held_there(places, quest, to)?;
-        let lacks = lacking(&here, theirs.as_ref().unwrap_or(&BTreeMap::new()));
+        let above = !watching.withholds_above(to);
+        let here = if above { &whole } else { &own };
+        let theirs = held_there(places, quest, to, above)?;
+        let lacks = lacking(here, theirs.as_ref().unwrap_or(&BTreeMap::new()));
         let reached = |reason: Option<Reason>, why: Option<String>| Reached {
             quest: quest.to_owned(),
             machine: to.to_owned(),
@@ -290,6 +303,15 @@ impl Watching for Node {
             Client::connect(&self.socket).and_then(|mut client| client.ask(&Request::Machines));
         matches!(answer, Ok(Ok(Response::Machines(machines)))
             if machines.iter().skip(1).any(|one| one.name == machine && one.state == Readiness::Ready))
+    }
+
+    fn withholds_above(&mut self, machine: &str) -> bool {
+        let answer =
+            Client::connect(&self.socket).and_then(|mut client| client.ask(&Request::Machines));
+        // As the link judges it: unknown, or a worker, is withheld.
+        !matches!(answer, Ok(Ok(Response::Machines(machines)))
+            if machines.iter().skip(1).any(|one| one.name == machine
+                && one.declared.as_ref().is_some_and(|said| !said.is_worker())))
     }
 
     fn waited(&self) -> Duration {
@@ -409,18 +431,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_worker_holds_a_quest_without_the_readmes_above_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = places(dir.path());
+        let parent = "QEST-20261013-4UHC5Q";
+        // The parent's README is here, so a peer would be waited on for it.
+        put(
+            places.record(parent).join("README.md"),
+            "---\nparent: null\n---\n# Parent\n",
+        );
+        put(
+            places.record(QUEST).join("README.md"),
+            &format!("---\nparent: {parent}\n---\n# Child\n"),
+        );
+        places.offer(QUEST, &[]).expect("shared");
+        says_skiff_holds(
+            &places,
+            holds_here(&places, QUEST, "kestrel").expect("read"),
+        );
+
+        let mut worker = Clock {
+            worker: true,
+            ..clock(true)
+        };
+        let reached = reach(
+            &places,
+            QUEST,
+            ("kestrel", "skiff"),
+            Duration::from_secs(3),
+            &mut worker,
+        )
+        .expect("waited");
+        assert!(
+            reached.held,
+            "a worker, never served its parent's README, holds the quest: {reached:?}"
+        );
+        assert_eq!(
+            (reached.files, reached.holding),
+            (1, 1),
+            "only the quest's own file is counted"
+        );
+    }
+
     /// A clock that moves on `step` at each pause, with a link to skiff
-    /// or not, doing `between` at each pause.
+    /// or not, to a worker or not, doing `between` at each pause.
     struct Clock<F: FnMut(Duration)> {
         at: Duration,
         step: Duration,
         linked: bool,
+        worker: bool,
         between: F,
     }
 
     impl<F: FnMut(Duration)> Watching for Clock<F> {
         fn linked(&mut self, machine: &str) -> bool {
             self.linked && machine == "skiff"
+        }
+
+        fn withholds_above(&mut self, _machine: &str) -> bool {
+            self.worker
         }
 
         fn waited(&self) -> Duration {
@@ -438,6 +508,7 @@ mod tests {
             at: Duration::ZERO,
             step: Duration::from_secs(1),
             linked,
+            worker: false,
             between: |_| {},
         }
     }
@@ -550,6 +621,7 @@ mod tests {
             at: Duration::ZERO,
             step: Duration::from_secs(1),
             linked: true,
+            worker: false,
             between: |at: Duration| {
                 if at == Duration::from_secs(3) {
                     says_skiff_holds(&places, here.clone());
