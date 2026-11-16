@@ -67,6 +67,8 @@ mod network;
 pub use network::{Holding, Standing, records as network_records};
 mod standing;
 mod team;
+mod tie;
+pub use tie::{Talk, aliases as tie_aliases, records as tie_records, talk};
 mod turns;
 
 /// How long a link waits before dialling again after it dropped, at first
@@ -343,7 +345,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 14] = [
+pub const HOLDS: [&str; 15] = [
     "session",
     "machine",
     "message",
@@ -358,6 +360,7 @@ pub const HOLDS: [&str; 14] = [
     kept::KIND,
     forage::KIND,
     murmur::KIND,
+    tie::KIND,
 ];
 
 /// The kind of record that is one thing a session did, as its presence's
@@ -504,6 +507,7 @@ where
                 shared.hand_over(&here);
                 shared.keep_awake(&mut awake, power.as_ref());
                 shared.cross_waiting();
+                shared.said.minute_passed();
             }
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => shared.read_message(&id),
@@ -855,6 +859,9 @@ struct Said {
     /// Told as any of the sessions, the machines or the receptors are,
     /// whose records the cells are made of.
     cells: watch::Sender<u64>,
+    /// Told as the messages are, whose ties they make, and each minute,
+    /// as a message leaves a tie's hour or its day.
+    ties: watch::Sender<u64>,
 }
 
 impl Default for Said {
@@ -866,6 +873,7 @@ impl Default for Said {
             receptors: watch::Sender::new(0),
             forages: watch::Sender::new(0),
             cells: watch::Sender::new(0),
+            ties: watch::Sender::new(0),
         }
     }
 }
@@ -883,6 +891,19 @@ impl Said {
     fn machines_moved(&self) {
         self.machines.send_modify(|said| *said += 1);
         self.cells.send_modify(|said| *said += 1);
+    }
+
+    /// Tells the watches of the messages, and of the ties, that a message
+    /// came.
+    fn messages_moved(&self) {
+        self.messages.send_modify(|said| *said += 1);
+        self.ties.send_modify(|said| *said += 1);
+    }
+
+    /// Tells the watches of the ties that a minute passed, in which a
+    /// message may have left a tie's hour or its day.
+    fn minute_passed(&self) {
+        self.ties.send_modify(|said| *said += 1);
     }
 
     /// Tells the watches of the receptors, and of the cells, that the
@@ -966,6 +987,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             carries,
             forages,
             murmurs,
+            ties,
         ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
@@ -1015,6 +1037,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (carries, vec!["state", "refused"]),
             (forages, vec!["purpose", "status", "documents", "lineage"]),
             (murmurs, vec!["text", "tied_to", "purpose", "settled"]),
+            (ties, tie::LIVE.to_vec()),
         ])
         .into_iter()
         .chain(served)
@@ -1075,6 +1098,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             kept::KIND => Some(self.carry_records()),
             forage::KIND => Some(self.forage_records()),
             murmur::KIND => Some(self.murmur_records()),
+            tie::KIND => Some(self.tie_records()),
             _ => self.served.records(kind),
         }
     }
@@ -1107,6 +1131,9 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             forage::KIND => Some(self.said.forages.subscribe()),
             // A cell's purpose shows with its next murmur.
             murmur::KIND => Some(self.murmurs.told()),
+            // A tie moves as its messages come, and as one leaves its hour
+            // or its day, which the minute's tick tells.
+            tie::KIND => Some(self.said.ties.subscribe()),
             _ => self.served.told(kind),
         }
     }
@@ -1451,7 +1478,7 @@ impl<S: Store> Shared<S> {
             .partition(|message| message.for_realm.is_some());
         self.lock().state.add_messages(messages);
         self.wait_to_cross(waiting);
-        self.said.messages.send_modify(|said| *said += 1);
+        self.said.messages_moved();
         self.read_sessions();
     }
 
@@ -1712,6 +1739,19 @@ impl<S: Store> Shared<S> {
         self.made_records(cell::records)
     }
 
+    /// The ties between the realm's cells, and each cell's talk, as the
+    /// messages held say of the last day: folded while they are held,
+    /// made records once they are let go.
+    fn tie_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let now = jiff::Timestamp::now().as_millisecond();
+        let talk = {
+            let inner = self.lock();
+            let aliases = tie::aliases(inner.state.each_session());
+            talk(inner.state.messages(), &aliases, now)
+        };
+        tie::records(talk)
+    }
+
     /// The records `making` makes of what the node holds, as the networks
     /// view reads it, each session standing as it does here.
     fn made_records(
@@ -1840,7 +1880,7 @@ impl<S: Store> Shared<S> {
         let mut inner = self.lock();
         if let Some(message) = inner.state.add_message(message) {
             inner.send_message(message);
-            self.said.messages.send_modify(|said| *said += 1);
+            self.said.messages_moved();
         }
     }
 
@@ -4594,6 +4634,71 @@ mod tests {
                 &json!("second")
             ),
             "a message heard is sent as it arrives: {changed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_watch_of_ties_is_sent_each_tie_a_message_thickens() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let said = |from: &str, to: &str| {
+            let draft = Draft {
+                from: from.to_owned(),
+                groups: vec![Group::new(format!("peer.{to}")).expect("a valid group")],
+                intent: Some(Intent::Question),
+                text: "words that stay here".to_owned(),
+                re: None,
+                realm: None,
+            };
+            mesh::written(&draft, 1)
+        };
+        let (first, body) = said("KP0L6A", "hnp07b");
+        store.send_here(&first, body);
+        let mut client = Speaking::to(&socket).await;
+
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert_eq!(
+            hello["kinds"]["tie"]["live"],
+            json!(tie::LIVE),
+            "hello names the ties and what of them changes: {hello}"
+        );
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "tie"}))
+            .await;
+        let records = client.next().await["records"].clone();
+        let tie = records
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|record| record["key"] == "tie:HNP07B~KP0L6A")
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            (&tie["today"], &tie["intents"]),
+            (&json!([0, 1]), &json!(["question"])),
+            "the ties already made come first: {records}"
+        );
+        let (second, body) = said("HNP07B", "kp0l6a");
+        store.send_here(&second, body);
+        let changed = client.next().await;
+        let tie = changed["changed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|record| record["key"] == "tie:HNP07B~KP0L6A")
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            tie["today"],
+            json!([1, 1]),
+            "a message thickening a tie is sent as it arrives: {changed}"
+        );
+        assert!(
+            !changed.to_string().contains("words"),
+            "no tie says what was said: {changed}"
         );
     }
 
