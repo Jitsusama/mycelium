@@ -57,11 +57,13 @@ use turns::{Asked, Turns};
 
 mod asker;
 pub use asker::Processes;
+mod cell;
+pub use cell::records as cell_records;
 mod crossing;
 mod fences;
 mod glyph;
 mod network;
-pub use network::records as network_records;
+pub use network::{Holding, Standing, records as network_records};
 mod standing;
 mod team;
 mod turns;
@@ -343,6 +345,7 @@ pub const HOLDS: [&str; 13] = [
     "message",
     team::KIND,
     network::KIND,
+    cell::KIND,
     unanswered::KIND,
     words::KIND,
     EVENT,
@@ -475,7 +478,7 @@ where
             }
             // A park's marker says nothing of the session itself, so only
             // how it stands, which records read from the markers, moves.
-            Some(()) = parks.recv() => shared.said.sessions.send_modify(|said| *said += 1),
+            Some(()) = parks.recv() => shared.said.sessions_moved(),
             // The slot lives as long as the node, so it never closes.
             Ok(()) = health.changed() => shared.keep_health(health.borrow_and_update().clone()),
             // A holder that ended without letting its session go says
@@ -497,9 +500,9 @@ where
                 }
                 Some(Change::Rescan) => {
                     shared.read_store();
-                    shared.said.machines.send_modify(|said| *said += 1);
+                    shared.said.machines_moved();
                 }
-                Some(Change::Machine(_)) => shared.said.machines.send_modify(|said| *said += 1),
+                Some(Change::Machine(_)) => shared.said.machines_moved(),
                 None => break Err(io::Error::other("the store stopped telling its changes")),
             },
         }
@@ -826,6 +829,9 @@ struct Said {
     messages: watch::Sender<u64>,
     receptors: watch::Sender<u64>,
     forages: watch::Sender<u64>,
+    /// Told as any of the sessions, the machines or the receptors are,
+    /// whose records the cells are made of.
+    cells: watch::Sender<u64>,
 }
 
 impl Default for Said {
@@ -836,7 +842,31 @@ impl Default for Said {
             messages: watch::Sender::new(0),
             receptors: watch::Sender::new(0),
             forages: watch::Sender::new(0),
+            cells: watch::Sender::new(0),
         }
+    }
+}
+
+impl Said {
+    /// Tells the watches of the sessions, and of the cells, that the
+    /// sessions may have changed.
+    fn sessions_moved(&self) {
+        self.sessions.send_modify(|said| *said += 1);
+        self.cells.send_modify(|said| *said += 1);
+    }
+
+    /// Tells the watches of the machines, and of the cells, that the
+    /// machines may have changed.
+    fn machines_moved(&self) {
+        self.machines.send_modify(|said| *said += 1);
+        self.cells.send_modify(|said| *said += 1);
+    }
+
+    /// Tells the watches of the receptors, and of the cells, that the
+    /// receptors changed.
+    fn receptors_moved(&self) {
+        self.receptors.send_modify(|said| *said += 1);
+        self.cells.send_modify(|said| *said += 1);
     }
 }
 
@@ -902,6 +932,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             messages,
             teams,
             networks,
+            cells,
             open,
             words,
             events,
@@ -949,6 +980,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                 networks,
                 vec!["title", "glyph", "within", "cells", "machines", "counts"],
             ),
+            (cells, cell::LIVE.to_vec()),
             // A hold says nothing more until it ends, when it is gone.
             (open, vec!["waiting_on"]),
             (words, vec!["taken_up", "answered", "failed"]),
@@ -1009,16 +1041,11 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             ),
             team::KIND => Some(self.team_records()),
             network::KIND => Some(self.network_records()),
+            cell::KIND => Some(self.cell_records()),
             unanswered::KIND => Some(self.unanswered_records()),
             words::KIND => Some(self.word_records()),
             EVENT => Some(self.event_records()),
-            receptor::KIND => Some(receptor::records(
-                &self
-                    .receptors
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-                &self.machine,
-            )),
+            receptor::KIND => Some(self.receptor_records()),
             BUILDER => Some(self.builder_records()),
             kept::KIND => Some(self.carry_records()),
             forage::KIND => Some(self.forage_records()),
@@ -1036,6 +1063,9 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // An event comes with its session's presence.
             "session" | team::KIND | network::KIND | EVENT => Some(self.said.sessions.subscribe()),
             "machine" => Some(self.said.machines.subscribe()),
+            // A cell is a session's, a machine's or a receptor's, so is
+            // told as any of them changes, and a machine's shows at once.
+            cell::KIND => Some(self.said.cells.subscribe()),
             // What waits changes as messages come, and a peer's addresses,
             // which change far more seldom, show with the next message,
             // as does a question or hold past its two hours.
@@ -1297,11 +1327,12 @@ impl<S: Store> Shared<S> {
             .map(|places| keep_forages(places, &forages, &said, &inner, &hello.machine));
         let held = receptor::Held::default();
         if let Some(folder) = receptors {
+            let telling = Arc::clone(&said);
             tokio::spawn(receptor::keep(
                 folder,
                 hello.realm.clone(),
                 Arc::clone(&held),
-                said.receptors.clone(),
+                move || telling.receptors_moved(),
             ));
         }
         let shared = Self {
@@ -1404,7 +1435,7 @@ impl<S: Store> Shared<S> {
         let mut inner = self.lock();
         let events = inner.state.set_sessions(sessions);
         if !events.is_empty() {
-            self.said.sessions.send_modify(|said| *said += 1);
+            self.said.sessions_moved();
         }
         for event in events {
             inner.send_all(&event);
@@ -1562,7 +1593,7 @@ impl<S: Store> Shared<S> {
                 steer.address
             );
         }
-        self.said.sessions.send_modify(|said| *said += 1);
+        self.said.sessions_moved();
     }
 
     /// The swarm's teams as the daemon interface holds them, titled and
@@ -1632,22 +1663,55 @@ impl<S: Store> Shared<S> {
     }
 
     /// The realm's networks as the daemon interface holds them, as the
-    /// networks view makes them of the node's teams, sessions and machines.
+    /// networks view makes them of the node's teams, sessions, machines,
+    /// receptors and builders.
     fn network_records(&self) -> BTreeMap<String, serde_json::Value> {
+        self.made_records(network::records)
+    }
+
+    /// The realm's cells as the daemon interface holds them, as the
+    /// networks view makes them of the same records as its networks.
+    fn cell_records(&self) -> BTreeMap<String, serde_json::Value> {
+        self.made_records(cell::records)
+    }
+
+    /// The records `making` makes of what the node holds, as the networks
+    /// view reads it, each session standing as it does here.
+    fn made_records(
+        &self,
+        making: fn(
+            &network::Holding<'_>,
+            &network::Standing<'_>,
+        ) -> BTreeMap<String, serde_json::Value>,
+    ) -> BTreeMap<String, serde_json::Value> {
         let teams = self.team_records();
         let machines = self.machine_records();
+        let receptors = self.receptor_records();
+        let builders = self.builder_records();
         let parked = standing::parked(&self.parked);
         let sessions = self.lock().state.sessions();
         let standing = |session: &Session| {
             let here = session.machine == self.machine;
             standing::standing(session, here, &parked, &self.boot)
         };
-        network::records(
-            &teams,
-            &sessions,
-            standing,
-            &machines,
-            &self.builder_records(),
+        let holding = network::Holding {
+            teams: &teams,
+            sessions: &sessions,
+            machines: &machines,
+            receptors: &receptors,
+            builders: &builders,
+        };
+        making(&holding, &standing)
+    }
+
+    /// This machine's receptors as the daemon interface holds them.
+    fn receptor_records(&self) -> BTreeMap<String, serde_json::Value> {
+        receptor::records(
+            &self
+                .receptors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &self.machine,
         )
     }
 
@@ -1895,7 +1959,7 @@ impl<S: Store> Shared<S> {
             .measured
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(here.clone());
-        self.said.machines.send_modify(|said| *said += 1);
+        self.said.machines_moved();
         here.power
     }
 
@@ -5955,6 +6019,203 @@ mod tests {
             skiff(&changed).map(|record| record["cells"].clone()),
             Some(json!(["KELP01", "REEF01", "SKIFF01"])),
             "a session joining a network is sent as what changed in it: {changed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_watch_of_cells_is_sent_each_cell_as_the_networks_view_makes_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let at = jiff::Timestamp::now().to_string();
+        let put = |session: &str, state: &str, groups: &[&str]| {
+            let presence = json!({
+                "session": session, "addresses": [session.to_uppercase()], "groups": groups,
+                "busy": state == "busy", "state": state, "at": at,
+                "cwd": format!("/home/someone/src/{session}"), "repo": "skiff",
+                "doing": {"plan": "PLAN-20261116-AAAAAA", "item": 2,
+                    "next": "serve the cells", "at": at},
+            });
+            store
+                .put_presence(session, "kestrel", &presence)
+                .expect("the presence is kept");
+        };
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert!(
+            hello["kinds"]["cell"]["live"].is_array(),
+            "hello names cells among the kinds it holds: {hello}"
+        );
+
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
+            .await;
+        let whole = client.next().await;
+        assert!(
+            whole["records"].is_array(),
+            "the records come whole first: {whole}"
+        );
+        put("reef01", "busy", &["#repo/skiff", "#peer/reef01"]);
+        put("kelp01", "busy", &["#repo/skiff", "#harbor"]);
+        let mut seen = std::collections::BTreeSet::new();
+        while !(seen.contains("cell:REEF01") && seen.contains("cell:KELP01")) {
+            let changed = client.next().await;
+            let keys = changed["changed"].as_array().into_iter().flatten();
+            seen.extend(keys.filter_map(|one| one["key"].as_str().map(str::to_owned)));
+        }
+
+        let mut listed = Vec::new();
+        for (id, kind) in [(3, "team"), (4, "session"), (5, "machine"), (6, "cell")] {
+            client
+                .ask(json!({"id": id, "ask": "list", "kind": kind}))
+                .await;
+            let answer = client.next().await;
+            listed.push(answer["records"].as_array().cloned().unwrap_or_default());
+        }
+        let made = crate::networks::Mycelium::of("work", &listed[0], &listed[1], &listed[2]);
+        // This machine's own measure may come between the lists, so the
+        // machines' cells are left out of what is compared.
+        let sessions = |record: &Value| record["type"] == "session";
+        let expected: BTreeMap<String, Value> = made
+            .cells
+            .iter()
+            .map(|cell| (format!("cell:{}", cell.name), json!(cell)))
+            .filter(|(_, cell)| sessions(cell))
+            .collect();
+        assert!(
+            expected["cell:REEF01"]["plan"]["next"] == "serve the cells",
+            "the networks view draws what a session's plan does next: {expected:?}"
+        );
+        assert!(
+            listed[3]
+                .iter()
+                .all(|record| record["heard"].as_i64() > Some(0)),
+            "each cell is heard as its record was: {:?}",
+            listed[3]
+        );
+        let served: BTreeMap<String, Value> = listed[3]
+            .iter()
+            .filter(|record| sessions(record))
+            .map(|record| {
+                let mut fields = record.clone();
+                let key = fields["key"].as_str().unwrap_or_default().to_owned();
+                if let Some(fields) = fields.as_object_mut() {
+                    fields.remove("key");
+                    fields.remove("heard");
+                }
+                (key, fields)
+            })
+            .collect();
+        assert_eq!(
+            served, expected,
+            "one record each, by its name, with the fields the networks view draws"
+        );
+
+        put("kelp01", "idle", &["#repo/skiff", "#harbor"]);
+        let kelp = |changed: &Value| {
+            changed["changed"]
+                .as_array()
+                .and_then(|each| each.iter().find(|one| one["key"] == "cell:KELP01"))
+                .is_some()
+        };
+        let mut changed = client.next().await;
+        while !kelp(&changed) {
+            changed = client.next().await;
+        }
+        let keys: Vec<&Value> = changed["changed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|one| one["key"] != "cell:skiff")
+            .map(|one| &one["key"])
+            .collect();
+        assert_eq!(
+            keys,
+            [&json!("cell:KELP01")],
+            "a session's change is sent as its cell alone: {changed}"
+        );
+
+        client
+            .ask(json!({"id": 7, "ask": "list", "kind": "cell", "fields": ["standing"]}))
+            .await;
+        let projected = client.next().await;
+        let kelp = projected["records"]
+            .as_array()
+            .and_then(|each| each.iter().find(|one| one["key"] == "cell:KELP01"))
+            .cloned();
+        assert_eq!(
+            kelp,
+            Some(json!({"key": "cell:KELP01", "kind": "cell", "standing": "quiet"})),
+            "a list naming fields is sent only those of each cell: {projected}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_receptor_reading_is_sent_to_a_watch_of_cells_and_its_network_is_served() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
+            .await;
+        client.next().await;
+
+        let now = jiff::Timestamp::now();
+        let pid = std::process::id();
+        let reading = receptor::Record {
+            source: receptor::Source::Slack,
+            realm: "work".to_owned(),
+            state: receptor::State::Reading,
+            since: now,
+            read_at: now,
+            every: 300,
+            pid,
+            started: receptor::started_at(pid),
+            counts: receptor::Counts {
+                hour: 2,
+                today: 5,
+                addressed: 1,
+            },
+        };
+        let folder = socket.with_file_name("receptors");
+        receptor::write(&folder, "work", reading, &receptor::Here).expect("the receptor is kept");
+        // No session changes, so only the receptor's reading tells the
+        // watch.
+        let slack = |changed: &Value| {
+            changed["changed"]
+                .as_array()
+                .and_then(|each| each.iter().find(|one| one["key"] == "cell:slack@skiff"))
+                .cloned()
+        };
+        let mut changed = client.next().await;
+        while slack(&changed).is_none() {
+            changed = client.next().await;
+        }
+        let cell = slack(&changed).unwrap_or_default();
+        assert_eq!(
+            (&cell["type"], &cell["state"], &cell["networks"]),
+            (
+                &json!("receptor"),
+                &json!("reading"),
+                &json!(["outside.slack"])
+            ),
+            "a receptor's reading is sent to a watch of cells as its cell: {changed}"
+        );
+
+        client
+            .ask(json!({"id": 3, "ask": "get", "keys": ["network:outside.slack"]}))
+            .await;
+        let got = client.next().await;
+        assert_eq!(
+            (&got["records"][0]["shape"], &got["records"][0]["cells"]),
+            (&json!("outside"), &json!(["slack@skiff"])),
+            "the source a receptor senses is a network the node serves: {got}"
         );
     }
 

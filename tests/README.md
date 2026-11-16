@@ -21,10 +21,12 @@ The rest of the tests sit beside the code they prove, in `src/`.
   share of it, the memory counted as `networks.rs` counts it
 - `named.rs`: a node given `--machine` recording the name, and a command
   with none going by it rather than the system's
-- `networks.rs`: the node's network records built for ten thousand cells
-  within 30 MB, each cell holding two trees, in time that grows with
-  the cells, the memory counted
-  by an allocator of its own, which only a program of its own may hold
+- `networks.rs` and `cells.rs`: the node's network and cell records each
+  built for ten thousand cells within 30 MB, each cell holding two trees,
+  in time that grows with the cells, the memory counted by an allocator
+  of its own, which only a program of its own may hold
+- `realm/`: the realm of ten thousand cells both are built for, and the
+  bar they are held to
 - `shared.rs`: a quest shared and waited for, printing one JSON line
   however the wait ends and failing unless the machine holds it
 - `receptors.rs`: what `mycelium receptors say` leaves on disk, its

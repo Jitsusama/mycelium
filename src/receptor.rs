@@ -427,11 +427,11 @@ const SETTLED_AFTER: Duration = Duration::from_millis(20);
 
 /// Keeps `held` as the receptors of `folder` stand for `realm`, judged
 /// each time a file there changes and every [`JUDGED_EVERY`] besides,
-/// telling `tell` each time they differ. The folder is made, its owner's
+/// calling `tell` each time they differ. The folder is made, its owner's
 /// alone, where it isn't there, so it can be watched from the start. Each
 /// judging reads the disk off the runtime, so a slow disk holds only
 /// this.
-pub async fn keep(folder: PathBuf, realm: String, held: Held, tell: watch::Sender<u64>) {
+pub async fn keep(folder: PathBuf, realm: String, held: Held, tell: impl Fn() + Send + 'static) {
     let made = owned(&folder);
     let (heard, mut changed) = mpsc::unbounded_channel();
     // Without a watch, as on a folder that can't be made, the receptors
@@ -458,7 +458,7 @@ pub async fn keep(folder: PathBuf, realm: String, held: Held, tell: watch::Sende
             let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
             if *held != now {
                 *held = now;
-                tell.send_modify(|changes| *changes += 1);
+                tell();
             }
         }
         tokio::select! {
