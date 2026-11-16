@@ -294,7 +294,7 @@ fn said_at(machine: &Machine) -> Option<jiff::Timestamp> {
 }
 
 /// What a machine carries beyond what its room says.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Load {
     /// The sessions running on it.
     pub sessions: u32,
@@ -356,10 +356,46 @@ impl Starts {
     }
 }
 
+/// Where work went, and how each machine was judged for it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Decision {
+    /// Where it went.
+    pub placement: Placement,
+    /// Each machine, in the order given.
+    pub judged: Vec<Judgement>,
+}
+
+/// How one machine was judged for work.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Judgement {
+    /// The machine.
+    pub machine: String,
+    /// Whether it could take the work at all.
+    pub qualifies: bool,
+    /// Whether it was past a limit of its queue's the work minds.
+    pub over: bool,
+    /// Whether its room hadn't been said lately.
+    pub unheard: bool,
+    /// How many of the work's preferences it met.
+    pub preferred: usize,
+    /// The room it had for more work, as [`headroom`] weighs it.
+    pub headroom: f64,
+    /// The chance it was the one chosen: one in as many as were near the
+    /// best, and none for the rest.
+    pub chance: f64,
+}
+
 /// Places `work` among `machines`, each carrying its `loads`.
 #[must_use]
 pub fn place(work: &Work, machines: &[Machine], loads: &Loads) -> Placement {
-    place_at(work, machines, loads, jiff::Timestamp::now(), &mut |many| {
+    decide(work, machines, loads).placement
+}
+
+/// Places `work` among `machines`, each carrying its `loads`, saying how
+/// each was judged.
+#[must_use]
+pub fn decide(work: &Work, machines: &[Machine], loads: &Loads) -> Decision {
+    decide_at(work, machines, loads, jiff::Timestamp::now(), &mut |many| {
         // Each `RandomState` is seeded afresh, so its hash of nothing is a
         // fresh draw.
         let draw = RandomState::new().hash_one(());
@@ -369,6 +405,7 @@ pub fn place(work: &Work, machines: &[Machine], loads: &Loads) -> Placement {
 
 /// Places `work` among `machines` as of `now`, with `pick` choosing which
 /// of the machines near the best, given how many, takes it.
+#[cfg(test)]
 fn place_at(
     work: &Work,
     machines: &[Machine],
@@ -376,7 +413,19 @@ fn place_at(
     now: jiff::Timestamp,
     pick: &mut dyn FnMut(usize) -> usize,
 ) -> Placement {
-    let mut judged: Vec<Judged> = machines
+    decide_at(work, machines, loads, now, pick).placement
+}
+
+/// Decides where `work` goes among `machines` as of `now`, with `pick`
+/// choosing which of the machines near the best, given how many, takes it.
+fn decide_at(
+    work: &Work,
+    machines: &[Machine],
+    loads: &Loads,
+    now: jiff::Timestamp,
+    pick: &mut dyn FnMut(usize) -> usize,
+) -> Decision {
+    let judged: Vec<Judged> = machines
         .iter()
         .map(|one| {
             let load = loads.get(&one.name).copied().unwrap_or_default();
@@ -398,9 +447,9 @@ fn place_at(
             .then_with(|| other.headroom.total_cmp(&one.headroom))
             .then_with(|| one.name.cmp(&other.name))
     });
-    let chosen = ranked.first().map(|&best| {
+    let near: Vec<usize> = ranked.first().map_or_else(Vec::new, |&best| {
         let best = &judged[best];
-        let near: Vec<usize> = ranked
+        ranked
             .iter()
             .copied()
             .take_while(|&at| {
@@ -409,9 +458,32 @@ fn place_at(
                     && one.preferred == best.preferred
                     && one.headroom >= best.headroom - NEAR_BEST
             })
-            .collect();
-        near[pick(near.len()).min(near.len() - 1)]
+            .collect()
     });
+    #[expect(clippy::cast_precision_loss, reason = "a realm's machines are few")]
+    let chance = 1.0 / near.len().max(1) as f64;
+    let judgements = judged
+        .iter()
+        .enumerate()
+        .map(|(at, one)| Judgement {
+            machine: one.name.clone(),
+            qualifies: one.hard.is_empty(),
+            over: one.over,
+            unheard: one.unheard,
+            preferred: one.preferred.iter().filter(|&&met| met).count(),
+            headroom: one.headroom,
+            chance: if near.contains(&at) { chance } else { 0.0 },
+        })
+        .collect();
+    let chosen = (!near.is_empty()).then(|| near[pick(near.len()).min(near.len() - 1)]);
+    Decision {
+        placement: placement(work, judged, chosen),
+        judged: judgements,
+    }
+}
+
+/// Where `work` goes, `chosen` from among those `judged`, if any was.
+fn placement(work: &Work, mut judged: Vec<Judged>, chosen: Option<usize>) -> Placement {
     if let Some(at) = chosen {
         let machine = judged.remove(at).name;
         let passed = judged
@@ -725,6 +797,45 @@ mod tests {
     /// Of the machines near the best, the best.
     fn first(_: usize) -> usize {
         0
+    }
+
+    #[test]
+    fn a_decision_says_how_each_machine_was_judged_and_its_chance() {
+        let realm = [
+            machine("kestrel", "linux", 32, &[]),
+            machine("skiff", "linux", 32, &[]),
+            pressed(machine("tern", "linux", 32, &[]), 90.0),
+            machine("osprey", "macos", 32, &[]),
+        ];
+        let work = needing(vec![Need::System("linux".to_owned())]);
+        let decision = decide_at(&work, &realm, &Loads::new(), now(), &mut first);
+        assert_eq!(placed(&decision.placement), Some("kestrel"));
+        let judged: Vec<(&str, bool, f64)> = decision
+            .judged
+            .iter()
+            .map(|one| (one.machine.as_str(), one.qualifies, one.chance))
+            .collect();
+        assert_eq!(
+            judged,
+            [
+                ("kestrel", true, 0.5),
+                ("skiff", true, 0.5),
+                ("tern", true, 0.0),
+                ("osprey", false, 0.0),
+            ],
+            "the two alike share the draw; one far behind and one not Linux have none"
+        );
+        let headroom = |name: &str| {
+            decision
+                .judged
+                .iter()
+                .find(|one| one.machine == name)
+                .map(|one| one.headroom)
+        };
+        assert!(
+            headroom("tern") < headroom("kestrel"),
+            "a machine waiting on its processors has less headroom"
+        );
     }
 
     #[test]

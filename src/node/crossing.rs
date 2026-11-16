@@ -361,6 +361,7 @@ mod tests {
             declared: "/nowhere/declared.json".into(),
             receptors: None,
             builders: crate::builders::Given::default(),
+            placements: None,
         };
         let membership = Realm {
             name: realm.to_owned(),

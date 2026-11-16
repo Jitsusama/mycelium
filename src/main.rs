@@ -1390,6 +1390,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         declared: place::declared(),
         receptors: Some(mycelium::receptor::folder(&state)),
         builders,
+        placements: Some(mycelium::placements::Log::at(state.join("placements"))),
     };
     let runtime = runtime()?;
     let ran = runtime.block_on(async {

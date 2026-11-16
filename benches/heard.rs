@@ -186,6 +186,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 declared: "/nowhere/declared.json".into(),
                 receptors: None,
                 builders: mycelium::builders::Given::default(),
+                placements: None,
             },
             bound,
             until_stopped,

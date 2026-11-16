@@ -911,6 +911,20 @@ chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only
 ranks it.
 
+Each placement, by `"Place"` or `"Start"`, is kept as a JSON line in
+`placements/<date>.jsonl` in mycelium's folder, a file for each day of
+the machine's calendar, so a monitor can judge how well work was placed
+and a replay can place it again under other weights: `at`, `start`
+(whether it was a start), the `work`, every machine's facts as placing
+read them (`machines`), each machine's `loads` (`sessions` and `placed`
+starts beyond what its room says), and the `decision`: the `placement`
+answered and, for each machine, how it was `judged` (`machine`,
+`qualifies`, `over`, `unheard`, how many preferences it met as
+`preferred`, its `headroom`, and its `chance` of being the one chosen,
+one in as many as were near the best and none for the rest). A
+placement the node can't keep is said on its error output and answered
+all the same.
+
 `"Start"` places `work` as `"Place"` does and starts `command` held
 there through the person's login shell (`$SHELL -lic`), so it has their
 environment rather than the node's. It begins in `folder`: a full path

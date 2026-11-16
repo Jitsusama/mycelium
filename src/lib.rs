@@ -88,6 +88,7 @@ pub mod node;
 pub mod offer;
 pub mod place;
 pub mod placement;
+pub mod placements;
 pub mod reach;
 pub mod receptor;
 pub mod record;

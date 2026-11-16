@@ -35,6 +35,7 @@ use crate::mesh;
 use crate::offer::{self, Offer};
 use crate::place;
 use crate::placement::{self, Miss, Need, Placement, Work};
+use crate::placements;
 use crate::receptor;
 use crate::record::{Message, Session, State as SessionState};
 use crate::room;
@@ -304,6 +305,9 @@ pub struct Given {
     /// The machines files naming the builders this machine sends Nix
     /// builds to, and how each is heard.
     pub builders: builders::Given,
+    /// Where it keeps each placement it makes, if it keeps them
+    /// (`placements`).
+    pub placements: Option<placements::Log>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -728,6 +732,8 @@ struct Shared<S> {
     talks: Arc<words::Talks>,
     /// Where this machine's configuration declares it.
     declared: PathBuf,
+    /// Where it keeps each placement it makes, if it does.
+    placements: Option<Arc<placements::Log>>,
     /// Held while the record of orchestrations is read and kept again, so
     /// two claims at once never undo each other.
     claiming: Arc<Mutex<()>>,
@@ -802,6 +808,7 @@ impl<S: Clone> Clone for Shared<S> {
             words: self.words.clone(),
             talks: self.talks.clone(),
             declared: self.declared.clone(),
+            placements: self.placements.clone(),
             claiming: self.claiming.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
@@ -1141,6 +1148,7 @@ impl<S: Store> Shared<S> {
             declared,
             receptors,
             builders,
+            placements,
         } = given;
         let said = Arc::<Said>::default();
         let held = receptor::Held::default();
@@ -1161,6 +1169,7 @@ impl<S: Store> Shared<S> {
             words: Arc::new(words),
             talks: Arc::default(),
             declared,
+            placements: placements.map(Arc::new),
             claiming: Arc::default(),
             client: None,
             served: Arc::new(Served::start(serves)),
@@ -1662,19 +1671,41 @@ impl<S: Store> Shared<S> {
     /// Places `work` among the realm's machines, each weighed with the
     /// sessions on it and the starts placed there that its room doesn't
     /// yet show. A `start` placed is kept as one, under the same lock, so
-    /// a burst of asks spreads rather than piling on whichever led.
+    /// a burst of asks spreads rather than piling on whichever led. Each
+    /// placement is kept in its log, where it keeps one, once the lock is
+    /// let go.
     fn place(&self, work: &Work, start: bool) -> Placement {
         let machines = self.machines();
         let now = jiff::Timestamp::now();
-        let mut inner = self.lock();
-        let inner = &mut *inner;
-        let sessions = inner.state.sessions();
-        let loads = inner.starts.loads(&machines, running(&sessions), now);
-        let placement = placement::place(work, &machines, &loads);
-        if start && let Placement::Placed { machine, .. } = &placement {
-            inner.starts.placed(machine, now);
+        let (loads, decision) = {
+            let mut inner = self.lock();
+            let inner = &mut *inner;
+            let sessions = inner.state.sessions();
+            let loads = inner.starts.loads(&machines, running(&sessions), now);
+            let decision = placement::decide(work, &machines, &loads);
+            if start && let Placement::Placed { machine, .. } = &decision.placement {
+                inner.starts.placed(machine, now);
+            }
+            (loads, decision)
+        };
+        let Some(log) = &self.placements else {
+            return decision.placement;
+        };
+        let record = placements::Record {
+            at: now.to_string(),
+            start,
+            work: work.clone(),
+            machines,
+            loads,
+            decision,
+        };
+        let day = now.to_zoned(jiff::tz::TimeZone::system()).date();
+        if let Err(error) = log.keep(&record, day) {
+            // A placement unkept costs the monitor one line, never the
+            // work its place.
+            eprintln!("a placement wasn't kept: {error}");
         }
-        placement
+        record.decision.placement
     }
 
     fn answer(&self, request: Request) -> Reply {
@@ -2700,6 +2731,7 @@ mod tests {
             declared: "/nowhere/declared.json".into(),
             receptors: None,
             builders: builders::Given::default(),
+            placements: None,
         }
     }
 
@@ -2770,6 +2802,7 @@ mod tests {
                 declared,
                 receptors,
                 builders,
+                placements: None,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -5942,6 +5975,78 @@ mod tests {
             !dir.path().join("mycelium").join("work.sock").exists(),
             "the socket is taken down"
         );
+    }
+
+    #[tokio::test]
+    async fn a_node_keeps_each_placement_with_what_it_knew() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let bound = bind(&socket).expect("the socket binds");
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let steers = dir.path().join("steer");
+        let kept = dir.path().join("placements");
+        let log = placements::Log::at(kept.clone());
+        let node = tokio::spawn(async move {
+            let given = Given {
+                placements: Some(log),
+                ..bare(steers, None)
+            };
+            let stopped = async {
+                // A dropped sender stops the node as surely as a sent stop.
+                let _ = stopped.await;
+            };
+            let nobody = Listed::<Ssh>(Vec::new());
+            run(Memory::default(), membership, nobody, given, bound, stopped).await
+        });
+
+        let answer = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            client
+                .ask(&Request::Place(work(Vec::new())))
+                .expect("the node answers")
+        });
+        let answer = tokio::time::timeout(PATIENCE, answer)
+            .await
+            .expect("the node answers in time")
+            .expect("the client asks");
+        let Ok(Response::Placement(placement)) = answer else {
+            panic!("a placement: {answer:?}");
+        };
+        let days: Vec<PathBuf> = fs::read_dir(&kept)
+            .expect("the log's folder")
+            .map(|entry| entry.expect("an entry").path())
+            .collect();
+        let [day] = days.as_slice() else {
+            panic!("one day's file: {days:?}");
+        };
+        let records: Vec<placements::Record> = fs::read_to_string(day)
+            .expect("the day's file")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a record"))
+            .collect();
+        let [record] = records.as_slice() else {
+            panic!("one placement kept: {records:?}");
+        };
+        assert!(!record.start, "asked where, not started");
+        assert_eq!(record.decision.placement, placement, "as it answered");
+        assert_eq!(
+            record
+                .machines
+                .iter()
+                .map(|one| one.name.as_str())
+                .collect::<Vec<_>>(),
+            ["skiff"],
+            "with the machines it placed among"
+        );
+        assert_eq!(record.decision.judged.len(), 1, "and how it judged each");
+        stop.send(()).expect("the node is still running");
+        node.await
+            .expect("the node runs to its end")
+            .expect("the node stops cleanly");
     }
 
     #[tokio::test]
