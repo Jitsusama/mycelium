@@ -231,7 +231,8 @@ enum Action {
     /// place by. With `-o json`, the same as one JSON line. With
     /// `--follow`, again each minute, each saying the flags seen in most
     /// of the last ten, each kept as a JSON line in the state folder's
-    /// `balance`, one file a day.
+    /// `balance`, one file a day, and the latest kept whole in its
+    /// `now.json`.
     #[command(after_help = "Example:\n  mycelium balance --follow")]
     Balance(BalanceAsked),
     /// Says how well this node placed work, judged in hindsight.
@@ -1721,7 +1722,6 @@ fn balance(socket: &Path, realm: &str, asked: BalanceAsked) -> io::Result<()> {
         return print(&balance_read(socket)?);
     }
     let kept = here.state.unwrap_or_else(place::state).join("balance");
-    std::fs::create_dir_all(&kept)?;
     let mut watch = mycelium::balance::Watch::default();
     loop {
         // A node restarting or slow to answer misses a minute, not the
@@ -1729,14 +1729,7 @@ fn balance(socket: &Path, realm: &str, asked: BalanceAsked) -> io::Result<()> {
         match balance_read(socket) {
             Ok(mut reading) => {
                 reading.held = Some(watch.take(&reading));
-                let day = jiff::Zoned::now().date();
-                let mut line = serde_json::to_string(&reading).map_err(io::Error::other)?;
-                line.push('\n');
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(kept.join(format!("{day}.jsonl")))?
-                    .write_all(line.as_bytes())?;
+                mycelium::balance::keep(&kept, &reading, jiff::Zoned::now().date())?;
                 print(&reading)?;
             }
             Err(error) => eprintln!("mycelium balance: couldn't read the node: {error}"),

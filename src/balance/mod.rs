@@ -19,6 +19,9 @@
 //! go only once it is seen in few, so a flag neither flickers nor lingers.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fs;
+use std::io::{self, Write};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -343,6 +346,34 @@ impl Watch {
     }
 }
 
+/// The file in the balance folder holding the latest reading whole, for a
+/// node to serve as a kind of its own.
+pub const NOW_FILE: &str = "now.json";
+
+/// Keeps `reading` in `folder`: appended as a line to the day's file,
+/// `<day>.jsonl`, which hindsight reads, and whole in [`NOW_FILE`],
+/// written beside it and renamed into place, so a reader watching it never
+/// sees half a reading.
+///
+/// # Errors
+///
+/// When either file can't be written.
+pub fn keep(folder: &Path, reading: &Reading, day: jiff::civil::Date) -> io::Result<()> {
+    fs::create_dir_all(folder)?;
+    let mut line = serde_json::to_vec(reading).map_err(io::Error::other)?;
+    line.push(b'\n');
+    // One write of a whole line, so no reader sees part of one.
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(folder.join(format!("{day}.jsonl")))?
+        .write_all(&line)?;
+    let latest = folder.join(NOW_FILE);
+    let writing = latest.with_extension("json.new");
+    fs::write(&writing, &line[..line.len() - 1])?;
+    fs::rename(writing, latest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,5 +634,47 @@ mod tests {
         );
         held = watch.take(&read(&calm, &[], now()));
         assert!(held.is_empty(), "let go once seen in only {CLEARED_AT}");
+    }
+
+    #[test]
+    fn each_reading_is_a_line_of_its_day_and_the_latest_whole() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let day: jiff::civil::Date = "2026-11-16".parse().expect("a day");
+        let first = read(&[machine("kestrel", 16, 64, 40, 0.0, 0)], &[], now());
+        let mut second = read(&[machine("osprey", 12, 48, 40, 90.0, 0)], &[], now());
+        second.held = Some(vec![Flag::Imbalanced]);
+        keep(folder.path(), &first, day).expect("the first is kept");
+        keep(folder.path(), &second, day).expect("the second is kept");
+        let lines =
+            fs::read_to_string(folder.path().join("2026-11-16.jsonl")).expect("the day's file");
+        let kept: Vec<Reading> = lines
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a reading a line"))
+            .collect();
+        assert_eq!(
+            kept,
+            [first, second.clone()],
+            "each reading a line, in order"
+        );
+        let latest: Reading =
+            serde_json::from_slice(&fs::read(folder.path().join(NOW_FILE)).expect("the latest"))
+                .expect("the latest is a reading");
+        assert_eq!(latest, second, "the latest is the last kept, whole");
+        let mut names: Vec<String> = fs::read_dir(folder.path())
+            .expect("the folder")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["2026-11-16.jsonl", NOW_FILE],
+            "nothing half-written left"
+        );
     }
 }

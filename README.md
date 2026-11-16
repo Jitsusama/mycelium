@@ -81,7 +81,8 @@ The harness mesh's messages and presence, carried between machines:
   place by. `-o json` prints the same as one JSON line. `--follow` reads
   each minute, says the flags seen in most of the last ten, and keeps
   each reading as a JSON line in the state folder's `balance`, one file
-  a day.
+  a day, and the latest whole in `now.json` beside them, written and
+  renamed into place, for a node to serve as a kind.
 - `mycelium node --eases` has the node say what its machine would do to
   ease itself while over its limits and another has room: put its
   waiting sessions to sleep, then carry one to a peer, each choice a
