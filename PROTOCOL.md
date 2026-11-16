@@ -941,7 +941,8 @@ to start on as a machine of the realm. One that costs is made only for
 a start that says it `may_cost` (`mycelium start --may-cost`); a start
 that doesn't is refused, saying which offer would have done and what it
 costs, and nothing is made. Of those that would take the work, it makes
-one of the cheapest an hour, after taints and preferences, as `PROGRAM make SHAPE --lasting SECONDS`: the work's
+one of the cheapest an hour, after taints and preferences, as
+`PROGRAM make SHAPE --lasting SECONDS`: the work's
 `lasts` and ten minutes to hand over, though no longer than the offer
 lives, or as long as the offer lives where the work doesn't say. It
 makes none where neither says, since no machine is made without an

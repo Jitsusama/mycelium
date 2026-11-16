@@ -434,7 +434,8 @@ where
                 });
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
                 let linked = keep_linked(dial.clone(), store.clone(), membership.clone(), carries);
-                links.spawn(keep_made(dial, made, shared.book.clone(), unwanted, linked));
+                let kept = Kept { book: shared.book.clone(), store: store.clone() };
+                links.spawn(keep_made(dial, made, kept, unwanted, linked));
             }
             Some(()) = held.recv() => {
                 shared.read_sessions();
@@ -571,14 +572,23 @@ async fn keep_linked(
     }
 }
 
+/// Where a machine made from an offer is kept: the book of what was made
+/// and let go, and the store of the realm's machines it leaves once let
+/// go.
+struct Kept<S> {
+    book: Book,
+    store: S,
+}
+
 /// Keeps a machine made from an offer `linked` until it is done with:
 /// until its work has handed over and it was released, it isn't wanted
 /// once made, or its time is up, when it is released. Keeps in the book
-/// that it was let go, and why.
+/// that it was let go, and why, and has it leave the realm's machines at
+/// once, so nothing lists a machine that is gone.
 async fn keep_made(
     dial: Arc<Program>,
     made: Made,
-    book: Book,
+    Kept { book, store }: Kept<impl Store>,
     unwanted: Arc<Notify>,
     linked: impl Future<Output = ()>,
 ) {
@@ -602,6 +612,7 @@ async fn keep_made(
         },
     };
     eprintln!("{} was let go: {why}", made.machine);
+    store::left(&store, &made.machine, jiff::Timestamp::now());
     if let Err(error) = book.released(&made, &why) {
         eprintln!(
             "{} was let go, but the book doesn't say so: {error}",
