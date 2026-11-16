@@ -303,7 +303,15 @@ pub async fn run(
     let claim = claimed(&store, &other.machine)?;
     let reach = reach_start(&store, &other.machine);
     admitted(&store, &other.machine)?;
-    let exchange = shares.map(|places| exchange_with(places, membership, &other.machine, worker));
+    let exchange = shares.map(|places| {
+        let mut exchange = exchange_with(places, membership, &other.machine, worker);
+        // The other end may be a worker until it says what its machine is,
+        // which it does first of all when both ends take facts, so nothing
+        // above the quests shared crosses before then. An end that takes
+        // none can declare nothing, so it is no worker.
+        exchange.withhold_above(membership.hello().facts && other.facts);
+        exchange
+    });
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
     let (answering, mut answered) = mpsc::unbounded_channel();
     let (runs, mut run_said) = Runs::new();
@@ -1366,8 +1374,9 @@ impl<S: Store> End<S> {
 
     /// Keeps what the other end says its machine is, which only it can
     /// say: a machine named otherwise is refused, and it is ready while
-    /// this link carries it, whatever it claims.
-    fn keep_machine(&self, mut said: Machine) {
+    /// this link carries it, whatever it claims. A worker is withheld the
+    /// quests above those shared with it.
+    fn keep_machine(&mut self, mut said: Machine) {
         if said.name != self.other {
             self.kept(
                 &said.name,
@@ -1376,6 +1385,13 @@ impl<S: Store> End<S> {
             return;
         }
         said.state = Readiness::Ready;
+        if let Some(exchange) = self.exchange.as_mut() {
+            exchange.withhold_above(
+                said.declared
+                    .as_ref()
+                    .is_some_and(crate::declared::Declared::is_worker),
+            );
+        }
         self.kept(&said.name, self.store.put_machine(&said));
     }
 
@@ -3401,6 +3417,137 @@ mod tests {
             ended.expect("the link doesn't fail"),
             Ending::HandedOver,
             "once the README came, the lent machine may be released"
+        );
+    }
+
+    /// Says each of `frames` over `writing`, as the far end of a link.
+    async fn says(writing: &mut WriteHalf<DuplexStream>, frames: &[Frame]) {
+        for frame in frames {
+            send(writing, frame).await.expect("the far end speaks");
+        }
+    }
+
+    /// The frames the other end says over `lines`, up to and with the first
+    /// `last` takes.
+    async fn heard_until(
+        lines: &mut tokio::io::Lines<BufReader<ReadHalf<DuplexStream>>>,
+        last: impl Fn(&Frame) -> bool,
+    ) -> Vec<Frame> {
+        let mut heard = Vec::new();
+        let waited = tokio::time::timeout(PATIENCE, async {
+            while let Some(line) = lines.next_line().await.expect("the pipe reads") {
+                let frame = serde_json::from_str::<Frame>(&line).expect("a frame");
+                let done = last(&frame);
+                heard.push(frame);
+                if done {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(waited.is_ok(), "the other end never said it: {heard:?}");
+        heard
+    }
+
+    #[tokio::test]
+    async fn a_parent_reaches_the_other_end_only_once_its_machine_is_known_no_worker() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let home = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        for (quest, readme) in [
+            (top, "---\nparent: null\n---\n# Top\n".to_owned()),
+            (child, format!("---\nparent: {top}\n---\n# Child\n")),
+        ] {
+            std::fs::create_dir_all(home.quests.join(quest)).expect("the quest made");
+            std::fs::write(home.quests.join(quest).join("README.md"), readme)
+                .expect("its README written");
+        }
+        home.offer(child, &[]).expect("shared");
+
+        let skiff = Memory::default();
+        let store = skiff.clone();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        let _skiff_end = tokio::spawn(async move {
+            run(
+                store,
+                &realm("skiff"),
+                connection(reading, writing),
+                Some(home),
+                None,
+            )
+            .await
+        });
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let mut lines = BufReader::new(far_reading).lines();
+        let names = |frame: &Frame, quest: &str| {
+            matches!(frame, Frame::Share(Say::Shares { quests, .. })
+                if quests.iter().any(|named| named == quest))
+        };
+        let shares = |frame: &Frame| matches!(frame, Frame::Share(Say::Shares { .. }));
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+            ],
+        )
+        .await;
+        let first = heard_until(&mut lines, shares).await;
+        assert!(
+            first.last().is_some_and(|frame| names(frame, child) && !names(frame, top)),
+            "before tern says what it is, skiff shares the quest, never its parent: {first:?}"
+        );
+
+        let nowhere = facts::Sources {
+            home: "/".into(),
+            queue: None,
+            disk_guard: None,
+            declared: "/nowhere".into(),
+            reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
+        };
+        let mut tern = facts::measure("tern", &nowhere);
+        tern.state = Readiness::Ready;
+        says(&mut far_writing, &[Frame::Machine(Box::new(tern.clone()))]).await;
+        heard_until(&mut lines, |frame| names(frame, top)).await;
+
+        tern.declared = Some(
+            serde_json::from_value(json!({
+                "reach": [], "outlives": [], "costs_money": true, "taints": []
+            }))
+            .expect("a declaration"),
+        );
+        let want = |quest: &str| {
+            Frame::Share(Say::Want {
+                quest: quest.to_owned(),
+                file: "record/README.md".to_owned(),
+                at: Some(0),
+            })
+        };
+        says(
+            &mut far_writing,
+            &[Frame::Machine(Box::new(tern)), want(top), want(child)],
+        )
+        .await;
+        let sent = heard_until(&mut lines, |frame| {
+            matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == child)
+        })
+        .await;
+        let of_top = |frame: &Frame| {
+            matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == top)
+        };
+        assert!(
+            !sent.iter().any(of_top),
+            "once tern says it costs money, it is sent nothing of the parent: {sent:?}"
         );
     }
 

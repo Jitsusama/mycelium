@@ -135,6 +135,16 @@ impl Declared {
         self
     }
 
+    /// Whether it is a worker: a machine lent or paid for, which work goes
+    /// to but which isn't one of the person's own lasting machines, so
+    /// nothing but the work is carried there.
+    #[must_use]
+    pub fn is_worker(&self) -> bool {
+        self.costs_money
+            || self.leaves_at.is_some()
+            || self.reach.iter().any(|network| network == "aquifer")
+    }
+
     /// Whether it has left by `now`.
     #[must_use]
     pub fn has_left(&self, now: jiff::Timestamp) -> bool {
@@ -561,6 +571,49 @@ mod tests {
             }),
             "it reads as declared"
         );
+    }
+
+    #[test]
+    fn a_machine_that_costs_money_leaves_or_reaches_aquifer_is_a_worker() {
+        let lasting = Declared {
+            reach: vec!["home".to_owned(), "internet".to_owned()],
+            probes: BTreeMap::new(),
+            outlives: Vec::new(),
+            costs_money: false,
+            taints: Vec::new(),
+            cores: None,
+            agents: BTreeMap::new(),
+            leaves_at: None,
+            within: None,
+            hosts: Vec::new(),
+            fence: None,
+        };
+        assert!(!lasting.is_worker(), "a machine of the person's own is none");
+        for (worker, why) in [
+            (
+                Declared {
+                    costs_money: true,
+                    ..lasting.clone()
+                },
+                "it costs money",
+            ),
+            (
+                Declared {
+                    leaves_at: Some(jiff::Timestamp::UNIX_EPOCH),
+                    ..lasting.clone()
+                },
+                "it leaves",
+            ),
+            (
+                Declared {
+                    reach: vec!["internet".to_owned(), "aquifer".to_owned()],
+                    ..lasting.clone()
+                },
+                "it reaches aquifer",
+            ),
+        ] {
+            assert!(worker.is_worker(), "a worker, as {why}");
+        }
     }
 
     #[test]
