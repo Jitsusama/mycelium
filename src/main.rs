@@ -488,6 +488,11 @@ struct Node {
     /// `{host}` for the builder's host, such as `/run/{host}/health.json`.
     #[arg(long)]
     lent_health: Option<String>,
+    /// The socket this machine's own health daemon answers on in the
+    /// daemon interface, whose words its machine record carries as
+    /// `health`; PROTOCOL.md says what is asked.
+    #[arg(long)]
+    health_socket: Option<PathBuf>,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -1391,6 +1396,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         receptors: Some(mycelium::receptor::folder(&state)),
         builders,
         placements: Some(mycelium::placements::Log::at(state.join("placements"))),
+        health: node.health_socket,
     };
     let runtime = runtime()?;
     let ran = runtime.block_on(async {

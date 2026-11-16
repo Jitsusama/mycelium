@@ -33,6 +33,7 @@ use crate::link::{self, discovery::Discovery, membership::Hello, membership::Mem
 use crate::made::{self, Book, Made};
 use crate::mesh;
 use crate::offer::{self, Offer};
+use crate::own_health;
 use crate::place;
 use crate::placement::{self, Miss, Need, Placement, Work};
 use crate::placements;
@@ -308,6 +309,9 @@ pub struct Given {
     /// Where it keeps each placement it makes, if it keeps them
     /// (`placements`).
     pub placements: Option<placements::Log>,
+    /// The socket its machine's own health daemon answers on, if it asks
+    /// one (`own_health`).
+    pub health: Option<PathBuf>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -1161,7 +1165,11 @@ impl<S: Store> Shared<S> {
             receptors,
             builders,
             placements,
+            health,
         } = given;
+        if let Some(socket) = health {
+            tokio::spawn(own_health::keep(socket, own_health::here()));
+        }
         let said = Arc::<Said>::default();
         let held = receptor::Held::default();
         if let Some(folder) = receptors {
@@ -2805,6 +2813,7 @@ mod tests {
             receptors: None,
             builders: builders::Given::default(),
             placements: None,
+            health: None,
         }
     }
 
@@ -2876,6 +2885,7 @@ mod tests {
                 receptors,
                 builders,
                 placements: None,
+                health: None,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.

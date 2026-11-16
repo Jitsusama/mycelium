@@ -736,6 +736,25 @@ macOS), and absent where none is kept, as after a reboot. It carries `at`,
 when the update ended: the updater's own where it says one, else when it
 last wrote that file, to the second.
 
+Its `health` is how the machine stands as its own health daemon says it,
+where its node is given that daemon's socket (`--health-socket`): the
+whole machine's word, `health`, and `parts`, each part's word by its
+name. A word is `good`, `watch`, `bad` or `unread`, and any other, a
+node's own or one a link carries, is read as `unread`. A part's name is
+at most 32 of `a` to `z`, `0` to `9` and `-`, and there are at most 16
+parts; any other part is left out. The node asks the daemon in the
+daemon interface, `hello`, then a `watch` of kind `summary` and one of
+kind `part`, and keeps from each record only its `health`, and a part's
+`part`: never what a part says, nor when it was read, so the health
+moves only when a word does, and holds under a kilobyte. A key the
+daemon lets go (`summary`, or `part:NAME`) is let go too. The health is
+absent, not `null`, while no daemon is given or answers, before one has
+said the whole, and from a node too old to say, and absent reads as
+unknown. A daemon that goes away is asked again after two seconds, and
+then after twice as long each time it still doesn't answer, up to a
+minute. The record says the health its node last heard as of its last
+measure, once a minute here and each time a link says its machine.
+
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,
 `memory_available` in bytes, `pressure` (`cpu`, `memory` and `io`, the
