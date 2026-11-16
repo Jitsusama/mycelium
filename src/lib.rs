@@ -62,6 +62,7 @@
 //! - [`web`]: a quest's shared space of murmurs and ties, one log folded
 
 pub mod awake;
+pub mod balance;
 pub mod carry;
 pub mod client;
 pub mod daemon;

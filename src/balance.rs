@@ -1,0 +1,556 @@
+//! How evenly the realm's machines carry its work, as `mycelium balance`
+//! says it: each machine's load and whether it is over, how far the loads
+//! spread, and the flags that say placement went wrong, read from what
+//! every node already holds, so every node says the same.
+//!
+//! A machine's load is its dominant share, the larger of the memory it
+//! uses and how long its work stalls, each from 0 to 1, as Dominant
+//! Resource Fairness weighs a share. Processor use isn't among a machine's
+//! facts yet, so its processor counts by its pressure alone, which is zero
+//! until every core is busy; [`MEASURES`] names this definition, and a
+//! better one will be a new name, never this one changed.
+//!
+//! A reading flags, at once, a machine over while another has room (what
+//! placement exists to prevent), a machine stranded (one resource spent,
+//! the other idle), and facts too old to place by. Over time, a [`Watch`]
+//! holds a flag once it is seen in most of the last readings and lets it
+//! go only once it is seen in few, so a flag neither flickers nor lingers.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+use serde::{Deserialize, Serialize};
+
+use crate::facts::{Machine, Readiness};
+use crate::record::{Session, State};
+
+/// The name of these measures' definitions, said in every reading.
+pub const MEASURES: &str = "balance/1";
+
+/// Processor pressure, in percent, at which a machine is over: the
+/// harness queue's own line, past which it starts no build beside a VM
+/// test.
+pub const OVER_CPU_PRESSURE: f64 = 70.0;
+
+/// Memory pressure, in percent, at which no job starts in the harness
+/// queue, so a memory stall of 1.
+pub const OVER_MEMORY_PRESSURE: f64 = 10.0;
+
+/// The most a machine with room may stall, 0 to 1.
+pub const ROOM_STALL: f64 = 0.25;
+
+/// The most memory a machine with room may use, 0 to 1.
+pub const ROOM_MEMORY: f64 = 0.8;
+
+/// Under this share of its memory used, a machine whose processors are
+/// over is stranded: the memory can't be used for want of processors.
+pub const STRANDED_MEMORY: f64 = 0.5;
+
+/// From this share of its memory used, a machine whose processors idle
+/// is stranded the other way: the processors can't be used for want of
+/// memory.
+pub const FULL_MEMORY: f64 = 0.95;
+
+/// How old a machine's facts may be before placing by them is placing
+/// blind: a link says them each minute, and the queue's room behind them
+/// is up to 30 seconds older, so two and a half minutes is one missed.
+pub const STALE_SECONDS: i64 = 150;
+
+/// The spread of loads, as their standard deviation, past which the realm
+/// is out of balance.
+pub const IMBALANCE: f64 = 0.2;
+
+/// How many readings a [`Watch`] judges a flag over.
+pub const WINDOW: usize = 10;
+
+/// In how many of the last [`WINDOW`] readings a flag must be seen to be
+/// held.
+pub const HELD_FROM: usize = 8;
+
+/// In how few of the last [`WINDOW`] readings a held flag must be seen to
+/// be let go.
+pub const CLEARED_AT: usize = 2;
+
+/// One reading of the realm's balance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Reading {
+    /// Which definitions these are.
+    pub measures: String,
+    /// When it was read, as an RFC 3339 time.
+    pub at: String,
+    /// Each machine, by name.
+    pub machines: Vec<Load>,
+    /// The standard deviation of the loads of machines that take work,
+    /// none while fewer than two have a load known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imbalance: Option<f64>,
+    /// What is wrong now.
+    pub flags: Vec<Flag>,
+    /// What a [`Watch`] holds wrong over the last readings, where one
+    /// follows them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<Vec<Flag>>,
+}
+
+/// One machine's load.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Load {
+    /// The machine.
+    pub machine: String,
+    /// Whether it takes work.
+    pub ready: bool,
+    /// The share of its memory in use, 0 to 1, where known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<f64>,
+    /// How long its work stalls, 0 to 1: processor pressure over 100 or
+    /// memory pressure over the queue's line, whichever is more.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stall: Option<f64>,
+    /// Its dominant share: the larger of `memory` and `stall`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load: Option<f64>,
+    /// Whether it is over: its queue says it is past a limit, or its
+    /// processor pressure is at [`OVER_CPU_PRESSURE`].
+    pub over: bool,
+    /// Whether it has room for more: not over, stalling under
+    /// [`ROOM_STALL`] and using under [`ROOM_MEMORY`] of its memory.
+    pub room: bool,
+    /// Its sessions running a turn.
+    pub busy: usize,
+    /// Its sessions waiting for something to do.
+    pub idle: usize,
+    /// Its busy sessions for each of its cores, where its cores are known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub busy_per_core: Option<f64>,
+    /// How old its facts are, in seconds, where they say when.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub age: Option<i64>,
+}
+
+/// Something wrong with how work is placed.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "flag")]
+pub enum Flag {
+    /// `hot` is over while `cool` has room: what placement is for.
+    HotWhileCool {
+        /// The machine over.
+        hot: String,
+        /// A machine with room.
+        cool: String,
+    },
+    /// One of `machine`'s resources is spent while the other idles.
+    Stranded {
+        /// The machine.
+        machine: String,
+        /// The resource spent: `processor` or `memory`.
+        spent: String,
+    },
+    /// `machine`'s facts are too old to place by.
+    Stale {
+        /// The machine.
+        machine: String,
+    },
+    /// The realm's loads spread past [`IMBALANCE`].
+    Imbalanced,
+}
+
+/// Reads the realm's balance from `machines` and `sessions` as of `now`.
+#[must_use]
+pub fn read(machines: &[Machine], sessions: &[Session], now: jiff::Timestamp) -> Reading {
+    let loads: Vec<Load> = machines
+        .iter()
+        .map(|machine| load(machine, sessions, now))
+        .collect();
+    let known: Vec<f64> = loads
+        .iter()
+        .filter(|one| one.ready)
+        .filter_map(|one| one.load)
+        .collect();
+    let imbalance = (known.len() >= 2).then(|| deviation(&known));
+    let mut flags = Vec::new();
+    for hot in loads.iter().filter(|one| one.ready && one.over) {
+        for cool in loads.iter().filter(|one| one.ready && one.room) {
+            flags.push(Flag::HotWhileCool {
+                hot: hot.machine.clone(),
+                cool: cool.machine.clone(),
+            });
+        }
+    }
+    for one in loads.iter().filter(|one| one.ready) {
+        if let Some(spent) = stranded(one, machines) {
+            flags.push(Flag::Stranded {
+                machine: one.machine.clone(),
+                spent: spent.to_owned(),
+            });
+        }
+        if one.age.is_some_and(|age| age > STALE_SECONDS) {
+            flags.push(Flag::Stale {
+                machine: one.machine.clone(),
+            });
+        }
+    }
+    if imbalance.is_some_and(|spread| spread > IMBALANCE) {
+        flags.push(Flag::Imbalanced);
+    }
+    Reading {
+        measures: MEASURES.to_owned(),
+        at: now.to_string(),
+        machines: loads,
+        imbalance,
+        flags,
+        held: None,
+    }
+}
+
+fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
+    let room = machine.room.as_ref();
+    let memory = room
+        .zip(machine.memory.filter(|&total| total > 0))
+        .map(|(room, total)| {
+            #[expect(clippy::cast_precision_loss, reason = "bytes well under 2^52")]
+            let share = 1.0 - room.memory_available as f64 / total as f64;
+            share.clamp(0.0, 1.0)
+        });
+    let stall = room.map(|room| {
+        (room.pressure.cpu / 100.0)
+            .max(room.pressure.memory / OVER_MEMORY_PRESSURE)
+            .clamp(0.0, 1.0)
+    });
+    let load = match (memory, stall) {
+        (Some(memory), Some(stall)) => Some(memory.max(stall)),
+        (one, other) => one.or(other),
+    };
+    let over = room.is_some_and(|room| {
+        room.over.as_ref().is_some_and(|over| !over.is_empty())
+            || room.pressure.cpu >= OVER_CPU_PRESSURE
+    });
+    let has_room = !over
+        && stall.is_some_and(|stall| stall < ROOM_STALL)
+        && memory.is_some_and(|memory| memory < ROOM_MEMORY);
+    let count = |state: State| {
+        sessions
+            .iter()
+            .filter(|one| one.machine == machine.name && one.state == state)
+            .count()
+    };
+    let busy = count(State::Busy);
+    #[expect(clippy::cast_precision_loss, reason = "session counts are small")]
+    let busy_per_core = machine
+        .cpu
+        .cores
+        .filter(|&cores| cores > 0)
+        .map(|cores| busy as f64 / f64::from(cores));
+    let age = machine
+        .measured_at
+        .parse::<jiff::Timestamp>()
+        .ok()
+        .map(|measured| now.duration_since(measured).as_secs());
+    Load {
+        machine: machine.name.clone(),
+        ready: machine.state == Readiness::Ready,
+        memory,
+        stall,
+        load,
+        over,
+        room: has_room,
+        busy,
+        idle: count(State::Idle),
+        busy_per_core,
+        age,
+    }
+}
+
+/// The resource `one` has spent while the other idles, if any.
+fn stranded(one: &Load, machines: &[Machine]) -> Option<&'static str> {
+    let memory = one.memory?;
+    let cpu = machines
+        .iter()
+        .find(|machine| machine.name == one.machine)
+        .and_then(|machine| machine.room.as_ref())
+        .map(|room| room.pressure.cpu)?;
+    if cpu >= OVER_CPU_PRESSURE && memory < STRANDED_MEMORY {
+        Some("processor")
+    } else if memory >= FULL_MEMORY && cpu / 100.0 < ROOM_STALL {
+        Some("memory")
+    } else {
+        None
+    }
+}
+
+/// The population standard deviation of `values`.
+fn deviation(values: &[f64]) -> f64 {
+    #[expect(clippy::cast_precision_loss, reason = "a handful of machines")]
+    let count = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / count;
+    (values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / count)
+        .sqrt()
+}
+
+/// Readings over time, holding each flag seen in most of the last
+/// [`WINDOW`] and letting it go once seen in few.
+#[derive(Debug, Default)]
+pub struct Watch {
+    seen: VecDeque<Vec<Flag>>,
+    held: BTreeSet<Flag>,
+}
+
+impl Watch {
+    /// Takes `reading` in, answering the flags held now.
+    pub fn take(&mut self, reading: &Reading) -> Vec<Flag> {
+        self.seen.push_back(reading.flags.clone());
+        while self.seen.len() > WINDOW {
+            self.seen.pop_front();
+        }
+        let mut counts: BTreeMap<&Flag, usize> = BTreeMap::new();
+        for flags in &self.seen {
+            for flag in flags {
+                *counts.entry(flag).or_default() += 1;
+            }
+        }
+        self.held = counts
+            .into_iter()
+            .filter(|(flag, count)| {
+                *count >= HELD_FROM || (self.held.contains(*flag) && *count > CLEARED_AT)
+            })
+            .map(|(flag, _)| flag.clone())
+            .collect();
+        self.held.iter().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::facts::{self, Sources};
+    use crate::room::{Limit, Pressure, Room, Takes};
+    use serde_json::json;
+
+    const NOW: &str = "2026-11-15T23:39:00Z";
+
+    fn now() -> jiff::Timestamp {
+        NOW.parse().expect("a time")
+    }
+
+    /// A ready machine of `cores` and `gib` GiB, with `free` GiB available
+    /// and processor pressure `cpu`, measured `age` seconds ago.
+    fn machine(name: &str, cores: u32, gib: u64, free: u64, cpu: f64, age: i64) -> Machine {
+        let nowhere = Sources {
+            home: "/".into(),
+            queue: None,
+            disk_guard: None,
+            declared: "/nowhere".into(),
+            reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
+        };
+        let mut machine = facts::measure(name, &nowhere);
+        machine.state = Readiness::Ready;
+        machine.cpu.cores = Some(cores);
+        machine.memory = Some(gib << 30);
+        machine.measured_at = (now() - jiff::SignedDuration::from_secs(age)).to_string();
+        machine.room = Some(Room {
+            said_at: NOW.to_owned(),
+            memory_available: free << 30,
+            pressure: Pressure {
+                cpu,
+                memory: 0.0,
+                io: 0.0,
+            },
+            takes: Takes {
+                builds: 1,
+                vm_tests: 1,
+            },
+            over: Some(if cpu >= OVER_CPU_PRESSURE {
+                vec![Limit::Cpu]
+            } else {
+                Vec::new()
+            }),
+        });
+        machine
+    }
+
+    fn session(id: &str, machine: &str, state: &str) -> Session {
+        serde_json::from_value(json!({
+            "id": id, "address": id, "machine": machine, "groups": [],
+            "state": state, "at": NOW,
+        }))
+        .expect("a session")
+    }
+
+    fn of<'a>(reading: &'a Reading, name: &str) -> &'a Load {
+        reading
+            .machines
+            .iter()
+            .find(|one| one.machine == name)
+            .expect("the machine")
+    }
+
+    #[test]
+    fn a_machine_over_while_another_has_room_is_flagged() {
+        // As on 15 November at 18:39: one machine stalled on its
+        // processors, the other with every core to spare.
+        let realm = [
+            machine("kestrel", 16, 64, 21, 4.6, 20),
+            machine("osprey", 12, 48, 41, 86.0, 40),
+        ];
+        let reading = read(&realm, &[], now());
+        assert!(of(&reading, "osprey").over, "processor pressure 86 is over");
+        assert!(
+            of(&reading, "kestrel").room,
+            "pressure 4.6 and a third free is room"
+        );
+        assert_eq!(
+            reading.flags,
+            [
+                Flag::HotWhileCool {
+                    hot: "osprey".to_owned(),
+                    cool: "kestrel".to_owned(),
+                },
+                Flag::Stranded {
+                    machine: "osprey".to_owned(),
+                    spent: "processor".to_owned(),
+                },
+            ],
+            "over while another has room, and stalled with its memory free"
+        );
+        assert_eq!(
+            reading.measures, MEASURES,
+            "a reading names its definitions"
+        );
+    }
+
+    #[test]
+    fn load_is_the_dominant_share_and_imbalance_its_spread() {
+        let realm = [
+            machine("kestrel", 16, 64, 16, 10.0, 0),
+            machine("osprey", 12, 48, 36, 50.0, 0),
+        ];
+        let reading = read(&realm, &[], now());
+        let kestrel = of(&reading, "kestrel");
+        let osprey = of(&reading, "osprey");
+        assert_eq!(kestrel.memory, Some(0.75), "48 of 64 GiB in use");
+        assert_eq!(
+            kestrel.load,
+            Some(0.75),
+            "memory dominates a light processor"
+        );
+        assert_eq!(
+            osprey.load,
+            Some(0.5),
+            "pressure 50 dominates a quarter of memory"
+        );
+        assert_eq!(
+            reading.imbalance,
+            Some(0.125),
+            "half the gap between 0.75 and 0.5"
+        );
+        assert!(
+            !reading.flags.contains(&Flag::Imbalanced),
+            "0.125 is within the line"
+        );
+        let wide = [
+            machine("kestrel", 16, 64, 60, 0.0, 0),
+            machine("osprey", 12, 48, 40, 90.0, 0),
+        ];
+        assert!(
+            read(&wide, &[], now()).flags.contains(&Flag::Imbalanced),
+            "0.9 against 0.06 is out of balance"
+        );
+    }
+
+    #[test]
+    fn sessions_count_by_machine_and_by_core() {
+        let realm = [machine("kestrel", 16, 64, 40, 0.0, 0)];
+        let sessions = [
+            session("a", "kestrel", "busy"),
+            session("b", "kestrel", "busy"),
+            session("c", "kestrel", "idle"),
+            session("d", "kestrel", "ended"),
+            session("e", "osprey", "busy"),
+        ];
+        let kestrel = read(&realm, &sessions, now()).machines.remove(0);
+        assert_eq!(
+            (kestrel.busy, kestrel.idle),
+            (2, 1),
+            "ended and elsewhere don't count"
+        );
+        assert_eq!(
+            kestrel.busy_per_core,
+            Some(0.125),
+            "two busy on sixteen cores"
+        );
+    }
+
+    #[test]
+    fn stranded_and_stale_machines_are_flagged() {
+        let realm = [
+            machine("kestrel", 16, 64, 50, 80.0, 0),
+            machine("osprey", 12, 48, 30, 0.0, 400),
+        ];
+        let flags = read(&realm, &[], now()).flags;
+        assert!(
+            flags.contains(&Flag::Stranded {
+                machine: "kestrel".to_owned(),
+                spent: "processor".to_owned(),
+            }),
+            "every core stalled with most memory free: {flags:?}"
+        );
+        assert!(
+            flags.contains(&Flag::Stale {
+                machine: "osprey".to_owned(),
+            }),
+            "facts four minutes old: {flags:?}"
+        );
+    }
+
+    #[test]
+    fn a_machine_out_of_reach_neither_has_room_nor_counts() {
+        let mut gone = machine("osprey", 12, 48, 40, 0.0, 30);
+        gone.state = Readiness::Unreachable;
+        let realm = [machine("kestrel", 16, 64, 10, 90.0, 0), gone];
+        let reading = read(&realm, &[], now());
+        assert!(
+            reading
+                .flags
+                .iter()
+                .all(|flag| !matches!(flag, Flag::HotWhileCool { .. })),
+            "no room out of reach"
+        );
+        assert_eq!(reading.imbalance, None, "one machine has no spread");
+    }
+
+    #[test]
+    fn a_watch_holds_a_flag_seen_mostly_and_lets_it_go_once_rare() {
+        let hot = [
+            machine("kestrel", 16, 64, 40, 0.0, 0),
+            machine("osprey", 12, 48, 40, 90.0, 0),
+        ];
+        let calm = [
+            machine("kestrel", 16, 64, 40, 0.0, 0),
+            machine("osprey", 12, 48, 40, 10.0, 0),
+        ];
+        let flag = Flag::HotWhileCool {
+            hot: "osprey".to_owned(),
+            cool: "kestrel".to_owned(),
+        };
+        let mut watch = Watch::default();
+        let mut held = Vec::new();
+        for _ in 0..HELD_FROM - 1 {
+            held = watch.take(&read(&hot, &[], now()));
+        }
+        assert!(held.is_empty(), "not yet seen in most readings");
+        held = watch.take(&read(&hot, &[], now()));
+        assert!(held.contains(&flag), "held once seen in {HELD_FROM}");
+        for _ in 0..WINDOW - CLEARED_AT - 1 {
+            held = watch.take(&read(&calm, &[], now()));
+        }
+        assert!(
+            held.contains(&flag),
+            "still held while seen in more than {CLEARED_AT}"
+        );
+        held = watch.take(&read(&calm, &[], now()));
+        assert!(held.is_empty(), "let go once seen in only {CLEARED_AT}");
+    }
+}
