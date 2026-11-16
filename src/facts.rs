@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::busy;
 use crate::declared::{self, Declared};
 use crate::disk::{self, Band};
 use crate::place;
@@ -129,13 +130,35 @@ pub enum Readiness {
 }
 
 /// A machine's processor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cpu {
     /// Its name, such as "Intel(R) Core(TM) Ultra X7 358H".
     pub model: Option<String>,
     /// How many it runs at once: the machine's, not what this process may
     /// use.
     pub cores: Option<u32>,
+    /// The share of the last few seconds its cores spent busy, 0 to 1, as
+    /// [`busy`](crate::busy) counts it; unknown from a node too old to say,
+    /// a system that doesn't count it, or before a stretch has passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy: Option<f64>,
+}
+
+/// The count processor use is measured from, kept between measures.
+static SAMPLER: std::sync::Mutex<Option<busy::Sampler>> = std::sync::Mutex::new(None);
+
+/// How busy this machine's processors were over the last stretch, where
+/// its system counts it.
+fn busy_now() -> Option<f64> {
+    let ticks = here::ticks()?;
+    // A measure that panicked holding the count left it whole, since a
+    // take writes it at once, so its count is still good to read on.
+    let mut sampler = SAMPLER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    sampler
+        .get_or_insert_with(busy::Sampler::default)
+        .take(std::time::Instant::now(), ticks)
 }
 
 /// A graphics or neural processor.
@@ -188,6 +211,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
             .as_ref()
             .and_then(|declared| declared.cores)
             .or(read.cpu.cores),
+        busy: busy_now(),
         ..read.cpu
     };
     let room = sources
@@ -302,6 +326,7 @@ mod here {
             cpu: Cpu {
                 model: linux::cpu_model(&cpuinfo),
                 cores: linux::cores(&cpuinfo),
+                busy: None,
             },
             memory: fs::read_to_string("/proc/meminfo")
                 .ok()
@@ -318,6 +343,11 @@ mod here {
     /// What it runs on now, as its power supplies say.
     pub(super) fn power() -> Option<Power> {
         supplies().and_then(|supplies| linux::power(&supplies))
+    }
+
+    /// What the kernel has counted of its cores' time.
+    pub(super) fn ticks() -> Option<crate::busy::Ticks> {
+        crate::busy::linux(&fs::read_to_string("/proc/stat").ok()?)
     }
 
     /// Each power supply the kernel lists, or none where it can't list
@@ -411,6 +441,12 @@ mod here {
         said("/usr/bin/pmset", &["-g", "batt"]).and_then(|said| macos::power(&said))
     }
 
+    /// Not counted yet: a Mac says it only through the Mach host's
+    /// processor info, which waits on its own change.
+    pub(super) fn ticks() -> Option<crate::busy::Ticks> {
+        None
+    }
+
     pub(super) fn read() -> Read {
         let sysctl = said(
             "/usr/sbin/sysctl",
@@ -431,6 +467,7 @@ mod here {
             cpu: Cpu {
                 model: value("machdep.cpu.brand_string"),
                 cores: value("hw.ncpu").and_then(|n| n.parse().ok()),
+                busy: None,
             },
             memory: value("hw.memsize").and_then(|n| n.parse().ok()),
             // A Mac's graphics and neural engines can't be listed without
@@ -452,6 +489,11 @@ mod here {
         None
     }
 
+    /// Nothing counts its cores' time.
+    pub(super) fn ticks() -> Option<crate::busy::Ticks> {
+        None
+    }
+
     pub(super) fn read() -> Read {
         Read {
             os: None,
@@ -460,6 +502,7 @@ mod here {
             cpu: Cpu {
                 model: None,
                 cores: None,
+                busy: None,
             },
             memory: None,
             accelerators: None,

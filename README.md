@@ -59,8 +59,9 @@ The harness mesh's messages and presence, carried between machines:
   sessions, the presences still saying they run with their process gone,
   and how long the node took to answer.
 - `mycelium balance` prints how evenly the realm's machines carry its
-  work as one JSON line: each machine's load (the larger of the memory
-  it uses and how long its work stalls), whether it is over or has room,
+  work as one JSON line: each machine's load (the largest of the memory
+  it uses, how busy its processors are and how long its work stalls),
+  whether it is over or has room,
   its busy and idle sessions, how far the loads spread, and flags for a
   machine over while another has room, one resource spent while the
   other idles, and facts too old to place by. `--follow` reads each

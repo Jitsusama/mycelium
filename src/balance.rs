@@ -3,12 +3,14 @@
 //! spread, and the flags that say placement went wrong, read from what
 //! every node already holds, so every node says the same.
 //!
-//! A machine's load is its dominant share, the larger of the memory it
-//! uses and how long its work stalls, each from 0 to 1, as Dominant
-//! Resource Fairness weighs a share. Processor use isn't among a machine's
-//! facts yet, so its processor counts by its pressure alone, which is zero
-//! until every core is busy; [`MEASURES`] names this definition, and a
-//! better one will be a new name, never this one changed.
+//! A machine's load is its dominant share, the largest of the memory it
+//! uses, the share of its processors it spends and how long its work
+//! stalls, each from 0 to 1, as Dominant Resource Fairness weighs a share.
+//! Its processors count by how busy its cores are where its node says so,
+//! and by pressure where that is more or the node doesn't say, since
+//! pressure is zero until every core is busy. [`MEASURES`] names this
+//! definition, `balance/2`; `balance/1` counted the processors by pressure
+//! alone, and a better one will be a new name, never this one changed.
 //!
 //! A reading flags, at once, a machine over while another has room (what
 //! placement exists to prevent), a machine stranded (one resource spent,
@@ -24,7 +26,7 @@ use crate::facts::{Machine, Readiness};
 use crate::record::{Session, State};
 
 /// The name of these measures' definitions, said in every reading.
-pub const MEASURES: &str = "balance/1";
+pub const MEASURES: &str = "balance/2";
 
 /// Processor pressure, in percent, at which a machine is over: the
 /// harness queue's own line, past which it starts no build beside a VM
@@ -37,6 +39,10 @@ pub const OVER_MEMORY_PRESSURE: f64 = 10.0;
 
 /// The most a machine with room may stall, 0 to 1.
 pub const ROOM_STALL: f64 = 0.25;
+
+/// The most of its processors a machine with room may spend, 0 to 1: a
+/// quarter of its cores free.
+pub const ROOM_PROCESSOR: f64 = 0.75;
 
 /// The most memory a machine with room may use, 0 to 1.
 pub const ROOM_MEMORY: f64 = 0.8;
@@ -105,7 +111,13 @@ pub struct Load {
     /// memory pressure over the queue's line, whichever is more.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stall: Option<f64>,
-    /// Its dominant share: the larger of `memory` and `stall`.
+    /// How much of its processors are spent, 0 to 1: the more of its
+    /// cores' use and its processor pressure over 100, or pressure alone
+    /// where its node doesn't say its use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processor: Option<f64>,
+    /// Its dominant share: the largest of `memory`, `processor` and
+    /// `stall`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load: Option<f64>,
     /// Whether it is over: its queue says it is past a limit, or its
@@ -215,16 +227,21 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
             .max(room.pressure.memory / OVER_MEMORY_PRESSURE)
             .clamp(0.0, 1.0)
     });
-    let load = match (memory, stall) {
-        (Some(memory), Some(stall)) => Some(memory.max(stall)),
-        (one, other) => one.or(other),
-    };
+    let processor = room.map(|room| {
+        let pressed = (room.pressure.cpu / 100.0).clamp(0.0, 1.0);
+        machine.cpu.busy.map_or(pressed, |busy| busy.max(pressed))
+    });
+    let load = [memory, processor, stall]
+        .into_iter()
+        .flatten()
+        .reduce(f64::max);
     let over = room.is_some_and(|room| {
         room.over.as_ref().is_some_and(|over| !over.is_empty())
             || room.pressure.cpu >= OVER_CPU_PRESSURE
     });
     let has_room = !over
         && stall.is_some_and(|stall| stall < ROOM_STALL)
+        && processor.is_some_and(|processor| processor < ROOM_PROCESSOR)
         && memory.is_some_and(|memory| memory < ROOM_MEMORY);
     let count = |state: State| {
         sessions
@@ -249,6 +266,7 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
         ready: machine.state == Readiness::Ready,
         memory,
         stall,
+        processor,
         load,
         over,
         room: has_room,
@@ -269,7 +287,7 @@ fn stranded(one: &Load, machines: &[Machine]) -> Option<&'static str> {
         .map(|room| room.pressure.cpu)?;
     if cpu >= OVER_CPU_PRESSURE && memory < STRANDED_MEMORY {
         Some("processor")
-    } else if memory >= FULL_MEMORY && cpu / 100.0 < ROOM_STALL {
+    } else if memory >= FULL_MEMORY && one.processor.unwrap_or(cpu / 100.0) < ROOM_STALL {
         Some("memory")
     } else {
         None
@@ -348,6 +366,9 @@ mod tests {
         let mut machine = facts::measure(name, &nowhere);
         machine.state = Readiness::Ready;
         machine.cpu.cores = Some(cores);
+        // As this machine's own cores are, never: a test reads the same
+        // wherever it runs.
+        machine.cpu.busy = None;
         machine.memory = Some(gib << 30);
         machine.measured_at = (now() - jiff::SignedDuration::from_secs(age)).to_string();
         machine.room = Some(Room {
@@ -457,6 +478,32 @@ mod tests {
         assert!(
             read(&wide, &[], now()).flags.contains(&Flag::Imbalanced),
             "0.9 against 0.06 is out of balance"
+        );
+    }
+
+    #[test]
+    fn cores_busy_but_not_waited_on_are_a_load() {
+        // Pressure stays near zero until every core is busy, so a
+        // machine nine tenths busy read as idle under balance/1.
+        let mut kestrel = machine("kestrel", 16, 64, 60, 2.0, 0);
+        kestrel.cpu.busy = Some(0.9);
+        let mut skiff = machine("skiff", 12, 48, 44, 40.0, 0);
+        skiff.cpu.busy = Some(0.1);
+        let reading = read(&[kestrel, skiff], &[], now());
+        let kestrel = of(&reading, "kestrel");
+        assert_eq!(kestrel.processor, Some(0.9), "its cores' use");
+        assert_eq!(kestrel.load, Some(0.9), "the processor dominates");
+        assert!(!kestrel.room, "nine tenths busy has no room");
+        assert_eq!(
+            of(&reading, "skiff").processor,
+            Some(0.4),
+            "pressure past its use still counts"
+        );
+        let unsaid = machine("kestrel", 16, 64, 60, 30.0, 0);
+        assert_eq!(
+            of(&read(&[unsaid], &[], now()), "kestrel").processor,
+            Some(0.3),
+            "a node not saying its use counts by pressure"
         );
     }
 
