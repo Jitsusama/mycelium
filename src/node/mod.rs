@@ -2192,6 +2192,9 @@ impl<S: Store> Shared<S> {
     /// let go.
     fn place(&self, work: &Work, start: bool) -> Placement {
         let machines = self.machines();
+        // This machine is measured first, so work asked on a worker stays
+        // there unless it names another.
+        let work = &placement::asked_on(work, &machines[0], &machines);
         let now = jiff::Timestamp::now();
         let (loads, decision) = {
             let mut inner = self.lock();
@@ -3026,7 +3029,7 @@ impl<S: Store> Shared<S> {
     /// once it links.
     async fn start_on_made(&self, asked: Start, misses: &[Miss]) -> Reply {
         let offers = self.offers().await;
-        let offer = placement::to_make(&asked.work, &offers.offers)
+        let offer = placement::to_make(&asked.work, &offers.offers, &self.machines())
             .map_err(|offered| nothing_offered(misses, &offered, &offers.unanswered))?
             .clone();
         self.start_made_of(asked, &offer).await
@@ -3043,11 +3046,12 @@ impl<S: Store> Shared<S> {
             .filter(|offer| offer.costs.free())
             .cloned()
             .collect();
-        if let Ok(offer) = placement::to_make(&asked.work, &free) {
+        let machines = self.machines();
+        if let Ok(offer) = placement::to_make(&asked.work, &free, &machines) {
             let offer = offer.clone();
             return self.start_made_of(asked, &offer).await;
         }
-        match placement::to_make(&asked.work, &offers) {
+        match placement::to_make(&asked.work, &offers, &machines) {
             Ok(costs) => Err(format!(
                 "{nowhere}; and {} from {} would, but costs {} {} an hour, so say it may cost",
                 costs.shape, costs.provider, costs.costs.hourly, costs.costs.currency
