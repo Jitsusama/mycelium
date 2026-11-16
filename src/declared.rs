@@ -252,34 +252,105 @@ pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String
     Ok(runs)
 }
 
-/// Whether no account but `declarers` can change `file`: it is in the Nix
-/// store, or it and each folder above it belongs to one of them and lets
-/// no other write, but for a sticky folder, where nobody else may move
-/// what isn't theirs.
+/// What a node says as it starts: the file it reads this machine's
+/// declaration from, and how each fence's agents run here, so a changed
+/// file or launcher shows in its journal as well as in a restart.
+#[must_use]
+pub fn said_at_start(file: &Path, declarers: &[u32]) -> String {
+    let runs = [Kind::Fence, Kind::Strict].map(|kind| match launcher(file, kind, declarers) {
+        Ok(runs) => format!("{kind} agents run through {}", runs.join(" ")),
+        Err(why) => format!("{kind} agents run nothing: {why}"),
+    });
+    format!(
+        "reads what this machine declares from {}; {}",
+        file.display(),
+        runs.join("; ")
+    )
+}
+
+/// How many links a path may pass through before it is taken as a loop,
+/// as Linux counts them.
+const HOPS: usize = 40;
+
+/// Whether no account but `declarers` can change what `file` names. The
+/// path is walked as given, link by link, since a link is only as sealed as
+/// what holds it: one an agent may repoint seals nothing, even where it
+/// points into the store. Each folder on the way down from the root and
+/// each link passed through belongs to one of them and lets no other
+/// write, but for a sticky folder, where nobody else may move what isn't
+/// theirs. Within the Nix store nothing changes, so nothing there is asked.
 fn sealed(file: &Path, declarers: &[u32]) -> Result<(), String> {
+    let given = std::path::absolute(file).map_err(|error| format!("it isn't there: {error}"))?;
+    let mut at = PathBuf::from("/");
+    trusted(
+        &at,
+        &fs::symlink_metadata(&at).map_err(|e| e.to_string())?,
+        declarers,
+    )?;
+    let mut ahead = parts(&given);
+    let mut hops = 0;
+    while let Some(part) = ahead.pop() {
+        if part == ".." {
+            at.pop();
+            continue;
+        }
+        let next = at.join(&part);
+        let said = fs::symlink_metadata(&next)
+            .map_err(|error| format!("{} can't be looked at: {error}", next.display()))?;
+        if !(next.starts_with(STORE) && next != Path::new(STORE)) {
+            trusted(&next, &said, declarers)?;
+        }
+        if said.file_type().is_symlink() {
+            hops += 1;
+            if hops > HOPS {
+                return Err(format!("it passes through more than {HOPS} links"));
+            }
+            let target = fs::read_link(&next)
+                .map_err(|error| format!("{} can't be read: {error}", next.display()))?;
+            if target.is_absolute() {
+                at = PathBuf::from("/");
+            }
+            ahead.extend(parts(&target));
+        } else {
+            at = next;
+        }
+    }
+    Ok(())
+}
+
+/// The names `path` walks through, last first, so the next is popped.
+fn parts(path: &Path) -> Vec<std::ffi::OsString> {
+    use std::path::Component;
+
+    path.components()
+        .rev()
+        .filter_map(|part| match part {
+            Component::Normal(name) => Some(name.to_owned()),
+            Component::ParentDir => Some("..".into()),
+            Component::RootDir | Component::CurDir | Component::Prefix(_) => None,
+        })
+        .collect()
+}
+
+/// Whether `entry`, as `said` describes it, belongs to one of `declarers`
+/// and lets no other write it. A link's own mode is never used, so only
+/// its owner is asked.
+fn trusted(entry: &Path, said: &fs::Metadata, declarers: &[u32]) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
 
-    let found = fs::canonicalize(file).map_err(|error| format!("it isn't there: {error}"))?;
-    if found.starts_with(STORE) {
-        return Ok(());
+    if !declarers.contains(&said.uid()) {
+        return Err(format!(
+            "{} belongs to account {}, which isn't trusted to declare it",
+            entry.display(),
+            said.uid()
+        ));
     }
-    for entry in found.ancestors() {
-        let said = fs::metadata(entry)
-            .map_err(|error| format!("{} can't be looked at: {error}", entry.display()))?;
-        if !declarers.contains(&said.uid()) {
-            return Err(format!(
-                "{} belongs to account {}, which isn't trusted to declare it",
-                entry.display(),
-                said.uid()
-            ));
-        }
-        let sticky = said.is_dir() && said.mode() & 0o1000 != 0;
-        if said.mode() & 0o022 != 0 && !sticky {
-            return Err(format!(
-                "{} may be written by others than its owner",
-                entry.display()
-            ));
-        }
+    let sticky = said.is_dir() && said.mode() & 0o1000 != 0;
+    if !said.file_type().is_symlink() && said.mode() & 0o022 != 0 && !sticky {
+        return Err(format!(
+            "{} may be written by others than its owner",
+            entry.display()
+        ));
     }
     Ok(())
 }
@@ -312,6 +383,36 @@ mod tests {
                                   "runs": runs}}
         });
         fs::write(file, declared.to_string()).expect("the configuration is written");
+    }
+
+    #[test]
+    fn a_node_says_as_it_starts_where_it_reads_and_how_each_fence_runs() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        let env = stored("env");
+        let env = env.to_str().expect("a path in words");
+        runs_through(&file, &[env, "FENCED=1"]);
+        assert_eq!(
+            said_at_start(&file, &declarers()),
+            format!(
+                "reads what this machine declares from {}; fenced agents run nothing: this \
+                 machine declares no way to run a command as its fenced sessions run; \
+                 strictly fenced agents run through {env} FENCED=1",
+                file.display()
+            )
+        );
+        let own = rustix::process::getuid().as_raw();
+        let refused = said_at_start(&file, &[0, 65534]);
+        assert!(
+            refused.contains(&format!(
+                "; strictly fenced agents run nothing: what {} declares can't say how a \
+                 strictly fenced command runs: ",
+                file.display()
+            )) && refused.ends_with(&format!(
+                "belongs to account {own}, which isn't trusted to declare it"
+            )),
+            "and why one runs nothing: {refused}"
+        );
     }
 
     #[test]
@@ -353,6 +454,59 @@ mod tests {
                 .as_ref()
                 .is_err_and(|why| why.ends_with("may be written by others than its owner")),
             "a file in a folder others write says nothing: {refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_link_another_account_may_repoint_seals_nothing_even_into_the_store() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let in_store = fs::canonicalize(stored("env")).expect("the store holds it");
+        let link = folder.path().join("declared.json");
+        std::os::unix::fs::symlink(&in_store, &link).expect("the link is made");
+        let own = rustix::process::getuid().as_raw();
+        let refused = sealed(&link, &[0, 65534]);
+        assert!(
+            refused.as_ref().is_err_and(|why| why.ends_with(&format!(
+                "belongs to account {own}, which isn't trusted to declare it"
+            ))),
+            "a store file reached through a folder the agents' account owns says nothing: \
+             {refused:?}"
+        );
+        assert_eq!(
+            sealed(&link, &declarers()),
+            Ok(()),
+            "the same link where only trusted accounts write says it"
+        );
+        assert_eq!(
+            sealed(&in_store, &[0, 65534]),
+            Ok(()),
+            "a store file named as itself says it"
+        );
+    }
+
+    #[test]
+    fn every_hop_of_a_link_is_sealed_not_only_its_end() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let shared = folder.path().join("shared");
+        fs::create_dir(&shared).expect("a folder is made");
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o775)).expect("it is shared");
+        let in_store = fs::canonicalize(stored("env")).expect("the store holds it");
+        let middle = shared.join("middle");
+        std::os::unix::fs::symlink(&in_store, &middle).expect("the middle link is made");
+        let link = folder.path().join("declared.json");
+        std::os::unix::fs::symlink("shared/middle", &link).expect("the first link is made");
+        let refused = sealed(&link, &declarers());
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.ends_with("may be written by others than its owner")),
+            "a link through a folder others write says nothing: {refused:?}"
+        );
+        let looping = folder.path().join("looping");
+        std::os::unix::fs::symlink("looping", &looping).expect("the loop is made");
+        assert!(
+            sealed(&looping, &declarers()).is_err(),
+            "a link to itself says nothing"
         );
     }
 

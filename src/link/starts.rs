@@ -51,6 +51,9 @@ pub struct Starting {
     /// None for a link another machine dialled, which watches it over the
     /// node's socket instead.
     pub health: Option<crate::own_health::Told>,
+    /// What this machine's configuration declares, as its node reads it,
+    /// which the link says in this machine's facts.
+    pub declared: PathBuf,
 }
 
 /// How a link carries what this machine's node asks of the other machine.
