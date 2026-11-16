@@ -140,3 +140,23 @@ fn counts_that_cant_be_are_refused() {
     assert!(!said.status.success(), "more addressed than came in");
     assert!(!dir.path().join("receptors").join("slack.json").exists());
 }
+
+#[test]
+fn a_process_that_isnt_running_is_refused() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let mut ended = Command::new(env!("CARGO_BIN_EXE_mycelium"))
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("mycelium runs");
+    ended.wait().expect("it ended");
+    let pid = ended.id().to_string();
+    let said = say(
+        dir.path(),
+        &[
+            "slack", "--state", "quiet", "--every", "300", "--pid", &pid,
+        ],
+    );
+    assert!(!said.status.success(), "a process gone can't keep it");
+    assert!(!dir.path().join("receptors").join("slack.json").exists());
+}

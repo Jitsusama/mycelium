@@ -60,8 +60,8 @@ pub enum Source {
     Calendar,
     /// What a call leaves behind: its transcript and summary.
     Calls,
-    /// Vault: reviews and mentions asked of its person.
-    Vault,
+    /// Reviews and proposals asked of its person.
+    Reviews,
     /// GitHub: reviews asked of and mentions of its person.
     Github,
     /// Instant messages to its person.
@@ -75,7 +75,7 @@ impl Source {
         Self::Mail,
         Self::Calendar,
         Self::Calls,
-        Self::Vault,
+        Self::Reviews,
         Self::Github,
         Self::Messages,
     ];
@@ -88,7 +88,7 @@ impl Source {
             Self::Mail => "mail",
             Self::Calendar => "calendar",
             Self::Calls => "calls",
-            Self::Vault => "vault",
+            Self::Reviews => "reviews",
             Self::Github => "github",
             Self::Messages => "messages",
         }
@@ -102,7 +102,7 @@ impl Source {
             Self::Mail => "Mail",
             Self::Calendar => "Calendar",
             Self::Calls => "Calls",
-            Self::Vault => "Vault",
+            Self::Reviews => "Reviews",
             Self::Github => "GitHub",
             Self::Messages => "Messages",
         }
@@ -199,9 +199,15 @@ fn refused(why: impl Into<String>) -> io::Error {
 /// # Errors
 ///
 /// When the record is of another realm, reads more often than it could
-/// or less than daily, counts more addressed than it has, or the file
-/// can't be written.
-pub fn write(folder: &Path, realm: &str, mut record: Record) -> io::Result<PathBuf> {
+/// or less than daily, counts more addressed than it has, names a process
+/// `living` says isn't running, or the file can't be written.
+pub fn write(
+    folder: &Path,
+    realm: &str,
+    mut record: Record,
+    living: &impl Living,
+) -> io::Result<PathBuf> {
+    let _ = living;
     if record.realm != realm {
         return Err(refused(format!(
             "a receptor of realm {:?} can't be written in realm {realm:?}",
@@ -425,6 +431,28 @@ mod tests {
         text.parse().expect("a time")
     }
 
+    /// `record` written as one whose process lives.
+    fn write(folder: &Path, realm: &str, record: Record) -> io::Result<PathBuf> {
+        super::write(folder, realm, record, &Lives(true))
+    }
+
+    /// What `folder` holds for the work realm, judged in a thread of its
+    /// own, or none where that doesn't end within a few seconds.
+    fn judged_soon(folder: &Path) -> Option<BTreeMap<Source, Record>> {
+        let (done, ended) = std::sync::mpsc::channel();
+        let folder = folder.to_owned();
+        std::thread::spawn(move || {
+            // Nothing hears this once the test has given up waiting.
+            let _ = done.send(judged(
+                &folder,
+                "work",
+                at("2026-11-15T19:11:00Z"),
+                &Lives(true),
+            ));
+        });
+        ended.recv_timeout(Duration::from_secs(5)).ok()
+    }
+
     fn slack() -> Record {
         Record {
             source: Source::Slack,
@@ -466,7 +494,7 @@ mod tests {
         let mut planted: Value =
             serde_json::from_slice(&fs::read(folder.join("slack.json")).expect("read"))
                 .expect("json");
-        planted["channel"] = "C0CGANYCGVA".into();
+        planted["channel"] = "#kestrel-talk".into();
         fs::write(folder.join("slack.json"), planted.to_string()).expect("planted");
         assert!(
             judged(&folder, "work", at("2026-11-15T19:11:00Z"), &Lives(true)).is_empty(),
@@ -486,7 +514,7 @@ mod tests {
         let state = tempfile::tempdir().expect("a folder");
         let folder = folder(state.path());
         fs::create_dir_all(&folder).expect("made");
-        for (field, word) in [("source", "C0CGANYCGVA"), ("state", "from Tobi")] {
+        for (field, word) in [("source", "#kestrel-talk"), ("state", "from Skiff")] {
             let mut bad = serde_json::to_value(slack()).expect("json");
             bad[field] = word.into();
             fs::write(folder.join("slack.json"), bad.to_string()).expect("planted");
@@ -558,6 +586,111 @@ mod tests {
             write(&folder, "work", rarely).is_err(),
             "a round past a day"
         );
+    }
+
+    #[test]
+    fn counts_that_cant_be_and_rounds_out_of_reach_are_dropped_as_read() {
+        let state = tempfile::tempdir().expect("a folder");
+        let folder = folder(state.path());
+        fs::create_dir_all(&folder).expect("made");
+        for (field, value) in [
+            ("/counts/addressed", 9),
+            ("/counts/hour", 9),
+            ("/every", 0),
+            ("/every", LONGEST_ROUND_SECS + 1),
+        ] {
+            let mut bad = serde_json::to_value(slack()).expect("json");
+            *bad.pointer_mut(field).expect("a field") = value.into();
+            fs::write(folder.join("slack.json"), bad.to_string()).expect("planted");
+            assert!(
+                judged(&folder, "work", at("2026-11-15T19:11:00Z"), &Lives(true)).is_empty(),
+                "{field} {value} drops it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_process_that_isnt_running_is_refused_as_written() {
+        let state = tempfile::tempdir().expect("a folder");
+        let folder = folder(state.path());
+        let refused = super::write(&folder, "work", slack(), &Lives(false)).expect_err("refused");
+        assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
+        assert!(!file(&folder, Source::Slack).exists(), "nothing was written");
+    }
+
+    #[test]
+    fn a_file_linked_from_elsewhere_is_dropped() {
+        let state = tempfile::tempdir().expect("a folder");
+        let folder = folder(state.path());
+        let elsewhere = state.path().join("elsewhere.json");
+        fs::create_dir_all(&folder).expect("made");
+        fs::write(&elsewhere, serde_json::to_vec(&slack()).expect("json")).expect("written");
+        std::os::unix::fs::symlink(&elsewhere, folder.join("slack.json")).expect("linked");
+        assert_eq!(judged_soon(&folder), Some(BTreeMap::new()));
+    }
+
+    #[test]
+    fn a_pipe_is_dropped_without_waiting_on_it() {
+        let state = tempfile::tempdir().expect("a folder");
+        let folder = folder(state.path());
+        fs::create_dir_all(&folder).expect("made");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            folder.join("slack.json"),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .expect("a pipe");
+        assert_eq!(
+            judged_soon(&folder),
+            Some(BTreeMap::new()),
+            "judged at once, and without it"
+        );
+    }
+
+    #[test]
+    fn a_file_larger_than_a_record_could_be_is_dropped() {
+        let state = tempfile::tempdir().expect("a folder");
+        let folder = folder(state.path());
+        fs::create_dir_all(&folder).expect("made");
+        let mut text = serde_json::to_vec(&slack()).expect("json");
+        text.resize(8192, b' ');
+        fs::write(folder.join("slack.json"), text).expect("written");
+        assert_eq!(judged_soon(&folder), Some(BTreeMap::new()));
+    }
+
+    #[test]
+    fn a_staged_name_linked_elsewhere_isnt_written_through() {
+        let state = tempfile::tempdir().expect("a folder");
+        let folder = folder(state.path());
+        let elsewhere = state.path().join("elsewhere");
+        fs::create_dir_all(&folder).expect("made");
+        fs::write(&elsewhere, "kept").expect("written");
+        let staged = folder.join(format!(".slack.{}", std::process::id()));
+        std::os::unix::fs::symlink(&elsewhere, &staged).expect("linked");
+        write(&folder, "work", slack()).expect("written");
+        assert_eq!(fs::read_to_string(&elsewhere).expect("read"), "kept");
+        assert!(!staged.exists(), "nothing staged is left behind");
+    }
+
+    #[test]
+    fn a_folder_linked_from_elsewhere_is_refused_and_left_unread() {
+        let state = tempfile::tempdir().expect("a folder");
+        let elsewhere = state.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).expect("made");
+        fs::set_permissions(&elsewhere, fs::Permissions::from_mode(0o755)).expect("opened");
+        fs::write(
+            elsewhere.join("slack.json"),
+            serde_json::to_vec(&slack()).expect("json"),
+        )
+        .expect("written");
+        let folder = folder(state.path());
+        std::os::unix::fs::symlink(&elsewhere, &folder).expect("linked");
+        assert!(write(&folder, "work", slack()).is_err(), "refused");
+        let mode = fs::metadata(&elsewhere).expect("there").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "its mode is left as it was");
+        assert_eq!(judged_soon(&folder), Some(BTreeMap::new()));
     }
 
     #[test]

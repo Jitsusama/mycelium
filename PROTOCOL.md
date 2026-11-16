@@ -1159,7 +1159,7 @@ and times alone, never what was read:
 
 | Field | What it is |
 | --- | --- |
-| `source` | `slack`, `mail`, `calendar`, `calls`, `vault`, `github` or `messages` |
+| `source` | `slack`, `mail`, `calendar`, `calls`, `reviews`, `github` or `messages` |
 | `realm` | the realm it senses for, which must be the node's |
 | `state` | `reading`, `quiet`, `failing` or `off` |
 | `since` | when the process keeping it began saying so |
@@ -1172,7 +1172,16 @@ The record is an allow-list: a file holding any other field, a word
 outside those listed, or a name that isn't its source's is malformed,
 and the node leaves it out, as it does a file of another realm. So a
 channel's name or a mail's subject can't reach the map by any field. No
-count may pass `today`.
+count may pass `today`, and these bounds hold as a file is read as well
+as written. A pid that isn't running is refused as it is written, so a
+pid used again later can't read as the receptor alive.
+
+The node reads only a regular file of at most 4 KiB, never following a
+link and never waiting on a pipe, and reads each off its runtime, so
+nothing planted in the folder can stall it. A receptors folder that is
+a link is refused as it is written and left unread, and a dot-file
+already standing where one is staged is removed rather than written
+through.
 
 The node judges each file rather than believing it, as it reads each
 change to the folder and every 30 seconds besides: a receptor whose

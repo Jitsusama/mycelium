@@ -846,7 +846,7 @@ fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
         },
     };
     let folder = receptor::folder(&said.state_folder.unwrap_or_else(place::state));
-    let written = receptor::write(&folder, &record.realm.clone(), record)?;
+    let written = receptor::write(&folder, &record.realm.clone(), record, &receptor::Here)?;
     writeln!(io::stdout().lock(), "{}", written.display())
 }
 
