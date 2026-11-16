@@ -343,14 +343,20 @@ mod tests {
         let mut resting = machine("osprey", 0.6, 0, 0.0);
         resting.ready = false;
         let shown = said(
-            &reading(vec![machine("kestrel", 0.9, 28, 1.75), resting], None, vec![]),
+            &reading(
+                vec![machine("kestrel", 0.9, 28, 1.75), resting],
+                None,
+                vec![],
+            ),
             "work",
             100,
             false,
         );
         assert!(shown.starts_with("work · 2 machines, 1 ready\n"), "{shown}");
         assert!(
-            shown.lines().any(|line| line.starts_with("  osprey   not ready")),
+            shown
+                .lines()
+                .any(|line| line.starts_with("  osprey   not ready")),
             "{shown}"
         );
     }
