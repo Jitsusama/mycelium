@@ -1146,13 +1146,13 @@ fn checked(realms: Vec<String>) -> io::Result<BTreeSet<String>> {
 /// Runs this machine's node on `socket`, as `node` says, until it is asked
 /// to stop.
 fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
-    let mut here = node.here;
     // The node names its machine for every command there: what it was
     // given, else the system's, recorded once its realm is settled.
-    let machine = place::node_machine(here.machine.as_deref())?;
-    here.machine = Some(machine.clone());
+    let machine = place::node_machine(node.here.machine.as_deref())?;
     let (dials, serves) = (node.dials(), node.serves(&machine)?);
     let providers = node.providers;
+    let mut here = node.here;
+    here.machine = Some(machine);
     let state = here.state.clone().unwrap_or_else(place::state);
     let (refused, book) = (state.join("refused"), state.join("made.jsonl"));
     let steers = here.steer.clone().unwrap_or_else(place::steer);
