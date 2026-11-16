@@ -51,6 +51,9 @@ pub fn linux(stat: &str) -> Option<Ticks> {
     })
 }
 
+/// How finely use is said: in hundredths.
+const HUNDREDTHS: f64 = 100.0;
+
 /// How many of the first line's counts say where time went; those after
 /// are guest time, counted again.
 const COUNTED: usize = 8;
@@ -87,7 +90,9 @@ impl Sampler {
                 reason = "a few seconds of ticks is far under 2^52"
             )]
             let share = busy as f64 / total as f64;
-            self.said = Some(share);
+            // To the hundredth, so a machine's record changes only when
+            // its use does, not at every measure.
+            self.said = Some((share * HUNDREDTHS).round() / HUNDREDTHS);
         }
         self.said
     }
@@ -154,6 +159,25 @@ mod tests {
             sampler.take(start + WINDOW * 2, at(1400, 3000)),
             Some(1.0),
             "all 1000 ticks since the last stretch's count busy"
+        );
+    }
+
+    #[test]
+    fn use_is_said_to_the_hundredth() {
+        // Said finer, a machine's record would differ at every measure,
+        // and every watcher would hear a change that moves nothing.
+        let start = Instant::now();
+        let mut sampler = Sampler::default();
+        sampler.take(start, at(0, 0));
+        assert_eq!(
+            sampler.take(start + WINDOW, at(1, 3)),
+            Some(0.33),
+            "a third, to the hundredth"
+        );
+        assert_eq!(
+            sampler.take(start + WINDOW * 2, at(1678, 3003)),
+            Some(0.56),
+            "1677 of 3000 rounds up"
         );
     }
 
