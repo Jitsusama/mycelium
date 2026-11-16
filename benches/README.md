@@ -33,7 +33,8 @@ nix develop -c cargo bench --bench unanswered -- --cells 1000,10000
 - `watched.rs`: what a watch of sessions sends when a launcher opens
   after a while shut, at thousands of cells: the bytes of the changes it
   held back and how long finding them takes for one watch and for many,
-  said whole and asked deep on each session's presence.
+  said whole and asked deep on each session's presence; then a list of
+  a few fields of every session, each cut down from its bytes.
 
 ```sh
 nix develop -c cargo bench --bench watched -- --cells 1000,10000 --watchers 1,50
