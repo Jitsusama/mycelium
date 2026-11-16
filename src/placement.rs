@@ -266,7 +266,14 @@ pub fn headroom(machine: &Machine, load: Load, rather_not: f64, heard: bool) -> 
     let cpu = room.map_or(0.0, |room| {
         let pressed = room.pressure.cpu / 100.0;
         let processor = machine.cpu.busy.map_or(pressed, |busy| busy.max(pressed));
-        (1.0 - processor).clamp(0.0, 1.0)
+        // A reading that isn't a number says nothing, so it counts as
+        // none: a NaN would rank by nothing and leave no machine near
+        // the best.
+        if processor.is_nan() {
+            0.0
+        } else {
+            (1.0 - processor).clamp(0.0, 1.0)
+        }
     });
     let memory = share(room.map(|room| room.memory_available), machine.memory);
     let disk = share(machine.disk_free, machine.disk);
@@ -1259,6 +1266,37 @@ mod tests {
             placed(&place(&needing(Vec::new()), &[busy, pressed_quiet])),
             Some("kestrel"),
             "a machine saying no use but waiting on every core has none to spare"
+        );
+    }
+
+    #[test]
+    fn a_processor_reading_not_a_number_counts_as_unknown() {
+        // A share that isn't a number would be kept as null in the
+        // placements log and never read back, and would rank by nothing.
+        let mut odd = machine("kestrel", "linux", 32, &[]);
+        odd.cpu.busy = Some(f64::NAN);
+        let mut pressed_odd = pressed(machine("skiff", "linux", 32, &[]), f64::NAN);
+        pressed_odd.cpu.busy = None;
+        let unknown = pressed(machine("tern", "linux", 32, &[]), f64::INFINITY);
+        let decision = decide_at(
+            &needing(Vec::new()),
+            &[odd, pressed_odd, unknown],
+            &Loads::new(),
+            now(),
+            &mut first,
+        );
+        assert!(
+            decision
+                .judged
+                .iter()
+                .all(|judged| judged.headroom.is_finite()),
+            "every headroom a number: {:?}",
+            decision.judged
+        );
+        assert!(
+            placed(&decision.placement).is_some(),
+            "and the work still placed: {:?}",
+            decision.placement
         );
     }
 
