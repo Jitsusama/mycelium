@@ -277,22 +277,22 @@ pub fn handover(scratch: &Path, quest: &str, host: &str) -> PathBuf {
     scratch.join(quest).join("handover").join(short_host(host))
 }
 
+/// Why a carry stands refused when its session's refusal is there but
+/// can't be told as its own, said plainly rather than as the reader's
+/// error, path and all.
+pub const UNREADABLE_REFUSAL: &str = "its refusal couldn't be read";
+
 /// Why `session` refused a carry in `handover` since `since`, when it
-/// did.
-///
-/// # Errors
-///
-/// When a refusal there can't be read, since its session meant one.
-pub fn refused(
-    handover: &Path,
-    session: &str,
-    since: jiff::Timestamp,
-) -> Result<Option<String>, String> {
+/// did: [`UNREADABLE_REFUSAL`] when its refusal there can't be told as
+/// its own, since its session meant one.
+#[must_use]
+pub fn refused(handover: &Path, session: &str, since: jiff::Timestamp) -> Option<String> {
     refusal(
         &handover.join(format!("{session}{REFUSED}")),
         session,
         since,
     )
+    .unwrap_or_else(|_| Some(UNREADABLE_REFUSAL.to_owned()))
 }
 
 /// Whether `session` wrote its done file in `handover` since `since`, as
@@ -393,7 +393,8 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::{
-        failed_why, handover, left, mark_started, refusals, refused, short_host, unstarted,
+        UNREADABLE_REFUSAL, failed_why, handover, left, mark_started, refusals, refused,
+        short_host, unstarted,
     };
     use crate::carry::Refused;
 
@@ -564,7 +565,7 @@ mod tests {
                 refused(handover, "s-since", before),
                 left(handover, "s-done", before)
             ),
-            (Ok(None), false),
+            (None, false),
             "nothing written, nothing seen"
         );
         fs::write(
@@ -575,13 +576,23 @@ mod tests {
         write_done(handover, "s-done");
         assert_eq!(
             refused(handover, "s-since", before),
-            Ok(Some("it holds a lease".to_owned())),
+            Some("it holds a lease".to_owned()),
             "its refusal since"
         );
         assert_eq!(
             refused(handover, "s-done", before),
-            Ok(None),
+            None,
             "another's refusal isn't its"
+        );
+        fs::write(
+            handover.join("s-odd.refused.json"),
+            r#"{"session": "s-since", "why": "a lease", "at": "2026-11-15T16:00:02Z"}"#,
+        )
+        .expect("another's name");
+        assert_eq!(
+            refused(handover, "s-odd", before).as_deref(),
+            Some(UNREADABLE_REFUSAL),
+            "one that can't be told as its own says so plainly, with no path"
         );
         assert!(left(handover, "s-done", before), "its done file since");
         assert!(
@@ -594,7 +605,7 @@ mod tests {
                 refused(handover, "s-since", later),
                 left(handover, "s-done", later)
             ),
-            (Ok(None), false),
+            (None, false),
             "neither counts for a carry ordered after"
         );
     }
