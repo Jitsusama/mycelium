@@ -365,6 +365,7 @@ mod tests {
             placements: None,
             health: None,
             scratch: None,
+            eases: None,
         };
         let membership = Realm {
             name: realm.to_owned(),

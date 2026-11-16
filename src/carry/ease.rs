@@ -81,10 +81,13 @@ pub struct Cell {
     pub alone: Option<bool>,
     /// Whether it is on the person's screen.
     pub on_screen: Option<bool>,
-    /// Whether it sleeps already.
+    /// Whether it sleeps already: parked, its process ended until it is
+    /// started again.
     pub asleep: bool,
     /// What it is part way through.
     pub busy: Option<Vec<Busy>>,
+    /// How much of it a carry takes, in bytes: its log's size.
+    pub size: Option<u64>,
 }
 
 impl Cell {
@@ -96,6 +99,9 @@ impl Cell {
         }
         match self.session.state {
             State::Idle => {}
+            // A session put to sleep has ended its process, to start
+            // again where a carry takes it.
+            State::Ended if self.asleep => {}
             State::Busy => return Some(format!("{who} is in a turn")),
             State::Ended | State::Unreachable => return Some(format!("{who} isn't running")),
         }
@@ -348,7 +354,9 @@ fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> V
 }
 
 /// The first of `cells` that may go to one of `peers`, placed as any work
-/// is and onto ground as firm, or why none may.
+/// is and onto ground as firm, or why none may. The smallest go first,
+/// since they take least to carry; those whose size can't be told go
+/// last.
 fn carried(
     here: &Here,
     cells: &[Cell],
@@ -366,8 +374,10 @@ fn carried(
         may_wait: false,
         lasts: Some(SignedDuration::MAX),
     };
+    let mut smallest_first: Vec<&Cell> = cells.iter().collect();
+    smallest_first.sort_by_key(|cell| cell.size.map_or((1, 0), |size| (0, size)));
     let mut why_not = Vec::new();
-    for cell in cells {
+    for cell in smallest_first {
         let who = &cell.session.address;
         if let Some(why) = cell.stays(here.name) {
             why_not.push(why);
@@ -429,7 +439,7 @@ fn why(here: &str, to: &str, reading: &Reading, history: &History) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::BTreeMap;
 
     use serde_json::json;
@@ -440,17 +450,17 @@ mod tests {
     use crate::facts::{self, Readiness, Sources};
     use crate::room::{Limit, Pressure, Room, Takes};
 
-    const NOW: &str = "2026-11-16T08:00:00Z";
+    pub(in crate::carry) const NOW: &str = "2026-11-16T08:00:00Z";
 
-    fn now() -> Timestamp {
+    pub(in crate::carry) fn now() -> Timestamp {
         NOW.parse().expect("a time")
     }
 
-    fn ago(mins: i64) -> Timestamp {
+    pub(in crate::carry) fn ago(mins: i64) -> Timestamp {
         now() - SignedDuration::from_mins(mins)
     }
 
-    fn declaring(kinds: &[Kind]) -> Declared {
+    pub(in crate::carry) fn declaring(kinds: &[Kind]) -> Declared {
         let open = Doors {
             builders: ["big".to_owned()].into(),
             forges: ["github".to_owned()].into(),
@@ -512,7 +522,7 @@ mod tests {
     }
 
     /// Skiff over, tern with room.
-    fn realm() -> Vec<Machine> {
+    pub(in crate::carry) fn realm() -> Vec<Machine> {
         vec![machine("skiff", 86.0), machine("tern", 4.6)]
     }
 
@@ -533,7 +543,7 @@ mod tests {
 
     /// A session of skiff's waiting, asleep, off the screen, part way
     /// through nothing, its quest only here.
-    fn cell(id: &str) -> Cell {
+    pub(in crate::carry) fn cell(id: &str) -> Cell {
         Cell {
             session: serde_json::from_value(json!({
                 "id": id, "address": id.to_uppercase(), "machine": "skiff",
@@ -545,6 +555,7 @@ mod tests {
             on_screen: Some(false),
             asleep: true,
             busy: Some(Vec::new()),
+            size: None,
         }
     }
 
@@ -722,6 +733,62 @@ mod tests {
             carries(&chose(&realm, &[with_turn(), cell("s2")], &history)),
             Some(("s2", "tern")),
             "one that stays leaves the next free to go"
+        );
+    }
+
+    #[test]
+    fn a_session_put_to_sleep_goes_though_its_process_has_ended() {
+        let realm = realm();
+        let history = hot_for(&realm, 11);
+        let parked = |id: &str| {
+            let mut one = cell(id);
+            one.session.state = State::Ended;
+            one
+        };
+        assert_eq!(
+            carries(&chose(&realm, &[parked("s1")], &history)),
+            Some(("s1", "tern")),
+            "a parked session is asleep, and goes"
+        );
+        let mut elsewhere = parked("s1");
+        elsewhere.alone = Some(false);
+        assert_eq!(
+            why_not(&chose(&realm, &[elsewhere], &history)),
+            "S1's quest runs on other machines too"
+        );
+        let mut ended = parked("s1");
+        ended.asleep = false;
+        assert_eq!(
+            why_not(&chose(&realm, &[ended], &history)),
+            "S1 isn't running",
+            "one ended without parking isn't asleep, and stays"
+        );
+    }
+
+    #[test]
+    fn the_smallest_session_to_carry_goes_first() {
+        let realm = realm();
+        let history = hot_for(&realm, 11);
+        let sized = |id: &str, size: Option<u64>| Cell { size, ..cell(id) };
+        let cells = [
+            sized("s1", None),
+            sized("s2", Some(900 << 10)),
+            sized("s3", Some(100 << 10)),
+        ];
+        assert_eq!(
+            carries(&chose(&realm, &cells, &history)),
+            Some(("s3", "tern")),
+            "the smallest record goes first, whatever order they came in"
+        );
+        assert_eq!(
+            carries(&chose(&realm, &cells[..2], &history)),
+            Some(("s2", "tern")),
+            "one whose size can't be told goes after those whose can"
+        );
+        assert_eq!(
+            carries(&chose(&realm, &cells[..1], &history)),
+            Some(("s1", "tern")),
+            "and goes when it is the only one"
         );
     }
 

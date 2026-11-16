@@ -72,6 +72,11 @@ The harness mesh's messages and presence, carried between machines:
   each minute, says the flags seen in most of the last ten, and keeps
   each reading as a JSON line in the state folder's `balance`, one file
   a day.
+- `mycelium node --eases` has the node say what its machine would do to
+  ease itself while over its limits and another has room: put its
+  waiting sessions to sleep, then carry one to a peer, each choice a
+  line in the state folder's `eases`, one file a day. It does none of
+  it yet; PROTOCOL.md says how it chooses.
 - `mycelium placements` judges in hindsight how well this node placed
   work over the last hour (`--hours` for more), from the placements it
   kept and the balance kept beside them, as one JSON line: each start
