@@ -2072,6 +2072,7 @@ pub(crate) mod tests {
         let kit = |tools: &[&str]| facts::Kit {
             path: "/nix/store/kit".to_owned(),
             tools: tools.iter().map(|&tool| tool.to_owned()).collect(),
+            refused: None,
         };
         let mut carrying = machine("kestrel", "linux", 8, &[]);
         // Out of order, as a record read from the wire may be.

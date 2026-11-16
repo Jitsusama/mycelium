@@ -548,8 +548,10 @@ struct Node {
     /// its path, put there after the person's login profile, and the
     /// machine record names them as `kit`. Unnamed, nothing is put
     /// first and the record says no kit. It goes first for agents too,
-    /// so it belongs where none can write, such as the Nix store or a
-    /// link the configuration keeps to it.
+    /// so it belongs where none can write, such as the Nix store: one an
+    /// account but root could change, or whose tools can't be listed, is
+    /// checked as the node starts and put on the path of nothing it
+    /// starts, and the node and its record say why.
     #[arg(long, value_parser = kit)]
     kit: Option<PathBuf>,
     /// A realm this realm's text may cross into, one way, where a session
@@ -1632,7 +1634,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let (store, membership, shares) = open(here, realm)?;
     place::record_machine(&state, &membership.machine)?;
     let scratch = Some(shares.scratch.clone());
-    let given = node::Given {
+    let mut given = node::Given {
         sharing: Some(shares),
         refusals: Refusals::kept_in(refused),
         steers,
@@ -1646,7 +1648,8 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
             } else {
                 Scope::None
             },
-            kit,
+            // Checked below, against the declarers its runs trust.
+            kit: None,
         }),
         awake: Awake::here(),
         updater: place::updater(),
@@ -1684,15 +1687,13 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         "mycelium: {}",
         mycelium::declared::said_at_start(&declared, &given.runs.declarers)
     );
-    if let Some(kit) = given
-        .starter
-        .as_ref()
-        .and_then(|starter| starter.kit.as_deref())
-    {
+    if let (Some(kit), Some(starter)) = (kit, given.starter.as_mut()) {
+        let checked = mycelium::declared::kit_checked(&kit, &given.runs.declarers);
         tell!(
             "mycelium: {}",
-            mycelium::declared::kit_said_at_start(kit, &given.runs.declarers)
+            mycelium::declared::kit_said_at_start(&checked)
         );
+        starter.kit = Some(checked);
     }
     let runtime = runtime()?;
     let ran = runtime.block_on(async {

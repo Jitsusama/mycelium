@@ -18,6 +18,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use crate::client::Client;
 use crate::hold::end::Asker;
+use crate::hold::start::Kit;
 use crate::link::dial::{Dial, Ssh};
 use crate::placement::Need;
 use crate::share::exchange::Places;
@@ -62,7 +63,7 @@ pub struct Starting {
     /// The realm's kit as the node was given it, which the link names in
     /// this machine's facts beside what it declares; read only with
     /// `declared`, since a dialled link asks the node for both.
-    pub kit: Option<PathBuf>,
+    pub kit: Option<Kit>,
 }
 
 /// How a link carries what this machine's node asks of the other machine.

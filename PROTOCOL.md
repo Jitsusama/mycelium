@@ -1010,22 +1010,31 @@ run the node starts finds first on its path. It carries `path`, where
 the folder is with any link to it resolved, which names its version
 where it is in the Nix store, and `tools`, the name of each entry in
 its `bin`, leaving out any beginning with a dot, in an order nothing
-should lean on. It is absent where the node is given no kit, its `bin`
-can't be listed, or the node is too old to say, and absent reads as
+should lean on. Where the node refuses the kit it carries `refused`,
+why, with `path` the folder as it was given and `tools` empty, so a
+node too old to read why still finds no tool there. It is absent where
+the node is given no kit or is too old to say, and absent reads as
 unknown. Both the node a machine dialled and the links it keeps say it.
 
 A kit is a whole path holding no colon, which the node refuses
 otherwise. Its tools come first for every session and run, an agent's
 fenced ones too, so it belongs where no agent can write, such as the
-Nix store or a link only root can repoint; the node says at its start
-what the kit holds, and where an account but root could change its
-`bin` or any tool in it, or where a tool leads. It says so rather than
-refusing the kit, since the configuration that names the kit also writes
-the node's own unit, and refusing would take the tools from every
-session. A
-session held while the kit changes keeps the folder it was given, so a
-link the configuration moves to each new kit reaches it when it wakes,
-where a store path pins the old one until it is collected.
+Nix store. The node checks it once, as it starts: where an account but
+root could change the way to it, any link on that way among it, its
+`bin` or anything in that, hidden entries too, or where a tool leads;
+where it resolves to a folder holding a colon; or where it isn't there
+or its `bin` can't be listed, the node refuses it, still starting but
+putting the kit on the path of nothing it starts, and says why at its
+start and in its machine's `kit`. A tool an agent could replace would
+otherwise run as every session and run that asks for it, other
+machines' among them. A kit it carries goes on each path as the folder
+it resolved to when checked, so a link repointed since changes nothing
+until the node starts again; a kit the configuration moves is best
+named by its store path, so moving it restarts the node. The check
+reaches only what the node starts from then on: a session already held
+keeps the path it was started with, a kit since refused among it,
+until it ends, and one held by an older node keeps the words it was
+started with.
 
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,
@@ -1249,8 +1258,10 @@ A processor reading that isn't a number counts as none, so every
 `"Start"` places `work` as `"Place"` does and starts `command` held
 there through the person's login shell (`$SHELL -lic`), so it has their
 environment rather than the node's, and the realm's kit's tools first on
-its path where its node is given a kit (`--kit`): put there after the
-profile runs, since a profile, or a Mac's `path_helper`, sets the path
+its path where its node is given a kit (`--kit`) and carries it, having
+found no agent could change it, as a machine's `kit` says above: put
+there after the profile runs, since a profile, or a Mac's `path_helper`,
+sets the path
 afresh, and a login shell that isn't interactive may never read the
 file adding the person's own. It begins in `folder`: a full path
 on that machine, or a path within its home, such as `src/core.nix`,

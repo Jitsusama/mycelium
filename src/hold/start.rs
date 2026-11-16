@@ -20,9 +20,53 @@ pub struct Starter {
     pub scope: Scope,
     /// The realm's kit, the folder whose `bin` holds the tools every
     /// machine in it has, put first on the path of each program started
-    /// through the person's login shell ([`login_shell`]), or none where
-    /// the machine is given none.
-    pub kit: Option<PathBuf>,
+    /// through the person's login shell ([`login_shell`]) where it is
+    /// carried, or none where the machine is given none.
+    pub kit: Option<Kit>,
+}
+
+/// The realm's kit as a node was given it, once checked
+/// ([`crate::declared::kit_checked`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kit {
+    /// Carried: its folder, resolved as it was checked, goes first on
+    /// each path, so a link repointed since changes nothing.
+    Carried(PathBuf),
+    /// On the path of nothing the node starts, since an account but its
+    /// declarers could change which kit it is or what its tools are, or it
+    /// couldn't be read: what it was given as, and why.
+    Refused {
+        /// The folder as it was given.
+        given: PathBuf,
+        /// Why it is left off.
+        why: String,
+    },
+}
+
+impl Kit {
+    /// The folder that goes first on each path, where it is carried.
+    #[must_use]
+    pub fn carried(&self) -> Option<&Path> {
+        match self {
+            Self::Carried(folder) => Some(folder),
+            Self::Refused { .. } => None,
+        }
+    }
+
+    /// The kit as the machine record says it: its tools where it is
+    /// carried, and none, with why, where it is refused, so no need for a
+    /// tool is met by a kit no session is given.
+    #[must_use]
+    pub fn said(&self) -> Option<crate::facts::Kit> {
+        match self {
+            Self::Carried(folder) => crate::facts::kit(folder),
+            Self::Refused { given, why } => Some(crate::facts::Kit {
+                path: given.display().to_string(),
+                tools: Vec::new(),
+                refused: Some(why.clone()),
+            }),
+        }
+    }
 }
 
 /// Where a holder starts. A scope of its own is what a stop reaches: when
@@ -162,7 +206,7 @@ impl Starter {
         if login {
             holder.arg("--login");
             // A terminal's hold has the person's own path already.
-            if let Some(kit) = &self.kit {
+            if let Some(kit) = self.kit.as_ref().and_then(Kit::carried) {
                 holder.arg("--kit").arg(kit);
             }
         }
@@ -492,10 +536,10 @@ mod tests {
 
     #[test]
     fn a_node_hold_names_its_kit_to_the_holder_and_a_terminals_does_not() {
-        let starter = Starter {
+        let mut starter = Starter {
             program: PathBuf::from("/bin/mycelium"),
             scope: Scope::None,
-            kit: Some(PathBuf::from("/nix/store/kit")),
+            kit: Some(Kit::Carried(PathBuf::from("/nix/store/kit"))),
         };
         // The words the holder is started with, as `start` gives them.
         let words = |login: bool| {
@@ -516,6 +560,22 @@ mod tests {
             !words(false).contains(&kit[0]),
             "a terminal's has the person's own path already: {:?}",
             words(false)
+        );
+        starter.kit = Some(Kit::Refused {
+            given: PathBuf::from("/home/kit"),
+            why: "its bin may be written by others than its owner".to_owned(),
+        });
+        let words = {
+            let mut holder = starter.scope.command(&starter.program, "f00d");
+            starter.name(&mut holder, "harbour", "f00d", Path::new("/home"), true);
+            holder
+                .get_args()
+                .map(|word| word.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            !words.contains(&kit[0]),
+            "a refused kit is named to no holder: {words:?}"
         );
     }
 

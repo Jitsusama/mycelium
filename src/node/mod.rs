@@ -2301,15 +2301,21 @@ impl<S: Store> Shared<S> {
         };
         let mut here = facts::measure_in(&self.machine, &self.realm, &sources);
         here.health.clone_from(&self.health.borrow());
-        here.kit = self.kit().and_then(facts::kit);
+        here.kit = self.given_kit().and_then(start::Kit::said);
         here
     }
 
-    /// The folder of the realm's kit this node was given, if it was.
-    fn kit(&self) -> Option<&Path> {
+    /// The realm's kit as this node was given it, if it was.
+    fn given_kit(&self) -> Option<&start::Kit> {
         self.starter
             .as_ref()
-            .and_then(|starter| starter.kit.as_deref())
+            .and_then(|starter| starter.kit.as_ref())
+    }
+
+    /// The folder of the realm's kit that goes first on each path, if this
+    /// node was given one and carries it.
+    fn kit(&self) -> Option<&Path> {
+        self.given_kit().and_then(start::Kit::carried)
     }
 
     /// Keeps this machine's own `health`, just moved, in its last measure
@@ -2551,7 +2557,7 @@ impl<S: Store> Shared<S> {
             steers: self.steers.clone(),
             health: Some(self.health.subscribe()),
             declared: Some(self.declared.clone()),
-            kit: self.kit().map(Path::to_owned),
+            kit: self.given_kit().cloned(),
         }
     }
 
@@ -8807,7 +8813,7 @@ esac
             // Nothing is held here, only run.
             program: PathBuf::from("/bin/false"),
             scope: start::Scope::None,
-            kit: Some(kit.clone()),
+            kit: Some(start::Kit::Carried(kit.clone())),
         };
         let running = node(&store, "skiff", Vec::<Piped>::new(), Some(starter), &socket);
         asks_as_person(&socket);
@@ -9101,6 +9107,103 @@ esac
         node.await
             .expect("the node runs to its end")
             .expect("it stops cleanly");
+    }
+
+    #[tokio::test]
+    async fn a_kit_an_agent_could_change_is_left_off_every_path_and_said_to_be() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let kit = dir.path().join("kit");
+        fs::create_dir_all(kit.join("bin")).expect("the kit's bin is made");
+        fs::write(kit.join("bin/gcloud"), "").expect("the kit holds gcloud");
+        let resolved = fs::canonicalize(&kit).expect("the kit resolves");
+        let declarers = [0, 65534, rustix::process::getuid().as_raw()];
+        // The PATH a person's run and an agent's fenced run each find, with
+        // the kit as the node checked it, each after the fence it ran in.
+        let paths = |checked: start::Kit| {
+            let socket = dir.path().join("skiff").join("work.sock");
+            async move {
+                let store = Memory::default();
+                let starter = Starter {
+                    program: PathBuf::from("/bin/false"),
+                    scope: start::Scope::None,
+                    kit: Some(checked),
+                };
+                let running = node(&store, "skiff", Vec::<Piped>::new(), Some(starter), &socket);
+                asks_as_person(&socket);
+                declares_runs(&socket, true);
+                let says_its_path = "printf %s \"${FENCED:-unfenced}=$PATH\"";
+                let person = run_through(socket.clone(), run_of("skiff", says_its_path))
+                    .await
+                    .expect("the person's runs here");
+                asks_below(&socket, 7001);
+                let agent = run_through(socket.clone(), run_of("skiff", says_its_path))
+                    .await
+                    .expect("an agent's runs here, in its fence");
+                let Ok(Response::Machine(machine)) = ask(socket.clone(), Request::Machine).await
+                else {
+                    panic!("the node says its machine")
+                };
+                let (stop, node) = running;
+                drop(stop);
+                node.await
+                    .expect("the node runs to its end")
+                    .expect("it stops cleanly");
+                let _ = fs::remove_file(&socket);
+                (
+                    String::from_utf8_lossy(&person.out).into_owned(),
+                    String::from_utf8_lossy(&agent.out).into_owned(),
+                    machine.kit,
+                )
+            }
+        };
+        let first = format!("{}/bin:", resolved.display());
+
+        // Given through a link, as a profile is, which is repointed once the
+        // node has checked it.
+        let profile = dir.path().join("profile");
+        std::os::unix::fs::symlink(&kit, &profile).expect("a link to the kit");
+        let checked = crate::declared::kit_checked(&profile, &declarers);
+        let other = dir.path().join("other");
+        fs::create_dir_all(other.join("bin")).expect("another kit");
+        fs::remove_file(&profile).expect("the link is taken away");
+        std::os::unix::fs::symlink(&other, &profile).expect("and repointed");
+        let (person, agent, said) = paths(checked).await;
+        assert!(
+            person.starts_with(&format!("unfenced={first}"))
+                && agent.starts_with(&format!("strict={first}")),
+            "a kit only its declarers can change comes first for both, as it was checked: \
+             {person} / {agent}"
+        );
+        assert_eq!(said.map(|kit| kit.tools), Some(vec!["gcloud".to_owned()]));
+
+        fs::set_permissions(kit.join("bin/gcloud"), fs::Permissions::from_mode(0o666))
+            .expect("a tool anyone writes");
+        let (person, agent, said) = paths(crate::declared::kit_checked(&kit, &declarers)).await;
+        let given = format!("{}/bin", kit.display());
+        assert!(
+            person.starts_with("unfenced=") && agent.starts_with("strict="),
+            "one ran as the person, the other in its fence: {person} / {agent}"
+        );
+        assert!(
+            [&first, &given]
+                .iter()
+                .all(|kit| !person.contains(kit.as_str()) && !agent.contains(kit.as_str())),
+            "a kit an agent could change is on neither path, as given or resolved: \
+             {person} / {agent}"
+        );
+        assert_eq!(
+            said,
+            Some(facts::Kit {
+                path: kit.display().to_string(),
+                tools: Vec::new(),
+                refused: Some(format!(
+                    "an agent could change what its tools are: {}/bin/gcloud may be written \
+                     by others than its owner",
+                    resolved.display()
+                )),
+            }),
+            "its machine names no tools in it, and says why"
+        );
     }
 
     #[tokio::test]
@@ -9710,7 +9813,7 @@ esac
         let holds = Starter {
             program: holder,
             scope: start::Scope::None,
-            kit: Some(PathBuf::from("/nix/store/kit")),
+            kit: Some(start::Kit::Carried(PathBuf::from("/nix/store/kit"))),
         };
         let (stop, node) = alone_with(
             &Memory::default(),
