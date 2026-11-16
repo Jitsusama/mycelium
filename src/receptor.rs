@@ -886,7 +886,6 @@ mod tests {
         if cfg!(any(target_os = "linux", target_os = "macos")) {
             assert!(started_at(me).is_some(), "this process's start is known");
         }
-        let me = std::process::id();
         assert!(Here.lives(me, started_at(me)));
         if let Some(started) = started_at(me) {
             assert!(!Here.lives(me, Some(started + 1)), "a pid used again");

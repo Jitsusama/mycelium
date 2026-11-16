@@ -67,7 +67,7 @@ fn a_receptor_says_how_it_stands_in_a_file_its_owners_alone() {
         .map(String::as_str)
         .collect();
     fields.sort_unstable();
-    // A process's start is known where /proc or ps tells it, on Linux and
+    // A process's start is known where /proc or libproc tells it, on Linux and
     // macOS, so only there is it kept; elsewhere the pid alone is judged.
     let mut expected = vec![
         "counts", "every", "pid", "read_at", "realm", "since", "source", "state",
