@@ -410,19 +410,20 @@ pub fn murmurs(events: &[Event]) -> Woven<'_> {
         match &event.said {
             Said::Murmur { .. } => {}
             Said::Tie { from, to, how } => {
-                let tied = |from_murmur, other: &'_ String| Tied {
-                    made: event,
-                    from_murmur,
-                    other: other.as_str(),
-                    how: how.as_deref(),
-                };
                 // A tie from or to a murmur goes with it, where it's read.
-                if let Some(murmur) = murmurs.get_mut(from.as_str()) {
-                    murmur.ties.push(tied(true, to));
-                } else if let Some(murmur) = murmurs.get_mut(to.as_str()) {
-                    murmur.ties.push(tied(false, from));
+                let (murmur, from_murmur, other) = if murmurs.contains_key(from.as_str()) {
+                    (murmurs.get_mut(from.as_str()), true, to)
                 } else {
-                    apart.push(event);
+                    (murmurs.get_mut(to.as_str()), false, from)
+                };
+                match murmur {
+                    Some(murmur) => murmur.ties.push(Tied {
+                        made: event,
+                        from_murmur,
+                        other: other.as_str(),
+                        how: how.as_deref(),
+                    }),
+                    None => apart.push(event),
                 }
             }
             Said::Settle { of, how } => {
@@ -435,8 +436,11 @@ pub fn murmurs(events: &[Event]) -> Woven<'_> {
     }
     let mut murmurs: Vec<Murmur<'_>> = murmurs.into_values().collect();
     murmurs.sort_by(|one, other| {
-        let order = |murmur: &Murmur<'_>| (murmur.said.at, &murmur.said.writer, &murmur.said.id);
-        order(other).cmp(&order(one))
+        (other.said.at, &other.said.writer, &other.said.id).cmp(&(
+            one.said.at,
+            &one.said.writer,
+            &one.said.id,
+        ))
     });
     Woven { murmurs, apart }
 }
