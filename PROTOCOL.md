@@ -541,6 +541,19 @@ is still the reason, `by` taken from the node's answer, never from the
 command line or the session's done file, so it arrives saying who
 carried it and why, never as the person.
 
+The node that kept a carry serves it in the daemon interface as a
+`carry` record for a day after it was ordered, its id the carried
+session's and `at`, holding `at`, `by`, `session`, `address`, `quest`,
+`from`, `to` and `why` as kept, and `state`, judged from what the node
+sees itself, never from what a session or its orchestrator says:
+`refused`, with `refused` saying why, once the session wrote a refusal
+since; `arrived` once it runs on `to`; `back` once it runs here again
+after its done file was written since; `carrying` once it is gone from
+here, by its presence ending or running somewhere else; and `ordered`
+until then. Its `state` and `refused` are live. The chain and asker
+stay in the file, which proves them. Each node serves only the carries
+it ordered, so a reader asks each machine's node for its own.
+
 ## Realm Flows
 
 Realms are kept apart, but a machine's configuration may open a flow: a
@@ -1277,7 +1290,7 @@ minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine`,
 `message`, `team`, `network`, `unanswered`, `said`, `event`,
-`receptor` or `builder`, can't be served.
+`receptor`, `builder` or `carry`, can't be served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and
