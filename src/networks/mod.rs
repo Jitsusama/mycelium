@@ -406,9 +406,9 @@ pub struct Usage {
     /// Its cost today, in US dollars.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_today: Option<f64>,
-    /// How much of its context window it holds, as `{used, limit}`.
+    /// How much of its context window it holds.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub context: Option<Value>,
+    pub context: Option<Context>,
     /// How many turns it took today.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turns_today: Option<u64>,
@@ -423,7 +423,7 @@ impl Usage {
         let usage = &session["presence"]["usage"];
         Self {
             cost_today: usage["pi.cost.usd"]["today"].as_f64(),
-            context: Some(usage["context"].clone()).filter(Value::is_object),
+            context: Context::of(&usage["context"]),
             turns_today: usage["turns"]["today"].as_u64(),
             last_turn: usage["turns"]["last"]["at"].as_str().map(str::to_owned),
         }
@@ -432,6 +432,30 @@ impl Usage {
     /// Whether it says nothing.
     fn is_empty(&self) -> bool {
         *self == Self::default()
+    }
+}
+
+/// How much of its context window a session holds, in tokens, as its
+/// presence says it: `{used, limit}`. Two numbers rather than the
+/// presence's object as it came, which held about 650 bytes for each of
+/// ten thousand cells.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Context {
+    /// How many tokens it holds, where it says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used: Option<u64>,
+    /// How many it may hold, where it says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+}
+
+impl Context {
+    /// What `context`, a presence's, says, or none where it is no object.
+    fn of(context: &Value) -> Option<Self> {
+        context.is_object().then(|| Self {
+            used: context["used"].as_u64(),
+            limit: context["limit"].as_u64(),
+        })
     }
 }
 

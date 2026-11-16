@@ -1209,11 +1209,9 @@ parked counts them `dormant`, so it draws after the living ones. A
 network is
 heard when the latest of its cells was, or its team where its cells say
 nothing. Its records change as the sessions do, so a machine come or
-gone shows with the next change to a session. Ten thousand cells make
-their networks in time that grows with them, within 38 MB while each
-holds two trees. The target is 30 MB, the map's and the launcher's
-bound; the gap is known, and closes by holding the repository keys,
-branches and cell names that repeat across cells once.
+gone shows with the next change to a session. Ten thousand cells, each
+holding two trees, make their networks within 30 MB, in time that grows
+with them.
 
 The `unanswered` kind holds what waits on the mesh, keyed by the
 message's id, as `mesh_read unanswered` and the hold leases judge it:
