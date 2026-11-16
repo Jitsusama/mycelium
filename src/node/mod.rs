@@ -435,7 +435,7 @@ where
 {
     store::out_of_reach_of_unclaimed(&store)?;
     let (to_dial, mut made) = mpsc::unbounded_channel();
-    redial_standing(&given, &store, &to_dial);
+    redial_standing(&given.book, &given.providers, &store, &to_dial);
     let eases = given.eases.clone();
     let (shared, kept) = Shared::of(
         store.clone(),
@@ -639,20 +639,22 @@ struct Keeping<S> {
     store: S,
 }
 
-/// Tells `to_dial` of each machine `given`'s book says this node made
-/// before it started and hasn't let go, so it links each, as it would one
-/// it made now. Nothing ever finds one of these unwanted, so it is let go
-/// at its time or once its work hands over. One whose time passed while
-/// the node was down was ended by its provider, so it is booked as let go
-/// and leaves the realm's machines; one whose provider the node no longer
-/// asks is left to end at its time, since the node runs only the programs
-/// it was given.
+/// Tells `to_dial` of each machine `book` says this node made before it
+/// started and hasn't let go, so it links each, as it would one it made
+/// now. Nothing ever finds one of these unwanted, so it is let go at its
+/// time or once its work hands over. One whose time passed while the node
+/// was down was ended by its provider, so it is booked as let go and
+/// leaves the realm's machines. Its provider is the one of `providers`
+/// named the same, or else of the same file name, as an upgrade moves a
+/// program's path; one whose provider the node no longer asks is left to
+/// end at its time, since the node runs only the programs it was given.
 fn redial_standing(
-    given: &Given,
+    book: &Book,
+    providers: &[String],
     store: &impl Store,
     to_dial: &mpsc::UnboundedSender<(Made, Arc<Notify>)>,
 ) {
-    let standing = match given.book.standing() {
+    let standing = match book.standing() {
         Ok(standing) => standing,
         Err(error) => {
             eprintln!("the book of machines made can't be read, so none is linked again: {error}");
@@ -666,30 +668,47 @@ fn redial_standing(
         );
     }
     let now = jiff::Timestamp::now();
-    for made in standing.made {
+    for mut made in standing.made {
         if made.until <= now {
             let why = "its time was up while its node was down";
             eprintln!("{} was let go: {why}", made.machine);
             store::left(store, &made.machine, now);
-            if let Err(error) = given.book.released(&made, why) {
+            if let Err(error) = book.released(&made, why) {
                 eprintln!(
                     "{} was let go, but the book doesn't say so: {error}",
                     made.machine
                 );
             }
-        } else if !given.providers.contains(&made.provider) {
-            eprintln!(
-                "{} was made by {}, which this node no longer asks, so it ends at its time",
-                made.machine, made.provider
-            );
-        } else {
+        } else if let Some(asked) = still_asked(providers, &made.provider) {
             eprintln!(
                 "{} was made before this node started, so it is linked again",
                 made.machine
             );
+            made.provider.clone_from(asked);
             // The loop that reads it hasn't started, so it holds the sender.
             let _ = to_dial.send((made, Arc::new(Notify::new())));
+        } else {
+            eprintln!(
+                "{} was made by {}, which this node no longer asks, so it ends at its time",
+                made.machine, made.provider
+            );
         }
+    }
+}
+
+/// The one of `providers` that is `provider`, or else the only one with
+/// its file name.
+fn still_asked<'a>(providers: &'a [String], provider: &str) -> Option<&'a String> {
+    if let Some(same) = providers.iter().find(|one| *one == provider) {
+        return Some(same);
+    }
+    let name = Path::new(provider).file_name()?;
+    let mut named = providers
+        .iter()
+        .filter(|one| Path::new(one.as_str()).file_name() == Some(name));
+    match (named.next(), named.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
     }
 }
 
@@ -8772,5 +8791,81 @@ mod tests {
             "its readers are told"
         );
         assert_eq!(shared.known_machines()[0].health, Some(health));
+    }
+
+    fn made_by(provider: &str, machine: &str, until: jiff::Timestamp) -> Made {
+        Made {
+            provider: provider.to_owned(),
+            shape: "scratch".to_owned(),
+            place: format!("{machine}-place"),
+            machine: machine.to_owned(),
+            until,
+            costs: crate::offer::Costs {
+                hourly: "0.12".to_owned(),
+                currency: "USD".to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_node_started_again_links_what_it_still_asks_for_and_books_what_ended() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let earlier = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
+        let asked = made_by("/old/bin/lend", "skiff", later);
+        let moved = made_by("/old/bin/hire", "tern", later);
+        let dropped = made_by("/old/bin/rent", "osprey", later);
+        let ended = made_by("/old/bin/lend", "kestrel", earlier);
+        for made in [&asked, &moved, &dropped, &ended] {
+            book.made(made).expect("the make is kept");
+        }
+        let providers = ["/old/bin/lend".to_owned(), "/new/bin/hire".to_owned()];
+        let (to_dial, mut dialled) = mpsc::unbounded_channel();
+
+        redial_standing(&book, &providers, &Memory::default(), &to_dial);
+
+        let mut sent = Vec::new();
+        while let Ok((made, _)) = dialled.try_recv() {
+            sent.push(made);
+        }
+        let moved_here = Made {
+            provider: "/new/bin/hire".to_owned(),
+            ..moved.clone()
+        };
+        assert_eq!(
+            sent,
+            vec![asked.clone(), moved_here],
+            "each it still asks for is dialled, by the provider's path as given now"
+        );
+        assert_eq!(
+            book.standing().expect("the book reads").made,
+            vec![asked, moved, dropped],
+            "the one whose time was up is booked as let go, the others left standing"
+        );
+    }
+
+    #[test]
+    fn a_provider_is_still_asked_by_its_path_or_its_only_namesake() {
+        let providers = [
+            "/new/bin/lend".to_owned(),
+            "/a/bin/hire".to_owned(),
+            "/b/bin/hire".to_owned(),
+        ];
+        assert_eq!(
+            still_asked(&providers, "/new/bin/lend"),
+            Some(&providers[0])
+        );
+        assert_eq!(
+            still_asked(&providers, "/old/bin/lend"),
+            Some(&providers[0])
+        );
+        assert_eq!(still_asked(&providers, "/a/bin/hire"), Some(&providers[1]));
+        assert_eq!(
+            still_asked(&providers, "/old/bin/hire"),
+            None,
+            "two of its name leave it unknown"
+        );
+        assert_eq!(still_asked(&providers, "/old/bin/rent"), None);
     }
 }

@@ -389,6 +389,14 @@ fn a_node_started_again_links_the_machine_it_made_before() {
     );
     let linked = root.join("linked");
     heard(root, &linked, PATIENCE, |text| !text.is_empty());
+    let book = std::fs::read_to_string(home.join("s").join("mycelium").join("made.jsonl"))
+        .expect("the make is kept");
+    let kept: serde_json::Value =
+        serde_json::from_str(book.lines().next().unwrap_or_default()).expect("a line");
+    assert_eq!(
+        kept["realm"], "work",
+        "the make names its node's realm: {kept}"
+    );
 
     drop(first);
     let again = skiff(mycelium(&home), &program);

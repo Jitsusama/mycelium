@@ -1161,9 +1161,14 @@ for it to link, places the work again by the machine's own facts, and
 starts it there. It lets the machine go, with `PROGRAM release PLACE`,
 once its work has handed over, at `until`, or at once when nothing
 started on it. Each make and release is kept as a JSON line in
-`made.jsonl` in mycelium's folder, `{"at", "made"}` with the machine,
-its place, shape, provider, `until` and hourly cost, and `{"at",
-"released"}` with why, so what was made and for how long can be summed.
+`made.jsonl` in mycelium's folder, `{"at", "made", "realm"}` with the
+machine, its place, shape, provider, `until` and hourly cost, and
+`{"at", "released", "realm"}` with why, so what was made and for how
+long can be summed. Every realm's node on the machine keeps the one
+book, so each line names the realm whose node kept it. A node started
+again links each machine its realm's lines say is made and not let go,
+where it still asks the provider that made it, and books as let go
+each whose `until` passed while it was down.
 A start whose providers make nothing says why: each machine's and each
 offer's reasons, and each program that couldn't say what it offers.
 
