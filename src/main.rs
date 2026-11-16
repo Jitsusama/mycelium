@@ -1756,8 +1756,9 @@ fn placements(asked: PlacementsAsked) -> io::Result<()> {
     let weights: Option<mycelium::placement::Weights> = replay
         .as_deref()
         .map(|path| {
-            mycelium::placement::Weights::read(&std::fs::read_to_string(path)?)
-                .map_err(|why| io::Error::other(format!("{}: {why}", path.display())))
+            let named = |why: String| io::Error::other(format!("{}: {why}", path.display()));
+            let said = std::fs::read_to_string(path).map_err(|error| named(error.to_string()))?;
+            mycelium::placement::Weights::read(&said).map_err(named)
         })
         .transpose()?;
     let state = here.state.unwrap_or_else(place::state);
