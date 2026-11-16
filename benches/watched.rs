@@ -14,6 +14,10 @@
 //! them, a few times each, and the median time for all of them said, with
 //! the bytes one watch's serialize to.
 //!
+//! Then a list asking for a few fields of every session, as a view reading
+//! only those asks: each record cut down to them from its bytes and the
+//! answer serialized, the median time and the bytes it comes to.
+//!
 //! ```sh
 //! nix develop -c cargo bench --bench watched -- --cells 1000,10000 --watchers 1,50
 //! ```
@@ -24,8 +28,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use mycelium::daemon::{Build, Record, record};
+use mycelium::daemon::{Build, Record, fields, record};
 use serde_json::{Value, json};
+
+/// The fields the list asks for: a few, as a view of cells reads them.
+const LISTED: [&str; 5] = [
+    "state",
+    "step",
+    "title",
+    "presence.questInfo.title",
+    "presence.usage.cost",
+];
 
 /// What to measure.
 #[derive(Parser)]
@@ -51,8 +64,10 @@ fn main() {
         "{:>6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
         "cells", "watches", "changed", "flat KB", "deep KB", "flat ms", "deep ms"
     );
+    let mut lists = Vec::new();
     for cells in asked.cells {
         let (before, after) = made(cells);
+        lists.push((cells, listed(&after, asked.runs)));
         for &watchers in &asked.watchers {
             let (flat, flat_took) = found(&before, &after, &[], watchers, asked.runs);
             let deep = ["presence".to_owned()];
@@ -67,6 +82,38 @@ fn main() {
             );
         }
     }
+    println!(
+        "{:>6} {:>8} {:>8} {:>8}",
+        "cells", "fields", "list KB", "list ms"
+    );
+    for (cells, (bytes, took)) in lists {
+        println!(
+            "{cells:>6} {:>8} {:>8.1} {:>8.2}",
+            LISTED.len(),
+            kb(bytes),
+            millis(took)
+        );
+    }
+}
+
+/// The bytes a list of [`LISTED`] of every record of `records` comes to,
+/// with the median time over `runs` to cut each down and serialize them.
+fn listed(records: &Shared, runs: usize) -> (usize, Duration) {
+    let paths = LISTED.map(str::to_owned);
+    let mut took = Vec::new();
+    let mut bytes = 0;
+    for _ in 0..runs.max(1) {
+        let listing = Instant::now();
+        let kept: Vec<_> = records
+            .values()
+            .map(|record| fields::projected(record.as_str(), &paths))
+            .collect();
+        let said = serde_json::to_string(&kept).expect("records serialize");
+        took.push(listing.elapsed());
+        bytes = said.len();
+    }
+    took.sort();
+    (bytes, took[took.len() / 2])
 }
 
 /// A kind's records by key, each shared, as a watch holds them.
