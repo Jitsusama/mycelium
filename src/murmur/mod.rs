@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use notify::Watcher as _;
@@ -81,7 +81,17 @@ pub struct Webs {
 #[derive(Debug, Default)]
 struct Quest {
     reading: Reading,
-    said: Vec<Said>,
+    said: Arc<[Said]>,
+}
+
+/// What the webs said as last read, shared with whoever asks while they
+/// are read again.
+#[derive(Debug, Default)]
+struct Seen {
+    /// Each quest's murmurs.
+    said: Vec<Arc<[Said]>>,
+    /// Why the scratch folder couldn't be read, if it couldn't.
+    refused: Option<String>,
 }
 
 impl Webs {
@@ -143,7 +153,7 @@ impl Webs {
             let held = self.quests.entry(name.clone()).or_default();
             seen.insert(name);
             if held.reading.read(&events) {
-                held.said = said_by(&held.reading.events(), &self.machine);
+                held.said = said_by(&held.reading.events(), &self.machine).into();
                 changed = true;
             }
         }
@@ -158,8 +168,20 @@ impl Webs {
     pub fn said_since(&self, since: i64) -> impl Iterator<Item = &Said> {
         self.quests
             .values()
-            .flat_map(|quest| &quest.said)
+            .flat_map(|quest| quest.said.iter())
             .filter(move |said| said.at > since)
+    }
+
+    /// What it holds as last read, sharing each quest's murmurs.
+    fn seen(&self) -> Seen {
+        Seen {
+            said: self
+                .quests
+                .values()
+                .map(|quest| Arc::clone(&quest.said))
+                .collect(),
+            refused: self.refused.clone(),
+        }
     }
 
     /// Whether any murmur ages out between `was` and `now`, as a day
@@ -245,7 +267,11 @@ pub fn records<'a, S: std::hash::BuildHasher>(
 /// this is kept.
 #[derive(Debug)]
 pub struct Murmurs {
-    held: Arc<Mutex<Webs>>,
+    /// The scratch folder read, if one is.
+    scratch: Option<PathBuf>,
+    /// What was last read, swapped whole as each read ends, so asking
+    /// never waits on a read.
+    held: Arc<Mutex<Arc<Seen>>>,
     told: watch::Sender<u64>,
     keeping: Option<tokio::task::JoinHandle<()>>,
 }
@@ -257,10 +283,13 @@ impl Murmurs {
     #[must_use]
     pub fn start(scratch: Option<PathBuf>, machine: String) -> Self {
         let (told, _) = watch::channel(0);
-        let keeps = scratch.is_some();
-        let held = Arc::new(Mutex::new(Webs::new(scratch.unwrap_or_default(), machine)));
-        let keeping = keeps.then(|| tokio::spawn(keep(Arc::clone(&held), told.clone())));
+        let held = Arc::default();
+        let keeping = scratch.clone().map(|scratch| {
+            let webs = Webs::new(scratch, machine);
+            tokio::spawn(keep(webs, Arc::clone(&held), told.clone()))
+        });
         Self {
+            scratch,
             held,
             told,
             keeping,
@@ -275,7 +304,10 @@ impl Murmurs {
         now: i64,
         purposes: &HashMap<String, String, S>,
     ) -> BTreeMap<String, Value> {
-        records(self.lock().said_since(now - KEPT_FOR), purposes)
+        let seen = self.seen();
+        let since = now - KEPT_FOR;
+        let said = seen.said.iter().flat_map(|said| said.iter());
+        records(said.filter(|said| said.at > since), purposes)
     }
 
     /// What changes each time the murmurs may have.
@@ -288,19 +320,18 @@ impl Murmurs {
     /// names a source: answering, or refused with why; none without one.
     #[must_use]
     pub fn health(&self) -> Vec<Value> {
-        if self.keeping.is_none() {
+        let Some(scratch) = &self.scratch else {
             return Vec::new();
-        }
-        let webs = self.lock();
-        let file = webs.scratch.display().to_string();
-        vec![match &webs.refused {
+        };
+        let file = scratch.display().to_string();
+        vec![match &self.seen().refused {
             Some(why) => json!({"name": KIND, "file": file, "state": "refused", "why": why}),
             None => json!({"name": KIND, "file": file, "state": "answering"}),
         }]
     }
 
-    fn lock(&self) -> MutexGuard<'_, Webs> {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    fn seen(&self) -> Arc<Seen> {
+        Arc::clone(&self.held.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
 
@@ -317,13 +348,14 @@ fn now() -> i64 {
     jiff::Timestamp::now().as_second()
 }
 
-/// Keeps `held` read, telling `tell` each time its murmurs change: read
-/// once, then again after each change in the folders it watches, and each
-/// [`AGAIN_EVERY`], when a murmur aging out tells too.
-async fn keep(held: Arc<Mutex<Webs>>, tell: watch::Sender<u64>) {
-    let lock = || held.lock().unwrap_or_else(PoisonError::into_inner);
+/// Keeps `webs` read, putting what each read saw in `held` and telling
+/// `tell` each time its murmurs change: read once, then again after each
+/// change in the folders it watches, and each [`AGAIN_EVERY`], when a
+/// murmur aging out tells too. Each read is made off the runtime's
+/// workers, and nothing waits on it but this.
+async fn keep(mut webs: Webs, held: Arc<Mutex<Arc<Seen>>>, tell: watch::Sender<u64>) {
     let (heard, mut changed) = mpsc::unbounded_channel();
-    let scratch = lock().scratch.clone();
+    let scratch = webs.scratch.clone();
     let mut watcher = crate::watching::watcher(move |event: notify::Result<notify::Event>| {
         if changes(&scratch, &event) {
             // Nothing hears this once the murmurs are no longer served.
@@ -334,14 +366,20 @@ async fn keep(held: Arc<Mutex<Webs>>, tell: watch::Sender<u64>) {
     let mut watching = BTreeSet::new();
     let mut was = now();
     loop {
-        let (read, folders, aged) = {
-            let mut webs = lock();
+        let reading = tokio::task::spawn_blocking(move || {
             let read = webs.read();
             let at = now();
             let aged = webs.ages_out(was, at);
-            was = at;
-            (read, webs.watched().clone(), aged)
+            (webs, read, aged, at)
+        });
+        // A read that panicked ends the keeping, as a panic here would.
+        let Ok((read_now, read, aged, at)) = reading.await else {
+            return;
         };
+        webs = read_now;
+        was = at;
+        let folders = webs.watched().clone();
+        *held.lock().unwrap_or_else(PoisonError::into_inner) = Arc::new(webs.seen());
         if read || aged {
             tell.send_modify(|changes| *changes += 1);
         }

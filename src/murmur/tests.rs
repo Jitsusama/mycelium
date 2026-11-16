@@ -163,6 +163,61 @@ fn a_web_not_made_yet_is_watched_for_from_the_nearest_folder_there() {
     assert_eq!(webs.said_since(0).count(), 0);
 }
 
+#[test]
+fn a_pipe_in_a_web_is_passed_over_while_the_others_are_heard() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let events = web::events_in(&dir.path().join("QEST-20261112-HARBOR").join(web::FOLDER));
+    fs::create_dir_all(&events).expect("its events' folder");
+    // A writer's file that is a pipe nothing writes to: opening it to read
+    // waits until something does, for ever.
+    let file = events.join("skiff.jsonl");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&file)
+        .status()
+        .expect("mkfifo ran");
+    assert!(made.success(), "mkfifo made no pipe: {made}");
+    let now = now();
+    Web::of(dir.path(), "QEST-20261112-TIDES")
+        .expect("a web")
+        .say("skiff", None, murmur("the tide turns"), now)
+        .expect("said");
+    // Kept on a runtime of its own, as the node's are, so whatever its
+    // read holds up there doesn't hold up the asking here.
+    let (started, running) = std::sync::mpsc::channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let scratch = dir.path().to_owned();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        runtime.block_on(async move {
+            let murmurs = Arc::new(Murmurs::start(Some(scratch), "skiff".to_owned()));
+            let _ = started.send(Arc::clone(&murmurs));
+            let _ = stopped.await;
+        });
+    });
+    let murmurs = running.recv_timeout(PATIENCE).expect("the murmurs kept");
+    let until = std::time::Instant::now() + PATIENCE;
+    let mut heard = false;
+    while !heard && std::time::Instant::now() < until {
+        heard = !murmurs.records(now + 1, &HashMap::new()).is_empty();
+        std::thread::yield_now();
+    }
+    // Were the pipe being read, a writer opening it lets that read go, so
+    // nothing is left waiting on it once the test ends.
+    let writer = rustix::fs::open(
+        &file,
+        rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    );
+    assert!(heard, "the other web's murmur is heard");
+    assert_eq!(murmurs.health()[0]["state"], "answering");
+    assert!(writer.is_err(), "nothing read the pipe");
+    drop(murmurs);
+    let _ = stop.send(());
+}
+
 #[tokio::test]
 async fn a_murmur_said_is_told_and_held() {
     let dir = tempfile::tempdir().expect("a temporary folder");
