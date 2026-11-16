@@ -221,6 +221,19 @@ impl Places {
         ))
     }
 
+    /// Shares `quest` as [`Self::offer`] does, asked for machine `to`,
+    /// and gives it to `to`, so a worker there is served it; nothing
+    /// above it is given, so a worker is served the quest alone.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::offer`], or when the gift can't be marked.
+    pub fn offer_to(&self, to: &str, quest: &str, scratch: &[String]) -> io::Result<String> {
+        let said = self.offer(quest, scratch)?;
+        self.give(to, quest)?;
+        Ok(said)
+    }
+
     /// The quests above `id` whose records are on this machine, nearest
     /// first, each its README's front matter's `parent`, stopping at one
     /// not here or named twice.
@@ -2771,6 +2784,43 @@ mod tests {
 
     fn readme(machine: &Machine, id: &str) -> Option<String> {
         fs::read_to_string(machine.places.quests.join(id).join("README.md")).ok()
+    }
+
+    #[test]
+    fn a_quest_shared_to_a_worker_reaches_it_alone() {
+        let skiff = Machine::new("skiff");
+        let tern = Machine::new("tern");
+        let (top, quest) = ("QEST-20261013-TOPQST", QUEST);
+        shared(&skiff, top, "---\nparent: null\n---\n# Top\n");
+        fs::create_dir_all(skiff.places.quests.join(quest)).expect("the quest made");
+        fs::write(
+            skiff.places.quests.join(quest).join("README.md"),
+            format!("---\nparent: {top}\n---\n# Under it\n"),
+        )
+        .expect("its README written");
+
+        skiff
+            .places
+            .offer_to("tern", quest, &[])
+            .expect("the quest shared to tern");
+        let mut near = skiff.exchange(&tern).for_worker();
+        let mut far = tern.exchange(&skiff);
+        talk(&mut near, &mut far);
+
+        assert_eq!(
+            readme(&tern, quest),
+            Some(format!("---\nparent: {top}\n---\n# Under it\n")),
+            "the quest shared to the worker reaches it"
+        );
+        assert_eq!(
+            readme(&tern, top),
+            None,
+            "nothing of the quest above it does, not even its README"
+        );
+        assert!(
+            !skiff.places.given("tern", top),
+            "and the quest above it isn't given"
+        );
     }
 
     #[test]

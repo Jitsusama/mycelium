@@ -2121,7 +2121,7 @@ fn share(sharing: Sharing, realm: String, socket: &Path) -> io::Result<()> {
             format!("{to} is this machine, so {quest} is there already"),
         ))
     } else {
-        shares.offer(quest, scratch).and_then(|_| {
+        shares.offer_to(to, quest, scratch).and_then(|_| {
             reached::reach(
                 &shares,
                 quest,
