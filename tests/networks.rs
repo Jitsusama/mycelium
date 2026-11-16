@@ -1,9 +1,7 @@
-//! The node's network records built for ten thousand cells, within 38 MB,
-//! and in time that grows with the cells rather than faster. The map and
-//! the launcher hold the memory to 30 MB; the trees each cell holds took
-//! it past that, a gap known and to be closed by holding the names that
-//! repeat across thousands of cells once, when the bar goes back to 30. The time is the processor's
-//! own for this thread, not the clock's, so a builder busy with other work,
+//! The node's network records built for ten thousand cells, each holding
+//! two trees, within the memory the map and the launcher hold it to,
+//! 30 MB, and in time that grows with the cells rather than faster. The
+//! time is the processor's own for this thread, not the clock's, so a builder busy with other work,
 //! which only makes this thread wait its turn, can't fail it. The time
 //! itself, 100 ms on the machine the bar is set for, is no builder's to
 //! hold, since builders run it several times slower, so the test says it
@@ -50,10 +48,8 @@ const GROWS_AT_MOST: u32 = 50;
 /// moment on the builder slows both alike, and the fastest of each taken.
 const TIMINGS: usize = 5;
 
-/// The most memory the build may hold beyond what it was given, in bytes:
-/// just above the 36.9 MB two trees a cell take, so it still holds the
-/// build from growing, until the gap to 30 MB is closed.
-const AT_MOST: usize = 38_000_000;
+/// The most memory the build may hold beyond what it was given, in bytes.
+const AT_MOST: usize = 30_000_000;
 
 /// The system's allocator, counting what is held and the most held.
 #[expect(unsafe_code, reason = "an allocator is unsafe to implement")]

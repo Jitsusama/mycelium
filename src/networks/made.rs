@@ -23,7 +23,7 @@ impl Mycelium {
     /// `machines` records make.
     #[must_use]
     pub fn of(realm: &str, teams: &[Value], sessions: &[Value], machines: &[Value]) -> Self {
-        let mut read = Sessions::default();
+        let mut read = Sessions::room_for(sessions.len() + machines.len());
         for session in sessions {
             read.add(session);
         }
@@ -40,7 +40,8 @@ impl Mycelium {
         sessions: impl IntoIterator<Item = Value>,
         machines: &[Value],
     ) -> Self {
-        let mut read = Sessions::default();
+        let sessions = sessions.into_iter();
+        let mut read = Sessions::room_for(sessions.size_hint().0 + machines.len());
         for session in sessions {
             read.add(&session);
         }
@@ -57,6 +58,7 @@ impl Mycelium {
         if cells.is_empty() {
             return self;
         }
+        self.cells.reserve_exact(cells.len());
         if let Some(machines) = self
             .networks
             .iter_mut()
@@ -134,8 +136,10 @@ impl Mycelium {
             .map(|one| machine_cell(one, &runs))
             .collect();
         // Extended in place, since collecting a chain would hold a second
-        // copy of every cell while it is made.
+        // copy of every cell while it is made, and in the room kept for
+        // the machines while the sessions were read where it was.
         let mut cells = sessions;
+        cells.reserve_exact(machines.len());
         cells.extend(machines);
         let networks = ordered(networks);
         Self {
@@ -156,6 +160,7 @@ impl Mycelium {
         if cells.is_empty() {
             return self;
         }
+        self.cells.reserve_exact(cells.len());
         let mut sensing: BTreeMap<&str, Vec<&Cell>> = BTreeMap::new();
         for cell in &cells {
             for name in &cell.networks {
@@ -328,6 +333,16 @@ struct Sessions {
 }
 
 impl Sessions {
+    /// None read yet, with room for `cells` cells. A cell is several
+    /// hundred bytes, so ten thousand grown by doubling kept thousands
+    /// of rooms spare, and held the list twice as each doubling copied it.
+    fn room_for(cells: usize) -> Self {
+        Self {
+            cells: Vec::with_capacity(cells),
+            ..Self::default()
+        }
+    }
+
     /// What `session` makes, added to what the sessions before it made.
     fn add(&mut self, session: &Value) {
         // Each quest's title by its short id in lower case, as the last
