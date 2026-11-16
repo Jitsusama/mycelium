@@ -165,7 +165,12 @@ impl Places {
             ));
         }
         let ledgers = self.ledgers();
-        ledgers.hold(quest)?.keep()?;
+        {
+            // Shared on its own, it no longer stops with the quests under it.
+            let mut held = ledgers.hold(quest)?;
+            held.ledger.above = false;
+            held.keep()?;
+        }
         let handover = (self.scratch.join(quest).join(HANDOVER).is_dir()
             && !scratch.iter().any(|folder| folder == HANDOVER))
         .then(|| HANDOVER.to_owned());
@@ -173,8 +178,12 @@ impl Places {
             self.name_scratch(quest, folder)?;
         }
         let above = self.above(quest);
+        // A parent shared only for the quests under it stops once none is.
         for parent in &above {
-            ledgers.hold(parent)?.keep()?;
+            let new = !ledgers.shares(parent);
+            let mut held = ledgers.hold(parent)?;
+            held.ledger.above |= new;
+            held.keep()?;
         }
         let folders = ledgers.hold(quest)?.ledger.scratch;
         let with = if folders.is_empty() {
@@ -217,6 +226,27 @@ impl Places {
             at = parent;
         }
         above
+    }
+
+    /// Whether `id` may be above `quest`, as their READMEs' `parent`s say:
+    /// one named counts before its own record reaches this machine, and a
+    /// README of a `shared` quest that hasn't arrived yet may name it, as
+    /// a quest's README may land before its parent's.
+    fn may_name_above(&self, quest: &str, id: &str, shared: &BTreeSet<String>) -> bool {
+        let mut at = quest.to_owned();
+        for _ in 0..MOST_NESTED {
+            let Ok(readme) = fs::read_to_string(self.record(&at).join("README.md")) else {
+                return shared.contains(&at);
+            };
+            let Some(parent) = parent(&readme).filter(|parent| is_quest(parent)) else {
+                return false;
+            };
+            if parent == id {
+                return true;
+            }
+            at = parent;
+        }
+        false
     }
 
     /// The group the sessions on quest `id` hear, named by the short ids of
@@ -286,6 +316,10 @@ pub enum Say {
         /// than this names none.
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
         ended: BTreeSet<String>,
+        /// Those of the quests this end shares only as quests above others
+        /// it shares; an end older than this names none.
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        above: BTreeSet<String>,
     },
     /// What this end holds of some of a quest's files.
     Holds {
@@ -370,7 +404,15 @@ pub struct Exchange {
     users: Box<dyn Users>,
     /// When each ended quest's scratch, found in use, is tried again.
     sweep_again: BTreeMap<String, Instant>,
+    /// Whether a README, what the other end shares, or which quests this
+    /// end shares changed since the last look decided which quests shared
+    /// only for those under them are spent, so an idle look reads no
+    /// README.
+    above_again: bool,
 }
+
+/// A shared quest's README, as its ledger keys it.
+const README: &str = "record/README.md";
 
 /// How long an ended quest's scratch found in use is let be before it is
 /// tried again: reading every process's open files once a second, for as
@@ -384,6 +426,8 @@ struct Theirs {
     quests: BTreeSet<String>,
     /// Those that have ended there.
     ended: BTreeSet<String>,
+    /// Those it shares only as quests above others.
+    above: BTreeSet<String>,
 }
 
 /// What was last said of a shared quest's scratch.
@@ -395,6 +439,8 @@ struct Told {
     clones: BTreeMap<String, Clone>,
     /// Whether the quest has ended here.
     ended: bool,
+    /// Whether it is shared only as a quest above others.
+    above: bool,
 }
 
 impl Exchange {
@@ -421,6 +467,7 @@ impl Exchange {
             wanted: BTreeSet::new(),
             users: Box::new(Processes),
             sweep_again: BTreeMap::new(),
+            above_again: true,
         }
     }
 
@@ -527,16 +574,20 @@ impl Exchange {
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
         let mut holds = Vec::new();
-        for id in ledgers.quests()? {
+        let quests = ledgers.quests()?;
+        let decide = std::mem::take(&mut self.above_again)
+            || quests.len() != self.told.len()
+            || quests.iter().any(|id| !self.told.contains_key(id));
+        for id in quests {
             let ended = self.places.ended(&id);
             if ended && self.has_ended_there(&id) && self.swept(&id) {
-                ledgers.stop(&id)?;
-                self.unsaid.remove(&id);
-                self.watch.forget(&id);
-                eprintln!(
-                    "{id} has ended here and on {}, so it is shared no longer",
-                    self.other
-                );
+                let why = format!("has ended here and on {}", self.other);
+                self.stop(&ledgers, &id, &why)?;
+                continue;
+            }
+            if decide && self.spent_here(&ledgers, &id)? {
+                let why = "was shared for the quests under it, and none is shared now";
+                self.stop(&ledgers, &id, why)?;
                 continue;
             }
             let mut held = ledgers.hold(&id)?;
@@ -560,6 +611,7 @@ impl Exchange {
                 held.keep()?;
             }
             changed.extend(self.unsaid.remove(&id).unwrap_or_default());
+            self.above_again |= changed.contains(README);
             let states = held.ledger.states();
             let files: BTreeMap<String, State> = if self.told.contains_key(&id) {
                 states
@@ -581,6 +633,7 @@ impl Exchange {
                     folders: held.ledger.scratch.clone(),
                     clones: held.ledger.clones.clone(),
                     ended,
+                    above: held.ledger.above,
                 },
             );
         }
@@ -605,6 +658,11 @@ impl Exchange {
                     .filter(|(_, told)| told.ended)
                     .map(|(id, _)| id.clone())
                     .collect(),
+                above: shares
+                    .iter()
+                    .filter(|(_, told)| told.above)
+                    .map(|(id, _)| id.clone())
+                    .collect(),
             });
         }
         says.extend(holds);
@@ -612,25 +670,44 @@ impl Exchange {
         Ok(says)
     }
 
+    /// Stops sharing quest `id`, which `why` says, forgetting what was
+    /// heard of it; a quest above it may be spent now, so the next look
+    /// decides again.
+    fn stop(&mut self, ledgers: &Ledgers, id: &str, why: &str) -> io::Result<()> {
+        ledgers.stop(id)?;
+        self.unsaid.remove(id);
+        self.watch.forget(id);
+        self.above_again = true;
+        eprintln!("{id} {why}, so it is shared no longer");
+        Ok(())
+    }
+
     /// Takes what the other end said, returning what this end says back.
     pub fn hear(&mut self, say: Say) -> io::Result<Vec<Say>> {
+        self.above_again |= match &say {
+            Say::Shares { .. } => true,
+            Say::Piece { file, .. } | Say::File { file, .. } => file == README,
+            _ => false,
+        };
         match say {
             Say::Shares {
                 quests,
                 scratch,
                 clones,
                 ended,
+                above,
             } => {
                 self.theirs = Some(Theirs {
                     quests: quests.iter().cloned().collect(),
                     ended,
+                    above,
                 });
                 for id in quests {
                     // A quest ended at both ends, which this end has
                     // stopped sharing, isn't taken up again; one reopened
                     // there is.
                     if !(self.places.ended(&id) && self.has_ended_there(&id)) {
-                        self.share(&id)?;
+                        self.take_up(&id)?;
                     }
                 }
                 for (id, folders) in scratch {
@@ -644,7 +721,9 @@ impl Exchange {
                 Ok(Vec::new())
             }
             Say::Holds { quest, files } => {
-                self.share(&quest)?;
+                if !self.take_up(&quest)? {
+                    return Ok(Vec::new());
+                }
                 let wants = self.held(&quest, files.clone())?;
                 let mut held = self.places.ledgers().hold(&quest)?;
                 if held.ledger.heard(&self.other, files) {
@@ -672,16 +751,64 @@ impl Exchange {
         }
     }
 
-    /// Starts sharing `id` if this end doesn't yet, moving its own record
-    /// aside first. None of its scratch is shared until a folder of it is
-    /// named.
-    fn share(&self, id: &str) -> io::Result<()> {
+    /// Starts sharing `id` as the other end does, if this end doesn't yet,
+    /// moving its own record aside first, and saying whether it shares it:
+    /// one the other end shares only as a quest above others is shared so
+    /// here too, and isn't taken up once no shared quest is under it. None
+    /// of its scratch is shared until a folder of it is named.
+    fn take_up(&self, id: &str) -> io::Result<bool> {
         let ledgers = self.places.ledgers();
         if !is_quest(id) || ledgers.shares(id) {
-            return Ok(());
+            return Ok(true);
+        }
+        let above = self
+            .theirs
+            .as_ref()
+            .is_some_and(|theirs| theirs.above.contains(id));
+        if self.spent_above(id, above)? {
+            return Ok(false);
         }
         self.move_aside(&self.places.record(id), id, "record")?;
-        ledgers.hold(id)?.keep()
+        let mut held = ledgers.hold(id)?;
+        held.ledger.above = above;
+        held.keep()?;
+        Ok(true)
+    }
+
+    /// Whether quest `id`, which this end shares, is spent as
+    /// [`spent_above`](Self::spent_above) says, its ledger held only to
+    /// read whether it is shared only for those under it.
+    fn spent_here(&self, ledgers: &Ledgers, id: &str) -> io::Result<bool> {
+        let above = ledgers.hold(id)?.ledger.above;
+        self.spent_above(id, above)
+    }
+
+    /// Whether quest `id`, shared only as a quest above others if `above`,
+    /// has none left under it: no quest shared in its own right, here or
+    /// at the other end, may name it above, and the other end doesn't
+    /// share it on its own. Quests shared only for those under them keep
+    /// none, so parents naming each other can't keep each other.
+    fn spent_above(&self, id: &str, above: bool) -> io::Result<bool> {
+        let Some(theirs) = self.theirs.as_ref().filter(|_| above) else {
+            return Ok(false);
+        };
+        if theirs.quests.contains(id) && !theirs.above.contains(id) {
+            return Ok(false);
+        }
+        let ledgers = self.places.ledgers();
+        let here: BTreeSet<String> = ledgers.quests()?.into_iter().collect();
+        let shared: BTreeSet<String> = here.union(&theirs.quests).cloned().collect();
+        for quest in shared
+            .iter()
+            .filter(|quest| *quest != id && is_quest(quest))
+        {
+            let own = (theirs.quests.contains(quest) && !theirs.above.contains(quest))
+                || (here.contains(quest) && !ledgers.hold(quest)?.ledger.above);
+            if own && self.places.may_name_above(quest, id, &shared) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Starts sharing each of `folders` of `id`'s scratch this end doesn't
@@ -1126,6 +1253,25 @@ mod tests {
         }
     }
 
+    /// Gives `says` from `one` to `two`, and each answer back, until
+    /// neither has more to say.
+    fn carry(says: Vec<Say>, one: &mut Exchange, two: &mut Exchange) {
+        let mut to_two = says;
+        for _ in 0..20 {
+            if to_two.is_empty() {
+                return;
+            }
+            let mut to_one = Vec::new();
+            for say in to_two.drain(..) {
+                to_one.extend(two.hear(say).expect("two hears"));
+            }
+            for say in to_one {
+                to_two.extend(one.hear(say).expect("one hears"));
+            }
+        }
+        panic!("the two ends never stopped talking");
+    }
+
     /// Passes what each end says to the other until neither has more to
     /// say, after each has looked for changes once. Each look walks every
     /// record, as after a watch overflows, so what a test wrote just before
@@ -1338,6 +1484,150 @@ mod tests {
             there(&format!("{top}/README.md")).as_deref(),
             Some("---\nparent: null\n---\n# Top, later\n"),
             "a parent is kept current"
+        );
+    }
+
+    #[test]
+    fn a_quest_shared_for_those_under_it_stops_once_none_is() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, middle) = ("QEST-20261007-WCJQSG", "QEST-20261013-4UHC5Q");
+        let (grandchild, sibling) = ("QEST-20261115-5XF89V", "QEST-20261115-AAAAAA");
+        let put = |quest: &str, text: String| {
+            let at = kestrel.places.quests.join(quest).join("README.md");
+            fs::create_dir_all(at.parent().expect("a file has a folder")).expect("made");
+            fs::write(at, text).expect("written");
+        };
+        let under = |parent: &str, status: &str| {
+            format!("---\nparent: {parent}\nstatus: {status}\n---\n# Under\n")
+        };
+        put(top, "---\nparent: null\n---\n# Top\n".to_owned());
+        put(middle, under(top, "active"));
+        put(grandchild, under(middle, "active"));
+        put(sibling, under(top, "active"));
+        kestrel.places.offer(grandchild, &[]).expect("shared");
+        kestrel.places.offer(sibling, &[]).expect("shared");
+        let shares = |machine: &Machine, quest: &str| machine.places.ledgers().shares(quest);
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        assert!(
+            [top, middle, grandchild, sibling]
+                .iter()
+                .all(|quest| shares(&kestrel, quest) && shares(&skiff, quest)),
+            "both ends share each quest and those above it"
+        );
+
+        put(grandchild, under(middle, "concluded"));
+        for _ in 0..4 {
+            talk(&mut near, &mut far);
+        }
+        assert!(
+            [grandchild, middle]
+                .iter()
+                .all(|quest| !shares(&kestrel, quest) && !shares(&skiff, quest)),
+            "once the quest under it has ended at both ends, neither shares its parent"
+        );
+        assert!(
+            shares(&kestrel, top) && shares(&skiff, top),
+            "while a parent another shared quest is under stays"
+        );
+
+        kestrel.places.offer(top, &[]).expect("shared on its own");
+        put(sibling, under(top, "concluded"));
+        for _ in 0..4 {
+            talk(&mut near, &mut far);
+        }
+        assert!(
+            !shares(&kestrel, sibling) && !shares(&skiff, sibling),
+            "the last quest under it has ended"
+        );
+        assert!(
+            shares(&kestrel, top) && shares(&skiff, top),
+            "but a parent also shared on its own stays"
+        );
+        assert!(
+            skiff.places.quests.join(middle).join("README.md").exists(),
+            "and a parent shared no longer keeps its files"
+        );
+    }
+
+    #[test]
+    fn a_parent_whose_files_arrive_after_the_quest_under_it_stays_shared() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        let put = |quest: &str, text: String| {
+            let at = kestrel.places.quests.join(quest).join("README.md");
+            fs::create_dir_all(at.parent().expect("a file has a folder")).expect("made");
+            fs::write(at, text).expect("written");
+        };
+        put(top, "---\nparent: null\n---\n# Top\n".to_owned());
+        put(child, format!("---\nparent: {top}\n---\n# Child\n"));
+        kestrel.places.offer(child, &[]).expect("shared");
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        near.watch.hear_anything();
+        far.watch.hear_anything();
+        // The parent's files are held back, so the child's README lands
+        // first and the parent's record isn't on skiff yet.
+        let is_top = |say: &Say| matches!(say, Say::Holds { quest, .. } if quest == top);
+        let (held_back, to_far): (Vec<Say>, Vec<Say>) =
+            near.look().expect("looks").into_iter().partition(is_top);
+        carry(to_far, &mut near, &mut far);
+        assert!(
+            skiff.places.quests.join(child).join("README.md").exists()
+                && !skiff.places.quests.join(top).join("README.md").exists(),
+            "the child's README arrived before its parent's"
+        );
+        let to_near = far.look().expect("skiff looks");
+        carry(to_near, &mut far, &mut near);
+        assert!(
+            skiff.places.ledgers().shares(top),
+            "a parent a README here names stays shared before its files arrive"
+        );
+
+        carry(held_back, &mut near, &mut far);
+        talk(&mut near, &mut far);
+        assert_eq!(
+            fs::read_to_string(skiff.places.quests.join(top).join("README.md")).ok(),
+            Some("---\nparent: null\n---\n# Top\n".to_owned()),
+            "and its files arrive"
+        );
+    }
+
+    #[test]
+    fn an_idle_look_decides_no_parent_spent_until_a_readme_changes() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        let put = |quest: &str, text: String| {
+            let at = kestrel.places.quests.join(quest).join("README.md");
+            fs::create_dir_all(at.parent().expect("a file has a folder")).expect("made");
+            fs::write(at, text).expect("written");
+        };
+        put(top, "---\nparent: null\n---\n# Top\n".to_owned());
+        put(child, format!("---\nparent: {top}\n---\n# Child\n"));
+        kestrel.places.offer(child, &[]).expect("shared");
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        // Again, so skiff, sharing them now, says so.
+        talk(&mut near, &mut far);
+        talk(&mut near, &mut far);
+        // What it heard last has been decided on.
+        near.look().expect("looks");
+
+        // Unheard, so no look knows the README changed.
+        put(child, "---\nparent: null\n---\n# Child, alone\n".to_owned());
+        near.look().expect("looks");
+        assert!(
+            kestrel.places.ledgers().shares(top),
+            "an idle look reads no README, so keeps its parent"
+        );
+
+        near.watch.hear_anything();
+        near.look().expect("looks");
+        near.look().expect("looks");
+        assert!(
+            !kestrel.places.ledgers().shares(top),
+            "once a look finds the README changed, the next decides"
         );
     }
 
