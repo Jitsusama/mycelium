@@ -475,6 +475,10 @@ pub struct Exchange {
     /// Whether the hold on the quests above lifted since the last look,
     /// so what the other end last said it shares is taken up again.
     take_again: bool,
+    /// What the other end said it holds of each quest above withheld or
+    /// not taken up, heard again once the hold lifts, since it says it
+    /// again only when it changes.
+    held_back: BTreeMap<String, BTreeMap<String, State>>,
     /// The quests whose whole record was last said, rather than their
     /// README alone ([`Self::whole`]).
     whole: BTreeSet<String>,
@@ -584,6 +588,7 @@ impl Exchange {
             worker: false,
             above_withheld: false,
             take_again: false,
+            held_back: BTreeMap::new(),
             whole: BTreeSet::new(),
             passed_over: BTreeSet::new(),
         }
@@ -796,9 +801,17 @@ impl Exchange {
         self.cloning.reap();
         // What the other end said while the quests above were withheld is
         // taken up once they aren't, since it says it again only when it
-        // changes.
-        if std::mem::take(&mut self.take_again) {
+        // changes; the hold stays lifted to be taken up again until all of
+        // it is.
+        let mut replayed = Vec::new();
+        if self.take_again {
             self.take_up_theirs()?;
+            let held_back: Vec<String> = self.held_back.keys().cloned().collect();
+            for quest in held_back {
+                let files = self.held_back.get(&quest).cloned().unwrap_or_default();
+                replayed.extend(self.hear(Say::Holds { quest, files })?);
+            }
+            self.take_again = false;
         }
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
@@ -896,6 +909,7 @@ impl Exchange {
             says.push(shares_said(&shares));
         }
         says.extend(holds);
+        says.extend(replayed);
         self.told = shares;
         self.whole = whole;
         self.passed_over = passed_over;
@@ -908,6 +922,7 @@ impl Exchange {
     fn stop(&mut self, ledgers: &Ledgers, id: &str, why: &str) -> io::Result<()> {
         ledgers.stop(id)?;
         self.unsaid.remove(id);
+        self.held_back.remove(id);
         self.watch.forget(id);
         self.above_again = true;
         eprintln!("{id} {why}, so it is shared no longer");
@@ -964,18 +979,22 @@ impl Exchange {
             }
             // What a worker says of a quest withheld from it is let be, as
             // is what it asks: it never holds such a quest of this end's.
-            Say::Holds { quest, .. }
-            | Say::Want { quest, .. }
-            | Say::Piece { quest, .. }
-            | Say::File { quest, .. }
+            // What another end holds of one is kept for when the hold lifts.
+            Say::Holds { quest, files } if self.withholds_quest(&quest)? => {
+                self.held_back.insert(quest, files);
+                Ok(Vec::new())
+            }
+            Say::Want { quest, .. } | Say::Piece { quest, .. } | Say::File { quest, .. }
                 if self.withholds_quest(&quest)? =>
             {
                 Ok(Vec::new())
             }
             Say::Holds { quest, files } => {
                 if !self.take_up(&quest)? {
+                    self.held_back.insert(quest, files);
                     return Ok(Vec::new());
                 }
+                self.held_back.remove(&quest);
                 let wants = self.held(&quest, files.clone())?;
                 let mut held = self.places.ledgers().hold(&quest)?;
                 if held.ledger.heard(&self.other, files) {
@@ -1052,7 +1071,7 @@ impl Exchange {
             }
         }
         for (id, clones) in &clones {
-            if self.carries_whole(id)? {
+            if !self.places.ended(id) && self.carries_whole(id)? {
                 self.clone_what(id, clones)?;
             }
         }
@@ -1928,7 +1947,7 @@ mod tests {
                 BTreeMap::from([(
                     top.to_owned(),
                     BTreeMap::from([(
-                        "notes/repo".to_owned(),
+                        "lab/repo".to_owned(),
                         Clone {
                             remote: "https://nowhere.invalid/repo.git".to_owned(),
                             branch: None,
@@ -1966,6 +1985,36 @@ mod tests {
              though skiff says nothing new"
         );
         assert!(!mine.exists(), "kestrel's own copy moved aside first");
+    }
+
+    #[test]
+    fn what_a_withheld_end_said_of_a_parent_is_taken_up_once_the_hold_lifts() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        under_top(&skiff, top, child);
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        near.withhold_above(true);
+        let said = far.look().expect("skiff looks");
+        carry(said, &mut far, &mut near);
+        assert!(
+            !kestrel.places.ledgers().shares(top),
+            "withheld, the parent isn't taken up"
+        );
+
+        near.withhold_above(false);
+        talk(&mut near, &mut far);
+        assert!(
+            kestrel.places.ledgers().shares(top),
+            "once the hold lifts, the parent skiff said it shares is taken up"
+        );
+        assert_eq!(
+            fs::read_to_string(kestrel.places.record(top).join("README.md"))
+                .ok()
+                .as_deref(),
+            Some(TOP_README),
+            "and its README asked for, though skiff says nothing new of it"
+        );
     }
 
     #[test]
