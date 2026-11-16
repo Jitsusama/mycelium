@@ -7,9 +7,12 @@
 //! choice replaces it. Both are then judged in hindsight by the same
 //! balance readings.
 //!
-//! An ask of where, which started nothing, is answered again the same
-//! way and counted, with each answer that would have differed, but never
-//! judged: it added no load, so hindsight has nothing of it to weigh.
+//! Every other answer that named a machine, an ask of where or a run,
+//! which a record doesn't tell apart, is answered again the same way and
+//! counted, with each that would have differed, but never judged:
+//! hindsight judges starts, the load a machine's room has yet to show, and
+//! a run's load passes with its asker. Answers that named no machine are
+//! left as they were, starts and asks alike.
 //!
 //! Those readings carry the work where it was kept, so a changed choice
 //! is judged on a machine that never carried it: a replay flatters a set
@@ -25,7 +28,7 @@ use crate::placements::Record;
 
 /// The name of what a replay means. A new definition gets a new name, so
 /// lines kept under an old one are never read as the new.
-pub const MEASURES: &str = "replay/1";
+pub const MEASURES: &str = "replay/2";
 
 /// What placing kept work again under other weights says.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -38,14 +41,12 @@ pub struct Replay {
     pub starts: usize,
     /// Each start the weights would have placed elsewhere.
     pub changed: Vec<Change>,
-    /// How many kept asks of where, which started nothing, were answered
-    /// again.
-    #[serde(default)]
+    /// How many kept answers that weren't starts, asks of where and runs,
+    /// named a machine and were answered again.
     pub asks: usize,
-    /// Each ask the weights would have answered elsewhere. An ask added
-    /// no load, so none is judged in hindsight: this says only how often
-    /// the weights would have told an asker something else.
-    #[serde(default)]
+    /// Each of those the weights would have answered elsewhere. None is
+    /// judged in hindsight: this says only how often the weights would
+    /// have told an asker something else.
     pub answered: Vec<Change>,
     /// Hindsight on the starts as they were placed.
     pub kept: Hindsight,
@@ -53,20 +54,21 @@ pub struct Replay {
     pub replayed: Hindsight,
 }
 
-/// A start the weights replayed would have placed elsewhere.
+/// A kept answer the weights replayed would have given elsewhere.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Change {
-    /// When it was placed.
+    /// When it was answered.
     pub at: String,
-    /// Where it went.
+    /// The machine it named.
     pub kept: String,
-    /// Where the weights would have put it; none where they would have
-    /// put it nowhere.
+    /// The machine the weights would have named; none where they would
+    /// have named none.
     pub replayed: Option<String>,
 }
 
-/// Places each start in `records` again under `weights`, judging both
-/// placings by the balance `readings` kept around them.
+/// Answers each kept placement in `records` that named a machine again
+/// under `weights`, judging the starts, as placed and as replayed, by the
+/// balance `readings` kept around them.
 #[must_use]
 pub fn replay(records: &[Record], readings: &[Reading], weights: &Weights) -> Replay {
     let mut starts = 0;
@@ -286,11 +288,41 @@ mod tests {
                 replayed: Some("kestrel".to_owned()),
             }]
         );
-        assert_eq!(replay.replayed, replay.kept, "an ask added no load");
     }
 
     #[test]
-    fn an_ask_the_weights_would_answer_alike_is_counted_alone() {
+    fn a_start_and_an_ask_are_each_counted_and_only_the_start_judged() {
+        let (machines, loads) = crowded_skiff();
+        let started = kept("skiff", machines, loads);
+        let asked = Record {
+            start: false,
+            ..started.clone()
+        };
+        let readings = [a_minute_on(&[("kestrel", 0.3), ("skiff", 0.6)])];
+        let heavier = Weights {
+            session: 1.0,
+            ..Weights::STARTING
+        };
+        let replay = replay(&[started, asked], &readings, &heavier);
+        let elsewhere = [Change {
+            at: AT.to_owned(),
+            kept: "skiff".to_owned(),
+            replayed: Some("kestrel".to_owned()),
+        }];
+        assert_eq!((replay.starts, replay.asks), (1, 1));
+        assert_eq!(
+            (&replay.changed[..], &replay.answered[..]),
+            (&elsewhere[..], &elsewhere[..])
+        );
+        assert_eq!(
+            (replay.kept.placed, replay.replayed.placed),
+            (1, 1),
+            "the ask is judged neither as kept nor as replayed"
+        );
+    }
+
+    #[test]
+    fn an_ask_the_weights_would_answer_alike_is_counted_but_not_listed() {
         let (machines, loads) = crowded_skiff();
         let mut asked = kept("skiff", machines, loads);
         asked.start = false;

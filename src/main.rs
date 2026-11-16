@@ -244,8 +244,8 @@ enum Action {
     ///
     /// With `--replay`, places each kept start again under the weights in
     /// a JSON file, any left out taking the starting ones, and says which
-    /// it would have placed elsewhere and hindsight on both, and which kept
-    /// asks of where it would have answered elsewhere.
+    /// it would have placed elsewhere and hindsight on both, and which other
+    /// kept answers, asks of where and runs, it would have given elsewhere.
     #[command(after_help = "Example:\n  mycelium placements --hours 168 --replay weights.json")]
     Placements(PlacementsAsked),
     /// Speaks in a quest's web of murmurs and ties.
