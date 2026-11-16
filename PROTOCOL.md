@@ -1128,10 +1128,13 @@ worktree's `branch` or a snapshot's `commit`). Its name is
 `tree.<repo>:<branch>`, or `tree.<repo>:<commit>` for a snapshot, the
 repository's whole key and the whole commit, read up to the last colon
 since a branch holds none; its short name is the repository's last
-part and the branch, `<name>@<branch>`, or the commit cut to seven.
-The machine is no part of it: cells on two machines holding one branch
-share one tree. A tree one cell holds alone is no network, only among
-that cell record's `trees`, and a group named as a tree joins none. A
+part and the branch, `<name>@<branch>`, or the commit cut to seven,
+saying the owner, `<owner>/<name>@<branch>`, or else the whole key,
+where two trees' short names would be one. The machine is no part of
+it: cells on two machines holding one branch share one tree. A tree one
+cell holds alone is no network, only among that cell record's `trees`,
+and a group named as a tree joins none. A tree whose every cell is
+parked counts them `dormant`, so it draws after the living ones. A
 network is
 heard when the latest of its cells was, or its team where its cells say
 nothing. Its records change as the sessions do, so a machine come or

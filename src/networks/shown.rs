@@ -912,7 +912,7 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
             tree.network()
                 .is_none_or(|name| mycelium.network(&name).is_none())
         })
-        .filter_map(super::Tree::short)
+        .filter_map(|tree| tree.shorts().map(|[name, ..]| name))
         .collect();
     if !own.is_empty() {
         lines.extend([String::new(), look.paint(BOLD, "its own trees")]);
