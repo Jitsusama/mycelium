@@ -996,8 +996,10 @@ starts beyond what its room says), and the `decision`: the `placement`
 answered and, for each machine, how it was `judged` (`machine`,
 `qualifies`, `over`, `unheard`, how many preferences it met as
 `preferred`, its `headroom`, and its `chance` of being the one chosen,
-one in as many as were near the best and none for the rest). A
-placement the node can't keep is said on its error output and answered
+one in as many as were near the best and none for the rest), and the
+`weights` that weighed them (`cpu`, `memory`, `disk`, `session`,
+`rather_not`, `filling` and `near_best`; a record without them was
+weighed by the starting ones). A placement the node can't keep is said on its error output and answered
 all the same. When a day's file is first written, the files of days
 more than 14 before it are let go, so the log holds about two weeks.
 A processor reading that isn't a number counts as none, so every
