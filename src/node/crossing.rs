@@ -311,7 +311,7 @@ mod tests {
     /// long as the node's other tests give it for a machine under load.
     const PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
-    /// A realm's node on optimus, its socket among every realm's.
+    /// A realm's node on skiff, its socket among every realm's.
     struct Node {
         store: Memory,
         socket: PathBuf,
@@ -362,7 +362,7 @@ mod tests {
         };
         let membership = Realm {
             name: realm.to_owned(),
-            machine: "optimus".to_owned(),
+            machine: "skiff".to_owned(),
         };
         let bound = bind(&socket).expect("the socket binds");
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -651,9 +651,9 @@ mod tests {
     #[tokio::test]
     async fn a_message_a_link_carried_crosses_where_both_realms_run() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        // methuselah runs no work node, so what it sends waits for one.
-        let methuselah = tempfile::tempdir().expect("a temporary folder");
-        let alone = node(methuselah.path(), "personal", &["work"], &[], &["Q9METH"]);
+        // osprey runs no work node, so what it sends waits for one.
+        let osprey = tempfile::tempdir().expect("a temporary folder");
+        let alone = node(osprey.path(), "personal", &["work"], &[], &["Q9METH"]);
         let finding = draft(Intent::Finding, vec![peer("16V6F4")], Some("work"));
         let Answer::Ok(Response::Sent(waiting)) =
             answer(&alone.socket, Request::Send(finding)).await
@@ -680,7 +680,7 @@ mod tests {
             "no one here hears it"
         );
 
-        // A link carries it to optimus, which runs both realms' nodes.
+        // A link carries it to skiff, which runs both realms' nodes.
         let personal = node(dir.path(), "personal", &["work"], &[], &[]);
         let work = node(dir.path(), "work", &[], &["personal"], &["16V6F4"]);
         let hearing = heard(&work.socket).await;
@@ -710,7 +710,7 @@ mod tests {
             .await
             .expect("its sender is told in time")
             .expect("the watch reads");
-        assert_eq!(told.from, "mycelium@optimus");
+        assert_eq!(told.from, "mycelium@skiff");
         assert_eq!(told.groups, vec![peer("Q9METH")]);
         assert_eq!(told.intent, Some(Intent::Finding));
         assert_eq!(told.re.as_deref(), Some(unheard.id.as_str()));

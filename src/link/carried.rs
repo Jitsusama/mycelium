@@ -226,21 +226,21 @@ mod tests {
         let asks = Asks::default();
         let words = ["mycelium".to_owned(), "attach".to_owned()];
         asks.know(
-            "penelope",
+            "tern",
             std::sync::Arc::new(|words: &[String]| {
-                let mut there = vec!["into-penelope".to_owned()];
+                let mut there = vec!["into-tern".to_owned()];
                 there.extend_from_slice(words);
                 there
             }),
         );
         assert_eq!(
-            asks.way("penelope")(&words),
-            ["into-penelope", "mycelium", "attach"],
+            asks.way("tern")(&words),
+            ["into-tern", "mycelium", "attach"],
             "a machine the node dialled is reached as its dial says"
         );
         assert_eq!(
-            asks.way("optimus")(&words),
-            ["ssh", "-t", "--", "optimus", "mycelium", "attach"],
+            asks.way("skiff")(&words),
+            ["ssh", "-t", "--", "skiff", "mycelium", "attach"],
             "one it never dialled is reached over SSH by its name"
         );
     }

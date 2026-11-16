@@ -2464,10 +2464,10 @@ mod tests {
         (holder, given)
     }
 
-    /// Holds session `0e50` on equilibrius, whose store is `store`, as its
+    /// Holds session `0e50` on kestrel, whose store is `store`, as its
     /// holder there keeps it by `5e551011`, answering the held folder.
     fn hold_a_session(dir: &Path, store: &Memory) -> PathBuf {
-        let held = dir.join("equilibrius.held");
+        let held = dir.join("kestrel.held");
         fs::create_dir(&held).expect("the held folder is made");
         let keeps = hold::Held {
             id: "5e551011".to_owned(),
@@ -2612,24 +2612,24 @@ mod tests {
         (stop, node)
     }
 
-    /// A dial to equilibrius over a pipe, whose far end runs equilibrius's
+    /// A dial to kestrel over a pipe, whose far end runs kestrel's
     /// end of the link on `store`, handing starts to its node at `socket`.
     #[derive(Clone)]
     struct Piped {
         store: Memory,
         socket: PathBuf,
         held: PathBuf,
-        /// Whether equilibrius's end knows the far end is optimus, as a
+        /// Whether kestrel's end knows the far end is skiff, as a
         /// pinned key proves it.
         proven: bool,
-        /// Whether equilibrius's end carries what its node asks of
-        /// optimus, as the end of a link the other machine dialled does.
+        /// Whether kestrel's end carries what its node asks of
+        /// skiff, as the end of a link the other machine dialled does.
         asks_back: bool,
     }
 
     impl Dial for Piped {
         fn describe(&self) -> String {
-            "a pipe to equilibrius".to_owned()
+            "a pipe to kestrel".to_owned()
         }
 
         fn dial(&self, _realm: &str) -> impl Future<Output = io::Result<Connection>> + Send {
@@ -2643,7 +2643,7 @@ mod tests {
             tokio::spawn(async move {
                 let realm = Realm {
                     name: "work".to_owned(),
-                    machine: "equilibrius".to_owned(),
+                    machine: "kestrel".to_owned(),
                 };
                 let starting = Starting {
                     node,
@@ -2655,7 +2655,7 @@ mod tests {
                 let _ = if proven {
                     let by_key = Proven {
                         by: realm,
-                        far: "optimus".to_owned(),
+                        far: "skiff".to_owned(),
                     };
                     link::run(store, &by_key, piped(far), None, Some(starting)).await
                 } else {
@@ -2666,7 +2666,7 @@ mod tests {
         }
 
         fn there(&self, words: &[String]) -> Vec<String> {
-            let mut there = vec!["into-equilibrius".to_owned()];
+            let mut there = vec!["into-kestrel".to_owned()];
             there.extend_from_slice(words);
             there
         }
@@ -2684,10 +2684,10 @@ mod tests {
             .expect("the client asks")
     }
 
-    /// Steers the session held on equilibrius from the node at
+    /// Steers the session held on kestrel from the node at
     /// `near_socket`, and has its talk answered there, as its session would,
     /// until the answer is carried back to `near_steers`.
-    async fn steers_the_session_on_equilibrius(
+    async fn steers_the_session_on_kestrel(
         near_socket: &Path,
         near_steers: &Path,
         far_steers: &Path,
@@ -2720,12 +2720,12 @@ mod tests {
         assert_eq!(
             ask(near_socket.to_owned(), asked).await,
             Ok(Response::Steered {
-                machine: "equilibrius".to_owned()
+                machine: "kestrel".to_owned()
             }),
             "a session on another machine is steered there"
         );
         let inbox: Vec<_> = fs::read_dir(far_steers.join("SAK9FZ"))
-            .expect("equilibrius's inbox for it is made")
+            .expect("kestrel's inbox for it is made")
             .flatten()
             .filter(|entry| entry.path().extension().is_some_and(|it| it == "json"))
             .collect();
@@ -2817,13 +2817,13 @@ mod tests {
             let (near, _far) = tokio::io::duplex(64);
             let mut connection = piped(near);
             connection.refused = Some(tokio::spawn(async {
-                Some("joel@equilibrius: Permission denied (publickey).".to_owned())
+                Some("joel@kestrel: Permission denied (publickey).".to_owned())
             }));
             std::future::ready(Ok(connection))
         }
 
         fn there(&self, words: &[String]) -> Vec<String> {
-            let mut there = vec!["into-equilibrius".to_owned()];
+            let mut there = vec!["into-kestrel".to_owned()];
             there.extend_from_slice(words);
             there
         }
@@ -2845,7 +2845,7 @@ mod tests {
         };
         let membership = Realm {
             name: "work".to_owned(),
-            machine: "optimus".to_owned(),
+            machine: "skiff".to_owned(),
         };
         let dial = Arc::new(Refusing { dialled });
         let words = dial.there(&[]);
@@ -2918,12 +2918,12 @@ mod tests {
     #[tokio::test]
     async fn a_node_says_what_its_providers_offer_and_why_one_couldnt() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         // The node makes its socket's folder, open to no one else; its
         // providers are asked only when offers are.
         let (_stop, _node) = node(
             &Memory::default(),
-            "optimus",
+            "skiff",
             Vec::<Piped>::new(),
             None,
             &socket,
@@ -2972,7 +2972,7 @@ mod tests {
     #[tokio::test]
     async fn a_machine_that_has_left_is_no_longer_one_of_the_realms() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let nowhere = facts::Sources {
             home: "/".into(),
@@ -3006,7 +3006,7 @@ mod tests {
         store
             .put_machine(&lent("staying", now + minute * 60))
             .expect("what it said is kept");
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let names = tokio::task::spawn_blocking(move || {
             let mut client = Client::connect(&socket).expect("the client connects");
             let Ok(Ok(Response::Machines(all))) = client.ask(&Request::Machines) else {
@@ -3018,7 +3018,7 @@ mod tests {
         .expect("the machines are asked for");
         assert_eq!(
             names,
-            ["optimus", "staying"],
+            ["skiff", "staying"],
             "a machine past the time it said it leaves is no longer listed"
         );
     }
@@ -3058,8 +3058,8 @@ mod tests {
         }
     }
 
-    /// What equilibrius says of itself, as measured at `at`.
-    fn equilibrius_at(at: &str) -> facts::Machine {
+    /// What kestrel says of itself, as measured at `at`.
+    fn kestrel_at(at: &str) -> facts::Machine {
         let nowhere = facts::Sources {
             home: "/".into(),
             queue: None,
@@ -3070,19 +3070,19 @@ mod tests {
         };
         facts::Machine {
             measured_at: at.to_owned(),
-            ..facts::measure("equilibrius", &nowhere)
+            ..facts::measure("kestrel", &nowhere)
         }
     }
 
     #[tokio::test]
     async fn a_list_naming_fields_is_sent_only_those_and_one_naming_none_all() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         store
-            .put_machine(&equilibrius_at("2026-10-31T04:00:00Z"))
+            .put_machine(&kestrel_at("2026-10-31T04:00:00Z"))
             .expect("what it said is kept");
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
@@ -3128,12 +3128,12 @@ mod tests {
     #[tokio::test]
     async fn a_client_opening_with_hello_is_answered_in_the_daemon_interface() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         store
-            .put_machine(&equilibrius_at("2026-10-31T04:00:00Z"))
+            .put_machine(&kestrel_at("2026-10-31T04:00:00Z"))
             .expect("what it said is kept");
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let mut client = Speaking::to(&socket).await;
 
         client.ask(json!({"id": 1, "ask": "hello"})).await;
@@ -3172,7 +3172,7 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            [&json!("machine:equilibrius"), &json!("machine:optimus")],
+            [&json!("machine:kestrel"), &json!("machine:skiff")],
             "this machine among the others, by key"
         );
         let here: Vec<&Value> = whole["records"]
@@ -3187,11 +3187,11 @@ mod tests {
             "each saying whether it is this one"
         );
         store
-            .put_machine(&equilibrius_at("2026-10-31T04:01:00Z"))
+            .put_machine(&kestrel_at("2026-10-31T04:01:00Z"))
             .expect("what it said is kept");
         // This machine's own minute's measure may be told first.
         let mut changed = client.next().await;
-        while changed["changed"][0]["key"] == json!("machine:optimus") {
+        while changed["changed"][0]["key"] == json!("machine:skiff") {
             changed = client.next().await;
         }
         assert_eq!(
@@ -3202,7 +3202,7 @@ mod tests {
             ),
             (
                 &json!(3),
-                &json!("machine:equilibrius"),
+                &json!("machine:kestrel"),
                 &json!("2026-10-31T04:01:00Z")
             ),
             "a machine saying itself again is sent as what changed: {changed}"
@@ -3225,10 +3225,10 @@ mod tests {
     #[tokio::test]
     async fn a_file_the_node_serves_is_a_kind_its_clients_watch() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let (_stop, _node) = node(
             &Memory::default(),
-            "optimus",
+            "skiff",
             Vec::<Piped>::new(),
             None,
             &socket,
@@ -3278,9 +3278,9 @@ mod tests {
     #[tokio::test]
     async fn a_watch_of_messages_is_sent_each_message_heard() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let said = |text: &str| {
             let draft = Draft {
                 from: "joel".to_owned(),
@@ -3333,7 +3333,7 @@ mod tests {
     #[tokio::test]
     async fn what_waits_on_the_mesh_is_watched_until_it_is_answered_or_ended() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         // SKIFF1's session goes by its own address too.
         let presence = json!({
@@ -3341,7 +3341,7 @@ mod tests {
             "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
         });
         store.start_here("skiff", presence, true);
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let now = jiff::Timestamp::now();
         let sent = |n: u32, from: &str, to: &str, intent: &str, more: Value| {
             let id = format!("{}-{from}-1-{n:08x}", now.as_millisecond());
@@ -3417,14 +3417,14 @@ mod tests {
     #[tokio::test]
     async fn the_persons_words_are_kept_with_a_talk_that_says_what_became_of_them() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let presence = json!({
             "session": "here", "addresses": ["HERE12"], "groups": [],
             "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
         });
         store.start_here("here", presence, true);
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
@@ -3471,7 +3471,7 @@ mod tests {
             Some(vec![(
                 json!(format!("said:{talk}")),
                 json!("HERE12"),
-                json!("optimus"),
+                json!("skiff"),
                 json!("ship it"),
                 None,
             )]),
@@ -3509,14 +3509,14 @@ mod tests {
     #[tokio::test]
     async fn an_agent_is_refused_a_steer_as_the_person_and_let_say_its_own() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let presence = json!({
             "session": "here", "addresses": ["HERE12"], "groups": [],
             "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
         });
         store.start_here("here", presence, true);
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         // The client runs in this process, which the stand-in for /proc
         // tells as running in one of pi's hosts.
         let asker = procs_of(&socket).join(std::process::id().to_string());
@@ -3583,7 +3583,7 @@ mod tests {
         let steered = client.next().await;
         assert_eq!(
             steered["steered"]["machine"],
-            json!("optimus"),
+            json!("skiff"),
             "what an agent says as no one but itself is let through: {steered}"
         );
         assert_eq!(held(), [own], "and reaches the inbox");
@@ -3701,14 +3701,14 @@ mod tests {
         for (at, presence) in also.iter().enumerate() {
             store.start_here(&format!("also-{at}"), presence.clone(), true);
         }
-        let (stop, running) = node(store, "optimus", Vec::<Piped>::new(), None, socket);
+        let (stop, running) = node(store, "skiff", Vec::<Piped>::new(), None, socket);
         let mut client = Speaking::to(socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
         // Once the node has started, as a link carries it, since a machine
         // no link claims as the node starts is marked out of reach.
         store
-            .put_machine(&fenced("penelope", &["remote"]))
+            .put_machine(&fenced("tern", &["remote"]))
             .expect("what it said is kept");
         client
             .ask(json!({"id": 2, "ask": "watch", "kind": "quest"}))
@@ -3721,7 +3721,7 @@ mod tests {
         for (pid, session) in [(7001, "s-steward"), (7002, "s-weigh"), (7003, "s-harbour")] {
             holds_log(socket, pid, session);
         }
-        let here = fenced("optimus", &["remote", "big"]).declared;
+        let here = fenced("skiff", &["remote", "big"]).declared;
         fs::write(
             socket.with_file_name("declared.json"),
             serde_json::to_vec(&here).expect("it is JSON"),
@@ -3842,7 +3842,7 @@ mod tests {
     #[tokio::test]
     async fn an_orchestrator_started_afresh_claims_its_quests_again() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
@@ -3874,7 +3874,7 @@ mod tests {
                 socket.clone(),
                 Request::Steer {
                     address: "ospht4".to_owned(),
-                    steer: json!({"act": "ordered-carry", "to": "penelope",
+                    steer: json!({"act": "ordered-carry", "to": "tern",
                                   "why": "it needs the camera"}),
                 },
             )
@@ -3906,7 +3906,7 @@ mod tests {
     #[tokio::test]
     async fn only_the_persons_own_login_frees_a_quest() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
         steward_claims(&socket).await;
         asks_below(&socket, 7002);
@@ -3945,14 +3945,14 @@ mod tests {
         );
     }
 
-    /// What `asker`'s pi answers as it orders HARBOR's carry to penelope.
+    /// What `asker`'s pi answers as it orders HARBOR's carry to tern.
     async fn orders_harbour(socket: &Path, asker: i32) -> Reply {
         asks_below(socket, asker);
         ask(
             socket.to_owned(),
             Request::Steer {
                 address: "harbor".to_owned(),
-                steer: json!({"act": "ordered-carry", "to": "penelope",
+                steer: json!({"act": "ordered-carry", "to": "tern",
                               "why": "it needs the camera"}),
             },
         )
@@ -3962,7 +3962,7 @@ mod tests {
     #[tokio::test]
     async fn an_ordered_carry_never_lands_on_looser_ground() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
@@ -3984,8 +3984,8 @@ mod tests {
             }
         };
         assert_eq!(
-            to("optimus").await,
-            Err("HARBOR already runs on optimus".to_owned()),
+            to("skiff").await,
+            Err("HARBOR already runs on skiff".to_owned()),
             "a carry goes somewhere else"
         );
         assert_eq!(
@@ -4022,7 +4022,7 @@ mod tests {
     #[tokio::test]
     async fn a_quest_no_orchestrator_told_the_node_of_orders_no_carry() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
         assert_eq!(
             orders_harbour(&socket, 7001).await,
@@ -4043,7 +4043,7 @@ mod tests {
     #[tokio::test]
     async fn only_the_session_holding_an_orchestration_hands_it_on() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
         steward_claims(&socket).await;
         assert_eq!(
@@ -4098,7 +4098,7 @@ mod tests {
     #[tokio::test]
     async fn a_session_whose_log_continues_an_orchestrator_takes_on_its_quests() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
         steward_claims(&socket).await;
         let quests = ["QEST-20261108-OSPHT4", "QEST-20261115-HARBOR"];
@@ -4139,7 +4139,7 @@ mod tests {
     #[tokio::test]
     async fn only_an_orchestrator_by_the_quests_record_orders_a_carry() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
         steward_claims(&socket).await;
         let inbox = inboxes(&socket).join("HARBOR");
@@ -4154,7 +4154,7 @@ mod tests {
                 },
             )
         };
-        let ordered = json!({"act": "ordered-carry", "to": "penelope",
+        let ordered = json!({"act": "ordered-carry", "to": "tern",
                              "why": "it needs the camera", "from": "person", "by": "OSPHT4"});
 
         asks_below(&socket, 7002);
@@ -4176,7 +4176,7 @@ mod tests {
 
         asks_below(&socket, 7001);
         assert_eq!(
-            order(json!({"act": "carry", "to": "penelope", "from": "person"})).await,
+            order(json!({"act": "carry", "to": "tern", "from": "person"})).await,
             Err(
                 "this asks from mycelium-pi-f3d9.scope, an agent's, and an agent can't speak \
                  as the person: only the person's own login says what they say"
@@ -4187,14 +4187,14 @@ mod tests {
         assert_eq!(
             order(ordered).await,
             Ok(Response::Steered {
-                machine: "optimus".to_owned()
+                machine: "skiff".to_owned()
             }),
             "its orchestrator, by the record, orders the carry"
         );
         assert_eq!(
             held(),
             [
-                json!({"act": "ordered-carry", "to": "penelope", "why": "it needs the camera",
+                json!({"act": "ordered-carry", "to": "tern", "why": "it needs the camera",
                     "by": "WCJQSG", "from": "WCJQSG"})
             ],
             "under the orchestrator's name, never the person's or the one the client gave"
@@ -4222,8 +4222,8 @@ mod tests {
                 &json!("HARBOR"),
                 &json!("s-harbour"),
                 &json!("QEST-20261115-HARBOR"),
-                &json!("optimus"),
-                &json!("penelope"),
+                &json!("skiff"),
+                &json!("tern"),
                 &json!("it needs the camera"),
             ),
             "kept saying who ordered which carry, from where to where, and why: {line}"
@@ -4242,7 +4242,7 @@ mod tests {
     #[tokio::test]
     async fn a_presence_borrowing_the_orchestrators_session_orders_no_carry() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         // A helper of OSPHT4's writes a presence naming WCJQSG's session
         // as its own, owned by the helper's own process.
         let helper = i32::try_from(std::process::id()).expect("a pid");
@@ -4258,7 +4258,7 @@ mod tests {
                 socket.clone(),
                 Request::Steer {
                     address: "harbor".to_owned(),
-                    steer: json!({"act": "ordered-carry", "to": "penelope",
+                    steer: json!({"act": "ordered-carry", "to": "tern",
                                   "why": "it needs the camera"}),
                 },
             )
@@ -4280,7 +4280,7 @@ mod tests {
     #[tokio::test]
     async fn a_chain_forged_in_the_quests_record_orders_no_carry() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         // OSPHT4 rewrites HARBOR's orchestrator in the quests' record as
         // itself; the mesh still puts HARBOR in WCJQSG's orchestration.
         let mut forged = orchestrations();
@@ -4319,7 +4319,7 @@ mod tests {
     #[tokio::test]
     async fn a_steer_asked_in_the_daemon_interface_reaches_its_sessions_inbox() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let presence = json!({
             "session": "here", "addresses": ["HERE12"], "groups": [],
@@ -4332,7 +4332,7 @@ mod tests {
             "busy": false, "state": "parked", "at": jiff::Timestamp::now().to_string(),
         });
         store.start_here("napper", parked, false);
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
@@ -4344,7 +4344,7 @@ mod tests {
         let steered = client.next().await;
         assert_eq!(
             (&steered["id"], &steered["steered"]["machine"]),
-            (&json!(2), &json!("optimus")),
+            (&json!(2), &json!("skiff")),
             "a session here is steered here: {steered}"
         );
         let inbox: Vec<Value> = fs::read_dir(inboxes(&socket).join("HERE12"))
@@ -4365,7 +4365,7 @@ mod tests {
         let left = client.next().await;
         assert_eq!(
             (&left["id"], &left["steered"]["machine"]),
-            (&json!(4), &json!("optimus")),
+            (&json!(4), &json!("skiff")),
             "a session parked here is left what is said, to read as it wakes: {left}"
         );
 
@@ -4402,11 +4402,11 @@ mod tests {
     #[tokio::test]
     async fn an_update_asked_in_the_daemon_interface_answers_how_it_ended() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let done = json!({"step": "done", "commit": "c0ffee", "applied": "now",
             "restart": null, "restarted": []});
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         // The node has made its folder by now, as only it may.
         stand_in_updater(&updater_of(&socket), done.clone());
         let mut client = Speaking::to(&socket).await;
@@ -4414,7 +4414,7 @@ mod tests {
         client.next().await;
 
         client
-            .ask(json!({"id": 2, "ask": "update", "machine": "optimus"}))
+            .ask(json!({"id": 2, "ask": "update", "machine": "skiff"}))
             .await;
         let updated = client.next().await;
         assert_eq!(
@@ -4442,9 +4442,9 @@ mod tests {
     #[tokio::test]
     async fn a_watch_of_sessions_is_sent_each_session_that_arrives() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
@@ -4462,7 +4462,7 @@ mod tests {
             "busy": true, "state": "busy", "at": jiff::Timestamp::now().to_string(),
         });
         store
-            .put_presence("there", "equilibrius", &presence)
+            .put_presence("there", "kestrel", &presence)
             .expect("the presence is kept");
         let arrived = client.next().await;
         assert_eq!(
@@ -4534,7 +4534,7 @@ mod tests {
     #[tokio::test]
     async fn a_watch_of_networks_is_sent_each_network_as_the_networks_view_makes_it() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let at = jiff::Timestamp::now().to_string();
         let put = |session: &str, groups: &[&str]| {
@@ -4543,10 +4543,10 @@ mod tests {
                 "busy": true, "state": "busy", "at": at,
             });
             store
-                .put_presence(session, "equilibrius", &presence)
+                .put_presence(session, "kestrel", &presence)
                 .expect("the presence is kept");
         };
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         let hello = client.next().await;
@@ -4641,9 +4641,9 @@ mod tests {
     #[tokio::test]
     async fn a_watch_asked_when_told_moves_holds_back_what_only_an_open_launcher_shows() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
@@ -4657,7 +4657,7 @@ mod tests {
         };
         let put_as = |session, busy, title| {
             store
-                .put_presence(session, "equilibrius", &presence(session, busy, title))
+                .put_presence(session, "kestrel", &presence(session, busy, title))
                 .expect("the presence is kept");
         };
         let put = |busy, title| put_as("there", busy, title);
@@ -4721,7 +4721,7 @@ mod tests {
     #[tokio::test]
     async fn a_watch_of_sessions_says_how_each_stands_and_hears_a_park_marked() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let now = jiff::Timestamp::now().to_string();
         let boot = store::folders::boot_id();
@@ -4734,7 +4734,7 @@ mod tests {
         store.start_here("runner", presence("runner", "listening"), true);
         // Parked, its process ended, though the harness hasn't marked it.
         store.start_here("napper", presence("napper", "parked"), false);
-        let (_stop, _node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
@@ -4782,8 +4782,8 @@ mod tests {
     async fn another_machines_node_starts_joins_and_steers_its_sessions_for_this_one() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (holder, given) = stand_in_holder(dir.path());
-        let far_socket = dir.path().join("equilibrius").join("work.sock");
-        let near_socket = dir.path().join("optimus").join("work.sock");
+        let far_socket = dir.path().join("kestrel").join("work.sock");
+        let near_socket = dir.path().join("skiff").join("work.sock");
         let near_steers = inboxes(&near_socket);
         let far_steers = inboxes(&far_socket);
         let far_store = Memory::default();
@@ -4792,7 +4792,7 @@ mod tests {
             scope: start::Scope::None,
         };
         let nobody = Vec::<Piped>::new();
-        let far = node(&far_store, "equilibrius", nobody, Some(holds), &far_socket);
+        let far = node(&far_store, "kestrel", nobody, Some(holds), &far_socket);
         let near_store = Memory::default();
         let held = hold_a_session(dir.path(), &far_store);
         let dial = Piped {
@@ -4802,27 +4802,27 @@ mod tests {
             proven: false,
             asks_back: false,
         };
-        let near = node(&near_store, "optimus", vec![dial], None, &near_socket);
-        // Nothing tells the test when the link has said what equilibrius
+        let near = node(&near_store, "skiff", vec![dial], None, &near_socket);
+        // Nothing tells the test when the link has said what kestrel
         // is, so it looks again every few milliseconds until it has.
         tokio::time::timeout(PATIENCE, async {
             while !near_store
                 .machines()
                 .iter()
-                .any(|one| one.name == "equilibrius")
+                .any(|one| one.name == "kestrel")
             {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("the link says what equilibrius is");
+        .expect("the link says what kestrel is");
         let carried = listed(near_socket.clone(), "0e50").await;
         assert_eq!(carried.held.as_deref(), Some("5e551011"));
         assert_eq!(
             carried.attach,
             Some(
                 [
-                    "into-equilibrius",
+                    "into-kestrel",
                     "mycelium",
                     "--realm",
                     "work",
@@ -4835,7 +4835,7 @@ mod tests {
             "a session held elsewhere is joined through the dial that reaches it"
         );
 
-        let there = Need::Machine("equilibrius".to_owned());
+        let there = Need::Machine("kestrel".to_owned());
         let asked = Request::Start(Start {
             work: work(vec![there]),
             folder: Some(dir.path().to_owned()),
@@ -4844,28 +4844,28 @@ mod tests {
         });
         let started = ask(near_socket.clone(), asked).await;
         let Ok(Response::Started(started)) = started else {
-            panic!("equilibrius's node starts it: {started:?}");
+            panic!("kestrel's node starts it: {started:?}");
         };
-        assert_eq!(started.machine, "equilibrius");
+        assert_eq!(started.machine, "kestrel");
         assert_eq!(
             started.attach,
             [
-                "into-equilibrius",
+                "into-kestrel",
                 "mycelium",
                 "--realm",
                 "work",
                 "attach",
                 &started.held
             ],
-            "its words join it through the dial that reaches equilibrius"
+            "its words join it through the dial that reaches kestrel"
         );
-        let given = fs::read_to_string(&given).expect("equilibrius's holder was started");
+        let given = fs::read_to_string(&given).expect("kestrel's holder was started");
         assert!(
             given.lines().any(|word| word == started.held),
             "under the id its node answered: {given}"
         );
 
-        steers_the_session_on_equilibrius(&near_socket, &near_steers, &far_steers).await;
+        steers_the_session_on_kestrel(&near_socket, &near_steers, &far_steers).await;
 
         for (stop, node) in [near, far] {
             drop(stop);
@@ -4908,7 +4908,7 @@ mod tests {
         };
         let join = ["node", "host-join.ts", "--session", "01a1", "--", "pi"];
         let joined =
-            session_held(&presence, "optimus", &[hold("0d1e", &join)]).expect("a session here");
+            session_held(&presence, "skiff", &[hold("0d1e", &join)]).expect("a session here");
         assert_eq!(
             joined.held.as_deref(),
             Some("0d1e"),
@@ -4920,8 +4920,8 @@ mod tests {
             "in the window its join holds"
         );
         let fell_back = ["pi", "--session", "/home/jitsusama/.pi/01a1.jsonl"];
-        let alone = session_held(&presence, "optimus", &[hold("0d1e", &fell_back)])
-            .expect("a session here");
+        let alone =
+            session_held(&presence, "skiff", &[hold("0d1e", &fell_back)]).expect("a session here");
         assert_eq!(
             (alone.held, alone.window),
             (None, None),
@@ -4932,7 +4932,7 @@ mod tests {
     #[tokio::test]
     async fn a_conversation_a_pi_host_holds_is_joined_through_its_host() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let presence = json!({
             "session": "01a1",
@@ -4942,7 +4942,7 @@ mod tests {
             "hosted": {"host": "work-attended", "conversation": "c-01a1"},
         });
         store.start_here("01a1", presence, true);
-        let (stop, node) = node(&store, "optimus", Vec::<Piped>::new(), None, &socket);
+        let (stop, node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
         let hosted = listed(socket.clone(), "01a1").await;
         assert_eq!(
             hosted.attach,
@@ -4996,12 +4996,12 @@ mod tests {
     async fn a_machine_starts_work_on_the_one_that_dialled_it_through_that_link() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (holder, given) = stand_in_holder(dir.path());
-        let far_socket = dir.path().join("equilibrius").join("work.sock");
-        let near_socket = dir.path().join("optimus").join("work.sock");
+        let far_socket = dir.path().join("kestrel").join("work.sock");
+        let near_socket = dir.path().join("skiff").join("work.sock");
         let far_store = Memory::default();
         let far = node(
             &far_store,
-            "equilibrius",
+            "kestrel",
             Vec::<Piped>::new(),
             None,
             &far_socket,
@@ -5018,18 +5018,12 @@ mod tests {
             asks_back: true,
         };
         let near_store = Memory::default();
-        let near = node(
-            &near_store,
-            "optimus",
-            vec![dial],
-            Some(holds),
-            &near_socket,
-        );
-        // Nothing tells the test when equilibrius's node has heard of
-        // optimus, or when its link has taken up what the node asks of it,
+        let near = node(&near_store, "skiff", vec![dial], Some(holds), &near_socket);
+        // Nothing tells the test when kestrel's node has heard of
+        // skiff, or when its link has taken up what the node asks of it,
         // so it asks again every few milliseconds until a start goes
         // through.
-        let there = Need::Machine("optimus".to_owned());
+        let there = Need::Machine("skiff".to_owned());
         let asked = Request::Start(Start {
             work: work(vec![there]),
             folder: Some(dir.path().to_owned()),
@@ -5046,27 +5040,27 @@ mod tests {
             }
         })
         .await
-        .expect("equilibrius starts work on optimus over the link optimus dialled");
-        assert_eq!(started.machine, "optimus");
+        .expect("kestrel starts work on skiff over the link skiff dialled");
+        assert_eq!(started.machine, "skiff");
         assert_eq!(
             started.attach,
             [
                 "ssh",
                 "-t",
                 "--",
-                "optimus",
+                "skiff",
                 "mycelium",
                 "--realm",
                 "work",
                 "attach",
                 &started.held
             ],
-            "equilibrius never dialled optimus, so its words join it over SSH by name"
+            "kestrel never dialled skiff, so its words join it over SSH by name"
         );
-        let given = fs::read_to_string(&given).expect("optimus's holder was started");
+        let given = fs::read_to_string(&given).expect("skiff's holder was started");
         assert!(
             given.lines().any(|word| word == started.held),
-            "under the id optimus's node answered: {given}"
+            "under the id skiff's node answered: {given}"
         );
 
         for (stop, node) in [near, far] {
@@ -5098,15 +5092,15 @@ mod tests {
         });
     }
 
-    /// Runs equilibrius's node and optimus's, linked, equilibrius's end
-    /// `proven` or not, once optimus has heard what equilibrius is.
-    async fn linked_to_equilibrius(dir: &Path, proven: bool) -> (PathBuf, [Running; 2]) {
-        let far_socket = dir.join("equilibrius").join("work.sock");
-        let near_socket = dir.join("optimus").join("work.sock");
+    /// Runs kestrel's node and skiff's, linked, kestrel's end
+    /// `proven` or not, once skiff has heard what kestrel is.
+    async fn linked_to_kestrel(dir: &Path, proven: bool) -> (PathBuf, [Running; 2]) {
+        let far_socket = dir.join("kestrel").join("work.sock");
+        let near_socket = dir.join("skiff").join("work.sock");
         let far_store = Memory::default();
         let far = node(
             &far_store,
-            "equilibrius",
+            "kestrel",
             Vec::<Piped>::new(),
             None,
             &far_socket,
@@ -5119,20 +5113,20 @@ mod tests {
             proven,
             asks_back: false,
         };
-        let near = node(&near_store, "optimus", vec![dial], None, &near_socket);
-        // Nothing tells the test when the link has said what equilibrius
+        let near = node(&near_store, "skiff", vec![dial], None, &near_socket);
+        // Nothing tells the test when the link has said what kestrel
         // is, so it looks again every few milliseconds until it has.
         tokio::time::timeout(PATIENCE, async {
             while !near_store
                 .machines()
                 .iter()
-                .any(|one| one.name == "equilibrius")
+                .any(|one| one.name == "kestrel")
             {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("the link says what equilibrius is");
+        .expect("the link says what kestrel is");
         (near_socket, [near, far])
     }
 
@@ -5141,22 +5135,22 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let done = json!({"step": "done", "commit": "c0ffee", "applied": "now",
             "restart": null, "restarted": []});
-        let (near_socket, nodes) = linked_to_equilibrius(dir.path(), true).await;
-        // equilibrius's node has made its folder by now, as only it may.
+        let (near_socket, nodes) = linked_to_kestrel(dir.path(), true).await;
+        // kestrel's node has made its folder by now, as only it may.
         stand_in_updater(
-            &updater_of(&dir.path().join("equilibrius").join("work.sock")),
+            &updater_of(&dir.path().join("kestrel").join("work.sock")),
             done.clone(),
         );
         let update = |machine: &str| Request::Update {
             machine: machine.to_owned(),
         };
-        let updated = ask(near_socket.clone(), update("equilibrius")).await;
+        let updated = ask(near_socket.clone(), update("kestrel")).await;
         assert_eq!(
             updated,
             Ok(Response::Updated(done)),
             "its node asks its updater, and the ending comes back"
         );
-        let here = ask(near_socket, update("optimus")).await;
+        let here = ask(near_socket, update("skiff")).await;
         assert!(
             here.as_ref().is_err_and(
                 |why| why.starts_with("no updater answers at") && why.contains("update.sock")
@@ -5166,11 +5160,14 @@ mod tests {
         stop(nodes).await;
 
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let (near_socket, nodes) = linked_to_equilibrius(dir.path(), false).await;
-        let refused = ask(near_socket, update("equilibrius")).await;
+        let (near_socket, nodes) = linked_to_kestrel(dir.path(), false).await;
+        let refused = ask(near_socket, update("kestrel")).await;
         assert_eq!(
             refused,
-            Err("equilibrius updates only when asked over a link its key proved, which this one isn't".to_owned()),
+            Err(
+                "kestrel updates only when asked over a link its key proved, which this one isn't"
+                    .to_owned()
+            ),
             "a link nothing proved can't ask"
         );
         stop(nodes).await;
@@ -5190,7 +5187,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("mycelium").join("work.sock");
         let store = Memory::default();
-        let (stop, node) = node::<Ssh>(&store, "optimus", Vec::new(), None, &socket);
+        let (stop, node) = node::<Ssh>(&store, "skiff", Vec::new(), None, &socket);
         let said = |text: &str, pid| {
             let draft = Draft {
                 from: "joel".to_owned(),
@@ -5268,7 +5265,7 @@ mod tests {
             "owner": {"pid": std::process::id()},
         });
         store.start_here("01a1", presence, true);
-        let (stop, node) = node::<Ssh>(&store, "optimus", Vec::new(), None, &socket);
+        let (stop, node) = node::<Ssh>(&store, "skiff", Vec::new(), None, &socket);
 
         let asked = tokio::task::spawn_blocking(move || {
             let stands = |client: &mut Client| {
@@ -5459,7 +5456,7 @@ mod tests {
         store.start_here("01a1", presence, true);
         let membership = Realm {
             name: "work".to_owned(),
-            machine: "optimus".to_owned(),
+            machine: "skiff".to_owned(),
         };
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let bound = bind(&socket).expect("the socket binds");
@@ -5555,7 +5552,7 @@ mod tests {
         let (holder, given) = stand_in_holder(dir.path());
         let membership = Realm {
             name: "work".to_owned(),
-            machine: "optimus".to_owned(),
+            machine: "skiff".to_owned(),
         };
         let bound = bind(&socket).expect("the socket binds");
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -5587,7 +5584,7 @@ mod tests {
                 });
                 client.ask(&asked).expect("the node answers")
             };
-            let elsewhere = Need::Machine("equilibrius".to_owned());
+            let elsewhere = Need::Machine("kestrel".to_owned());
             (
                 start(vec![elsewhere], Some(folder)),
                 start(Vec::new(), None),
@@ -5599,13 +5596,13 @@ mod tests {
             .expect("the client asks");
         assert_eq!(
             refused,
-            Err("nowhere: optimus isn't equilibrius".to_owned()),
+            Err("nowhere: skiff isn't kestrel".to_owned()),
             "a start nowhere can take says why, as the launcher shows it"
         );
         let Ok(Response::Started(started)) = started else {
             panic!("a start any machine can take starts here: {started:?}");
         };
-        assert_eq!(started.machine, "optimus");
+        assert_eq!(started.machine, "skiff");
         assert_eq!(
             started.attach,
             ["mycelium", "--realm", "work", "attach", &started.held],

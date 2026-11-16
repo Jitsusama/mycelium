@@ -517,9 +517,9 @@ mod tests {
             ("AB12", json!({"act": "explode"})),
             ("AB12", json!({"text": "hi", "id": "../talk"})),
             ("AB12", json!({"act": "carry"})),
-            ("AB12", json!({"act": "carry", "to": "../penelope"})),
+            ("AB12", json!({"act": "carry", "to": "../tern"})),
             ("AB12", json!({"act": "carry", "to": "-o"})),
-            ("AB12", json!({"act": "close", "to": "penelope"})),
+            ("AB12", json!({"act": "close", "to": "tern"})),
             ("AB12", json!({"act": "wake", "text": "hi"})),
             ("AB12", json!({"act": "wake", "id": "talk-1"})),
             ("AB12", json!({"act": "fill"})),
@@ -528,7 +528,7 @@ mod tests {
             ("AB12", json!({"text": "hi", "now": false})),
             ("AB12", json!({"act": "pause", "now": true})),
             ("AB12", json!({"act": "move"})),
-            ("AB12", json!({"act": "move", "to": "penelope"})),
+            ("AB12", json!({"act": "move", "to": "tern"})),
             ("AB12", json!({"act": "answer", "value": "yes"})),
             ("AB12", json!({"act": "answer", "want": "question@t"})),
             (
@@ -567,11 +567,11 @@ mod tests {
                 && !Steer::new("AB12", &json!({"act": "pause"})).is_ok_and(|it| it.only_wakes()),
             "a wake only wakes, and only a wake"
         );
-        let carrying = Steer::new("AB12", &json!({"act": "carry", "to": "penelope"}))
+        let carrying = Steer::new("AB12", &json!({"act": "carry", "to": "tern"}))
             .expect("a carry naming its machine");
         assert_eq!(
             carrying.body.get("to"),
-            Some(&json!("penelope")),
+            Some(&json!("tern")),
             "a carry's machine is written for the harness"
         );
         // For You's deal fills a session's prompt with words for Joel to
@@ -614,18 +614,18 @@ mod tests {
     fn an_ordered_carry_is_an_act_of_its_own_saying_where_and_why() {
         for said in [
             json!({"act": "ordered-carry", "why": "its camera"}),
-            json!({"act": "ordered-carry", "to": "penelope"}),
-            json!({"act": "ordered-carry", "to": "penelope", "why": " "}),
-            json!({"act": "ordered-carry", "to": "../penelope", "why": "its camera"}),
-            json!({"act": "carry", "to": "penelope", "why": "its camera"}),
-            json!({"act": "carry", "to": "penelope", "by": "WCJQSG"}),
+            json!({"act": "ordered-carry", "to": "tern"}),
+            json!({"act": "ordered-carry", "to": "tern", "why": " "}),
+            json!({"act": "ordered-carry", "to": "../tern", "why": "its camera"}),
+            json!({"act": "carry", "to": "tern", "why": "its camera"}),
+            json!({"act": "carry", "to": "tern", "by": "WCJQSG"}),
             json!({"act": "pause", "by": "WCJQSG"}),
         ] {
             assert!(Steer::new("AB12", &said).is_err(), "{said} is refused");
         }
         // Nothing trusting the person's carry trusts an orchestrator's,
         // which says who ordered it and why.
-        let ordered = json!({"act": "ordered-carry", "to": "penelope", "why": "its camera",
+        let ordered = json!({"act": "ordered-carry", "to": "tern", "why": "its camera",
                              "by": "WCJQSG", "from": "WCJQSG"});
         let ordering = Steer::new("AB12", &ordered).expect("an ordered carry");
         assert_eq!(

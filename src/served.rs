@@ -842,15 +842,15 @@ mod tests {
         let source = Source {
             file: Some(queue),
             records: None,
-            whole: Some("optimus".to_owned()),
+            whole: Some("skiff".to_owned()),
             key: None,
             ..quests(&file)
         };
         assert_eq!(
             unheard(&read("queue", &source).records),
             BTreeMap::from([(
-                "queue:optimus".to_owned(),
-                json!({"key": "queue:optimus", "kind": "queue", "heartbeat": 7, "jobs": []})
+                "queue:skiff".to_owned(),
+                json!({"key": "queue:skiff", "kind": "queue", "heartbeat": 7, "jobs": []})
             )]),
             "a file held whole is one record of all its fields"
         );
@@ -869,7 +869,7 @@ mod tests {
         let source = Source {
             file: Some(answers),
             records: None,
-            whole: Some("optimus".to_owned()),
+            whole: Some("skiff".to_owned()),
             key: None,
             ..quests(dir.path())
         };
@@ -878,8 +878,8 @@ mod tests {
         assert_eq!(
             unheard(&read.records),
             BTreeMap::from([(
-                "void-answers:optimus".to_owned(),
-                json!({"key": "void-answers:optimus", "kind": "void-answers", "lines": [
+                "void-answers:skiff".to_owned(),
+                json!({"key": "void-answers:skiff", "kind": "void-answers", "lines": [
                     {"msg": "b2", "event": "routed"}, {"msg": "a1", "event": "answered"}
                 ]})
             )]),
@@ -1068,7 +1068,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let config = dir.path().join("serves.json");
         let here = Here {
-            machine: "optimus".to_owned(),
+            machine: "skiff".to_owned(),
             runtime: None,
         };
         let configure = |sources: Value| {
@@ -1102,7 +1102,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let config = dir.path().join("serves.json");
         let here = Here {
-            machine: "optimus".to_owned(),
+            machine: "skiff".to_owned(),
             runtime: Some(PathBuf::from("/run/user/1000")),
         };
         let refuses_on = |sources: Value, here: &Here| {
@@ -1186,7 +1186,7 @@ mod tests {
                     Source {
                         file: Some(PathBuf::from("/run/user/1000/jobs/queue.json")),
                         records: None,
-                        whole: Some("optimus".to_owned()),
+                        whole: Some("skiff".to_owned()),
                         key: None,
                         ..quests(Path::new("/q.json"))
                     }

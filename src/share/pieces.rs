@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn pieces_staged_in_turn_make_the_file_whole() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let pieces = Pieces::from(dir.path(), "equilibrius");
+        let pieces = Pieces::from(dir.path(), "kestrel");
         let bytes: Vec<u8> = (0..=u8::MAX).cycle().take(2 * 1024 * 1024 + 7).collect();
         let len = u64::try_from(bytes.len()).expect("a length");
         let mut at = 0;
@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(at, 2 * PIECE, "three pieces, the last one short");
         assert!(whole == bytes, "the file is whole as it was sent");
         assert_eq!(
-            fs::read_dir(dir.path().join("pieces/equilibrius"))
+            fs::read_dir(dir.path().join("pieces/kestrel"))
                 .expect("the folder")
                 .count(),
             0,
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn a_piece_out_of_turn_is_passed_over() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let pieces = Pieces::from(dir.path(), "equilibrius");
+        let pieces = Pieces::from(dir.path(), "kestrel");
         let piece = vec![1; usize::try_from(PIECE).expect("a size")];
         assert_eq!(
             pieces
@@ -160,7 +160,7 @@ mod tests {
         );
         pieces.clear().expect("cleared");
         assert!(
-            !dir.path().join("pieces/equilibrius").exists(),
+            !dir.path().join("pieces/kestrel").exists(),
             "a link's start clears what an earlier one left"
         );
     }

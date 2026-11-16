@@ -1,6 +1,7 @@
 # Every check `nix flake check` runs: the crate built with its tests, held to
 # clippy and rustfmt, and every other tracked file to its own linter, with the
-# tree's own rules (tree.sh); and on Linux, the command linked in whole.
+# tree's own rules (tree.sh), with no real name in it; and on Linux, the
+# command linked in whole.
 {
   pkgs,
   package,
@@ -60,6 +61,34 @@ in
   markdown-is-clean = inTree "markdown-is-clean" [ pkgs.rumdl ] ''
     rumdl check .
   '';
+
+  # The repository is public, so no file names a real machine, employer,
+  # person's account or place: tests and docs say kestrel, skiff, osprey and
+  # tern for machines, and the documentation ranges (192.0.2.x, 2001:db8::)
+  # for addresses. It reads every tracked file but this one, which has to
+  # name the words, and the lock file, which only names pins.
+  names-stay-out =
+    let
+      real = [
+        "optimus"
+        "penelope"
+        "methuselah"
+        "equilibrius"
+        "shopify"
+        "grrbrr"
+        "joel-gerber"
+        "joel.gerber"
+        "192.168.4."
+      ];
+    in
+    inTree "names-stay-out" [ pkgs.ripgrep ] ''
+      if rg --ignore-case --fixed-strings --line-number --no-heading --hidden \
+        --glob '!nix/checks.nix' --glob '!flake.lock' \
+        ${pkgs.lib.concatMapStringsSep " " (word: "-e ${pkgs.lib.escapeShellArg word}") real} .; then
+        echo "The lines above name a real machine, employer, account or place."
+        exit 1
+      fi
+    '';
 
   # Every folder says what it holds, and every file is read by a linter.
   tree-keeps-its-rules = inTree "tree-keeps-its-rules" [ pkgs.shellcheck ] ''

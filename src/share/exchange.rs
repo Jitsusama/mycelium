@@ -1155,12 +1155,12 @@ mod tests {
 
     #[test]
     fn a_shared_quest_reaches_the_other_end_whose_own_copy_moves_aside() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
-        optimus.write("README.md", "# Shared\n");
-        optimus.write("plans/PLAN-20261026-IZH11J.md", "plan\n");
-        equilibrius.write("README.md", "# Stale\n");
-        optimus
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("README.md", "# Shared\n");
+        skiff.write("plans/PLAN-20261026-IZH11J.md", "plan\n");
+        kestrel.write("README.md", "# Stale\n");
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
@@ -1168,23 +1168,20 @@ mod tests {
             .keep()
             .expect("shared");
 
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
 
         assert_eq!(
-            equilibrius.read("README.md").as_deref(),
+            kestrel.read("README.md").as_deref(),
             Some("# Shared\n"),
             "the README crossed"
         );
         assert_eq!(
-            equilibrius.read("plans/PLAN-20261026-IZH11J.md").as_deref(),
+            kestrel.read("plans/PLAN-20261026-IZH11J.md").as_deref(),
             Some("plan\n"),
             "the plan crossed"
         );
-        let aside = fs::read_dir(equilibrius.places.state.join("before-share"))
+        let aside = fs::read_dir(kestrel.places.state.join("before-share"))
             .expect("something moved aside")
             .next()
             .expect("one move")
@@ -1196,10 +1193,10 @@ mod tests {
             "the far end's own copy was kept aside"
         );
 
-        equilibrius.write("README.md", "# Changed there\n");
+        kestrel.write("README.md", "# Changed there\n");
         talk(&mut near, &mut far);
         assert_eq!(
-            optimus.read("README.md").as_deref(),
+            skiff.read("README.md").as_deref(),
             Some("# Changed there\n"),
             "a change comes back"
         );
@@ -1346,10 +1343,10 @@ mod tests {
 
     #[test]
     fn a_file_found_as_it_was_is_not_read_again() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
-        optimus.write("README.md", "# Shared\n");
-        optimus
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("README.md", "# Shared\n");
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
@@ -1357,7 +1354,7 @@ mod tests {
             .keep()
             .expect("shared");
         let seen = || {
-            optimus
+            skiff
                 .places
                 .ledgers()
                 .hold(QUEST)
@@ -1366,8 +1363,8 @@ mod tests {
                 .files["record/README.md"]
                 .seen
         };
-        let mut near = optimus.exchange(&equilibrius);
-        near.look().expect("optimus looks");
+        let mut near = skiff.exchange(&kestrel);
+        near.look().expect("skiff looks");
         assert_eq!(
             seen(),
             None,
@@ -1376,18 +1373,18 @@ mod tests {
         let long_ago = std::time::SystemTime::now() - Duration::from_secs(60);
         fs::File::options()
             .write(true)
-            .open(optimus.places.quests.join(QUEST).join("README.md"))
+            .open(skiff.places.quests.join(QUEST).join("README.md"))
             .and_then(|file| file.set_modified(long_ago))
             .expect("its time set");
         // A time set is no change to what a file holds, so the record is
         // walked again once another file in it changes.
-        let notes = optimus.places.quests.join(QUEST).join("notes.md");
+        let notes = skiff.places.quests.join(QUEST).join("notes.md");
         fs::write(&notes, "notes\n").expect("written");
         assert!(
             near.watch.wait_for(&notes, HEARD_WITHIN),
             "the watcher hears the record change"
         );
-        near.look().expect("optimus looks again");
+        near.look().expect("skiff looks again");
         assert!(
             seen().is_some(),
             "found as it was once its size and time stand, it is kept as seen, so no later \
@@ -1397,40 +1394,37 @@ mod tests {
 
     #[test]
     fn a_file_asked_for_is_waited_on_until_it_comes() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
-        optimus.write("README.md", "# Shared\n");
-        optimus
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("README.md", "# Shared\n");
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
             .expect("held")
             .keep()
             .expect("shared");
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
 
         let mut wants = Vec::new();
-        for say in near.look().expect("optimus looks") {
-            wants.extend(far.hear(say).expect("equilibrius hears"));
+        for say in near.look().expect("skiff looks") {
+            wants.extend(far.hear(say).expect("kestrel hears"));
         }
         assert!(
             far.waiting() > 0,
-            "equilibrius waits on the README it asked for: {wants:?}"
+            "kestrel waits on the README it asked for: {wants:?}"
         );
 
         let mut files = Vec::new();
         for want in wants {
-            files.extend(near.hear(want).expect("optimus hears"));
+            files.extend(near.hear(want).expect("skiff hears"));
         }
         for file in files {
-            far.hear(file).expect("equilibrius hears");
+            far.hear(file).expect("kestrel hears");
         }
         assert_eq!(far.waiting(), 0, "once it came, nothing is waited on");
         assert_eq!(
-            equilibrius.read("README.md").as_deref(),
+            kestrel.read("README.md").as_deref(),
             Some("# Shared\n"),
             "the README crossed"
         );
@@ -1438,39 +1432,36 @@ mod tests {
 
     #[test]
     fn a_journey_written_on_both_ends_keeps_both_entries() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
-        optimus.write("JOURNEY.md", "# Journey\n\n- **2026-10-26**: began\n");
-        optimus
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("JOURNEY.md", "# Journey\n\n- **2026-10-26**: began\n");
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
             .expect("held")
             .keep()
             .expect("shared");
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
 
-        optimus.write(
+        skiff.write(
             "JOURNEY.md",
             "# Journey\n\n- **2026-10-27**: here\n- **2026-10-26**: began\n",
         );
-        equilibrius.write(
+        kestrel.write(
             "JOURNEY.md",
             "# Journey\n\n- **2026-10-27**: there\n- **2026-10-26**: began\n",
         );
         talk(&mut near, &mut far);
 
-        let journey = optimus.read("JOURNEY.md").expect("a journey");
+        let journey = skiff.read("JOURNEY.md").expect("a journey");
         assert!(
             journey.contains("here") && journey.contains("there") && journey.contains("began"),
             "both entries and the old one are kept: {journey}"
         );
         assert_eq!(
-            equilibrius.read("JOURNEY.md"),
+            kestrel.read("JOURNEY.md"),
             Some(journey),
             "both ends hold the same"
         );
@@ -1478,55 +1469,52 @@ mod tests {
 
     #[test]
     fn a_document_written_on_both_ends_keeps_the_others_beside_and_says_so() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
         let plan = "plans/PLAN-20261026-IZH11J.md";
-        optimus.write(plan, "one\n");
-        optimus.write(
+        skiff.write(plan, "one\n");
+        skiff.write(
             "README.md",
             "---\nid: QEST-20261013-4UHC5Q\nparent: QEST-20261007-WCJQSG\n---\n",
         );
-        for machine in [&optimus, &equilibrius] {
+        for machine in [&skiff, &kestrel] {
             let above = machine.places.quests.join("QEST-20261007-WCJQSG");
             fs::create_dir_all(&above).expect("made");
             fs::write(above.join("README.md"), "---\nparent: null\n---\n").expect("written");
         }
-        optimus
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
             .expect("held")
             .keep()
             .expect("shared");
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
 
-        optimus.write(plan, "here\n");
-        equilibrius.write(plan, "there\n");
+        skiff.write(plan, "here\n");
+        kestrel.write(plan, "there\n");
         talk(&mut near, &mut far);
 
-        // equilibrius sorts first, so it settles: its own stands, and
-        // optimus's is beside it, on its disk alone.
+        // kestrel sorts first, so it settles: its own stands, and
+        // skiff's is beside it, on its disk alone.
         assert_eq!(
-            equilibrius.read(plan).as_deref(),
+            kestrel.read(plan).as_deref(),
             Some("there\n"),
             "the settler's stands"
         );
         assert_eq!(
-            optimus.read(plan).as_deref(),
+            skiff.read(plan).as_deref(),
             Some("there\n"),
             "and both ends hold it"
         );
         assert_eq!(
-            equilibrius.read(&beside(plan, "optimus")).as_deref(),
+            kestrel.read(&beside(plan, "skiff")).as_deref(),
             Some("here\n"),
             "the other's is kept beside it"
         );
         assert_eq!(
-            optimus.read(&beside(plan, "optimus")),
+            skiff.read(&beside(plan, "skiff")),
             None,
             "and never crosses back"
         );
@@ -1539,14 +1527,14 @@ mod tests {
                 told[0].intent
             ),
             (
-                "mycelium@equilibrius",
+                "mycelium@kestrel",
                 "quest.wcjqsg.4uhc5q",
                 Some(Intent::Finding)
             ),
             "as a finding to the quest's whole group"
         );
         assert!(
-            told[0].text.contains(&beside(plan, "optimus")),
+            told[0].text.contains(&beside(plan, "skiff")),
             "naming where the other's is: {}",
             told[0].text
         );
@@ -1555,31 +1543,28 @@ mod tests {
 
     #[test]
     fn a_deletion_crosses() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
-        optimus.write("attachments/map.md", "map\n");
-        optimus
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("attachments/map.md", "map\n");
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
             .expect("held")
             .keep()
             .expect("shared");
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
         assert!(
-            equilibrius.read("attachments/map.md").is_some(),
+            kestrel.read("attachments/map.md").is_some(),
             "the attachment crossed"
         );
 
-        fs::remove_file(optimus.places.quests.join(QUEST).join("attachments/map.md"))
+        fs::remove_file(skiff.places.quests.join(QUEST).join("attachments/map.md"))
             .expect("removed");
         talk(&mut near, &mut far);
         assert_eq!(
-            equilibrius.read("attachments/map.md"),
+            kestrel.read("attachments/map.md"),
             None,
             "and its removal did"
         );
@@ -1587,90 +1572,87 @@ mod tests {
 
     #[test]
     fn only_the_scratch_folders_named_cross_and_the_far_ends_own_moves_aside() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
         let scratch = |machine: &Machine, path: &str| machine.places.scratch.join(QUEST).join(path);
         let put = |machine: &Machine, path: &str, text: &str| {
             let path = scratch(machine, path);
             fs::create_dir_all(path.parent().expect("a file has a folder")).expect("made");
             fs::write(path, text).expect("written");
         };
-        optimus.write("README.md", "# Shared\n");
-        put(&optimus, "notes/plan.md", "notes\n");
-        put(&optimus, "notes/runs/one.json", "{}\n");
-        put(&optimus, "hub-home/big.bin", "bulk\n");
-        put(&optimus, "tmp/session.log", "a session's own\n");
-        put(&equilibrius, "notes/old.md", "the Mac's own notes\n");
-        optimus
+        skiff.write("README.md", "# Shared\n");
+        put(&skiff, "notes/plan.md", "notes\n");
+        put(&skiff, "notes/runs/one.json", "{}\n");
+        put(&skiff, "hub-home/big.bin", "bulk\n");
+        put(&skiff, "tmp/session.log", "a session's own\n");
+        put(&kestrel, "notes/old.md", "the Mac's own notes\n");
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
             .expect("held")
             .keep()
             .expect("shared");
-        optimus
+        skiff
             .places
             .name_scratch(QUEST, "notes")
             .expect("notes named");
 
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
         let read = |machine: &Machine, path: &str| fs::read_to_string(scratch(machine, path)).ok();
         assert_eq!(
-            read(&equilibrius, "notes/plan.md").as_deref(),
+            read(&kestrel, "notes/plan.md").as_deref(),
             Some("notes\n"),
             "the named folder crossed"
         );
         assert_eq!(
-            read(&equilibrius, "notes/runs/one.json").as_deref(),
+            read(&kestrel, "notes/runs/one.json").as_deref(),
             Some("{}\n"),
             "with what is in it"
         );
         assert_eq!(
-            read(&equilibrius, "notes/old.md"),
+            read(&kestrel, "notes/old.md"),
             None,
             "the far end's own folder moved aside"
         );
-        let aside = fs::read_dir(equilibrius.places.state.join("before-share"))
+        let aside = fs::read_dir(kestrel.places.state.join("before-share"))
             .expect("something moved aside")
             .map(|entry| entry.expect("an entry").path())
             .find(|at| at.join(QUEST).join("scratch/notes/old.md").exists());
         assert!(aside.is_some(), "where nothing is lost");
         for path in ["hub-home/big.bin", "tmp/session.log"] {
-            assert_eq!(read(&equilibrius, path), None, "{path} stayed home");
+            assert_eq!(read(&kestrel, path), None, "{path} stayed home");
         }
 
         // The Mac's look walks its notes once, and watches them from then.
-        put(&equilibrius, "notes/plan.md", "notes, from the Mac\n");
+        put(&kestrel, "notes/plan.md", "notes, from the Mac\n");
         talk(&mut near, &mut far);
         assert_eq!(
-            read(&optimus, "notes/plan.md").as_deref(),
+            read(&skiff, "notes/plan.md").as_deref(),
             Some("notes, from the Mac\n"),
             "and a change crosses back"
         );
-        put(&equilibrius, "notes/runs/two.json", "[]\n");
+        put(&kestrel, "notes/runs/two.json", "[]\n");
         assert!(
             far.watch.wait(HEARD_WITHIN),
             "the Mac's watch hears its notes change"
         );
         talk(&mut near, &mut far);
         assert_eq!(
-            read(&optimus, "notes/runs/two.json").as_deref(),
+            read(&skiff, "notes/runs/two.json").as_deref(),
             Some("[]\n"),
             "so what the watch heard crosses too"
         );
 
-        put(&optimus, "bench/run.csv", "1,2\n");
-        optimus
+        put(&skiff, "bench/run.csv", "1,2\n");
+        skiff
             .places
             .name_scratch(QUEST, "bench")
             .expect("bench named");
         talk(&mut near, &mut far);
         assert_eq!(
-            read(&equilibrius, "bench/run.csv").as_deref(),
+            read(&kestrel, "bench/run.csv").as_deref(),
             Some("1,2\n"),
             "a folder named once the quest is shared crosses too"
         );
@@ -1678,41 +1660,38 @@ mod tests {
 
     #[test]
     fn a_change_found_while_hearing_the_other_end_is_still_said() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
-        optimus.write("attachments/a.md", "a\n");
-        optimus.write("attachments/b.md", "b\n");
-        optimus
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("attachments/a.md", "a\n");
+        skiff.write("attachments/b.md", "b\n");
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
             .expect("held")
             .keep()
             .expect("shared");
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
 
-        // Optimus writes a.md, but hears of the Mac's b.md before it looks.
-        optimus.write("attachments/a.md", "a, again\n");
-        equilibrius.write("attachments/b.md", "b, from the Mac\n");
-        for say in far.look().expect("equilibrius looks") {
-            for answer in near.hear(say).expect("optimus hears") {
-                for file in far.hear(answer).expect("equilibrius hears") {
-                    near.hear(file).expect("optimus hears");
+        // Skiff writes a.md, but hears of the Mac's b.md before it looks.
+        skiff.write("attachments/a.md", "a, again\n");
+        kestrel.write("attachments/b.md", "b, from the Mac\n");
+        for say in far.look().expect("kestrel looks") {
+            for answer in near.hear(say).expect("skiff hears") {
+                for file in far.hear(answer).expect("kestrel hears") {
+                    near.hear(file).expect("skiff hears");
                 }
             }
         }
         talk(&mut near, &mut far);
         assert_eq!(
-            equilibrius.read("attachments/a.md").as_deref(),
+            kestrel.read("attachments/a.md").as_deref(),
             Some("a, again\n"),
-            "optimus's change, found while it heard the Mac, still crossed"
+            "skiff's change, found while it heard the Mac, still crossed"
         );
         assert_eq!(
-            optimus.read("attachments/b.md").as_deref(),
+            skiff.read("attachments/b.md").as_deref(),
             Some("b, from the Mac\n"),
             "as the Mac's did"
         );
@@ -1720,35 +1699,32 @@ mod tests {
 
     #[test]
     fn a_large_file_crosses_a_piece_to_a_frame() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
         let at = |machine: &Machine| machine.places.scratch.join(QUEST).join("bench/run.bin");
         let bytes: Vec<u8> = (0..=u8::MAX)
             .cycle()
             .take(usize::try_from(2 * PIECE).expect("a size") + 512 * 1024)
             .collect();
-        fs::create_dir_all(at(&optimus).parent().expect("a folder")).expect("made");
-        fs::write(at(&optimus), &bytes).expect("written");
-        optimus
+        fs::create_dir_all(at(&skiff).parent().expect("a folder")).expect("made");
+        fs::write(at(&skiff), &bytes).expect("written");
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
             .expect("held")
             .keep()
             .expect("shared");
-        optimus
+        skiff
             .places
             .name_scratch(QUEST, "bench")
             .expect("bench named");
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
 
-        // Passed by hand, to see each frame: what optimus sends for each
-        // thing equilibrius asks.
-        let mut to_far = near.look().expect("optimus looks");
-        far.look().expect("equilibrius looks");
+        // Passed by hand, to see each frame: what skiff sends for each
+        // thing kestrel asks.
+        let mut to_far = near.look().expect("skiff looks");
+        far.look().expect("kestrel looks");
         let mut pieces = Vec::new();
         for _ in 0..20 {
             let mut to_near = Vec::new();
@@ -1760,10 +1736,10 @@ mod tests {
                     !matches!(&say, Say::File { file, .. } if file.ends_with("run.bin")),
                     "the large file never crosses in one frame"
                 );
-                to_near.extend(far.hear(say).expect("equilibrius hears"));
+                to_near.extend(far.hear(say).expect("kestrel hears"));
             }
             for say in to_near {
-                to_far.extend(near.hear(say).expect("optimus hears"));
+                to_far.extend(near.hear(say).expect("skiff hears"));
             }
             if to_far.is_empty() {
                 break;
@@ -1776,7 +1752,7 @@ mod tests {
             "it crossed in three pieces, each asked for once the last was staged"
         );
         assert!(
-            fs::read(at(&equilibrius)).expect("it crossed") == bytes,
+            fs::read(at(&kestrel)).expect("it crossed") == bytes,
             "and landed whole"
         );
         assert!(
@@ -1786,7 +1762,7 @@ mod tests {
                     file: "scratch/bench/run.bin".to_owned(),
                     at: None,
                 })
-                .expect("optimus hears")
+                .expect("skiff hears")
                 .as_slice(),
                 [Say::File { body: Some(_), .. }]
             ),
@@ -1796,9 +1772,9 @@ mod tests {
 
     #[test]
     fn a_clone_with_no_origin_or_a_heavy_folder_is_refused_when_named() {
-        let optimus = Machine::new("optimus");
+        let skiff = Machine::new("skiff");
         let put = |path: &str, bytes: &[u8]| {
-            let path = optimus.places.scratch.join(QUEST).join(path);
+            let path = skiff.places.scratch.join(QUEST).join(path);
             fs::create_dir_all(path.parent().expect("a file has a folder")).expect("made");
             fs::write(path, bytes).expect("written");
         };
@@ -1807,7 +1783,7 @@ mod tests {
         for at in 0..=MOST_FILES {
             put(&format!("many/{at}"), b"");
         }
-        let named = |folder: &str| optimus.places.name_scratch(QUEST, folder);
+        let named = |folder: &str| skiff.places.name_scratch(QUEST, folder);
         for (folder, why) in [
             ("ttc", "git clone"),
             ("many", "more than"),
@@ -1818,7 +1794,7 @@ mod tests {
             assert!(error.contains(why), "{folder} refused as {why}: {error}");
         }
         assert!(
-            optimus
+            skiff
                 .places
                 .ledgers()
                 .hold(QUEST)
@@ -1832,63 +1808,60 @@ mod tests {
 
     #[test]
     fn a_quest_concluded_is_shared_until_both_ends_know_then_no_longer() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
         let scratch = |machine: &Machine, path: &str| machine.places.scratch.join(QUEST).join(path);
         let readme = |status: &str| format!("---\nid: {QUEST}\nstatus: {status}\n---\n# Shared\n");
         let shares = |machine: &Machine| machine.places.ledgers().shares(QUEST);
-        optimus.write("README.md", &readme("active"));
-        let notes = scratch(&optimus, "notes/plan.md");
+        skiff.write("README.md", &readme("active"));
+        let notes = scratch(&skiff, "notes/plan.md");
         fs::create_dir_all(notes.parent().expect("a file has a folder")).expect("made");
         fs::write(&notes, "notes\n").expect("written");
-        optimus
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
             .expect("held")
             .keep()
             .expect("shared");
-        optimus.places.name_scratch(QUEST, "notes").expect("named");
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        skiff.places.name_scratch(QUEST, "notes").expect("named");
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
-        assert!(shares(&equilibrius), "the Mac takes the quest up");
+        assert!(shares(&kestrel), "the Mac takes the quest up");
 
-        // Concluding it writes its README and takes optimus's scratch away.
-        optimus.write("README.md", &readme("concluded"));
-        fs::remove_dir_all(optimus.places.scratch.join(QUEST)).expect("taken away");
+        // Concluding it writes its README and takes skiff's scratch away.
+        skiff.write("README.md", &readme("concluded"));
+        fs::remove_dir_all(skiff.places.scratch.join(QUEST)).expect("taken away");
         // The README crosses at one look, the Mac stops at its next, and
-        // optimus at the one after it hears so.
+        // skiff at the one after it hears so.
         for _ in 0..3 {
             talk(&mut near, &mut far);
         }
         assert_eq!(
-            equilibrius.read("README.md"),
+            kestrel.read("README.md"),
             Some(readme("concluded")),
             "the Mac learns it concluded"
         );
         assert!(
-            !shares(&optimus) && !shares(&equilibrius),
+            !shares(&skiff) && !shares(&kestrel),
             "and then neither end shares it"
         );
         assert!(
-            !equilibrius.places.scratch.join(QUEST).exists(),
-            "and the Mac takes its own scratch away, as concluding did on optimus"
+            !kestrel.places.scratch.join(QUEST).exists(),
+            "and the Mac takes its own scratch away, as concluding did on skiff"
         );
 
-        fs::create_dir_all(scratch(&equilibrius, "notes")).expect("made");
-        fs::write(scratch(&equilibrius, "notes/plan.md"), "later\n").expect("written");
+        fs::create_dir_all(scratch(&kestrel, "notes")).expect("made");
+        fs::write(scratch(&kestrel, "notes/plan.md"), "later\n").expect("written");
         for _ in 0..3 {
             talk(&mut near, &mut far);
         }
         assert!(
-            !optimus.places.scratch.join(QUEST).exists(),
-            "a later change on the Mac never makes optimus's scratch again"
+            !skiff.places.scratch.join(QUEST).exists(),
+            "a later change on the Mac never makes skiff's scratch again"
         );
         assert!(
-            !shares(&optimus) && !shares(&equilibrius),
+            !shares(&skiff) && !shares(&kestrel),
             "nor is the quest taken up again"
         );
     }
@@ -1904,38 +1877,32 @@ mod tests {
 
     #[test]
     fn an_ended_quests_scratch_in_use_is_kept_shared_until_nothing_works_there() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
         let readme = |status: &str| format!("---\nid: {QUEST}\nstatus: {status}\n---\n# Shared\n");
         let shares = |machine: &Machine| machine.places.ledgers().shares(QUEST);
-        let notes = equilibrius.places.scratch.join(QUEST).join("notes/plan.md");
-        optimus.write("README.md", &readme("active"));
-        optimus
+        let notes = kestrel.places.scratch.join(QUEST).join("notes/plan.md");
+        skiff.write("README.md", &readme("active"));
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
             .expect("held")
             .keep()
             .expect("shared");
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         let working = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         far.users = Box::new(Working(working.clone()));
         talk(&mut near, &mut far);
         fs::create_dir_all(notes.parent().expect("a file has a folder")).expect("made");
         fs::write(&notes, "notes\n").expect("written");
 
-        optimus.write("README.md", &readme("concluded"));
+        skiff.write("README.md", &readme("concluded"));
         for _ in 0..3 {
             talk(&mut near, &mut far);
         }
         assert!(notes.exists(), "a scratch something works in is let be");
-        assert!(
-            shares(&equilibrius),
-            "and the Mac shares the quest meanwhile"
-        );
+        assert!(shares(&kestrel), "and the Mac shares the quest meanwhile");
 
         working.store(false, std::sync::atomic::Ordering::SeqCst);
         talk(&mut near, &mut far);
@@ -1946,11 +1913,11 @@ mod tests {
             talk(&mut near, &mut far);
         }
         assert!(
-            !equilibrius.places.scratch.join(QUEST).exists(),
+            !kestrel.places.scratch.join(QUEST).exists(),
             "once nothing works there it is taken away"
         );
         assert!(
-            !shares(&optimus) && !shares(&equilibrius),
+            !shares(&skiff) && !shares(&kestrel),
             "and neither end shares the quest"
         );
     }
@@ -1970,74 +1937,71 @@ mod tests {
 
     #[test]
     fn a_scratch_taken_away_whole_is_no_word_on_the_other_machines() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
         let scratch = |machine: &Machine, path: &str| machine.places.scratch.join(QUEST).join(path);
         let put = |path: &str, text: &str| {
-            let path = scratch(&optimus, path);
+            let path = scratch(&skiff, path);
             fs::create_dir_all(path.parent().expect("a file has a folder")).expect("made");
             fs::write(path, text).expect("written");
         };
-        optimus.write("README.md", "# Shared\n");
+        skiff.write("README.md", "# Shared\n");
         put("notes/plan.md", "notes\n");
         put("notes/old.md", "old notes\n");
-        optimus
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
             .expect("held")
             .keep()
             .expect("shared");
-        optimus.places.name_scratch(QUEST, "notes").expect("named");
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        skiff.places.name_scratch(QUEST, "notes").expect("named");
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
         assert!(
-            scratch(&equilibrius, "notes/old.md").exists(),
+            scratch(&kestrel, "notes/old.md").exists(),
             "the notes cross"
         );
 
-        fs::remove_file(scratch(&optimus, "notes/old.md")).expect("removed");
-        assert!(near.watch.wait(HEARD_WITHIN), "optimus hears it");
+        fs::remove_file(scratch(&skiff, "notes/old.md")).expect("removed");
+        assert!(near.watch.wait(HEARD_WITHIN), "skiff hears it");
         talk(&mut near, &mut far);
         assert!(
-            !scratch(&equilibrius, "notes/old.md").exists(),
+            !scratch(&kestrel, "notes/old.md").exists(),
             "a file removed from a named folder is removed there too"
         );
 
         // Concluding a quest takes this machine's whole scratch away.
-        fs::remove_dir_all(optimus.places.scratch.join(QUEST)).expect("taken away");
+        fs::remove_dir_all(skiff.places.scratch.join(QUEST)).expect("taken away");
         // inotify hears a watched folder go with the folder holding it, so
         // on Linux the look walks it and must find nothing to remove. macOS's
         // FSEvents didn't hear it within the wait in any of 20KSI7's runs on
-        // equilibrius (2026-10-29); unheard, the folder isn't walked, which
+        // kestrel (2026-10-29); unheard, the folder isn't walked, which
         // also crosses nothing, so the Mac's copy stays either way.
         let heard = near.watch.wait(HEARD_WITHIN);
-        assert!(heard || !cfg!(target_os = "linux"), "optimus hears it");
+        assert!(heard || !cfg!(target_os = "linux"), "skiff hears it");
         talk(&mut near, &mut far);
         assert_eq!(
-            fs::read_to_string(scratch(&equilibrius, "notes/plan.md"))
+            fs::read_to_string(scratch(&kestrel, "notes/plan.md"))
                 .ok()
                 .as_deref(),
             Some("notes\n"),
-            "but the Mac's copy stays when optimus's scratch goes whole"
+            "but the Mac's copy stays when skiff's scratch goes whole"
         );
     }
 
     #[test]
     fn a_clone_crosses_as_its_remote_and_is_made_where_it_is_lacking() {
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
         let scratch = |machine: &Machine, path: &str| machine.places.scratch.join(QUEST).join(path);
         let put = |path: &str, text: &str| {
-            let path = scratch(&optimus, path);
+            let path = scratch(&skiff, path);
             fs::create_dir_all(path.parent().expect("a file has a folder")).expect("made");
             fs::write(path, text).expect("written");
         };
         let origin = |url: &str| format!("[remote \"origin\"]\n\turl = {url}\n");
-        optimus.write("README.md", "# Shared\n");
+        skiff.write("README.md", "# Shared\n");
         put("notes/plan.md", "notes\n");
         put(
             "notes/ttc/.git/config",
@@ -2058,7 +2022,7 @@ mod tests {
             "crash/.git/HEAD",
             "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n",
         );
-        optimus
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
@@ -2066,33 +2030,27 @@ mod tests {
             .keep()
             .expect("shared");
         for folder in ["notes", "crash"] {
-            optimus.places.name_scratch(QUEST, folder).expect("named");
+            skiff.places.name_scratch(QUEST, folder).expect("named");
         }
 
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
         assert_eq!(
-            fs::read_to_string(scratch(&equilibrius, "notes/plan.md"))
+            fs::read_to_string(scratch(&kestrel, "notes/plan.md"))
                 .ok()
                 .as_deref(),
             Some("notes\n"),
             "the notes cross"
         );
         assert!(
-            !scratch(&equilibrius, "notes/ttc/src/lib.rs").exists(),
+            !scratch(&kestrel, "notes/ttc/src/lib.rs").exists(),
             "but no file of a clone does"
         );
         assert_eq!(
             far.cloning.making(),
-            vec![
-                scratch(&equilibrius, "crash"),
-                scratch(&equilibrius, "notes/ttc")
-            ],
+            vec![scratch(&kestrel, "crash"), scratch(&kestrel, "notes/ttc")],
             "each clone with a remote over the network is made from it instead, \
-             and one from a path on optimus's disk is left out"
+             and one from a path on skiff's disk is left out"
         );
         far.cloning.wait();
     }
@@ -2107,45 +2065,38 @@ mod tests {
                 .mode()
                 & 0o777
         };
-        let optimus = Machine::new("optimus");
-        let equilibrius = Machine::new("equilibrius");
-        optimus.write("attachments/hub.env", "TOKEN=1\n");
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("attachments/hub.env", "TOKEN=1\n");
         fs::set_permissions(
-            optimus
-                .places
-                .quests
-                .join(QUEST)
-                .join("attachments/hub.env"),
+            skiff.places.quests.join(QUEST).join("attachments/hub.env"),
             fs::Permissions::from_mode(0o600),
         )
         .expect("made the owner's alone");
-        optimus
+        skiff
             .places
             .ledgers()
             .hold(QUEST)
             .expect("held")
             .keep()
             .expect("shared");
-        let (mut near, mut far) = (
-            optimus.exchange(&equilibrius),
-            equilibrius.exchange(&optimus),
-        );
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
         talk(&mut near, &mut far);
         assert_eq!(
-            mode_of(&equilibrius, "attachments/hub.env"),
+            mode_of(&kestrel, "attachments/hub.env"),
             0o600,
             "it lands as only its owner may read it"
         );
 
-        optimus.write("attachments/hub.env", "TOKEN=2\n");
+        skiff.write("attachments/hub.env", "TOKEN=2\n");
         talk(&mut near, &mut far);
         assert_eq!(
-            equilibrius.read("attachments/hub.env").as_deref(),
+            kestrel.read("attachments/hub.env").as_deref(),
             Some("TOKEN=2\n"),
             "a change crosses"
         );
         assert_eq!(
-            mode_of(&equilibrius, "attachments/hub.env"),
+            mode_of(&kestrel, "attachments/hub.env"),
             0o600,
             "still as only its owner may read it"
         );

@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn a_mark_is_made_only_for_a_plain_session_id() {
         let handover = tempfile::tempdir().expect("a handover");
-        let handover = handover.path().join("optimus");
+        let handover = handover.path().join("skiff");
         fs::create_dir(&handover).expect("this machine's handover");
         for odd in ["../s-elsewhere", "..", ""] {
             assert!(mark_started(&handover, odd).is_err(), "{odd:?} is refused");

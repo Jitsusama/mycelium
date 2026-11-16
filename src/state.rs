@@ -170,7 +170,7 @@ mod tests {
         Session {
             id: id.to_owned(),
             address: id.to_uppercase(),
-            machine: "optimus".to_owned(),
+            machine: "skiff".to_owned(),
             title: None,
             working_on: None,
             groups: Vec::new(),

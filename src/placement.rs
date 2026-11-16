@@ -155,8 +155,8 @@ impl fmt::Display for Because {
     }
 }
 
-/// Each machine's reasons, in words a person reads: `optimus lacks system
-/// macos; penelope is out of reach`.
+/// Each machine's reasons, in words a person reads: `skiff lacks system
+/// macos; tern is out of reach`.
 #[must_use]
 pub fn said(misses: &[Miss]) -> String {
     if misses.is_empty() {
@@ -554,24 +554,15 @@ mod tests {
     #[test]
     fn work_goes_to_a_machine_that_is_what_it_needs() {
         let realm = [
-            machine(
-                "optimus",
-                "linux",
-                8,
-                &["home", "internet", "shopify-services"],
-            ),
-            machine("penelope", "linux", 12, &["home", "internet"]),
-            machine("equilibrius", "macos", 30, &["home", "internet"]),
+            machine("skiff", "linux", 8, &["home", "internet", "work-services"]),
+            machine("tern", "linux", 12, &["home", "internet"]),
+            machine("kestrel", "macos", 30, &["home", "internet"]),
         ];
         let placement = place(
-            &needing(vec![Need::Reach("shopify-services".to_owned())]),
+            &needing(vec![Need::Reach("work-services".to_owned())]),
             &realm,
         );
-        assert_eq!(
-            placed(&placement),
-            Some("optimus"),
-            "only optimus reaches it"
-        );
+        assert_eq!(placed(&placement), Some("skiff"), "only skiff reaches it");
         let Placement::Placed { passed, .. } = placement else {
             unreachable!()
         };
@@ -579,7 +570,7 @@ mod tests {
             passed
                 .iter()
                 .all(|miss| miss.because
-                    == [Because::Lacks(Need::Reach("shopify-services".to_owned()))]),
+                    == [Because::Lacks(Need::Reach("work-services".to_owned()))]),
             "each other machine lacks it: {passed:?}"
         );
         assert_eq!(
@@ -587,26 +578,26 @@ mod tests {
                 &needing(vec![Need::System("linux".to_owned())]),
                 &realm
             )),
-            Some("penelope"),
+            Some("tern"),
             "of those that qualify, the one with the most memory free"
         );
         let mut work = needing(vec![Need::System("linux".to_owned())]);
-        work.prefers = vec![Need::Reach("shopify-services".to_owned())];
+        work.prefers = vec![Need::Reach("work-services".to_owned())];
         assert_eq!(
             placed(&place(&work, &realm)),
-            Some("optimus"),
+            Some("skiff"),
             "a preference met outranks memory free"
         );
     }
 
     #[test]
     fn a_machine_on_its_battery_below_the_mark_takes_no_new_work() {
-        let mut equilibrius = machine("equilibrius", "macos", 30, &["home"]);
-        equilibrius.power = Some(Power {
+        let mut kestrel = machine("kestrel", "macos", 30, &["home"]);
+        kestrel.power = Some(Power {
             on_battery: true,
             charge: Some(awake::LOW_CHARGE - 1),
         });
-        let realm = [equilibrius.clone()];
+        let realm = [kestrel.clone()];
         let only_it = needing(vec![Need::System("macos".to_owned())]);
         assert_eq!(
             placed(&place(&only_it, &realm)),
@@ -617,39 +608,39 @@ mod tests {
         tolerant.tolerates = vec![LOW_BATTERY.to_owned(), ON_BATTERY.to_owned()];
         assert_eq!(
             placed(&place(&tolerant, &realm)),
-            Some("equilibrius"),
+            Some("kestrel"),
             "unless the work doesn't mind"
         );
-        equilibrius.power = Some(Power {
+        kestrel.power = Some(Power {
             on_battery: true,
             charge: Some(awake::LOW_CHARGE),
         });
         assert_eq!(
-            placed(&place(&only_it, &[equilibrius])),
-            Some("equilibrius"),
+            placed(&place(&only_it, &[kestrel])),
+            Some("kestrel"),
             "at the mark it still takes work"
         );
     }
 
     #[test]
     fn a_machine_that_would_rather_not_takes_work_only_when_none_else_will() {
-        let mut equilibrius = machine("equilibrius", "macos", 30, &["home"]);
-        equilibrius.power = Some(Power {
+        let mut kestrel = machine("kestrel", "macos", 30, &["home"]);
+        kestrel.power = Some(Power {
             on_battery: true,
             charge: Some(40),
         });
-        let mut optimus = machine("optimus", "linux", 2, &["home"]);
-        let realm = [equilibrius.clone(), optimus.clone()];
+        let mut skiff = machine("skiff", "linux", 2, &["home"]);
+        let realm = [kestrel.clone(), skiff.clone()];
         assert_eq!(
             placed(&place(&needing(Vec::new()), &realm)),
-            Some("optimus"),
+            Some("skiff"),
             "a machine on its battery goes after one plugged in"
         );
         let mut tolerant = needing(Vec::new());
         tolerant.tolerates = vec![ON_BATTERY.to_owned()];
         assert_eq!(
             placed(&place(&tolerant, &realm)),
-            Some("equilibrius"),
+            Some("kestrel"),
             "unless the work doesn't mind"
         );
         assert_eq!(
@@ -657,27 +648,24 @@ mod tests {
                 &needing(vec![Need::System("macos".to_owned())]),
                 &realm
             )),
-            Some("equilibrius"),
+            Some("kestrel"),
             "and it still takes what only it can"
         );
 
-        optimus.room.as_mut().expect("a room").over = Some(vec![Limit::Memory]);
-        equilibrius.power = None;
+        skiff.room.as_mut().expect("a room").over = Some(vec![Limit::Memory]);
+        kestrel.power = None;
         assert_eq!(
-            placed(&place(
-                &needing(Vec::new()),
-                &[optimus.clone(), equilibrius]
-            )),
-            Some("equilibrius"),
+            placed(&place(&needing(Vec::new()), &[skiff.clone(), kestrel])),
+            Some("kestrel"),
             "a machine past its queue's memory limit goes after one that isn't"
         );
 
-        optimus.declared.as_mut().expect("declared").taints = vec![Taint {
+        skiff.declared.as_mut().expect("declared").taints = vec![Taint {
             key: "fleets".to_owned(),
             effect: Effect::Never,
             why: "no fleets here".to_owned(),
         }];
-        let only = [optimus];
+        let only = [skiff];
         assert!(
             matches!(
                 place(&needing(Vec::new()), &only),
@@ -689,61 +677,61 @@ mod tests {
         fleet.tolerates = vec!["fleets".to_owned()];
         assert_eq!(
             placed(&place(&fleet, &only)),
-            Some("optimus"),
+            Some("skiff"),
             "unless the work tolerates it"
         );
     }
 
     #[test]
     fn a_machine_whose_disk_is_filling_goes_after_one_with_room() {
-        let mut optimus = machine("optimus", "linux", 30, &[]);
-        let mut penelope = machine("penelope", "linux", 2, &[]);
-        optimus.disk_band = Some(Band::Filling);
-        penelope.disk_band = Some(Band::Healthy);
-        let realm = [optimus.clone(), penelope.clone()];
+        let mut skiff = machine("skiff", "linux", 30, &[]);
+        let mut tern = machine("tern", "linux", 2, &[]);
+        skiff.disk_band = Some(Band::Filling);
+        tern.disk_band = Some(Band::Healthy);
+        let realm = [skiff.clone(), tern.clone()];
         assert_eq!(
             placed(&place(&needing(Vec::new()), &realm)),
-            Some("penelope"),
+            Some("tern"),
             "a disk past healthy ranks its machine last, room or not"
         );
         let mut tolerant = needing(Vec::new());
         tolerant.tolerates = vec![DISK_PRESSURE.to_owned()];
         assert_eq!(
             placed(&place(&tolerant, &realm)),
-            Some("optimus"),
+            Some("skiff"),
             "unless the work doesn't mind"
         );
-        optimus.disk_band = None;
+        skiff.disk_band = None;
         assert_eq!(
-            placed(&place(&needing(Vec::new()), &[optimus, penelope])),
-            Some("optimus"),
+            placed(&place(&needing(Vec::new()), &[skiff, tern])),
+            Some("skiff"),
             "a disk no guard bands is no reason to pass a machine by"
         );
     }
 
     #[test]
     fn work_waits_for_a_machine_out_of_reach_only_when_it_may() {
-        let mut penelope = machine("penelope", "linux", 12, &["home"]);
-        penelope.state = Readiness::Unreachable;
-        let realm = [machine("optimus", "linux", 8, &["home"]), penelope];
-        let mut work = needing(vec![Need::Machine("penelope".to_owned())]);
+        let mut tern = machine("tern", "linux", 12, &["home"]);
+        tern.state = Readiness::Unreachable;
+        let realm = [machine("skiff", "linux", 8, &["home"]), tern];
+        let mut work = needing(vec![Need::Machine("tern".to_owned())]);
         assert!(
             matches!(place(&work, &realm), Placement::Refused { .. }),
             "work that may not wait is refused"
         );
         work.may_wait = true;
         let Placement::Pending { misses } = place(&work, &realm) else {
-            panic!("work that may wait waits for penelope")
+            panic!("work that may wait waits for tern")
         };
         assert_eq!(
             misses,
             [
                 Miss {
-                    machine: "optimus".to_owned(),
-                    because: vec![Because::Lacks(Need::Machine("penelope".to_owned()))],
+                    machine: "skiff".to_owned(),
+                    because: vec![Because::Lacks(Need::Machine("tern".to_owned()))],
                 },
                 Miss {
-                    machine: "penelope".to_owned(),
+                    machine: "tern".to_owned(),
                     because: vec![Because::Unreachable],
                 },
             ],
@@ -757,7 +745,7 @@ mod tests {
         let mut sandbox = machine("sandbox", "linux", 30, &[]);
         let leaves = now + jiff::SignedDuration::from_mins(40);
         sandbox.declared.as_mut().expect("declared").leaves_at = Some(leaves);
-        let realm = [machine("optimus", "linux", 8, &[]), sandbox];
+        let realm = [machine("skiff", "linux", 8, &[]), sandbox];
         let mut work = needing(Vec::new());
         assert_eq!(
             placed(&place_at(&work, &realm, now)),
@@ -769,7 +757,7 @@ mod tests {
         let Placement::Placed { machine, passed } = place_at(&work, &realm, now) else {
             panic!("work that outlasts the sandbox goes elsewhere")
         };
-        assert_eq!(machine, "optimus", "to the machine that stays");
+        assert_eq!(machine, "skiff", "to the machine that stays");
         assert_eq!(
             passed,
             [Miss {
@@ -812,11 +800,11 @@ mod tests {
     #[test]
     fn the_cheapest_offer_that_would_take_the_work_is_made() {
         let offers = [
-            offer("large", "10.0", Some(7200), &["shopify"]),
-            offer("small", "9.50", Some(3600), &["shopify"]),
+            offer("large", "10.0", Some(7200), &["work"]),
+            offer("small", "9.50", Some(3600), &["work"]),
             offer("open", "0.001", None, &[]),
         ];
-        let mut work = needing(vec![Need::Reach("shopify".to_owned())]);
+        let mut work = needing(vec![Need::Reach("work".to_owned())]);
         assert_eq!(
             to_make(&work, &offers).map(|chosen| chosen.shape.as_str()),
             Ok("small"),
@@ -831,21 +819,21 @@ mod tests {
         );
 
         work.needs.push(Need::Accelerator(AcceleratorKind::Gpu));
-        work.needs.push(Need::Machine("optimus".to_owned()));
+        work.needs.push(Need::Machine("skiff".to_owned()));
         let Err(misses) = to_make(&work, &offers) else {
             panic!("no offer promises a gpu, and none is a machine already named");
         };
         assert_eq!(
             said(&misses[..2]),
-            "large from lender hasn't said a gpu, isn't optimus; small from lender \
-             would live only 1h, ending before the work, hasn't said a gpu, isn't optimus",
+            "large from lender hasn't said a gpu, isn't skiff; small from lender \
+             would live only 1h, ending before the work, hasn't said a gpu, isn't skiff",
             "each offer says why not, a fact it doesn't promise meeting no need"
         );
     }
 
     #[test]
     fn what_a_machine_never_said_meets_no_need() {
-        let mut quiet = machine("methuselah", "macos", 16, &[]);
+        let mut quiet = machine("osprey", "macos", 16, &[]);
         quiet.declared = None;
         quiet.accelerators = None;
         let Placement::Refused { misses } = place(
@@ -866,7 +854,7 @@ mod tests {
             "unknown, not lacking"
         );
 
-        let mut npu = machine("optimus", "linux", 8, &[]);
+        let mut npu = machine("skiff", "linux", 8, &[]);
         npu.accelerators = Some(vec![Accelerator {
             kind: AcceleratorKind::Npu,
             driver: "intel_vpu".to_owned(),
@@ -876,14 +864,14 @@ mod tests {
                 &needing(vec![Need::Accelerator(AcceleratorKind::Npu)]),
                 &[npu]
             )),
-            Some("optimus"),
+            Some("skiff"),
             "an accelerator it lists meets the need"
         );
     }
 
     #[test]
     fn a_network_reached_now_and_then_is_met_while_its_probe_answers() {
-        let mut laptop = machine("optimus", "linux", 8, &["internet"]);
+        let mut laptop = machine("skiff", "linux", 8, &["internet"]);
         if let Some(declared) = laptop.declared.as_mut() {
             declared.probes =
                 BTreeMap::from([("home".to_owned(), Probe::Connect("192.0.2.1:53".to_owned()))]);
@@ -907,7 +895,7 @@ mod tests {
         laptop.reached.insert("home".to_owned(), true);
         assert_eq!(
             placed(&place(&home(), std::slice::from_ref(&laptop))),
-            Some("optimus"),
+            Some("skiff"),
             "a probe that answered meets it"
         );
         assert_eq!(
@@ -915,7 +903,7 @@ mod tests {
                 &needing(vec![Need::Reach("internet".to_owned())]),
                 &[laptop]
             )),
-            Some("optimus"),
+            Some("skiff"),
             "a network declared outright needs no probe"
         );
     }

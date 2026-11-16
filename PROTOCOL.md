@@ -35,7 +35,7 @@ a machine asleep only means its records arrive when it wakes.
 
 A message to the mesh's machine-wide group (`#machine`, or its older names
 `#all` and `#global`) stays on its machine, and so does an answer to one:
-a hold before optimus reboots means nothing to the Mac's sessions.
+a hold before skiff reboots means nothing to the Mac's sessions.
 
 A machine has one mesh, so it belongs to one realm, recorded in
 `~/.local/state/mycelium/realm` the first time a node or link runs there;
@@ -330,7 +330,7 @@ A deletion gives way to a write. A scratch file is taken as deleted only
 while its named folder is there: a folder gone whole, as concluding a
 quest takes a machine's whole scratch, is no word on another machine's
 copy. Record text crosses with the home folder
-marked, so a path under `/home/jitsusama` reads `/Users/joel.gerber` on a
+marked, so a path under `/home/jitsusama` reads `/Users/jsama` on a
 Mac. Each write takes the quest's lock as the harness does and lands by
 rename, so a session never reads half a file.
 
@@ -529,7 +529,7 @@ second machine of both realms crossed first, is answered as sent and
 not written twice. A crossing made on one machine leaves nothing in the
 realm it left.
 
-A machine with a flow but no node of the other realm, as methuselah has
+A machine with a flow but no node of the other realm, as osprey has
 none of work's, keeps the message in its own realm's mesh marked
 `"forRealm"`, which no session there hears and the node lists to no
 client. Links carry it as any message; a node with the flow on a machine
@@ -804,12 +804,12 @@ none or names no folder there. The answer is the `machine`, the `held`
 id, the `folder` it began in, and `attach`, the words that join it from
 a terminal on the asking machine, to be run as given. A start that
 isn't placed, or doesn't start, is an error saying why, such as
-`nowhere: optimus isn't equilibrius`. A node run as a systemd unit
+`nowhere: skiff isn't kestrel`. A node run as a systemd unit
 starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in
 `app.slice`, so the session outlives the node. A start placed on
 another machine is asked of it through the link this node keeps to it,
 and its `attach` comes back as the words that run that machine's own
-over the dial, such as `ssh -t equilibrius mycelium --realm work attach
+over the dial, such as `ssh -t kestrel mycelium --realm work attach
 <held>`. It fails with a reason when no link reaches the machine, its
 mycelium is too old to start sessions, or it doesn't answer within 30
 seconds.

@@ -138,32 +138,32 @@ mod tests {
     #[test]
     fn a_read_says_each_link_its_drops_and_each_machines_sessions() {
         let machines = [
-            machine("optimus", Readiness::Ready),
-            machine("penelope", Readiness::Ready),
-            machine("methuselah", Readiness::Unreachable),
+            machine("skiff", Readiness::Ready),
+            machine("tern", Readiness::Ready),
+            machine("osprey", Readiness::Unreachable),
         ];
         let busy = json!({"state": "busy", "busy": true});
         let listening = json!({"state": "listening"});
         let parked = json!({"state": "parked"});
         let sessions = [
-            session("a", "optimus", "busy", &busy),
-            session("b", "optimus", "idle", &listening),
-            session("c", "optimus", "ended", &parked),
-            session("d", "optimus", "ended", &listening),
-            session("e", "optimus", "ended", &busy),
-            session("f", "methuselah", "unreachable", &listening),
+            session("a", "skiff", "busy", &busy),
+            session("b", "skiff", "idle", &listening),
+            session("c", "skiff", "ended", &parked),
+            session("d", "skiff", "ended", &listening),
+            session("e", "skiff", "ended", &busy),
+            session("f", "osprey", "unreachable", &listening),
         ];
         let read = Read {
             realm: "personal",
             at: 1_794_470_400,
-            here: "optimus",
+            here: "skiff",
             machines: &machines,
             sessions: &sessions,
             slowest: Duration::from_millis(7_900),
         };
         let line = line(
             &read,
-            |machine| usize::from(machine == "methuselah") * 1_410,
+            |machine| usize::from(machine == "osprey") * 1_410,
             |_| None,
         );
         assert_eq!(
@@ -172,12 +172,12 @@ mod tests {
                 "realm": "personal",
                 "at": 1_794_470_400,
                 "links": [
-                    {"machine": "methuselah", "state": "unreachable", "ended24h": 1_410},
-                    {"machine": "penelope", "state": "up", "ended24h": 0},
+                    {"machine": "osprey", "state": "unreachable", "ended24h": 1_410},
+                    {"machine": "tern", "state": "up", "ended24h": 0},
                 ],
                 "sessions": {
-                    "methuselah": {"busy": 0, "idle": 0, "ended": 0, "unreachable": 1},
-                    "optimus": {"busy": 1, "idle": 1, "ended": 3, "unreachable": 0},
+                    "osprey": {"busy": 0, "idle": 0, "ended": 0, "unreachable": 1},
+                    "skiff": {"busy": 1, "idle": 1, "ended": 3, "unreachable": 0},
                 },
                 "deadPresences": 2,
                 "slowestAsk": 8,
@@ -189,26 +189,26 @@ mod tests {
     #[test]
     fn a_link_refused_says_why_until_it_is_up() {
         let machines = [
-            machine("optimus", Readiness::Ready),
-            machine("penelope", Readiness::Ready),
-            machine("methuselah", Readiness::Unreachable),
+            machine("skiff", Readiness::Ready),
+            machine("tern", Readiness::Ready),
+            machine("osprey", Readiness::Unreachable),
         ];
         let read = Read {
             realm: "personal",
             at: 1_794_470_400,
-            here: "optimus",
+            here: "skiff",
             machines: &machines,
             sessions: &[],
             slowest: Duration::ZERO,
         };
-        let why = "methuselah speaks link version 2 and optimus 1, so they link again once \
-                   optimus's mycelium is as new as methuselah's";
+        let why = "osprey speaks link version 2 and skiff 1, so they link again once \
+                   skiff's mycelium is as new as osprey's";
         let line = line(&read, |_| 0, |_| Some(why.to_owned()));
         assert_eq!(
             line["links"],
             json!([
-                {"machine": "methuselah", "state": "refused", "why": why, "ended24h": 0},
-                {"machine": "penelope", "state": "up", "ended24h": 0},
+                {"machine": "osprey", "state": "refused", "why": why, "ended24h": 0},
+                {"machine": "tern", "state": "up", "ended24h": 0},
             ]),
             "a refusal says why while no link reaches the machine, and a link up outranks it"
         );

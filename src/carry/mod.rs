@@ -643,7 +643,7 @@ mod tests {
             let held = format!("h{}", self.started.len());
             self.started.push(start);
             Ok(Started {
-                machine: "penelope".to_owned(),
+                machine: "tern".to_owned(),
                 held: held.clone(),
                 folder: "/home/joel".into(),
                 attach: vec!["mycelium".to_owned(), "attach".to_owned(), held],
@@ -677,26 +677,20 @@ mod tests {
         .expect("a session")
     }
 
-    /// A realm of optimus and penelope, where HARBOR runs busy and is
-    /// parked this boot on optimus, was parked a boot before there, runs on
-    /// penelope already, and another quest runs beside it.
+    /// A realm of skiff and tern, where HARBOR runs busy and is
+    /// parked this boot on skiff, was parked a boot before there, runs on
+    /// tern already, and another quest runs beside it.
     fn realm() -> Realm {
         let none = json!({});
         let parked = |boot: &str| json!({"state": "parked", "owner": {"bootId": boot}});
         Realm {
-            machines: vec!["penelope".to_owned()],
+            machines: vec!["tern".to_owned()],
             sessions: vec![
-                session("BUSY01", "optimus", QUEST, "busy", &none),
-                session("NAPS02", "optimus", QUEST, "ended", &parked("this-boot")),
-                session(
-                    "OLDNAP",
-                    "optimus",
-                    QUEST,
-                    "ended",
-                    &parked("a-boot-before"),
-                ),
-                session("THERE3", "penelope", QUEST, "idle", &none),
-                session("OTHER4", "optimus", "QEST-20261107-OTHERS", "idle", &none),
+                session("BUSY01", "skiff", QUEST, "busy", &none),
+                session("NAPS02", "skiff", QUEST, "ended", &parked("this-boot")),
+                session("OLDNAP", "skiff", QUEST, "ended", &parked("a-boot-before")),
+                session("THERE3", "tern", QUEST, "idle", &none),
+                session("OTHER4", "skiff", "QEST-20261107-OTHERS", "idle", &none),
             ],
             boot: Some("this-boot".to_owned()),
             carries: ["s-busy01", "s-naps02"].map(str::to_owned).into(),
@@ -706,10 +700,10 @@ mod tests {
         }
     }
 
-    /// Carries HARBOR from optimus to `to` in `realm`, with each line said.
+    /// Carries HARBOR from skiff to `to` in `realm`, with each line said.
     fn carried(realm: &mut Realm, to: &str) -> (Result<Carried, Failed>, Vec<Value>) {
         let mut lines = Vec::new();
-        let done = carry(realm, QUEST, "optimus", to, &mut |line: &Value| {
+        let done = carry(realm, QUEST, "skiff", to, &mut |line: &Value| {
             lines.push(line.clone());
         });
         (done, lines)
@@ -738,7 +732,7 @@ mod tests {
     #[test]
     fn a_quest_is_carried_step_by_step_with_its_sessions_here() {
         let mut realm = realm();
-        let (done, lines) = carried(&mut realm, "penelope");
+        let (done, lines) = carried(&mut realm, "tern");
         let done = done.expect("carried");
         assert_eq!(
             steps(&lines),
@@ -763,10 +757,10 @@ mod tests {
             "only those of the quest here that can carry"
         );
         assert_eq!(realm.steered[0].1["act"], "carry", "told to carry");
-        assert_eq!(realm.steered[0].1["to"], "penelope", "to the machine named");
+        assert_eq!(realm.steered[0].1["to"], "tern", "to the machine named");
         assert_eq!(
             realm.rest.as_deref(),
-            Some("QEST-20261107-HARBOR penelope"),
+            Some("QEST-20261107-HARBOR tern"),
             "pi-carry takes what no session carried"
         );
         assert_eq!(realm.shared, [QUEST], "shared once, after the push");
@@ -778,7 +772,7 @@ mod tests {
         let trees = &realm.started[3];
         assert_eq!(
             &trees.command[3..7],
-            [PI_CARRY, QUEST, "optimus", QUEST],
+            [PI_CARRY, QUEST, "skiff", QUEST],
             "the quest's own trees arrive by its done file"
         );
         assert!(
@@ -788,7 +782,7 @@ mod tests {
         );
         let first = &realm.started[0];
         assert!(
-            matches!(first.work.needs.as_slice(), [Need::Machine(on)] if on == "penelope"),
+            matches!(first.work.needs.as_slice(), [Need::Machine(on)] if on == "tern"),
             "on the machine named: {:?}",
             first.work.needs
         );
@@ -797,9 +791,9 @@ mod tests {
             [
                 PI_CARRY,
                 QUEST,
-                "optimus",
+                "skiff",
                 "s-busy01",
-                &super::carry_on("optimus")
+                &super::carry_on("skiff")
             ],
             "arriving with its own session, told to carry on, its folder left to pi-carry"
         );
@@ -807,7 +801,7 @@ mod tests {
             first.command[2].starts_with("pi-carry arrive"),
             "arrives before pi starts"
         );
-        assert_eq!(done.machine, "penelope", "said where it went");
+        assert_eq!(done.machine, "tern", "said where it went");
         let addresses: Vec<&str> = done
             .sessions
             .iter()
@@ -864,7 +858,7 @@ mod tests {
         let one = Done {
             session: "s-busy01".to_owned(),
         };
-        let start = super::arriving(QUEST, "optimus", "penelope", &one);
+        let start = super::arriving(QUEST, "skiff", "tern", &one);
         let path = format!(
             "{}:{}",
             bin.display(),
@@ -938,7 +932,7 @@ mod tests {
         assert_eq!(
             told,
             "[Automated message, no human input: pi-carry carried this session here \
-             from optimus.] Carry on from where you left off: your plan's next open item.",
+             from skiff.] Carry on from where you left off: your plan's next open item.",
             "its first prompt says where it came from and sets it to work, \
              so it never sits idle until a message wakes it"
         );
@@ -946,7 +940,7 @@ mod tests {
 
     #[test]
     fn a_machine_out_of_reach_or_this_one_is_refused_before_anything_moves() {
-        for to in ["lighthouse", "optimus"] {
+        for to in ["lighthouse", "skiff"] {
             let mut realm = realm();
             let (done, lines) = carried(&mut realm, to);
             assert_eq!(done, Err(Failed { step: Step::Find }), "{to} is refused");
@@ -968,7 +962,7 @@ mod tests {
             carries: ["s-busy01"].map(str::to_owned).into(),
             ..realm()
         };
-        let (done, lines) = carried(&mut realm, "penelope");
+        let (done, lines) = carried(&mut realm, "tern");
         assert_eq!(
             done,
             Err(Failed { step: Step::Push }),
@@ -991,7 +985,7 @@ mod tests {
             ends: false,
             ..realm()
         };
-        let (done, lines) = carried(&mut realm, "penelope");
+        let (done, lines) = carried(&mut realm, "tern");
         assert_eq!(
             done,
             Err(Failed { step: Step::Close }),
@@ -1020,11 +1014,11 @@ mod tests {
     #[test]
     fn a_later_carry_starts_only_what_was_carried_since() {
         let mut realm = realm();
-        carried(&mut realm, "penelope").0.expect("the first carry");
+        carried(&mut realm, "tern").0.expect("the first carry");
         realm.started.clear();
-        realm.sessions = vec![session("FRESH5", "optimus", QUEST, "busy", &json!({}))];
+        realm.sessions = vec![session("FRESH5", "skiff", QUEST, "busy", &json!({}))];
         realm.carries.insert("s-fresh5".to_owned());
-        let (done, lines) = carried(&mut realm, "penelope");
+        let (done, lines) = carried(&mut realm, "tern");
         done.expect("the later carry");
         assert_eq!(
             arrivals(&realm.started),
@@ -1039,7 +1033,7 @@ mod tests {
             refuses: Some("s-naps02".to_owned()),
             ..realm()
         };
-        let (done, lines) = carried(&mut realm, "penelope");
+        let (done, lines) = carried(&mut realm, "tern");
         assert_eq!(
             done,
             Err(Failed { step: Step::Start }),
@@ -1053,7 +1047,7 @@ mod tests {
             "the one before it started"
         );
         realm.refuses = None;
-        let (done, lines) = carried(&mut realm, "penelope");
+        let (done, lines) = carried(&mut realm, "tern");
         done.expect("taken again, it goes through");
         assert_eq!(
             arrivals(&realm.started),

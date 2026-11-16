@@ -316,17 +316,17 @@ mod tests {
     fn each_writer_appends_to_its_own_file_numbered_in_turn() {
         let (dir, web) = web();
         let first = web
-            .say("optimus", Some("KP0L6A"), murmur("Landed is slow"), 100)
-            .expect("optimus says");
+            .say("skiff", Some("KP0L6A"), murmur("Landed is slow"), 100)
+            .expect("skiff says");
         let second = web
-            .say("optimus", None, murmur("so is Recent"), 101)
-            .expect("optimus says again");
+            .say("skiff", None, murmur("so is Recent"), 101)
+            .expect("skiff says again");
         let far = web
-            .say("equilibrius", None, murmur("the dock wakes late"), 100)
-            .expect("equilibrius says");
+            .say("kestrel", None, murmur("the dock wakes late"), 100)
+            .expect("kestrel says");
         assert_eq!(
             [first.id.as_str(), second.id.as_str(), far.id.as_str()],
-            ["optimus-1", "optimus-2", "equilibrius-1"],
+            ["skiff-1", "skiff-2", "kestrel-1"],
             "each writer numbers its own"
         );
         let events = dir
@@ -334,8 +334,8 @@ mod tests {
             .join("QEST-20261013-4UHC5Q")
             .join("web")
             .join("events");
-        let lines = fs::read_to_string(events.join("optimus.jsonl")).expect("optimus's file");
-        assert_eq!(lines.lines().count(), 2, "optimus's two, one a line");
+        let lines = fs::read_to_string(events.join("skiff.jsonl")).expect("skiff's file");
+        assert_eq!(lines.lines().count(), 2, "skiff's two, one a line");
         assert!(lines.ends_with('\n'), "each line is whole, newline and all");
         assert!(
             web.say("../escape", None, murmur("out"), 100).is_err(),
@@ -363,20 +363,17 @@ mod tests {
             };
             serde_json::to_string(&event).expect("an event writes") + "\n"
         };
-        let optimus = line("optimus-1", "optimus", 1, 100) + &line("optimus-2", "optimus", 2, 102);
-        fs::write(
-            events.join("optimus.jsonl"),
-            optimus + "{\"id\": \"optimus-3\"",
-        )
-        .expect("optimus's file");
+        let skiff = line("skiff-1", "skiff", 1, 100) + &line("skiff-2", "skiff", 2, 102);
+        fs::write(events.join("skiff.jsonl"), skiff + "{\"id\": \"skiff-3\"")
+            .expect("skiff's file");
         // A copy carried twice, as a file moved aside and back may be.
-        let far = line("equilibrius-1", "equilibrius", 1, 100).repeat(2)
-            + &line("equilibrius-2", "equilibrius", 2, 101);
-        fs::write(events.join("equilibrius.jsonl"), far).expect("equilibrius's file");
+        let far =
+            line("kestrel-1", "kestrel", 1, 100).repeat(2) + &line("kestrel-2", "kestrel", 2, 101);
+        fs::write(events.join("kestrel.jsonl"), far).expect("kestrel's file");
         let ids: Vec<String> = web.events().into_iter().map(|event| event.id).collect();
         assert_eq!(
             ids,
-            ["equilibrius-1", "optimus-1", "equilibrius-2", "optimus-2"],
+            ["kestrel-1", "skiff-1", "kestrel-2", "skiff-2"],
             "by when, then writer; once each; the half-written line waits"
         );
     }
@@ -392,29 +389,29 @@ mod tests {
             said,
         };
         let events = [
-            event("optimus", 1, 100, murmur("Landed is slow")),
-            event("equilibrius", 1, 101, murmur("the dock wakes late")),
+            event("skiff", 1, 100, murmur("Landed is slow")),
+            event("kestrel", 1, 101, murmur("the dock wakes late")),
             event(
-                "optimus",
+                "skiff",
                 2,
                 102,
                 Said::Tie {
-                    from: "optimus-1".to_owned(),
+                    from: "skiff-1".to_owned(),
                     to: "QEST-20261106-KP0L6A".to_owned(),
                     how: Some("about".to_owned()),
                 },
             ),
             event(
-                "equilibrius",
+                "kestrel",
                 2,
                 103,
                 Said::Settle {
-                    of: "optimus-1".to_owned(),
+                    of: "skiff-1".to_owned(),
                     how: "filed".to_owned(),
                 },
             ),
             event(
-                "optimus",
+                "skiff",
                 3,
                 104,
                 Said::Tie {
@@ -428,26 +425,26 @@ mod tests {
             fold(&events, 200),
             json!({
                 "at": 200,
-                "writers": {"equilibrius": 2, "optimus": 3},
+                "writers": {"kestrel": 2, "skiff": 3},
                 "murmurs": [
                     {
-                        "id": "equilibrius-1", "writer": "equilibrius", "at": 101,
+                        "id": "kestrel-1", "writer": "kestrel", "at": 101,
                         "words": "the dock wakes late", "ties": [], "settled": null,
                     },
                     {
-                        "id": "optimus-1", "writer": "optimus", "at": 100,
+                        "id": "skiff-1", "writer": "skiff", "at": 100,
                         "words": "Landed is slow",
                         "ties": [{
-                            "id": "optimus-2", "writer": "optimus", "at": 102,
+                            "id": "skiff-2", "writer": "skiff", "at": 102,
                             "to": "QEST-20261106-KP0L6A", "how": "about",
                         }],
                         "settled": {
-                            "id": "equilibrius-2", "writer": "equilibrius", "at": 103, "how": "filed",
+                            "id": "kestrel-2", "writer": "kestrel", "at": 103, "how": "filed",
                         },
                     },
                 ],
                 "ties": [{
-                    "id": "optimus-3", "writer": "optimus", "at": 104,
+                    "id": "skiff-3", "writer": "skiff", "at": 104,
                     "from": "QEST-20261106-KP0L6A", "to": "core.nix#3696",
                 }],
             }),
@@ -459,8 +456,8 @@ mod tests {
     fn a_fold_is_written_only_when_it_says_something_new() {
         let (dir, web) = web();
         let into = dir.path().join("site").join("web.json");
-        web.say("optimus", None, murmur("Landed is slow"), 100)
-            .expect("optimus says");
+        web.say("skiff", None, murmur("Landed is slow"), 100)
+            .expect("skiff says");
         assert!(
             web.fold_into(&into, 200).expect("it folds"),
             "first, it writes"
@@ -469,8 +466,8 @@ mod tests {
             !web.fold_into(&into, 201).expect("it folds again"),
             "nothing new, so nothing written, though the time moved"
         );
-        web.say("optimus", None, murmur("so is Recent"), 202)
-            .expect("optimus says again");
+        web.say("skiff", None, murmur("so is Recent"), 202)
+            .expect("skiff says again");
         assert!(
             web.fold_into(&into, 203).expect("it folds"),
             "something new"

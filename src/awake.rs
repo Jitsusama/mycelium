@@ -216,7 +216,7 @@ mod tests {
     }
 
     /// The machine the tests' sessions run on.
-    const HERE: &str = "penelope";
+    const HERE: &str = "tern";
 
     /// Session `id`, held as `held`, standing as `state` says.
     fn session(id: &str, held: &str, state: &str) -> Session {
@@ -263,7 +263,7 @@ mod tests {
             !at_work(
                 HERE,
                 &[],
-                &[hosted("there", "work-background", "optimus", "busy")],
+                &[hosted("there", "work-background", "skiff", "busy")],
                 &nothing
             ),
             "a session a host on another machine runs keeps that machine, not this"

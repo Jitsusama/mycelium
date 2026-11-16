@@ -61,7 +61,7 @@ pub trait Dial: Send + Sync + 'static {
 /// run there, speaking over the session's pipes.
 #[derive(Debug, Clone)]
 pub struct Ssh {
-    /// Where SSH connects, such as `joel.gerber@192.168.4.32`.
+    /// Where SSH connects, such as `jsama@192.0.2.32`.
     pub destination: String,
     /// SSH options, each as `-o` takes it.
     pub options: Vec<String>,
@@ -416,7 +416,7 @@ mod tests {
             "the program is asked to release its place"
         );
         let ssh = Way::Ssh(Ssh {
-            destination: "equilibrius".to_owned(),
+            destination: "kestrel".to_owned(),
             options: Vec::new(),
             command: "mycelium".to_owned(),
         });

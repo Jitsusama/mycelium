@@ -195,14 +195,14 @@ mod tests {
         fs::write(
             git.join("config"),
             "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = https://example.com/up.git\n\
-             [remote \"origin\"]\n\turl = git@github.com:Shopify/ttc.git\n\
+             [remote \"origin\"]\n\turl = git@github.com:example/widgets.git\n\
              \tfetch = +refs/heads/*:refs/remotes/origin/*\n",
         )
         .expect("written");
         fs::write(git.join("HEAD"), "ref: refs/heads/main\n").expect("written");
         assert_eq!(
             Clone::read(&dir.path().join("ttc")),
-            Some(clone("git@github.com:Shopify/ttc.git", Some("main"))),
+            Some(clone("git@github.com:example/widgets.git", Some("main"))),
             "its origin, not another remote, and its branch"
         );
         fs::write(
@@ -212,7 +212,7 @@ mod tests {
         .expect("written");
         assert_eq!(
             Clone::read(&dir.path().join("ttc")),
-            Some(clone("git@github.com:Shopify/ttc.git", None)),
+            Some(clone("git@github.com:example/widgets.git", None)),
             "a detached head names no branch"
         );
         fs::write(git.join("config"), "[core]\n\tbare = false\n").expect("written");
