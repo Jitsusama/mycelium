@@ -13,7 +13,8 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `named.rs`: a node given `--machine` recording the name, and a command
   with none going by it rather than the system's
 - `networks.rs`: the node's network records built for ten thousand cells
-  within 30 MB, in time that grows with the cells, the memory counted
+  within 38 MB, short of the 30 MB target while each cell holds two
+  trees, in time that grows with the cells, the memory counted
   by an allocator of its own, which only a program of its own may hold
 - `shared.rs`: a quest shared and waited for, printing one JSON line
   however the wait ends and failing unless the machine holds it
