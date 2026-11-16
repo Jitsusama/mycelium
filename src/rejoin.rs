@@ -149,6 +149,10 @@ pub trait Joining {
     /// Whether it still runs there, as this machine's node knows it.
     fn still(&mut self) -> impl Future<Output = Still>;
 
+    /// Puts the person's terminal back as it was before the join there
+    /// set its modes, which a dropped way leaves set.
+    fn reset(&mut self);
+
     /// Says `line` to the person.
     fn say(&mut self, line: &str);
 }
@@ -196,6 +200,8 @@ impl Joining for Over {
             _ => Still::Unknown,
         }
     }
+
+    fn reset(&mut self) {}
 
     fn say(&mut self, line: &str) {
         eprintln!("{line}");
@@ -258,6 +264,7 @@ mod tests {
         tries: VecDeque<(i32, Duration)>,
         tried: Vec<Instant>,
         said: Vec<String>,
+        told: Vec<String>,
         asked: usize,
         ends_at: Option<usize>,
     }
@@ -299,8 +306,13 @@ mod tests {
             })
         }
 
+        fn reset(&mut self) {
+            self.told.push("(reset)".to_owned());
+        }
+
         fn say(&mut self, line: &str) {
             self.said.push(line.to_owned());
+            self.told.push(line.to_owned());
         }
     }
 
@@ -393,6 +405,29 @@ mod tests {
             "as a shell says Ctrl+C"
         );
         assert_eq!(joining.tried.len(), 1, "never trying again");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_terminal_is_put_back_before_each_line_said() {
+        let mut joining = Scripted {
+            ends_at: Some(2),
+            ..Scripted::ending(&[(DROPPED, 0), (DROPPED, 0)])
+        };
+
+        rejoin("skiff", &mut joining, Waits::default(), never())
+            .await
+            .expect("it ends");
+
+        assert_eq!(
+            joining.told,
+            [
+                "(reset)",
+                "Reconnecting to skiff.",
+                "(reset)",
+                "Harbour work has ended."
+            ],
+            "so a line isn't drawn on the screen the join there left, and Ctrl+C reads as itself"
+        );
     }
 
     fn words(words: &[&str]) -> Vec<String> {
