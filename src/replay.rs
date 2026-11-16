@@ -7,6 +7,10 @@
 //! choice replaces it. Both are then judged in hindsight by the same
 //! balance readings.
 //!
+//! An ask of where, which started nothing, is answered again the same
+//! way and counted, with each answer that would have differed, but never
+//! judged: it added no load, so hindsight has nothing of it to weigh.
+//!
 //! Those readings carry the work where it was kept, so a changed choice
 //! is judged on a machine that never carried it: a replay flatters a set
 //! that changes much, and how many it changed is said beside its
@@ -34,6 +38,15 @@ pub struct Replay {
     pub starts: usize,
     /// Each start the weights would have placed elsewhere.
     pub changed: Vec<Change>,
+    /// How many kept asks of where, which started nothing, were answered
+    /// again.
+    #[serde(default)]
+    pub asks: usize,
+    /// Each ask the weights would have answered elsewhere. An ask added
+    /// no load, so none is judged in hindsight: this says only how often
+    /// the weights would have told an asker something else.
+    #[serde(default)]
+    pub answered: Vec<Change>,
     /// Hindsight on the starts as they were placed.
     pub kept: Hindsight,
     /// Hindsight on the starts as the weights would have placed them.
@@ -58,28 +71,39 @@ pub struct Change {
 pub fn replay(records: &[Record], readings: &[Reading], weights: &Weights) -> Replay {
     let mut starts = 0;
     let mut changed = Vec::new();
+    let mut asks = 0;
+    let mut answered = Vec::new();
     let mut replayed = Vec::with_capacity(records.len());
     for record in records {
-        let Some((kept, at)) = start(record) else {
+        let Some((kept, at)) = answer(record) else {
             replayed.push(record.clone());
             continue;
         };
-        starts += 1;
         let decision =
             placement::decide_as(&record.work, &record.machines, &record.loads, at, weights);
         let drawn = decision
             .judged
             .iter()
             .any(|judged| judged.machine == kept && judged.chance > 0.0);
+        let change = Change {
+            at: record.at.clone(),
+            kept: kept.to_owned(),
+            replayed: placed_on(&decision.placement).map(str::to_owned),
+        };
+        if !record.start {
+            asks += 1;
+            if !drawn {
+                answered.push(change);
+            }
+            replayed.push(record.clone());
+            continue;
+        }
+        starts += 1;
         if drawn {
             replayed.push(record.clone());
             continue;
         }
-        changed.push(Change {
-            at: record.at.clone(),
-            kept: kept.to_owned(),
-            replayed: placed_on(&decision.placement).map(str::to_owned),
-        });
+        changed.push(change);
         replayed.push(Record {
             decision,
             ..record.clone()
@@ -90,18 +114,16 @@ pub fn replay(records: &[Record], readings: &[Reading], weights: &Weights) -> Re
         weights: *weights,
         starts,
         changed,
+        asks,
+        answered,
         kept: hindsight::judge(records, readings),
         replayed: hindsight::judge(&replayed, readings),
     }
 }
 
-/// Where `record` started work and when, if it was a start that placed
-/// work somewhere at a time that reads; an ask of where alone added no
-/// load, so it is left as it was.
-fn start(record: &Record) -> Option<(&str, jiff::Timestamp)> {
-    if !record.start {
-        return None;
-    }
+/// Where `record` was answered and when, if its answer named a machine at
+/// a time that reads, whether it started work there or only asked.
+fn answer(record: &Record) -> Option<(&str, jiff::Timestamp)> {
     Some((
         placed_on(&record.decision.placement)?,
         record.at.parse().ok()?,
@@ -243,16 +265,37 @@ mod tests {
     }
 
     #[test]
-    fn an_ask_of_where_alone_is_not_placed_again() {
+    fn an_ask_of_where_is_answered_again_but_never_judged() {
         let (machines, loads) = crowded_skiff();
         let mut asked = kept("skiff", machines, loads);
         asked.start = false;
+        let readings = [a_minute_on(&[("kestrel", 0.3), ("skiff", 0.6)])];
         let heavier = Weights {
             session: 1.0,
             ..Weights::STARTING
         };
-        let replay = replay(&[asked], &[], &heavier);
+        let replay = replay(&[asked], &readings, &heavier);
         assert_eq!(replay.starts, 0);
         assert_eq!(replay.changed, []);
+        assert_eq!(replay.asks, 1);
+        assert_eq!(
+            replay.answered,
+            [Change {
+                at: AT.to_owned(),
+                kept: "skiff".to_owned(),
+                replayed: Some("kestrel".to_owned()),
+            }]
+        );
+        assert_eq!(replay.replayed, replay.kept, "an ask added no load");
+    }
+
+    #[test]
+    fn an_ask_the_weights_would_answer_alike_is_counted_alone() {
+        let (machines, loads) = crowded_skiff();
+        let mut asked = kept("skiff", machines, loads);
+        asked.start = false;
+        let replay = replay(&[asked], &[], &Weights::STARTING);
+        assert_eq!(replay.asks, 1);
+        assert_eq!(replay.answered, []);
     }
 }
