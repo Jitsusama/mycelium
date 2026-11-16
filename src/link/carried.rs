@@ -46,6 +46,10 @@ enum Carried {
         #[serde(default)]
         checked: bool,
     },
+    End {
+        held: String,
+        by: crate::hold::end::Asker,
+    },
 }
 
 impl TryFrom<Asked> for Carried {
@@ -61,6 +65,7 @@ impl TryFrom<Asked> for Carried {
             },
             Asked::Update => Self::Update,
             Asked::Carry { quest, to, checked } => Self::Carry { quest, to, checked },
+            Asked::End { held, by } => Self::End { held, by },
             Asked::Run(..) => {
                 return Err("it dialled this machine, and a run goes only where this \
                             machine dialled"
@@ -85,6 +90,7 @@ impl From<Carried> for Asked {
             }),
             Carried::Update => Self::Update,
             Carried::Carry { quest, to, checked } => Self::Carry { quest, to, checked },
+            Carried::End { held, by } => Self::End { held, by },
         }
     }
 }

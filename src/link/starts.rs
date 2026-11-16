@@ -5,7 +5,8 @@
 //! own facts as they are then. The far end can't start it itself: a
 //! process SSH started sits outside its person's login session, where a
 //! Mac keeps the model token. A steer, which is only a file written into
-//! a session's inbox, the far end writes itself.
+//! a session's inbox, the far end writes itself, and an end of a session
+//! held there, which only signals its holder, it does itself too.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,6 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use crate::client::Client;
+use crate::hold::end::Asker;
 use crate::link::dial::{Dial, Ssh};
 use crate::placement::Need;
 use crate::share::exchange::Places;
@@ -90,6 +92,9 @@ pub(super) enum Asked {
         to: String,
         checked: bool,
     },
+    /// End the session held there as `held` for good, as `by` asks, who
+    /// this machine's node judged.
+    End { held: String, by: Asker },
 }
 
 /// Something asked of another machine, and where its answer goes.
@@ -175,6 +180,19 @@ impl Asks {
             quest: quest.to_owned(),
             to: to.to_owned(),
             checked,
+        };
+        self.send(machine, asked, None).await?
+    }
+
+    /// Asks `machine` to end the session held there as `held` for good,
+    /// for `by`, as this machine's node judged who asks, through the link
+    /// reaching it, answering how it ended. An end gives the session a
+    /// grace to save what it holds, so it is waited on for as long as the
+    /// link stands.
+    pub async fn end(&self, machine: &str, held: &str, by: Asker) -> Reply {
+        let asked = Asked::End {
+            held: held.to_owned(),
+            by,
         };
         self.send(machine, asked, None).await?
     }

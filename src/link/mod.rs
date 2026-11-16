@@ -178,6 +178,16 @@ pub enum Frame {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         checked: bool,
     },
+    /// End a session held on the other end's machine for good, as this
+    /// end's node judged who asked.
+    End {
+        /// Which ask, so its answer finds it.
+        ask: u64,
+        /// The session's held id there.
+        held: String,
+        /// Who asked, as this end's node judged them.
+        by: hold::end::Asker,
+    },
     /// The talks this end follows and how much of each it has, so the
     /// other end carries on with those whose sessions run there.
     Follow {
@@ -917,6 +927,7 @@ impl<S: Store> End<S> {
                 to,
                 checked,
             } => self.carry(ask, (quest, to), checked),
+            Frame::End { ask, held, by } => self.end(ask, held, &by),
             Frame::Follow { talks } => {
                 if let Some(following) = self.following.as_mut() {
                     following.follow(talks);
@@ -949,6 +960,7 @@ impl<S: Store> End<S> {
             Frame::Steer { ask, .. } => Some(self.refused(*ask, "takes no steers from")),
             Frame::Update { ask } => Some(self.refused(*ask, "updates nothing for")),
             Frame::Carry { ask, .. } => Some(self.refused(*ask, "carries nothing for")),
+            Frame::End { ask, .. } => Some(self.refused(*ask, "ends nothing for")),
             Frame::Run { ask, .. } => Some(Refused::Answered(Box::new(Frame::Ran {
                 ask: *ask,
                 ran: Ran::Failed(format!("{} runs nothing for a worker", self.here)),
@@ -1039,6 +1051,7 @@ impl<S: Store> End<S> {
             Asked::Update => self.said.updates.then_some(()).ok_or("be asked to update"),
             Asked::Run(..) => self.said.runs.then_some(()).ok_or("run commands"),
             Asked::Carry { .. } => self.said.carries.then_some(()).ok_or("carry sessions"),
+            Asked::End { .. } => self.said.ends.then_some(()).ok_or("end held sessions"),
         };
         if let Err(cannot) = carried {
             // The asker may have given up; then nobody hears it.
@@ -1074,6 +1087,7 @@ impl<S: Store> End<S> {
                 to,
                 checked,
             },
+            Asked::End { held, by } => Frame::End { ask: id, held, by },
             Asked::Run(..) => unreachable!("a run is sent above"),
         };
         send(writing, &frame).await
@@ -1365,6 +1379,77 @@ impl<S: Store> End<S> {
             // A link that dropped meanwhile has nobody to answer.
             let _ = answering.send((ask, reply));
         });
+    }
+
+    /// Ends the session held here as `held` for good, as the other end
+    /// asks for `by`, away from the link's own work, since the session has
+    /// a grace to save what it holds: only when the other end is proven
+    /// to be its machine, as for a carry, and only for the person or the
+    /// session the held one answers to as its orchestrator, as its
+    /// presence here says.
+    fn end(&self, ask: u64, held: String, by: &hold::end::Asker) {
+        let answering = self.answering.clone();
+        let folder = if self.proven {
+            self.held
+                .clone()
+                .ok_or_else(|| format!("{} ends no held sessions over this link", self.here))
+        } else {
+            Err(format!(
+                "{} ends a held session only when asked over a link its key proved, which \
+                 this one isn't",
+                self.here
+            ))
+        };
+        let may = folder.and_then(|folder| {
+            let orchestrator = self.orchestrator_of(&folder, &held);
+            hold::end::may(by, orchestrator.as_deref(), &held).map(|()| folder)
+        });
+        let folder = match may {
+            Ok(folder) => folder,
+            Err(why) => {
+                eprintln!(
+                    "{} asked {} to end {held} for {by}, refused: {why}",
+                    self.other, self.here
+                );
+                // The link outlives this call, so its loop is there to send it.
+                let _ = answering.send((ask, Err(why)));
+                return;
+            }
+        };
+        eprintln!("{} asked {} to end {held}, for {by}", self.other, self.here);
+        let here = self.here.clone();
+        tokio::spawn(async move {
+            let id = held.clone();
+            let ended =
+                tokio::task::spawn_blocking(move || hold::end::end(&folder, &id, hold::end::GRACE))
+                    .await;
+            let reply = match ended {
+                Ok(Ok(ending)) => Ok(Response::Ended {
+                    machine: here,
+                    held,
+                    ending,
+                }),
+                Ok(Err(error)) => Err(format!("{held} didn't end on {here}: {error}")),
+                Err(error) => Err(format!("its end stopped: {error}")),
+            };
+            // A link that dropped meanwhile has nobody to answer.
+            let _ = answering.send((ask, reply));
+        });
+    }
+
+    /// The orchestrator the session held here as `id` in `folder` answers
+    /// to, as its presence says, if it says.
+    fn orchestrator_of(&self, folder: &std::path::Path, id: &str) -> Option<String> {
+        let held = hold::held(folder);
+        self.store
+            .presences()
+            .into_iter()
+            .filter(|presence| {
+                mesh::held_by(presence, &held)
+                    .or_else(|| mesh::joined_by(presence, &held))
+                    .is_some_and(|one| one.id == id)
+            })
+            .find_map(|presence| mesh::session(&presence, &self.here)?.orchestrated_by)
     }
 
     /// Keeps what the other end says its machine is, which only it can
@@ -2671,6 +2756,7 @@ mod tests {
             runs: true,
             carries: true,
             shows: true,
+            ends: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await

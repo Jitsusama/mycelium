@@ -52,6 +52,14 @@ pub enum Request {
         /// What is said, as the launcher writes it.
         steer: serde_json::Value,
     },
+    /// End the session held as `held` for good, on the machine holding
+    /// it: here, or through the link reaching that machine. Only the
+    /// person's own login, or the session the held one answers to as its
+    /// orchestrator, ends one.
+    End {
+        /// Its held id, as `holds` lists it.
+        held: String,
+    },
     /// The latest messages to the groups `groups` hears, oldest first.
     Messages {
         /// Which groups.
@@ -316,6 +324,15 @@ pub enum Response {
         /// carried by.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         by: Option<String>,
+    },
+    /// The held session asked for, ended on `machine`.
+    Ended {
+        /// The machine it was held on.
+        machine: String,
+        /// Its held id.
+        held: String,
+        /// Whether it went within its grace or was killed.
+        ending: crate::hold::end::Ending,
     },
     /// The messages asked for.
     Messages(Vec<Message>),

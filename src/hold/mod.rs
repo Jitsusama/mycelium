@@ -21,6 +21,8 @@
 //!
 //! - [`holder`]: the holder, keeping the program's terminal
 //! - [`attach`]: a terminal joining a holder
+//! - [`end`]: ending a held session for good, as its orchestrator or the
+//!   person asks
 //! - [`start`]: starting a holder in a process of its own
 //! - [`modes`]: what the program asked of its terminal, for one joining
 //! - [`title`]: the window title the program set last, for one joining
@@ -35,6 +37,7 @@
 //! the title it set last, then the program's output as it came.
 
 pub mod attach;
+pub mod end;
 pub mod environment;
 pub mod holder;
 pub mod journal;

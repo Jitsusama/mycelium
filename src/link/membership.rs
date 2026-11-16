@@ -70,6 +70,12 @@ pub struct Hello {
     /// that told it.
     #[serde(default)]
     pub shows: bool,
+    /// Whether it carries an end of a session held on its machine, ending
+    /// it there when its key proved the machine and the asker may end
+    /// it, and refusing it otherwise; an end older than this does
+    /// neither, and would end a link that asked.
+    #[serde(default)]
+    pub ends: bool,
 }
 
 /// Which machines a node links with.
@@ -112,6 +118,7 @@ impl Membership for Realm {
             runs: true,
             carries: true,
             shows: true,
+            ends: true,
         }
     }
 
