@@ -34,9 +34,9 @@ pass() {
   local sha=$1
   shift
   local check
-  for check in markdown-is-clean merge-gate-holds mycelium mycelium-needs-no-libraries \
-    mycelium-passes-clippy names-stay-out nix-is-clean rust-is-formatted \
-    toml-is-clean tree-keeps-its-rules; do
+  for check in agents-cargo-goes-through-nix-offload markdown-is-clean merge-gate-holds \
+    mycelium mycelium-needs-no-libraries mycelium-passes-clippy names-stay-out \
+    nix-is-clean rust-is-formatted toml-is-clean tree-keeps-its-rules; do
     if [[ " $* " != *" ${check} "* ]]; then
       printf '{"check":"checks.x86_64-linux.%s","dir":null}\n' "${check}"
     fi
