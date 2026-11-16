@@ -1817,11 +1817,15 @@ pub(crate) mod tests {
             cloud,
             lent,
         ];
-        let Placement::Placed { machine, passed } = place(&needing(Vec::new()), &realm) else {
+        let Placement::Placed {
+            machine: chosen,
+            passed,
+        } = place(&needing(Vec::new()), &realm)
+        else {
             panic!("work naming nothing goes to the person's own machine")
         };
         assert_eq!(
-            machine, "skiff",
+            chosen, "skiff",
             "never to a worker, however much room it has"
         );
         assert_eq!(
