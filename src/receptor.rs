@@ -42,11 +42,12 @@ const LATE_AFTER_ROUNDS: u32 = 3;
 /// The longest round a receptor may say it reads on: a day.
 const LONGEST_ROUND_SECS: u32 = 86_400;
 
-/// Mode of the receptors' folder: its owner's alone.
-const FOLDER_MODE: u32 = 0o700;
+/// Mode of the receptors' folder: its owner's alone. A raw mode is as
+/// wide as the platform's `mode_t`, which is 16 bits on macOS.
+const FOLDER_MODE: rustix::fs::RawMode = 0o700;
 
 /// Mode of a receptor's file: its owner's alone.
-const FILE_MODE: u32 = 0o600;
+const FILE_MODE: rustix::fs::RawMode = 0o600;
 
 /// The most a receptor's file may hold. Its fields take under 300 bytes,
 /// so anything larger was put there by something else.
