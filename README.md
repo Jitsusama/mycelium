@@ -42,6 +42,7 @@ The harness mesh's messages and presence, carried between machines:
 - A session on another machine linked over SSH is joined with
   `mycelium attach --on <MACHINE>`, the words the node serves for it,
   which runs SSH there and runs it again each time the link drops,
+  putting back the terminal modes the program there left set and
   saying `Reconnecting to <MACHINE>.` and waiting a second, then twice
   as long each time up to 30. It ends as the join there ends, with its
   code; with 0 once the node says the session has ended; and with 130

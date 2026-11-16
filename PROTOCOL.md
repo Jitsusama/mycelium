@@ -798,9 +798,12 @@ link of this node's reaches, and none while no link does. Over SSH,
 those are `mycelium --realm REALM attach --on MACHINE ID -- WORDS`,
 `WORDS` being SSH's to that machine's own: run here, it runs `WORDS`
 and runs them again each time SSH ends 255, as it does when its link
-drops, saying `Reconnecting to MACHINE.` and waiting 1 second, then
-twice as long each time up to 30, back to 1 after a join that held 10
-seconds. Before each try it asks this node's `Sessions`, and once they
+drops, putting back the terminal modes the program there left set
+(the kitty keyboard flags, the alternate screen, a hidden cursor,
+mouse and focus reports and bracketed paste) when its standard error
+is a terminal, saying `Reconnecting to MACHINE.` and waiting 1
+second, then twice as long each time up to 30, back to 1 after a join
+that held 10 seconds. Before each try it asks this node's `Sessions`, and once they
 list the session `ended` and not parked, it says `TITLE has ended.`
 and exits 0; one they don't list, or a node that doesn't answer, is
 tried again. It exits with any other code the join ends with, and 130

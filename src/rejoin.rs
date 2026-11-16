@@ -4,7 +4,7 @@
 //! SSH. One dropped link closed 17 windows on 2026-11-16, each on a
 //! session still running on the other machine.
 
-use std::io;
+use std::io::{self, IsTerminal as _, Write as _};
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -22,6 +22,14 @@ pub const DROPPED: i32 = 255;
 /// The code a join ends with when the person stops it with Ctrl+C while
 /// it waits to join again: 128 and SIGINT's number, as a shell says it.
 pub const INTERRUPTED: u8 = 130;
+
+/// What puts a terminal back from the modes a program there set, which
+/// SSH leaves set when its way drops, though it puts back the terminal's
+/// own settings: the kitty keyboard flags popped first, so Ctrl+C is ^C
+/// again, then the alternate screen left, the cursor shown, and mouse
+/// and focus reports and bracketed paste turned off.
+pub const RESET: &str =
+    "\x1b[<u\x1b[?1049l\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l";
 
 /// How long this machine's node has to say whether a session still runs.
 const ASKED_WITHIN: Duration = Duration::from_secs(5);
@@ -178,8 +186,11 @@ impl Joining for Over {
                 "no words to join it by",
             ));
         };
+        // Ctrl+C drops this join midway; SSH goes with it, so none is
+        // left behind.
         let ended = tokio::process::Command::new(program)
             .args(arguments)
+            .kill_on_drop(true)
             .status()
             .await?;
         // A signal that ended it is said as a shell says one.
@@ -201,7 +212,13 @@ impl Joining for Over {
         }
     }
 
-    fn reset(&mut self) {}
+    fn reset(&mut self) {
+        let mut terminal = io::stderr();
+        if terminal.is_terminal() {
+            // A terminal that won't take it has nothing to put back.
+            let _ = terminal.write_all(RESET.as_bytes());
+        }
+    }
 
     fn say(&mut self, line: &str) {
         eprintln!("{line}");
@@ -210,8 +227,9 @@ impl Joining for Over {
 
 /// Joins over `joining` until a try ends otherwise than as a dropped way
 /// does, answering the code it ended with. After each drop it asks
-/// whether the session still runs, answering 0 once it has ended, and
-/// otherwise says it reconnects to `on` and tries again after a wait:
+/// whether the session still runs and puts the terminal back, answering
+/// 0 once it has ended, and otherwise says it reconnects to `on` and
+/// tries again after a wait:
 /// `waits.first`, doubling with each drop in a row up to `waits.most`,
 /// and `first` again after a try that held. Ctrl+C, as `interrupted`
 /// resolves, ends it with [`INTERRUPTED`].
@@ -235,7 +253,9 @@ pub async fn rejoin(
         if began.elapsed() >= waits.held {
             wait = waits.first;
         }
-        if let Still::Ended(name) = joining.still().await {
+        let still = joining.still().await;
+        joining.reset();
+        if let Still::Ended(name) = still {
             joining.say(&format!("{name} has ended."));
             return Ok(0);
         }
