@@ -2555,7 +2555,9 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to run: name a command".to_owned());
         }
-        let machine = match placement::place(&asked.work, &self.machines()) {
+        // A run ends when its asker stops waiting, so it isn't kept as a
+        // start the machine's room has yet to show.
+        let machine = match self.place(&asked.work, false) {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } => {
                 return Err(format!(
