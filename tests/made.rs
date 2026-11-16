@@ -5,7 +5,8 @@
 //! it has handed over after its work, keeping each make and release in its
 //! book. An offer that costs is never made for a start that didn't say it
 //! may cost. Nothing of the asker's environment, or its node's, reaches
-//! the work there, as nothing of a carried session's does. Each
+//! the work there, as nothing of a carried session's does. A node started
+//! again links each machine its book says is still made. Each
 //! node, and the made machine's end of the link, is a `mycelium` process of
 //! its own, each machine in folders of its own.
 
@@ -104,7 +105,8 @@ const FREE: &str = "0.000";
 
 /// A provider's program at `root`, offering one shape of machine that
 /// reaches `lent-net` at `hourly` an hour, making it as `lent` at `lent`'s
-/// folders until `until`, linking it there, and saying what it released.
+/// folders until `until`, linking it there, saying in `linked` which node
+/// asked each time, and saying what it released.
 fn provider(root: &Path, lent: &Path, until: jiff::Timestamp, hourly: &str) -> PathBuf {
     let offer = format!(
         r#"{{"shape": "small", "facts": {{"declared": {{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": []}}}}, "costs": {{"hourly": "{hourly}", "currency": "USD"}}, "lasts": 3600}}"#
@@ -116,12 +118,13 @@ fn provider(root: &Path, lent: &Path, until: jiff::Timestamp, hourly: &str) -> P
          case \"$1\" in\n\
          offers) echo '{offer}' ;;\n\
          make) echo \"$@\" > {asked}; echo '{made}' ;;\n\
-         link) export HOME={home} XDG_RUNTIME_DIR={r} XDG_CONFIG_HOME={c} \
+         link) echo $PPID >> {linked}; export HOME={home} XDG_RUNTIME_DIR={r} XDG_CONFIG_HOME={c} \
          XDG_STATE_HOME={s} XDG_DATA_HOME={d} XDG_CACHE_HOME={k} PATH={bin}:$PATH; \
          exec {mycelium} --realm \"$3\" link --machine lent ;;\n\
          release) echo \"$2\" > {released} ;;\n\
          esac\n",
         asked = root.join("asked").display(),
+        linked = root.join("linked").display(),
         home = lent.display(),
         r = at("r"),
         c = at("c"),
@@ -175,8 +178,18 @@ fn nodes_with(
             .spawn()
             .expect("lent's node starts"),
     );
-    let node = Running(
-        with(mycelium(home), planted[1])
+    let node = skiff(with(mycelium(home), planted[1]), program);
+    for at in [home, lent] {
+        let socket = at.join("r").join("mycelium").join("work.sock");
+        heard(at, &socket, PATIENCE, |_| true);
+    }
+    (lent_node, node)
+}
+
+/// Skiff's node, run by `command`, asking `program`, until dropped.
+fn skiff(mut command: Command, program: &Path) -> Running {
+    Running(
+        command
             .args([
                 "--realm",
                 "work",
@@ -188,12 +201,7 @@ fn nodes_with(
             .arg(program)
             .spawn()
             .expect("skiff's node starts"),
-    );
-    for at in [home, lent] {
-        let socket = at.join("r").join("mycelium").join("work.sock");
-        heard(at, &socket, PATIENCE, |_| true);
-    }
-    (lent_node, node)
+    )
 }
 
 /// Starts work that ends at once, as skiff's, that lent alone reaches,
@@ -357,6 +365,42 @@ fn a_machine_that_costs_nothing_is_made_for_any_start_and_let_go_after_its_work(
         machines(&home),
         ["skiff"],
         "a machine let go leaves the realm's machines at once, not at its time"
+    );
+}
+
+#[test]
+fn a_node_started_again_links_the_machine_it_made_before() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let root = dir.path();
+    let (home, lent) = (root.join("o"), root.join("l"));
+    // It never hands over, and is made to end long after the test.
+    let until = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+    machine(&home, None);
+    machine(
+        &lent,
+        Some(r#"{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": []}"#),
+    );
+    let program = provider(root, &lent, until, COSTS);
+    let (_lent_node, first) = nodes(&home, &lent, &program);
+    let said = start(&home, true);
+    assert_eq!(
+        said["Ok"]["Started"]["machine"], "lent",
+        "the work starts on the machine made for it: {said}"
+    );
+    let linked = root.join("linked");
+    heard(root, &linked, PATIENCE, |text| text.lines().count() == 1);
+
+    drop(first);
+    let again = skiff(mycelium(&home), &program);
+    let asked = heard(root, &linked, PATIENCE, |text| text.lines().count() == 2);
+    assert_eq!(
+        asked.lines().nth(1),
+        Some(again.0.id().to_string().as_str()),
+        "the node started again dialled the machine its book holds: {asked:?}"
+    );
+    assert!(
+        !root.join("released").exists(),
+        "a machine still made isn't released by the node starting again"
     );
 }
 
