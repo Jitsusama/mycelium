@@ -63,9 +63,11 @@ How this repository keeps Joel's repository standard:
   lacks any Linux check kept as passed at that very commit. So rebase
   onto main and build the checks there just before merging. Where
   several reviewed changes are ready at once, they ride the merge train
-  instead: `scripts/merge-train.sh make` lays them onto main as one tip,
-  the checks build there once, and `land` moves main to it, each
-  change then reading merged.
+  instead, named by their reviewed heads' full shas. Run main's own
+  copy, `git show origin/main:scripts/merge-train.sh | bash -s -- make
+  SHA...`, after `git fetch -q origin main`: it lays them onto main as
+  one tip, the checks build there once, and `land TIP` moves main to
+  it through main's gate, each change then reading merged.
 - **Linters:** clippy with pedantic and rustc's own lints, as
   `Cargo.toml` sets them; rustfmt; nixfmt, deadnix and statix; taplo;
   rumdl, as `.rumdl.toml` sets it; shellcheck with every optional check.
