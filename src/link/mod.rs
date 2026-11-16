@@ -316,6 +316,7 @@ pub async fn run(
         inboxes,
         held: starting.as_ref().map(|starting| starting.held.clone()),
         health: health_of(starting.as_ref()),
+        declared: declared_of(starting.as_ref()),
         node: starting.map(|starting| starting.node),
         answering,
         asks: HashMap::new(),
@@ -443,6 +444,13 @@ fn asked_of(
         }
         None => (None, None),
     }
+}
+
+/// The file this machine's declaration is read from: the node's, for a
+/// link it keeps, so both say the machine alike; the account's own for a
+/// link with no node behind it, which says only facts.
+fn declared_of(starting: Option<&Starting>) -> PathBuf {
+    starting.map_or_else(crate::place::declared, |starting| starting.declared.clone())
 }
 
 /// This machine's own health as a link says it, when the link carries
@@ -610,6 +618,8 @@ struct End<S> {
     /// moving has said again at once rather than with the next minute's
     /// keep.
     health: OwnHealth,
+    /// What this machine's configuration declares, as its node reads it.
+    declared: PathBuf,
     _claim: Claim,
 }
 
@@ -1255,11 +1265,14 @@ impl<S: Store> End<S> {
             return Ok(());
         }
         let (here, realm) = (self.here.clone(), self.realm.clone());
-        let mut machine = tokio::task::spawn_blocking(move || {
-            facts::measure_in(&here, &realm, &facts::Sources::here())
-        })
-        .await
-        .map_err(io::Error::other)?;
+        let sources = facts::Sources {
+            declared: self.declared.clone(),
+            ..facts::Sources::here()
+        };
+        let mut machine =
+            tokio::task::spawn_blocking(move || facts::measure_in(&here, &realm, &sources))
+                .await
+                .map_err(io::Error::other)?;
         machine.health = self
             .health
             .told
@@ -1974,6 +1987,7 @@ mod tests {
             asking: None,
             steers: dir.path().join("steer"),
             health: Some(slot.subscribe()),
+            declared: dir.path().join("declared.json"),
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2728,6 +2742,7 @@ mod tests {
             asking: None,
             steers: dir.join("inboxes"),
             health: None,
+            declared: dir.join("declared.json"),
         }
     }
 

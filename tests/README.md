@@ -5,6 +5,8 @@ across one: what it reads from its environment, what it leaves on disk,
 and how much memory it holds.
 The rest of the tests sit beside the code they prove, in `src/`.
 
+- `declared.rs`: a node given `--declared` saying its machine as that
+  file declares, never as the account's own declaration says
 - `forages.rs`: the node's forage records made for ten thousand cells
   within 64 MB, what was read for them included, in time that grows
   with the cells; short of the 30 MB target while each record carries

@@ -492,6 +492,16 @@ struct Node {
     /// as a kind of records; PROTOCOL.md says its shape.
     #[arg(long)]
     serves: Option<PathBuf>,
+    /// What this machine's configuration declares of it, as a file only
+    /// root writes, such as its path in the Nix store. The node reads it
+    /// alone, never the account's own, so an account's link can't widen
+    /// how its agents' commands run. Unnamed, the account's is read.
+    /// Whatever writes the node's own unit can name another file, or
+    /// another program for the node, so this guards nothing against it;
+    /// it takes a restart that shows, and the node says at start what it
+    /// reads and how its agents run, so the journal shows it too.
+    #[arg(long)]
+    declared: Option<PathBuf>,
     /// A realm this realm's text may cross into, one way, where a session
     /// names it; given again for each. PROTOCOL.md says what crosses.
     #[arg(long = "flow-to")]
@@ -1426,6 +1436,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let machine = place::node_machine(node.here.machine.as_deref())?;
     let (dials, serves) = (node.dials(), node.serves(&machine)?);
     let providers = node.providers;
+    let declared = node.declared.unwrap_or_else(place::declared);
     let builders = builders::Given {
         files: node
             .builders
@@ -1477,7 +1488,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         orchestrations: state.join("orchestrations.json"),
         logs: place::logs(),
         words: mycelium::words::Book::at(state.join("said.jsonl")),
-        declared: place::declared(),
+        declared: declared.clone(),
         receptors: Some(mycelium::receptor::folder(&state)),
         builders,
         placements: Some(mycelium::placements::Log::at(state.join("placements"))),
@@ -1488,11 +1499,15 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
             every: carry::easing::EVERY,
         }),
     };
+    eprintln!(
+        "mycelium: {}",
+        mycelium::declared::said_at_start(&declared, &given.runs.declarers)
+    );
     let runtime = runtime()?;
     let ran = runtime.block_on(async {
         let bound = node::bind(socket)?;
         // Probing ends with the process, when the node does.
-        tokio::spawn(mycelium::reach::keep(place::declared(), place::reached()));
+        tokio::spawn(mycelium::reach::keep(declared, place::reached()));
         node::run(store, membership, Listed(dials), given, bound, stopped()).await
     });
     // Once the node has stopped, its links ended and their sessions let go,
@@ -1523,6 +1538,7 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         steers,
         // A dialled link runs apart from the node, so asks it.
         health: None,
+        declared: place::declared(),
     };
     match far {
         Some(far) => {

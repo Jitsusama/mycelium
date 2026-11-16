@@ -1941,7 +1941,11 @@ impl<S: Store> Shared<S> {
     /// This machine as it is now, as its realm hears it: a handful of small
     /// files read, or one sysctl on a Mac, quick enough to answer in place.
     fn measure(&self) -> facts::Machine {
-        let mut here = facts::measure_in(&self.machine, &self.realm, &facts::Sources::here());
+        let sources = facts::Sources {
+            declared: self.declared.clone(),
+            ..facts::Sources::here()
+        };
+        let mut here = facts::measure_in(&self.machine, &self.realm, &sources);
         here.health.clone_from(&self.health.borrow());
         here
     }
@@ -2164,6 +2168,7 @@ impl<S: Store> Shared<S> {
             })),
             steers: self.steers.clone(),
             health: Some(self.health.subscribe()),
+            declared: self.declared.clone(),
         }
     }
 
@@ -3696,6 +3701,7 @@ mod tests {
                     machine: "kestrel".to_owned(),
                 };
                 let starting = Starting {
+                    declared: node.with_file_name("declared.json"),
                     node,
                     held: held_here,
                     asking,
@@ -3934,6 +3940,7 @@ mod tests {
             asking: None,
             steers: dir.path().join("steer"),
             health: None,
+            declared: dir.path().join("declared.json"),
         };
         let membership = Realm {
             name: "work".to_owned(),

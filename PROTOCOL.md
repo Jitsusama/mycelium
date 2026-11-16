@@ -920,7 +920,10 @@ fence, spoiling nothing else declared; a carry an orchestrator orders
 lands only where it says one (A Carry an Orchestrator Orders). Only
 the machine's own built configuration writes it, as
 `~/.config/mycelium/declared.json` (or under `XDG_CONFIG_HOME`), and
-the machine enforces its own taints. It is `null` where nothing is
+the machine enforces its own taints. A node started with
+`--declared <file>` reads that file instead, for everything it and the
+links in its process say and run, and never the account's own, which
+anything running as the account could rewrite. It is `null` where nothing is
 declared, or where the file isn't in this shape, which the node logs.
 
 Its `reached` says whether each probed network answered, by name. The
@@ -1194,9 +1197,11 @@ fenced at least. An agent's run goes only where an ordered carry could
 land it (A Carry an Orchestrator Orders), and there runs as its
 fence's declared `runs`, then the login shell, then `command`; a
 machine declaring no `runs` for it refuses it. The node takes `runs`
-only from a declaration in the Nix store or one whose every folder
-root owns and no one else may write, and only where its first word
-is in the Nix store. The person's run goes as the person. Once it
+only from a declaration reached through folders and links root owns
+and no one else may write, each followed as written, with any part
+within the Nix store taken as the store's, and only where its first
+word is in the Nix store; a link the account owns, even one into the
+store, seals nothing. The person's run goes as the person. Once it
 runs, the node answers `{"Running": {"machine"}}`, then a `Ran` a line:
 `{"Out": base64}` and `{"Err": base64}` as it writes them, at most 64
 KiB each, then `{"Exited": code}`, 128 and the signal where one ended
