@@ -1534,6 +1534,21 @@ mod tests {
         );
     }
 
+    /// The purpose read from Kestrel's README with `instead` written
+    /// where it says "Kestrel learns", in a store named `name`.
+    fn purpose_with(name: &str, instead: &str) -> Option<String> {
+        let store = Store::new(name);
+        let readme = README.replace("Kestrel learns", instead);
+        store.write("QEST-20261116-KESTRL/README.md", &readme);
+        let mut shelf = Shelf::default();
+        assert!(shelf.read(&store.0, "QEST-20261116-KESTRL"));
+        shelf
+            .quest("QEST-20261116-KESTRL")
+            .expect("read")
+            .purpose
+            .clone()
+    }
+
     #[test]
     fn a_summary_left_as_the_templates_guidance_is_no_purpose() {
         let store = Store::new("guidance");
@@ -1550,20 +1565,12 @@ mod tests {
 
     #[test]
     fn the_quests_own_words_after_the_templates_guidance_are_its_purpose() {
-        let store = Store::new("after-guidance");
-        let guidance = README.replace(
-            "Kestrel learns",
-            "*One paragraph: what this quest is.*\n\nKestrel learns",
-        );
-        store.write("QEST-20261116-KESTRL/README.md", &guidance);
-        let mut shelf = Shelf::default();
-        assert!(shelf.read(&store.0, "QEST-20261116-KESTRL"));
         assert_eq!(
-            shelf
-                .quest("QEST-20261116-KESTRL")
-                .expect("read")
-                .purpose
-                .as_deref(),
+            purpose_with(
+                "after-guidance",
+                "*One paragraph: what this quest is.*\n\nKestrel learns"
+            )
+            .as_deref(),
             Some("Kestrel learns to hover over one field.")
         );
     }
@@ -1620,20 +1627,12 @@ mod tests {
 
     #[test]
     fn guidance_right_above_the_quests_words_is_not_them() {
-        let store = Store::new("guidance-above");
-        let guidance = README.replace(
-            "Kestrel learns",
-            "_One paragraph: what this quest is._\nKestrel learns",
-        );
-        store.write("QEST-20261116-KESTRL/README.md", &guidance);
-        let mut shelf = Shelf::default();
-        shelf.read(&store.0, "QEST-20261116-KESTRL");
         assert_eq!(
-            shelf
-                .quest("QEST-20261116-KESTRL")
-                .expect("read")
-                .purpose
-                .as_deref(),
+            purpose_with(
+                "guidance-above",
+                "_One paragraph: what this quest is._\nKestrel learns"
+            )
+            .as_deref(),
             Some("Kestrel learns to hover over one field.")
         );
     }
@@ -1856,6 +1855,33 @@ mod tests {
         );
     }
 
+    /// Keeps `store`'s quests in `held` as the node does, with no cells,
+    /// and asks for Kestrel's. Answers what to hold for as long as the
+    /// keeping runs, and the watch told of each change.
+    fn keeping_kestrel(
+        store: &Store,
+        held: &Held,
+    ) -> (
+        mpsc::UnboundedSender<String>,
+        watch::Sender<u64>,
+        watch::Receiver<u64>,
+    ) {
+        let (want, wanted) = mpsc::unbounded_channel();
+        let (sessions_sent, sessions) = watch::channel(0);
+        let tell = watch::Sender::new(0);
+        let told = tell.subscribe();
+        tokio::spawn(keep(
+            store.0.clone(),
+            Arc::clone(held),
+            wanted,
+            sessions,
+            Vec::new,
+            tell,
+        ));
+        want.send("QEST-20261116-KESTRL".to_owned()).expect("sent");
+        (want, sessions_sent, told)
+    }
+
     #[tokio::test]
     async fn a_waiting_folder_made_late_or_made_anew_is_heard() {
         let store = Store::new("waits-kept");
@@ -1865,19 +1891,7 @@ mod tests {
         let mission = Store::new("waits-kept-mission");
         let folder = mission.0.join("waiting");
         let held: Held = Arc::new(Mutex::new(Shelf::with_waits(folder.clone())));
-        let (want, wanted) = mpsc::unbounded_channel();
-        let (_sessions, sessions) = watch::channel(0);
-        let tell = watch::Sender::new(0);
-        let mut told = tell.subscribe();
-        tokio::spawn(keep(
-            store.0.clone(),
-            Arc::clone(&held),
-            wanted,
-            sessions,
-            Vec::new,
-            tell,
-        ));
-        want.send("QEST-20261116-KESTRL".to_owned()).expect("sent");
+        let (_want, _sessions, mut told) = keeping_kestrel(&store, &held);
         let titles = |held: &Held| -> Vec<String> {
             held.lock()
                 .expect("held")
@@ -2009,19 +2023,7 @@ mod tests {
         store.write("QEST-20261116-KESTRL/README.md", README);
         store.write("QEST-20261116-KESTRL/plans/PLAN-20261116-HOVERS.md", PLAN);
         let held = Held::default();
-        let (want, wanted) = mpsc::unbounded_channel();
-        let (_sessions, sessions) = watch::channel(0);
-        let tell = watch::Sender::new(0);
-        let mut told = tell.subscribe();
-        tokio::spawn(keep(
-            store.0.clone(),
-            Arc::clone(&held),
-            wanted,
-            sessions,
-            Vec::new,
-            tell,
-        ));
-        want.send("QEST-20261116-KESTRL".to_owned()).expect("sent");
+        let (_want, _sessions, mut told) = keeping_kestrel(&store, &held);
         tokio::time::timeout(Duration::from_secs(30), told.changed())
             .await
             .expect("told in time")

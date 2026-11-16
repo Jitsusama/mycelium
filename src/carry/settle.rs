@@ -665,12 +665,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_settling_ended_by_a_signal_is_kept_as_nothing_and_asked_again_only_afresh() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        // It may have let some trees go, as a node stopping would end it.
-        let (program, given) = stand_in(dir.path(), "kill -9 $$");
-        let running = settler(dir.path(), program.clone(), PATIENCE);
+    /// Settles a fresh carry with `program` in `dir` to its end, and
+    /// finds nothing of it kept for good, nor it asked again while this
+    /// node runs. Answers the carry, for a node started afresh to ask.
+    fn ends_keeping_nothing(dir: &Path, program: &Path) -> Kept {
+        let running = settler(dir, program.to_owned(), PATIENCE);
         let carry = carried(25);
         let (told, ended) = mpsc::channel();
         assert!(
@@ -680,12 +679,22 @@ mod tests {
         ended.recv_timeout(PATIENCE).expect("it ends in time");
         assert!(
             !running.settled().expect("it reads").contains_key(&carry.id),
-            "what it came to isn't known, so nothing is kept for good"
+            "what {} came to isn't known, so nothing is kept for good",
+            program.display()
         );
         assert!(
             !running.settle(&carry, || ()),
             "nor is it asked again while this node runs"
         );
+        carry
+    }
+
+    #[test]
+    fn a_settling_ended_by_a_signal_is_kept_as_nothing_and_asked_again_only_afresh() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        // It may have let some trees go, as a node stopping would end it.
+        let (program, given) = stand_in(dir.path(), "kill -9 $$");
+        let carry = ends_keeping_nothing(dir.path(), &program);
         assert_eq!(
             fs::read_to_string(&given).expect("it ran").lines().count(),
             1,
@@ -739,23 +748,7 @@ mod tests {
         // the form as asked wrongly.
         let (too_old, _) = stand_in(dir.path(), "exit 2");
         for program in [dir.path().join("no-such"), too_old] {
-            let running = settler(dir.path(), program.clone(), PATIENCE);
-            let carry = carried(25);
-            let (told, ended) = mpsc::channel();
-            assert!(
-                running.settle(&carry, move || told.send(()).expect("the test waits")),
-                "it begins"
-            );
-            ended.recv_timeout(PATIENCE).expect("it ends in time");
-            assert!(
-                !running.settled().expect("it reads").contains_key(&carry.id),
-                "{} keeps nothing for good, so a later pi-carry settles it",
-                program.display()
-            );
-            assert!(
-                !running.settle(&carry, || ()),
-                "nor is it asked again while this node runs"
-            );
+            let carry = ends_keeping_nothing(dir.path(), &program);
             assert!(
                 settler(dir.path(), program, PATIENCE).settle(&carry, || ()),
                 "a node started afresh asks it again"
