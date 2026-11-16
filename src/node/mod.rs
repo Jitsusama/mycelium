@@ -780,6 +780,9 @@ struct Shared<S> {
     /// This machine's hostname, read once at start, which names its
     /// sessions' handover folder as the harness names it.
     hostname: Arc<str>,
+    /// The refusals in that handover that couldn't be read, each said on
+    /// the node's stderr once.
+    unreadable: Arc<through::Unreadable>,
     /// Where it keeps each command it runs, and who may say how a fenced
     /// one runs.
     runs: Arc<run::Given>,
@@ -931,6 +934,7 @@ impl<S: Clone> Clone for Shared<S> {
             carries: self.carries.clone(),
             scratch: self.scratch.clone(),
             hostname: Arc::clone(&self.hostname),
+            unreadable: Arc::clone(&self.unreadable),
             runs: self.runs.clone(),
             hosts: self.hosts.clone(),
             orchestrations: self.orchestrations.clone(),
@@ -1414,6 +1418,7 @@ impl<S: Store> Shared<S> {
             carries,
             scratch: sharing.as_ref().map(|places| places.scratch.clone()),
             hostname: rustix::system::uname().nodename().to_string_lossy().into(),
+            unreadable: Arc::default(),
             runs: Arc::new(runs),
             hosts,
             orchestrations,
@@ -1620,7 +1625,11 @@ impl<S: Store> Shared<S> {
             return kept::Seen::default();
         };
         kept::Seen {
-            refused: through::refused(&handover, session, carry.at),
+            refused: through::refused(&handover, session, carry.at, |error| {
+                if self.unreadable.first(&error) {
+                    eprintln!("a carry's refusal couldn't be read: {error}");
+                }
+            }),
             left: through::left(&handover, session, carry.at),
             runs_on: None,
         }

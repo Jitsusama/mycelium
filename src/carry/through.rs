@@ -2,11 +2,13 @@
 //! machine's node over its socket, the quest's handover in its scratch,
 //! `pi-carry` for what no session carries, and the quest's share.
 
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -284,15 +286,38 @@ pub const UNREADABLE_REFUSAL: &str = "its refusal couldn't be read";
 
 /// Why `session` refused a carry in `handover` since `since`, when it
 /// did: [`UNREADABLE_REFUSAL`] when its refusal there can't be told as
-/// its own, since its session meant one.
-#[must_use]
-pub fn refused(handover: &Path, session: &str, since: jiff::Timestamp) -> Option<String> {
+/// its own, since its session meant one, handing `unreadable` the
+/// reader's error, path and all, so it can still be found.
+pub fn refused(
+    handover: &Path,
+    session: &str,
+    since: jiff::Timestamp,
+    unreadable: impl FnOnce(String),
+) -> Option<String> {
     refusal(
         &handover.join(format!("{session}{REFUSED}")),
         session,
         since,
     )
-    .unwrap_or_else(|_| Some(UNREADABLE_REFUSAL.to_owned()))
+    .unwrap_or_else(|error| {
+        unreadable(error);
+        Some(UNREADABLE_REFUSAL.to_owned())
+    })
+}
+
+/// The errors of the refusals that couldn't be read, each said once,
+/// since the carries are judged again each time they're asked for.
+#[derive(Debug, Default)]
+pub struct Unreadable(Mutex<BTreeSet<String>>);
+
+impl Unreadable {
+    /// Whether `error` is said for the first time.
+    pub fn first(&self, error: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(error.to_owned())
+    }
 }
 
 /// Whether `session` wrote its done file in `handover` since `since`, as
@@ -393,8 +418,8 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::{
-        UNREADABLE_REFUSAL, failed_why, handover, left, mark_started, refusals, refused,
-        short_host, unstarted,
+        UNREADABLE_REFUSAL, Unreadable, failed_why, handover, left, mark_started, refusals,
+        refused, short_host, unstarted,
     };
     use crate::carry::Refused;
 
@@ -560,6 +585,11 @@ mod tests {
         let handover = tempfile::tempdir().expect("a handover");
         let handover = handover.path();
         let before: jiff::Timestamp = "2026-11-15T16:00:00Z".parse().expect("a time");
+        let refused = |handover: &Path, session: &str, since| {
+            refused(handover, session, since, |error| {
+                panic!("{session}'s refusal was read: {error}")
+            })
+        };
         assert_eq!(
             (
                 refused(handover, "s-since", before),
@@ -589,10 +619,16 @@ mod tests {
             r#"{"session": "s-since", "why": "a lease", "at": "2026-11-15T16:00:02Z"}"#,
         )
         .expect("another's name");
+        let mut heard = None;
         assert_eq!(
-            refused(handover, "s-odd", before).as_deref(),
+            super::refused(handover, "s-odd", before, |error| heard = Some(error)).as_deref(),
             Some(UNREADABLE_REFUSAL),
             "one that can't be told as its own says so plainly, with no path"
+        );
+        let heard = heard.expect("the reader's error is handed on");
+        assert!(
+            heard.contains(&handover.join("s-odd.refused.json").display().to_string()),
+            "the reader's error names the file, so it can be found: {heard}"
         );
         assert!(left(handover, "s-done", before), "its done file since");
         assert!(
@@ -608,6 +644,14 @@ mod tests {
             (None, false),
             "neither counts for a carry ordered after"
         );
+    }
+
+    #[test]
+    fn each_unreadable_refusal_is_said_once() {
+        let unreadable = Unreadable::default();
+        assert!(unreadable.first("one"), "a new error is said");
+        assert!(!unreadable.first("one"), "the same error isn't said again");
+        assert!(unreadable.first("another"), "another error is said");
     }
 
     #[test]
