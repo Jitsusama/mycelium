@@ -1384,9 +1384,7 @@ impl<S: Store> End<S> {
     /// Ends the session held here as `held` for good, as the other end
     /// asks for `by`, away from the link's own work, since the session has
     /// a grace to save what it holds: only when the other end is proven
-    /// to be its machine, as for a carry, and only for the person or the
-    /// session the held one answers to as its orchestrator, as its
-    /// presence here says.
+    /// to be its machine, as for a carry, and only for the person.
     fn end(&self, ask: u64, held: String, by: &hold::end::Asker) {
         let answering = self.answering.clone();
         let folder = if self.proven {
@@ -1400,9 +1398,15 @@ impl<S: Store> End<S> {
                 self.here
             ))
         };
-        let may = folder.and_then(|folder| {
-            let orchestrator = self.orchestrator_of(&folder, &held);
-            hold::end::may(by, orchestrator.as_deref(), &held).map(|()| folder)
+        // A session's end is proved only where both run, by that node's
+        // record of orchestrations, so across a link only the person's is.
+        let may = folder.and_then(|folder| match by {
+            hold::end::Asker::Person => Ok(folder),
+            hold::end::Asker::Session(address) => Err(format!(
+                "{} ends a held session over a link only for the person, not for {address}, \
+                 whose orchestration is proved only where both run",
+                self.here
+            )),
         });
         let folder = match may {
             Ok(folder) => folder,
@@ -1435,21 +1439,6 @@ impl<S: Store> End<S> {
             // A link that dropped meanwhile has nobody to answer.
             let _ = answering.send((ask, reply));
         });
-    }
-
-    /// The orchestrator the session held here as `id` in `folder` answers
-    /// to, as its presence says, if it says.
-    fn orchestrator_of(&self, folder: &std::path::Path, id: &str) -> Option<String> {
-        let held = hold::held(folder);
-        self.store
-            .presences()
-            .into_iter()
-            .filter(|presence| {
-                mesh::held_by(presence, &held)
-                    .or_else(|| mesh::joined_by(presence, &held))
-                    .is_some_and(|one| one.id == id)
-            })
-            .find_map(|presence| mesh::session(&presence, &self.here)?.orchestrated_by)
     }
 
     /// Keeps what the other end says its machine is, which only it can

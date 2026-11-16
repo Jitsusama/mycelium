@@ -2445,24 +2445,52 @@ impl<S: Store> Shared<S> {
     }
 
     /// Ends the session held as `held` for good, on the one machine
-    /// holding it: here, or through the link reaching that machine, which
-    /// judges the asker again by what it knows of the session. Only the
-    /// person's own login ends one, or the session the held one answers to
-    /// as its orchestrator, proved as the kernel and pi's records prove
-    /// which session asks. Its presence leaves the sessions as its
-    /// program's ends, and its hold's record goes with its holder.
+    /// holding it: here, or through the link reaching that machine. The
+    /// person's own login ends any, here or across a link. A session ends
+    /// one only here, where both run, and only once this node's record of
+    /// orchestrations proves it orchestrates the held one's quest, as an
+    /// ordered carry is proved; a presence naming its orchestrator proves
+    /// nothing, since a session writes its own. Its presence leaves the
+    /// sessions as its program's ends, and its hold's record goes with its
+    /// holder.
     async fn end(&self, held: &str) -> Reply {
-        let asker = self.ender().await?;
+        let (asker, asking) = self.ender().await?;
         let sessions = self.lock().state.sessions();
-        let orchestrator = |machine: &str| {
-            sessions
-                .iter()
-                .find(|session| session.machine == machine && session.held.as_deref() == Some(held))
-                .and_then(|session| session.orchestrated_by.clone())
-        };
         let folder = self.held.clone();
         if hold::held(&folder).iter().any(|one| one.id == held) {
-            hold::end::may(&asker, orchestrator(&self.machine).as_deref(), held)?;
+            if let (hold::end::Asker::Session(address), Some(asking)) = (&asker, &asking) {
+                let target = sessions
+                    .iter()
+                    .find(|session| {
+                        session.machine == self.machine && session.held.as_deref() == Some(held)
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "no session here runs in {held}, so {address} isn't proved to \
+                             orchestrate it: only the person ends it"
+                        )
+                    })?;
+                let session = target
+                    .presence
+                    .get("session")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&target.id);
+                let asking_known = ordered::Known {
+                    session: asking,
+                    address,
+                };
+                let carried = ordered::Known {
+                    session,
+                    address: &target.address,
+                };
+                self.ordered_by(asking_known, carried, &sessions)
+                    .map_err(|why| {
+                        format!(
+                            "{address} isn't proved to orchestrate the session held as {held}, \
+                             so it can't end it: {why}"
+                        )
+                    })?;
+            }
             let id = held.to_owned();
             let ending =
                 tokio::task::spawn_blocking(move || hold::end::end(&folder, &id, hold::end::GRACE))
@@ -2489,10 +2517,13 @@ impl<S: Store> Shared<S> {
             [] => Err(format!(
                 "nothing is held as {held} here, nor on any machine in reach"
             )),
-            [machine] => {
-                hold::end::may(&asker, orchestrator(machine).as_deref(), held)?;
-                self.asks.end(machine, held, asker).await
-            }
+            [machine] => match asker {
+                hold::end::Asker::Person => self.asks.end(machine, held, asker).await,
+                hold::end::Asker::Session(address) => Err(format!(
+                    "{held} is held on {machine}, and {address}'s end is proved only where \
+                     both run: only the person ends it from here"
+                )),
+            },
             many => Err(format!(
                 "{held} is held on {}, so it isn't ended",
                 many.join(" and ")
@@ -2501,8 +2532,8 @@ impl<S: Store> Shared<S> {
     }
 
     /// Who asks an end: the person, where their own login asks, else the
-    /// session asking, by its address here.
-    async fn ender(&self) -> Result<hold::end::Asker, String> {
+    /// session asking, by its address here, with its id.
+    async fn ender(&self) -> Result<(hold::end::Asker, Option<String>), String> {
         let (client, processes) = (self.client, self.processes.clone());
         let person = tokio::task::spawn_blocking(move || {
             asker::persons_own(client, &processes, "end a held session as the person")
@@ -2510,7 +2541,7 @@ impl<S: Store> Shared<S> {
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))?;
         if person.is_ok() {
-            return Ok(hold::end::Asker::Person);
+            return Ok((hold::end::Asker::Person, None));
         }
         let session = self.asking_session().await.map_err(|why| {
             format!(
@@ -2519,9 +2550,8 @@ impl<S: Store> Shared<S> {
             )
         })?;
         let sessions = self.lock().state.sessions();
-        Ok(hold::end::Asker::Session(
-            self.address_of(&sessions, &session).to_owned(),
-        ))
+        let address = self.address_of(&sessions, &session).to_owned();
+        Ok((hold::end::Asker::Session(address), Some(session)))
     }
 
     /// The id of the session this connection's client asks for. Each
@@ -7630,7 +7660,10 @@ mod tests {
         };
         let record = serde_json::to_vec(&record).expect("a record");
         fs::write(folder.join(format!("{id}.json")), record).expect("the record is written");
-        fs::write(folder.join(format!("{id}.sock")), "").expect("its socket stands");
+        let answers = std::os::unix::net::UnixListener::bind(folder.join(format!("{id}.sock")))
+            .expect("its socket answers");
+        // It answers for as long as the test runs, as a live holder's does.
+        std::mem::forget(answers);
         (holder, program)
     }
 

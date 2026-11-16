@@ -3,10 +3,12 @@
 //! given a grace to save what they hold, and are killed past it, and the
 //! hold's record and socket go with them.
 //!
-//! The holder is told first, so a program that parks as it saves stays
-//! down rather than waiting to be woken: a holder told to end tells its
-//! program too, and ends with it. The program's whole group is told as
-//! well, so what it started on its terminal ends with it.
+//! The program's whole group is told first, so what it started on its
+//! terminal ends with it, and it has the whole grace: its holder, told
+//! to end, would give it only its own few seconds. The holder is told
+//! once the program has gone, or its grace is over. A record whose holder
+//! no longer answers on its socket is stale, its pids perhaps another's
+//! by now, so nothing it names is signalled.
 
 use std::fs;
 use std::io;
@@ -57,36 +59,16 @@ pub enum Ending {
     Killed,
 }
 
-/// Whether `asker` may end the session held as `id`, whose session names
-/// `orchestrator` as the one it answers to, if it names one: the person
-/// may end any, and a session only one it orchestrates.
+/// Ends the session held as `id` in `dir`: tells its program's process
+/// group to end and waits as long as `grace` for it to go, tells its
+/// holder to end, kills whatever is left, and takes away its record and
+/// socket.
 ///
 /// # Errors
 ///
-/// When the asker is a session the held one doesn't answer to.
-pub fn may(asker: &Asker, orchestrator: Option<&str>, id: &str) -> Result<(), String> {
-    match asker {
-        Asker::Person => Ok(()),
-        Asker::Session(address)
-            if orchestrator.is_some_and(|it| it.eq_ignore_ascii_case(address)) =>
-        {
-            Ok(())
-        }
-        Asker::Session(address) => Err(format!(
-            "{address} doesn't orchestrate the session held as {id}, so it can't end it: \
-             only its orchestrator or the person does"
-        )),
-    }
-}
-
-/// Ends the session held as `id` in `dir`: tells its holder and its
-/// program's process group to end, waits as long as `grace` for both to
-/// go, kills whatever is left, and takes away its record and socket.
-///
-/// # Errors
-///
-/// When nothing is held as `id`, or its record or socket can't be taken
-/// away.
+/// When nothing is held as `id`, when its holder no longer answers (its
+/// record and socket are then taken away, nothing signalled), or when
+/// its record or socket can't be taken away.
 pub fn end(dir: &Path, id: &str, grace: Duration) -> io::Result<Ending> {
     let Some(one) = held(dir).into_iter().find(|one| one.id == id) else {
         return Err(io::Error::new(
@@ -94,11 +76,26 @@ pub fn end(dir: &Path, id: &str, grace: Duration) -> io::Result<Ending> {
             format!("nothing is held as {id}; `mycelium holds` lists what is"),
         ));
     };
+    if std::os::unix::net::UnixStream::connect(socket(dir, id)).is_err() {
+        take_away(dir, id)?;
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "the holder of {id} no longer answers, so nothing it named is signalled; \
+                 its stale record is taken away"
+            ),
+        ));
+    }
     let holder = pid(one.holder);
     // A parked program runs no process.
-    let program = pid(one.pid);
-    tell(holder, program, Signal::TERM);
-    let ending = if gone_within(holder, program, grace) {
+    let program = if one.parked { None } else { pid(one.pid) };
+    tell(None, program, Signal::TERM);
+    let gently = gone_within(None, program, grace);
+    if gently {
+        // A holder whose program has gone ends as soon as it's told.
+        tell(holder, None, Signal::TERM);
+    }
+    let ending = if gently && gone_within(holder, None, KILLED_WITHIN) {
         Ending::Gently
     } else {
         tell(holder, program, Signal::KILL);
@@ -109,14 +106,20 @@ pub fn end(dir: &Path, id: &str, grace: Duration) -> io::Result<Ending> {
         }
         Ending::Killed
     };
-    // A holder that ended removed these itself; one killed left them.
+    take_away(dir, id)?;
+    Ok(ending)
+}
+
+/// Takes away the record and socket of the hold `id` in `dir`, which a
+/// holder that ended removed itself and one killed left.
+fn take_away(dir: &Path, id: &str) -> io::Result<()> {
     for left in [dir.join(format!("{id}.json")), socket(dir, id)] {
         match fs::remove_file(&left) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
             _ => {}
         }
     }
-    Ok(ending)
+    Ok(())
 }
 
 /// The process `raw` names, if it names one.
@@ -162,6 +165,7 @@ fn gone_within(holder: Option<Pid>, program: Option<Pid>, grace: Duration) -> bo
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
 
@@ -204,8 +208,9 @@ mod tests {
     }
 
     /// Writes the record and socket of a hold `id` in `dir`, held by
-    /// `holder` and running `pid`.
-    fn holds(dir: &Path, id: &str, holder: u32, pid: u32) {
+    /// `holder` and running `pid`, with the socket answering while what
+    /// this gives back is kept.
+    fn holds(dir: &Path, id: &str, holder: u32, pid: u32) -> UnixListener {
         let record = Held {
             id: id.to_owned(),
             command: vec!["pi".to_owned()],
@@ -221,7 +226,7 @@ mod tests {
             serde_json::to_vec(&record).expect("a record"),
         )
         .expect("the record is written");
-        fs::write(socket(dir, id), "").expect("its socket stands");
+        UnixListener::bind(socket(dir, id)).expect("its socket answers")
     }
 
     fn runs(pid: u32) -> bool {
@@ -231,12 +236,24 @@ mod tests {
     #[test]
     fn a_hold_told_to_end_ends_gently_and_leaves_nothing_behind() {
         let dir = tempfile::tempdir().expect("a folder");
-        let (holder, program) = (holder(), program("echo ready; sleep 1000 & wait"));
-        holds(dir.path(), "ending1", holder, program);
+        let told = dir.path().join("told");
+        let program = program(&format!(
+            "trap 'echo TERM > {}; exit 0' TERM; echo ready; while :; do sleep 0.05; done",
+            told.display()
+        ));
+        let holder = holder();
+        let _answers = holds(dir.path(), "ending1", holder, program);
 
         assert_eq!(
             end(dir.path(), "ending1", GRACE).expect("it ends"),
             Ending::Gently
+        );
+        assert_eq!(
+            fs::read_to_string(&told)
+                .expect("the program was told")
+                .trim(),
+            "TERM",
+            "the program was told to end, not killed"
         );
         assert!(
             !runs(holder) && !runs(program),
@@ -255,7 +272,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a folder");
         let program = program("trap '' TERM; echo ready; while :; do sleep 1; done");
         let holder = holder();
-        holds(dir.path(), "stubborn", holder, program);
+        let _answers = holds(dir.path(), "stubborn", holder, program);
 
         assert_eq!(
             end(dir.path(), "stubborn", Duration::from_millis(200)).expect("it ends"),
@@ -263,9 +280,32 @@ mod tests {
         );
         assert!(!runs(program), "the program that ignored its end is killed");
         assert!(
-            !dir.path().join("stubborn.json").exists(),
-            "its record goes"
+            !dir.path().join("stubborn.json").exists() && !socket(dir.path(), "stubborn").exists(),
+            "its record and socket go"
         );
+    }
+
+    #[test]
+    fn a_stale_record_is_taken_away_signalling_nothing() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let (holder, program) = (holder(), program("echo ready; sleep 1000 & wait"));
+        drop(holds(dir.path(), "stale", holder, program));
+
+        let error = end(dir.path(), "stale", GRACE).expect_err("its holder doesn't answer");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(
+            runs(holder) && runs(program),
+            "what its pids name now is left alone"
+        );
+        assert!(
+            !dir.path().join("stale.json").exists(),
+            "its stale record goes"
+        );
+        for pid in [holder, program] {
+            let _ =
+                rustix::process::kill_process_group(self::pid(pid).expect("a pid"), Signal::KILL);
+            let _ = rustix::process::kill_process(self::pid(pid).expect("a pid"), Signal::KILL);
+        }
     }
 
     #[test]
@@ -273,31 +313,5 @@ mod tests {
         let dir = tempfile::tempdir().expect("a folder");
         let error = end(dir.path(), "nobody", GRACE).expect_err("nothing to end");
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
-    }
-
-    #[test]
-    fn only_the_person_or_the_sessions_orchestrator_may_end_it() {
-        let person = Asker::Person;
-        let orchestrator = Asker::Session("WCJQSG".to_owned());
-        let stranger = Asker::Session("HARBOR".to_owned());
-        assert_eq!(may(&person, None, "ab12"), Ok(()), "the person, any");
-        assert_eq!(
-            may(&orchestrator, Some("wcjqsg"), "ab12"),
-            Ok(()),
-            "its orchestrator, in any case"
-        );
-        assert_eq!(
-            may(&stranger, Some("WCJQSG"), "ab12"),
-            Err(
-                "HARBOR doesn't orchestrate the session held as ab12, so it can't end it: \
-                 only its orchestrator or the person does"
-                    .to_owned()
-            ),
-            "anyone else is refused, saying why"
-        );
-        assert!(
-            may(&stranger, None, "ab12").is_err(),
-            "nor a session one that answers to nobody"
-        );
     }
 }

@@ -727,8 +727,8 @@ enum HoldAct {
     /// Names the program its next start runs.
     Again,
     /// Ends it for good, here or on the machine holding it: its program
-    /// is told to end, given ten seconds, then killed. Only the person or
-    /// the session's orchestrator may.
+    /// is told to end, given ten seconds, then killed. Only the person
+    /// may, or the session's orchestrator on the machine where both run.
     End,
 }
 

@@ -54,8 +54,8 @@ pub enum Request {
     },
     /// End the session held as `held` for good, on the machine holding
     /// it: here, or through the link reaching that machine. Only the
-    /// person's own login, or the session the held one answers to as its
-    /// orchestrator, ends one.
+    /// person's own login ends one, or, on the machine where both run,
+    /// the session the node's record proves orchestrates it.
     End {
         /// Its held id, as `holds` lists it.
         held: String,

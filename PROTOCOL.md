@@ -246,8 +246,8 @@ same code, each line a JSON value:
     `Ended`. `by` is who this end's node judged asks: `"Person"` for the
     person's own login, or `{"Session": address}` for the session asking.
     The other end takes it only if its membership proved which machine
-    asked, as for an update, and `by` is the person or the orchestrator
-    the held session's presence there names; otherwise it refuses,
+    asked, as for an update, and `by` is the person, since a session's
+    orchestration is proved only where both run; otherwise it refuses,
     saying why. It ends the hold itself, as `"End"` on the socket does.
     No time limits the answer, since the session has ten seconds to
     save what it holds.
@@ -1727,14 +1727,18 @@ started, and a closing window hangs up on its own session only.
 
 `mycelium holds <id> end` asks the node `{"End": {"held"}}` to end a
 held session for good, on whichever machine holds it: here, or over the
-link reaching that machine (`End` above), never by SSH. Only the
-person's own login ends one, or the session the held one's presence
-names as its orchestrator, proved as a steer's asker is; anyone else is
-refused, saying why, as is an id held on more than one machine. The
-holder is told to end (`TERM`), then the program's process group; what
-still runs after ten seconds is killed, and the answer's `ending` says
-which, `gently` or `killed`. Its record and socket go, and its
-presence leaves the sessions as its program's ends.
+link reaching that machine (`End` above), never by SSH. The person's
+own login ends any. A session ends one only on the machine where both
+run, once that node's record of orchestrations proves it orchestrates
+the held session's quest, as an ordered carry is proved; a presence
+naming its orchestrator proves nothing. Anyone else is refused, saying
+why. An id held here is ended here; one held on more than one other
+machine is refused. A holder that no longer answers on its socket has
+its stale record taken away, and nothing it names is signalled. The
+program's process group is told to end (`TERM`) and has ten seconds,
+then its holder is told; what still runs is killed, and the answer's
+`ending` says which, `gently` or `killed`. Its record and socket go,
+and its presence leaves the sessions as its program's ends.
 
 Each holder serves `<id>.sock` in `<runtime>/mycelium/<realm>.held`,
 reachable only by its account, beside
