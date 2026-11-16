@@ -164,18 +164,23 @@ fn a_web_not_made_yet_is_watched_for_from_the_nearest_folder_there() {
 }
 
 #[test]
-fn the_murmurs_answer_while_a_web_is_read() {
+fn a_pipe_in_a_web_is_passed_over_while_the_others_are_heard() {
     let dir = tempfile::tempdir().expect("a temporary folder");
     let events = web::events_in(&dir.path().join("QEST-20261112-HARBOR").join(web::FOLDER));
     fs::create_dir_all(&events).expect("its events' folder");
-    // A writer's file that is a pipe nothing writes to: opening it waits
-    // until something does, as a read of a slow disk waits on it.
+    // A writer's file that is a pipe nothing writes to: opening it to read
+    // waits until something does, for ever.
     let file = events.join("skiff.jsonl");
     let made = std::process::Command::new("mkfifo")
         .arg(&file)
         .status()
         .expect("mkfifo ran");
     assert!(made.success(), "mkfifo made no pipe: {made}");
+    let now = now();
+    Web::of(dir.path(), "QEST-20261112-TIDES")
+        .expect("a web")
+        .say("skiff", None, murmur("the tide turns"), now)
+        .expect("said");
     // Kept on a runtime of its own, as the node's are, so whatever its
     // read holds up there doesn't hold up the asking here.
     let (started, running) = std::sync::mpsc::channel();
@@ -193,41 +198,24 @@ fn the_murmurs_answer_while_a_web_is_read() {
         });
     });
     let murmurs = running.recv_timeout(PATIENCE).expect("the murmurs kept");
-    let (answered, answers) = std::sync::mpsc::channel();
-    let asking = Arc::clone(&murmurs);
-    std::thread::spawn(move || {
-        // Asked over and over while the read starts and waits on the pipe.
-        let until = std::time::Instant::now() + Duration::from_millis(500);
-        while std::time::Instant::now() < until {
-            let _ = asking.records(NOW, &HashMap::new());
-            let _ = asking.health();
-            std::thread::yield_now();
-        }
-        let _ = answered.send(());
-    });
-    let answering = answers.recv_timeout(PATIENCE);
-    // The read is let go, here as a writer opens the pipe, so nothing is
-    // left waiting on it; the writer stays open until the test ends.
     let until = std::time::Instant::now() + PATIENCE;
-    let writer = loop {
-        let opened = rustix::fs::open(
-            &file,
-            rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        );
-        match opened {
-            Ok(writer) => break writer,
-            Err(_) if std::time::Instant::now() < until => std::thread::yield_now(),
-            Err(error) => panic!("the pipe was never read: {error}"),
-        }
-    };
-    assert!(
-        answering.is_ok(),
-        "the murmurs answered as the webs were read"
+    let mut heard = false;
+    while !heard && std::time::Instant::now() < until {
+        heard = !murmurs.records(now + 1, &HashMap::new()).is_empty();
+        std::thread::yield_now();
+    }
+    // Were the pipe being read, a writer opening it lets that read go, so
+    // nothing is left waiting on it once the test ends.
+    let writer = rustix::fs::open(
+        &file,
+        rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
     );
+    assert!(heard, "the other web's murmur is heard");
+    assert_eq!(murmurs.health()[0]["state"], "answering");
+    assert!(writer.is_err(), "nothing read the pipe");
     drop(murmurs);
     let _ = stop.send(());
-    Box::leak(Box::new(writer));
 }
 
 #[tokio::test]
