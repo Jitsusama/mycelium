@@ -174,18 +174,17 @@ fn quote_or_escape(bytes: &[u8], at: usize) -> Option<usize> {
     // The high bit of each byte of nought, and of none before the first.
     let noughts = |word: u64| word.wrapping_sub(ONES) & !word & HIGHS;
     let rest = bytes.get(at..)?;
-    let mut words = rest.chunks_exact(8);
-    for (word_at, word) in words.by_ref().enumerate() {
-        let word = u64::from_le_bytes(word.try_into().ok()?);
+    let (words, tail) = rest.as_chunks::<8>();
+    for (word_at, word) in words.iter().enumerate() {
+        let word = u64::from_le_bytes(*word);
         let found = noughts(word ^ QUOTES) | noughts(word ^ ESCAPES);
         if found != 0 {
             let byte = usize::try_from(found.trailing_zeros() / 8).ok()?;
             return Some(at + word_at * 8 + byte);
         }
     }
-    let tail = at + rest.len() - words.remainder().len();
     let sought = |byte: &u8| matches!(byte, b'"' | b'\\');
-    Some(tail + words.remainder().iter().position(sought)?)
+    Some(at + words.len() * 8 + tail.iter().position(sought)?)
 }
 
 #[cfg(test)]
@@ -276,7 +275,7 @@ mod tests {
     fn a_quote_or_an_escape_is_found_wherever_it_falls_in_a_word() {
         for length in 0..20 {
             for at in 0..length {
-                for sought in [b'"', b'\\'] {
+                for sought in *b"\"\\" {
                     let mut bytes = vec![b'a'; length];
                     bytes[at] = sought;
                     if at + 1 < length {
