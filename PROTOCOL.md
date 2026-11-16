@@ -274,7 +274,10 @@ on this machine, as quests of their own with none of their scratch
 named, so a session on the other machine can tell what orchestrates it.
 One shared only so stops being shared, at both ends, once no quest
 either end shares names it above and the other end doesn't share it on
-its own; one shared on its own as well stays.
+its own; one shared on its own as well stays. Only a quest shared in
+its own right keeps a quest above it, so parents naming each other
+can't keep each other. A parent shared before ends said `above` carries
+no mark, so it never stops.
 
 A git clone, named or within a named folder, crosses as its `origin`
 and branch, never file by file, since two machines writing one `.git`
