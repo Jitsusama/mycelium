@@ -365,14 +365,17 @@ impl Serving {
         let records = records
             .map(|(_, records)| records.clone())
             .unwrap_or_default();
-        let records: Vec<Value> = match &asked.1 {
-            Some(paths) => records
-                .into_iter()
-                .map(|record| fields::projected(record, paths))
-                .collect(),
-            None => records,
+        let json = match &asked.1 {
+            Some(paths) => {
+                let records: Vec<_> = records
+                    .iter()
+                    .map(|record| fields::projected(&record.to_string(), paths))
+                    .collect();
+                serde_json::to_string(&records).expect("records serialize")
+            }
+            None => Value::from(records).to_string(),
         };
-        let json = Arc::new(Value::from(records).to_string());
+        let json = Arc::new(json);
         sent.push((asked, Arc::clone(&json)));
         json
     }

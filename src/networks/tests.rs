@@ -334,8 +334,11 @@ fn reading_only_what_the_networks_read_makes_the_same_mycelium() {
         fields.len()
     );
     let projected = |records: &[Value]| -> Vec<Value> {
-        let each = records.iter().cloned();
-        each.map(|record| projected(record, &fields)).collect()
+        let each = records
+            .iter()
+            .map(|record| projected(&record.to_string(), &fields));
+        each.map(|sent| serde_json::from_str(sent.get()).expect("a projected record is JSON"))
+            .collect()
     };
     let sent = Mycelium::of(
         "work",
