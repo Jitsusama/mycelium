@@ -148,6 +148,22 @@ fn a_session_going_by_several_addresses_is_one_cell() {
 }
 
 #[test]
+fn a_name_holding_the_key_separator_is_no_cell() {
+    let messages = [
+        said("m1", "KP0L6A~HNP07B", MINUTE, &["peer.tern"], None),
+        answering("m1", said("m2", "OSPREY", MINUTE, &["quest.x"], None)),
+    ];
+    let records = made(&messages);
+    let keys: Vec<&str> = records.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        ["tie:OSPREY"],
+        "a cell named with `~` would read as a tie, so it neither talks nor is tied"
+    );
+    assert_eq!(records["tie:OSPREY"]["ties"], json!(0));
+}
+
+#[test]
 fn no_one_is_tied_to_themself() {
     let messages = [said("m1", "KP0L6A", MINUTE, &["peer.kp0l6a"], None)];
     let records = made(&messages);

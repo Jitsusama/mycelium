@@ -1832,16 +1832,17 @@ impl<S: Store> Shared<S> {
     }
 
     /// The ties between the realm's cells, and each cell's talk, as the
-    /// messages held say of the last day: folded while they are held,
-    /// made records once they are let go.
+    /// messages held say of the last day, taken shared while the node is
+    /// locked and folded once it is let go, since a fold of a busy day
+    /// takes milliseconds that every other reader would wait out.
     fn tie_records(&self) -> BTreeMap<String, serde_json::Value> {
         let now = jiff::Timestamp::now().as_millisecond();
-        let talk = {
+        let (aliases, messages) = {
             let inner = self.lock();
             let aliases = tie::aliases(inner.state.each_session());
-            talk(inner.state.messages(), &aliases, now)
+            (aliases, inner.state.shared_messages())
         };
-        tie::records(talk)
+        tie::records(talk(messages.iter().map(AsRef::as_ref), &aliases, now))
     }
 
     /// The records `making` makes of what the node holds, as the networks

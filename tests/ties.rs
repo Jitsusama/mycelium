@@ -22,12 +22,12 @@ use std::time::Duration;
 use mycelium::group::Group;
 use mycelium::node::{talk, tie_records};
 use mycelium::record::{Intent, Message};
+use mycelium::state::{KEPT_MESSAGES, State};
 use serde_json::Value;
 
 use counting::{HELD, PEAK, thread_time};
 
 /// The system's allocator, counting what is held and the most held.
-#[expect(unsafe_code, reason = "an allocator is unsafe to implement")]
 #[path = "realm/counting.rs"]
 mod counting;
 
@@ -96,8 +96,7 @@ fn ten_thousand_cells_make_their_tie_records_within_the_bar() {
     let per_cell = |at: usize, of: f64| of / f64::from(u32::try_from(SIZES[at]).expect("cells"));
     let grew = |of: &dyn Fn(usize) -> f64| per_cell(2, of(2)) / per_cell(1, of(1));
     let time = grew(&|at| least[at].as_secs_f64());
-    #[expect(clippy::cast_precision_loss, reason = "bytes held fit a double")]
-    let memory = grew(&|at| most_held[at] as f64);
+    let memory = grew(&|at| f64::from(u32::try_from(most_held[at]).expect("under 4 GB held")));
     eprintln!("from a thousand cells, time a cell grew {time:.2} times, memory {memory:.2}");
     assert!(
         time < GROWS_AT_MOST,
@@ -107,6 +106,52 @@ fn ten_thousand_cells_make_their_tie_records_within_the_bar() {
         memory < GROWS_AT_MOST,
         "the memory a cell grew {memory:.2} times from a thousand to ten thousand"
     );
+}
+
+/// How many of those were sent in the last day, about as many as the
+/// busiest machine's mesh sends in one.
+const HELD_TODAY: usize = 12_000;
+
+/// The most the node's lock may be held, of the processor's time, while
+/// the fold takes all it holds to read once the lock is let go.
+const LOCKED_WITHIN: Duration = Duration::from_millis(5);
+
+#[test]
+fn the_fold_holds_the_nodes_lock_briefly_over_all_it_holds() {
+    let cells = 1_000;
+    let mut draws = Draws(7);
+    let mut messages: Vec<Message> = Vec::with_capacity(KEPT_MESSAGES);
+    for n in 0..KEPT_MESSAGES {
+        let (from, to) = (draws.cell(cells), draws.cell(cells));
+        let groups = [format!("peer.{}", address(to).to_lowercase())];
+        let re = (n % 2 == 1).then(|| n - 1);
+        let mut message = said(&mut draws, n, from, &groups, re, &messages);
+        if n >= HELD_TODAY {
+            let ago = DAY + draws.next() % (2 * DAY);
+            let ago = i64::try_from(ago).expect("three days fit");
+            message.at = jiff::Timestamp::from_millisecond(NOW - ago)
+                .expect("a time")
+                .to_string();
+        }
+        messages.push(message);
+    }
+    let mut state = State::default();
+    state.add_messages(messages);
+    let aliases: HashMap<String, String> = (0..cells).map(|n| (address(n), address(n))).collect();
+    let (mut locked, mut folded) = (Duration::MAX, Duration::MAX);
+    for _ in 0..TIMINGS {
+        let begun = thread_time();
+        let shared = state.shared_messages();
+        let taken = thread_time();
+        let talk = talk(shared.iter().map(AsRef::as_ref), &aliases, NOW);
+        locked = locked.min(taken.saturating_sub(begun));
+        folded = folded.min(thread_time().saturating_sub(taken));
+        drop(talk);
+    }
+    eprintln!(
+        "{KEPT_MESSAGES} messages held, {HELD_TODAY} today: taken in {locked:?}, folded in {folded:?} once let go"
+    );
+    assert!(locked < LOCKED_WITHIN, "taking them held the lock {locked:?}");
 }
 
 /// The messages of a realm of cells, as the node holds them.
@@ -225,15 +270,11 @@ impl Draws {
     /// A cell of `cells`, the first far likelier than the last, as a
     /// power law draws them.
     fn cell(&mut self, cells: usize) -> usize {
-        #[expect(clippy::cast_precision_loss, reason = "a draw needs no more")]
-        let unit = (self.next() >> 11) as f64 / (1_u64 << 53) as f64;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::cast_precision_loss,
-            reason = "a fraction of the cells is a cell"
-        )]
-        let cell = (unit.powi(3) * cells as f64) as usize;
+        // A fraction of 2^21, cubed, is a fraction of 2^63.
+        let unit = u128::from(self.next() >> 43);
+        let cubed = unit * unit * unit;
+        let cells_wide = u128::try_from(cells).expect("a few cells");
+        let cell = usize::try_from((cubed * cells_wide) >> 63).expect("under the cells");
         cell.min(cells - 1)
     }
 }

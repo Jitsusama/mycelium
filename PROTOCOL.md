@@ -1388,7 +1388,9 @@ the message it answers (`re`), where that is held, each once, and no
 one to themself; one only to named groups, answering nothing, ties no
 one. A cell is named by its session's own address wherever it goes by
 another, and otherwise as said, uppercase. A tie is keyed by its two
-ends sorted and joined, `tie:<A>~<B>`, which alone names them, and
+ends sorted and joined, `tie:<A>~<B>`, which alone names them, so a
+cell whose name holds a `~` is no cell: its messages are passed over
+and no one is tied to it. A group's name never holds one. A tie
 says each end's messages on it in the last hour as `hour` and in the
 last day as `today`, in the order of its key, the `intents` and
 `groups` its messages had, sorted, and its `strength`, and is heard at

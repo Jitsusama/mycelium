@@ -3,6 +3,7 @@
 //! sends.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use crate::group::{Group, Pattern};
 use crate::record::{Message, Session};
@@ -18,7 +19,9 @@ pub const KEPT_MESSAGES: usize = 50_000;
 #[derive(Debug, Default)]
 pub struct State {
     sessions: BTreeMap<String, Session>,
-    messages: VecDeque<Message>,
+    /// Each shared, so a reader takes them all while the node is locked
+    /// by counting each once more, and reads them once it is let go.
+    messages: VecDeque<Arc<Message>>,
     message_ids: HashSet<String>,
     /// What waits among the messages, kept as each comes.
     unanswered: Unanswered,
@@ -37,7 +40,15 @@ impl State {
 
     /// Every message held, in the order they were sent.
     pub fn messages(&self) -> impl Iterator<Item = &Message> {
-        self.messages.iter()
+        self.messages.iter().map(AsRef::as_ref)
+    }
+
+    /// Every message held, in the order they were sent, shared, to read
+    /// once the node is let go: 50,000 take well under a millisecond, as
+    /// `tests/ties.rs` measures.
+    #[must_use]
+    pub fn shared_messages(&self) -> Vec<Arc<Message>> {
+        self.messages.iter().cloned().collect()
     }
 
     /// What each session says it works on, by its address, for those that
@@ -92,7 +103,7 @@ impl State {
         let at = self
             .messages
             .partition_point(|held| sent_first(held, &message));
-        self.messages.insert(at, message.clone());
+        self.messages.insert(at, Arc::new(message.clone()));
         self.unanswered
             .add(&message, jiff::Timestamp::now().as_millisecond());
         while self.messages.len() > KEPT_MESSAGES {
@@ -133,7 +144,7 @@ impl State {
             .rev()
             .filter(|message| message.groups.iter().any(|group| groups.matches(group)))
             .take(limit)
-            .cloned()
+            .map(|message| Message::clone(message))
             .collect();
         found.reverse();
         found
@@ -159,7 +170,7 @@ impl State {
                 }
                 latest
             })
-            .cloned()
+            .map(|message| Message::clone(message))
             .collect();
         found.reverse();
         found
