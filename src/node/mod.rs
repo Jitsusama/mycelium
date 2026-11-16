@@ -436,6 +436,9 @@ where
     store::out_of_reach_of_unclaimed(&store)?;
     let (to_dial, mut made) = mpsc::unbounded_channel();
     let eases = given.eases.clone();
+    // Asked before any task is spawned, so a store that can't tell its
+    // changes leaves nothing running.
+    let mut changes = store.changes()?;
     let (shared, kept) = Shared::of(
         store.clone(),
         (membership.hello(), socket.path.clone()),
@@ -450,7 +453,6 @@ where
         mut awake,
         receptors: keeping_receptors,
     } = kept;
-    let mut changes = store.changes()?;
     let (_watching_held, mut held) = watch(&shared.held, "what is held");
     let (_watching_parks, mut parks) = watch(&shared.parked, "what is parked");
     shared.read_store();
