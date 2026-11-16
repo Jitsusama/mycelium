@@ -132,6 +132,39 @@ impl Shelf {
         self.quests.keys().cloned().collect()
     }
 
+    /// What it holds of the quests `due` in `store` but the files in
+    /// `stale`, as a shelf of its own, so they're read from the disk
+    /// without holding this one and every forage made meanwhile.
+    #[must_use]
+    pub fn lend(&self, store: &Path, due: &BTreeSet<String>, stale: &[PathBuf]) -> Self {
+        let folders: Vec<PathBuf> = due.iter().map(|id| store.join(id)).collect();
+        Self {
+            quests: due
+                .iter()
+                .filter_map(|id| Some((id.clone(), self.quests.get(id)?.clone())))
+                .collect(),
+            files: self
+                .files
+                .iter()
+                .filter(|(path, _)| {
+                    folders.iter().any(|folder| path.starts_with(folder)) && !stale.contains(path)
+                })
+                .map(|(path, read)| (path.clone(), read.clone()))
+                .collect(),
+            asked: BTreeSet::new(),
+        }
+    }
+
+    /// Takes back what `read`, a shelf it lent, read of its quests in
+    /// `store`, in place of what it held of them.
+    pub fn take_back(&mut self, store: &Path, read: Self) {
+        let folders: Vec<PathBuf> = read.quests.keys().map(|id| store.join(id)).collect();
+        self.files
+            .retain(|path, _| !folders.iter().any(|folder| path.starts_with(folder)));
+        self.files.extend(read.files);
+        self.quests.extend(read.quests);
+    }
+
     /// Whether `id` has been read.
     #[must_use]
     pub fn holds(&self, id: &str) -> bool {
@@ -202,8 +235,10 @@ fn first_sentence(paragraph: &str) -> String {
     if sentence.chars().count() <= LONGEST_PURPOSE {
         return sentence.to_owned();
     }
-    let cut: String = sentence.chars().take(LONGEST_PURPOSE - 1).collect();
-    format!("{}…", cut.trim_end())
+    // Three plain dots rather than an ellipsis, as every word the node
+    // says is plain ASCII punctuation.
+    let cut: String = sentence.chars().take(LONGEST_PURPOSE - 3).collect();
+    format!("{}...", cut.trim_end())
 }
 
 /// What a quest's README says: its parent, its status and its purpose.
@@ -379,14 +414,19 @@ pub fn records(
 /// quest `wanted` names, and each one held again when a watch on its
 /// folders hears a change, telling `tell` whenever what it holds changed.
 /// `sessions` says when the node's cells may have changed, which changes
-/// whose forages there are, so it tells `tell` then too.
+/// whose forages there are, so it tells `tell` then too, once `cells`,
+/// this machine's cells as they stand, differ from those it last told of.
+/// Each quest is read on a shelf `held` lends, so a round over thousands
+/// of quests never keeps a forage waiting on the disk.
 pub async fn keep(
     store: PathBuf,
     held: Held,
     mut wanted: mpsc::UnboundedReceiver<String>,
     mut sessions: watch::Receiver<u64>,
+    cells: impl Fn() -> Vec<Cell> + Send + 'static,
     tell: watch::Sender<u64>,
 ) {
+    let mut told_of: Vec<Cell> = Vec::new();
     let (heard, mut changed) = mpsc::unbounded_channel::<PathBuf>();
     let mut watcher = crate::watching::watcher(move |event: notify::Result<notify::Event>| {
         if let Ok(event) = event {
@@ -427,7 +467,16 @@ pub async fn keep(
                 due.extend(touched.iter().filter_map(|path| quest_of(&store, path)));
             }
             Ok(()) = sessions.changed() => {
-                tell.send_modify(|changes| *changes += 1);
+                // A presence beats every few seconds while its cells seldom
+                // move: the beats within the next moment are heard as one,
+                // and told only when a cell came, went or moved quest.
+                tokio::time::sleep(SETTLED_AFTER).await;
+                sessions.borrow_and_update();
+                let now = cells();
+                if now != told_of {
+                    told_of = now;
+                    tell.send_modify(|changes| *changes += 1);
+                }
                 continue;
             }
             _ = rounds.tick() => {
@@ -449,15 +498,21 @@ pub async fn keep(
         }
         let (reading, of, shelf) = (store.clone(), due.clone(), Arc::clone(&held));
         let read = tokio::task::spawn_blocking(move || {
-            let mut shelf = shelf.lock().unwrap_or_else(PoisonError::into_inner);
             // A file a watch heard written is read again even when its
             // length and time look the same, as a step ticked within the
             // clock's last tick does.
-            for path in &touched {
-                shelf.files.remove(path);
-            }
-            of.iter()
-                .fold(false, |moved, id| shelf.read(&reading, id) | moved)
+            let mut lent = shelf
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .lend(&reading, &of, &touched);
+            let moved = of
+                .iter()
+                .fold(false, |moved, id| lent.read(&reading, id) | moved);
+            shelf
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take_back(&reading, lent);
+            moved
         });
         // A reading that panicked leaves the forages as last read.
         if read.await.unwrap_or(false) {
@@ -744,7 +799,7 @@ mod tests {
         let long = "word ".repeat(100);
         let purpose = first_sentence(&long);
         assert_eq!(purpose.chars().count(), LONGEST_PURPOSE);
-        assert!(purpose.ends_with('…'));
+        assert!(purpose.ends_with("..."));
     }
 
     fn forage(cell: &str, machine: &str, quest: &str) -> Value {
@@ -816,6 +871,90 @@ mod tests {
         assert_eq!(quest_of(store, Path::new("/elsewhere/QEST-1")), None);
     }
 
+    #[test]
+    fn a_quest_is_read_on_a_shelf_of_its_own_then_taken_back() {
+        let store = Store::new("lent");
+        let plan = "QEST-20261116-KESTRL/plans/PLAN-20261116-HOVERS.md";
+        store.write("QEST-20261116-KESTRL/README.md", README);
+        store.write(plan, PLAN);
+        let mut shelf = Shelf::default();
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        let ticked = |shelf: &mut Shelf| {
+            shelf
+                .quest("QEST-20261116-KESTRL")
+                .map(|quest| quest.documents[0].ticked)
+        };
+        store.write(plan, &PLAN.replace("- [ ] turn", "- [x] turn"));
+        let due = BTreeSet::from(["QEST-20261116-KESTRL".to_owned()]);
+        let mut lent = shelf.lend(&store.0, &due, &[store.0.join(plan)]);
+        assert!(lent.read(&store.0, "QEST-20261116-KESTRL"));
+        assert_eq!(ticked(&mut shelf), Some(2), "the shelf lent is unchanged");
+        shelf.take_back(&store.0, lent);
+        assert_eq!(ticked(&mut shelf), Some(3));
+        let mut again = shelf.lend(&store.0, &due, &[]);
+        assert!(
+            !again.read(&store.0, "QEST-20261116-KESTRL"),
+            "what was read is lent again, so nothing reads as changed"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_cells_that_moved_are_told() {
+        let store = Store::new("beats");
+        let held = Held::default();
+        let (_want, wanted) = mpsc::unbounded_channel();
+        let (beat, sessions) = watch::channel(0);
+        let tell = watch::Sender::new(0);
+        let mut told = tell.subscribe();
+        let kestrel = Cell {
+            address: "KESTRL".to_owned(),
+            session: "0000-kestrel".to_owned(),
+            quest: "QEST-20261116-KESTRL".to_owned(),
+            started_by: None,
+        };
+        let cells = Arc::new(Mutex::new(vec![kestrel.clone()]));
+        let now = Arc::clone(&cells);
+        tokio::spawn(keep(
+            store.0.clone(),
+            held,
+            wanted,
+            sessions,
+            move || now.lock().expect("cells").clone(),
+            tell,
+        ));
+        let beats = |count: usize| {
+            for _ in 0..count {
+                beat.send_modify(|beats| *beats += 1);
+            }
+        };
+        beats(20);
+        let within = Duration::from_secs(30);
+        tokio::time::timeout(within, told.wait_for(|told| *told >= 1))
+            .await
+            .expect("told in time")
+            .expect("told");
+        for _ in 0..3 {
+            beats(1);
+            // A beat that moved no cell tells nothing, so this one waits
+            // out its bound.
+            let _ = tokio::time::timeout(SETTLED_AFTER * 2, told.changed()).await;
+        }
+        cells.lock().expect("cells").push(Cell {
+            address: "OSPREY".to_owned(),
+            ..kestrel
+        });
+        beats(1);
+        tokio::time::timeout(within, told.wait_for(|told| *told >= 2))
+            .await
+            .expect("told in time")
+            .expect("told");
+        assert_eq!(
+            *told.borrow(),
+            2,
+            "told once for the first cells, once as one moved"
+        );
+    }
+
     #[tokio::test]
     async fn a_document_written_is_told_and_read() {
         let store = Store::new("kept");
@@ -831,6 +970,7 @@ mod tests {
             Arc::clone(&held),
             wanted,
             sessions,
+            Vec::new,
             tell,
         ));
         want.send("QEST-20261116-KESTRL".to_owned()).expect("sent");

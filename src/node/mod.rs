@@ -1146,6 +1146,57 @@ fn running(sessions: &[Session]) -> impl Iterator<Item = &str> {
         .map(|one| one.machine.as_str())
 }
 
+/// Keeps `forages` true to the quests in `places` for the cells of
+/// `machine` that `inner` holds, telling `said` as they change, and gives
+/// what asks for a quest to be read.
+fn keep_forages(
+    places: &Places,
+    forages: &forage::Held,
+    said: &Said,
+    inner: &Arc<Mutex<Inner>>,
+    machine: &str,
+) -> mpsc::UnboundedSender<String> {
+    let (to_read, wanted) = mpsc::unbounded_channel();
+    let (state, machine) = (Arc::clone(inner), machine.to_owned());
+    tokio::spawn(forage::keep(
+        places.quests.clone(),
+        Arc::clone(forages),
+        wanted,
+        said.sessions.subscribe(),
+        move || {
+            forage_cells(
+                &state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                &machine,
+            )
+        },
+        said.forages.clone(),
+    ));
+    to_read
+}
+
+/// The cells of `machine` that work on a quest, each with what its forage
+/// is made of, ordered by address.
+fn forage_cells(inner: &Inner, machine: &str) -> Vec<forage::Cell> {
+    let mut cells: Vec<forage::Cell> = inner
+        .state
+        .sessions()
+        .into_iter()
+        .filter(|session| session.machine == machine)
+        .filter_map(|session| {
+            Some(forage::Cell {
+                quest: session.quest?,
+                address: session.address,
+                session: session.id,
+                started_by: session.orchestrated_by,
+            })
+        })
+        .collect();
+    cells.sort_by(|one, other| one.address.cmp(&other.address));
+    cells
+}
+
 impl Inner {
     /// What a node of `realm` holds as it starts: nothing, but the crossings
     /// its log says were judged before it restarted, which aren't handed
@@ -1197,18 +1248,11 @@ impl<S: Store> Shared<S> {
             tokio::spawn(own_health::keep(socket, own_health::here()));
         }
         let said = Arc::<Said>::default();
+        let inner = Arc::new(Mutex::new(Inner::after(&flows, &hello.realm)));
         let forages = forage::Held::default();
-        let to_read = sharing.as_ref().map(|places| {
-            let (to_read, wanted) = mpsc::unbounded_channel();
-            tokio::spawn(forage::keep(
-                places.quests.clone(),
-                Arc::clone(&forages),
-                wanted,
-                said.sessions.subscribe(),
-                said.forages.clone(),
-            ));
-            to_read
-        });
+        let to_read = sharing
+            .as_ref()
+            .map(|places| keep_forages(places, &forages, &said, &inner, &hello.machine));
         let held = receptor::Held::default();
         if let Some(folder) = receptors {
             tokio::spawn(receptor::keep(
@@ -1243,7 +1287,7 @@ impl<S: Store> Shared<S> {
             steers,
             updater,
             store,
-            inner: Arc::new(Mutex::new(Inner::after(&flows, &hello.realm))),
+            inner,
             machine: hello.machine,
             realm: hello.realm,
             starter: starter.map(Arc::new),
@@ -1585,21 +1629,7 @@ impl<S: Store> Shared<S> {
     /// asking for each quest not yet read to be read, which tells the
     /// forages' watchers once it is.
     fn forage_records(&self) -> BTreeMap<String, serde_json::Value> {
-        let cells: Vec<forage::Cell> = self
-            .lock()
-            .state
-            .sessions()
-            .into_iter()
-            .filter(|session| session.machine == self.machine)
-            .filter_map(|session| {
-                Some(forage::Cell {
-                    quest: session.quest?,
-                    address: session.address,
-                    session: session.id,
-                    started_by: session.orchestrated_by,
-                })
-            })
-            .collect();
+        let cells = forage_cells(&self.lock(), &self.machine);
         let (records, unread) = forage::records(
             &mut self
                 .forages

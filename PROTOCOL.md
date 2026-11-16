@@ -1459,7 +1459,18 @@ quest's folder and its documents' folders hears each write, and a
 document whose length and time are unchanged isn't read again unless a
 watch heard it written. Every five minutes each quest held is looked at
 again, for a change a watch missed, and those no cell works on any more
-are let go.
+are let go. A quest is read on a shelf of its own, lent what the node
+holds of it and taken back once read, so a forage asked for meanwhile
+never waits on the disk. A presence beats every few seconds while its
+cells seldom move, so forage watchers are told only when this
+machine's cells came, went or moved quest, the beats within 250 ms
+heard as one.
+
+Ten thousand cells make their forages in time that grows with them,
+within 64 MB. The target is 30 MB, the map's and the launcher's bound;
+the gap is known, since each record carries its quest's documents,
+about 5 KB a cell, made for each ask and never held, and it closes by
+23 November 2026.
 
 ## A Held Session
 
