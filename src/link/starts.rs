@@ -59,6 +59,10 @@ pub struct Starting {
     /// another machine dialled, which runs apart from the node and asks it
     /// for this machine's facts instead, so it can't be told another file.
     pub declared: Option<PathBuf>,
+    /// The realm's kit as the node was given it, which the link names in
+    /// this machine's facts beside what it declares; read only with
+    /// `declared`, since a dialled link asks the node for both.
+    pub kit: Option<PathBuf>,
 }
 
 /// How a link carries what this machine's node asks of the other machine.
@@ -127,11 +131,15 @@ struct Reaches {
 impl Asks {
     /// Asks `machine` to start `start`, through the link reaching it,
     /// answering as its node does, with words that join it from here, or
-    /// why no answer came.
-    pub async fn ask(&self, machine: &str, start: Start) -> Reply {
+    /// why no answer came. It goes without the tools it would rather have,
+    /// as [`Work::asked_there`] says.
+    ///
+    /// [`Work::asked_there`]: crate::placement::Work::asked_there
+    pub async fn ask(&self, machine: &str, mut start: Start) -> Reply {
         let there = self
             .there(machine)
             .ok_or_else(|| format!("no link reaches {machine} now"))?;
+        start.work = start.work.asked_there();
         match self
             .send(machine, Asked::Start(start), Some(ANSWERED_WITHIN))
             .await?
@@ -145,8 +153,10 @@ impl Asks {
     }
 
     /// Asks `machine` to run `run`, through the link reaching it, answering
-    /// what it says as it goes, or why it can't be asked.
-    pub async fn run(&self, machine: &str, run: Run) -> Result<mpsc::Receiver<Ran>, String> {
+    /// what it says as it goes, or why it can't be asked. It goes without
+    /// the tools it would rather have, as a start does.
+    pub async fn run(&self, machine: &str, mut run: Run) -> Result<mpsc::Receiver<Ran>, String> {
+        run.work = run.work.asked_there();
         let (ran, said) = mpsc::channel(crate::run::BACKLOG);
         self.send(machine, Asked::Run(run, ran), Some(ANSWERED_WITHIN))
             .await??;
@@ -443,5 +453,79 @@ pub(super) async fn update(node: PathBuf, here: String) -> Reply {
              and its `updated` fact says how it ended: {error}"
         )),
         Err(error) => Err(format!("its update stopped: {error}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::placement::Work;
+
+    /// Work that needs and would rather have `gcloud`, and would rather
+    /// run on Linux.
+    fn wanting_gcloud() -> Work {
+        let gcloud = Need::Tool("gcloud".to_owned());
+        Work {
+            needs: vec![gcloud.clone()],
+            prefers: vec![gcloud, Need::System("linux".to_owned())],
+            tolerates: Vec::new(),
+            may_wait: false,
+            lasts: None,
+        }
+    }
+
+    /// What a start or a run is asked as of kestrel, through a link this
+    /// test holds in its place, once `ask` asks it.
+    async fn asked_of_kestrel(ask: impl AsyncFnOnce(Asks)) -> Work {
+        let asks = Asks::default();
+        let there: There = Arc::new(|_: &str, words: &[String]| words.to_vec());
+        let (mut asked, _reaching) = asks.reach("kestrel", there);
+        let ((), came) = tokio::join!(ask(asks.clone()), async {
+            let Ask { asked, answer } = asked.recv().await.expect("kestrel is asked");
+            let _ = answer.send(Err("only looked at".to_owned()));
+            asked
+        });
+        match came {
+            Asked::Start(start) => start.work,
+            Asked::Run(run, _) => run.work,
+            _ => panic!("neither a start nor a run was asked"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_start_or_a_run_asked_of_another_machine_prefers_no_tool_but_still_needs_one() {
+        let start = Start {
+            work: wanting_gcloud(),
+            folder: None,
+            command: vec!["true".to_owned()],
+            may_cost: false,
+        };
+        let run = Run {
+            work: wanting_gcloud(),
+            folder: None,
+            command: vec!["true".to_owned()],
+            by: None,
+            from: None,
+        };
+        let started = asked_of_kestrel(async |asks: Asks| {
+            let _ = asks.ask("kestrel", start).await;
+        })
+        .await;
+        let ran = asked_of_kestrel(async |asks: Asks| {
+            let _ = asks.run("kestrel", run).await;
+        })
+        .await;
+        for (asked, work) in [("start", started), ("run", ran)] {
+            assert_eq!(
+                work.prefers,
+                [Need::System("linux".to_owned())],
+                "a node too old to read a tool may have been preferred for a {asked}"
+            );
+            assert_eq!(
+                work.needs,
+                [Need::Tool("gcloud".to_owned())],
+                "only a node naming its kit can meet a {asked}'s need for a tool"
+            );
+        }
     }
 }

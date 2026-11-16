@@ -63,7 +63,13 @@ The harness mesh's messages and presence, carried between machines:
   never dialled so as not to wake what costs to run. Given its machine's
   own health daemon's socket as `--health-socket`, it carries in its
   machine the words that daemon says of the whole machine and each
-  part, so every machine reads how every other stands. A client that opens
+  part, so every machine reads how every other stands. Given its
+  realm's kit as `--kit`, a folder whose `bin` holds the tools every
+  machine in the realm is to have, each session and run it starts finds
+  them first on its path, its machine names them as its `kit`, and work
+  needing one (`--need tool=gcloud`) goes only where the kit holds it.
+  Its tools come first for agents too, so the kit belongs where none
+  can write, such as the Nix store. A client that opens
   with `hello` is answered in the daemon interface every daemon on the machine
   speaks, and watches the realm's sessions, machines, messages, teams
   and networks change, each network made as `mycelium networks` makes

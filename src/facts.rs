@@ -94,6 +94,56 @@ pub struct Machine {
         deserialize_with = "own_health::cleaned"
     )]
     pub health: Option<Health>,
+    /// The realm's kit as its node was given it: the tools each session
+    /// and run it starts finds first on its path. Unknown where its node
+    /// was given none, its kit's tools can't be listed, or the node is
+    /// too old to say. Measuring leaves it unknown; the node sets it from
+    /// the kit it was given ([`kit`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kit: Option<Kit>,
+}
+
+/// A realm's kit on one machine: a folder whose `bin` holds the tools
+/// every machine in the realm is to have.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Kit {
+    /// Where it is, with any link it was given through resolved, so a
+    /// Nix profile's link names the store path it is now, which names its
+    /// version: two machines with the same path have the same tools.
+    pub path: String,
+    /// The name of each tool in its `bin`, in order as this node lists
+    /// them, though a record read from another may not be.
+    pub tools: Vec<String>,
+}
+
+impl Kit {
+    /// Whether it holds the tool `name`.
+    #[must_use]
+    pub fn holds(&self, name: &str) -> bool {
+        self.tools.iter().any(|tool| tool == name)
+    }
+}
+
+/// The kit in `folder`, its tools listed from its `bin`, or unknown where
+/// they can't be: a kit whose tools are unknown would meet no need for
+/// one, so it is none rather than one with no tools.
+#[must_use]
+pub fn kit(folder: &Path) -> Option<Kit> {
+    // Resolved before it is listed, so a profile switched between the two
+    // can't pair one generation's path with another's tools.
+    let path = std::fs::canonicalize(folder).ok()?;
+    let mut tools: Vec<String> = std::fs::read_dir(path.join("bin"))
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|tool| tool.file_name().into_string().ok())
+        // A start-up file's dotted names are no tools a need could name.
+        .filter(|tool| !tool.starts_with('.'))
+        .collect();
+    tools.sort_unstable();
+    Some(Kit {
+        path: path.display().to_string(),
+        tools,
+    })
 }
 
 /// Where a machine's facts are read from, beyond the machine itself.
@@ -280,6 +330,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         reached: reach::read(&sources.reached, now.as_second()),
         updated: update::last(&sources.updated),
         health: None,
+        kit: None,
     }
 }
 
@@ -802,6 +853,78 @@ mod tests {
         let heard: Machine = serde_json::from_value(said).expect("the machine is still heard");
         assert_eq!(heard.name, "osprey", "the rest of the machine stays");
         assert_eq!(heard.disk_band, None, "only the band it can't read goes");
+    }
+
+    #[test]
+    fn a_kit_lists_the_tools_in_its_bin_in_order() {
+        let folder = tempfile::tempdir().expect("a temporary kit");
+        assert_eq!(
+            kit(folder.path()),
+            None,
+            "a kit with no bin to list has tools unknown, so it is none"
+        );
+        let bin = folder.path().join("bin");
+        std::fs::create_dir(&bin).expect("its bin");
+        for tool in ["websocat", "gh", "git", ".keep"] {
+            std::fs::write(bin.join(tool), "").expect("a tool");
+        }
+        let listed = kit(folder.path()).expect("a kit whose bin is listed");
+        let resolved = std::fs::canonicalize(folder.path()).expect("the kit resolves");
+        assert_eq!(
+            listed,
+            Kit {
+                path: resolved.display().to_string(),
+                tools: ["gh", "git", "websocat"].map(str::to_owned).to_vec(),
+            },
+            "its tools, sorted, and no start-up file among them"
+        );
+        assert!(
+            listed.holds("gh") && listed.holds("websocat"),
+            "it holds each"
+        );
+        assert!(!listed.holds("gcloud"), "and only those");
+
+        let link = tempfile::tempdir().expect("a folder for a link");
+        let profile = link.path().join("profile");
+        std::os::unix::fs::symlink(folder.path(), &profile).expect("a link to the kit");
+        assert_eq!(
+            kit(&profile).map(|linked| linked.path),
+            Some(resolved.display().to_string()),
+            "a kit given through a link names what it is now"
+        );
+    }
+
+    #[test]
+    fn a_machine_says_its_kit_only_where_it_has_one_as_an_older_node_reads_it() {
+        let nowhere = Sources {
+            home: "/".into(),
+            queue: None,
+            disk_guard: None,
+            declared: None,
+            reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
+        };
+        let mut machine = measure("osprey", &nowhere);
+        let said = serde_json::to_value(&machine).expect("it says itself");
+        assert!(
+            said.get("kit").is_none(),
+            "no kit is said as an older node says it"
+        );
+        let heard: Machine = serde_json::from_value(said).expect("an older record is heard");
+        assert_eq!(heard.kit, None, "with no kit");
+
+        machine.kit = Some(Kit {
+            path: "/nix/store/kit".to_owned(),
+            tools: vec!["gh".to_owned()],
+        });
+        let said = serde_json::to_value(&machine).expect("it says itself");
+        assert_eq!(
+            said["kit"],
+            serde_json::json!({"path": "/nix/store/kit", "tools": ["gh"]}),
+            "a kit is said as PROTOCOL.md says it"
+        );
+        let heard: Machine = serde_json::from_value(said).expect("a record with a kit is heard");
+        assert_eq!(heard.kit, machine.kit, "and heard as it was said");
     }
 
     #[test]

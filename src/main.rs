@@ -473,6 +473,10 @@ enum Action {
         /// Runs each start of it through the person's login shell.
         #[arg(long)]
         login: bool,
+        /// The kit whose tools come first on the path the login shell
+        /// gives it.
+        #[arg(long, requires = "login", value_parser = kit)]
+        kit: Option<PathBuf>,
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
@@ -537,6 +541,16 @@ struct Node {
     /// every source is silent. PROTOCOL.md says its shape.
     #[arg(long)]
     stimuli: Option<PathBuf>,
+    /// The realm's kit: a folder whose `bin` holds the tools every
+    /// machine in it is to have, such as a Nix profile built for the
+    /// realm. Each session and run this node starts finds them first on
+    /// its path, put there after the person's login profile, and the
+    /// machine record names them as `kit`. Unnamed, nothing is put
+    /// first and the record says no kit. It goes first for agents too,
+    /// so it belongs where none can write, such as the Nix store or a
+    /// link the configuration keeps to it.
+    #[arg(long, value_parser = kit)]
+    kit: Option<PathBuf>,
     /// A realm this realm's text may cross into, one way, where a session
     /// names it; given again for each. PROTOCOL.md says what crosses.
     #[arg(long = "flow-to")]
@@ -957,8 +971,9 @@ struct Running {
 #[derive(clap::Args)]
 struct Asked {
     /// What a machine must be, as `kind=value`: `machine`, `system`,
-    /// `arch`, `reach` or `accelerator`, such as `system=linux`; given
-    /// again for each.
+    /// `arch`, `reach`, `accelerator` or `tool` (one the realm's kit
+    /// holds), such as `system=linux` or `tool=gcloud`; given again for
+    /// each.
     #[arg(long = "need", value_parser = need)]
     needs: Vec<Need>,
     /// What a machine had rather be, in the same words, most wanted first.
@@ -1388,8 +1403,12 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             id,
             folder,
             login,
+            kit,
             command,
-        } => hold_here(&realm, &id, &folder, login, &command, &socket),
+        } => {
+            let through = held_through(login, &realm, kit.as_deref());
+            hold_here(&realm, &id, &folder, &through, &command, &socket)
+        }
         Action::Watch { groups, recent } => watch(&socket, groups, recent),
         Action::Machines { .. }
         | Action::Machine { .. }
@@ -1581,6 +1600,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let (dials, serves) = (node.dials(), node.serves(&machine)?);
     let providers = node.providers;
     let declared = node.declared.unwrap_or_else(place::declared);
+    let kit = node.kit;
     let builders = builders::Given {
         files: node
             .builders
@@ -1620,6 +1640,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
             } else {
                 Scope::None
             },
+            kit,
         }),
         awake: Awake::here(),
         updater: place::updater(),
@@ -1652,6 +1673,16 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         "mycelium: {}",
         mycelium::declared::said_at_start(&declared, &given.runs.declarers)
     );
+    if let Some(kit) = given
+        .starter
+        .as_ref()
+        .and_then(|starter| starter.kit.as_deref())
+    {
+        tell!(
+            "mycelium: {}",
+            mycelium::declared::kit_said_at_start(kit, &given.runs.declarers)
+        );
+    }
     let runtime = runtime()?;
     let ran = runtime.block_on(async {
         let bound = node::bind(socket)?;
@@ -1688,6 +1719,7 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         // A dialled link runs apart from the node, so asks it.
         health: None,
         declared: None,
+        kit: None,
     };
     match far {
         Some(far) => {
@@ -2471,6 +2503,8 @@ fn hold(
     let starter = Starter {
         program: std::env::current_exe()?,
         scope: Scope::of_a_terminal(runtime.as_deref()),
+        // A terminal's hold has the person's own path already.
+        kit: None,
     };
     let id = starter.start(realm, &folder, command, false)?;
     if detached {
@@ -2480,24 +2514,24 @@ fn hold(
     }
 }
 
-/// Holds `command` here as the session `id`, in `folder`, until its
-/// scope's stop tells it to end, asking the node at `node` for a turn
+/// Holds `command` here as the session `id`, in `folder`, each start of
+/// it inside the words `through` ([`held_through`]), until its scope's
+/// stop tells it to end, asking the node at `node` for a turn
 /// first when it resumes a session.
 fn hold_here(
     realm: &str,
     id: &str,
     folder: &Path,
-    login: bool,
+    through: &[String],
     command: &[String],
     node: &Path,
 ) -> io::Result<()> {
-    let through = held_through(login, realm);
     be_holder(&hold::holder::Holding {
         dir: &place::held(realm),
         realm,
         id,
         command,
-        through: &through,
+        through,
         folder,
         environment: &ServiceManager,
         journal: &SystemJournal::here(),
@@ -2508,10 +2542,10 @@ fn hold_here(
 
 /// The words a held program starts inside: a login shell, for a hold a
 /// node starts, or none for a hold from a terminal, which has the
-/// person's environment already.
-fn held_through(login: bool, realm: &str) -> Vec<String> {
+/// person's environment already. A node's names its realm's `kit`.
+fn held_through(login: bool, realm: &str, kit: Option<&Path>) -> Vec<String> {
     if login {
-        login_shell(realm)
+        login_shell(realm, kit)
     } else {
         Vec::new()
     }
@@ -2774,8 +2808,27 @@ fn need(said: &str) -> Result<Need, String> {
         .split_once('=')
         .ok_or_else(|| format!("{said:?} is not kind=value, such as system=linux"))?;
     serde_json::from_value(serde_json::json!({ kind: value })).map_err(|_| {
-        format!("{said:?} is not a need: machine, system, arch, reach or accelerator (gpu, npu)")
+        format!(
+            "{said:?} is not a need: machine, system, arch, reach, accelerator (gpu, npu) or tool"
+        )
     })
+}
+
+/// A kit's folder as it can go on a path: whole, since every session
+/// starts in a folder of its own, and holding nothing a path would split
+/// or mangle.
+fn kit(said: &str) -> Result<PathBuf, String> {
+    if !said.starts_with('/') {
+        return Err(format!(
+            "{said:?} is not a whole path, and a session starts in its own folder"
+        ));
+    }
+    if said.contains(':') {
+        return Err(format!(
+            "{said:?} holds a colon, which would split it on a path"
+        ));
+    }
+    Ok(PathBuf::from(said))
 }
 
 /// A reason that says something.
@@ -2799,8 +2852,8 @@ mod tests {
     use std::io;
 
     use super::{
-        Action, Command, HELP_WIDTH, SwarmAsked, Tree, in_place, reader_left, swarm_asked, tree,
-        write_line,
+        Action, Command, HELP_WIDTH, SwarmAsked, Tree, in_place, kit, reader_left, swarm_asked,
+        tree, write_line,
     };
 
     /// A reader that has gone, as `| head` is once it has read enough.
@@ -2830,6 +2883,45 @@ mod tests {
                 "a broken pipe, not an error of its own, or `| head` reads as a failure"
             );
         }
+    }
+
+    #[test]
+    fn a_kit_is_taken_only_as_a_whole_path_a_path_list_can_hold() {
+        assert_eq!(
+            kit("/nix/store/kit"),
+            Ok("/nix/store/kit".into()),
+            "a whole path is taken"
+        );
+        assert!(
+            kit("kit").is_err_and(|why| why.contains("not a whole path")),
+            "a relative one would name another folder in each session's own"
+        );
+        assert!(
+            kit("/nix/store/a:b").is_err_and(|why| why.contains("colon")),
+            "a colon would split it in two on the path"
+        );
+        let node = |kit: &str| Command::try_parse_from(["mycelium", "node", "--kit", kit]);
+        let holder = |kit: &str| {
+            Command::try_parse_from([
+                "mycelium", "holder", "--id", "f00d", "--folder", "/", "--login", "--kit", kit,
+                "--", "pi",
+            ])
+        };
+        for (said, given) in [("node", node("kit")), ("holder", holder("kit"))] {
+            assert_eq!(
+                given.err().map(|error| error.kind()),
+                Some(clap::error::ErrorKind::ValueValidation),
+                "the {said}'s --kit is read as a whole path"
+            );
+        }
+        assert!(
+            node("/nix/store/kit").is_ok(),
+            "the node takes a whole path"
+        );
+        assert!(
+            holder("/nix/store/kit").is_ok(),
+            "the holder takes a whole path"
+        );
     }
 
     #[test]

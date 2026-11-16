@@ -64,6 +64,20 @@ pub struct Work {
     pub lasts: Option<jiff::SignedDuration>,
 }
 
+impl Work {
+    /// This work as it is asked of the machine already chosen for it,
+    /// without the tools it would rather have: a preference can choose a
+    /// node too old to read a tool, which would drop the link rather than
+    /// answer, and once a machine is chosen a preference changes nothing.
+    /// A tool it needs stays, since only a node that names its kit, and so
+    /// reads a tool, can have been chosen for it.
+    #[must_use]
+    pub fn asked_there(mut self) -> Self {
+        self.prefers.retain(|need| !matches!(need, Need::Tool(_)));
+        self
+    }
+}
+
 /// Something a machine is, which work can need or prefer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +92,9 @@ pub enum Need {
     Reach(String),
     /// A kind of accelerator it has.
     Accelerator(AcceleratorKind),
+    /// A tool its realm's kit holds, by name, such as `gcloud`: a machine
+    /// whose node names no kit hasn't said, as with any unsaid fact.
+    Tool(String),
 }
 
 /// Where work goes.
@@ -145,6 +162,7 @@ impl fmt::Display for Need {
             Need::Reach(network) => write!(f, "reach {network}"),
             Need::Accelerator(AcceleratorKind::Gpu) => write!(f, "a gpu"),
             Need::Accelerator(AcceleratorKind::Npu) => write!(f, "an npu"),
+            Need::Tool(tool) => write!(f, "tool {tool}"),
         }
     }
 }
@@ -729,7 +747,8 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
         Need::System(system) => shape.system.as_ref().map(|its| its == system),
         Need::Arch(arch) => shape.arch.as_ref().map(|its| its == arch),
         Need::Reach(network) => reaches(shape.declared.as_ref(), &BTreeMap::new(), network),
-        Need::Accelerator(_) => None,
+        // What a machine not yet made would carry isn't offered yet.
+        Need::Accelerator(_) | Need::Tool(_) => None,
     };
     for need in &work.needs {
         match promised(need) {
@@ -965,6 +984,7 @@ fn is(machine: &Machine, need: &Need) -> Option<bool> {
             .accelerators
             .as_ref()
             .map(|all| all.iter().any(|one| one.kind == *kind)),
+        Need::Tool(tool) => machine.kit.as_ref().map(|kit| kit.holds(tool)),
     }
 }
 
@@ -2044,6 +2064,72 @@ pub(crate) mod tests {
             )),
             Some("skiff"),
             "an accelerator it lists meets the need"
+        );
+    }
+
+    #[test]
+    fn a_tool_is_met_only_where_the_realms_kit_holds_it() {
+        let kit = |tools: &[&str]| facts::Kit {
+            path: "/nix/store/kit".to_owned(),
+            tools: tools.iter().map(|&tool| tool.to_owned()).collect(),
+        };
+        let mut carrying = machine("kestrel", "linux", 8, &[]);
+        // Out of order, as a record read from the wire may be.
+        carrying.kit = Some(kit(&["git", "gh", "gcloud"]));
+        let mut lacking = machine("osprey", "linux", 32, &[]);
+        lacking.kit = Some(kit(&["gh", "git"]));
+        let unsaid = machine("tern", "linux", 32, &[]);
+        let gcloud = || needing(vec![Need::Tool("gcloud".to_owned())]);
+        let Placement::Placed { machine, passed } =
+            place(&gcloud(), &[lacking.clone(), unsaid.clone(), carrying])
+        else {
+            panic!("the machine whose kit holds it takes it")
+        };
+        assert_eq!(machine, "kestrel", "for all it has less room");
+        assert_eq!(
+            passed,
+            [
+                Miss {
+                    machine: "osprey".to_owned(),
+                    because: vec![Because::Lacks(Need::Tool("gcloud".to_owned()))],
+                },
+                Miss {
+                    machine: "tern".to_owned(),
+                    because: vec![Because::Unknown(Need::Tool("gcloud".to_owned()))],
+                },
+            ],
+            "a kit without it lacks it, and no kit hasn't said"
+        );
+        assert_eq!(
+            Because::Lacks(Need::Tool("gcloud".to_owned())).to_string(),
+            "lacks tool gcloud",
+            "a miss says it in words"
+        );
+        assert_eq!(
+            serde_json::to_value(Need::Tool("gcloud".to_owned())).expect("a need says itself"),
+            serde_json::json!({"tool": "gcloud"}),
+            "as PROTOCOL.md says it"
+        );
+    }
+
+    #[test]
+    fn work_asked_of_its_chosen_machine_prefers_no_tool_but_still_needs_one() {
+        let gcloud = Need::Tool("gcloud".to_owned());
+        let linux = Need::System("linux".to_owned());
+        let work = Work {
+            prefers: vec![gcloud.clone(), linux.clone()],
+            ..needing(vec![gcloud.clone()])
+        };
+        let there = work.asked_there();
+        assert_eq!(
+            there.prefers,
+            [linux],
+            "a node too old to read a tool may have been preferred"
+        );
+        assert_eq!(
+            there.needs,
+            [gcloud],
+            "only a node naming its kit can meet a need for a tool"
         );
     }
 

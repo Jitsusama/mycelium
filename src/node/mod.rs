@@ -2176,7 +2176,15 @@ impl<S: Store> Shared<S> {
         };
         let mut here = facts::measure_in(&self.machine, &self.realm, &sources);
         here.health.clone_from(&self.health.borrow());
+        here.kit = self.kit().and_then(facts::kit);
         here
+    }
+
+    /// The folder of the realm's kit this node was given, if it was.
+    fn kit(&self) -> Option<&Path> {
+        self.starter
+            .as_ref()
+            .and_then(|starter| starter.kit.as_deref())
     }
 
     /// Keeps this machine's own `health`, just moved, in its last measure
@@ -2417,6 +2425,7 @@ impl<S: Store> Shared<S> {
             steers: self.steers.clone(),
             health: Some(self.health.subscribe()),
             declared: Some(self.declared.clone()),
+            kit: self.kit().map(Path::to_owned),
         }
     }
 
@@ -3488,7 +3497,7 @@ impl<S: Store> Shared<S> {
                     )?
                 }
             };
-            words.extend(start::login_run(&self.realm));
+            words.extend(start::login_run(&self.realm, self.kit()));
             words.extend(asked.command);
             let (ran, said) = mpsc::channel(run::BACKLOG);
             tokio::spawn(run::here(words, folder, ran));
@@ -4072,6 +4081,7 @@ mod tests {
                     asking,
                     steers,
                     health: None,
+                    kit: None,
                 };
                 // The test judges the link by what crosses it.
                 let _ = if proven {
@@ -4311,6 +4321,7 @@ mod tests {
             steers: dir.path().join("steer"),
             health: None,
             declared: Some(dir.path().join("declared.json")),
+            kit: None,
         };
         let membership = Realm {
             name: "work".to_owned(),
@@ -7521,6 +7532,7 @@ mod tests {
         let holds = Starter {
             program: holder,
             scope: start::Scope::None,
+            kit: None,
         };
         let nobody = Vec::<Piped>::new();
         let far = node(&far_store, "kestrel", nobody, Some(holds), &far_socket);
@@ -7740,6 +7752,7 @@ mod tests {
         let holds = Starter {
             program: holder,
             scope: start::Scope::None,
+            kit: None,
         };
         let dial = Piped {
             store: far_store.clone(),
@@ -8288,6 +8301,44 @@ mod tests {
         assert_eq!(
             nothing.err(),
             Some("nothing to run: name a command".to_owned())
+        );
+        let (stop, node) = running;
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    #[tokio::test]
+    async fn a_node_given_a_kit_runs_with_its_tools_first_and_names_them() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let kit = dir.path().join("kit");
+        fs::create_dir_all(kit.join("bin")).expect("the kit's bin is made");
+        fs::write(kit.join("bin/gcloud"), "").expect("the kit holds gcloud");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let starter = Starter {
+            // Nothing is held here, only run.
+            program: PathBuf::from("/bin/false"),
+            scope: start::Scope::None,
+            kit: Some(kit.clone()),
+        };
+        let running = node(&store, "skiff", Vec::<Piped>::new(), Some(starter), &socket);
+        asks_as_person(&socket);
+        let came = run_through(socket.clone(), run_of("skiff", "printf %s \"$PATH\""))
+            .await
+            .expect("it runs here");
+        let path = String::from_utf8_lossy(&came.out);
+        assert!(
+            path.starts_with(&format!("{}/bin:", kit.display())),
+            "the kit's tools come first, after the profile: {path}"
+        );
+        let Ok(Response::Machine(machine)) = ask(socket, Request::Machine).await else {
+            panic!("the node says its machine")
+        };
+        assert_eq!(
+            machine.kit.map(|kit| kit.tools),
+            Some(vec!["gcloud".to_owned()]),
+            "its machine names what the kit holds"
         );
         let (stop, node) = running;
         drop(stop);
@@ -9242,6 +9293,7 @@ mod tests {
             let starter = Starter {
                 program: holder,
                 scope: start::Scope::None,
+                kit: Some(PathBuf::from("/nix/store/kit")),
             };
             let given = bare(steers, Some(starter));
             let stopped = async {
@@ -9307,8 +9359,15 @@ mod tests {
         // them, is start's own test; here, only that the node asks for them.
         assert_eq!(
             given[7..],
-            ["--login", "--", "pi", "--continue"],
-            "each start of the program runs through the login shell"
+            [
+                "--login",
+                "--kit",
+                "/nix/store/kit",
+                "--",
+                "pi",
+                "--continue"
+            ],
+            "each start of the program runs through the login shell, with the realm's kit"
         );
 
         drop(stop);

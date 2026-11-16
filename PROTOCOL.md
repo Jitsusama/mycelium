@@ -917,6 +917,30 @@ going away does. A word moving is said at once: the node keeps it in
 its last measure, and each link says its machine again, a link another
 machine dialled hearing it over a `Health` connection to its node.
 
+Its `kit` is its realm's kit as its node was given it (`--kit`): a
+folder whose `bin` holds the tools every machine in the realm is to
+have, such as a Nix profile built for the realm, which each session and
+run the node starts finds first on its path. It carries `path`, where
+the folder is with any link to it resolved, which names its version
+where it is in the Nix store, and `tools`, the name of each entry in
+its `bin`, leaving out any beginning with a dot, in an order nothing
+should lean on. It is absent where the node is given no kit, its `bin`
+can't be listed, or the node is too old to say, and absent reads as
+unknown. Both the node a machine dialled and the links it keeps say it.
+
+A kit is a whole path holding no colon, which the node refuses
+otherwise. Its tools come first for every session and run, an agent's
+fenced ones too, so it belongs where no agent can write, such as the
+Nix store or a link only root can repoint; the node says at its start
+what the kit holds, and where an account but root could change its
+`bin` or any tool in it, or where a tool leads. It says so rather than
+refusing the kit, since the configuration that names the kit also writes
+the node's own unit, and refusing would take the tools from every
+session. A
+session held while the kit changes keeps the folder it was given, so a
+link the configuration moves to each new kit reaches it when it wakes,
+where a store path pins the old one until it is collected.
+
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,
 `memory_available` in bytes, `pressure` (`cpu`, `memory` and `io`, the
@@ -1052,10 +1076,12 @@ what it is.
 
 `"Place"` asks which of those machines work should go to. The work says
 its `needs` and `prefers`, each one of `{"machine": name}`,
-`{"system": "linux"}`, `{"arch": "x86_64"}`, `{"reach": network}` or
-`{"accelerator": "gpu"}`, the earliest preference most wanted (a
-machine reaches a network it declares in `reach`, or one it probes
-while its probe last answered, and lacks one whose probe didn't); the
+`{"system": "linux"}`, `{"arch": "x86_64"}`, `{"reach": network}`,
+`{"accelerator": "gpu"}` or `{"tool": name}`, the earliest preference
+most wanted (a machine reaches a network it declares in `reach`, or one
+it probes while its probe last answered, and lacks one whose probe
+didn't; it has a tool its `kit` lists, lacks one its kit doesn't, and
+hasn't said one where it says no kit, nor has a machine not yet made); the
 keys of the taints it `tolerates`; whether it `may_wait` for a machine
 out of reach; and how long it `lasts`, as an ISO 8601 duration such as
 `PT2H` (`2h` reads too). A machine carries the taints its configuration
@@ -1136,7 +1162,11 @@ A processor reading that isn't a number counts as none, so every
 
 `"Start"` places `work` as `"Place"` does and starts `command` held
 there through the person's login shell (`$SHELL -lic`), so it has their
-environment rather than the node's. It begins in `folder`: a full path
+environment rather than the node's, and the realm's kit's tools first on
+its path where its node is given a kit (`--kit`): put there after the
+profile runs, since a profile, or a Mac's `path_helper`, sets the path
+afresh, and a login shell that isn't interactive may never read the
+file adding the person's own. It begins in `folder`: a full path
 on that machine, or a path within its home, such as `src/core.nix`,
 since each machine's home is its own; `mycelium start --folder` says a
 folder under home that way. It begins in its home when `folder` is
@@ -1148,7 +1178,9 @@ isn't placed, or doesn't start, is an error saying why, such as
 starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in
 `app.slice`, so the session outlives the node. A start placed on
 another machine is asked of it through the link this node keeps to it,
-and its `attach` comes back as the words that join it over the dial,
+without the tools its work prefers, since a node too old to read one
+may have been preferred and would end the link rather than answer, and
+its `attach` comes back as the words that join it over the dial,
 as a held session's `attach` says, such as `mycelium --realm work
 attach --on kestrel <held> -- ssh -t -- kestrel mycelium --realm work
 attach <held>`. It fails with a reason when no link reaches the machine, its
@@ -1253,7 +1285,8 @@ ending comes back, and then the ask fails, saying so; the machine's
 
 `"Run"` runs `command` on the machine placement chooses for `work`,
 never on one made for it, in `folder` as for `"Start"`, through the
-person's login shell there without a terminal, and with nothing on its
+person's login shell there without a terminal, its kit's tools first on
+its path as for `"Start"`, and with nothing on its
 input. This machine runs it as the node's own; another, through the link
 reaching it, as A Link says. The node judges who asks, as `by`,
 `"Person"` or `{"Agent": kind}`: an agent, in the strictest fence the
@@ -1896,9 +1929,10 @@ Each lands behind a seam above, or as a seam of its own:
 - **Places and what they can do:** a machine says what it is, and the
   node places work and starts it held on whichever machine it chose,
   which admits or refuses it on its own facts. The launcher and pi
-  already start sessions through it; next, a place says what it offers,
-  such as evaluating and building for a system, so work that needs it is
-  placed there.
+  already start sessions through it, and work needing a tool goes where
+  the realm's kit holds it; next, a place says what it offers, such as
+  evaluating and building for a system, so work that needs it is placed
+  there, and a provider's offer promises the kit its machine would carry.
 - **Providers:** programs beside a node that offer shapes of machine
   and make one for a start that may cost (`"Offers"` and `"Start"`,
   above), reach it and let it go, such as Aquifer's, which lives
