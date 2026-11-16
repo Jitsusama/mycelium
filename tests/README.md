@@ -15,7 +15,8 @@ The rest of the tests sit beside the code they prove, in `src/`.
   window joined, ending as its program does
 - `made.rs`: a machine made for a start from a provider's offer, linked,
   started on and let go at its time or once it hands over, each node and
-  link a process of its own
+  link a process of its own; nothing of the asker's environment, or its
+  node's, reaching the work there, as nothing of a carried session's does
 - `murmurs.rs`: ten thousand cells' murmurs read within 30 MB, in time
   that grows with the cells, and read again after one more in a small
   share of it, the memory counted as `networks.rs` counts it
