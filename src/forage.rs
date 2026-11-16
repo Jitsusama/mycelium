@@ -251,32 +251,42 @@ fn read_readme(path: &Path) -> (Option<String>, Option<String>, Option<String>) 
     let mut paragraph: Vec<String> = Vec::new();
     for line in lines {
         let line = line.trim();
-        if let Some(heading) = line.strip_prefix("## ") {
-            if in_summary && !paragraph.is_empty() {
+        let heading = line.strip_prefix("## ");
+        if (line.is_empty() || heading.is_some()) && !paragraph.is_empty() {
+            // The template's guidance, left above the quest's own words,
+            // isn't them, so the paragraph after it is.
+            if !is_guidance(&paragraph.join(" ")) {
                 break;
             }
+            paragraph.clear();
+        }
+        if let Some(heading) = heading {
             in_summary = heading.contains("Summary");
             continue;
         }
-        if !in_summary {
+        if !in_summary || line.is_empty() {
             continue;
-        }
-        if line.is_empty() {
-            if paragraph.is_empty() {
-                continue;
-            }
-            break;
         }
         // A quote of the person's words leads with who said it; the purpose
         // is the quest's own sentence, so the first plain line starts it.
         paragraph.push(line.to_owned());
     }
-    // A Summary wholly in italics is the template's guidance, left for the
-    // quest's own words to replace, so it says no purpose yet.
     let summary = paragraph.join(" ");
-    let guidance = summary.len() > 1 && summary.starts_with('_') && summary.ends_with('_');
-    let purpose = (!summary.is_empty() && !guidance).then(|| first_sentence(&summary));
+    let purpose = (!summary.is_empty() && !is_guidance(&summary)).then(|| first_sentence(&summary));
     (said.remove("parent"), said.remove("status"), purpose)
+}
+
+/// Whether `paragraph` is one span in italics, as the quest template's
+/// guidance is, left for the quest's own words to replace. A paragraph
+/// that only opens and closes on an italic word, or is in bold, is the
+/// quest's own.
+fn is_guidance(paragraph: &str) -> bool {
+    ['_', '*'].into_iter().any(|mark| {
+        paragraph
+            .strip_prefix(mark)
+            .and_then(|rest| rest.strip_suffix(mark))
+            .is_some_and(|inner| !inner.is_empty() && !inner.contains(mark))
+    })
 }
 
 /// What a document says of itself, or none when it isn't one.
@@ -808,6 +818,37 @@ mod tests {
         assert!(shelf.read(&store.0, "QEST-20261116-KESTRL"));
         let quest = shelf.quest("QEST-20261116-KESTRL").expect("read");
         assert_eq!(quest.purpose, None);
+    }
+
+    #[test]
+    fn the_quests_own_words_after_the_templates_guidance_are_its_purpose() {
+        let store = Store::new("after-guidance");
+        let guidance = README.replace(
+            "Kestrel learns",
+            "*One paragraph: what this quest is.*\n\nKestrel learns",
+        );
+        store.write("QEST-20261116-KESTRL/README.md", &guidance);
+        let mut shelf = Shelf::default();
+        assert!(shelf.read(&store.0, "QEST-20261116-KESTRL"));
+        assert_eq!(
+            shelf
+                .quest("QEST-20261116-KESTRL")
+                .expect("read")
+                .purpose
+                .as_deref(),
+            Some("Kestrel learns to hover over one field.")
+        );
+    }
+
+    #[test]
+    fn only_one_span_in_italics_is_guidance() {
+        assert!(is_guidance("_One paragraph: what this quest is._"));
+        assert!(is_guidance("*One paragraph.*"));
+        assert!(!is_guidance("_Kestrel_ learns to hover over _one field_"));
+        assert!(!is_guidance("__Kestrel learns to hover.__"));
+        assert!(!is_guidance("**Kestrel learns to hover.**"));
+        assert!(!is_guidance("_"));
+        assert!(!is_guidance("Kestrel learns to hover."));
     }
 
     #[test]
