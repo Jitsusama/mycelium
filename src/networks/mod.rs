@@ -349,20 +349,34 @@ impl Tree {
     /// the last colon, since a branch can't hold one. None for one saying
     /// neither its branch nor its commit.
     fn network(&self) -> Option<String> {
-        let at = self.branch.as_deref().or(self.commit.as_deref())?;
-        Some(format!("tree.{}:{at}", self.repo))
+        let (repo, at) = self.place()?;
+        Some(format!("tree.{repo}:{at}"))
     }
 
-    /// What a person types to reach that network: its repository's name
-    /// and branch, such as `oars@jsama/tides`, or a snapshot's commit cut
-    /// to seven, such as `skiff@6b88106`.
-    fn short(&self) -> Option<String> {
+    /// Where it is: its repository's key and its branch or commit, alike
+    /// for every tree of one network. None for one saying neither.
+    fn place(&self) -> Option<(&str, &str)> {
+        let at = self.branch.as_deref().or(self.commit.as_deref())?;
+        Some((&self.repo, at))
+    }
+
+    /// What a person may type to reach that network, saying ever more of
+    /// its repository, each to be taken where the one before is another
+    /// tree's too: its name, such as `oars@jsama/tides`; its owner and
+    /// name, such as `harbour/oars@jsama/tides`, or its whole key where
+    /// it has no owner; then its whole key. A snapshot's commit is cut to
+    /// seven, such as `skiff@6b88106`.
+    fn shorts(&self) -> Option<[String; 3]> {
         let at = match (&self.branch, &self.commit) {
             (Some(branch), _) => branch.as_str(),
             (None, Some(commit)) => commit.get(..7).unwrap_or(commit),
             (None, None) => return None,
         };
-        Some(format!("{}@{at}", self.repo_name()))
+        let owned = match self.repo.split_once(':') {
+            Some((_, owned)) if owned.contains('/') => owned,
+            _ => &self.repo,
+        };
+        Some([self.repo_name(), owned, &self.repo].map(|repo| format!("{repo}@{at}")))
     }
 }
 

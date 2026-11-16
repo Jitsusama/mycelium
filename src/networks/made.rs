@@ -115,6 +115,12 @@ impl Mycelium {
         let leads = led(teams);
         for cell in &mut sessions {
             cell.networks.retain(|name| names.contains(name.as_str()));
+            for tree in &cell.trees {
+                let Some(name) = tree.network() else { continue };
+                if names.contains(name.as_str()) && !cell.networks.contains(&name) {
+                    cell.networks.push(name);
+                }
+            }
             if let Some(led) = cell.id.as_deref().and_then(|id| leads.get(id)) {
                 cell.leads.clone_from(led);
             }
@@ -365,13 +371,17 @@ fn session_cell(session: &Value) -> Option<Cell> {
     let text = |field: &str| session[field].as_str().map(str::to_owned);
     // A tree saying no repository, or neither branch nor commit, is passed
     // over, as nothing could name the network it shares.
-    let trees: Vec<Tree> = session["presence"]["trees"]
+    let mut trees: Vec<Tree> = session["presence"]["trees"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|tree| Tree::deserialize(tree).ok())
         .filter(|tree| tree.network().is_some())
         .collect();
+    // Held for each of ten thousand cells, so no room is kept spare.
+    trees.shrink_to_fit();
+    // The networks of the trees it shares are added once they are known,
+    // since most trees are one cell's own and naming each costs room.
     let networks = session["groups"]
         .as_array()
         .into_iter()
@@ -381,7 +391,6 @@ fn session_cell(session: &Value) -> Option<Cell> {
         // group named as one is passed over.
         .filter(|group| Shape::of_group(group).is_some_and(|shape| shape != Shape::Tree))
         .map(str::to_owned)
-        .chain(trees.iter().filter_map(Tree::network))
         .collect();
     let title = swarm::title(session).to_owned();
     Some(Cell {
@@ -534,25 +543,62 @@ fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>)
     titled_by_teams(&mut networks, teams);
     titled_by_quests(&mut networks, quests);
     titled_by_repos(&mut networks, sessions);
-    shortened_trees(&mut networks, sessions);
+    networks.extend(shared_trees(sessions));
     networks
 }
 
-/// Each tree's network's short name as its tree says it, such as
-/// `oars@jsama/tides`, since a repository's key holds a colon and a slash
-/// and its branch a slash, so the network's name can't be cut into them.
-fn shortened_trees(networks: &mut [Network], sessions: &[Cell]) {
-    let mut shorts: HashMap<String, String> = HashMap::new();
-    for tree in sessions.iter().flat_map(|cell| &cell.trees) {
-        if let (Some(name), Some(short)) = (tree.network(), tree.short()) {
-            shorts.entry(name).or_insert(short);
+/// The networks of the trees two cells or more of `sessions` hold, each
+/// short named as its tree says, such as `oars@jsama/tides`, since a
+/// repository's key holds a colon and a slash and its branch a slash, so
+/// the network's name can't be cut into them. Where two trees' would be
+/// one, each says more of its repository until none is another's, such
+/// as `harbour/oars@jsama/tides`. Most trees are one cell's own, and ten
+/// thousand cells hold tens of thousands, so only a shared tree is named:
+/// the trees are found alike by sorting them where they are held, in the
+/// order their sessions are.
+fn shared_trees(sessions: &[Cell]) -> Vec<Network> {
+    let mut held: Vec<(&Tree, &Cell)> = sessions
+        .iter()
+        .flat_map(|cell| cell.trees.iter().map(move |tree| (tree, cell)))
+        .collect();
+    held.sort_by(|(one, _), (other, _)| one.place().cmp(&other.place()));
+    let mut trees: Vec<(Network, [String; 3], usize)> = Vec::new();
+    for alike in held.chunk_by(|(one, _), (other, _)| one.place() == other.place()) {
+        let mut cells: Vec<&Cell> = alike.iter().map(|(_, cell)| *cell).collect();
+        cells.dedup_by(|one, other| std::ptr::eq(*one, *other));
+        let tree = alike[0].0;
+        let (Some(name), Some(said)) = (tree.network(), tree.shorts()) else {
+            continue;
+        };
+        if cells.len() > 1 {
+            trees.push((network_of(&name, Shape::Tree, &cells), said, 0));
         }
     }
-    for each in networks.iter_mut().filter(|each| each.shape == Shape::Tree) {
-        if let Some(short) = shorts.remove(&each.name) {
-            each.short = short;
+    loop {
+        let mut taken: HashMap<&str, usize> = HashMap::new();
+        for (_, said, depth) in &trees {
+            *taken.entry(said[*depth].as_str()).or_default() += 1;
+        }
+        let clashing: Vec<usize> = (0..trees.len())
+            .filter(|n| {
+                let (_, said, depth) = &trees[*n];
+                *depth + 1 < said.len() && taken[said[*depth].as_str()] > 1
+            })
+            .collect();
+        if clashing.is_empty() {
+            break;
+        }
+        for n in clashing {
+            trees[n].2 += 1;
         }
     }
+    trees
+        .into_iter()
+        .map(|(mut each, said, depth)| {
+            each.short.clone_from(&said[depth]);
+            each
+        })
+        .collect()
 }
 
 /// Each address `session`, if living, goes by beside its own, to its own,

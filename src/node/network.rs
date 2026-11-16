@@ -7,8 +7,9 @@
 //! A session's record is mostly what the networks never read, so each is
 //! made for them lean, with only that of its presence, and let go once
 //! its cell is made, and the cells are let go before the records are
-//! made: ten thousand cells build within 30 MB, in time that grows with
-//! them, as `tests/networks.rs` shows.
+//! made: ten thousand cells build within 38 MB, short of the 30 MB the
+//! map and the launcher hold it to, in time that grows with them, as
+//! `tests/networks.rs` shows.
 
 use std::collections::{BTreeMap, HashMap};
 

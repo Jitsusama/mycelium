@@ -309,10 +309,19 @@ fn reading_only_what_the_networks_read_makes_the_same_mycelium() {
     let [teams, mut sessions, machines] = records();
     sessions[1]["landings"] = json!([{"ref": "world#1", "what": "A landing"}]);
     sessions[1]["presence"]["owner"] = json!({"pid": 1});
+    // Two cells hold one tree, so the tree's network is read too.
+    for held in &mut sessions[..2] {
+        held["presence"]["trees"] = json!([tides()]);
+    }
     let kept = |records: &[Value]| -> Vec<Value> {
         records.iter().map(|each| pruned(each, &RECORD)).collect()
     };
-    let (lean, whole) = (kept(&sessions), mycelium());
+    let lean = kept(&sessions);
+    let whole = Mycelium::of("work", &teams, &sessions, &machines);
+    assert!(
+        whole.networks.iter().any(|each| each.shape == Shape::Tree),
+        "the harbour's two cells share a tree"
+    );
     assert_eq!(lean[1].get("landings"), None);
     assert_eq!(lean[1]["presence"].get("owner"), None);
     let read = Mycelium::of("work", &kept(&teams), &lean, &kept(&machines));
@@ -450,6 +459,80 @@ fn a_tree_is_named_by_its_whole_repo_key_and_no_group_joins_one() {
         mycelium.cell("TERN01").expect("Tern").networks,
         Vec::<String>::new(),
         "so a tree held alone is no network"
+    );
+}
+
+#[test]
+fn two_trees_whose_short_names_clash_are_told_apart_by_their_owners() {
+    let theirs = json!({
+        "key": "worktree-github-other-oars-jsama-tides",
+        "repo": "github:other/oars",
+        "branch": "jsama/tides",
+    });
+    let ours = json!({
+        "key": "worktree-local-oars-jsama-tides",
+        "repo": "local:oars",
+        "branch": "jsama/tides",
+    });
+    let sessions = [
+        holding("ROWS01", 1, json!([tides(), ours])),
+        holding("OARS01", 2, json!([tides(), ours])),
+        holding("TERN01", 3, json!([theirs])),
+        holding("KELP01", 4, json!([theirs])),
+    ];
+    let mycelium = Mycelium::of("home", &[], &sessions, &[]);
+    let shorts: Vec<&str> = trees(&mycelium).iter().map(|tree| tree.1).collect();
+    assert_eq!(
+        shorts,
+        [
+            "harbour/oars@jsama/tides",
+            "other/oars@jsama/tides",
+            "local:oars@jsama/tides"
+        ],
+        "a short name two trees would share says the owner, or the whole key where \
+         there is none"
+    );
+}
+
+#[test]
+fn a_tree_only_parked_cells_hold_is_dormant_and_after_a_live_one() {
+    let parked = |address: &str, n: u8| {
+        let mut napping = holding(address, n, json!([tides()]));
+        napping["state"] = json!("ended");
+        napping["standing"] = json!("parked");
+        napping
+    };
+    let pinned = json!({
+        "key": "snapshot-local-skiff-6b881064c2f1",
+        "repo": "local:skiff",
+        "commit": "6b881064c2f1d9a3e57b0c48f2e6a1d9c3b75e04",
+    });
+    let sessions = [
+        parked("NAPS01", 1),
+        parked("NAPS02", 2),
+        parked("NAPS03", 3),
+        holding("ROWS01", 4, json!([pinned])),
+        holding("OARS01", 5, json!([pinned])),
+    ];
+    let mycelium = Mycelium::of("home", &[], &sessions, &[]);
+    let counted: Vec<(&str, Vec<(&str, u64)>)> = mycelium
+        .networks
+        .iter()
+        .filter(|each| each.shape == Shape::Tree)
+        .map(|each| {
+            let counts = each.counts.iter().filter(|(_, many)| **many > 0);
+            let counts = counts.map(|(standing, many)| (*standing, *many)).collect();
+            (each.short.as_str(), counts)
+        })
+        .collect();
+    assert_eq!(
+        counted,
+        [
+            ("skiff@6b88106", vec![("moving", 2)]),
+            ("oars@jsama/tides", vec![("dormant", 3)]),
+        ],
+        "parked cells still hold their tree, which is dormant, after a live one however \
+         many hold it"
     );
 }
 
@@ -675,7 +758,7 @@ fn json_lines_say_each_cells_plan_and_folder_then_what_the_cells_did_newest_firs
 #[test]
 fn a_networks_ask_reads_what_a_cell_says_it_does_and_did() {
     let asked = paths(&RECORD);
-    for field in ["doing", "events", "presence.cwd"] {
+    for field in ["doing", "events", "presence.cwd", "presence.trees"] {
         assert!(
             asked.iter().any(|path| path == field),
             "{field} is asked of the node: {asked:?}"

@@ -1128,15 +1128,21 @@ worktree's `branch` or a snapshot's `commit`). Its name is
 `tree.<repo>:<branch>`, or `tree.<repo>:<commit>` for a snapshot, the
 repository's whole key and the whole commit, read up to the last colon
 since a branch holds none; its short name is the repository's last
-part and the branch, `<name>@<branch>`, or the commit cut to seven.
-The machine is no part of it: cells on two machines holding one branch
-share one tree. A tree one cell holds alone is no network, only among
-that cell record's `trees`, and a group named as a tree joins none. A
+part and the branch, `<name>@<branch>`, or the commit cut to seven,
+saying the owner, `<owner>/<name>@<branch>`, or else the whole key,
+where two trees' short names would be one. The machine is no part of
+it: cells on two machines holding one branch share one tree. A tree one
+cell holds alone is no network, only among that cell record's `trees`,
+and a group named as a tree joins none. A tree whose every cell is
+parked counts them `dormant`, so it draws after the living ones. A
 network is
 heard when the latest of its cells was, or its team where its cells say
 nothing. Its records change as the sessions do, so a machine come or
 gone shows with the next change to a session. Ten thousand cells make
-their networks within 30 MB, in time that grows with them.
+their networks in time that grows with them, within 38 MB while each
+holds two trees. The target is 30 MB, the map's and the launcher's
+bound; the gap is known, and closes by holding the repository keys,
+branches and cell names that repeat across cells once.
 
 The `unanswered` kind holds what waits on the mesh, keyed by the
 message's id, as `mesh_read unanswered` and the hold leases judge it:
