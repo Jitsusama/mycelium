@@ -34,8 +34,16 @@ const SHARING: usize = 5;
 
 /// How many times longer ten times the cells may take, as in
 /// `networks.rs`.
-#[cfg(not(target_env = "musl"))]
+#[cfg(not(any(target_env = "musl", target_os = "macos")))]
 const GROWS_AT_MOST: u32 = 15;
+
+/// How many times longer ten times the cells may take on macOS, whose
+/// allocator and a Mac lent to builds took 15.5 on the networks at a load
+/// of 95 to 130 (2026-11-16). Work that grows with the square of the
+/// cells and is a third of the build takes about forty, so this still
+/// tells it.
+#[cfg(target_os = "macos")]
+const GROWS_AT_MOST: u32 = 25;
 
 /// How many times longer ten times the cells may take under musl, whose
 /// allocator slows as the heap grows.
