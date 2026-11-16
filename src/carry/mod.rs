@@ -18,9 +18,12 @@
 //! What it does to the world goes through [`Hands`], whose one
 //! implementation is the command's, so the order is proved over a fake.
 //! Who may order one session's carry other than the person, its
-//! orchestrator by the quests' record, is [`ordered`]'s to say.
+//! orchestrator by the quests' record, is [`ordered`]'s to say. Which of
+//! a machine's sessions it carries away to ease itself, while it is over
+//! and another has room, is [`ease`]'s to choose.
 
 pub mod chain;
+pub mod ease;
 pub mod ground;
 pub mod kept;
 pub mod ordered;
