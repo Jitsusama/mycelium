@@ -1406,9 +1406,9 @@ machine declaring no `runs` for it refuses it, as does one whose
 `runs` doesn't end with `--`, so nothing `command` says is read as
 `runs`' own options. The node doesn't yet say which work trees are
 shared to whom, so `runs` saying `--shared-tree`, or a shortening of
-it, refuses every run. So pi-fence refuses a run started in a work
-tree its asker doesn't hold. The node takes `runs` only from a
-declaration reached through folders and links root owns
+it, as a word of its own refuses every run. So pi-fence refuses a run
+started in a work tree its asker doesn't hold. The node takes `runs`
+only from a declaration reached through folders and links root owns
 and no one else may write, each followed as written, with any part
 within the Nix store taken as the store's, and only where its first
 word is in the Nix store; a link the account owns, even one into the

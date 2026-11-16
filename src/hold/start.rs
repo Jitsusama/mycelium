@@ -195,7 +195,7 @@ const YIELDING_ON_A_MAC: [&str; 3] = ["/usr/sbin/taskpolicy", "-c", "utility"];
 /// path, after it too, since a profile (or a Mac's `path_helper`) sets
 /// the path afresh and a non-interactive one may never read the file that
 /// adds the person's own; then runs the program.
-const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then PATH="$2/bin:$PATH"; export PATH; fi; shift 2; exec "$@""#;
+const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then PATH="$2/bin${PATH:+:$PATH}"; export PATH; fi; shift 2; exec "$@""#;
 
 /// The words that run a program held in `realm` through the person's
 /// login shell, as a terminal would run it, so it has their environment
@@ -424,6 +424,42 @@ mod tests {
                 "the kit's tools come before the profile's, which set the path afresh"
             );
         }
+    }
+
+    #[test]
+    fn a_kit_on_an_empty_path_never_puts_the_runs_folder_on_it() {
+        let kit = tempfile::tempdir().expect("a temporary kit");
+        let bin = kit.path().join("bin");
+        fs::create_dir(&bin).expect("the kit's bin");
+        let sh = std::env::split_paths(&std::env::var_os("PATH").expect("a PATH"))
+            .map(|folder| folder.join("sh"))
+            .find(|sh| sh.is_file())
+            .expect("sh is on the PATH");
+        // The kit holds the shell the run starts, since nothing else is on
+        // an empty path.
+        std::os::unix::fs::symlink(&sh, bin.join("sh")).expect("the kit's shell");
+        let words = login_run("harbour", Some(kit.path()));
+        let script = words
+            .iter()
+            .position(|word| word == "-lc")
+            .expect("the words run a login shell");
+        let said = Command::new(&sh)
+            .arg("-c")
+            .args(&words[script + 1..])
+            .args(["sh", "-c", r#"printf %s "$PATH""#])
+            .env("PATH", "")
+            .output()
+            .expect("the stand-in shell runs");
+        assert!(
+            said.status.success(),
+            "the run started through the kit's shell: {}",
+            String::from_utf8_lossy(&said.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&said.stdout),
+            bin.display().to_string(),
+            "an empty entry would search the folder the run starts in"
+        );
     }
 
     #[test]
