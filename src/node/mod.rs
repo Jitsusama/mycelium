@@ -17,6 +17,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::awake::{self, Awake};
+use crate::builders::{self, Builders};
 use crate::carry::{chain, ground, ordered};
 use crate::daemon;
 use crate::facts::{self, Readiness};
@@ -300,6 +301,9 @@ pub struct Given {
     /// The folder its receptors each say how they stand in, if it serves
     /// any (`receptor`).
     pub receptors: Option<PathBuf>,
+    /// The machines files naming the builders this machine sends Nix
+    /// builds to, and how each is heard.
+    pub builders: builders::Given,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -308,7 +312,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 9] = [
+pub const HOLDS: [&str; 10] = [
     "session",
     "machine",
     "message",
@@ -318,11 +322,15 @@ pub const HOLDS: [&str; 9] = [
     words::KIND,
     EVENT,
     receptor::KIND,
+    BUILDER,
 ];
 
 /// The kind of record that is one thing a session did, as its presence's
 /// `events` says it.
 pub const EVENT: &str = "event";
+
+/// The kind of a builder's records.
+pub const BUILDER: &str = "builder";
 
 /// How many of each group's latest messages the daemon interface holds as
 /// `message` records: a conversation's recent tail, as a person reads it,
@@ -724,6 +732,8 @@ struct Shared<S> {
     served: Arc<Served>,
     /// The providers' programs asked what machines they could make.
     providers: Arc<[String]>,
+    /// The builders this machine sends Nix builds to, kept heard.
+    builders: Arc<Builders>,
     /// Where it keeps each machine it makes and lets go.
     book: Book,
     /// The node's loop, which links each machine made, and lets it go
@@ -789,6 +799,7 @@ impl<S: Clone> Clone for Shared<S> {
             said: self.said.clone(),
             served: self.served.clone(),
             providers: self.providers.clone(),
+            builders: self.builders.clone(),
             book: self.book.clone(),
             to_dial: self.to_dial.clone(),
             flows: self.flows.clone(),
@@ -819,6 +830,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             words,
             events,
             receptors,
+            builders,
         ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
@@ -861,6 +873,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (open, vec!["waiting_on"]),
             (words, vec!["taken_up", "answered", "failed"]),
             (receptors, vec!["state", "read_at", "counts"]),
+            (builders, vec!["state", "said", "heard_at"]),
         ])
         .into_iter()
         .chain(served)
@@ -917,6 +930,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
                 &self.machine,
             )),
+            BUILDER => Some(self.builder_records()),
             _ => self.served.records(kind),
         }
     }
@@ -939,6 +953,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // a word kept tells its watchers too.
             words::KIND => Some(self.said.sessions.subscribe()),
             receptor::KIND => Some(self.said.receptors.subscribe()),
+            BUILDER => Some(self.builders.told()),
             _ => self.served.told(kind),
         }
     }
@@ -968,6 +983,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
                 }),
             })
             .chain(self.served.health())
+            .chain(self.builders.health())
             .collect();
         serde_json::Map::from_iter([
             ("version".to_owned(), daemon::VERSION.into()),
@@ -1113,6 +1129,7 @@ impl<S: Store> Shared<S> {
             words,
             declared,
             receptors,
+            builders,
         } = given;
         let said = Arc::<Said>::default();
         let held = receptor::Held::default();
@@ -1136,6 +1153,7 @@ impl<S: Store> Shared<S> {
             claiming: Arc::default(),
             client: None,
             served: Arc::new(Served::start(serves)),
+            builders: Arc::new(Builders::start(builders)),
             providers: providers.into(),
             book,
             to_dial,
@@ -1340,6 +1358,20 @@ impl<S: Store> Shared<S> {
             .collect()
     }
 
+    /// Every builder this machine sends Nix builds to, as the daemon
+    /// interface holds it, heard when it was last heard, or never.
+    fn builder_records(&self) -> BTreeMap<String, serde_json::Value> {
+        self.builders
+            .builders()
+            .into_iter()
+            .map(|builder| {
+                let heard = builder.heard_at.map_or(0, jiff::Timestamp::as_millisecond);
+                let record = daemon::record(BUILDER, &builder.name, heard, json_of(&builder));
+                (daemon::key(BUILDER, &builder.name), record)
+            })
+            .collect()
+    }
+
     /// Every machine of the realm as the daemon interface holds it, each
     /// saying whether it is this one.
     fn machine_records(&self) -> BTreeMap<String, serde_json::Value> {
@@ -1370,7 +1402,13 @@ impl<S: Store> Shared<S> {
             let here = session.machine == self.machine;
             standing::standing(session, here, &parked, &self.boot)
         };
-        network::records(&teams, &sessions, standing, &machines)
+        network::records(
+            &teams,
+            &sessions,
+            standing,
+            &machines,
+            &self.builder_records(),
+        )
     }
 
     /// A session as the daemon interface holds it: its fields, whether it
@@ -1633,6 +1671,7 @@ impl<S: Store> Shared<S> {
             Request::Sessions => Ok(Response::Sessions(self.lock().state.sessions())),
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
             Request::Machines => Ok(Response::Machines(self.machines())),
+            Request::Builders => Ok(Response::Builders(self.builders.builders())),
             Request::Place(work) => Ok(Response::Placement(self.place(&work, false))),
             Request::Messages { groups, limit } => {
                 Ok(Response::Messages(self.lock().state.recent(&groups, limit)))
@@ -2610,6 +2649,7 @@ mod tests {
             words: words::Book::at("/nowhere/said.jsonl".into()),
             declared: "/nowhere/declared.json".into(),
             receptors: None,
+            builders: builders::Given::default(),
         }
     }
 
@@ -2657,6 +2697,7 @@ mod tests {
         let words = words::Book::at(socket.with_file_name("said.jsonl"));
         let declared = socket.with_file_name("declared.json");
         let receptors = Some(socket.with_file_name("receptors"));
+        let builders = builders_of(socket);
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing: None,
@@ -2678,6 +2719,7 @@ mod tests {
                 words,
                 declared,
                 receptors,
+                builders,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -2855,6 +2897,20 @@ mod tests {
     /// Where the updater of a node on `socket` is asked, beside it.
     fn updater_of(socket: &Path) -> PathBuf {
         socket.with_file_name("update.sock")
+    }
+
+    /// The builders of a node on `socket`: those a lent machines file
+    /// beside it names, as a test may write one, never dialled.
+    fn builders_of(socket: &Path) -> builders::Given {
+        builders::Given {
+            files: vec![builders::File {
+                name: "lent".to_owned(),
+                path: socket.with_file_name("lent-machines"),
+                lent: true,
+            }],
+            lent_health: None,
+            ssh: "ssh".to_owned(),
+        }
     }
 
     /// The providers of a node on `socket`, beside it: one a test may put
@@ -3054,6 +3110,84 @@ mod tests {
         assert!(
             lasting(&work, &offer(None)).is_err(),
             "and never with no end, where neither says"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_says_its_builders_apart_from_its_machines() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (_stop, _node) = node(
+            &Memory::default(),
+            "skiff",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+        );
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 0, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert!(hello["kinds"]["builder"]["live"].is_array(), "{hello}");
+        client
+            .ask(json!({"id": 1, "ask": "watch", "kind": "builder"}))
+            .await;
+        let whole = client.next().await;
+        assert_eq!(
+            whole["records"],
+            json!([]),
+            "none before a file names one: {whole}"
+        );
+        fs::write(
+            socket.with_file_name("lent-machines"),
+            "ssh-ng://hook@kestrel x86_64-linux /etc/nix/key 16 1 big-parallel\n",
+        )
+        .expect("the machines file is written");
+        let mut changed = client.next().await;
+        while changed["changed"][0]["state"] != json!("unknown") {
+            changed = client.next().await;
+        }
+        let kestrel = &changed["changed"][0];
+        assert_eq!(
+            (
+                &kestrel["key"],
+                &kestrel["jobs"],
+                &kestrel["lines"],
+                &kestrel["lent"]
+            ),
+            (
+                &json!("builder:kestrel"),
+                &json!(16),
+                &json!(["lent"]),
+                &json!(true)
+            ),
+            "{changed}"
+        );
+        let Ok(Response::Builders(builders)) = ask(socket.clone(), Request::Builders).await else {
+            panic!("the node says its builders");
+        };
+        assert_eq!(
+            builders
+                .iter()
+                .map(|one| one.name.as_str())
+                .collect::<Vec<_>>(),
+            ["kestrel"]
+        );
+        let Ok(Response::Machines(machines)) = ask(socket.clone(), Request::Machines).await else {
+            panic!("the node says its machines");
+        };
+        assert!(
+            machines.iter().all(|one| one.name != "kestrel"),
+            "a builder is no machine of the realm"
+        );
+        client.ask(json!({"id": 2, "ask": "health"})).await;
+        let health = client.next().await;
+        assert!(
+            health["sources"]
+                .as_array()
+                .expect("its sources")
+                .iter()
+                .any(|source| source["name"] == "builders lent" && source["state"] == "answering"),
+            "{health}"
         );
     }
 

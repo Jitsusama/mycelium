@@ -596,6 +596,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Sessions"` | `{"Sessions": [session]}`, this machine's and others' |
 | `"Machine"` | `{"Machine": machine}`, this machine as measured now |
 | `"Machines"` | `{"Machines": [machine]}`, this machine first, then each other |
+| `"Builders"` | `{"Builders": [builder]}`, the builders it sends Nix builds to |
 | `"Offers"` | `{"Offers": {"offers", "unanswered"}}`, asked of each provider now |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"Start": {"work", "folder", "command", "may_cost"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
@@ -781,6 +782,42 @@ network is unknown rather than stale while no node probes.
 
 `"Machines"` gives each other machine as its own end of a link last
 said it, about once a minute.
+
+`"Builders"` gives the builders this machine sends Nix builds to, which
+are no machines of the realm: no session runs on one, and none is in
+`"Machines"`, a placement or an offer. The node reads them from Nix
+machines files, given as `--builders NAME=PATH` for builders it may
+dial and `--lent-builders NAME=PATH` for lent ones it never dials, each
+name saying what the file is, such as `standing` or `lent`. Each file is
+read whole when its folder changes and once a minute, and one not there
+holds nothing; one it can't read is a source `builders NAME` refused in
+`health`. A builder is the host of a line's `ssh://` or `ssh-ng://` uri,
+in lower case with a last dot and a trailing `.local` dropped, as its
+`name`, or `address-` and a number for a host given as an address, which
+is never served; a builder several files name is one, its facts from
+the first file given that names it, dialled files before lent ones.
+One any lent file names is lent, and stays so while the node runs. It
+says its `systems`, `jobs`, `speed`, `supported` and `mandatory`
+features, the `lines` naming it, whether it is `lent`, its `state`, why
+where it says (`said`) and `heard_at`.
+No key path, host key or uri query is ever kept or served.
+
+A builder it may dial is heard at most every five minutes: `ssh -G`
+resolves its host and port without the network, and it is `answering`
+when that port sends an `SSH-` greeting within 3 seconds, never a login
+or a build, and otherwise `not answering`. One reached through a jump
+host or a proxy command is `unknown` and never dialled, so nothing is
+woken, and the jump host isn't named. A builder dialled isn't dialled
+again within five minutes, whatever its files say meanwhile. A lent
+builder costs while it runs and idles off, so is never dialled: its
+lender's health file says how it stands, at the path `--lent-health`
+gives with `{host}` for its host, such as `/run/{host}/health.json`, a
+JSON object of `at` (seconds since the epoch) and `state`. It is
+`running` while that file is under two minutes old and its state isn't
+`none`, `not running` otherwise, and `unknown` with no file to read;
+neither the file's path nor why it couldn't be read is served. A lent
+builder another file names too goes by its lent line's host. A builder
+not yet heard is `unheard`.
 
 `"Offers"` asks each program the node was given as `--provider PROGRAM`
 what it could make, all at once, as `PROGRAM offers`. The program writes
@@ -994,10 +1031,10 @@ in milliseconds.
 
 A record carries `key` (`session:<id>`, `machine:<name>`,
 `message:<id>`, `team:<address>`, `network:<name>`, `unanswered:<id>`,
-`said:<id>`, `event:<session>:<at>` or `receptor:<source>`), `kind`,
-`heard` (milliseconds
-since the epoch) and the fields `Sessions`, `Machines` and `Messages`
-give it. A field its source named `key`, `kind` or `heard`, such as a
+`said:<id>`, `event:<session>:<at>`, `receptor:<source>` or
+`builder:<name>`), `kind`, `heard` (milliseconds since the epoch) and
+the fields `Sessions`, `Machines` and `Messages` give it. A field its
+source named `key`, `kind` or `heard`, such as a
 job's own `kind`, is kept under `source` rather than lost beneath the
 interface's, beside the record's own `source` where it has one. A
 session also says
@@ -1031,7 +1068,8 @@ by the very model `mycelium networks` draws, with its fields: its
 `shape` (`orchestration`, `project`, `repository`, `group`,
 `machines` or `outside`), the `short` name a person types, its `title` and `glyph`
 where something says them, the network it is `within`, its `cells` and
-the `machines` they run on, and `counts` of its sessions as
+the `machines` they run on, the machines' own network's `builders`
+beside its machines, and `counts` of its sessions as
 `needs-you`, `stuck`, `moving`, `quiet` and `dormant`. A network is
 heard when the latest of its cells was, or its team where its cells say
 nothing. Its records change as the sessions do, so a machine come or
@@ -1187,8 +1225,8 @@ which is no trouble, and a folder not there is looked for again each
 minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine`,
-`message`, `team`, `network`, `unanswered`, `said`, `event` or
-`receptor`, can't be served.
+`message`, `team`, `network`, `unanswered`, `said`, `event`,
+`receptor` or `builder`, can't be served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and

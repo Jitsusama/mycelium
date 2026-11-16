@@ -147,6 +147,39 @@ fn receptor_said(receptor: &Cell) -> String {
     said
 }
 
+/// What a builder is and how it stands, as its row says it: the files
+/// naming it, its state, its systems and how many builds it takes.
+fn builder_said(builder: &Cell) -> String {
+    let state = builder.state.as_deref().unwrap_or("unheard");
+    let Some(builds) = &builder.builds else {
+        return state.to_owned();
+    };
+    let jobs = if builds.jobs == 1 { "job" } else { "jobs" };
+    format!(
+        "{} · {state} · {} · {} {jobs}",
+        builds.lines.join(", "),
+        builds.systems.join(", "),
+        builds.jobs
+    )
+}
+
+/// A builder in the few words a tree's row has room for: `lent` for a
+/// lent one, as what costs to run, else the files naming it; then its
+/// state.
+fn builder_brief(builder: &Cell) -> String {
+    let state = builder.state.as_deref().unwrap_or("unheard");
+    match &builder.builds {
+        Some(builds) if builds.lent => format!("lent · {state}"),
+        Some(builds) => format!("{} · {state}", builds.lines.join(", ")),
+        None => state.to_owned(),
+    }
+}
+
+/// The builders of `mycelium`, drawn beside its machines.
+fn builders(mycelium: &Mycelium) -> impl Iterator<Item = &Cell> {
+    mycelium.cells.iter().filter(|cell| cell.is == Is::Builder)
+}
+
 /// How a long list folds: past how many it folds at all, how many of
 /// those needing their person or stuck it shows then, and how many of the
 /// rest, the busiest, before one row counts what folded.
@@ -282,6 +315,10 @@ fn summary(mycelium: &Mycelium, look: &Look) -> String {
         sessions.clone().count(),
         mycelium.networks.len()
     );
+    let builders = builders(mycelium).count();
+    if builders > 0 {
+        let _ = write!(head, " and {builders} builders");
+    }
     for each in [Standing::NeedsYou, Standing::Stuck] {
         let many = sessions
             .clone()
@@ -436,6 +473,26 @@ impl<'a> Drawing<'a> {
             ));
         }
     }
+
+    /// Each builder's row under its own heading, set in by `depth`, where
+    /// there is one; a builder runs no session, so counts none.
+    fn builders(&self, lines: &mut Vec<String>, depth: usize) {
+        let mut builders = builders(self.mycelium).peekable();
+        if builders.peek().is_none() {
+            return;
+        }
+        let indent = "  ".repeat(depth.saturating_sub(1));
+        lines.push(format!("{indent}{}", self.look.paint(BOLD, "builders")));
+        for builder in builders {
+            let said = builder_brief(builder);
+            let label = Label {
+                short: Some(&builder.name),
+                width: self.width,
+                title: &said,
+            };
+            lines.push(row(self.look, depth, &label, &counts_among(&[]), false));
+        }
+    }
 }
 
 /// Every network as a tree under its shape, nested as each branched from
@@ -446,7 +503,7 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
     let width = mycelium
         .cells
         .iter()
-        .filter(|cell| cell.is == Is::Machine)
+        .filter(|cell| matches!(cell.is, Is::Machine | Is::Builder))
         .map(|cell| cell.name.chars().count())
         .chain([shorts_width(mycelium.networks.iter())])
         .max()
@@ -467,6 +524,7 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
         lines.push(look.paint(BOLD, shape.heading()));
         if shape == Shape::Machines {
             drawing.machines(&mut lines, 1);
+            drawing.builders(&mut lines, 1);
             continue;
         }
         let tops = mycelium.networks.iter().filter(|each| {
@@ -620,6 +678,7 @@ pub fn network(mycelium: &Mycelium, asked: &str, look: &Look, all: bool) -> Resu
     if network.shape == Shape::Machines {
         lines.extend([String::new(), header(look, 0, &Standing::CELLS)]);
         drawing.machines(&mut lines, 0);
+        drawing.builders(&mut lines, 0);
     } else if !within.is_empty() {
         lines.extend([String::new(), header(look, 0, &Standing::CELLS)]);
         let (shown, folded) = folding.split(&NETWORKS_FOLD, within, |each| network_worrying(each));
@@ -695,6 +754,30 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
         if !folded.is_empty() {
             let said = format!("and {} more machines", folded.len());
             lines.push(format!("  {}", look.paint(FAINT, &said)));
+        }
+    }
+    let builders: Vec<&Cell> = builders(mycelium).filter(|_| standing.is_empty()).collect();
+    if !builders.is_empty() {
+        lines.extend([String::new(), look.paint(BOLD, "builders")]);
+        let width = builders
+            .iter()
+            .map(|cell| cell.name.chars().count())
+            .max()
+            .unwrap_or_default();
+        for builder in builders {
+            let mut said = builder_said(builder);
+            if let Some(why) = builder
+                .builds
+                .as_ref()
+                .and_then(|builds| builds.said.as_ref())
+            {
+                let _ = write!(said, " · {why}");
+            }
+            lines.push(format!(
+                "  {}{GAP}{}",
+                padded(&builder.name, width),
+                look.paint(FAINT, &said)
+            ));
         }
     }
     let receptors: Vec<&Cell> = mycelium

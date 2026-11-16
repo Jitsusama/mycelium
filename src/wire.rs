@@ -27,6 +27,9 @@ pub enum Request {
     /// What every machine of the realm is: this one measured now, then
     /// each other one as its links last carried it.
     Machines,
+    /// The builders this machine sends Nix builds to, which are no
+    /// machines of the realm, each as it was last heard.
+    Builders,
     /// The shapes of machine this node's providers' programs could make,
     /// each asked now.
     Offers,
@@ -215,6 +218,8 @@ pub enum Response {
     Machine(Box<Machine>),
     /// Every machine, this one first.
     Machines(Vec<Machine>),
+    /// The builders this machine sends Nix builds to.
+    Builders(Vec<crate::builders::Builder>),
     /// What the node's providers offer.
     Offers(Offers),
     /// Where the work asked about goes.

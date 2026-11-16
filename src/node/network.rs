@@ -23,8 +23,9 @@ use crate::swarm;
 /// The kind of a network's records.
 pub const KIND: &str = "network";
 
-/// Every network the node's `teams` and `machines` records and its
-/// `sessions` make, by key, each session standing as `standing` says.
+/// Every network the node's `teams`, `machines` and `builders` records
+/// and its `sessions` make, by key, each session standing as `standing`
+/// says.
 /// Each record carries the fields of the network the networks view makes,
 /// and is heard when the latest of its cells was, or its team where its
 /// cells say nothing.
@@ -33,6 +34,7 @@ pub fn records(
     sessions: &[Session],
     standing: impl Fn(&Session) -> Option<&'static str>,
     machines: &BTreeMap<String, Value>,
+    builders: &BTreeMap<String, Value>,
 ) -> BTreeMap<String, Value> {
     let mut heard: HashMap<String, i64> = HashMap::new();
     let mut hear = |name: String, at: Option<i64>| {
@@ -58,7 +60,8 @@ pub fn records(
         .iter()
         .map(|session| lean(session, standing(session)));
     // The realm names none of its networks' fields.
-    let mut mycelium = Mycelium::of_each("", &teams, each, &machines);
+    let builders: Vec<Value> = builders.values().cloned().collect();
+    let mut mycelium = Mycelium::of_each("", &teams, each, &machines).with_builders(&builders);
     // Only its networks are made records, so its cells are let go before
     // they are, never held beside them.
     let networks = std::mem::take(&mut mycelium.networks);

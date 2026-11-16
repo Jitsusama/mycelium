@@ -44,8 +44,11 @@ The harness mesh's messages and presence, carried between machines:
 - Each node serves a local socket in niri's shape, which pi, Quickshell
   or a terminal reads, and says on it what each machine is (`mycelium
   machines`, or `machines <NAME>` for one), the facts work will be
-  placed by. A client that opens with
-  `hello` is answered in the daemon interface every daemon on the machine
+  placed by. Beside them it says the builders this machine sends Nix
+  builds to, read from Nix machines files given as `--builders` and
+  `--lent-builders`: what each builds and whether it answers, a lent one
+  never dialled so as not to wake what costs to run. A client that opens
+  with `hello` is answered in the daemon interface every daemon on the machine
   speaks, and watches the realm's sessions, machines, messages, teams
   and networks change, each network made as `mycelium networks` makes
   it.
@@ -78,7 +81,8 @@ The harness mesh's messages and presence, carried between machines:
   machines), with how many of each one's sessions need you, are stuck,
   move, wait or lie dormant; `--cells` puts each network's sessions
   under it, and `mycelium networks <NAME>` draws one with its cells.
-  `mycelium cells` lists every session worst first, then the machines,
+  `mycelium cells` lists every session worst first, then the machines
+  and the builders,
   and `mycelium cells <NAME>` says what one is and which networks it
   joined. A long list folds, so a realm of thousands of sessions still
   fits a screen: the worrying first, then the busiest few, then one row
