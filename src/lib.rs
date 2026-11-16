@@ -66,6 +66,7 @@
 pub mod awake;
 pub mod balance;
 pub mod builders;
+pub mod busy;
 pub mod carry;
 pub mod client;
 pub mod daemon;

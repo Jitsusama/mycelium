@@ -701,7 +701,10 @@ reaches now, as of when one last did), `os`, `system` (`linux` or
 `macos`, `null` from a node too old to say it), `arch`, `model` (a
 Mac's is its identifier, such as `Mac14,2`), `model_name`, its kind in
 words (`MacBook Air`, absent from a node too old to say it), `cpu`
-(`model`, `cores`), `memory` and `disk` in bytes (the disk holding its
+(`model`, `cores`, and `busy`, the share of its cores' time spent busy
+across the last five seconds or more, 0 to 1, absent where the node
+doesn't count it: a Mac's for now, or a node too old to say), `memory`
+and `disk` in bytes (the disk holding its
 account's home), `disk_free`, how much of that disk its account may
 still write, in bytes (absent from a node too old to say), `disk_band`,
 how full that disk is as the machine's disk guard bands it (`healthy`,
@@ -872,7 +875,7 @@ so asks alike spread rather than herd. Headroom is one sum, its weights
 named in `src/placement.rs` to be tuned:
 
 ```text
-headroom = 1.0 * (1 - cpu pressure / 100)      CPU_WEIGHT
+headroom = 1.0 * (1 - processor)               CPU_WEIGHT
          + 1.0 * memory_available / memory     MEMORY_WEIGHT
          + 0.5 * disk_free / disk              DISK_WEIGHT
          - 0.5 * (sessions + starts) / cores   SESSION_WEIGHT
@@ -880,6 +883,10 @@ headroom = 1.0 * (1 - cpu pressure / 100)      CPU_WEIGHT
          - 1.0 * each other prefer_not taint   RATHER_NOT_WEIGHT
 ```
 
+Its `processor` is the more of its `cpu`'s `busy` and its cpu pressure
+over 100, or pressure alone where it says no `busy`: how busy its cores
+are tells machines apart that wait on none, and pressure still counts
+where cores are shared out short. Over still reads from pressure alone.
 A share it never said counts as none, and `cores` is its declared
 `cores`, else its `cpu`'s, else one. Its `sessions` are those busy
 there, since an idle one's memory is already gone from

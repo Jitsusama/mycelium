@@ -3020,6 +3020,7 @@ mod tests {
             cpu: facts::Cpu {
                 model: None,
                 cores: Some(8),
+                busy: None,
             },
             memory: Some(64 << 30),
             declared: None,

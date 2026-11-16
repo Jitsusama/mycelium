@@ -244,8 +244,11 @@ fn costs(machine: &Machine, taint: &Taint) -> f64 {
 /// that would rather not have the work costing `rather_not` between them,
 /// where its room was `heard` lately: one sum of what is free of its
 /// processor, memory and disk, less what its sessions and starts take of
-/// its cores and what its taints cost, each by its weight. A share never
-/// said counts as none. This is the one place placement weighs a
+/// its cores and what its taints cost, each by its weight. Its processor
+/// is the more of how busy its cores are and how much work waits on them,
+/// since the first tells apart machines that wait on none and the second
+/// still counts where its cores are shared out short. A share never said
+/// counts as none. This is the one place placement weighs a
 /// machine's room, to be tuned.
 #[must_use]
 pub fn headroom(machine: &Machine, load: Load, rather_not: f64, heard: bool) -> f64 {
@@ -261,7 +264,9 @@ pub fn headroom(machine: &Machine, load: Load, rather_not: f64, heard: bool) -> 
     }
     let room = machine.room.as_ref().filter(|_| heard);
     let cpu = room.map_or(0.0, |room| {
-        (1.0 - room.pressure.cpu / 100.0).clamp(0.0, 1.0)
+        let pressed = room.pressure.cpu / 100.0;
+        let processor = machine.cpu.busy.map_or(pressed, |busy| busy.max(pressed));
+        (1.0 - processor).clamp(0.0, 1.0)
     });
     let memory = share(room.map(|room| room.memory_available), machine.memory);
     let disk = share(machine.disk_free, machine.disk);
@@ -773,6 +778,7 @@ mod tests {
             cpu: facts::Cpu {
                 model: None,
                 cores: Some(8),
+                busy: None,
             },
             memory: Some(64 << 30),
             disk: Some(1 << 40),
@@ -1121,6 +1127,27 @@ mod tests {
             placed(&place(&needing(Vec::new()), &[healthy, filling])),
             Some("tern"),
             "a disk filling is only a weight, outweighed by a machine idle beside one busy"
+        );
+    }
+
+    #[test]
+    fn of_machines_unpressed_the_one_whose_cores_are_less_busy_goes_first() {
+        // Neither waits on its processors, so pressure can't tell them
+        // apart; kestrel would win the tie by name.
+        let mut busy = machine("kestrel", "linux", 32, &[]);
+        busy.cpu.busy = Some(0.9);
+        let mut quiet = machine("skiff", "linux", 32, &[]);
+        quiet.cpu.busy = Some(0.1);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[busy.clone(), quiet])),
+            Some("skiff"),
+            "a tenth busy has more room than nine tenths"
+        );
+        let pressed_quiet = pressed(machine("skiff", "linux", 32, &[]), 95.0);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[busy, pressed_quiet])),
+            Some("kestrel"),
+            "a machine saying no use but waiting on every core has none to spare"
         );
     }
 
