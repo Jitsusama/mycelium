@@ -273,6 +273,13 @@ fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> E
         exchange
     };
     exchange.withhold_above(true);
+    if !there.facts {
+        eprintln!(
+            "{} takes no facts, so it can't declare itself no worker and is sent none \
+             of the quests above those shared",
+            there.machine
+        );
+    }
     exchange
 }
 
@@ -3744,9 +3751,11 @@ mod tests {
              nothing of the parent: {sent:?}"
         );
 
+        // The parent asked for last, nothing asked is still to come once
+        // it is heard.
         tern.declared = Some(declares(false));
         says(&mut far_writing, &[Frame::Machine(Box::new(tern.clone()))]).await;
-        says(&mut far_writing, &asks).await;
+        says(&mut far_writing, &[want_readme(CHILD), want_readme(TOP)]).await;
         heard_until(&mut lines, |frame| carries_of(frame, TOP)).await;
 
         tern.declared = Some(declares(true));
