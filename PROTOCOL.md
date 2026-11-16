@@ -709,8 +709,8 @@ link has carried a machine for a day, what it told is let go.
 
 A carried session leaves its worktrees on the machine it left, so that
 machine's node lets them go once the carry is done with them: once a
-carry it ordered from here stands `arrived` and was ordered more than
-a day ago, it runs `pi-carry settle <quest> --session <session>` once,
+carry it kept from here stands `arrived` and was ordered more than a
+day ago, it runs `pi-carry settle <quest> --session <session>` once,
 off its loop and in its own environment, saying in its log when that
 takes over a minute and waiting on it, never ending one part way
 itself. A service manager stopping the node ends it too, as it ends
@@ -739,9 +739,22 @@ which settling allows. Where the file can't be read, nothing is settled.
 The carry's record then holds `settle`, `{"did", "let" or "why",
 "at"}`, and is shown for a day after it settled as well as a day
 after it was
-ordered, on every machine its `Carries` reach. A carry the person made
-with `mycelium carry` keeps no line in `carries.jsonl`, so the trees it
-leaves stay where they are.
+ordered, on every machine its `Carries` reach.
+
+A carry the person's own login asks, with `mycelium carry` or the
+one-act `carry` ask, is kept in `carries.jsonl` too, as each `carry`
+steer reaches a session here, and only where this node saw the asker
+was the person's own: `by` is `person`, as the node judged it, since a
+steer giving `by` is refused. It holds no `why`, `asker` or `chain`,
+since the person gives no reason and is ordered by nobody. A session
+of no quest is carried with no line, since nothing settles a carry
+without its quest. One that can't be kept isn't carried. It is then
+served, told to linked machines and settled as an ordered one is. A
+one-act carry asked of a node its quest doesn't run on is kept where
+it runs, since that node, asked over the link, steers its own
+sessions through its own socket, as the person. A steer a link
+carries to an inbox keeps no line, since that end knows no sessions
+or quests.
 
 ### A Machine Easing Itself
 

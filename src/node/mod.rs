@@ -2712,6 +2712,7 @@ impl<S: Store> Shared<S> {
             }
             return steered;
         }
+        self.keep_persons_carry(&steer, &sessions)?;
         self.steer_here(&steer, &sessions)?;
         if person {
             self.keep_word(&steer, &machine);
@@ -2827,6 +2828,50 @@ impl<S: Store> Shared<S> {
         let sessions = self.lock().state.sessions();
         let address = self.address_of(&sessions, &session).to_owned();
         Ok((hold::end::Asker::Session(address), Some(session)))
+    }
+
+    /// Keeps a carry the person's own login asks of a session here, as an
+    /// ordered one is kept, so the person sees it with the rest and the
+    /// trees it leaves here are let go once it arrives: by the person, as
+    /// this node saw who asked, never as the asker says, and with no why.
+    /// A session of no quest is carried with nothing kept, since nothing
+    /// settles a carry without its quest.
+    fn keep_persons_carry(&self, steer: &Steer, sessions: &[Session]) -> Result<(), String> {
+        let carries = steer.body.get("act").and_then(serde_json::Value::as_str) == Some("carry");
+        if !carries || !steer.checked {
+            return Ok(());
+        }
+        let to = steer.body.get("to").and_then(serde_json::Value::as_str);
+        let Some((session, quest)) = sessions
+            .iter()
+            .filter(|session| {
+                session.machine == self.machine
+                    && (matches!(session.state, SessionState::Busy | SessionState::Idle)
+                        || parked_presence(session))
+            })
+            .find_map(|session| Some((session, session.quest.as_deref()?)))
+            .filter(|_| to.is_some_and(|to| to != self.machine))
+        else {
+            return Ok(());
+        };
+        let kept = serde_json::json!({
+            "at": jiff::Timestamp::now().to_string(),
+            "by": "person",
+            "session": session
+                .presence
+                .get("session")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&session.id),
+            "address": session.address,
+            "quest": quest,
+            "from": self.machine,
+            "to": to,
+        });
+        ordered::keep(&self.carries, &kept)
+            .map_err(|error| format!("the carry couldn't be kept, so it isn't carried: {error}"))?;
+        self.said.sessions.send_modify(|said| *said += 1);
+        self.tell_carries();
+        Ok(())
     }
 
     /// The id of the session this connection's client asks for. Each
@@ -4300,6 +4345,8 @@ mod tests {
         /// Whether kestrel's end carries what its node asks of
         /// skiff, as the end of a link the other machine dialled does.
         asks_back: bool,
+        /// Where kestrel keeps the quests it shares, when it shares them.
+        shares: Option<Places>,
     }
 
     impl Dial for Piped {
@@ -4315,6 +4362,7 @@ mod tests {
             let steers = inboxes(&self.socket);
             let proven = self.proven;
             let asking = self.asks_back.then_some(Asking::Dialled);
+            let shares = self.shares.clone();
             tokio::spawn(async move {
                 let realm = Realm {
                     name: "work".to_owned(),
@@ -4335,9 +4383,9 @@ mod tests {
                         by: realm,
                         far: "skiff".to_owned(),
                     };
-                    link::run(store, &by_key, piped(far), None, Some(starting)).await
+                    link::run(store, &by_key, piped(far), shares, Some(starting)).await
                 } else {
-                    link::run(store, &realm, piped(far), None, Some(starting)).await
+                    link::run(store, &realm, piped(far), shares, Some(starting)).await
                 };
             });
             std::future::ready(Ok(piped(near)))
@@ -6970,6 +7018,210 @@ esac
     }
 
     #[tokio::test]
+    async fn a_carry_the_persons_own_login_asks_is_kept_as_theirs() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        let kept = socket.with_file_name("carries.jsonl");
+        let carry = || {
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: "harbor".to_owned(),
+                    steer: json!({"act": "carry", "to": "tern", "from": "person"}),
+                },
+            )
+        };
+
+        asks_below(&socket, 7001);
+        assert!(carry().await.is_err(), "an agent can't carry as the person");
+        assert!(!kept.exists(), "so nothing is kept as the person's carry");
+
+        asks_as_the_person(&socket);
+        assert_eq!(
+            carry().await,
+            Ok(Response::Steered {
+                machine: "skiff".to_owned(),
+                by: None,
+            }),
+            "the person carries it"
+        );
+        let line: Value = serde_json::from_str(
+            fs::read_to_string(&kept)
+                .expect("the person's carry is kept")
+                .trim_end(),
+        )
+        .expect("one JSON line");
+        assert_eq!(
+            (
+                &line["by"],
+                &line["address"],
+                &line["session"],
+                &line["quest"],
+                &line["from"],
+                &line["to"],
+            ),
+            (
+                &json!("person"),
+                &json!("HARBOR"),
+                &json!("s-harbour"),
+                &json!("QEST-20261115-HARBOR"),
+                &json!("skiff"),
+                &json!("tern"),
+            ),
+            "kept as the person's, as the node told who asked: {line}"
+        );
+        assert!(
+            line.get("why").is_none() && line.get("chain").is_none(),
+            "the person gives no reason and is ordered by no chain: {line}"
+        );
+
+        assert!(
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: "harbor".to_owned(),
+                    steer: json!({"act": "pause", "from": "person"}),
+                },
+            )
+            .await
+            .is_ok(),
+            "the person pauses it"
+        );
+        assert_eq!(
+            fs::read_to_string(&kept).expect("it reads").lines().count(),
+            1,
+            "and only a carry is kept as one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_carry_back_over_a_link_is_kept_where_its_quest_runs() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (near_socket, far_socket, scratch, nodes) =
+            harbour_on_kestrel_linked_to_skiff(dir.path()).await;
+        let mut client = Speaking::to(&near_socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(
+                json!({"id": 2, "ask": "carry", "quest": "QEST-20261115-HARBOR",
+                        "to": "skiff"}),
+            )
+            .await;
+        let kept = far_socket.with_file_name("carries.jsonl");
+        // Nothing tells the test when kestrel keeps it, so it looks again
+        // every few milliseconds, until the carry answers otherwise.
+        let keeping = async {
+            loop {
+                let all = fs::read_to_string(&kept).unwrap_or_default();
+                if all.ends_with('\n') {
+                    break serde_json::from_str::<Value>(all.trim_end()).expect("one JSON line");
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        let line = tokio::time::timeout(PATIENCE, async {
+            tokio::select! {
+                line = keeping => line,
+                answered = client.next() => panic!("it ended before kestrel kept it: {answered}"),
+            }
+        })
+        .await
+        .expect("kestrel keeps the carry back");
+        assert_eq!(
+            (
+                &line["by"],
+                &line["address"],
+                &line["session"],
+                &line["quest"],
+                &line["from"],
+                &line["to"],
+            ),
+            (
+                &json!("person"),
+                &json!("HARBOR"),
+                &json!("s-harbour"),
+                &json!("QEST-20261115-HARBOR"),
+                &json!("kestrel"),
+                &json!("skiff"),
+            ),
+            "kept as the person's on kestrel, where its session runs: {line}"
+        );
+        assert!(
+            !near_socket.with_file_name("carries.jsonl").exists(),
+            "and once, not on skiff too"
+        );
+
+        let host = rustix::system::uname()
+            .nodename()
+            .to_string_lossy()
+            .into_owned();
+        let handover = through::handover(&scratch, "QEST-20261115-HARBOR", &host);
+        fs::create_dir_all(&handover).expect("its handover is made");
+        let refused = json!({"session": "s-harbour", "why": "a push is running",
+                             "at": jiff::Timestamp::now().to_string()});
+        fs::write(handover.join("s-harbour.refused.json"), refused.to_string())
+            .expect("its refusal is written");
+        let ended = tokio::time::timeout(PATIENCE, client.next())
+            .await
+            .expect("the carry ends");
+        assert!(ended["error"].is_object(), "refused, so it ends: {ended}");
+        drop(client);
+        stop(nodes).await;
+    }
+
+    /// Skiff's node linked to kestrel's, which shares its quests and runs
+    /// HARBOR's session: their sockets, kestrel's scratch, and both nodes.
+    async fn harbour_on_kestrel_linked_to_skiff(
+        dir: &Path,
+    ) -> (PathBuf, PathBuf, PathBuf, [Running; 2]) {
+        let far_socket = dir.join("kestrel").join("work.sock");
+        let near_socket = dir.join("skiff").join("work.sock");
+        let far_store = Memory::default();
+        far_store.start_here(
+            "s-harbour",
+            json!({"session": "s-harbour", "addresses": ["HARBOR"], "groups": [],
+                   "busy": true, "state": "working",
+                   "at": jiff::Timestamp::now().to_string(),
+                   "quest": "QEST-20261115-HARBOR"}),
+            true,
+        );
+        let places = dir.join("places");
+        let sharing = Places {
+            quests: places.join("quests"),
+            scratch: places.join("scratch"),
+            home: places.join("home"),
+            state: places.join("state"),
+        };
+        let scratch = sharing.scratch.clone();
+        let shares = sharing.clone();
+        let far = node_sharing(
+            &far_store,
+            "kestrel",
+            Vec::<Piped>::new(),
+            None,
+            &far_socket,
+            Some(sharing),
+        );
+        let dial = Piped {
+            store: far_store,
+            socket: far_socket.clone(),
+            held: dir.join("held"),
+            proven: true,
+            asks_back: false,
+            shares: Some(shares),
+        };
+        let near = node(&Memory::default(), "skiff", vec![dial], None, &near_socket);
+        listed(near_socket.clone(), "s-harbour").await;
+        // The person asks skiff's node, and kestrel's node then asks
+        // itself, as its own process.
+        asks_as_the_person(&near_socket);
+        asks_as_the_person(&far_socket);
+        (near_socket, far_socket, scratch, [near, far])
+    }
+
+    #[tokio::test]
     async fn a_presence_borrowing_the_orchestrators_session_orders_no_carry() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
@@ -8085,6 +8337,7 @@ esac
             held,
             proven: false,
             asks_back: false,
+            shares: None,
         };
         let near = node(&near_store, "skiff", vec![dial], None, &near_socket);
         known_to(&near_store, "kestrel").await;
@@ -8283,6 +8536,7 @@ esac
             held: dir.path().join("held"),
             proven: false,
             asks_back: true,
+            shares: None,
         };
         let near_store = Memory::default();
         let near = node(&near_store, "skiff", vec![dial], Some(holds), &near_socket);
@@ -8390,6 +8644,7 @@ esac
             held: dir.join("held"),
             proven,
             asks_back: false,
+            shares: None,
         };
         let near = node(near_store, "skiff", vec![dial], None, &near_socket);
         known_to(near_store, "kestrel").await;
@@ -8885,6 +9140,7 @@ esac
             held: dir.path().join("held"),
             proven: true,
             asks_back: true,
+            shares: None,
         };
         let near = node(&Memory::default(), "skiff", vec![dial], None, &near_socket);
         asks_as_person(&far_socket);
@@ -9223,6 +9479,7 @@ esac
                 held: dir.path().join("held"),
                 proven,
                 asks_back: false,
+                shares: None,
             };
             let near = node(&Memory::default(), "skiff", vec![dial], None, &near_socket);
             listed(near_socket.clone(), "s-far").await;
