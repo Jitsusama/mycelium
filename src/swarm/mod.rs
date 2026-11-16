@@ -215,19 +215,27 @@ pub(crate) fn fit(text: &str, width: usize) -> String {
 }
 
 /// `text` wrapped at its spaces to `width` columns, its first line after
-/// `first` and each after it after `rest`. A word wider than the room left
-/// stands on a line of its own rather than being split.
+/// `first` and each after it after `rest`. A word wider than a whole line's
+/// room, such as a path, is broken across lines rather than passing it.
 pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> String {
+    let room = |at: usize| {
+        let indent = if at == 0 { first } else { rest };
+        width.saturating_sub(indent.chars().count()).max(1)
+    };
     let mut lines: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
-        let indent = if lines.len() > 1 { rest } else { first };
-        let room = width.saturating_sub(indent.chars().count());
-        match lines.last_mut() {
-            Some(line) if line.chars().count() + 1 + word.chars().count() <= room => {
-                line.push(' ');
-                line.push_str(word);
-            }
-            _ => lines.push(word.to_owned()),
+        let joins = lines.last().is_some_and(|line| {
+            line.chars().count() + 1 + word.chars().count() <= room(lines.len() - 1)
+        });
+        if let Some(line) = lines.last_mut().filter(|_| joins) {
+            line.push(' ');
+            line.push_str(word);
+            continue;
+        }
+        let mut left: Vec<char> = word.chars().collect();
+        while !left.is_empty() {
+            let taken = room(lines.len()).min(left.len());
+            lines.push(left.drain(..taken).collect());
         }
     }
     lines

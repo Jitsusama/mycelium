@@ -15,8 +15,14 @@ const HANGING: &str = "  ";
 /// How wide a label of one machine's facts is drawn, its widest.
 const LABEL_WIDTH: usize = 8;
 
-/// Bytes in a gigabyte, as disks and memory are sold.
-const GB: f64 = 1_000_000_000.0;
+/// Bytes in a gigabyte, as disks are sold.
+const GB: u64 = 1_000_000_000;
+
+/// Bytes in a gibibyte, as memory is sold.
+const GIB: u64 = 1 << 30;
+
+/// Tenths at and past which an amount is said whole.
+const WHOLE_FROM: u64 = 100;
 
 /// What each machine's row says, column by column.
 const MACHINE_COLUMNS: [&str; 7] = [
@@ -250,15 +256,14 @@ fn percent(share: f64) -> String {
     format!("{:.0}%", share * 100.0)
 }
 
-/// `bytes` in gigabytes, whole once past ten.
-fn gigabytes(bytes: u64) -> String {
-    // A machine's bytes fit a float's 52 bits until 4 PB.
-    #[expect(clippy::cast_precision_loss, reason = "a machine's bytes fit 52 bits")]
-    let gb = bytes as f64 / GB;
-    if gb >= 10.0 {
-        format!("{gb:.0}")
+/// `bytes` in `unit`s, rounded to a tenth, or whole from ten.
+fn amount(bytes: u64, unit: u64) -> String {
+    let (bytes, unit) = (u128::from(bytes), u128::from(unit));
+    let tenths = (bytes * 10 + unit / 2) / unit;
+    if tenths >= u128::from(WHOLE_FROM) {
+        format!("{}", (bytes + unit / 2) / unit)
     } else {
-        format!("{gb:.1}")
+        format!("{}.{}", tenths / 10, tenths % 10)
     }
 }
 
@@ -266,8 +271,8 @@ fn gigabytes(bytes: u64) -> String {
 fn memory(machine: &Machine) -> String {
     let free = machine.room.as_ref().map(|room| room.memory_available);
     match (free, machine.memory) {
-        (Some(free), Some(all)) => format!("{} of {} GB", gigabytes(free), gigabytes(all)),
-        (None, Some(all)) => format!("? of {} GB", gigabytes(all)),
+        (Some(free), Some(all)) => format!("{} of {} GiB", amount(free, GIB), amount(all, GIB)),
+        (None, Some(all)) => format!("? of {} GiB", amount(all, GIB)),
         _ => String::new(),
     }
 }
@@ -280,9 +285,9 @@ fn disk(machine: &Machine) -> String {
     };
     match (machine.disk_free, machine.disk) {
         (Some(free), Some(all)) => {
-            format!("{} of {} GB{filling}", gigabytes(free), gigabytes(all))
+            format!("{} of {} GB{filling}", amount(free, GB), amount(all, GB))
         }
-        (None, Some(all)) => format!("? of {} GB", gigabytes(all)),
+        (None, Some(all)) => format!("? of {} GB", amount(all, GB)),
         _ => String::new(),
     }
 }
@@ -354,10 +359,10 @@ mod tests {
             "os": "NixOS 26.11", "system": "linux", "arch": "x86_64",
             "model": "Framework Laptop 13", "model_name": "Laptop 13",
             "cpu": {"model": "AMD Ryzen 7", "cores": 16, "busy": 0.42},
-            "memory": 64_000_000_000_u64, "disk": 1_000_000_000_000_u64,
+            "memory": 68_719_476_736_u64, "disk": 1_000_000_000_000_u64,
             "disk_free": 160_000_000_000_u64, "disk_band": "filling",
             "accelerators": [], "power": {"on_battery": false, "charge": 76},
-            "room": {"said_at": "2026-11-12T16:59:50Z", "memory_available": 20_500_000_000_u64,
+            "room": {"said_at": "2026-11-12T16:59:50Z", "memory_available": 21_474_836_480_u64,
                 "pressure": {"cpu": 10.0, "memory": 2.0, "io": 0.0},
                 "takes": {"builds": 2, "vm_tests": 1}, "over": ["memory"]},
             "declared": null, "reached": {"home": true, "far": false},
@@ -372,13 +377,22 @@ mod tests {
             "os": "macOS 26.6", "system": "macos", "arch": "aarch64",
             "model": "Mac16,8", "model_name": "MacBook Pro",
             "cpu": {"model": "Apple M4 Pro", "cores": 12},
-            "memory": 48_000_000_000_u64, "disk": 994_000_000_000_u64,
+            "memory": 51_539_607_552_u64, "disk": 994_000_000_000_u64,
             "disk_free": 130_000_000_000_u64, "accelerators": null,
             "power": {"on_battery": true, "charge": 100}, "room": null, "declared": null,
             "updated": {"step": "failed", "at": "2026-11-12T16:29:02Z",
                 "why": "building the system failed (exit status: 1)"},
         }))
         .expect("a machine")
+    }
+
+    /// Osprey as tern, its update failing on a word wider than a line.
+    fn tern() -> Machine {
+        let mut tern = osprey();
+        tern.name = "tern".to_owned();
+        tern.updated = Some(json!({"step": "failed", "at": "2026-11-12T16:29:02Z",
+            "why": "/nix/store/0c3f4a9b2d1e8f7a6b5c4d3e2f1a0b9c-nixos-system-tern failed"}));
+        tern
     }
 
     fn skiff() -> Builder {
@@ -395,9 +409,9 @@ mod tests {
         let drawn = table(&[kestrel(), osprey()], &[skiff()], &look(120));
         assert_eq!(
             drawn,
-            "machine  state  busy  memory free  disk free                power         updated\n\
-             kestrel  ready  42%   20 of 64 GB  160 of 1000 GB, filling  mains 76%     done 16:29\n\
-             osprey   ready        ? of 48 GB   130 of 994 GB            battery 100%  failed 16:29\n\
+            "machine  state  busy  memory free   disk free                power         updated\n\
+             kestrel  ready  42%   20 of 64 GiB  160 of 1000 GB, filling  mains 76%     done 16:29\n\
+             osprey   ready        ? of 48 GiB   130 of 994 GB            battery 100%  failed 16:29\n\
              \n\
              kestrel is at its queue's memory limit, so it starts no more heavy work\n\
              osprey's update failed at 16:29: building the system failed (exit status: 1)\n\
@@ -411,8 +425,8 @@ mod tests {
     #[test]
     fn no_line_passes_a_narrow_terminal() {
         let drawn = [
-            table(&[kestrel(), osprey()], &[skiff()], &look(40)),
-            one(&osprey(), &look(40)),
+            table(&[kestrel(), osprey(), tern()], &[skiff()], &look(40)),
+            one(&tern(), &look(40)),
             one_builder(&skiff(), &look(40)),
         ]
         .concat();
@@ -428,7 +442,7 @@ mod tests {
         assert_eq!(
             table(&[osprey()], &[], &look(40)),
             "machine  state  busy  memory free\n\
-             osprey   ready        ? of 48 GB\n\
+             osprey   ready        ? of 48 GiB\n\
              \n\
              osprey's update failed at 16:29:\n\
              \x20 building the system failed (exit\n\
@@ -443,7 +457,7 @@ mod tests {
             "kestrel  ready\n\
              \x20 what      Laptop 13, NixOS 26.11, x86_64\n\
              \x20 cpu       AMD Ryzen 7, 16 cores, 42% busy\n\
-             \x20 memory    20 of 64 GB\n\
+             \x20 memory    20 of 64 GiB\n\
              \x20 disk      160 of 1000 GB, filling\n\
              \x20 power     mains 76%\n\
              \x20 reaches   home\n\
