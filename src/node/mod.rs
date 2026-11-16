@@ -6086,7 +6086,8 @@ mod tests {
                 may_wait: false,
                 lasts: None,
             },
-            folder: None,
+            // A full path, since a build's home is no folder at all.
+            folder: Some(std::env::temp_dir()),
             command: ["/bin/sh", "-c", script].map(str::to_owned).to_vec(),
         }
     }
