@@ -203,8 +203,9 @@ struct Listed<'a, R> {
 
 /// The records of `kind` a list asks for, at most `limit` of them and only
 /// their `fields` if it names them, answered under `id` as begun at
-/// `begun`, serialized. Asked for all their fields, the records are
-/// written as the bytes they are held as, none parsed.
+/// `begun`, serialized. The records are written from the bytes they are
+/// held as: whole, or cut down to their `fields`, splitting only the
+/// objects a field's path runs through.
 fn list_answer(
     holds: &impl Holds,
     id: &Value,
@@ -220,7 +221,7 @@ fn list_answer(
             id,
             records: records
                 .iter()
-                .map(|record| fields::projected(record.value(), paths))
+                .map(|record| fields::projected(record.as_str(), paths))
                 .collect(),
             took: took(begun),
         }),

@@ -9,8 +9,17 @@
 //! looks into an array, and a path a record lacks is left out rather than
 //! sent as null. Every record keeps its `key` and `kind`, so a reader can
 //! still tell records apart however few fields it asked for.
+//!
+//! A record is cut down from the bytes it is held as: only the objects a
+//! path runs through are split into their fields, and what is kept is
+//! copied as its bytes, never parsed.
 
-use serde_json::{Map, Value};
+use std::borrow::Cow;
+
+use serde_json::Value;
+use serde_json::value::RawValue;
+
+use super::records::{Pieces, fields, object};
 
 /// The most fields one list may ask for, so an ask can't make the node
 /// match every key of every record against thousands of paths.
@@ -46,27 +55,27 @@ pub fn read(asked: &Value) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// `record` with only the fields of `paths`, and its `key` and `kind`.
-/// What it holds is moved, not copied, since a list's records are its
-/// own.
+/// The record whose bytes are `record` with only the fields of `paths`,
+/// and its `key` and `kind`, as the bytes it is sent as.
 #[must_use]
-pub fn projected(record: Value, paths: &[String]) -> Value {
+pub fn projected(record: &str, paths: &[String]) -> Box<RawValue> {
     let mut asked: Vec<&str> = paths.iter().map(String::as_str).collect();
     asked.extend(ALWAYS);
-    kept(record, &asked).unwrap_or_else(|| Value::Object(Map::new()))
+    let kept = kept(record, &asked).unwrap_or_else(|| "{}".to_owned());
+    // What is kept was read as JSON, so it is JSON written again.
+    RawValue::from_string(kept).unwrap_or_else(|_| RawValue::NULL.to_owned())
 }
 
-/// What of `value` the `paths` under it name, or none where they name
-/// nothing it holds, an object of nothing included.
-fn kept(value: Value, paths: &[&str]) -> Option<Value> {
-    let Value::Object(fields) = value else {
-        return None;
-    };
-    let kept: Map<String, Value> = fields
-        .into_iter()
+/// What of the value whose bytes are `json` the `paths` under it name, as
+/// its bytes, or none where they name nothing it holds, an object of
+/// nothing included.
+fn kept(json: &str, paths: &[&str]) -> Option<String> {
+    let fields = fields(json)?;
+    let kept: Pieces<'_, '_> = fields
+        .iter()
         .filter_map(|(key, value)| {
             if paths.contains(&key.as_str()) {
-                return Some((key, value));
+                return Some((key.as_str(), Cow::Borrowed(value.get())));
             }
             let under: Vec<&str> = paths
                 .iter()
@@ -75,17 +84,31 @@ fn kept(value: Value, paths: &[&str]) -> Option<Value> {
             if under.is_empty() {
                 return None;
             }
-            Some((key, kept(value, &under)?))
+            Some((key.as_str(), Cow::Owned(kept(value.get(), &under)?)))
         })
         .collect();
-    (!kept.is_empty()).then_some(Value::Object(kept))
+    (!kept.is_empty()).then(|| object(&kept))
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{MOST_FIELDS, projected, read};
+    use super::{MOST_FIELDS, read};
+
+    /// `record` projected to `asked`, as the bytes a list sends, which
+    /// are the bytes the value it means is written as.
+    fn projected(record: &serde_json::Value, asked: &[String]) -> serde_json::Value {
+        let sent = super::projected(&record.to_string(), asked);
+        let value: serde_json::Value =
+            serde_json::from_str(sent.get()).expect("a projected record is JSON");
+        assert_eq!(
+            sent.get(),
+            value.to_string(),
+            "sent as its value is written"
+        );
+        value
+    }
 
     /// A session record, much as the node holds one.
     fn session() -> serde_json::Value {
@@ -113,7 +136,7 @@ mod tests {
         ]
         .map(str::to_owned);
         assert_eq!(
-            projected(session(), &asked),
+            projected(&session(), &asked),
             json!({
                 "key": "session:a",
                 "kind": "session",
@@ -132,9 +155,29 @@ mod tests {
     fn a_path_a_record_lacks_is_left_out_and_nothing_looks_into_an_array() {
         let asked = ["machine", "presence.repo", "groups.0", "address.x"].map(str::to_owned);
         assert_eq!(
-            projected(session(), &asked),
+            projected(&session(), &asked),
             json!({"key": "session:a", "kind": "session"}),
             "neither null nor an empty object stands in for what isn't there"
+        );
+    }
+
+    #[test]
+    fn a_key_or_field_written_with_escapes_is_kept_as_its_value_is_written() {
+        let record = json!({
+            "key": "session:\"a\"",
+            "kind": "session",
+            "say \"hi\"": {"tab\there": "line\none", "left": 1},
+            "dropped": "\u{1F980}",
+        });
+        let asked = ["say \"hi\".tab\there".to_owned()];
+        assert_eq!(
+            projected(&record, &asked),
+            json!({
+                "key": "session:\"a\"",
+                "kind": "session",
+                "say \"hi\"": {"tab\there": "line\none"},
+            }),
+            "a key is matched as it reads, not as it is escaped"
         );
     }
 

@@ -407,13 +407,13 @@ impl Change {
 type Fields<'a> = BTreeMap<String, &'a RawValue>;
 
 /// `json`'s fields as its bytes, where it is an object.
-fn fields(json: &str) -> Option<Fields<'_>> {
+pub(super) fn fields(json: &str) -> Option<Fields<'_>> {
     serde_json::from_str(json).ok()
 }
 
 /// A change's fields by name, each as the bytes it is sent as, in the
 /// order a value's object keeps them.
-type Pieces<'f, 'v> = BTreeMap<&'f str, Cow<'v, str>>;
+pub(super) type Pieces<'f, 'v> = BTreeMap<&'f str, Cow<'v, str>>;
 
 /// The fields of `now` that differ from `was`'s, each as `said` says it
 /// from both, and each `was` had that `now` lacks, as null.
@@ -437,7 +437,7 @@ fn moved<'f, 'v>(
 }
 
 /// `pieces` as one object's bytes, as a value's object would write them.
-fn object(pieces: &Pieces<'_, '_>) -> String {
+pub(super) fn object(pieces: &Pieces<'_, '_>) -> String {
     let mut written = String::from("{");
     for (at, (field, bytes)) in pieces.iter().enumerate() {
         if at > 0 {
