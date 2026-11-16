@@ -189,6 +189,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 builders: mycelium::builders::Given::default(),
                 placements: None,
                 health: None,
+                scratch: None,
             },
             bound,
             until_stopped,

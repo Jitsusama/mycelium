@@ -30,6 +30,26 @@ impl State {
         self.sessions.values().cloned().collect()
     }
 
+    /// What each session says it works on, by its address, for those that
+    /// say: a session on `machine` before one of the same address
+    /// elsewhere, as a cell there is the one murmuring there.
+    pub fn purposes(&self, machine: &str) -> HashMap<String, String> {
+        if std::hint::black_box(true) {
+            return HashMap::new(); // RED STUB
+        }
+        let mut purposes = HashMap::new();
+        let (here, elsewhere): (Vec<&Session>, Vec<&Session>) = self
+            .sessions
+            .values()
+            .partition(|session| session.machine == machine);
+        for session in elsewhere.into_iter().chain(here) {
+            if let Some(working_on) = &session.working_on {
+                purposes.insert(session.address.clone(), working_on.clone());
+            }
+        }
+        purposes
+    }
+
     /// Takes `sessions` as every session there is, returning an event for
     /// each that changed, came or went.
     pub fn set_sessions(&mut self, sessions: Vec<Session>) -> Vec<Event> {
@@ -191,6 +211,27 @@ mod tests {
             at: "2026-10-26T20:00:00Z".to_owned(),
             presence: serde_json::Value::Null.into(),
         }
+    }
+
+    #[test]
+    fn a_purpose_is_what_a_session_says_it_works_on_here_first() {
+        let mut state = State::default();
+        let working = |id: &str, machine: &str, on: Option<&str>| Session {
+            address: "KP0L6A".to_owned(),
+            machine: machine.to_owned(),
+            working_on: on.map(str::to_owned),
+            ..session(id, Standing::Idle)
+        };
+        state.set_sessions(vec![
+            working("a", "skiff", Some("the murmur kind")),
+            working("b", "kestrel", Some("the tide")),
+            working("c", "skiff", None),
+        ]);
+        assert_eq!(
+            state.purposes("skiff"),
+            HashMap::from([("KP0L6A".to_owned(), "the murmur kind".to_owned())]),
+            "the session here says it, and one saying nothing says no other"
+        );
     }
 
     #[test]

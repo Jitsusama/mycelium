@@ -62,6 +62,8 @@
 //! - [`install`]: whether the build a process runs is still installed
 //! - [`ssh`]: what another machine's link key may run on this one
 //! - [`update`]: its configuration's updater, asked to update it to main
+//! - [`murmur`]: what this machine's cells murmured in the quests' webs,
+//!   served as records
 //! - [`web`]: a quest's shared space of murmurs and ties, one log folded
 
 pub mod awake;
@@ -86,6 +88,7 @@ pub mod install;
 pub mod link;
 pub mod made;
 pub mod mesh;
+pub mod murmur;
 pub mod networks;
 pub mod node;
 pub mod offer;

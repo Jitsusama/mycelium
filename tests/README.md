@@ -16,6 +16,9 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `made.rs`: a machine made for a start from a provider's offer, linked,
   started on and let go at its time or once it hands over, each node and
   link a process of its own
+- `murmurs.rs`: ten thousand cells' murmurs read within 30 MB, in time
+  that grows with the cells, and read again after one more in a small
+  share of it, the memory counted as `networks.rs` counts it
 - `named.rs`: a node given `--machine` recording the name, and a command
   with none going by it rather than the system's
 - `networks.rs`: the node's network records built for ten thousand cells

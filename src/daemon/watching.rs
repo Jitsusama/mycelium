@@ -60,7 +60,8 @@ pub(super) async fn keep_watching<H: Holds>(
         }
     };
     let mut sent = Shared::clone(&held(&holds, *told.borrow_and_update()));
-    let Some(first) = whole(&id, &sent) else {
+    let in_order = super::in_order(holds.as_ref(), &kind, sent.values().map(AsRef::as_ref));
+    let Some(first) = whole(&id, in_order) else {
         return;
     };
     if answering.send(first).await.is_err() {
@@ -102,12 +103,11 @@ struct Whole<'a> {
     records: Vec<&'a Value>,
 }
 
-/// The first answer to watch `id`, serialized from the very records `sent`
-/// shares with every other watch, copying none of them. Records always
-/// serialize, being values already; were one ever not to, the watch ends
-/// rather than send a broken line.
-fn whole(id: &Value, sent: &Shared) -> Option<String> {
-    let records = sent.values().map(AsRef::as_ref).collect();
+/// The first answer to watch `id`, serialized from the very `records`, in
+/// order, that it shares with every other watch, copying none of them.
+/// Records always serialize, being values already; were one ever not to,
+/// the watch ends rather than send a broken line.
+fn whole<'a>(id: &'a Value, records: Vec<&'a Value>) -> Option<String> {
     serde_json::to_string(&Whole { id, records }).ok()
 }
 
@@ -210,7 +210,8 @@ mod tests {
     fn heard(when: Option<&[String]>, builds: &[Shared]) -> Vec<String> {
         let (first, rest) = builds.split_first().expect("a first build");
         let mut sent = first.clone();
-        let mut answers = vec![whole(&json!(1), &sent).expect("records serialize")];
+        let records = sent.values().map(AsRef::as_ref).collect();
+        let mut answers = vec![whole(&json!(1), records).expect("records serialize")];
         for now in rest {
             if let Some((changed, gone)) = answer(when, &[], &mut sent, now) {
                 answers.push(json!({"id": 1, "changed": changed, "gone": gone}).to_string());
@@ -240,7 +241,7 @@ mod tests {
             .map(|record| Value::clone(record))
             .collect();
         assert_eq!(
-            whole(&json!(1), &kept[0]),
+            whole(&json!(1), kept[0].values().map(AsRef::as_ref).collect()),
             Some(json!({"id": 1, "records": records}).to_string()),
             "the first answer reads as one built whole would"
         );

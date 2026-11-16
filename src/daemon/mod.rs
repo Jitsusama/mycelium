@@ -58,6 +58,27 @@ pub trait Holds: Send + Sync + 'static {
     fn deep(&self, _kind: &str) -> Vec<&'static str> {
         Vec::new()
     }
+    /// Whether `kind`'s records are listed, and a watch's first answer
+    /// sent, newest first, by when each was heard, rather than by key;
+    /// not, unless it says.
+    fn newest_first(&self, _kind: &str) -> bool {
+        false
+    }
+}
+
+/// `records` in the order `kind`'s are listed: by key, or newest first
+/// where `holds` says, the same moment's by key.
+fn in_order<'a>(
+    holds: &impl Holds,
+    kind: &str,
+    records: impl Iterator<Item = &'a Value>,
+) -> Vec<&'a Value> {
+    let mut records: Vec<&Value> = records.collect();
+    if holds.newest_first(kind) {
+        let heard = |record: &Value| record.get("heard").and_then(Value::as_i64).unwrap_or(0);
+        records.sort_by_key(|record| std::cmp::Reverse(heard(record)));
+    }
+    records
 }
 
 /// What a daemon does for its clients beyond reading: what the person says
@@ -175,12 +196,12 @@ fn answer<H: Holds + Steers>(
         } => holds
             .records(&kind)
             .map(|records| {
-                let records: Vec<Value> = records
-                    .into_values()
+                let records: Vec<Value> = in_order(holds.as_ref(), &kind, records.values())
+                    .into_iter()
                     .take(limit.unwrap_or(usize::MAX))
                     .map(|record| match &fields {
-                        Some(paths) => fields::projected(record, paths),
-                        None => record,
+                        Some(paths) => fields::projected(record.clone(), paths),
+                        None => record.clone(),
                     })
                     .collect();
                 json!({"id": id, "records": records})
