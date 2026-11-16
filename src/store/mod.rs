@@ -18,6 +18,7 @@ pub mod folders;
 #[cfg(test)]
 pub mod memory;
 
+use std::collections::BTreeMap;
 use std::io;
 use std::sync::Arc;
 
@@ -55,6 +56,9 @@ pub enum Change {
     Presence,
     /// What a linked machine says of itself was said again, by its name.
     Machine(String),
+    /// The carries a machine's node ordered were told again, by its
+    /// name.
+    Carries(String),
     /// Changes may have been missed, so everything should be read again.
     Rescan,
 }
@@ -164,6 +168,15 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// Keeps what another machine, `machine.name`, says it is, in place of
     /// what it said before.
     fn put_machine(&self, machine: &Machine) -> io::Result<()>;
+
+    /// The carries each machine's node last told of, by machine: this
+    /// machine's own as its node put them, and each other's as its link
+    /// heard them.
+    fn told_carries(&self) -> BTreeMap<String, Vec<Value>>;
+
+    /// Keeps `told`, the carries `machine`'s node ordered, in place of
+    /// what it told before; none lets go of them.
+    fn put_told_carries(&self, machine: &str, told: &[Value]) -> io::Result<()>;
 
     /// Starts telling of each change.
     fn changes(&self) -> io::Result<Changes>;

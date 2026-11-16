@@ -64,6 +64,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::carry::kept;
 use crate::facts::{self, Machine, Readiness};
 use crate::handover;
 use crate::hold;
@@ -223,6 +224,15 @@ pub enum Frame {
     /// there now, and all it holds of the quests it shares has been said.
     /// Sent only to an end that said it `releases`.
     HandedOver,
+    /// The carries this end's machine's node ordered within the last
+    /// day, newest first, as [`kept::told`] says each, so the person sees
+    /// them from the other end's machine too. Sent only where both ends
+    /// said they `shows`, and never on a link that `releases` a machine,
+    /// whose lent machine's person is not the person's own.
+    Carries {
+        /// The carries, at most [`kept::MOST_TOLD`].
+        carries: Vec<Value>,
+    },
 }
 
 /// How a link ended without failing.
@@ -304,6 +314,7 @@ pub async fn run(
         realm: membership.hello().realm,
         proven: membership.proves(),
         worker,
+        shows: membership.hello().shows && other.shows && !releases && !other.releases && !worker,
         handover: Handover {
             releases: other.releases,
             ..Handover::default()
@@ -354,11 +365,7 @@ pub async fn run(
             _ = looking.tick() => end.look(&mut writing).await,
             () = own_health::moved(&mut end.health.told) => end.send_machine(&mut writing).await,
             change = changes.changes.recv() => match change {
-                Some(Change::Message(id)) => end.send_messages(vec![id], &mut writing).await,
-                Some(Change::Presence) => end.send_presence(&mut writing).await,
-                Some(Change::Rescan) => end.catch_up(&mut writing).await,
-                // A machine's facts cross only from that machine itself.
-                Some(Change::Machine(_)) => Ok(()),
+                Some(change) => end.changed(change, &mut writing).await,
                 None => break Ok(Ending::Left),
             },
         };
@@ -634,6 +641,10 @@ struct End<S> {
     /// Whether the other end is a worker, which asks nothing of this
     /// machine and speaks only for its own sessions ([`Connection::worker`]).
     worker: bool,
+    /// Whether the two ends tell each other of the carries their nodes
+    /// ordered: both said they do, neither releases the other, and the
+    /// other isn't a worker, since quest ids and reasons aren't work.
+    shows: bool,
     /// Where either machine's handover stands.
     handover: Handover,
     /// When this end last heard the other, and whether it should have.
@@ -756,14 +767,70 @@ impl<S: Store> End<S> {
     }
 
     /// Says what opens a link, once the hellos are said: the Have, then
-    /// this end's machine, its sessions and the talks it follows.
+    /// this end's machine, the carries its node ordered, its sessions and
+    /// the talks it follows.
     async fn open(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
         let messages = self.store.message_ids(self.reach);
         let living = Some(self.living().into_keys().collect());
         send(writing, &Frame::Have { messages, living }).await?;
         self.send_machine(writing).await?;
+        self.send_carries(writing).await?;
         self.send_presence(writing).await?;
         self.send_follow(writing).await
+    }
+
+    /// Tells the other end of what changed in the store that is this
+    /// end's to tell.
+    async fn changed(
+        &mut self,
+        change: Change,
+        writing: &mut (impl AsyncWrite + Unpin),
+    ) -> io::Result<()> {
+        match change {
+            Change::Message(id) => self.send_messages(vec![id], writing).await,
+            Change::Presence => self.send_presence(writing).await,
+            Change::Rescan => self.catch_up(writing).await,
+            // A machine's facts and carries cross only from that machine
+            // itself, and this end measures its own facts as it sends them.
+            Change::Carries(machine) if machine == self.here => self.send_carries(writing).await,
+            Change::Machine(_) | Change::Carries(_) => Ok(()),
+        }
+    }
+
+    /// Tells the other end of the carries this end's machine's node
+    /// ordered, if the two ends tell each other so.
+    async fn send_carries(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
+        if !self.shows {
+            return Ok(());
+        }
+        let carries = self
+            .store
+            .told_carries()
+            .remove(&self.here)
+            .unwrap_or_default();
+        send(writing, &Frame::Carries { carries }).await
+    }
+
+    /// Keeps the carries the other end's machine's node ordered, which
+    /// only that end tells of: refused where the two ends never agreed to
+    /// tell them, or where they are more than a machine may tell at once.
+    fn keep_carries(&self, carries: &[Value]) {
+        let record = format!("{}'s carries", self.other);
+        if !self.shows {
+            self.kept(
+                &record,
+                Err(refusal(format!(
+                    "{} told of its carries where this link doesn't show them",
+                    self.other
+                ))),
+            );
+            return;
+        }
+        if let Err(why) = kept::fits(carries) {
+            self.kept(&record, Err(refusal(why)));
+            return;
+        }
+        self.kept(&record, self.store.put_told_carries(&self.other, carries));
     }
 
     async fn take(
@@ -824,6 +891,7 @@ impl<S: Store> End<S> {
                     .await?;
             }
             Frame::Machine(said) => self.keep_machine(*said),
+            Frame::Carries { carries } => self.keep_carries(&carries),
             Frame::Start { ask, start } => self.answer(ask, start),
             Frame::Steer {
                 ask,
@@ -899,6 +967,10 @@ impl<S: Store> End<S> {
                 )))
             }
             Frame::Message { id, body } => self.message_refused(id, body),
+            // Quest ids and reasons aren't work.
+            Frame::Carries { .. } => Some(Refused::Dropped(format!(
+                "{other}, a worker, told of carries, which aren't work"
+            ))),
             Frame::Hello(_)
             | Frame::Have { .. }
             | Frame::Presence { .. }
@@ -2262,6 +2334,171 @@ mod tests {
         );
     }
 
+    /// The carries skiff's node ordered, as it tells them.
+    fn skiffs_carries(why: &str) -> Vec<Value> {
+        vec![json!({
+            "at": "2026-11-16T08:00:00Z", "by": "WCJQSG", "session": "s-harbour",
+            "from": "skiff", "to": "tern", "why": why, "left": false,
+        })]
+    }
+
+    #[tokio::test]
+    async fn a_nodes_carries_cross_to_each_machine_it_links_and_no_further() {
+        let (skiff, kestrel) = (Memory::default(), Memory::default());
+        for (machine, why) in [
+            ("skiff", "it needs the camera"),
+            ("tern", "heard from tern"),
+        ] {
+            skiff
+                .put_told_carries(machine, &skiffs_carries(why))
+                .expect("the carries are kept");
+        }
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _near = end(&skiff, "skiff", near);
+        let _far = end(&kestrel, "kestrel", far);
+        until(&kestrel, |store| {
+            store.told_carries().get("skiff") == Some(&skiffs_carries("it needs the camera"))
+        })
+        .await;
+
+        skiff
+            .put_told_carries("skiff", &skiffs_carries("it needs the lens"))
+            .expect("the carries are kept");
+        until(&kestrel, |store| {
+            store.told_carries().get("skiff") == Some(&skiffs_carries("it needs the lens"))
+        })
+        .await;
+        skiff
+            .put_told_carries("skiff", &[])
+            .expect("the carries are let go");
+        until(&kestrel, |store| store.told_carries().is_empty()).await;
+        assert_eq!(
+            skiff.told_carries().keys().collect::<Vec<_>>(),
+            ["tern"],
+            "tern's, which skiff only heard, never went on, and kestrel told of none back"
+        );
+    }
+
+    /// A link no carries cross: whether skiff's end releases, the far end
+    /// releases and the far end is a worker; whether the far end says it
+    /// shows them; what it tells; and what the link is.
+    type Unshown = ((bool, bool, bool), bool, Vec<Value>, &'static str);
+
+    /// The links no carries cross.
+    fn unshown_links() -> Vec<Unshown> {
+        let many: Vec<Value> = (0..=kept::MOST_TOLD)
+            .flat_map(|_| skiffs_carries("one too many"))
+            .collect();
+        vec![
+            (
+                (false, false, false),
+                false,
+                skiffs_carries("older"),
+                "an older end",
+            ),
+            (
+                (true, false, false),
+                true,
+                skiffs_carries("lent"),
+                "a link releasing a lent machine",
+            ),
+            (
+                (false, true, false),
+                true,
+                skiffs_carries("lent"),
+                "a lent machine's link",
+            ),
+            (
+                (false, false, true),
+                true,
+                skiffs_carries("a worker"),
+                "a worker's link",
+            ),
+            (
+                (false, false, false),
+                true,
+                many,
+                "an end telling of too many",
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn no_carries_cross_unless_both_ends_show_them_and_neither_is_lent_or_a_worker() {
+        for ((releases, far_releases, worker), shows, told, said) in unshown_links() {
+            let skiff = Memory::default();
+            skiff.start_here("launcher", json!({"session": "launcher"}), true);
+            skiff
+                .put_told_carries("skiff", &skiffs_carries("it needs the camera"))
+                .expect("the carries are kept");
+            let (near, far) = tokio::io::duplex(1 << 20);
+            let store = skiff.clone();
+            let _skiff_end = tokio::spawn(async move {
+                let (reading, writing) = tokio::io::split(near);
+                let connection = Connection {
+                    releases,
+                    worker,
+                    ..connection(reading, writing)
+                };
+                run(store, &realm("skiff"), connection, None, None).await
+            });
+            let (far_reading, mut far_writing) = tokio::io::split(far);
+            let hello = Hello {
+                shows,
+                releases: far_releases,
+                ..realm("kestrel").hello()
+            };
+            send(&mut far_writing, &Frame::Hello(hello))
+                .await
+                .expect("the far end says hello");
+            let mut lines = BufReader::new(far_reading).lines();
+            let mut heard = Vec::new();
+            let waited = tokio::time::timeout(PATIENCE, async {
+                while let Some(line) = lines.next_line().await.expect("the pipe reads") {
+                    let frame = serde_json::from_str::<Frame>(&line).expect("a frame");
+                    let presence = matches!(frame, Frame::Presence { .. });
+                    heard.push(frame);
+                    if presence {
+                        return;
+                    }
+                }
+            })
+            .await;
+            assert!(waited.is_ok(), "{said}: skiff's session never crossed");
+            let crossed = heard
+                .iter()
+                .any(|frame| matches!(frame, Frame::Carries { .. }));
+            assert_eq!(crossed, said.ends_with("too many"), "{said}: {heard:?}");
+
+            for frame in [
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(vec!["walgit".to_owned()]),
+                },
+                Frame::Carries { carries: told },
+                Frame::Presence {
+                    session: "walgit".to_owned(),
+                    body: json!({"session": "walgit"}),
+                    leases: None,
+                    held: None,
+                },
+            ] {
+                send(&mut far_writing, &frame)
+                    .await
+                    .expect("the far end speaks");
+            }
+            until(&skiff, |store| {
+                store.presences().iter().any(|p| p.session == "walgit")
+            })
+            .await;
+            assert_eq!(
+                skiff.told_carries().keys().collect::<Vec<_>>(),
+                ["skiff"],
+                "{said}: what kestrel told is refused, and the link carries on"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_sessions_changes_are_carried_with_it_and_go_when_it_ends() {
         let skiff = Memory::default();
@@ -2421,6 +2658,7 @@ mod tests {
             updates: true,
             runs: true,
             carries: true,
+            shows: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await

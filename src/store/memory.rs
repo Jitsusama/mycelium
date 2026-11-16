@@ -30,6 +30,8 @@ struct Held {
     /// Why each machine's last link was refused, until one was admitted.
     links_refused: BTreeMap<String, String>,
     machines: BTreeMap<String, Machine>,
+    /// The carries each machine's node told of.
+    carries: BTreeMap<String, Vec<Value>>,
     /// Processes said to have ended, whose sessions are ended whatever
     /// the test said of them.
     ended: BTreeSet<i64>,
@@ -349,6 +351,21 @@ impl Store for Memory {
         let mut held = self.held();
         held.machines.insert(machine.name.clone(), machine.clone());
         held.tell(&Change::Machine(machine.name.clone()));
+        Ok(())
+    }
+
+    fn told_carries(&self) -> BTreeMap<String, Vec<Value>> {
+        self.held().carries.clone()
+    }
+
+    fn put_told_carries(&self, machine: &str, told: &[Value]) -> io::Result<()> {
+        let mut held = self.held();
+        if told.is_empty() {
+            held.carries.remove(machine);
+        } else {
+            held.carries.insert(machine.to_owned(), told.to_vec());
+        }
+        held.tell(&Change::Carries(machine.to_owned()));
         Ok(())
     }
 
