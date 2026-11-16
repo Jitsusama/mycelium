@@ -4,14 +4,17 @@
 
 mod realm;
 
-/// A tenth of the cells to all of them at most fifteen times as long.
-/// Work that grows with them takes about ten times as long; work that
-/// grows with their square takes more once it is a third of the build at
-/// ten thousand, as a scan of every session for each repository once was.
+/// Half the cells to all of them at most three times as long. Ten
+/// thousand cells' records are past any cache and a thousand's are not,
+/// so from a tenth a busy builder took 15.2 and 15.6 times as long for
+/// work that grows with them (2026-11-17), against 11.5 to 12.8 when
+/// quieter. From half, where both are past it, work growing with the
+/// cells takes twice as long and with their square four times, as a scan
+/// of every session for each repository once did.
 #[cfg(not(any(target_env = "musl", target_os = "macos")))]
 const GROWTH: realm::Growth = realm::Growth {
-    from: realm::CELLS / 10,
-    times: 15,
+    from: realm::CELLS / 2,
+    times: 3,
     within: None,
 };
 
