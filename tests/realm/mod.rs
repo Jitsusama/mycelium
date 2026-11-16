@@ -51,7 +51,6 @@ pub struct Growth {
 const TIMINGS: usize = 5;
 
 /// The system's allocator, counting what is held and the most held.
-#[expect(unsafe_code, reason = "an allocator is unsafe to implement")]
 mod counting;
 
 /// That the records `making` makes of ten thousand cells hold to the bar,
