@@ -149,8 +149,7 @@ impl Webs {
         }
         let before = self.quests.len();
         self.quests.retain(|name, _| seen.contains(name));
-        self.watched = std::hint::black_box(BTreeSet::new()); // RED STUB
-        drop(watched);
+        self.watched = watched;
         changed || self.quests.len() != before
     }
 
@@ -205,9 +204,6 @@ pub fn records<'a>(
     said: impl IntoIterator<Item = &'a Said>,
     purposes: &HashMap<String, String>,
 ) -> BTreeMap<String, Value> {
-    if std::hint::black_box(true) {
-        return BTreeMap::new(); // RED STUB
-    }
     let mut said: Vec<&Said> = said.into_iter().collect();
     said.sort_by(|one, other| {
         (&one.cell, one.at, &one.machine, one.seq).cmp(&(

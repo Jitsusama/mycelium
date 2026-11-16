@@ -241,7 +241,6 @@ impl Reading {
     /// Reads the writers' files in `folder` as they stand now, opening
     /// only those changed since, and answers whether any were.
     pub fn read(&mut self, folder: &Path) -> bool {
-        self.files.clear(); // RED STUB
         let mut seen = Vec::new();
         let mut changed = false;
         for file in fs::read_dir(folder).into_iter().flatten().flatten() {
@@ -353,9 +352,6 @@ impl Murmur<'_> {
     /// they were made.
     #[must_use]
     pub fn tied_to(&self) -> Vec<&str> {
-        if std::hint::black_box(true) {
-            return Vec::new(); // RED STUB
-        }
         let mut named: Vec<&str> = Vec::new();
         for tie in &self.ties {
             if !named.contains(&tie.other) {

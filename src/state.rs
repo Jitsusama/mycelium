@@ -34,9 +34,6 @@ impl State {
     /// say: a session on `machine` before one of the same address
     /// elsewhere, as a cell there is the one murmuring there.
     pub fn purposes(&self, machine: &str) -> HashMap<String, String> {
-        if std::hint::black_box(true) {
-            return HashMap::new(); // RED STUB
-        }
         let mut purposes = HashMap::new();
         let (here, elsewhere): (Vec<&Session>, Vec<&Session>) = self
             .sessions
