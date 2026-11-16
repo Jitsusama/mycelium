@@ -766,8 +766,9 @@ struct Starting {
     /// none there, that machine's home.
     #[arg(long)]
     folder: Option<PathBuf>,
-    /// Makes a machine for it from a provider's offer, which may cost
-    /// money, where no machine of the realm takes it.
+    /// Makes a machine for it from a provider's offer that costs money,
+    /// where no machine of the realm takes it. One that costs nothing is
+    /// made without it.
     #[arg(long)]
     may_cost: bool,
     /// The program and its arguments, after `--`.

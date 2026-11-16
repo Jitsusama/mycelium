@@ -180,6 +180,24 @@ pub fn let_go(store: &impl Store, machine: &str, kept: impl Fn(&str) -> bool) {
     }
 }
 
+/// Has `machine`, made for work and now let go, leave the realm `at`: it
+/// is no longer one of the machines, as one whose `leaves_at` has passed
+/// isn't, and every session it carried here is let go, since a machine
+/// released is never dialled again. One that declared nothing has no
+/// `leaves_at` to say it by, so it stays, out of reach, as any machine a
+/// link no longer reaches does.
+pub fn left(store: &impl Store, machine: &str, at: jiff::Timestamp) {
+    if let Some(mut said) = store.machines().into_iter().find(|one| one.name == machine)
+        && let Some(declared) = said.declared.as_mut()
+    {
+        declared.leaves_at = Some(declared.leaves_at.map_or(at, |leaves| leaves.min(at)));
+        if let Err(error) = store.put_machine(&said) {
+            eprintln!("couldn't say {machine} has left: {error}");
+        }
+    }
+    let_go(store, machine, |_| false);
+}
+
 /// Marks every session `machine` carried here out of reach since `since`:
 /// a link that drops says nothing of whether they still run, so they stay
 /// until a link to that machine comes back and says which do.
