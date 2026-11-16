@@ -92,7 +92,8 @@ messages, being a union, reach every machine linked by any path.
 same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
-   "steers", "releases", "updates", "runs"}}`, first, from each end. Each end's
+   "steers", "releases", "updates", "runs", "carries"}}`, first, from each
+   end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
    older than it says nothing of machines and is sent nothing. `starts`
@@ -100,8 +101,8 @@ same code, each line a JSON value:
    is asked none of it. `releases` says the end's way to the other
    end's machine can release that machine, as a provider's program can;
    only such an end is told the machine has handed over. `updates` says
-   it carries update asks, and `runs` runs; an end older than either
-   is asked none of it.
+   it carries update asks, `runs` runs and `carries` carry asks; an end
+   older than any of them is asked none of it.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -211,12 +212,21 @@ same code, each line a JSON value:
     faster than its asker reads waits rather than filling the link.
     `{"Unrun": {"ask"}}` says the asker let go, and the run is stopped;
     a link that drops stops every run it carried.
+16. `{"Carry": {"ask", "quest", "to", "checked"}}`: carry `quest`'s
+    sessions off the other end's machine to machine `to`, for the
+    person, answered by `Started` with `Carried`. `checked` says this
+    end's node saw the person's own login ask, and is left out when
+    false. The other end takes it only if its membership proved which
+    machine asked and `checked` is true, then runs the carry's steps
+    against its own node's socket, as `mycelium carry` does; otherwise
+    it refuses, saying why. No time limits the answer, since a carry
+    waits minutes for its sessions to end.
 
 Only one link joins two machines, and whichever dialled first holds it,
 so each end carries what its own node asks of the other machine: starts,
-steers and updates, and runs from the dialling end only. The dialling
-end runs in its node and takes them there. The dialled end runs in a
-process SSH started, outside its node, so it holds a `Carry`
+steers, updates and carries, and runs from the dialling end only. The
+dialling end runs in its node and takes them there. The dialled end runs
+in a process SSH started, outside its node, so it holds a `Carry`
 connection to its node's socket (see The Socket), asked again every
 five seconds while the node can't be reached. Its node
 joins a session there, or one it started, over the way its own dial to
@@ -1172,6 +1182,7 @@ in milliseconds.
 | `health` | `state`, and each linked machine and served file as a source |
 | `steer` with `address` and `steer` | `steered` with the `machine` whose session's inbox has it |
 | `update` with `machine` | `updated`, the ending its updater said, as `Updated` gives it |
+| `carry` with `quest` and `to` | `carried`, where its sessions went, as `mycelium carry` says it |
 
 A record carries `key` (`session:<id>`, `machine:<name>`,
 `message:<id>`, `team:<address>`, `network:<name>`, `unanswered:<id>`,
@@ -1375,6 +1386,15 @@ session no machine runs, or one two do, is `refused`, saying which.
 An `update` asks `machine` to update itself, as `"Update"` does, and
 is answered once its updater says how it ended, the connection's other
 asks answered meanwhile; one no updater or link answers is `refused`.
+A `carry` is the person's one act to carry `quest` to machine `to`,
+as a launcher asks it, and only the person's own login may ask it:
+one an agent's process asks is `refused`, as a `"Free"` is. The node
+finds the one machine `quest`'s sessions run or are parked on, then
+runs the carry's steps itself against its own socket, or asks that
+machine's node over its link with `checked` set. It is answered once
+the carry has ended, the connection's other asks answered meanwhile.
+A quest nothing runs, or one split across machines, is `refused`, as
+is a carry whose step failed, saying which step and why.
 
 The node also serves files another program keeps, each as a kind of its
 own, so a reader asks the node and hears each change rather than reading

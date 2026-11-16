@@ -617,6 +617,35 @@ fn parked(session: &Session, boot: Option<&str>) -> bool {
         }
 }
 
+/// The one machine `quest`'s sessions run on, or are parked on, among
+/// `sessions`, the realm's as a node sees them, which is where a carry of
+/// it starts.
+///
+/// # Errors
+///
+/// When no session of the quest runs anywhere, or they run on more than
+/// one machine, so which to carry it from can't be told.
+pub fn runs_on(sessions: &[Session], quest: &str) -> Result<String, String> {
+    let mut machines: Vec<&str> = sessions
+        .iter()
+        .filter(|session| session.quest.as_deref() == Some(quest))
+        .filter(|session| runs(session) || parked(session, None))
+        .map(|session| session.machine.as_str())
+        .collect();
+    machines.sort_unstable();
+    machines.dedup();
+    match machines.as_slice() {
+        [one] => Ok((*one).to_owned()),
+        [] => Err(format!(
+            "no session of {quest} runs on any machine in reach, so there's nothing to carry"
+        )),
+        several => Err(format!(
+            "{quest}'s sessions run on {}, so which machine to carry it from can't be told",
+            several.join(" and ")
+        )),
+    }
+}
+
 /// The session's own id, as its presence names it and its done file does.
 fn session_id(session: &Session) -> Option<&str> {
     session.presence.get("session").and_then(Value::as_str)
@@ -637,7 +666,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, carry};
+    use super::{Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, carry, runs_on};
     use crate::placement::Need;
     use crate::record::{Session, State};
     use crate::wire::{Start, Started};
@@ -863,6 +892,41 @@ mod tests {
             .and_then(|line| line["said"].as_str())
             .unwrap_or("")
             .to_owned()
+    }
+
+    #[test]
+    fn a_quest_is_carried_from_the_one_machine_its_sessions_run_on() {
+        let none = json!({});
+        let parked = json!({"state": "parked"});
+        let only = |sessions: &[Session]| runs_on(sessions, QUEST);
+        assert_eq!(
+            only(&[
+                session("GONE01", "skiff", QUEST, "ended", &none),
+                session("THERE2", "tern", QUEST, "busy", &none),
+                session("NAPS03", "tern", QUEST, "ended", &parked),
+                session("OTHER4", "kestrel", "QEST-20261107-OTHERS", "idle", &none),
+            ]),
+            Ok("tern".to_owned()),
+            "it runs, or is parked, on tern alone; an ended one and another quest don't count"
+        );
+        assert_eq!(
+            only(&[session("GONE01", "skiff", QUEST, "ended", &none)]),
+            Err(format!(
+                "no session of {QUEST} runs on any machine in reach, so there's nothing to carry"
+            )),
+            "a quest nothing runs is carried from nowhere"
+        );
+        assert_eq!(
+            only(&[
+                session("THERE2", "tern", QUEST, "busy", &none),
+                session("HERE01", "skiff", QUEST, "idle", &none),
+            ]),
+            Err(format!(
+                "{QUEST}'s sessions run on skiff and tern, so which machine to carry it from \
+                 can't be told"
+            )),
+            "a quest split across machines isn't guessed at"
+        );
     }
 
     #[test]

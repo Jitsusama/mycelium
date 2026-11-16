@@ -162,6 +162,20 @@ pub enum Frame {
         /// Which ask, so its answer finds it.
         ask: u64,
     },
+    /// Carry a quest's sessions off the other end's machine, as the
+    /// person asked on this one.
+    Carry {
+        /// Which ask, so its answer finds it.
+        ask: u64,
+        /// The quest, by its id.
+        quest: String,
+        /// The machine it goes to.
+        to: String,
+        /// Whether this end's node saw the person's own login ask, which
+        /// the other end carries nothing without.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        checked: bool,
+    },
     /// The talks this end follows and how much of each it has, so the
     /// other end carries on with those whose sessions run there.
     Follow {
@@ -643,29 +657,10 @@ impl<S: Store> End<S> {
             }
             Frame::Presence {
                 session,
-                mut body,
+                body,
                 leases,
                 held,
-            } => {
-                // The held id is the link's to say, never the presence's.
-                if let Some(fields) = body.as_object_mut() {
-                    fields.remove(mesh::HELD_AS);
-                    if let Some(held) = held {
-                        fields.insert(mesh::HELD_AS.to_owned(), Value::String(held));
-                    }
-                }
-                let put = self.store.put_presence(&session, &self.other, &body);
-                if put.is_ok() {
-                    self.carried.insert(session.clone());
-                    if let Some(leases) = leases {
-                        self.kept(
-                            &session,
-                            self.store.put_leases(&session, &self.other, &leases),
-                        );
-                    }
-                }
-                self.kept(&session, put);
-            }
+            } => self.hear_presence(&session, body, leases, held),
             Frame::Ended { session } => {
                 self.carried.remove(&session);
                 self.store.remove_presence(&session, &self.other)?;
@@ -700,6 +695,12 @@ impl<S: Store> End<S> {
             Frame::Taken { ask } => self.runs.taken(ask),
             // Dropping it stops it.
             Frame::Unrun { ask } => drop(self.runs.here.remove(&ask)),
+            Frame::Carry {
+                ask,
+                quest,
+                to,
+                checked,
+            } => self.carry(ask, (quest, to), checked),
             Frame::Follow { talks } => {
                 if let Some(following) = self.following.as_mut() {
                     following.follow(talks);
@@ -729,6 +730,7 @@ impl<S: Store> End<S> {
             Asked::Steer(_) => self.said.steers.then_some(()).ok_or("carry steers"),
             Asked::Update => self.said.updates.then_some(()).ok_or("be asked to update"),
             Asked::Run(..) => self.said.runs.then_some(()).ok_or("run commands"),
+            Asked::Carry { .. } => self.said.carries.then_some(()).ok_or("carry sessions"),
         };
         if let Err(cannot) = carried {
             // The asker may have given up; then nobody hears it.
@@ -758,6 +760,12 @@ impl<S: Store> End<S> {
                 checked: steer.checked,
             },
             Asked::Update => Frame::Update { ask: id },
+            Asked::Carry { quest, to, checked } => Frame::Carry {
+                ask: id,
+                quest,
+                to,
+                checked,
+            },
             Asked::Run(..) => unreachable!("a run is sent above"),
         };
         send(writing, &frame).await
@@ -857,6 +865,35 @@ impl<S: Store> End<S> {
         send(writing, &frame).await
     }
 
+    /// Keeps the presence the other end sent of `session`, with the leases
+    /// it holds and the id the link holds it by.
+    fn hear_presence(
+        &mut self,
+        session: &str,
+        mut body: Value,
+        leases: Option<Vec<Value>>,
+        held: Option<String>,
+    ) {
+        // The held id is the link's to say, never the presence's.
+        if let Some(fields) = body.as_object_mut() {
+            fields.remove(mesh::HELD_AS);
+            if let Some(held) = held {
+                fields.insert(mesh::HELD_AS.to_owned(), Value::String(held));
+            }
+        }
+        let put = self.store.put_presence(session, &self.other, &body);
+        if put.is_ok() {
+            self.carried.insert(session.to_owned());
+            if let Some(leases) = leases {
+                self.kept(
+                    session,
+                    self.store.put_leases(session, &self.other, &leases),
+                );
+            }
+        }
+        self.kept(session, put);
+    }
+
     /// Tells an end that carries steers which talks this end follows, so
     /// it carries on with those whose sessions run on its machine.
     async fn send_follow(&mut self, writing: &mut (impl AsyncWrite + Unpin)) -> io::Result<()> {
@@ -941,6 +978,60 @@ impl<S: Store> End<S> {
         let here = self.here.clone();
         tokio::spawn(async move {
             let reply = starts::update(node, here).await;
+            // A link that dropped meanwhile has nobody to answer.
+            let _ = answering.send((ask, reply));
+        });
+    }
+
+    /// Carries `quest`'s sessions off this machine to `to` as the other
+    /// end asks for the person, away from the link's own work, since it
+    /// waits minutes for them to end: only when the other end is proven
+    /// to be its machine and its node `checked` the person asked, so no
+    /// agent there carries a session here, and never as anyone but the
+    /// person.
+    fn carry(&self, ask: u64, (quest, to): (String, String), checked: bool) {
+        let answering = self.answering.clone();
+        let hands = if !self.proven {
+            Err(format!(
+                "{} carries a session only when asked over a link its key proved, which \
+                 this one isn't",
+                self.here
+            ))
+        } else if !checked {
+            Err(format!(
+                "{} didn't say it saw the person ask, so {} carries none of {quest}'s \
+                 sessions for it",
+                self.other, self.here
+            ))
+        } else {
+            self.node
+                .clone()
+                .zip(
+                    self.exchange
+                        .as_ref()
+                        .map(|exchange| exchange.places().clone()),
+                )
+                .ok_or_else(|| format!("{} carries no sessions over this link", self.here))
+        };
+        let (node, places) = match hands {
+            Ok(hands) => hands,
+            Err(why) => {
+                eprintln!(
+                    "{} asked {} to carry {quest} to {to}, refused: {why}",
+                    self.other, self.here
+                );
+                // The link outlives this call, so its loop is there to send it.
+                let _ = answering.send((ask, Err(why)));
+                return;
+            }
+        };
+        eprintln!(
+            "{} asked {} to carry {quest} to {to}, for the person",
+            self.other, self.here
+        );
+        let here = self.here.clone();
+        tokio::spawn(async move {
+            let reply = starts::carry(node, places, here, (quest, to)).await;
             // A link that dropped meanwhile has nobody to answer.
             let _ = answering.send((ask, reply));
         });
@@ -1251,7 +1342,7 @@ mod tests {
 
     use super::*;
     use crate::declared::Kind;
-    use crate::link::membership::{Realm, VERSION};
+    use crate::link::membership::{Proven, Realm, VERSION};
     use crate::store::memory::Memory;
     use crate::wire::By;
 
@@ -1882,6 +1973,7 @@ mod tests {
             releases: false,
             updates: true,
             runs: true,
+            carries: true,
         };
         send(&mut far_writing, &Frame::Hello(personal))
             .await
@@ -1898,6 +1990,66 @@ mod tests {
             matches!(heard.as_slice(), [Frame::Hello(_)]),
             "only skiff's hello crossed: {heard:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_carry_is_taken_only_as_the_asking_node_saw_the_person_ask_it() {
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        let proven = Proven {
+            by: realm("skiff"),
+            far: "kestrel".to_owned(),
+        };
+        let skiff = Memory::default();
+        let skiff_end = tokio::spawn(async move {
+            run(skiff, &proven, connection(reading, writing), None, None).await
+        });
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        send(&mut far_writing, &Frame::Hello(realm("kestrel").hello()))
+            .await
+            .expect("the far end says hello");
+        let mut lines = BufReader::new(far_reading).lines();
+        let mut answer = async |ask: u64, checked: bool| {
+            let carry = Frame::Carry {
+                ask,
+                quest: "QEST-20261115-HARBOR".to_owned(),
+                to: "kestrel".to_owned(),
+                checked,
+            };
+            send(&mut far_writing, &carry).await.expect("it asks");
+            loop {
+                let line = lines.next_line().await.expect("the pipe reads");
+                let line = line.expect("skiff answers before it ends");
+                if let Frame::Started {
+                    ask: answered,
+                    reply,
+                } = serde_json::from_str(&line).expect("a frame")
+                    && answered == ask
+                {
+                    return reply;
+                }
+            }
+        };
+        assert_eq!(
+            tokio::time::timeout(PATIENCE, answer(1, false))
+                .await
+                .expect("in time"),
+            Err(
+                "kestrel didn't say it saw the person ask, so skiff carries none of \
+                 QEST-20261115-HARBOR's sessions for it"
+                    .to_owned()
+            ),
+            "a carry its asking node didn't vouch for as the person's is refused"
+        );
+        assert_eq!(
+            tokio::time::timeout(PATIENCE, answer(2, true))
+                .await
+                .expect("in time"),
+            Err("skiff carries no sessions over this link".to_owned()),
+            "one it vouched for goes on to what this end can carry"
+        );
+        drop(far_writing);
+        skiff_end.abort();
     }
 
     #[tokio::test]

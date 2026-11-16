@@ -120,6 +120,11 @@ pub trait Steers: Send + Sync + 'static {
     /// link reaching it, answering how its updater said it ended, or why
     /// it couldn't be asked.
     fn update(&self, machine: &str) -> impl Future<Output = Result<Value, String>> + Send;
+
+    /// Carries `quest`'s sessions to the machine `to` as the person asks,
+    /// from whichever machine runs them, answering where each went, or
+    /// why it wasn't carried: only the person's own login asks it.
+    fn carry(&self, quest: &str, to: &str) -> impl Future<Output = Result<Value, String>> + Send;
 }
 
 /// The version of the interface this node speaks.
@@ -192,6 +197,28 @@ fn offered(holds: &impl Holds, kind: &str, deep: Vec<String>) -> Vec<String> {
     deep
 }
 
+/// The records of `kind` a list asks for, at most `limit` of them and only
+/// their `fields` if it names them, answered under `id`.
+fn list_answer(
+    holds: &impl Holds,
+    id: &Value,
+    kind: String,
+    limit: Option<usize>,
+    fields: Option<&[String]>,
+) -> Result<Value, Refusal> {
+    let Some(records) = holds.records(&kind) else {
+        return Err(Refusal::UnknownKind(kind));
+    };
+    let records: Vec<Value> = listed(holds, &kind, records, limit)
+        .into_iter()
+        .map(|record| match fields {
+            Some(paths) => fields::projected(record, paths),
+            None => record,
+        })
+        .collect();
+    Ok(json!({"id": id, "records": records}))
+}
+
 /// The answer to `ask`, now, or none for a watch, which answers through
 /// `answering` for as long as it lasts, a steer, which answers through it
 /// once its session's machine has it, or an unwatch, which answers not at
@@ -216,19 +243,7 @@ fn answer<H: Holds + Steers>(
             kind,
             limit,
             fields,
-        } => holds
-            .records(&kind)
-            .map(|records| {
-                let records: Vec<Value> = listed(holds.as_ref(), &kind, records, limit)
-                    .into_iter()
-                    .map(|record| match &fields {
-                        Some(paths) => fields::projected(record, paths),
-                        None => record,
-                    })
-                    .collect();
-                json!({"id": id, "records": records})
-            })
-            .ok_or(Refusal::UnknownKind(kind)),
+        } => list_answer(holds.as_ref(), &id, kind, limit, fields.as_deref()),
         What::Watch {
             kind,
             keys,
@@ -298,6 +313,14 @@ fn answer<H: Holds + Steers>(
             let holds = Arc::clone(holds);
             later(answering, id, begun, async move {
                 Ok(("updated", holds.update(&machine).await?))
+            });
+            return None;
+        }
+        What::Carry { quest, to } => {
+            // A carry waits for its sessions to end, which takes minutes.
+            let holds = Arc::clone(holds);
+            later(answering, id, begun, async move {
+                Ok(("carried", holds.carry(&quest, &to).await?))
             });
             return None;
         }

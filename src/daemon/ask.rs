@@ -58,6 +58,14 @@ pub enum What {
         /// The machine's name.
         machine: String,
     },
+    /// The person's own carry of `quest`'s sessions to the machine `to`,
+    /// from whichever machine runs them.
+    Carry {
+        /// The quest, by its id.
+        quest: String,
+        /// The machine it goes to.
+        to: String,
+    },
 }
 
 /// Why an ask can't be answered, by the interface's codes.
@@ -119,6 +127,14 @@ pub fn read(line: &str) -> Result<Ask, (Value, Refusal)> {
             .map(str::to_owned)
             .ok_or_else(|| refused(Refusal::NotAnAsk(format!("{ask:?} names no `kind`"))))
     };
+    let named = |field: &str, missing: &str| {
+        value
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|named| !named.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| refused(Refusal::NotAnAsk(missing.to_owned())))
+    };
     let keys = |name| {
         value.get(name).and_then(Value::as_array).map(|keys| {
             keys.iter()
@@ -174,6 +190,10 @@ pub fn read(line: &str) -> Result<Ask, (Value, Refusal)> {
                 .ok_or_else(|| {
                     refused(Refusal::NotAnAsk("an update names no `machine`".to_owned()))
                 })?,
+        },
+        "carry" => What::Carry {
+            quest: named("quest", "a carry names no `quest`")?,
+            to: named("to", "a carry names no machine it goes `to`")?,
         },
         other => return Err(refused(Refusal::UnknownAsk(other.to_owned()))),
     };
@@ -264,6 +284,33 @@ mod tests {
                 read(nothing).map_err(|(id, refusal)| (id, refusal.code())),
                 Err((json!(7), "not-an-ask")),
                 "a steer for nobody, or saying nothing, isn't one: {nothing}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_carry_is_read_with_its_quest_and_where_it_goes() {
+        assert_eq!(
+            read(r#"{"id":8,"ask":"carry","quest":"QEST-1","to":"tern"}"#),
+            Ok(Ask {
+                id: json!(8),
+                what: What::Carry {
+                    quest: "QEST-1".to_owned(),
+                    to: "tern".to_owned(),
+                },
+            }),
+            "a carry names its quest and the machine it goes to"
+        );
+        for nothing in [
+            r#"{"id":9,"ask":"carry","to":"tern"}"#,
+            r#"{"id":9,"ask":"carry","quest":"","to":"tern"}"#,
+            r#"{"id":9,"ask":"carry","quest":"QEST-1"}"#,
+            r#"{"id":9,"ask":"carry","quest":"QEST-1","to":7}"#,
+        ] {
+            assert_eq!(
+                read(nothing).map_err(|(id, refusal)| (id, refusal.code())),
+                Err((json!(9), "not-an-ask")),
+                "a carry of no quest, or to nowhere, isn't one: {nothing}"
             );
         }
     }
