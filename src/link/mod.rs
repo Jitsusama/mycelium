@@ -1370,7 +1370,8 @@ impl<S: Store> End<S> {
     /// Keeps what the other end says its machine is, which only it can
     /// say: a machine named otherwise is refused, and it is ready while
     /// this link carries it, whatever it claims. A worker is withheld the
-    /// quests above those shared with it.
+    /// quests above those shared with it, and so is a machine that declares
+    /// nothing of itself, as a node does for a while as it restarts.
     fn keep_machine(&mut self, mut said: Machine) {
         if said.name != self.other {
             self.kept(
@@ -1384,7 +1385,7 @@ impl<S: Store> End<S> {
             exchange.withhold_above(
                 said.declared
                     .as_ref()
-                    .is_some_and(crate::declared::Declared::is_worker),
+                    .is_none_or(crate::declared::Declared::is_worker),
             );
         }
         self.kept(&said.name, self.store.put_machine(&said));
@@ -3445,7 +3446,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_parent_reaches_the_other_end_only_once_its_machine_is_known_no_worker() {
+    async fn a_parent_reaches_the_other_end_only_once_its_machine_declares_no_worker() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let home = Places {
             quests: dir.path().join("quests"),
@@ -3514,15 +3515,7 @@ mod tests {
         };
         let mut tern = facts::measure("tern", &nowhere);
         tern.state = Readiness::Ready;
-        says(&mut far_writing, &[Frame::Machine(Box::new(tern.clone()))]).await;
-        heard_until(&mut lines, |frame| names(frame, top)).await;
-
-        tern.declared = Some(
-            serde_json::from_value(json!({
-                "reach": [], "outlives": [], "costs_money": true, "taints": []
-            }))
-            .expect("a declaration"),
-        );
+        tern.declared = None;
         let want = |quest: &str| {
             Frame::Share(Say::Want {
                 quest: quest.to_owned(),
@@ -3530,20 +3523,50 @@ mod tests {
                 at: Some(0),
             })
         };
+        let child_sent =
+            |frame: &Frame| matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == child);
+        let of_top = |frame: &Frame| match frame {
+            Frame::Share(Say::File { quest, .. }) => quest == top,
+            Frame::Share(Say::Shares { quests, .. }) => quests.iter().any(|named| named == top),
+            _ => false,
+        };
+        says(
+            &mut far_writing,
+            &[
+                Frame::Machine(Box::new(tern.clone())),
+                want(top),
+                want(child),
+            ],
+        )
+        .await;
+        let sent = heard_until(&mut lines, child_sent).await;
+        assert!(
+            !sent.iter().any(of_top),
+            "tern declares nothing of itself, as a restarting node does, so it is sent \
+             nothing of the parent: {sent:?}"
+        );
+
+        let declares = |costs_money: bool| {
+            serde_json::from_value(json!({
+                "reach": [], "outlives": [], "costs_money": costs_money, "taints": []
+            }))
+            .expect("a declaration")
+        };
+        tern.declared = Some(declares(false));
+        says(&mut far_writing, &[Frame::Machine(Box::new(tern.clone()))]).await;
+        heard_until(&mut lines, |frame| names(frame, top)).await;
+
+        tern.declared = Some(declares(true));
         says(
             &mut far_writing,
             &[Frame::Machine(Box::new(tern)), want(top), want(child)],
         )
         .await;
-        let sent = heard_until(
-            &mut lines,
-            |frame| matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == child),
-        )
-        .await;
-        let of_top =
-            |frame: &Frame| matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == top);
+        let sent = heard_until(&mut lines, child_sent).await;
         assert!(
-            !sent.iter().any(of_top),
+            !sent
+                .iter()
+                .any(|frame| matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == top)),
             "once tern says it costs money, it is sent nothing of the parent: {sent:?}"
         );
     }
