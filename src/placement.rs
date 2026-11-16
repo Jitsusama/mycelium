@@ -6,10 +6,15 @@
 //!
 //! A machine's taints are those its configuration declares and those its
 //! conditions set while they last: running on its battery, running on it
-//! below the mark at which it is let sleep, which refuses all new work, or
-//! being past its queue's memory limit. A taint that refuses never keeps work off a
-//! machine; one that would rather not only ranks the machine after every
-//! other that qualifies.
+//! below the mark at which it is let sleep, which refuses all new work,
+//! being past its queue's memory or processor limit, or its disk filling.
+//! A taint that refuses keeps work off a machine. A machine past a limit of
+//! its queue's, or whose room hasn't been said lately, goes after every
+//! other that qualifies; the rest are ranked by the preferences each meets,
+//! then by their [`headroom`], where each taint that would rather not is
+//! only a weight, and one of those near the best is chosen at random. A
+//! start this node placed counts against its machine
+//! until the machine's room shows it ([`Starts`]), so a burst spreads.
 //!
 //! Where no machine of the realm takes work, an offer may
 //! ([`to_make`]): each is judged by the facts its provider promises, the
@@ -22,6 +27,7 @@
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::hash::{BuildHasher, RandomState};
 
 use serde::{Deserialize, Serialize};
 
@@ -122,6 +128,8 @@ pub enum Because {
     LeavesFirst(jiff::Timestamp),
     /// One made would live only this long, ending before the work would.
     LivesOnly(jiff::SignedDuration),
+    /// Its room hasn't been said lately, so it earns no headroom.
+    Unheard,
 }
 
 impl fmt::Display for Need {
@@ -151,6 +159,7 @@ impl fmt::Display for Because {
             Because::LivesOnly(lives) => {
                 write!(f, "would live only {lives:#}, ending before the work")
             }
+            Because::Unheard => write!(f, "hasn't said its room lately"),
         }
     }
 }
@@ -185,32 +194,219 @@ pub const MEMORY_PRESSURE: &str = "memory-pressure";
 /// The key of the taint a machine whose home's disk is filling carries.
 pub const DISK_PRESSURE: &str = "disk-pressure";
 
-/// Places `work` among `machines`.
-#[must_use]
-pub fn place(work: &Work, machines: &[Machine]) -> Placement {
-    place_at(work, machines, jiff::Timestamp::now())
+/// The key of the taint a machine past its queue's processor limit carries.
+pub const CPU_PRESSURE: &str = "cpu-pressure";
+
+/// How long a start placed counts against its machine at most, where its
+/// room isn't said after it sooner.
+pub const STARTS_COUNT_FOR: jiff::SignedDuration = jiff::SignedDuration::from_mins(5);
+
+/// How old a machine's room may be and still earn it headroom: three of
+/// the minutes a link carries another machine's facts in, so one gone
+/// quiet never wins on what it said long ago.
+pub const ROOM_HEARD_WITHIN: jiff::SignedDuration = jiff::SignedDuration::from_mins(3);
+
+/// How far below the best headroom a machine may be and still be chosen at
+/// random beside it.
+pub const NEAR_BEST: f64 = 0.05;
+
+/// What a processor's whole headroom is worth: all of it free of pressure.
+pub const CPU_WEIGHT: f64 = 1.0;
+
+/// What a machine's whole memory free is worth.
+pub const MEMORY_WEIGHT: f64 = 1.0;
+
+/// What a machine's whole disk free is worth.
+pub const DISK_WEIGHT: f64 = 0.5;
+
+/// What each session or start a core carries costs.
+pub const SESSION_WEIGHT: f64 = 0.5;
+
+/// What each taint that would rather not costs, beside those that say a
+/// machine is over, which rank it after every machine that isn't.
+pub const RATHER_NOT_WEIGHT: f64 = 1.0;
+
+/// What a disk filling costs, beside one nearly or critically full, which
+/// costs as any taint that would rather not: a guard clearing what has
+/// waited a while is no reason to keep work off.
+pub const FILLING_WEIGHT: f64 = 0.25;
+
+/// What `taint`, which would rather not have the work, costs `machine`.
+fn costs(machine: &Machine, taint: &Taint) -> f64 {
+    if taint.key == DISK_PRESSURE && machine.disk_band == Some(Band::Filling) {
+        FILLING_WEIGHT
+    } else {
+        RATHER_NOT_WEIGHT
+    }
 }
 
-/// Places `work` among `machines` as of `now`.
-fn place_at(work: &Work, machines: &[Machine], now: jiff::Timestamp) -> Placement {
-    let mut judged: Vec<Judged> = machines.iter().map(|one| judge(work, one, now)).collect();
-    // Machines that qualify, those no taint would rather not have first,
-    // then by how many preferences each meets, earliest most, then by the
-    // memory it has free; a name settles the rest, so one ask answers the
-    // same as the next.
-    let chosen = judged
+/// How much room `machine` has for more work, carrying `load` and taints
+/// that would rather not have the work costing `rather_not` between them,
+/// where its room was `heard` lately: one sum of what is free of its
+/// processor, memory and disk, less what its sessions and starts take of
+/// its cores and what its taints cost, each by its weight. A share never
+/// said counts as none. This is the one place placement weighs a
+/// machine's room, to be tuned.
+#[must_use]
+pub fn headroom(machine: &Machine, load: Load, rather_not: f64, heard: bool) -> f64 {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a share needs no more precision than a double gives bytes"
+    )]
+    fn share(part: Option<u64>, whole: Option<u64>) -> f64 {
+        match (part, whole) {
+            (Some(part), Some(whole)) if whole > 0 => (part as f64 / whole as f64).clamp(0.0, 1.0),
+            _ => 0.0,
+        }
+    }
+    let room = machine.room.as_ref().filter(|_| heard);
+    let cpu = room.map_or(0.0, |room| {
+        (1.0 - room.pressure.cpu / 100.0).clamp(0.0, 1.0)
+    });
+    let memory = share(room.map(|room| room.memory_available), machine.memory);
+    let disk = share(machine.disk_free, machine.disk);
+    let cores = machine
+        .declared
+        .as_ref()
+        .and_then(|declared| declared.cores)
+        .or(machine.cpu.cores)
+        .unwrap_or(1)
+        .max(1);
+    let carried = f64::from(load.sessions.saturating_add(load.placed)) / f64::from(cores);
+    CPU_WEIGHT * cpu + MEMORY_WEIGHT * memory + DISK_WEIGHT * disk
+        - SESSION_WEIGHT * carried
+        - rather_not
+}
+
+/// Whether `machine`'s room was said within [`ROOM_HEARD_WITHIN`] of `now`.
+fn heard(machine: &Machine, now: jiff::Timestamp) -> bool {
+    said_at(machine).is_some_and(|said| now.duration_since(said) <= ROOM_HEARD_WITHIN)
+}
+
+/// When `machine` last said its room, where it has and the time reads.
+fn said_at(machine: &Machine) -> Option<jiff::Timestamp> {
+    machine.room.as_ref()?.said_at.parse().ok()
+}
+
+/// What a machine carries beyond what its room says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Load {
+    /// The sessions running on it.
+    pub sessions: u32,
+    /// The starts placed on it that its room doesn't yet show.
+    pub placed: u32,
+}
+
+/// Each machine's load, by name; a machine not in it carries none.
+pub type Loads = BTreeMap<String, Load>;
+
+/// The starts a node placed lately, kept in memory only: each is load on
+/// its machine until that machine says its room after it, as its room then
+/// shows it, or for [`STARTS_COUNT_FOR`] at most, and is then forgotten.
+#[derive(Debug, Default)]
+pub struct Starts {
+    placed: Vec<(String, jiff::Timestamp)>,
+}
+
+impl Starts {
+    /// Keeps that a start was placed on `machine` at `at`.
+    pub fn placed(&mut self, machine: &str, at: jiff::Timestamp) {
+        self.placed.push((machine.to_owned(), at));
+    }
+
+    /// Each of `machines`' load as of `now`, with `sessions` naming the
+    /// machine each session running runs on; forgets each start its
+    /// machine's room now shows, or that is past its time.
+    pub fn loads<'a>(
+        &mut self,
+        machines: &[Machine],
+        sessions: impl IntoIterator<Item = &'a str>,
+        now: jiff::Timestamp,
+    ) -> Loads {
+        let said: BTreeMap<&str, Option<jiff::Timestamp>> = machines
+            .iter()
+            .map(|one| (one.name.as_str(), said_at(one)))
+            .collect();
+        self.placed.retain(|(machine, at)| {
+            let shown = said
+                .get(machine.as_str())
+                .copied()
+                .flatten()
+                .is_some_and(|said| said > *at);
+            !shown && now.duration_since(*at) < STARTS_COUNT_FOR
+        });
+        let mut loads: Loads = machines
+            .iter()
+            .map(|one| (one.name.clone(), Load::default()))
+            .collect();
+        for machine in sessions {
+            let load = loads.entry(machine.to_owned()).or_default();
+            load.sessions = load.sessions.saturating_add(1);
+        }
+        for (machine, _) in &self.placed {
+            let load = loads.entry(machine.clone()).or_default();
+            load.placed = load.placed.saturating_add(1);
+        }
+        loads
+    }
+}
+
+/// Places `work` among `machines`, each carrying its `loads`.
+#[must_use]
+pub fn place(work: &Work, machines: &[Machine], loads: &Loads) -> Placement {
+    place_at(work, machines, loads, jiff::Timestamp::now(), &mut |many| {
+        // Each `RandomState` is seeded afresh, so its hash of nothing is a
+        // fresh draw.
+        let draw = RandomState::new().hash_one(());
+        usize::try_from(draw % u64::try_from(many.max(1)).unwrap_or(1)).unwrap_or(0)
+    })
+}
+
+/// Places `work` among `machines` as of `now`, with `pick` choosing which
+/// of the machines near the best, given how many, takes it.
+fn place_at(
+    work: &Work,
+    machines: &[Machine],
+    loads: &Loads,
+    now: jiff::Timestamp,
+    pick: &mut dyn FnMut(usize) -> usize,
+) -> Placement {
+    let mut judged: Vec<Judged> = machines
         .iter()
-        .enumerate()
-        .filter(|(_, one)| one.hard.is_empty())
-        .min_by_key(|(_, one)| {
-            (
-                !one.rather_not.is_empty(),
-                Reverse(one.preferred.clone()),
-                Reverse(one.free),
-                one.name.clone(),
-            )
+        .map(|one| {
+            let load = loads.get(&one.name).copied().unwrap_or_default();
+            judge(work, one, load, now)
         })
-        .map(|(at, _)| at);
+        .collect();
+    // Machines that qualify, those not over first, then by how many
+    // preferences each meets, earliest most, then by the headroom it has,
+    // then by name. Of the best and those as good but for headroom within
+    // the band, one at random, so asks alike spread rather than herd.
+    let mut ranked: Vec<usize> = (0..judged.len())
+        .filter(|&at| judged[at].hard.is_empty())
+        .collect();
+    ranked.sort_by(|&one, &other| {
+        let (one, other) = (&judged[one], &judged[other]);
+        (one.over || one.unheard)
+            .cmp(&(other.over || other.unheard))
+            .then_with(|| other.preferred.cmp(&one.preferred))
+            .then_with(|| other.headroom.total_cmp(&one.headroom))
+            .then_with(|| one.name.cmp(&other.name))
+    });
+    let chosen = ranked.first().map(|&best| {
+        let best = &judged[best];
+        let near: Vec<usize> = ranked
+            .iter()
+            .copied()
+            .take_while(|&at| {
+                let one = &judged[at];
+                (one.over || one.unheard) == (best.over || best.unheard)
+                    && one.preferred == best.preferred
+                    && one.headroom >= best.headroom - NEAR_BEST
+            })
+            .collect();
+        near[pick(near.len()).min(near.len() - 1)]
+    });
     if let Some(at) = chosen {
         let machine = judged.remove(at).name;
         let passed = judged
@@ -218,6 +414,9 @@ fn place_at(work: &Work, machines: &[Machine], now: jiff::Timestamp) -> Placemen
             .map(|one| {
                 let mut because = one.hard;
                 because.extend(one.rather_not.into_iter().map(Because::RatherNot));
+                if one.unheard {
+                    because.push(Because::Unheard);
+                }
                 if because.is_empty() {
                     because.push(Because::Ranked);
                 }
@@ -330,7 +529,9 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
             .iter()
             .map(|need| promised(need) == Some(true))
             .collect(),
-        free: 0,
+        headroom: 0.0,
+        over: false,
+        unheard: false,
     }
 }
 
@@ -361,15 +562,23 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
             ),
         });
     }
-    let pressed = machine
-        .room
-        .as_ref()
-        .and_then(|room| room.over.as_ref())
-        .is_some_and(|over| over.contains(&Limit::Memory));
-    if pressed {
+    let past = |limit: Limit| {
+        machine
+            .room
+            .as_ref()
+            .and_then(|room| room.over.as_ref())
+            .is_some_and(|over| over.contains(&limit))
+    };
+    if past(Limit::Memory) {
         taints.push(condition(
             MEMORY_PRESSURE,
             "its queue starts no work for want of memory",
+        ));
+    }
+    if past(Limit::Cpu) {
+        taints.push(condition(
+            CPU_PRESSURE,
+            "its queue starts no build beside a VM test for want of a processor",
         ));
     }
     if machine.disk_band.is_some_and(|band| band > Band::Healthy) {
@@ -390,11 +599,15 @@ struct Judged {
     rather_not: Vec<Taint>,
     /// Whether it meets each preference, in the work's order.
     preferred: Vec<bool>,
-    /// The memory it has free, or none known.
-    free: u64,
+    /// The room it has for more work, as [`headroom`] weighs it.
+    headroom: f64,
+    /// Whether it is past a limit of its queue's the work minds.
+    over: bool,
+    /// Whether its room hasn't been said lately.
+    unheard: bool,
 }
 
-fn judge(work: &Work, machine: &Machine, now: jiff::Timestamp) -> Judged {
+fn judge(work: &Work, machine: &Machine, load: Load, now: jiff::Timestamp) -> Judged {
     let mut hard = Vec::new();
     if machine.state == Readiness::Unreachable {
         hard.push(Because::Unreachable);
@@ -426,6 +639,16 @@ fn judge(work: &Work, machine: &Machine, now: jiff::Timestamp) -> Judged {
             Effect::PreferNot => rather_not.push(taint),
         }
     }
+    let is_over = |taint: &&Taint| [MEMORY_PRESSURE, CPU_PRESSURE].contains(&taint.key.as_str());
+    // Over is read from the room even where it is unheard, and harmlessly:
+    // a machine unheard ranks with those over either way.
+    let over = rather_not.iter().any(|taint| is_over(&taint));
+    let weighed = rather_not
+        .iter()
+        .filter(|taint| !is_over(taint))
+        .map(|taint| costs(machine, taint))
+        .sum();
+    let lately = heard(machine, now);
     Judged {
         name: machine.name.clone(),
         hard,
@@ -435,10 +658,9 @@ fn judge(work: &Work, machine: &Machine, now: jiff::Timestamp) -> Judged {
             .iter()
             .map(|need| is(machine, need) == Some(true))
             .collect(),
-        free: machine
-            .room
-            .as_ref()
-            .map_or(0, |room| room.memory_available),
+        headroom: headroom(machine, load, weighed, lately),
+        over,
+        unheard: !lately,
     }
 }
 
@@ -484,8 +706,58 @@ mod tests {
     use crate::facts::{self, Accelerator, Power, Sources};
     use crate::room::{Pressure, Room, Takes};
 
-    /// A machine as it might say itself: `system` on `x86_64`, plugged
-    /// in, with `free` GiB and reaching `reach`.
+    /// Half a minute after each machine here says its room.
+    fn now() -> jiff::Timestamp {
+        "2026-10-29T06:00:30Z".parse().expect("a time")
+    }
+
+    /// Places `work` among `machines` that carry nothing beyond what they
+    /// say of themselves, half a minute after they said their room.
+    fn place(work: &Work, machines: &[Machine]) -> Placement {
+        place_at(work, machines, &Loads::new(), now(), &mut first)
+    }
+
+    /// Of the machines near the best, the best.
+    fn first(_: usize) -> usize {
+        0
+    }
+
+    #[test]
+    fn work_goes_at_random_to_one_of_the_machines_near_the_best() {
+        let realm = [
+            machine("skiff", "linux", 31, &[]),
+            machine("kestrel", "linux", 32, &[]),
+            machine("tern", "linux", 20, &[]),
+            over(machine("osprey", "linux", 32, &[]), &[Limit::Cpu]),
+        ];
+        let mut near = Vec::new();
+        for chosen in 0..2 {
+            let placement = place_at(
+                &needing(Vec::new()),
+                &realm,
+                &Loads::new(),
+                now(),
+                &mut |many| {
+                    near.push(many);
+                    chosen
+                },
+            );
+            assert_eq!(
+                placed(&placement),
+                Some(["kestrel", "skiff"][chosen]),
+                "the best first, then the next"
+            );
+        }
+        assert_eq!(
+            near,
+            [2, 2],
+            "kestrel and skiff are within the band, but neither tern, further off, nor osprey, over"
+        );
+    }
+
+    /// A machine as it might say itself: `system` on `x86_64` with eight
+    /// cores, plugged in, idle, with `free` GiB of its 64 and half its
+    /// disk free, and reaching `reach`.
     fn machine(name: &str, system: &str, free: u64, reach: &[&str]) -> Machine {
         let nowhere = Sources {
             home: "/".into(),
@@ -498,6 +770,14 @@ mod tests {
         Machine {
             system: Some(system.to_owned()),
             arch: "x86_64".to_owned(),
+            cpu: facts::Cpu {
+                model: None,
+                cores: Some(8),
+            },
+            memory: Some(64 << 30),
+            disk: Some(1 << 40),
+            disk_free: Some(1 << 39),
+            disk_band: None,
             accelerators: Some(Vec::new()),
             power: Some(Power {
                 on_battery: false,
@@ -686,13 +966,13 @@ mod tests {
     fn a_machine_whose_disk_is_filling_goes_after_one_with_room() {
         let mut skiff = machine("skiff", "linux", 30, &[]);
         let mut tern = machine("tern", "linux", 2, &[]);
-        skiff.disk_band = Some(Band::Filling);
+        skiff.disk_band = Some(Band::NearlyFull);
         tern.disk_band = Some(Band::Healthy);
         let realm = [skiff.clone(), tern.clone()];
         assert_eq!(
             placed(&place(&needing(Vec::new()), &realm)),
             Some("tern"),
-            "a disk past healthy ranks its machine last, room or not"
+            "a disk past healthy weighs against its machine, though it has more memory free"
         );
         let mut tolerant = needing(Vec::new());
         tolerant.tolerates = vec![DISK_PRESSURE.to_owned()];
@@ -706,6 +986,240 @@ mod tests {
             placed(&place(&needing(Vec::new()), &[skiff, tern])),
             Some("skiff"),
             "a disk no guard bands is no reason to pass a machine by"
+        );
+    }
+
+    /// `machine` working as hard as `cpu` percent of the last ten seconds
+    /// waited on a processor, as its queue says.
+    fn pressed(mut machine: Machine, cpu: f64) -> Machine {
+        machine.room.as_mut().expect("a room").pressure.cpu = cpu;
+        machine
+    }
+
+    /// `machine` past each of `limits`, as its queue says.
+    fn over(mut machine: Machine, limits: &[Limit]) -> Machine {
+        machine.room.as_mut().expect("a room").over = Some(limits.to_vec());
+        machine
+    }
+
+    #[test]
+    fn a_machine_over_a_limit_is_never_chosen_while_another_is_not() {
+        let kestrel = over(
+            pressed(machine("kestrel", "macos", 60, &[]), 90.0),
+            &[Limit::Cpu],
+        );
+        let mut skiff = machine("skiff", "linux", 2, &[]);
+        skiff.disk_band = Some(Band::Filling);
+        skiff.power = Some(Power {
+            on_battery: true,
+            charge: Some(60),
+        });
+        let realm = [kestrel.clone(), skiff];
+        let Placement::Placed {
+            machine: chosen,
+            passed,
+        } = place(&needing(Vec::new()), &realm)
+        else {
+            panic!("skiff takes it")
+        };
+        assert_eq!(
+            chosen, "skiff",
+            "a disk filling and a battery weigh less than a processor over its queue's limit"
+        );
+        assert!(
+            passed[0]
+                .because
+                .iter()
+                .any(|why| matches!(why, Because::RatherNot(taint) if taint.key == CPU_PRESSURE)),
+            "kestrel says it is over: {passed:?}"
+        );
+
+        let osprey = over(machine("osprey", "linux", 1, &[]), &[Limit::Memory]);
+        assert_eq!(
+            placed(&place(
+                &needing(Vec::new()),
+                &[osprey.clone(), kestrel.clone()]
+            )),
+            Some("kestrel"),
+            "of machines all over, the one with the most headroom"
+        );
+        let mut tolerant = needing(Vec::new());
+        tolerant.tolerates = vec![CPU_PRESSURE.to_owned()];
+        assert_eq!(
+            placed(&place(&tolerant, &[osprey, kestrel])),
+            Some("kestrel"),
+            "and work that doesn't mind a pressed processor sees no limit there"
+        );
+    }
+
+    #[test]
+    fn a_machine_whose_room_is_unheard_goes_after_one_heard_lately() {
+        let mut kestrel = machine("kestrel", "linux", 60, &[]);
+        kestrel.room.as_mut().expect("a room").said_at = "2026-10-29T05:50:00Z".to_owned();
+        let tern = pressed(machine("tern", "linux", 2, &[]), 80.0);
+        let Placement::Placed {
+            machine: chosen,
+            passed,
+        } = place(&needing(Vec::new()), &[kestrel.clone(), tern.clone()])
+        else {
+            panic!("tern takes it")
+        };
+        assert_eq!(
+            chosen, "tern",
+            "a room said ten minutes ago earns nothing, however roomy"
+        );
+        assert_eq!(passed[0].because, [Because::Unheard], "kestrel says why");
+        kestrel.room = None;
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[kestrel, tern])),
+            Some("tern"),
+            "and nor does a room never said"
+        );
+    }
+
+    #[test]
+    fn machines_are_ranked_by_their_headroom() {
+        // The name that settles a tie would choose kestrel each time.
+        let idle = || machine("skiff", "linux", 32, &[]);
+        let busy = pressed(machine("kestrel", "linux", 32, &[]), 70.0);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[busy, idle()])),
+            Some("skiff"),
+            "the processor less pressed"
+        );
+        let mut full = machine("kestrel", "linux", 32, &[]);
+        full.disk_free = Some(1 << 36);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[full, idle()])),
+            Some("skiff"),
+            "the disk more free"
+        );
+        let crowded = machine("kestrel", "linux", 32, &[]);
+        let loads = Loads::from([(
+            "skiff".to_owned(),
+            Load {
+                sessions: 6,
+                placed: 0,
+            },
+        )]);
+        assert_eq!(
+            placed(&place_at(
+                &needing(Vec::new()),
+                &[crowded, idle()],
+                &loads,
+                now(),
+                &mut first
+            )),
+            Some("kestrel"),
+            "the fewer sessions"
+        );
+
+        let mut filling = machine("tern", "linux", 56, &[]);
+        filling.disk_band = Some(Band::Filling);
+        let healthy = pressed(machine("osprey", "linux", 4, &[]), 80.0);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[healthy, filling])),
+            Some("tern"),
+            "a disk filling is only a weight, outweighed by a machine idle beside one busy"
+        );
+    }
+
+    #[test]
+    fn a_disk_weighs_by_how_full_it_is() {
+        let mut tern = machine("tern", "linux", 32, &[]);
+        let osprey = pressed(machine("osprey", "linux", 32, &[]), 40.0);
+        tern.disk_band = Some(Band::Filling);
+        assert_eq!(
+            placed(&place(
+                &needing(Vec::new()),
+                &[osprey.clone(), tern.clone()]
+            )),
+            Some("tern"),
+            "a disk filling costs little, outweighed by a processor far less pressed"
+        );
+        for band in [Band::NearlyFull, Band::CriticallyFull] {
+            tern.disk_band = Some(band);
+            assert_eq!(
+                placed(&place(
+                    &needing(Vec::new()),
+                    &[osprey.clone(), tern.clone()]
+                )),
+                Some("osprey"),
+                "a disk {band:?} costs as any taint that would rather not"
+            );
+        }
+    }
+
+    #[test]
+    fn a_burst_spreads_across_machines_alike() {
+        let realm = [
+            machine("kestrel", "linux", 32, &[]),
+            machine("skiff", "linux", 32, &[]),
+            over(machine("osprey", "linux", 60, &[]), &[Limit::Cpu]),
+        ];
+        let mut starts = Starts::default();
+        let mut landed = BTreeMap::<String, u32>::new();
+        let mut at = now();
+        for _ in 0..10 {
+            let loads = starts.loads(&realm, std::iter::empty(), at);
+            let chosen = placed(&place_at(
+                &needing(Vec::new()),
+                &realm,
+                &loads,
+                at,
+                &mut first,
+            ))
+            .expect("placed")
+            .to_owned();
+            starts.placed(&chosen, at);
+            *landed.entry(chosen).or_default() += 1;
+            at += jiff::SignedDuration::from_secs(1);
+        }
+        assert_eq!(
+            landed,
+            BTreeMap::from([("kestrel".to_owned(), 5), ("skiff".to_owned(), 5)]),
+            "each start counts against its machine, and none goes to one over"
+        );
+    }
+
+    #[test]
+    fn a_start_counts_until_its_machine_says_its_room_after_it() {
+        let mut kestrel = machine("kestrel", "linux", 32, &[]);
+        let at: jiff::Timestamp = "2026-10-29T06:00:05Z".parse().expect("a time");
+        let mut starts = Starts::default();
+        starts.placed("kestrel", at);
+        let sessions = ["kestrel", "kestrel", "skiff"];
+        let later = at + jiff::SignedDuration::from_secs(10);
+        assert_eq!(
+            starts.loads(std::slice::from_ref(&kestrel), sessions, later)["kestrel"],
+            Load {
+                sessions: 2,
+                placed: 1
+            },
+            "a start its room doesn't yet show counts beside its sessions"
+        );
+        kestrel.room.as_mut().expect("a room").said_at = "2026-10-29T06:00:06Z".to_owned();
+        assert_eq!(
+            starts.loads(std::slice::from_ref(&kestrel), sessions, later)["kestrel"].placed,
+            0,
+            "and no longer once its room is said after it"
+        );
+        kestrel.room.as_mut().expect("a room").said_at = "2026-10-29T06:00:00Z".to_owned();
+        assert_eq!(
+            starts.loads(std::slice::from_ref(&kestrel), sessions, later)["kestrel"].placed,
+            0,
+            "nor comes back, as it is forgotten"
+        );
+        starts.placed("kestrel", at);
+        assert_eq!(
+            starts.loads(
+                std::slice::from_ref(&kestrel),
+                std::iter::empty(),
+                at + STARTS_COUNT_FOR
+            )["kestrel"]
+                .placed,
+            0,
+            "nor past its time, said after or not"
         );
     }
 
@@ -741,20 +1255,22 @@ mod tests {
 
     #[test]
     fn work_never_goes_to_a_machine_that_leaves_before_it_ends() {
-        let now: jiff::Timestamp = "2026-10-30T01:20:00Z".parse().expect("a time");
+        let now = now();
         let mut sandbox = machine("sandbox", "linux", 30, &[]);
         let leaves = now + jiff::SignedDuration::from_mins(40);
         sandbox.declared.as_mut().expect("declared").leaves_at = Some(leaves);
         let realm = [machine("skiff", "linux", 8, &[]), sandbox];
         let mut work = needing(Vec::new());
         assert_eq!(
-            placed(&place_at(&work, &realm, now)),
+            placed(&place_at(&work, &realm, &Loads::new(), now, &mut first)),
             Some("sandbox"),
             "work that says nothing of how long it runs may go where there is room"
         );
 
         work.lasts = Some(jiff::SignedDuration::from_hours(1));
-        let Placement::Placed { machine, passed } = place_at(&work, &realm, now) else {
+        let Placement::Placed { machine, passed } =
+            place_at(&work, &realm, &Loads::new(), now, &mut first)
+        else {
             panic!("work that outlasts the sandbox goes elsewhere")
         };
         assert_eq!(machine, "skiff", "to the machine that stays");
@@ -771,7 +1287,10 @@ mod tests {
         work.needs = vec![Need::Machine("sandbox".to_owned())];
         work.may_wait = true;
         assert!(
-            matches!(place_at(&work, &realm, leaves), Placement::Refused { .. }),
+            matches!(
+                place_at(&work, &realm, &Loads::new(), leaves, &mut first),
+                Placement::Refused { .. }
+            ),
             "once it has left, nothing goes there, and nothing waits for it"
         );
     }
