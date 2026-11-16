@@ -15,6 +15,12 @@ use serde::{Deserialize, Serialize};
 use crate::facts::Machine;
 use crate::placement::{Decision, Loads, Work};
 
+/// How many days back a day's file is kept, counted from the newest: two
+/// weeks of placements is enough to tune weights on, and each line
+/// carries every machine's facts, so the log is bounded on a disk that
+/// may already be filling.
+pub const KEPT_DAYS: i64 = 14;
+
 /// One placement, as the node made it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
@@ -47,13 +53,18 @@ impl Log {
         Self { folder }
     }
 
-    /// Keeps `record` as a line of `day`'s file.
+    /// Keeps `record` as a line of `day`'s file, letting go of the days
+    /// more than [`KEPT_DAYS`] before it when that file is new.
     ///
     /// # Errors
     ///
     /// When the folder can't be made or the file written.
     pub fn keep(&self, record: &Record, day: jiff::civil::Date) -> io::Result<()> {
         fs::create_dir_all(&self.folder)?;
+        let file = self.folder.join(format!("{day}.jsonl"));
+        if !file.exists() {
+            self.let_go_before(day.saturating_sub(jiff::Span::new().days(KEPT_DAYS)));
+        }
         let mut line = serde_json::to_vec(record)?;
         line.push(b'\n');
         // One write of the whole line, appended, so two placements kept
@@ -61,8 +72,31 @@ impl Log {
         OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.folder.join(format!("{day}.jsonl")))?
+            .open(file)?
             .write_all(&line)
+    }
+
+    /// Removes each day's file from before `oldest`, leaving anything not
+    /// named as a day.
+    fn let_go_before(&self, oldest: jiff::civil::Date) {
+        let Ok(entries) = fs::read_dir(&self.folder) else {
+            // Unread, nothing is let go; the next new day tries again.
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let day = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".jsonl"))
+                .and_then(|stem| stem.parse::<jiff::civil::Date>().ok());
+            if day.is_some_and(|day| day < oldest)
+                && let Err(error) = fs::remove_file(&path)
+            {
+                // An old day left costs disk, never a placement.
+                eprintln!("{} wasn't let go: {error}", path.display());
+            }
+        }
     }
 }
 
@@ -100,6 +134,45 @@ mod tests {
                 }],
             },
         }
+    }
+
+    #[test]
+    fn a_new_days_file_lets_go_of_days_past_the_fortnight() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let kept = folder.path().join("placements");
+        fs::create_dir_all(&kept).expect("the folder");
+        for name in [
+            "2026-11-01.jsonl",
+            "2026-11-02.jsonl",
+            "2026-11-03.jsonl",
+            "notes.txt",
+        ] {
+            fs::write(kept.join(name), "").expect("a file");
+        }
+        let log = Log::at(kept.clone());
+        log.keep(&record("kestrel"), jiff::civil::date(2026, 11, 16))
+            .expect("kept");
+        let mut names: Vec<String> = fs::read_dir(&kept)
+            .expect("the folder")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "2026-11-02.jsonl",
+                "2026-11-03.jsonl",
+                "2026-11-16.jsonl",
+                "notes.txt"
+            ],
+            "the fifteenth day back goes; the fortnight and what isn't a day stay"
+        );
     }
 
     #[test]

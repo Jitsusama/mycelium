@@ -923,7 +923,10 @@ answered and, for each machine, how it was `judged` (`machine`,
 `preferred`, its `headroom`, and its `chance` of being the one chosen,
 one in as many as were near the best and none for the rest). A
 placement the node can't keep is said on its error output and answered
-all the same.
+all the same. When a day's file is first written, the files of days
+more than 14 before it are let go, so the log holds about two weeks.
+A processor reading that isn't a number counts as none, so every
+`headroom` is a number.
 
 `"Start"` places `work` as `"Place"` does and starts `command` held
 there through the person's login shell (`$SHELL -lic`), so it has their
