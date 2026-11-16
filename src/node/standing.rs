@@ -153,11 +153,13 @@ fn parks(presence: &Value, parked: &HashSet<String>, boot: &Boot) -> bool {
 
 /// A presence's fields that only an open launcher shows, and that change
 /// as the session works: its step, what it has used, when it was last
-/// heard, and whether it works or listens and since when. Of Joel's 113
-/// sessions' changes in 30 s on 2026-11-09, 21 of 26 moved nothing else.
-const SHOWN_ONLY: [&str; 8] = [
+/// heard, and since when it works or listens. Of Joel's 113 sessions'
+/// changes in 30 s on 2026-11-09, 21 of 26 moved nothing else. Whether
+/// it works is told, since a shut launcher's foot counts those working;
+/// it moved in 4 of 80 sessions' changes held back over 90 s on
+/// 2026-11-15. Its `state` says the same as `busy`, so stays out.
+const SHOWN_ONLY: [&str; 7] = [
     "at",
-    "busy",
     "heard",
     "since",
     "state",
@@ -170,8 +172,8 @@ const SHOWN_ONLY: [&str; 8] = [
 /// launcher shows, so a change whose records carry no new digest tells a
 /// shut launcher nothing it reads. The record's own `at`, `step` and
 /// `since` move as its presence's do; its `state` tells only whether it
-/// runs, since working and listening are shown alone, and `standing`
-/// tells the rest. Said as hex, since a reader in JavaScript loses a
+/// runs, since its presence's `busy` tells whether it works or listens,
+/// and `standing` tells the rest. Said as hex, since a reader in JavaScript loses a
 /// number's last digits past 2^53.
 pub fn told(fields: &Value) -> String {
     let mut kept = fields.clone();
@@ -367,9 +369,15 @@ mod tests {
         };
         let first = told(&fields("busy", "read", true, json!([])));
         assert_eq!(
-            told(&fields("idle", "edit", false, json!([]))),
+            told(&fields("idle", "edit", true, json!([]))),
             first,
-            "working, listening and each step are shown alone"
+            "each step is shown alone"
+        );
+        assert_ne!(
+            told(&fields("busy", "read", false, json!([]))),
+            first,
+            "whether it works or listens is read shut, in the launcher's count of those \
+             working"
         );
         assert_ne!(
             told(&fields("busy", "read", true, json!([{"what": "a look"}]))),

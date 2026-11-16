@@ -918,10 +918,10 @@ in milliseconds.
 
 | Ask | Answer |
 | --- | --- |
-| `hello` | `version`, `domain` (`node`), `state` and `kinds`, each with its `live` fields |
+| `hello` | `version`, `domain` (`node`), `state` and `kinds`, each with its `live` fields, and those it offers `deep` |
 | `get` with `keys` | `records`, those held, in the order asked |
 | `list` with `kind`, and `limit` and `fields` | `records`, every one of the kind |
-| `watch` with `kind`, and `keys` and `when` | `records` whole, then `changed` and `gone` |
+| `watch` with `kind`, and `keys`, `when` and `deep` | `records` whole, then `changed` and `gone` |
 | `unwatch` | nothing; the watch with that `id` ends |
 | `health` | `state`, and each linked machine and served file as a source |
 | `steer` with `address` and `steer` | `steered` with the `machine` whose session's inbox has it |
@@ -940,7 +940,7 @@ its process runs, here or on a machine heard of this boot; `parked` here,
 ended for its holder to start again, its park marked this boot; `closed`
 here, ended this boot unparked; and no `standing` for one passed over.
 Its `told` is a digest of the record without what only an open launcher
-shows (its step, usage, times, and working against listening), so a
+shows (its step, usage and times), so a
 change whose records carry no new `told` tells a shut one nothing it
 reads. The `machine` kind holds every machine of the
 realm, this one as its last minute's measure found it, each saying
@@ -1054,7 +1054,17 @@ changed 56 times in a minute on 2026-11-11, and none of them moved a
 `told`; once one did, every session's held step went with it, about
 30 KB a line. Asked again under its `id` for the same kind and keys,
 a watch keeps on, sending at once what it held back, and from then on
-as `when` now says, rather than everything whole again. An ask
+as `when` now says, rather than everything whole again.
+
+A watch asked `deep` some fields, among those its kind's `hello` offers
+`deep`, says a change to one, an object before and after, as only what
+moved inside it, a dropped one as null, rather than all of it; the rest
+of `deep` is taken for nothing, and what it held back comes the same
+way. A session offers `presence`, most of its record, whose time moves
+at every beat: of Joel's 80 sessions' changes held back over 90 s on
+2026-11-15, 128 KB of 207 KB was presence that hadn't moved. Asked
+again with another `deep`, a watch starts over, its records whole. A
+node whose `hello` offers nothing `deep` says every change whole. An ask
 it can't answer gets `{"id", "error": {"code", "message"}}`, the code
 one of `unknown-ask`, `unknown-kind` or `not-an-ask`, or `refused` for an
 ask understood that it couldn't do, its message saying why.

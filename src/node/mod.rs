@@ -855,6 +855,18 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
         .collect()
     }
 
+    // A session's presence is most of its record, and its time moves at
+    // every beat, so said whole it went again each time: of Joel's 80
+    // sessions' changes held back over 90 s on 2026-11-15, 128 KB of
+    // 207 KB was presence that hadn't moved.
+    fn deep(&self, kind: &str) -> Vec<&'static str> {
+        if kind == HOLDS[0] {
+            vec!["presence"]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn records(&self, kind: &str) -> Option<BTreeMap<String, serde_json::Value>> {
         match kind {
             "session" => {
@@ -4648,19 +4660,18 @@ mod tests {
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         client.next().await;
         let at = jiff::Timestamp::now().to_string();
-        let presence = |session: &str, busy: bool, title: &str| {
+        let presence = |session: &str, step: &str, title: &str| {
             json!({
                 "session": session, "addresses": [session.to_uppercase()], "groups": [],
-                "busy": busy, "state": if busy { "busy" } else { "idle" },
-                "at": at, "title": title,
+                "busy": true, "state": "busy", "step": step, "at": at, "title": title,
             })
         };
-        let put_as = |session, busy, title| {
+        let put_as = |session, step, title| {
             store
-                .put_presence(session, "kestrel", &presence(session, busy, title))
+                .put_presence(session, "kestrel", &presence(session, step, title))
                 .expect("the presence is kept");
         };
-        let put = |busy, title| put_as("there", busy, title);
+        let put = |step, title| put_as("there", step, title);
 
         // A shut launcher's watch, as the shell asks for one.
         let shut = json!({"id": 4, "ask": "watch", "kind": "session", "when": ["told"]});
@@ -4670,51 +4681,121 @@ mod tests {
             json!([]),
             "no session runs yet"
         );
-        put(true, "one");
+        put("read", "one");
         let came = client.next().await;
         assert_eq!(
             came["changed"][0]["key"],
             json!("session:there"),
             "a session coming is sent: {came}"
         );
-        put_as("beside", true, "other");
+        put_as("beside", "read", "other");
         client.next().await;
 
-        put(false, "one");
-        put_as("beside", false, "other");
-        put(false, "two");
+        put("edit", "one");
+        put_as("beside", "edit", "other");
+        put("edit", "two");
         let retitled = client.next().await;
         assert_eq!(
             (
                 retitled["changed"].as_array().map(Vec::len),
-                &retitled["changed"][0]["presence"]["busy"],
+                &retitled["changed"][0]["presence"]["step"],
                 &retitled["changed"][0]["presence"]["title"]
             ),
-            (Some(1), &json!(false), &json!("two")),
-            "its working ending wasn't sent alone, but with its retitling, \
+            (Some(1), &json!("edit"), &json!("two")),
+            "its step wasn't sent alone, but with its retitling, \
              and the other's step stayed held back: {retitled}"
         );
 
-        put(true, "two");
+        put("look", "two");
         // The launcher opening asks for every change, under the same id.
         client
             .ask(json!({"id": 4, "ask": "watch", "kind": "session"}))
             .await;
         let opened = client.next().await;
-        let busy = |key: &str| {
+        let step = |key: &str| {
             opened["changed"]
                 .as_array()
                 .and_then(|changed| changed.iter().find(|record| record["key"] == key))
-                .map(|record| record["presence"]["busy"].clone())
+                .map(|record| record["presence"]["step"].clone())
         };
         assert_eq!(
             (
                 opened.get("records"),
-                busy("session:there"),
-                busy("session:beside")
+                step("session:there"),
+                step("session:beside")
             ),
-            (None, Some(json!(true)), Some(json!(false))),
+            (None, Some(json!("look")), Some(json!("edit"))),
             "asked again, it sends all it held back at once, not everything whole: {opened}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_watch_asked_deep_hears_only_what_moved_in_a_presence() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert_eq!(
+            (
+                &hello["kinds"]["session"]["deep"],
+                hello["kinds"]["machine"].get("deep")
+            ),
+            (&json!(["presence"]), None),
+            "hello names what a session offers deep, and nothing for a kind offering none"
+        );
+        let put = |busy: bool, step: &str, at: &str| {
+            let presence = json!({
+                "session": "kestrel", "addresses": ["KESTREL"], "groups": ["#quest/skiff"],
+                "busy": busy, "step": step, "at": at, "title": "Hear the Tide",
+                "worksOn": "charting the skiff's tides",
+            });
+            store
+                .put_presence("kestrel", "osprey", &presence)
+                .expect("the presence is kept");
+        };
+        let at = |seconds: i64| {
+            jiff::Timestamp::now()
+                .checked_add(jiff::SignedDuration::from_secs(seconds))
+                .expect("a time")
+                .to_string()
+        };
+        put(true, "read", &at(0));
+        let shut = json!({
+            "id": 4, "ask": "watch", "kind": "session", "when": ["told"],
+            "deep": ["presence", "standing"],
+        });
+        client.ask(shut).await;
+        client.next().await;
+
+        let (stepped, ticked) = (at(1), at(2));
+        put(true, "edit", &stepped);
+        put(false, "edit", &ticked);
+        let ended = client.next().await;
+        assert_eq!(
+            &ended["changed"][0]["presence"],
+            &json!({"busy": false, "step": "edit", "at": ticked}),
+            "its working ending is told shut, with only what moved in its presence: {ended}"
+        );
+
+        put(false, "look", &at(3));
+        client
+            .ask(json!({
+                "id": 4, "ask": "watch", "kind": "session",
+                "deep": ["presence", "standing"],
+            }))
+            .await;
+        let opened = client.next().await;
+        assert_eq!(
+            (
+                opened.get("records"),
+                opened["changed"][0]["presence"].get("worksOn"),
+                &opened["changed"][0]["presence"]["step"]
+            ),
+            (None, None, &json!("look")),
+            "asked again under the same deep watch, what it held back comes deep too: {opened}"
         );
     }
 
