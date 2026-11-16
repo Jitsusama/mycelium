@@ -245,7 +245,16 @@ mod tests {
                 r#"{ "address": "AB12CD", "key": "session:a", "kind": "session", "presence": {"repo": "world"} }"#,
                 "spaced out",
             ),
+            (
+                r#"{"address": "AB12CD","key":"session:a","kind":"session","presence":{"repo": "world"}}"#,
+                "spaced after its colons",
+            ),
         ] {
+            let paths = ["address", "presence.repo", "key", "kind"];
+            assert!(
+                matches!(super::kept(record, &paths), Err(super::Unsplit)),
+                "a record written {why} isn't split, so it is the parse that cuts it"
+            );
             let sent = super::projected(record, &asked);
             assert_eq!(
                 serde_json::from_str::<serde_json::Value>(sent.get()).expect("JSON"),

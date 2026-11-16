@@ -10,10 +10,12 @@
 //! byte it reads where a split only looks for quotes, eight bytes at a
 //! time.
 //!
-//! Only JSON as `serde_json` writes a value is split: compact, its
-//! object's keys sorted and each once. Anything else isn't, and is read
-//! as no object at all, so whoever splits falls back to the record whole
-//! rather than reading it wrong.
+//! Only an object laid out as `serde_json` writes one is split: compact,
+//! its keys sorted and each once. One laid out otherwise, spaced out or
+//! its keys in another order, is read as no object at all, so whoever
+//! splits falls back to the record whole or parsed rather than reading it
+//! wrong. The values themselves are trusted to be JSON, not checked, since
+//! a held record is only ever the bytes `serde_json` wrote.
 
 use std::borrow::Cow;
 
@@ -154,6 +156,8 @@ fn value_end(bytes: &[u8], at: usize) -> Option<usize> {
                 next += 1;
             }
         }
+        // Compact JSON holds no space before a value, nor a value of nothing.
+        b' ' | b'\t' | b'\n' | b'\r' | b',' | b'}' | b']' => None,
         _ => {
             let ends = |byte: &u8| matches!(byte, b',' | b'}' | b']');
             let rest = bytes.get(at..)?;
@@ -273,6 +277,10 @@ mod tests {
             "{\"a\":1}x",
             "{ \"a\":1}",
             "{\"a\" :1}",
+            "{\"a\": 1}",
+            "{\"a\":\n1}",
+            "{\"a\":}",
+            "{\"a\":,\"b\":1}",
             "{\"b\":1,\"a\":2}",
             "{\"a\":1,\"a\":2}",
             "{\"a\":\"open}",
@@ -285,11 +293,13 @@ mod tests {
     fn a_quote_or_an_escape_is_found_wherever_it_falls_in_a_word() {
         for length in 0..20 {
             for at in 0..length {
-                for sought in *b"\"\\" {
+                // Past what is found, a quote, or a byte one off a quote or a
+                // backslash, which the word's borrow can mark as sought too.
+                for (sought, after) in [(b'"', b'"'), (b'"', b'#'), (b'\\', b']'), (b'\\', b'"')] {
                     let mut bytes = vec![b'a'; length];
                     bytes[at] = sought;
                     if at + 1 < length {
-                        bytes[at + 1] = b'"';
+                        bytes[at + 1] = after;
                     }
                     assert_eq!(quote_or_escape(&bytes, 0), Some(at), "{length} {at}");
                     assert_eq!(quote_or_escape(&bytes, at), Some(at));

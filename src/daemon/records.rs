@@ -400,16 +400,21 @@ fn differs(key: &str, was: Option<&Record>, now: &Record, deep: &[String]) -> Ch
 }
 
 impl Change {
-    /// `now` whole, as a record new is sent, carrying every field it has.
+    /// `now` whole, as a record new is sent, carrying every field it has:
+    /// read from its split, or from a parse where it can't be split, so a
+    /// watch held back to some fields isn't held back from it.
     pub(super) fn whole(key: &str, now: &Record) -> Self {
+        let split = split::fields(now.as_str()).map(|fields| {
+            let names = fields.into_iter().map(|field| field.name.into_owned());
+            names.collect()
+        });
+        let parsed = || {
+            let fields: BTreeMap<String, &RawValue> = serde_json::from_str(now.as_str()).ok()?;
+            Some(fields.into_keys().collect())
+        };
         Self {
             key: key.to_owned(),
-            carries: split::fields(now.as_str())
-                .map(|fields| {
-                    let names = fields.into_iter().map(|field| field.name.into_owned());
-                    names.collect()
-                })
-                .unwrap_or_default(),
+            carries: split.or_else(parsed).unwrap_or_default(),
             bytes: now.bytes.clone(),
         }
     }
@@ -802,5 +807,25 @@ mod tests {
             Some(2),
             "each set asked deep works out each moved record once, the new one included"
         );
+    }
+
+    #[test]
+    fn a_record_the_split_cant_read_is_sent_whole_carrying_every_field() {
+        // Held bytes are always serde_json's, keys sorted; these are not,
+        // as they would be were serde_json's preserve_order turned on.
+        let held = |json: &str| Record {
+            bytes: RawValue::from_string(json.to_owned()).expect("JSON"),
+            heard: 0,
+        };
+        let was = held(r#"{"key":"session:a","step":"read","presence":{"b":1,"a":1}}"#);
+        let now = held(r#"{"key":"session:a","step":"wrote","presence":{"b":2,"a":1}}"#);
+        let change = differs("session:a", Some(&was), &now, &["presence".to_owned()]);
+        assert_eq!(change.value(), now.value(), "sent whole, not read wrong");
+        for field in ["key", "presence", "step"] {
+            assert!(
+                change.carries(field),
+                "it carries {field}, so a watch held back to it is sent the change"
+            );
+        }
     }
 }
