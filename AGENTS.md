@@ -15,7 +15,7 @@ says what crosses between machines and how clients speak to a node.
   it measured
 - `tests/`: the `mycelium` command tested as its own process
 - `nix/`: the package, the checks and the tree's own rules
-- `scripts/`: the merge gate and its cases
+- `scripts/`: the merge gate, the merge train and their cases
 
 ## Rules
 
@@ -61,7 +61,13 @@ How this repository keeps Joel's repository standard:
   A merge goes only through `scripts/merge-gate.sh`, main's own copy,
   which refuses a head that doesn't hold main as it is now, or that
   lacks any Linux check kept as passed at that very commit. So rebase
-  onto main and build the checks there just before merging.
+  onto main and build the checks there just before merging. Where
+  several reviewed changes are ready at once, they ride the merge train
+  instead, named by their reviewed heads' full shas. Run main's own
+  copy, `git show origin/main:scripts/merge-train.sh | bash -s -- make
+  SHA...`, after `git fetch -q origin main`: it lays them onto main as
+  one tip, the checks build there once, and `land TIP` moves main to
+  it through main's gate, each change then reading merged.
 - **Linters:** clippy with pedantic and rustc's own lints, as
   `Cargo.toml` sets them; rustfmt; nixfmt, deadnix and statix; taplo;
   rumdl, as `.rumdl.toml` sets it; shellcheck with every optional check.

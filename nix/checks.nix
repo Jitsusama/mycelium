@@ -24,12 +24,14 @@ let
 
   # The merge gate refuses a head that doesn't hold main or lacks a check
   # passed there, and asks for every check the flake has on Linux, this one
-  # among them, so a check added is one the gate asks for.
+  # among them, so a check added is one the gate asks for. The merge train
+  # lands only as the gate lets its tip.
   gateHolds =
     named:
     inTree "merge-gate-holds" [ pkgs.git pkgs.shellcheck ] ''
-      shellcheck --enable=all scripts/merge-gate.sh scripts/merge-gate-test.sh
-      bash scripts/merge-gate-test.sh scripts/merge-gate.sh
+      shellcheck --enable=all scripts/merge-gate.sh scripts/merge-gate-test.sh \
+        scripts/merge-train.sh
+      bash scripts/merge-gate-test.sh scripts/merge-gate.sh scripts/merge-train.sh
       ${pkgs.lib.optionalString (static != null) ''
         asked=$(sed -n '/^checks=(/,/^)/{/^  /s/^  //p}' scripts/merge-gate.sh | sort)
         has=$(printf '%s\n' ${pkgs.lib.escapeShellArgs named} merge-gate-holds | sort)
