@@ -237,6 +237,20 @@ enum Action {
         #[command(flatten)]
         here: Here,
     },
+    /// Says how well this node placed work, judged in hindsight.
+    ///
+    /// Reads the placements this node kept and the balance kept each
+    /// minute, and says which placements its machine regretted a minute
+    /// on, carrying more than another with room, and which herded onto
+    /// one machine while another had more headroom, as a JSON line.
+    #[command(after_help = "Example:\n  mycelium placements --hours 24")]
+    Placements {
+        /// How many hours back to judge.
+        #[arg(long, default_value_t = 1)]
+        hours: u16,
+        #[command(flatten)]
+        here: Here,
+    },
     /// Speaks in a quest's web of murmurs and ties.
     ///
     /// A web is what a quest's sessions on every machine share: this says
@@ -1167,6 +1181,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Said => print_records(&socket, mycelium::words::KIND),
         Action::Health { here } => health(&socket, here, realm),
         Action::Balance { follow, here } => balance(&socket, here, follow),
+        Action::Placements { hours, here } => placements(here, hours),
         Action::Swarm {
             words,
             output,
@@ -1618,6 +1633,77 @@ fn balance(socket: &Path, here: Here, follow: bool) -> io::Result<()> {
         }
         std::thread::sleep(BALANCE_EVERY);
     }
+}
+
+/// Prints what hindsight says of the placements kept over the last
+/// `hours`, judged by the balance kept beside them.
+fn placements(here: Here, hours: u16) -> io::Result<()> {
+    let state = here.state.unwrap_or_else(place::state);
+    let now = jiff::Zoned::now();
+    let since = now
+        .timestamp()
+        .checked_sub(jiff::SignedDuration::from_hours(i64::from(hours)))
+        .map_err(io::Error::other)?;
+    let since_day = since.to_zoned(now.time_zone().clone()).date();
+    let records: Vec<mycelium::placements::Record> =
+        kept_lines(&state.join("placements"), since_day)?
+            .into_iter()
+            .filter(|record: &mycelium::placements::Record| {
+                record
+                    .at
+                    .parse()
+                    .is_ok_and(|at: jiff::Timestamp| at >= since)
+            })
+            .collect();
+    let readings: Vec<mycelium::balance::Reading> = kept_lines(&state.join("balance"), since_day)?
+        .into_iter()
+        .filter(|reading: &mycelium::balance::Reading| {
+            reading.measures == mycelium::balance::MEASURES
+                && reading
+                    .at
+                    .parse()
+                    .is_ok_and(|at: jiff::Timestamp| at >= since)
+        })
+        .collect();
+    print_line(&mycelium::hindsight::judge(&records, &readings))
+}
+
+/// Every line of the day files in `folder` from `since` on that reads as
+/// a `T`, in day order; a folder not yet made holds none, and a line that
+/// doesn't read is passed over, as one cut short by a crash would be.
+fn kept_lines<T: serde::de::DeserializeOwned>(
+    folder: &Path,
+    since: jiff::civil::Date,
+) -> io::Result<Vec<T>> {
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut days: Vec<(jiff::civil::Date, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let day = path
+                .file_name()?
+                .to_str()?
+                .strip_suffix(".jsonl")?
+                .parse()
+                .ok()?;
+            Some((day, path))
+        })
+        .filter(|&(day, _)| day >= since)
+        .collect();
+    days.sort();
+    let mut lines = Vec::new();
+    for (_, path) in days {
+        let text = std::fs::read_to_string(path)?;
+        lines.extend(
+            text.lines()
+                .filter_map(|line| serde_json::from_str(line).ok()),
+        );
+    }
+    Ok(lines)
 }
 
 /// Reads the realm's balance from the node's machines and sessions.
