@@ -271,7 +271,11 @@ fn read_readme(path: &Path) -> (Option<String>, Option<String>, Option<String>) 
         // is the quest's own sentence, so the first plain line starts it.
         paragraph.push(line.to_owned());
     }
-    let purpose = (!paragraph.is_empty()).then(|| first_sentence(&paragraph.join(" ")));
+    // A Summary wholly in italics is the template's guidance, left for the
+    // quest's own words to replace, so it says no purpose yet.
+    let summary = paragraph.join(" ");
+    let guidance = summary.len() > 1 && summary.starts_with('_') && summary.ends_with('_');
+    let purpose = (!summary.is_empty() && !guidance).then(|| first_sentence(&summary));
     (said.remove("parent"), said.remove("status"), purpose)
 }
 
@@ -790,6 +794,20 @@ mod tests {
             shelf.quest("QEST-20261116-KESTRL").expect("read").documents,
             Vec::<Document>::new()
         );
+    }
+
+    #[test]
+    fn a_summary_left_as_the_templates_guidance_is_no_purpose() {
+        let store = Store::new("guidance");
+        let guidance = README.replace(
+            "Kestrel learns to hover over one field. It then\nlearns a second.",
+            "_One paragraph: what this quest is and why it exists._",
+        );
+        store.write("QEST-20261116-KESTRL/README.md", &guidance);
+        let mut shelf = Shelf::default();
+        assert!(shelf.read(&store.0, "QEST-20261116-KESTRL"));
+        let quest = shelf.quest("QEST-20261116-KESTRL").expect("read");
+        assert_eq!(quest.purpose, None);
     }
 
     #[test]
