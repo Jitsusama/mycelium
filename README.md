@@ -59,8 +59,8 @@ The harness mesh's messages and presence, carried between machines:
   line for a daily read: each link and how often it dropped in the last
   day, why a link was refused (such as a machine on another link version,
   saying which to update) while none reaches it, each machine's
-  sessions, the presences still saying they run with their process gone,
-  and how long the node took to answer.
+  sessions, the presences written in the last day still saying they run
+  with their process gone, and how long the node took to answer.
 - `mycelium balance` says how evenly the realm's machines carry its
   work: a row for each machine's load (the largest of the memory it
   uses, how busy its processors are and how long its work stalls),
