@@ -752,8 +752,8 @@ impl Exchange {
             // now where it carried only its README, or the other way, is
             // walked and said whole.
             let carried = self.quest(&id, &held.ledger);
-            let anew = !self.told.contains_key(&id)
-                || self.whole.contains(&id) == carried.readme_alone;
+            let anew =
+                !self.told.contains_key(&id) || self.whole.contains(&id) == carried.readme_alone;
             if !carried.readme_alone {
                 whole.insert(id.clone());
             }
@@ -1607,7 +1607,11 @@ mod tests {
             "---\nparent: null\n---\n# Top\n",
         );
         put(quests, &format!("{top}/JOURNEY.md"), "# Journey\n");
-        put(quests, &format!("{top}/plans/PLAN-20261007-AAAAAA.md"), "plan\n");
+        put(
+            quests,
+            &format!("{top}/plans/PLAN-20261007-AAAAAA.md"),
+            "plan\n",
+        );
         put(quests, &format!("{top}/attachments/map.png"), "a picture\n");
         put(
             quests,
@@ -1645,10 +1649,19 @@ mod tests {
             "its parent's README crosses"
         );
         for path in BESIDE_ITS_README {
-            assert_eq!(there(&skiff, top, path), None, "but not its parent's {path}");
+            assert_eq!(
+                there(&skiff, top, path),
+                None,
+                "but not its parent's {path}"
+            );
         }
-        let said: Vec<String> = kestrel.places.ledgers().hold(top).expect("held").ledger.theirs
-            ["skiff"]
+        let said: Vec<String> = kestrel
+            .places
+            .ledgers()
+            .hold(top)
+            .expect("held")
+            .ledger
+            .theirs["skiff"]
             .keys()
             .cloned()
             .collect();

@@ -588,7 +588,10 @@ mod tests {
             hosts: Vec::new(),
             fence: None,
         };
-        assert!(!lasting.is_worker(), "a machine of the person's own is none");
+        assert!(
+            !lasting.is_worker(),
+            "a machine of the person's own is none"
+        );
         for (worker, why) in [
             (
                 Declared {

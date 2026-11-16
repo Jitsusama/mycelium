@@ -3498,7 +3498,9 @@ mod tests {
         .await;
         let first = heard_until(&mut lines, shares).await;
         assert!(
-            first.last().is_some_and(|frame| names(frame, child) && !names(frame, top)),
+            first
+                .last()
+                .is_some_and(|frame| names(frame, child) && !names(frame, top)),
             "before tern says what it is, skiff shares the quest, never its parent: {first:?}"
         );
 
@@ -3533,13 +3535,13 @@ mod tests {
             &[Frame::Machine(Box::new(tern)), want(top), want(child)],
         )
         .await;
-        let sent = heard_until(&mut lines, |frame| {
-            matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == child)
-        })
+        let sent = heard_until(
+            &mut lines,
+            |frame| matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == child),
+        )
         .await;
-        let of_top = |frame: &Frame| {
-            matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == top)
-        };
+        let of_top =
+            |frame: &Frame| matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == top);
         assert!(
             !sent.iter().any(of_top),
             "once tern says it costs money, it is sent nothing of the parent: {sent:?}"
