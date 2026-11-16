@@ -111,6 +111,7 @@ pub mod ssh;
 mod stand_in;
 pub mod state;
 pub mod steer;
+pub mod stimuli;
 pub mod store;
 pub mod swarm;
 pub mod unanswered;
