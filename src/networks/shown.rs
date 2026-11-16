@@ -31,6 +31,7 @@ impl Shape {
             Self::Orchestration => "orchestrations",
             Self::Project => "projects",
             Self::Repository => "repositories",
+            Self::Tree => "trees",
             Self::Group => "groups",
             Self::Machines => "machines",
             Self::Outside => "outside",
@@ -43,6 +44,7 @@ impl Shape {
             Self::Orchestration => "orchestration",
             Self::Project => "project",
             Self::Repository => "repository",
+            Self::Tree => "tree",
             Self::Group => "group",
             Self::Machines => "the machines' network",
             Self::Outside => "outside source",
@@ -516,9 +518,11 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
         header(look, 0, &Standing::CELLS),
     ];
     for shape in Shape::EACH {
-        // A realm whose machines sense nothing outside says nothing of it.
-        let sensing = mycelium.networks.iter().any(|each| each.shape == shape);
-        if shape == Shape::Outside && !sensing {
+        // A realm whose machines sense nothing outside says nothing of it,
+        // and a tree is a network only while two cells hold it, so neither
+        // heading is drawn while no such network is.
+        let any = mycelium.networks.iter().any(|each| each.shape == shape);
+        if matches!(shape, Shape::Outside | Shape::Tree) && !any {
             continue;
         }
         lines.push(look.paint(BOLD, shape.heading()));
@@ -899,6 +903,20 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
             }
             lines.push(line.trim_end().to_owned());
         }
+    }
+    // A tree it shares is among its networks; one it holds alone is its own.
+    let own: Vec<String> = cell
+        .trees
+        .iter()
+        .filter(|tree| {
+            tree.network()
+                .is_none_or(|name| mycelium.network(&name).is_none())
+        })
+        .filter_map(super::Tree::short)
+        .collect();
+    if !own.is_empty() {
+        lines.extend([String::new(), look.paint(BOLD, "its own trees")]);
+        lines.extend(own.iter().map(|short| format!("  {short}")));
     }
     lines.join("\n")
 }

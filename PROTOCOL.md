@@ -1080,12 +1080,24 @@ session answering to nobody and leading nothing is in no team.
 The `network` kind holds each network of the realm, keyed by its name
 as the mesh names its group, such as `repo.skiff` or `machines`, made
 by the very model `mycelium networks` draws, with its fields: its
-`shape` (`orchestration`, `project`, `repository`, `group`,
-`machines` or `outside`), the `short` name a person types, its `title` and `glyph`
+`shape` (`orchestration`, `project`, `repository`, `tree`, `group`,
+`machines` or `outside`), the `short` name a person types, its `title`
+and `glyph`
 where something says them, the network it is `within`, its `cells` and
 the `machines` they run on, the machines' own network's `builders`
 beside its machines, and `counts` of its sessions as
-`needs-you`, `stuck`, `moving`, `quiet` and `dormant`. A network is
+`needs-you`, `stuck`, `moving`, `quiet` and `dormant`. A tree is a
+network only while two cells or more hold it at once, as each
+session's presence lists its `trees` (each `key`, `repo` and a
+worktree's `branch` or a snapshot's `commit`). Its name is
+`tree.<repo>:<branch>`, or `tree.<repo>:<commit>` for a snapshot, the
+repository's whole key and the whole commit, read up to the last colon
+since a branch holds none; its short name is the repository's last
+part and the branch, `<name>@<branch>`, or the commit cut to seven.
+The machine is no part of it: cells on two machines holding one branch
+share one tree. A tree one cell holds alone is no network, only among
+that cell record's `trees`, and a group named as a tree joins none. A
+network is
 heard when the latest of its cells was, or its team where its cells say
 nothing. Its records change as the sessions do, so a machine come or
 gone shows with the next change to a session. Ten thousand cells make
@@ -1160,7 +1172,7 @@ A list naming `fields`, a list of paths of keys joined by dots such as
 with its `key` and `kind` always; a path a record lacks is left out
 rather than sent as null, and so is an object left empty. A reader of
 thousands of sessions needs a few dozen of each one's hundreds of
-fields: `mycelium networks` reads 32, about a quarter of a session's
+fields: `mycelium networks` reads 41, about a quarter of a session's
 bytes. Paths may not index lists, and more than 64 of them, or a path
 that isn't one, is `not-an-ask`. A watch sends records whole, as
 before.
