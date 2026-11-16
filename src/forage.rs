@@ -573,32 +573,36 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
     chosen
 }
 
-/// `forages` drawn for a person: a block each, its cell, machine and
-/// quest, its purpose, then a line for each document. Says so in words
-/// when there are none, or none `named` names.
+/// `forages` drawn for a person in `width` columns: a block each, its
+/// cell, machine and quest, its purpose wrapped under its indent, then a
+/// line for each document, its title cut where the row would pass
+/// `width`. Says so in words when there are none, or none `named` names.
 #[must_use]
-pub fn draw(forages: &[Value], named: Option<&str>) -> String {
+pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
+    use crate::swarm::{fit, wrapped};
     if forages.is_empty() {
-        return match named {
-            Some(name) => format!("No cell named {name} has a forage.\n"),
-            None => "No cell works on a quest, so none has a forage.\n".to_owned(),
+        let said = match named {
+            Some(name) => format!("No cell named {name} has a forage."),
+            None => "No cell works on a quest, so none has a forage.".to_owned(),
         };
+        return wrapped(&said, "", "", width);
     }
     let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
     let blocks: Vec<String> = forages
         .iter()
         .map(|forage| {
-            let mut block = format!(
-                "{}  on {}  {}\n",
+            let heading = format!(
+                "{}  on {}  {}",
                 text(&forage["cell"]),
                 text(&forage["machine"]),
                 text(&forage["quest"])
             );
+            let mut block = fit(&heading, width);
+            block.push('\n');
             let purpose = forage["purpose"]
                 .as_str()
                 .unwrap_or("Its quest says no purpose yet.");
-            // Writing to a String never fails.
-            let _ = writeln!(block, "  {purpose}");
+            block.push_str(&wrapped(purpose, "  ", "  ", width));
             let documents = forage["documents"]
                 .as_array()
                 .map_or(&[][..], Vec::as_slice);
@@ -622,13 +626,14 @@ pub fn draw(forages: &[Value], named: Option<&str>) -> String {
                 } else {
                     format!("{ticked} of {} ticked", ticked + open)
                 };
-                let _ = writeln!(
-                    block,
+                let row = format!(
                     "  {:kinds$}  {:stages$}  {steps:<16}  {}",
                     text(&document["kind"]),
                     text(&document["stage"]),
                     text(&document["title"]),
                 );
+                // Writing to a String never fails.
+                let _ = writeln!(block, "{}", fit(&row, width));
             }
             if documents.is_empty() {
                 block.push_str("  No research, plans or reports yet.\n");
@@ -946,7 +951,7 @@ mod tests {
 
     #[test]
     fn a_forage_is_drawn_as_its_purpose_and_documents() {
-        let drawn = draw(&[forage("KESTRL", "kestrel", "QEST-1")], None);
+        let drawn = draw(&[forage("KESTRL", "kestrel", "QEST-1")], None, 80);
         assert_eq!(
             drawn,
             "KESTRL  on kestrel  QEST-1\n  Kestrel learns to hover over one field.\n  plan  build  2 of 4 ticked     Hover Over the Field\n"
@@ -954,14 +959,31 @@ mod tests {
     }
 
     #[test]
+    fn a_forage_fits_a_narrow_terminal_its_purpose_wrapped_and_titles_cut() {
+        let drawn = draw(&[forage("KESTRL", "kestrel", "QEST-1")], None, 40);
+        assert_eq!(
+            drawn,
+            "KESTRL  on kestrel  QEST-1\n  Kestrel learns to hover over one\n  field.\n  plan  build  2 of 4 ticked     Hover…\n"
+        );
+        assert!(
+            drawn.lines().all(|line| line.chars().count() <= 40),
+            "no line passes the terminal's width"
+        );
+    }
+
+    #[test]
     fn no_forage_is_said_in_words() {
         assert_eq!(
-            draw(&[], None),
+            draw(&[], None, 80),
             "No cell works on a quest, so none has a forage.\n"
         );
         assert_eq!(
-            draw(&[], Some("KESTRL")),
+            draw(&[], Some("KESTRL"), 80),
             "No cell named KESTRL has a forage.\n"
+        );
+        assert_eq!(
+            draw(&[], None, 30),
+            "No cell works on a quest, so\nnone has a forage.\n"
         );
     }
 

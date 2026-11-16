@@ -55,6 +55,8 @@
 //! - [`swarm`]: the swarm's teams as a person reads them in a terminal
 //! - [`networks`]: the cells and the networks they join, one model for
 //!   every view
+//! - [`machines`]: the realm's machines and builders as a person reads
+//!   them in a terminal
 //! - [`watching`]: watches of folders that hear only what changes them
 //! - [`client`]: a client of the socket
 //! - [`health`]: how a realm's network stands, for a daily read
@@ -87,6 +89,7 @@ pub mod hold;
 pub mod hosted_attach;
 pub mod install;
 pub mod link;
+pub mod machines;
 pub mod made;
 pub mod mesh;
 pub mod murmur;

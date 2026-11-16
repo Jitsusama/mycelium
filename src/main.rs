@@ -256,14 +256,20 @@ enum Action {
     Web(WebAsked),
     /// Says what each machine of the realm is, or what one is.
     ///
-    /// Bare, it prints every machine, this one first, then on a line of
-    /// their own the builders this machine sends Nix builds to; given its
-    /// name, one machine or builder. `machine` is the same, and bare
-    /// prints what this machine is.
+    /// Bare, it prints every machine, this one first, then the builders
+    /// this machine sends Nix builds to; given its name, one machine or
+    /// builder. To a terminal it is drawn for a person, a row each with
+    /// what is worth a look beneath; anywhere else it prints the node's
+    /// JSON lines, as programs read them. `-o` says which either way.
+    /// `machine` is the same, and bare prints what this machine is.
     #[command(after_help = "Example:\n  mycelium machines tern")]
     Machines {
         /// The machine or builder, such as `tern`.
         name: Option<String>,
+        /// How to print it: text, or JSON lines; drawn as text only to a
+        /// terminal, unless this says.
+        #[arg(short = 'o', long = "output", value_enum)]
+        format: Option<Format>,
     },
     /// `machines`, as it was spelt before, when bare it printed this
     /// machine.
@@ -595,7 +601,7 @@ impl Output {
 }
 
 /// A way of printing what is asked.
-#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Format {
     /// For a person, drawn to the terminal's width.
     Text,
@@ -737,12 +743,12 @@ enum HoldAct {
 /// whichever spelling it was typed in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Tree {
-    /// Every machine of the realm, this one first.
-    Machines,
+    /// Every machine of the realm, this one first, printed as asked.
+    Machines(Option<Format>),
     /// This machine, as bare `machine` asks.
     ThisMachine,
-    /// The machine of this name.
-    Machine(String),
+    /// The machine of this name, printed as asked.
+    Machine(String, Option<Format>),
     /// Every session held here.
     Holds,
     /// The session held here by this id.
@@ -766,11 +772,13 @@ enum Tree {
 /// action, and for an attach to a pi host's conversation.
 fn tree(action: &Action) -> Option<Result<Tree, String>> {
     Some(Ok(match action {
-        Action::Machines { name: None } => Tree::Machines,
+        Action::Machines { name: None, format } => Tree::Machines(*format),
         Action::Machine { name: None } => Tree::ThisMachine,
-        Action::Machines { name: Some(name) } | Action::Machine { name: Some(name) } => {
-            Tree::Machine(name.clone())
-        }
+        Action::Machines {
+            name: Some(name),
+            format,
+        } => Tree::Machine(name.clone(), *format),
+        Action::Machine { name: Some(name) } => Tree::Machine(name.clone(), None),
         Action::Holds(holds) => return Some(holds_asked(holds)),
         Action::Held => Tree::Holds,
         Action::Attach(Attaching {
@@ -1346,7 +1354,9 @@ fn steer(socket: &Path, address: String) -> io::Result<()> {
 fn in_tree(socket: &Path, realm: &str, asked: Tree) -> io::Result<ExitCode> {
     let held = place::held(realm);
     match asked {
-        Tree::Machines => {
+        Tree::Machines(format) if drawn(format) => machines_drawn(socket, None),
+        Tree::Machine(name, format) if drawn(format) => machines_drawn(socket, Some(&name)),
+        Tree::Machines(_) => {
             print_reply(socket, &Request::Machines)?;
             match builders_of(socket) {
                 Some(builders) if !builders.is_empty() => {
@@ -1356,7 +1366,7 @@ fn in_tree(socket: &Path, realm: &str, asked: Tree) -> io::Result<ExitCode> {
             }
         }
         Tree::ThisMachine => print_reply(socket, &Request::Machine),
-        Tree::Machine(name) => print_line(&one_machine(
+        Tree::Machine(name, _) => print_line(&one_machine(
             Client::connect(socket)?.ask(&Request::Machines)?,
             builders_of(socket).unwrap_or_default(),
             &name,
@@ -1377,6 +1387,48 @@ fn in_tree(socket: &Path, realm: &str, asked: Tree) -> io::Result<ExitCode> {
             .and_then(|woke| print_line(&serde_json::json!({"id": id, "woke": woke}))),
     }
     .map(|()| ExitCode::SUCCESS)
+}
+
+/// Whether machines asked to print as `format` are drawn for a person:
+/// when asked for text, or asked nothing and printed to a terminal. The
+/// callers that read the JSON lines ask nothing and read through a pipe.
+fn drawn(format: Option<Format>) -> bool {
+    use std::io::IsTerminal as _;
+    format.map_or_else(
+        || io::stdout().is_terminal(),
+        |format| format == Format::Text,
+    )
+}
+
+/// The realm's machines and builders drawn for a person, or the one
+/// `name`d, through the node at `socket`.
+fn machines_drawn(socket: &Path, name: Option<&str>) -> io::Result<()> {
+    let look = look();
+    let builders = builders_of(socket).unwrap_or_default();
+    let reply = Client::connect(socket)?.ask(&Request::Machines)?;
+    let drawn = match name {
+        None => match reply {
+            Ok(Response::Machines(machines)) => {
+                mycelium::machines::table(&machines, &builders, &look)
+            }
+            Ok(_) => {
+                return Err(io::Error::other(
+                    "the node answered machines with something else",
+                ));
+            }
+            Err(why) => return Err(io::Error::other(why)),
+        },
+        Some(name) => match one_machine(reply, builders, name)? {
+            Ok(Response::Machine(machine)) => mycelium::machines::one(&machine, &look),
+            Ok(Response::Builders(builders)) => builders
+                .iter()
+                .map(|builder| mycelium::machines::one_builder(builder, &look))
+                .collect(),
+            Ok(_) => unreachable!("one machine is a machine or a builder"),
+            Err(why) => return Err(io::Error::other(why)),
+        },
+    };
+    io::stdout().lock().write_all(drawn.as_bytes())
 }
 
 /// The node's answer for every machine, `reply`, cut to the one `name`d,
@@ -2551,7 +2603,7 @@ fn forage(socket: &Path, asked: &ForageAsked) -> io::Result<()> {
     write!(
         io::stdout().lock(),
         "{}",
-        forage::draw(&chosen, asked.cell.as_deref())
+        forage::draw(&chosen, asked.cell.as_deref(), look().width)
     )
 }
 
@@ -2823,7 +2875,7 @@ mod tests {
             (
                 "machine tern",
                 "machines tern",
-                Tree::Machine("tern".to_owned()),
+                Tree::Machine("tern".to_owned(), None),
             ),
             ("held", "holds", Tree::Holds),
             (
@@ -2852,7 +2904,21 @@ mod tests {
             assert_eq!(asked(old), Ok(both.clone()), "{old}");
             assert_eq!(asked(new), Ok(both), "{new}");
         }
-        assert_eq!(asked("machines"), Ok(Tree::Machines), "bare, every machine");
+        assert_eq!(
+            asked("machines"),
+            Ok(Tree::Machines(None)),
+            "bare, every machine"
+        );
+        assert_eq!(
+            asked("machines -o json"),
+            Ok(Tree::Machines(Some(super::Format::Json))),
+            "every machine, as JSON lines wherever it prints"
+        );
+        assert_eq!(
+            asked("machines tern -o text"),
+            Ok(Tree::Machine("tern".to_owned(), Some(super::Format::Text))),
+            "one machine, drawn wherever it prints"
+        );
         assert_eq!(
             asked("machine"),
             Ok(Tree::ThisMachine),

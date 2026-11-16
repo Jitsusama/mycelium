@@ -54,7 +54,10 @@ The harness mesh's messages and presence, carried between machines:
 - Each node serves a local socket in niri's shape, which pi, Quickshell
   or a terminal reads, and says on it what each machine is (`mycelium
   machines`, or `machines <NAME>` for one), the facts work will be
-  placed by. Beside them it says the builders this machine sends Nix
+  placed by. To a terminal they are drawn as a row each, with a line
+  beneath for an update that failed, a disk nearly full or a queue at
+  its limit; through a pipe they stay the node's JSON lines, and `-o`
+  chooses either. Beside them it says the builders this machine sends Nix
   builds to, read from Nix machines files given as `--builders` and
   `--lent-builders`: what each builds and whether it answers, a lent one
   never dialled so as not to wake what costs to run. Given its machine's

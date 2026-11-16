@@ -214,6 +214,33 @@ pub(crate) fn fit(text: &str, width: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
+/// `text` wrapped at its spaces to `width` columns, its first line after
+/// `first` and each after it after `rest`. A word wider than the room left
+/// stands on a line of its own rather than being split.
+pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        let indent = if lines.len() > 1 { rest } else { first };
+        let room = width.saturating_sub(indent.chars().count());
+        match lines.last_mut() {
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= room => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_owned()),
+        }
+    }
+    lines
+        .iter()
+        .enumerate()
+        .fold(String::new(), |mut out, (at, line)| {
+            let indent = if at == 0 { first } else { rest };
+            // Writing to a String never fails.
+            let _ = writeln!(out, "{indent}{line}");
+            out
+        })
+}
+
 /// `text` padded with spaces to `width` characters.
 pub(crate) fn padded(text: &str, width: usize) -> String {
     let short = width.saturating_sub(text.chars().count());
