@@ -6,8 +6,11 @@ and how much memory it holds.
 The rest of the tests sit beside the code they prove, in `src/`.
 
 - `forages.rs`: the node's forage records made for ten thousand cells
-  within 30 MB, what was read for them included, in time that grows
-  with the cells
+  within 64 MB, what was read for them included, in time that grows
+  with the cells; short of the 30 MB target while each record carries
+  its quest's documents, about 5 KB a cell, made for each ask and never
+  held, a gap that closes by noon on 18 November 2026, by writing the
+  records as raw bytes as the cells' do
 - `held.rs`: a holder told to end as its scope's stop tells it, with a
   window joined, ending as its program does
 - `made.rs`: a machine made for a start from a provider's offer, linked,

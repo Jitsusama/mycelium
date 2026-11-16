@@ -124,6 +124,7 @@ fn ten_thousand_cells_make_their_forage_records_within_the_bar() {
     for n in 0..quests {
         shelf.read(store.path(), &quest(n));
     }
+    let shelved = HELD.load(Ordering::Relaxed) - before;
     let (records, unread) = forage::records(&mut shelf, &cells, "kestrel");
     let peak = PEAK.load(Ordering::Relaxed) - before;
     assert_eq!(records.len(), CELLS, "every cell has its forage");
@@ -133,7 +134,7 @@ fn ten_thousand_cells_make_their_forage_records_within_the_bar() {
     let (least_fewer, least_all) = fastest(&mut shelf, &fewer, &cells);
     eprintln!(
         "{FEWER} cells took {least_fewer:?}; {CELLS} took {least_all:?}, \
-         holding {peak} bytes at most"
+         holding {peak} bytes at most, {shelved} of them the shelf"
     );
     assert!(
         peak < AT_MOST,
