@@ -410,8 +410,8 @@ fn nothing_of_the_askers_environment_reaches_the_work_on_another_machine() {
         "the work starts on the other machine: {said}"
     );
     // The work's file comes only as the far end hands over, at its keep a
-    // minute in, so it's waited for as a hand-over is: within PATIENCE,
-    // the suite took 60.3 s when it passed and failed on loaded builders.
+    // minute in, so it's waited for as a hand-over is, longer than that
+    // minute.
     let environment = heard(root, &out, HANDS_OVER, |_| true);
     assert!(
         environment.lines().any(|line| line == "LENT_OWN=lent-mark"),

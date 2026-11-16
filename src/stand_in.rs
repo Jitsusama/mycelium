@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 /// test without its stand-in proves nothing.
 pub fn program(path: &Path, text: &str) {
     let mut child = Command::new("sh")
-        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .args(["-c", "cat > \"$1\" && chmod 755 -- \"$1\"", "sh"])
         .arg(path)
         .stdin(Stdio::piped())
         .spawn()
@@ -29,7 +29,9 @@ pub fn program(path: &Path, text: &str) {
         .take()
         .expect("the shell's input")
         .write_all(text.as_bytes())
-        .expect("the stand-in is told the shell");
+        .unwrap_or_else(|error| {
+            panic!("the stand-in {} is told the shell: {error}", path.display())
+        });
     let put = child.wait().expect("the shell ends");
     assert!(put.success(), "the stand-in {} is in place", path.display());
 }

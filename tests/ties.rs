@@ -81,7 +81,7 @@ fn ten_thousand_cells_make_their_tie_records_within_the_bar() {
     let per_cell = |at: usize, of: f64| of / f64::from(u32::try_from(SIZES[at]).expect("cells"));
     let grew = |of: &dyn Fn(usize) -> f64| per_cell(2, of(2)) / per_cell(1, of(1));
     for turn in 0..MOST_TIMINGS {
-        if turn >= TIMINGS && grew(&|at| least[at].as_secs_f64()) < GROWS_AT_MOST {
+        if turn >= TIMINGS && grew(&|at| least[at].as_secs_f64()) < TIME_GROWS_AT_MOST {
             break;
         }
         for (at, realm) in realms.iter().enumerate() {
