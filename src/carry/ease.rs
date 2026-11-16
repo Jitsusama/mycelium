@@ -439,7 +439,7 @@ fn why(here: &str, to: &str, reading: &Reading, history: &History) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::BTreeMap;
 
     use serde_json::json;
@@ -450,17 +450,17 @@ mod tests {
     use crate::facts::{self, Readiness, Sources};
     use crate::room::{Limit, Pressure, Room, Takes};
 
-    const NOW: &str = "2026-11-16T08:00:00Z";
+    pub(in crate::carry) const NOW: &str = "2026-11-16T08:00:00Z";
 
-    fn now() -> Timestamp {
+    pub(in crate::carry) fn now() -> Timestamp {
         NOW.parse().expect("a time")
     }
 
-    fn ago(mins: i64) -> Timestamp {
+    pub(in crate::carry) fn ago(mins: i64) -> Timestamp {
         now() - SignedDuration::from_mins(mins)
     }
 
-    fn declaring(kinds: &[Kind]) -> Declared {
+    pub(in crate::carry) fn declaring(kinds: &[Kind]) -> Declared {
         let open = Doors {
             builders: ["big".to_owned()].into(),
             forges: ["github".to_owned()].into(),
@@ -522,7 +522,7 @@ mod tests {
     }
 
     /// Skiff over, tern with room.
-    fn realm() -> Vec<Machine> {
+    pub(in crate::carry) fn realm() -> Vec<Machine> {
         vec![machine("skiff", 86.0), machine("tern", 4.6)]
     }
 
@@ -543,7 +543,7 @@ mod tests {
 
     /// A session of skiff's waiting, asleep, off the screen, part way
     /// through nothing, its quest only here.
-    fn cell(id: &str) -> Cell {
+    pub(in crate::carry) fn cell(id: &str) -> Cell {
         Cell {
             session: serde_json::from_value(json!({
                 "id": id, "address": id.to_uppercase(), "machine": "skiff",

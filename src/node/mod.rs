@@ -18,7 +18,8 @@ use tokio::task::JoinSet;
 
 use crate::awake::{self, Awake};
 use crate::builders::{self, Builders};
-use crate::carry::{chain, ground, kept, ordered, through};
+use crate::carry::easing::{self, Eases, Easing};
+use crate::carry::{chain, ease, ground, kept, ordered, through};
 use crate::daemon;
 use crate::facts::{self, Readiness};
 use crate::flow::{self, Flows};
@@ -331,6 +332,9 @@ pub struct Given {
     /// The quests' scratch folders, whose webs its cells murmur in, if it
     /// serves their murmurs (`murmur`).
     pub scratch: Option<PathBuf>,
+    /// Where it keeps what it would do to ease its machine, and how
+    /// often it looks, if it looks (`carry::easing`).
+    pub eases: Option<Eases>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -422,6 +426,7 @@ where
 {
     store::out_of_reach_of_unclaimed(&store)?;
     let (to_dial, mut made) = mpsc::unbounded_channel();
+    let eases = given.eases.clone();
     let (shared, kept) = Shared::of(
         store.clone(),
         (membership.hello(), socket.path.clone()),
@@ -429,6 +434,7 @@ where
         to_dial,
     );
     let seeing_fences = tokio::spawn(shared.clone().see_fences());
+    let easing = eases.map(|eases| tokio::spawn(shared.clone().ease(eases)));
     let Kept {
         sharing,
         refusals,
@@ -520,6 +526,9 @@ where
     // for them.
     let stopping = std::time::Instant::now();
     seeing_fences.abort();
+    if let Some(easing) = easing {
+        easing.abort();
+    }
     links.shutdown().await;
     let ended = stopping.elapsed();
     let letting_go = std::time::Instant::now();
@@ -1339,6 +1348,7 @@ impl<S: Store> Shared<S> {
             placements,
             health,
             scratch,
+            eases: _,
         } = given;
         let own = own_health::Slot::new(None);
         if let Some(socket) = health {
@@ -2357,6 +2367,155 @@ impl<S: Store> Shared<S> {
         }
     }
 
+    /// Looks each `eases.every` at what this machine would do to ease
+    /// itself (`carry::easing`), keeping each choice in `eases.folder`,
+    /// and does none of it. It begins once the carries kept here, which
+    /// say what moved lately, can be read, saying why while they can't.
+    async fn ease(self, eases: Eases) {
+        let mut easing = None;
+        let mut sampler = easing::Sampler::default();
+        let mut unread = None;
+        let mut every = tokio::time::interval(eases.every);
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            every.tick().await;
+            let now = jiff::Timestamp::now();
+            if easing.is_none() {
+                match self.carried_lately(now).await {
+                    Ok(kept) => easing = Some(Easing::after(&kept)),
+                    Err(why) if unread.as_ref() == Some(&why) => continue,
+                    Err(why) => {
+                        let line = serde_json::json!({
+                            "at": now.to_string(), "would": true, "choice": "nothing", "why": why,
+                        });
+                        unread = Some(why);
+                        self.keep_easing(&eases.folder, now, line).await;
+                        continue;
+                    }
+                }
+            }
+            let Some(easing) = easing.as_mut() else {
+                continue;
+            };
+            let (line, back) = self
+                .look_to_ease(easing, std::mem::take(&mut sampler), now)
+                .await;
+            sampler = back;
+            if let Some(line) = line {
+                self.keep_easing(&eases.folder, now, line).await;
+            }
+        }
+    }
+
+    /// The carries kept here within a day of `now`, or why they can't be
+    /// read.
+    async fn carried_lately(&self, now: jiff::Timestamp) -> Result<Vec<kept::Kept>, String> {
+        let carries = self.carries.clone();
+        tokio::task::spawn_blocking(move || kept::read(&carries, now - ease::PIN))
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|read| read.map_err(|error| error.to_string()))
+            .map_err(|error| {
+                format!("the carries kept here can't be read ({error}), so what moved lately can't be told")
+            })
+    }
+
+    /// What this machine would do now to ease itself, as `easing` says
+    /// it, with `sampler` back, having counted its sessions' processes.
+    async fn look_to_ease(
+        &self,
+        easing: &mut Easing,
+        mut sampler: easing::Sampler,
+        now: jiff::Timestamp,
+    ) -> (Option<serde_json::Value>, easing::Sampler) {
+        let machines = self.machines();
+        let (sessions, loads) = {
+            let mut inner = self.lock();
+            let inner = &mut *inner;
+            let sessions = inner.state.sessions();
+            let loads = inner.starts.loads(&machines, running(&sessions), now);
+            (sessions, loads)
+        };
+        let here: Vec<&Session> = sessions
+            .iter()
+            .filter(|session| session.machine == self.machine)
+            .collect();
+        let fences: BTreeMap<String, crate::declared::Kind> = here
+            .iter()
+            .filter_map(|session| {
+                let id = easing::id(session);
+                Some((id.to_owned(), self.fences.strictest(id).ok()?))
+            })
+            .collect();
+        let ids: std::collections::BTreeSet<String> = here
+            .iter()
+            .map(|session| easing::id(session).to_owned())
+            .collect();
+        // A session a host runs shares the host's process, which says
+        // nothing of the session's own use.
+        let pids: BTreeMap<String, i32> = here
+            .iter()
+            .filter(|session| session.host.is_none())
+            .filter_map(|session| {
+                let pid = session.presence.pointer("/owner/pid")?.as_i64()?;
+                Some((session.id.clone(), i32::try_from(pid).ok()?))
+            })
+            .collect();
+        let procs = match &*self.processes {
+            Processes::Folder(procs) => Some(procs.clone()),
+            Processes::Listed => None,
+        };
+        let (store, logs) = (self.store.clone(), self.logs.clone());
+        let read = tokio::task::spawn_blocking(move || {
+            let holdings = store.holdings();
+            let queued = place::queue()
+                .map(|queue| room::queued_by(&queue, now.as_second()))
+                .unwrap_or_default();
+            let sizes = easing::sizes(&logs, &ids);
+            let holds = procs
+                .map(|procs| sampler.take(&procs, &pids, now))
+                .unwrap_or_default();
+            (holdings, queued, sizes, holds, sampler)
+        })
+        .await;
+        let Ok((holdings, queued, sizes, holds, sampler)) = read else {
+            return (None, easing::Sampler::default());
+        };
+        let boot = store::folders::boot_id();
+        let looked = easing::Looked {
+            sessions: &sessions,
+            fences: &fences,
+            holdings: &holdings,
+            queued: &queued,
+            sizes: &sizes,
+            boot: boot.as_deref(),
+            now,
+        };
+        let cells = easing::cells(&self.machine, &looked);
+        let here = ease::Here {
+            name: &self.machine,
+            declared: machines.first().and_then(|one| one.declared.as_ref()),
+            machines: &machines,
+            loads: &loads,
+        };
+        let reading = crate::balance::read(&machines, &sessions, now);
+        (easing.look(&here, reading, cells, &holds, now), sampler)
+    }
+
+    /// Keeps `line`, said `now`, in `folder`, saying so where it can't.
+    async fn keep_easing(&self, folder: &Path, now: jiff::Timestamp, line: serde_json::Value) {
+        let folder = folder.to_owned();
+        let kept = tokio::task::spawn_blocking(move || {
+            easing::keep(&folder, now, &line, easing::DAY_HOLDS)
+        })
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|kept| kept.map_err(|error| error.to_string()));
+        if let Err(error) = kept {
+            eprintln!("what this machine would do to ease itself isn't kept: {error}");
+        }
+    }
+
     /// The presences of this machine's sessions that run, or wait parked
     /// to run again.
     fn standing(&self) -> Vec<store::Presence> {
@@ -3353,6 +3512,7 @@ mod tests {
             placements: None,
             health: None,
             scratch: None,
+            eases: None,
         }
     }
 
@@ -3444,6 +3604,7 @@ mod tests {
                 placements: None,
                 health: None,
                 scratch,
+                eases: None,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -7884,6 +8045,77 @@ mod tests {
         assert!(
             !dir.path().join("mycelium").join("work.sock").exists(),
             "the socket is taken down"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_easing_says_what_it_would_do_and_does_none_of_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let bound = bind(&socket).expect("the socket binds");
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let steers = dir.path().join("steer");
+        let folder = dir.path().join("eases");
+        let carries = dir.path().join("carries.jsonl");
+        let eases = Eases {
+            folder: folder.clone(),
+            every: Duration::from_millis(10),
+        };
+        let given = Given {
+            eases: Some(eases),
+            carries: carries.clone(),
+            ..bare(steers, None)
+        };
+        let node = tokio::spawn(async move {
+            let stopped = async {
+                // A dropped sender stops the node as surely as a sent stop.
+                let _ = stopped.await;
+            };
+            let nobody = Listed::<Ssh>(Vec::new());
+            run(Memory::default(), membership, nobody, given, bound, stopped).await
+        });
+
+        let day = folder.join(format!(
+            "{}.jsonl",
+            jiff::Timestamp::now().strftime("%Y-%m-%d")
+        ));
+        let said = tokio::time::timeout(PATIENCE, async {
+            // Nothing tells a test when a line is kept, so it looks again
+            // every few milliseconds until one is.
+            loop {
+                if let Some(line) = fs::read_to_string(&day)
+                    .ok()
+                    .and_then(|kept| kept.lines().next().map(str::to_owned))
+                {
+                    return line;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a line is kept in time");
+        let line: Value = serde_json::from_str(&said).expect("a line");
+        assert_eq!(
+            (&line["would"], &line["choice"]),
+            (&serde_json::json!(true), &serde_json::json!("nothing")),
+            "a lone machine has nowhere to ease to: {line}"
+        );
+        assert!(line["reading"]["held"].is_array(), "{line}");
+        stop.send(()).expect("the node still runs");
+        node.await.expect("the node ends").expect("the node ran");
+        assert!(
+            !carries.exists(),
+            "what it would do never reaches the record of carries"
+        );
+        let kept = fs::read_to_string(&day).expect("the day's file");
+        assert_eq!(
+            kept.lines().count(),
+            1,
+            "nothing is said again for the same reason: {kept}"
         );
     }
 

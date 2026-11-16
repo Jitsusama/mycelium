@@ -24,6 +24,7 @@
 
 pub mod chain;
 pub mod ease;
+pub mod easing;
 pub mod ground;
 pub mod kept;
 pub mod ordered;
@@ -607,7 +608,7 @@ fn runs(session: &Session) -> bool {
 /// for its holder to start again, which a holder can only do in the boot
 /// it began in. Where the machine names no boot, any park is taken as
 /// this boot's.
-fn parked(session: &Session, boot: Option<&str>) -> bool {
+pub(crate) fn parked(session: &Session, boot: Option<&str>) -> bool {
     let presence = &session.presence;
     session.state == State::Ended
         && presence.get("state").and_then(Value::as_str) == Some("parked")
@@ -650,7 +651,7 @@ pub fn runs_on(sessions: &[Session], quest: &str) -> Result<String, String> {
 }
 
 /// The session's own id, as its presence names it and its done file does.
-fn session_id(session: &Session) -> Option<&str> {
+pub(crate) fn session_id(session: &Session) -> Option<&str> {
     session.presence.get("session").and_then(Value::as_str)
 }
 

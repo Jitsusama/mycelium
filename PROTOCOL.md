@@ -614,6 +614,37 @@ until then. Its `state` and `refused` are live. The chain and asker
 stay in the file, which proves them. Each node serves only the carries
 it ordered, so a reader asks each machine's node for its own.
 
+### A Machine Easing Itself
+
+A node run with `--eases` looks each minute at what its machine would
+do to ease itself, judging only by what it reads, and does none of it.
+It reads the realm's balance as `mycelium balance --follow` does and
+holds what is seen in most of the last ten readings. Once its machine
+has been held over for ten minutes while another has room, it would
+put its sessions that wait to sleep where they are. If the readings
+five minutes on still say over, it would carry one session to a peer
+with room: the smallest log first, placed as any work is and onto
+ground as firm. A session in a turn, on the person's screen, holding a
+lease or a heavy run, or whose quest runs elsewhere too stays. So does
+one it can't tell any of these of. What a session is part way through
+is told only once its presence says `"leases": {"background": true}`,
+its harness keeping a lease for each background run. After a carry it
+would carry none for half an hour. A session moved by anyone stays put
+for a day, by the carries kept here, and nothing goes to a machine a
+session came from within the hour.
+
+Each choice to sleep or carry, and each change in why it does nothing,
+is a JSON line in the state folder's `eases`, a file each day of at
+most 8 MiB, the folder its owner's alone. Each line holds `at`, `would:
+true`, `choice` (`nothing` with `why`, `sleep` with `sessions`, or
+`carry` with `session`, `to` and `why`) and the `reading` it was chosen
+by. A carry's line adds `holds`, what the session's own process holds
+where it has one: `memory` resident in bytes, and `cpu` in cores over
+the last ten minutes. What it would have done counts in its memory
+alone, so a session it would have put to sleep counts as asleep, and
+one it would have carried as gone. Nothing reaches the record of
+carries.
+
 ## Realm Flows
 
 Realms are kept apart, but a machine's configuration may open a flow: a

@@ -12,6 +12,7 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser, Subcommand};
 use mycelium::awake::Awake;
 use mycelium::builders::{self, Builder};
+use mycelium::carry::easing::Eases;
 use mycelium::carry::through::Through;
 use mycelium::client::Client;
 use mycelium::flow::Flows;
@@ -68,7 +69,7 @@ enum Action {
     /// The node links this machine with the others of its realm and
     /// answers every other command here.
     #[command(after_help = "Example:\n  mycelium node --ssh joel@skiff.local")]
-    Node(Node),
+    Node(Box<Node>),
     /// Runs this machine's end of a link to another machine.
     ///
     /// Another machine's node starts it over SSH and speaks through
@@ -517,6 +518,12 @@ struct Node {
     /// `health`; PROTOCOL.md says what is asked.
     #[arg(long)]
     health_socket: Option<PathBuf>,
+    /// Look each minute at what this machine would do to ease itself
+    /// while over its limits and another has room, keeping each choice
+    /// in the state folder's `eases`, a file each day; it does none of
+    /// it.
+    #[arg(long)]
+    eases: bool,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -1201,7 +1208,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         return in_tree(&socket, &realm, asked);
     }
     let ran = match action {
-        Action::Node(node) => run_node(node, realm, &socket),
+        Action::Node(node) => run_node(*node, realm, &socket),
         Action::Link { here } => run_link(here, realm, socket, None),
         Action::Ssh { here, from } => return run_asked(here, realm, socket, from),
         Action::Share(sharing) => share(sharing, realm, &socket),
@@ -1476,6 +1483,10 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         placements: Some(mycelium::placements::Log::at(state.join("placements"))),
         health: node.health_socket,
         scratch,
+        eases: node.eases.then(|| Eases {
+            folder: state.join("eases"),
+            every: carry::easing::EVERY,
+        }),
     };
     let runtime = runtime()?;
     let ran = runtime.block_on(async {
