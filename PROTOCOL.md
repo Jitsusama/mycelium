@@ -1469,8 +1469,9 @@ heard as one.
 Ten thousand cells make their forages in time that grows with them,
 within 64 MB. The target is 30 MB, the map's and the launcher's bound;
 the gap is known, since each record carries its quest's documents,
-about 5 KB a cell, made for each ask and never held, and it closes by
-23 November 2026.
+about 5 KB a cell, made for each ask and never held. It closes by noon
+on 18 November 2026, once the records are written as raw bytes, as the
+cells' are.
 
 ## A Held Session
 
