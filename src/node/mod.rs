@@ -961,6 +961,9 @@ struct Shared<S> {
     /// The ids of the signals this node said as its receptors this run,
     /// the only messages from a receptor's name it takes (`signals`).
     spoken: Arc<Mutex<HashSet<String>>>,
+    /// The ids of messages from a receptor's name it didn't say, refused
+    /// once and never opened again when the store is read whole.
+    refused: Arc<Mutex<HashSet<String>>>,
     /// Its cells' forages, as last read from the quest store.
     forages: forage::Held,
     /// Asks for a quest a cell works on to be read, when it hasn't been;
@@ -1080,6 +1083,7 @@ impl<S: Clone> Clone for Shared<S> {
             receptors: self.receptors.clone(),
             stimuli: self.stimuli.clone(),
             spoken: Arc::clone(&self.spoken),
+            refused: Arc::clone(&self.refused),
             forages: self.forages.clone(),
             to_read: self.to_read.clone(),
         }
@@ -1586,6 +1590,7 @@ impl<S: Store> Shared<S> {
             receptors: held,
             stimuli,
             spoken: Arc::default(),
+            refused: Arc::default(),
             forages,
             to_read,
         };
@@ -1616,9 +1621,10 @@ impl<S: Store> Shared<S> {
     fn read_store(&self) {
         let ids = self.store.message_ids(0);
         let unread: Vec<String> = {
+            let refused = self.refused_ids();
             let inner = self.lock();
             ids.into_iter()
-                .filter(|id| !inner.state.holds_message(id))
+                .filter(|id| !inner.state.holds_message(id) && !refused.contains(id))
                 .collect()
         };
         let (waiting, messages): (Vec<Message>, Vec<Message>) = unread
@@ -3679,6 +3685,13 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
                     .is_some_and(|realm| *realm != shared.realm) =>
             {
                 shared.send_across(draft).await
+            }
+            // A crossing is another realm's node handing on what it took,
+            // and its receptors' signals stay with it.
+            Ok(Request::Cross(crossing))
+                if crate::stimuli::speaks_as_receptor(&crossing.message.from) =>
+            {
+                Answer::Err("a receptor's signal stays in its own realm".to_owned())
             }
             Ok(Request::Cross(crossing)) => shared.take(crossing),
             asked => asked.and_then(|request| shared.answer(request)).into(),
@@ -7235,6 +7248,36 @@ mod tests {
             records,
             json!([]),
             "a message planted in the store as a receptor was taken"
+        );
+        let (late, body) = mesh::written(
+            &Draft {
+                from: "Slack@skiff".to_owned(),
+                groups: vec![Group::new("outside.slack").expect("a valid group")],
+                intent: Some(Intent::Fyi),
+                text: "slack: 8 asked of you, up from 0; 8 today".to_owned(),
+                re: None,
+                realm: None,
+            },
+            1,
+        );
+        store.send_here(&late, body);
+        let (after, body) = mesh::written(
+            &Draft {
+                from: "OSPR01".to_owned(),
+                groups: vec![Group::new("outside.slack").expect("a valid group")],
+                intent: Some(Intent::Fyi),
+                text: "heard after".to_owned(),
+                re: None,
+                realm: None,
+            },
+            1,
+        );
+        store.send_here(&after, body);
+        let changed = messages.next().await;
+        assert_eq!(
+            changed["changed"][0]["key"],
+            json!(format!("message:{after}")),
+            "one planted as a receptor while the node ran was taken: {changed}"
         );
 
         slack_asking_beside(&socket, 1);

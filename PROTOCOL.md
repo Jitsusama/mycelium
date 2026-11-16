@@ -1697,16 +1697,24 @@ grants nothing, and it starts, moves or steers no cell.
 
 Which sources may speak is the person's table, named by `mycelium node
 --stimuli FILE` and shaped `{"say": ["github", "slack"]}`. The file is
-taken only where no account but root's or the node's own could change
-it, walked link by link as `--declared` is, or within the Nix store. A
-table unnamed, refused or naming a source the node doesn't know leaves
-every source silent.
+taken only where no account but root could change it, walked link by
+link as `--declared` is, or within the Nix store. A table unnamed,
+refused or naming a source the node doesn't know leaves every source
+silent. The node reads it once, as it starts, so a changed table takes
+its restart.
 
-Only the node speaks as a receptor. A client's message from any name
-with `@` in it is refused, a link never carries a receptor's message and
-refuses one it is handed, and the node takes a message from a
-receptor's name only when it said it since it started, so one planted
-in the store is no signal. A signal stays on its machine, as the
+Only the node speaks as a receptor, and a name reads as a receptor's
+when the part before its `@` is a source's name once case, digits,
+punctuation and spaces are set aside, or holds anything outside ASCII.
+A client's message from any name with `@` in it is refused, and so is a
+crossing from another realm's node that names a receptor. A link never
+carries a receptor's message and refuses one it is handed. The node
+serves a message from a receptor's name, on a watch or to a link, only
+when it said it since it started, so after a restart its earlier
+signals drop out of what it serves. What the node vouches for is what
+it serves and carries: a reader of the messages folder itself, as a pi
+session is, reads whatever the folder's account wrote there, under a
+receptor's name or any other. A signal stays on its machine, as the
 receptor's record does.
 
 ### Forages

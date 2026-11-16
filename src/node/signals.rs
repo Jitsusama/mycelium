@@ -1,10 +1,11 @@
 //! The node saying its receptors' climbs on their networks (`stimuli`):
 //! as the receptor's own cell, `<source>@<machine>`, which only this node
 //! speaks as. A client can't send as a name with `@` in it, a link never
-//! carries one, and a message from a receptor's name is taken only when
-//! this node said it this run, so one planted in the store is no signal.
+//! carries one, and a message from a receptor's name is served only when
+//! this node said it this run. What reads the store's folder itself, as
+//! a session does, isn't the node's to vouch for.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use jiff::Timestamp;
 
@@ -54,13 +55,30 @@ impl<S: Store + Clone + Send + Sync + 'static> Shared<S> {
     }
 
     /// Whether `message` is one the node takes: any but one from a
-    /// receptor's name, which it takes only when it said it this run.
+    /// receptor's name, which it takes only when it said it this run. One
+    /// it refuses is remembered, so reading the store whole skips it.
     pub(super) fn takes(&self, message: &Message) -> bool {
-        !speaks_as_receptor(&message.from)
+        if !speaks_as_receptor(&message.from)
             || self
                 .spoken
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .contains(&message.id)
+        {
+            return true;
+        }
+        self.refused
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message.id.clone());
+        false
+    }
+
+    /// The ids of the messages from a receptor's name it refused.
+    pub(super) fn refused_ids(&self) -> HashSet<String> {
+        self.refused
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }

@@ -627,6 +627,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_receptors_signal_never_crosses_into_another_realm() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let work = node(dir.path(), "work", &[], &["personal"], &["16V6F4"]);
+        for from in ["github@kestrel", "GitHub@kestrel"] {
+            let crossing = crate::flow::Crossing {
+                message: Message {
+                    id: "1762200000000-Q9METH-1-00000002".to_owned(),
+                    at: "2026-11-03T21:00:00Z".to_owned(),
+                    from: from.to_owned(),
+                    groups: vec![peer("16V6F4")],
+                    intent: Some(Intent::Fyi),
+                    text: "github: 9 asked of you, up from 0; 9 today".to_owned(),
+                    re: None,
+                    supersedes: None,
+                    from_realm: None,
+                    for_realm: None,
+                    ends_hold: false,
+                },
+                from_realm: "personal".to_owned(),
+            };
+            let answered = answer(&work.socket, Request::Cross(crossing)).await;
+            assert!(
+                matches!(answered, Answer::Err(_)),
+                "{from} crossed as a receptor: {answered:?}"
+            );
+        }
+        assert!(
+            work.store.message_ids(0).is_empty(),
+            "a receptor's signal was kept in another realm"
+        );
+    }
+
+    #[tokio::test]
     async fn a_message_naming_no_other_realm_never_crosses() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let personal = node(

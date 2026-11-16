@@ -92,12 +92,22 @@ pub fn cell(source: Source, machine: &str) -> String {
     format!("{}@{machine}", source.name())
 }
 
-/// Whether `from` names a receptor cell, of any machine: what only a
-/// receptor's own node may say as.
+/// Whether `from` names a receptor cell, of any machine, or could be read
+/// as one: what only a receptor's own node may say as. The part before the
+/// `@` counts as a source's name with its case, digits, punctuation and
+/// spaces set aside, so `GitHub@kestrel` or `git-hub@kestrel` is one, and
+/// any letter outside ASCII makes it one too, since a look-alike such as a
+/// Cyrillic `і` would read as the cell to whoever hears it.
 #[must_use]
 pub fn speaks_as_receptor(from: &str) -> bool {
-    from.split_once('@')
-        .is_some_and(|(source, _)| Source::named(source).is_some())
+    from.split_once('@').is_some_and(|(said, _)| {
+        let letters: String = said
+            .chars()
+            .filter(char::is_ascii_alphabetic)
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        !said.is_ascii() || Source::named(&letters).is_some()
+    })
 }
 
 /// What each receptor last said, or was first seen at, so a count is said
@@ -225,14 +235,9 @@ mod tests {
         assert_eq!(draft.intent, Some(Intent::Fyi), "an fyi, asking nothing");
         assert_eq!(draft.re, None, "answering nothing");
         assert_eq!(draft.realm, None, "crossing no realm");
-        assert_eq!(draft.text, "github: 2 asked of you, up from 1; 3 today");
-        assert!(
-            draft
-                .text
-                .chars()
-                .all(|c| c.is_ascii_digit() || "github: asked of you, up from; today".contains(c)),
-            "the source's name and digits, nothing read outside: {}",
-            draft.text
+        assert_eq!(
+            draft.text, "github: 2 asked of you, up from 1; 3 today",
+            "the source's name and counts, nothing read outside"
         );
     }
 
@@ -341,6 +346,29 @@ mod tests {
                 Table::read(Some(&file), &declarers()).0,
                 Table::silent(),
                 "{text} is silent"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_that_could_be_read_as_a_receptors_is_one() {
+        for name in [
+            "GitHub@kestrel",
+            "git-hub@kestrel",
+            " slack @kestrel",
+            "github\u{200b}@kestrel",
+            "g\u{0456}thub@kestrel",
+            "github@kestrel.",
+        ] {
+            assert!(
+                speaks_as_receptor(name),
+                "{name:?} reads as a receptor's cell but wasn't taken as one"
+            );
+        }
+        for name in ["mycelium@kestrel", "WCJQSG", "joel"] {
+            assert!(
+                !speaks_as_receptor(name),
+                "{name:?} was taken as a receptor's cell"
             );
         }
     }
