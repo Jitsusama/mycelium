@@ -25,6 +25,7 @@ system=x86_64-linux
 # Every check the flake has on Linux; nix/checks.nix fails when this list
 # and the flake's part ways.
 checks=(
+  agents-cargo-goes-through-nix-offload
   markdown-is-clean
   merge-gate-holds
   mycelium

@@ -55,6 +55,9 @@
         default = pkgs.mkShell {
           inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ];
           packages = [
+            # Ahead of cargo itself, so an agent's whole suite goes to a lent
+            # builder (nix/cargo-for-agents.sh).
+            (pkgs.callPackage ./nix/cargo-for-agents.nix { })
             pkgs.clippy
             pkgs.deadnix
             pkgs.nixfmt
