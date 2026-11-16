@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 
-use super::records::{Build, Record, Shared, shared};
+use super::records::{Build, Change, Record, Shared, shared};
 use super::{BETWEEN_SENDS, Holds};
 
 /// A watch a client asked for, running, with what it watches, so asking
@@ -87,11 +87,14 @@ pub(super) async fn keep_watching<H: Holds>(
         ) else {
             continue;
         };
-        if answering
-            .send(json!({"id": id, "changed": changed, "gone": gone}).to_string())
-            .await
-            .is_err()
-        {
+        let Ok(said) = serde_json::to_string(&Changed {
+            id: &id,
+            changed: &changed,
+            gone: &gone,
+        }) else {
+            return;
+        };
+        if answering.send(said).await.is_err() {
             return;
         }
     }
@@ -103,6 +106,16 @@ pub(super) async fn keep_watching<H: Holds>(
 struct Whole<'a> {
     id: &'a Value,
     records: Vec<&'a Record>,
+}
+
+/// A watch's answer after its first: each record changed, as the very
+/// bytes every watch sent the same change sends, and the keys gone. Its
+/// fields are in the order a `Value` gives its keys.
+#[derive(Serialize)]
+struct Changed<'a> {
+    changed: &'a [Arc<Change>],
+    gone: &'a [String],
+    id: &'a Value,
 }
 
 /// The first answer to watch `id`, written from the very bytes of the
@@ -122,19 +135,15 @@ fn answer(
     deep: &[String],
     sent: &mut Shared,
     now: &Build,
-) -> Option<(Vec<Value>, Vec<String>)> {
+) -> Option<(Vec<Arc<Change>>, Vec<String>)> {
     let (changed, gone) = now.changes(sent, keys, deep);
     let changed = sends(when, sent, changed);
     let now = now.records();
     if changed.is_empty() && gone.is_empty() {
         return None;
     }
-    for record in &changed {
-        if let Some((key, record)) = record
-            .get("key")
-            .and_then(Value::as_str)
-            .and_then(|key| now.get_key_value(key))
-        {
+    for change in &changed {
+        if let Some((key, record)) = now.get_key_value(change.key()) {
             sent.insert(key.clone(), Arc::clone(record));
         }
     }
@@ -149,18 +158,14 @@ fn answer(
 /// names, such as a session's `told`, which moves only with what a shut
 /// launcher reads. The rest are held back, so one session's `told`
 /// moving sends that session alone, not every other's step beside it.
-fn sends(when: Option<&[String]>, sent: &Shared, changed: Vec<Value>) -> Vec<Value> {
+fn sends(when: Option<&[String]>, sent: &Shared, changed: Vec<Arc<Change>>) -> Vec<Arc<Change>> {
     let Some(when) = when else {
         return changed;
     };
     changed
         .into_iter()
-        .filter(|record| {
-            record
-                .get("key")
-                .and_then(Value::as_str)
-                .is_none_or(|key| !sent.contains_key(key))
-                || when.iter().any(|field| record.get(field).is_some())
+        .filter(|change| {
+            !sent.contains_key(change.key()) || when.iter().any(|field| change.carries(field))
         })
         .collect()
 }
@@ -169,7 +174,25 @@ fn sends(when: Option<&[String]>, sent: &Shared, changed: Vec<Value>) -> Vec<Val
 mod tests {
     use std::collections::BTreeMap;
 
+    use serde_json::json;
+
     use super::*;
+
+    /// Each of `records` as the change a watch sends of it new.
+    fn changes(records: Vec<Value>) -> Vec<Arc<Change>> {
+        records
+            .into_iter()
+            .map(|record| {
+                let key = record["key"].as_str().expect("a key").to_owned();
+                Arc::new(Change::whole(&key, &Record::from(record)))
+            })
+            .collect()
+    }
+
+    /// An answer's changes read back, to compare them as values.
+    fn read((changed, gone): (Vec<Arc<Change>>, Vec<String>)) -> (Vec<Value>, Vec<String>) {
+        (changed.iter().map(|change| change.value()).collect(), gone)
+    }
 
     /// A run of builds of a kind's records: steps moving, a digest moving,
     /// one going, one coming, a field dropped, and one moving back to what
@@ -221,7 +244,12 @@ mod tests {
         let mut answers = vec![whole(&json!(1), records).expect("records serialize")];
         for now in rest {
             if let Some((changed, gone)) = answer((when, None), &[], &mut sent, now) {
-                answers.push(json!({"id": 1, "changed": changed, "gone": gone}).to_string());
+                let changed = Changed {
+                    id: &json!(1),
+                    changed: &changed,
+                    gone: &gone,
+                };
+                answers.push(serde_json::to_string(&changed).expect("changes serialize"));
             }
         }
         answers
@@ -304,7 +332,8 @@ mod tests {
                 &deep,
                 &mut sent,
                 &Build::after(Shared::clone(&second), Some(first))
-            ),
+            )
+            .map(read),
             None,
             "shut, a tick and a step are held back"
         );
@@ -314,7 +343,8 @@ mod tests {
                 &deep,
                 &mut sent,
                 &Build::after(at(3, "edit"), Some(second))
-            ),
+            )
+            .map(read),
             Some((
                 vec![json!({
                     "key": "session:skiff", "step": "edit",
@@ -341,20 +371,22 @@ mod tests {
         ]);
         let told = ["told".to_owned()];
         let stepped = || vec![json!({"key": "session:a", "step": "y"})];
+        let said = |when: Option<&[String]>, changed: Vec<Value>| {
+            read((sends(when, &sent, changes(changed)), Vec::new())).0
+        };
         assert_eq!(
-            sends(None, &sent, stepped()),
+            said(None, stepped()),
             stepped(),
             "asked when nothing in particular, every change is sent"
         );
         assert_eq!(
-            sends(Some(&told), &sent, stepped()),
+            said(Some(&told[..]), stepped()),
             Vec::<Value>::new(),
             "a step alone moves nothing a shut launcher reads"
         );
         assert_eq!(
-            sends(
-                Some(&told),
-                &sent,
+            said(
+                Some(&told[..]),
                 vec![
                     json!({"key": "session:a", "step": "y", "told": "2"}),
                     json!({"key": "session:b", "step": "y"}),

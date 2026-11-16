@@ -1,6 +1,7 @@
 //! A record as the interface carries it, what changed between two sets of
 //! them, and each kind's records built once for every watch of it.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -78,8 +79,51 @@ impl Serialize for Record {
 /// build is the very record every watch of it already holds.
 pub type Shared = BTreeMap<String, Arc<Record>>;
 
+/// What a watch is sent of a record new or changed: its key, the names of
+/// the fields the change carries, and the change itself as the bytes it
+/// is sent as, written from the record's own bytes, never parsed. Shared,
+/// every watch sending it sends these very bytes.
+#[derive(Debug)]
+pub struct Change {
+    /// The record's key.
+    key: String,
+    /// The fields the change carries, in order.
+    carries: Vec<String>,
+    /// The change, serialized.
+    bytes: Box<RawValue>,
+}
+
+impl Change {
+    /// The key of the record it changes.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Whether it carries `field`, as a record new carries all of its own.
+    #[must_use]
+    pub fn carries(&self, field: &str) -> bool {
+        self.carries
+            .binary_search_by(|carried| carried.as_str().cmp(field))
+            .is_ok()
+    }
+
+    /// The change parsed, to read it.
+    #[must_use]
+    pub fn value(&self) -> Value {
+        serde_json::from_str(self.bytes.get()).unwrap_or(Value::Null)
+    }
+}
+
+impl Serialize for Change {
+    /// The change's bytes, written as they are.
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.bytes.serialize(serializer)
+    }
+}
+
 /// What changed of each moved record, by its key.
-type Moved = HashMap<String, Value>;
+type Moved = HashMap<String, Arc<Change>>;
 
 /// A kind's records as built at one change, beside those of the build
 /// before it, so each record moved between them is parsed and its change
@@ -127,14 +171,14 @@ impl Build {
         sent: &Shared,
         keys: Option<&[String]>,
         deep: &[String],
-    ) -> (Vec<Value>, Vec<String>) {
+    ) -> (Vec<Arc<Change>>, Vec<String>) {
         let after = self
             .records
             .iter()
             .filter(|(key, _)| keys.is_none_or(|keys| keys.contains(*key)));
         let Some(before) = &self.before else {
             return found(sent, after, &self.records, |key, was, now| {
-                differs(key, was, now, deep)
+                Arc::new(differs(key, was, now, deep))
             });
         };
         let moved = self.moved(before, deep);
@@ -145,8 +189,8 @@ impl Build {
                 _ => false,
             };
             match moved.get(key) {
-                Some(change) if as_before => change.clone(),
-                _ => differs(key, was, now, deep),
+                Some(change) if as_before => Arc::clone(change),
+                _ => Arc::new(differs(key, was, now, deep)),
             }
         })
     }
@@ -159,17 +203,17 @@ impl Build {
         if let Some(said) = moved.get(deep) {
             return Arc::clone(said);
         }
-        let mut said = HashMap::new();
-        found(
-            before,
-            self.records.iter(),
-            &self.records,
-            |key, was, now| {
-                let change = differs(key, was, now, deep);
-                said.insert(key.to_owned(), change);
-                Value::Null
-            },
-        );
+        let said: Moved = self
+            .records
+            .iter()
+            .filter_map(|(key, now)| match before.get(key) {
+                Some(was) if Arc::ptr_eq(was, now) || was == now => None,
+                was => Some((
+                    key.clone(),
+                    Arc::new(differs(key, was.map(AsRef::as_ref), now, deep)),
+                )),
+            })
+            .collect();
         let said = Arc::new(said);
         moved.insert(deep.to_vec(), Arc::clone(&said));
         said
@@ -278,9 +322,13 @@ pub fn key(kind: &str, id: &str) -> String {
 /// both before and after says only what differs inside it, in the same
 /// way, rather than all of it.
 #[must_use]
-pub fn changes(before: &Shared, after: &Shared, deep: &[String]) -> (Vec<Value>, Vec<String>) {
+pub fn changes(
+    before: &Shared,
+    after: &Shared,
+    deep: &[String],
+) -> (Vec<Arc<Change>>, Vec<String>) {
     found(before, after.iter(), after, |key, was, now| {
-        differs(key, was, now, deep)
+        Arc::new(differs(key, was, now, deep))
     })
 }
 
@@ -292,8 +340,8 @@ fn found<'a>(
     before: &Shared,
     after: impl Iterator<Item = (&'a String, &'a Arc<Record>)>,
     all: &Shared,
-    mut said: impl FnMut(&str, Option<&Record>, &Record) -> Value,
-) -> (Vec<Value>, Vec<String>) {
+    mut said: impl FnMut(&str, Option<&Record>, &Record) -> Arc<Change>,
+) -> (Vec<Arc<Change>>, Vec<String>) {
     let changed = after
         .filter_map(|(key, now)| match before.get(key) {
             Some(was) if Arc::ptr_eq(was, now) || was == now => None,
@@ -313,24 +361,45 @@ fn found<'a>(
 /// and each field `was` had that `now` lacks, as null. A field `deep`
 /// names, an object both before and after, is said the same way, one
 /// level in. Each field is compared as its bytes, as a record is, and
-/// only one that moved is parsed: a cell's trees, most of its bytes, are
-/// read only when they change.
-fn differs(key: &str, was: Option<&Record>, now: &Record, deep: &[String]) -> Value {
-    let Some((was, now_fields)) =
-        was.and_then(|was| Some((fields(was.as_str())?, fields(now.as_str())?)))
-    else {
-        return now.value();
+/// the change is written from the bytes of those that moved, none of them
+/// parsed: a cell's trees, most of its bytes, are only split from the
+/// rest and copied.
+fn differs(key: &str, was: Option<&Record>, now: &Record, deep: &[String]) -> Change {
+    let (Some(was), Some(now_fields)) = (
+        was.and_then(|was| fields(was.as_str())),
+        fields(now.as_str()),
+    ) else {
+        return Change::whole(key, now);
     };
     let mut changed = moved(&was, &now_fields, |field, before, after| {
         if deep.iter().any(|named| named == field)
             && let (Some(before), Some(after)) = (fields(before.get()), fields(after.get()))
         {
-            return Value::Object(moved(&before, &after, |_, _, inside| parsed(inside)));
+            let inside = moved(&before, &after, |_, _, inside| Cow::Borrowed(inside.get()));
+            return Cow::Owned(object(&inside));
         }
-        parsed(after)
+        Cow::Borrowed(after.get())
     });
-    changed.insert("key".to_owned(), Value::String(key.to_owned()));
-    Value::Object(changed)
+    changed.insert("key", Cow::Owned(quoted(key)));
+    Change {
+        key: key.to_owned(),
+        carries: changed.keys().map(|field| (*field).to_owned()).collect(),
+        bytes: RawValue::from_string(object(&changed))
+            .unwrap_or_else(|_| RawValue::NULL.to_owned()),
+    }
+}
+
+impl Change {
+    /// `now` whole, as a record new is sent, carrying every field it has.
+    pub(super) fn whole(key: &str, now: &Record) -> Self {
+        Self {
+            key: key.to_owned(),
+            carries: fields(now.as_str())
+                .map(|fields| fields.into_keys().collect())
+                .unwrap_or_default(),
+            bytes: now.bytes.clone(),
+        }
+    }
 }
 
 /// An object's fields, each as its bytes, or none where `json` is no
@@ -342,30 +411,49 @@ fn fields(json: &str) -> Option<Fields<'_>> {
     serde_json::from_str(json).ok()
 }
 
-/// `raw` parsed, or null where it can't be.
-fn parsed(raw: &RawValue) -> Value {
-    serde_json::from_str(raw.get()).unwrap_or(Value::Null)
-}
+/// A change's fields by name, each as the bytes it is sent as, in the
+/// order a value's object keeps them.
+type Pieces<'f, 'v> = BTreeMap<&'f str, Cow<'v, str>>;
 
 /// The fields of `now` that differ from `was`'s, each as `said` says it
 /// from both, and each `was` had that `now` lacks, as null.
-fn moved(
-    was: &Fields<'_>,
-    now: &Fields<'_>,
-    said: impl Fn(&str, &RawValue, &RawValue) -> Value,
-) -> Map<String, Value> {
-    let mut changed: Map<String, Value> = now
+fn moved<'f, 'v>(
+    was: &'f Fields<'v>,
+    now: &'f Fields<'v>,
+    said: impl Fn(&str, &'v RawValue, &'v RawValue) -> Cow<'v, str>,
+) -> Pieces<'f, 'v> {
+    let mut changed: Pieces<'f, 'v> = now
         .iter()
         .filter_map(|(field, value)| match was.get(field) {
             Some(before) if before.get() == value.get() => None,
-            Some(before) => Some((field.clone(), said(field, before, value))),
-            None => Some((field.clone(), parsed(value))),
+            Some(before) => Some((field.as_str(), said(field, before, value))),
+            None => Some((field.as_str(), Cow::Borrowed(value.get()))),
         })
         .collect();
     for field in was.keys().filter(|field| !now.contains_key(*field)) {
-        changed.insert(field.clone(), Value::Null);
+        changed.insert(field.as_str(), Cow::Borrowed("null"));
     }
     changed
+}
+
+/// `pieces` as one object's bytes, as a value's object would write them.
+fn object(pieces: &Pieces<'_, '_>) -> String {
+    let mut written = String::from("{");
+    for (at, (field, bytes)) in pieces.iter().enumerate() {
+        if at > 0 {
+            written.push(',');
+        }
+        written.push_str(&quoted(field));
+        written.push(':');
+        written.push_str(bytes);
+    }
+    written.push('}');
+    written
+}
+
+/// `text` as a JSON string.
+fn quoted(text: &str) -> String {
+    Value::from(text).to_string()
 }
 
 #[cfg(test)]
@@ -418,6 +506,24 @@ mod tests {
         );
     }
 
+    /// Changes read back as values, each first shown to be the very bytes
+    /// its value would write.
+    fn said((changed, gone): (Vec<Arc<Change>>, Vec<String>)) -> (Vec<Value>, Vec<String>) {
+        let changed = changed
+            .iter()
+            .map(|change| {
+                let value = change.value();
+                assert_eq!(
+                    serde_json::to_string(change).expect("a change serializes"),
+                    value.to_string(),
+                    "a change is written as its value would be"
+                );
+                value
+            })
+            .collect();
+        (changed, gone)
+    }
+
     #[test]
     fn a_change_says_only_what_differs_and_what_is_gone() {
         let records = |all: &[Value]| -> Shared {
@@ -439,7 +545,7 @@ mod tests {
             json!({"key": "session:c", "state": "idle"}),
         ]);
         assert_eq!(
-            changes(&before, &after, &[]),
+            said(changes(&before, &after, &[])),
             (
                 vec![
                     json!({"key": "session:a", "state": "busy", "step": null}),
@@ -450,9 +556,18 @@ mod tests {
             "a changed record names its key and what moved, a new one comes whole"
         );
         assert_eq!(
-            changes(&after, &after, &[]),
+            said(changes(&after, &after, &[])),
             (Vec::new(), Vec::new()),
             "nothing is said while nothing changes"
+        );
+        let odd = |at: u32| records(&[json!({"key": "session:\"é\"", "tab\tbed": at})]);
+        assert_eq!(
+            said(changes(&odd(1), &odd(2), &[])),
+            (
+                vec![json!({"key": "session:\"é\"", "tab\tbed": 2})],
+                Vec::new()
+            ),
+            "a key and a field that need escaping are written escaped"
         );
     }
 
@@ -473,7 +588,7 @@ mod tests {
         }));
         let deep = ["presence".to_owned(), "standing".to_owned()];
         assert_eq!(
-            changes(&before, &after, &deep),
+            said(changes(&before, &after, &deep)),
             (
                 vec![json!({
                     "key": "session:kestrel", "step": "edit", "standing": 3,
@@ -485,7 +600,7 @@ mod tests {
              and a field asked deep that isn't an object both times comes whole"
         );
         assert_eq!(
-            changes(&before, &after, &[])
+            said(changes(&before, &after, &[]))
                 .0
                 .first()
                 .map(|record| record["presence"].clone()),
@@ -498,7 +613,7 @@ mod tests {
                 "landings": [{"what": "Hear the Tide"}]},
         }));
         assert_eq!(
-            changes(&before, &nulled, &deep).0,
+            said(changes(&before, &nulled, &deep)).0,
             vec![json!({"key": "session:kestrel", "presence": {"cwd": null}})],
             "a field inside one asked deep that becomes null is said as null, as one dropped \
              is, so a reader takes null for either"
@@ -635,15 +750,18 @@ mod tests {
         let deep = ["presence".to_owned()];
         for sent in [&*before, &older, &Shared::new()] {
             for asked in [&deep[..], &[]] {
+                let bytes = |(changed, gone): (Vec<Arc<Change>>, Vec<String>)| {
+                    serde_json::to_string(&(changed, gone)).expect("changes serialize")
+                };
                 assert_eq!(
-                    build.changes(sent, None, asked),
-                    changes(sent, &after, asked),
+                    bytes(build.changes(sent, None, asked)),
+                    bytes(changes(sent, &after, asked)),
                     "a watch is sent what it would have worked out alone, asked deep {asked:?}"
                 );
             }
         }
         assert_eq!(
-            build.changes(&before, Some(&["session:tern".to_owned()]), &deep),
+            said(build.changes(&before, Some(&["session:tern".to_owned()]), &deep)),
             (
                 vec![json!({"key": "session:tern", "step": "read"})],
                 Vec::new()
