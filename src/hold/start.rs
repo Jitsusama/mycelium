@@ -207,6 +207,21 @@ pub fn login_shell(realm: &str) -> Vec<String> {
     through
 }
 
+/// The words that run a command in `realm` through the person's login
+/// shell, as [`login_shell`] does, but not as a terminal would: nothing
+/// is held, so the shell runs without a terminal, and an interactive one
+/// would complain of having none. Someone waits on its output, so on a
+/// Mac it doesn't yield as a held session does.
+#[must_use]
+pub fn login_run(realm: &str) -> Vec<String> {
+    let mut words = login_shell(realm);
+    words.retain(|word| !YIELDING_ON_A_MAC.contains(&word.as_str()));
+    if let Some(flags) = words.iter_mut().find(|word| *word == "-lic") {
+        "-lc".clone_into(flags);
+    }
+    words
+}
+
 /// The words that join the session held as `id` in `realm` on this
 /// machine, from a terminal here.
 #[must_use]

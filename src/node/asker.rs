@@ -390,6 +390,9 @@ pub fn persons_own(asker: Option<i32>, processes: &Processes) -> Result<(), Stri
 /// # Errors
 ///
 /// When no one session can be told to ask.
+///
+/// See [`claimed_above`] for the sessions that may limit what the asker
+/// does, which needs no proof.
 pub fn session_of(
     asker: Option<i32>,
     processes: &Processes,
@@ -486,6 +489,27 @@ fn listing(listed: &str) -> HashMap<i32, (String, i32)> {
             let command = command.trim();
             let name = command.rsplit('/').next().unwrap_or(command);
             Some((pid.parse().ok()?, (name.to_owned(), parent.parse().ok()?)))
+        })
+        .collect()
+}
+
+/// The sessions of `claims` whose process is the asker or one of its
+/// forebears, nearest first. Nothing is proved: a claim here can only
+/// limit what the asker may do, never widen it, so one forged or stale
+/// costs the asker, not the machine.
+#[must_use]
+pub fn claimed_above(asker: Option<i32>, processes: &Processes, claims: &[Claim]) -> Vec<String> {
+    let Some(pid) = asker else {
+        return Vec::new();
+    };
+    processes
+        .lineage(pid)
+        .into_iter()
+        .flat_map(|process| {
+            claims
+                .iter()
+                .filter(move |claim| claim.pid == Some(process))
+                .map(|claim| claim.session.clone())
         })
         .collect()
 }

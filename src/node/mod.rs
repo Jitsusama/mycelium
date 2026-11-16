@@ -41,12 +41,15 @@ use crate::placements;
 use crate::receptor;
 use crate::record::{Message, Session, State as SessionState};
 use crate::room;
+use crate::run;
 use crate::served::{self, Served};
 use crate::share::exchange::Places;
 use crate::state::State;
 use crate::steer::{self, Steer};
 use crate::store::{self, Change, Store};
-use crate::wire::{Answer, Draft, Event, Offers, Reply, Request, Response, Start, Started};
+use crate::wire::{
+    Answer, Draft, Event, Offers, Ran, Reply, Request, Response, Run, Start, Started,
+};
 use crate::within;
 use crate::{unanswered, words};
 use turns::{Asked, Turns};
@@ -1871,6 +1874,7 @@ impl<S: Store> Shared<S> {
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
             Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
+            Request::Run(_) => Err("a run is answered by `run`".to_owned()),
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
             Request::Orchestrates { .. } => {
@@ -2542,6 +2546,95 @@ impl<S: Store> Shared<S> {
         }))
     }
 
+    /// Runs `asked` on the machine placement chooses, answering where, and
+    /// what it says as it goes, or why it doesn't run: this machine runs
+    /// it as its own, another through the link reaching it. A fenced
+    /// session asking runs it only where it would stand on ground as firm
+    /// as here, as an ordered carry would.
+    async fn run(&self, asked: Run) -> Result<(String, mpsc::Receiver<Ran>), String> {
+        if asked.command.is_empty() {
+            return Err("nothing to run: name a command".to_owned());
+        }
+        let machine = match placement::place(&asked.work, &self.machines()) {
+            Placement::Placed { machine, .. } => machine,
+            Placement::Pending { misses } => {
+                return Err(format!(
+                    "nowhere now, though a machine out of reach would do: {}",
+                    placement::said(&misses)
+                ));
+            }
+            Placement::Refused { misses } => {
+                return Err(format!("nowhere: {}", placement::said(&misses)));
+            }
+        };
+        self.fenced_to(&machine).await?;
+        if machine != self.machine {
+            let ran = self.asks.run(&machine, asked).await?;
+            return Ok((machine, ran));
+        }
+        let home =
+            std::env::home_dir().ok_or_else(|| format!("{machine} has no home to run in"))?;
+        let folder = start::begins_in(asked.folder.as_deref(), &home);
+        let mut words = start::login_run(&self.realm);
+        words.extend(asked.command);
+        let (ran, said) = mpsc::channel(run::BACKLOG);
+        tokio::spawn(run::here(words, folder, ran));
+        Ok((machine, said))
+    }
+
+    /// Whether whoever asks may run something on `machine`: anyone not in a
+    /// fenced session may, and a fenced session only where that machine
+    /// runs sessions in its fence with no door wider than here's. The
+    /// sessions whose process is the asker's or a forebear's say which
+    /// fences it stands in.
+    async fn fenced_to(&self, machine: &str) -> Result<(), String> {
+        let standing = self.standing();
+        let claims: Vec<asker::Claim> = standing
+            .iter()
+            .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
+            .collect();
+        let (client, processes) = (self.client, self.processes.clone());
+        let above =
+            tokio::task::spawn_blocking(move || asker::claimed_above(client, &processes, &claims))
+                .await
+                .map_err(|error| format!("who asks couldn't be told: {error}"))?;
+        let mut kinds = std::collections::BTreeSet::new();
+        for presence in standing
+            .iter()
+            .filter(|presence| above.contains(&presence.session))
+        {
+            let Some(said) = presence.body.get("fence") else {
+                continue;
+            };
+            let kind = serde_json::from_value::<crate::declared::Kind>(said.clone()).map_err(|_| {
+                format!(
+                    "this asks from {}, whose fence {said} this node doesn't know, so it runs nothing",
+                    presence.session
+                )
+            })?;
+            if kind != crate::declared::Kind::None {
+                kinds.insert(kind);
+            }
+        }
+        if kinds.is_empty() {
+            return Ok(());
+        }
+        let there = if machine == self.machine {
+            Some(self.measure())
+        } else {
+            self.others().into_iter().find(|one| one.name == machine)
+        };
+        let here = crate::declared::read(&self.declared);
+        for kind in kinds {
+            ground::firm(Some(kind), here.as_ref(), machine, there.as_ref()).map_err(|why| {
+                format!(
+                    "this asks from a {kind} session, so it runs nothing on looser ground: {why}"
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     /// Starts a watch: its first events are the whole state, taken under
     /// the same lock as every later change, so none is missed or doubled.
     fn watch(&self, groups: Option<&Pattern>, recent: usize) -> (u64, mpsc::Receiver<Event>) {
@@ -2640,6 +2733,10 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             link::carried::to_link(&shared.asks, &machine, lines, writing).await;
             return;
         }
+        if let Ok(Request::Run(asked)) = request {
+            hand_on_run(&shared, asked, lines, writing).await;
+            return;
+        }
         if let Ok(Request::Watch { groups, recent }) = request {
             if write(&mut writing, &Reply::Ok(Response::Watching))
                 .await
@@ -2686,6 +2783,45 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
         };
         if write(&mut writing, &reply).await.is_err() {
             return;
+        }
+    }
+}
+
+/// Runs what a client asks, writing where it runs and then what it says as
+/// it goes, each line written before the next is taken, so a client that
+/// reads slowly slows the run. A client that hangs up, or says anything
+/// more, stops it.
+async fn hand_on_run<S: Store>(
+    shared: &Shared<S>,
+    asked: Run,
+    mut lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    mut writing: tokio::net::unix::OwnedWriteHalf,
+) {
+    let (machine, mut said) = match shared.run(asked).await {
+        Ok(running) => running,
+        Err(why) => {
+            // A client that hung up hears nothing.
+            let _ = write(&mut writing, &Reply::Err(why)).await;
+            return;
+        }
+    };
+    if write(&mut writing, &Reply::Ok(Response::Running { machine }))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    loop {
+        tokio::select! {
+            ran = said.recv() => {
+                let ran = ran.unwrap_or_else(|| Ran::Failed("the run ended without saying how".to_owned()));
+                let ends = ran.ends();
+                if write(&mut writing, &ran).await.is_err() || ends {
+                    return;
+                }
+            }
+            // Dropping what it says stops the run.
+            _ = lines.next_line() => return,
         }
     }
 }
@@ -5926,6 +6062,268 @@ mod tests {
             "a link nothing proved can't ask"
         );
         stop(nodes).await;
+    }
+
+    /// What a run asked of the node at `socket` came to: the node's first
+    /// answer, then all it wrote to its output and its errors, and how it
+    /// ended, if it ran.
+    #[derive(Debug, Default)]
+    struct Came {
+        out: Vec<u8>,
+        err: Vec<u8>,
+        ended: Option<Ran>,
+    }
+
+    /// A run of `script` through `/bin/sh` on `machine`.
+    fn run_of(machine: &str, script: &str) -> Run {
+        Run {
+            work: Work {
+                needs: vec![Need::Machine(machine.to_owned())],
+                prefers: Vec::new(),
+                tolerates: Vec::new(),
+                may_wait: false,
+                lasts: None,
+            },
+            folder: None,
+            command: ["/bin/sh", "-c", script].map(str::to_owned).to_vec(),
+        }
+    }
+
+    /// Asks the node at `socket` for `run` and reads all it says, or why
+    /// it won't run.
+    async fn run_through(socket: PathBuf, run: Run) -> Result<Came, String> {
+        let asked = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            client.ask(&Request::Run(run)).expect("the node answers")?;
+            let mut came = Came::default();
+            while let Some(ran) = client.next_ran().expect("the node says more") {
+                match ran {
+                    Ran::Out(piece) => came.out.extend(run::bytes(&piece).expect("base64")),
+                    Ran::Err(piece) => came.err.extend(run::bytes(&piece).expect("base64")),
+                    ended => {
+                        came.ended = Some(ended);
+                        break;
+                    }
+                }
+            }
+            Ok(came)
+        });
+        tokio::time::timeout(PATIENCE, asked)
+            .await
+            .expect("the run ends in time")
+            .expect("the client asks")
+    }
+
+    #[tokio::test]
+    async fn a_run_here_hands_back_what_it_writes_and_its_own_exit_code() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let running = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let came = run_through(
+            socket.clone(),
+            run_of("skiff", "echo out; echo err >&2; exit 7"),
+        )
+        .await
+        .expect("it runs here");
+        assert_eq!(came.out, b"out\n");
+        assert_eq!(came.err, b"err\n");
+        assert_eq!(came.ended, Some(Ran::Exited(7)));
+        let nowhere = run_through(socket.clone(), run_of("kestrel", "true")).await;
+        assert!(
+            nowhere
+                .as_ref()
+                .is_err_and(|why| why.starts_with("nowhere")),
+            "a machine the realm doesn't have takes nothing: {nowhere:?}"
+        );
+        let nothing = run_through(
+            socket,
+            Run {
+                command: Vec::new(),
+                ..run_of("skiff", "")
+            },
+        )
+        .await;
+        assert_eq!(
+            nothing.err(),
+            Some("nothing to run: name a command".to_owned())
+        );
+        let (stop, node) = running;
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    #[tokio::test]
+    async fn a_run_on_another_machine_streams_back_over_a_link_its_key_proved_and_only_then() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (near_socket, nodes) = linked_to_kestrel(dir.path(), true).await;
+        let came = run_through(
+            near_socket.clone(),
+            run_of("kestrel", "echo out; echo err >&2; exit 7"),
+        )
+        .await
+        .expect("it runs on kestrel");
+        assert_eq!(came.out, b"out\n");
+        assert_eq!(came.err, b"err\n");
+        assert_eq!(came.ended, Some(Ran::Exited(7)), "its exit code is its own");
+
+        // Far more than the link's window and every channel's backlog hold.
+        let flood = run_through(near_socket, run_of("kestrel", "head -c 4194304 /dev/zero"))
+            .await
+            .expect("a flood runs");
+        assert_eq!(flood.out.len(), 4 * 1024 * 1024, "all of it comes back");
+        assert_eq!(flood.ended, Some(Ran::Exited(0)));
+        stop(nodes).await;
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (near_socket, nodes) = linked_to_kestrel(dir.path(), false).await;
+        let refused = run_through(near_socket, run_of("kestrel", "echo ran"))
+            .await
+            .expect("skiff asks it of kestrel");
+        assert_eq!(refused.out, b"", "nothing ran");
+        assert_eq!(
+            refused.ended,
+            Some(Ran::Failed(
+                "kestrel runs only what is asked over a link its key proved, which this one isn't"
+                    .to_owned()
+            )),
+            "a link nothing proved can't ask"
+        );
+        stop(nodes).await;
+    }
+
+    #[tokio::test]
+    async fn a_run_asked_of_the_machine_that_dialled_crosses_its_link_and_is_judged_there() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let far_socket = dir.path().join("kestrel").join("work.sock");
+        let near_socket = dir.path().join("skiff").join("work.sock");
+        let far_store = Memory::default();
+        let far = node(
+            &far_store,
+            "kestrel",
+            Vec::<Piped>::new(),
+            None,
+            &far_socket,
+        );
+        let dial = Piped {
+            store: far_store.clone(),
+            socket: far_socket.clone(),
+            held: dir.path().join("held"),
+            proven: true,
+            asks_back: true,
+        };
+        let near = node(&Memory::default(), "skiff", vec![dial], None, &near_socket);
+        // Nothing tells the test when kestrel's link has taken up what its
+        // node asks of skiff, so it asks again every few milliseconds
+        // until a run crosses. Skiff's own end proves nothing of kestrel,
+        // so skiff refuses it, and the refusal crosses back.
+        let came = tokio::time::timeout(PATIENCE, async {
+            loop {
+                if let Ok(came) = run_through(far_socket.clone(), run_of("skiff", "echo ran")).await
+                {
+                    break came;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("kestrel asks skiff over the link skiff dialled");
+        assert_eq!(came.out, b"", "nothing ran");
+        assert_eq!(
+            came.ended,
+            Some(Ran::Failed(
+                "skiff runs only what is asked over a link its key proved, which this one isn't"
+                    .to_owned()
+            ))
+        );
+        stop([near, far]).await;
+    }
+
+    #[tokio::test]
+    async fn an_asker_that_hangs_up_stops_a_run_on_another_machine() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (near_socket, nodes) = linked_to_kestrel(dir.path(), true).await;
+        let mark = dir.path().join("pid");
+        let script = format!(
+            "sleep 600 & echo $! > {}; echo started; wait",
+            mark.display()
+        );
+        let asked = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&near_socket).expect("the client connects");
+            let running = client.ask(&Request::Run(run_of("kestrel", &script)));
+            let first = client.next_ran().expect("the node says more");
+            // Dropping the client hangs up.
+            (running.expect("the node answers"), first)
+        });
+        let (running, first) = tokio::time::timeout(PATIENCE, asked)
+            .await
+            .expect("the run starts in time")
+            .expect("the client asks");
+        assert_eq!(
+            running,
+            Ok(Response::Running {
+                machine: "kestrel".to_owned()
+            })
+        );
+        assert!(matches!(first, Some(Ran::Out(_))), "{first:?}");
+        let pid: i32 = fs::read_to_string(&mark)
+            .expect("its child said its pid")
+            .trim()
+            .parse()
+            .expect("a pid");
+        let pid = rustix::process::Pid::from_raw(pid).expect("a real pid");
+        // Nothing says when the far end has stopped it, so this looks
+        // again every few milliseconds.
+        tokio::time::timeout(PATIENCE, async {
+            while rustix::process::test_kill_process(pid).is_ok() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("what it ran on kestrel is stopped");
+        stop(nodes).await;
+    }
+
+    #[tokio::test]
+    async fn a_fenced_session_runs_nothing_on_looser_ground() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        let unlinked = Some("no link reaches tern now".to_owned());
+        assert_eq!(
+            run_through(socket.clone(), run_of("tern", "true"))
+                .await
+                .err(),
+            unlinked.clone(),
+            "no fenced session asks, so it goes as far as the link"
+        );
+        asks_below(&socket, 7001);
+        assert_eq!(
+            run_through(socket.clone(), run_of("tern", "true"))
+                .await
+                .err(),
+            Some(
+                "this asks from a strictly fenced session, so it runs nothing on looser ground: \
+                 tern's strictly fenced session opens builders cloud, which here's doesn't, so \
+                 the session would land looser there"
+                    .to_owned()
+            ),
+            "a machine whose fence opens a builder here's doesn't"
+        );
+        store
+            .put_machine(&fenced("tern", &["remote"]))
+            .expect("what it said is kept");
+        assert_eq!(
+            run_through(socket, run_of("tern", "true")).await.err(),
+            unlinked,
+            "a machine as firm as here's goes as far as the link"
+        );
     }
 
     /// Stops each of `nodes`, checking it stops cleanly.

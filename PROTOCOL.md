@@ -92,7 +92,7 @@ messages, being a union, reach every machine linked by any path.
 same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
-   "steers", "releases", "updates"}}`, first, from each end. Each end's
+   "steers", "releases", "updates", "runs"}}`, first, from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
    older than it says nothing of machines and is sent nothing. `starts`
@@ -100,7 +100,8 @@ same code, each line a JSON value:
    is asked none of it. `releases` says the end's way to the other
    end's machine can release that machine, as a provider's program can;
    only such an end is told the machine has handed over. `updates` says
-   it carries update asks; an end older than it is asked none.
+   it carries update asks, and `runs` runs; an end older than either
+   is asked none of it.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -196,10 +197,21 @@ same code, each line a JSON value:
     own node's socket; otherwise it refuses, saying why. No time limits
     the answer, since an update takes minutes; a switch there restarts
     the link, which then ends the wait.
+15. `{"Run": {"ask", "run"}}`: run a command on the other end's machine,
+    as a `"Run"` request says it. The other end takes it only if its
+    membership proved which machine asked, as for an update, and hands
+    it to its own node's socket pinned to its machine; otherwise it
+    refuses. Either way it answers `{"Ran": {"ask", "ran"}}` a line for
+    each `Ran` the run says, the last its `Exited` or `Failed`. It sends
+    at most eight pieces of output ahead of `{"Taken": {"ask"}}`, which
+    the asking end sends as its asker takes each, so a run writing
+    faster than its asker reads waits rather than filling the link.
+    `{"Unrun": {"ask"}}` says the asker let go, and the run is stopped;
+    a link that drops stops every run it carried.
 
 Only one link joins two machines, and whichever dialled first holds it,
 so each end carries what its own node asks of the other machine: starts,
-steers and updates. The dialling end runs in its node and takes them
+steers, updates and runs. The dialling end runs in its node and takes them
 there. The dialled end runs in a process SSH started, outside its node,
 so it holds a `Carry` connection to its node's socket (see The Socket),
 asked again every five seconds while the node can't be reached. Its node
@@ -625,6 +637,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
+| `{"Run": {"work", "folder", "command"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Send": {"from", "groups", "intent", "text", "re", "realm"}}` | `{"Sent": message}`, or refused |
@@ -657,8 +670,12 @@ refuses.
 A `Carry` connection is how the end of a link another machine dialled
 carries what its node asks of that machine. The node writes each ask as
 `{"ask", "asked"}`, where `asked` is `{"Start": start}`, `{"Steer":
-{"address", "steer", "checked"}}` or `"Update"`, and the link writes back
-`{"ask", "reply"}` with the other end's reply. It lasts until either
+{"address", "steer", "checked"}}`, `"Update"` or `{"Run": run}`, and the
+link writes back `{"ask", "reply"}` with the other end's reply. A run's
+reply comes once the link has asked it; then the link writes `{"ask",
+"ran"}` for each `Ran` it says, the node reading each only once its asker
+has taken the one before, and the node writes `{"ask", "asked":
+"Unrun"}` once its asker lets go. It lasts until either
 hangs up, or until another link reaching the machine takes its place;
 an ask still waiting then hears that the link dropped.
 
@@ -1068,6 +1085,22 @@ and answers a JSON line a step, each with its `step`: `fetching`,
 the ending whole. A switch may restart the node or its link before the
 ending comes back, and then the ask fails, saying so; the machine's
 `updated` fact says how it ended.
+
+`"Run"` runs `command` on the machine placement chooses for `work`,
+never on one made for it, in `folder` as for `"Start"`, through the
+person's login shell there without a terminal, and with nothing on its
+input. This machine runs it as the node's own; another, through the link
+reaching it, as A Link says. A session asking from a fence, as the
+presences of its process and its forebears say, runs it only where an
+ordered carry could land it (A Carry an Orchestrator Orders). Once it
+runs, the node answers `{"Running": {"machine"}}`, then a `Ran` a line:
+`{"Out": base64}` and `{"Err": base64}` as it writes them, at most 64
+KiB each, then `{"Exited": code}`, 128 and the signal where one ended
+it, or `{"Failed": why}`. Each line is written before the next is
+taken, so a client that reads slowly slows the run. A client that hangs
+up stops it: its process group is sent the terminate signal.
+`mycelium run` prints what it writes as it comes and exits with its
+code, or 255 when it couldn't run.
 
 A watch sends the whole state first, `SessionsChanged` and
 `MessagesChanged`, then each change: `SessionChanged`, `SessionForgotten`
