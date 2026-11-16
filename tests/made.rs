@@ -1,8 +1,10 @@
-//! A machine made for a start that may cost money: skiff's node asks a
-//! provider's program what it offers, makes the one machine that would
-//! take the work, links it through the program, starts the work there, and
-//! lets it go at its time, or once it has handed over after its work,
-//! keeping each make and release in its book. Each
+//! A machine made for a start that may cost money, or for any start where
+//! the offer costs nothing: skiff's node asks a provider's program what it
+//! offers, makes the one machine that would take the work, links it through
+//! the program, starts the work there, and lets it go at its time, or once
+//! it has handed over after its work, keeping each make and release in its
+//! book. An offer that costs is never made for a start that didn't say it
+//! may cost. Each
 //! node, and the made machine's end of the link, is a `mycelium` process of
 //! its own, each machine in folders of its own.
 
@@ -92,11 +94,20 @@ fn heard(root: &Path, path: &Path, within: Duration, holds: impl Fn(&str) -> boo
     }
 }
 
+/// What the machine `provider` offers costs an hour.
+const COSTS: &str = "0.003";
+
+/// What a machine that costs nothing costs an hour, as a provider may
+/// write it.
+const FREE: &str = "0.000";
+
 /// A provider's program at `root`, offering one shape of machine that
-/// reaches `lent-net`, making it as `lent` at `lent`'s folders until
-/// `until`, linking it there, and saying what it released.
-fn provider(root: &Path, lent: &Path, until: jiff::Timestamp) -> PathBuf {
-    let offer = r#"{"shape": "small", "facts": {"declared": {"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": []}}, "costs": {"hourly": "0.003", "currency": "USD"}, "lasts": 3600}"#;
+/// reaches `lent-net` at `hourly` an hour, making it as `lent` at `lent`'s
+/// folders until `until`, linking it there, and saying what it released.
+fn provider(root: &Path, lent: &Path, until: jiff::Timestamp, hourly: &str) -> PathBuf {
+    let offer = format!(
+        r#"{{"shape": "small", "facts": {{"declared": {{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": []}}}}, "costs": {{"hourly": "{hourly}", "currency": "USD"}}, "lasts": 3600}}"#
+    );
     let made = format!(r#"{{"place": "p1", "machine": "lent", "until": "{until}"}}"#);
     let at = |name: &str| lent.join(name).display().to_string();
     let script = format!(
@@ -167,21 +178,16 @@ fn nodes(home: &Path, lent: &Path, program: &Path) -> (Running, Running) {
     (lent_node, node)
 }
 
-/// Starts work that ends at once, as skiff's may cost and lent alone
-/// reaches, answering where it started.
-fn start(home: &Path) -> serde_json::Value {
+/// Starts work that ends at once, as skiff's, that lent alone reaches,
+/// saying it may cost where `may_cost`, answering where it started.
+fn start(home: &Path, may_cost: bool) -> serde_json::Value {
     let (answered, answer) = mpsc::channel();
     let mut starting = mycelium(home);
-    starting.args([
-        "--realm",
-        "work",
-        "start",
-        "--need",
-        "reach=lent-net",
-        "--may-cost",
-        "--",
-        "true",
-    ]);
+    starting.args(["--realm", "work", "start", "--need", "reach=lent-net"]);
+    if may_cost {
+        starting.arg("--may-cost");
+    }
+    starting.args(["--", "true"]);
     std::thread::spawn(move || answered.send(starting.output()));
     let started = answer
         .recv_timeout(PATIENCE)
@@ -215,10 +221,10 @@ fn a_machine_made_is_let_go_once_it_hands_over_after_its_work() {
             r#"{{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": [], "leaves_at": "{until}"}}"#
         )),
     );
-    let program = provider(root, &lent, until);
+    let program = provider(root, &lent, until, COSTS);
     let _nodes = nodes(&home, &lent, &program);
 
-    let said = start(&home);
+    let said = start(&home, true);
     assert_eq!(
         said["Ok"]["Started"]["machine"], "lent",
         "the work starts on the machine made for it: {said}"
@@ -241,10 +247,10 @@ fn a_start_that_may_cost_has_a_machine_made_for_it_until_its_time() {
         Some(r#"{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": []}"#),
     );
     let until = jiff::Timestamp::now() + LIVES;
-    let program = provider(root, &lent, until);
+    let program = provider(root, &lent, until, COSTS);
     let _nodes = nodes(&home, &lent, &program);
 
-    let said = start(&home);
+    let said = start(&home, true);
     assert_eq!(
         said["Ok"]["Started"]["machine"], "lent",
         "the work starts on the machine made for it: {said}"
@@ -273,5 +279,59 @@ fn a_start_that_may_cost_has_a_machine_made_for_it_until_its_time() {
         fs::read_to_string(root.join("released")).expect("it was released"),
         "p1\n",
         "released where it was made"
+    );
+}
+
+#[test]
+fn a_machine_that_costs_nothing_is_made_for_any_start_and_let_go_after_its_work() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let root = dir.path();
+    let (home, lent) = (root.join("o"), root.join("l"));
+    let until = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+    machine(&home, None);
+    machine(
+        &lent,
+        Some(&format!(
+            r#"{{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": [], "leaves_at": "{until}"}}"#
+        )),
+    );
+    let program = provider(root, &lent, until, FREE);
+    let _nodes = nodes(&home, &lent, &program);
+
+    let said = start(&home, false);
+    assert_eq!(
+        said["Ok"]["Started"]["machine"], "lent",
+        "a start that never said it may cost still has a free machine made for it: {said}"
+    );
+    let lines = book(&home, HANDS_OVER);
+    assert_eq!(
+        (&lines[0]["made"]["costs"]["hourly"], &lines[1]["released"]["why"]),
+        (&serde_json::json!(FREE), &serde_json::json!("its work handed over")),
+        "made at no cost, and let go once its work was done: {lines:?}"
+    );
+}
+
+#[test]
+fn a_machine_that_costs_is_never_made_for_a_start_that_did_not_say_it_may() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let root = dir.path();
+    let (home, lent) = (root.join("o"), root.join("l"));
+    machine(&home, None);
+    machine(
+        &lent,
+        Some(r#"{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": []}"#),
+    );
+    let program = provider(root, &lent, jiff::Timestamp::now() + LIVES, COSTS);
+    let _nodes = nodes(&home, &lent, &program);
+
+    let said = start(&home, false);
+    let why = said["Err"].as_str().unwrap_or_default();
+    assert!(
+        why.starts_with("nowhere") && why.contains("costs"),
+        "refused, saying the only offer costs: {said}"
+    );
+    assert!(
+        !root.join("asked").exists(),
+        "the provider was never asked to make one"
     );
 }
