@@ -1167,8 +1167,10 @@ machine, its place, shape, provider, `until` and hourly cost, and
 long can be summed. Every realm's node on the machine keeps the one
 book, so each line names the realm whose node kept it. A node started
 again links each machine its realm's lines say is made and not let go,
-where it still asks the provider that made it, and books as let go
-each whose `until` passed while it was down.
+where it still asks the provider that made it, at its path or built
+again into the Nix store (the same path past the store's hash), and
+books as let go each whose `until` passed while it was down. A line
+naming no realm, kept before lines named one, is never linked again.
 A start whose providers make nothing says why: each machine's and each
 offer's reasons, and each program that couldn't say what it offers.
 

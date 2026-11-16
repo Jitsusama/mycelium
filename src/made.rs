@@ -122,8 +122,10 @@ pub struct Book {
 pub struct Standing {
     /// Each machine, oldest first.
     pub made: Vec<Made>,
-    /// The lines passed over.
+    /// The lines passed over, each cut short by a crash among them.
     pub unread: usize,
+    /// The makes that name no realm, kept before makes named one.
+    pub unnamed: usize,
 }
 
 impl Book {
@@ -184,10 +186,16 @@ impl Book {
         };
         let mut standing = Standing::default();
         for line in String::from_utf8_lossy(&bytes).lines() {
-            let Some(kept) = kept(line) else {
+            let (kept, whole) = kept(line);
+            if !whole {
                 standing.unread += 1;
+            }
+            let Some(kept) = kept else {
                 continue;
             };
+            if kept.realm.is_none() && kept.made.is_some() {
+                standing.unnamed += 1;
+            }
             if kept.realm.is_none() || kept.realm != self.realm {
                 continue;
             }
@@ -228,14 +236,18 @@ struct Kept {
     released: Option<Released>,
 }
 
-/// What `line` keeps; or, where it can't be read whole, what the last line
-/// kept within it does, since a line cut short by a crash has the next
-/// written straight after it.
-fn kept(line: &str) -> Option<Kept> {
-    serde_json::from_str(line).ok().or_else(|| {
-        let next = line.rfind(r#"{"at""#).filter(|at| *at > 0)?;
-        serde_json::from_str(&line[next..]).ok()
-    })
+/// What `line` keeps, and whether it reads whole; where it doesn't, what
+/// the last line kept within it does, since a line cut short by a crash
+/// has the next written straight after it.
+fn kept(line: &str) -> (Option<Kept>, bool) {
+    if let Ok(whole) = serde_json::from_str(line) {
+        return (Some(whole), true);
+    }
+    let after = line
+        .rfind(r#"{"at""#)
+        .filter(|at| *at > 0)
+        .and_then(|next| serde_json::from_str(&line[next..]).ok());
+    (after, false)
 }
 
 /// Which machine a release let go.
@@ -420,12 +432,13 @@ mod tests {
             book.standing().expect("the book reads"),
             Standing {
                 made: vec![kept, its_place, its_name, ended, again],
-                unread: 1,
+                unread: 2,
+                unnamed: 1,
             },
             "each machine made and not released, oldest first, ended or not, \
              a release taking only the machine of its name at its place, \
-             another realm's makes and releases left to it, and none that \
-             names no realm"
+             another realm's makes and releases left to it, none that names \
+             no realm but counted, and the line cut short counted"
         );
     }
 

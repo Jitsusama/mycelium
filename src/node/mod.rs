@@ -645,9 +645,10 @@ struct Keeping<S> {
 /// time or once its work hands over. One whose time passed while the node
 /// was down was ended by its provider, so it is booked as let go and
 /// leaves the realm's machines. Its provider is the one of `providers`
-/// named the same, or else of the same file name, as an upgrade moves a
-/// program's path; one whose provider the node no longer asks is left to
-/// end at its time, since the node runs only the programs it was given.
+/// named the same, or else the same program built again into the Nix
+/// store, as an upgrade moves its path; one whose provider the node no
+/// longer asks is left to end at its time, since the node runs only the
+/// programs it was given.
 fn redial_standing(
     book: &Book,
     providers: &[String],
@@ -665,6 +666,12 @@ fn redial_standing(
         eprintln!(
             "{} lines of the book of machines made can't be read, so what they kept isn't linked again",
             standing.unread
+        );
+    }
+    if standing.unnamed > 0 {
+        eprintln!(
+            "{} machines were kept in the book before makes named their realm, so none is linked again; each ends at its time",
+            standing.unnamed
         );
     }
     let now = jiff::Timestamp::now();
@@ -696,20 +703,30 @@ fn redial_standing(
     }
 }
 
-/// The one of `providers` that is `provider`, or else the only one with
-/// its file name.
+/// The one of `providers` that is `provider`, or else the only one that is
+/// it built again into the Nix store: the same path past the store's hash.
 fn still_asked<'a>(providers: &'a [String], provider: &str) -> Option<&'a String> {
     if let Some(same) = providers.iter().find(|one| *one == provider) {
         return Some(same);
     }
-    let name = Path::new(provider).file_name()?;
-    let mut named = providers
+    let built = past_the_hash(provider)?;
+    let mut again = providers
         .iter()
-        .filter(|one| Path::new(one.as_str()).file_name() == Some(name));
-    match (named.next(), named.next()) {
+        .filter(|one| past_the_hash(one) == Some(built));
+    match (again.next(), again.next()) {
         (Some(only), None) => Some(only),
         _ => None,
     }
+}
+
+/// What follows the hash in a path in the Nix store, such as
+/// `lend-1.0/bin/lend`.
+fn past_the_hash(path: &str) -> Option<&str> {
+    let (hash, rest) = path.strip_prefix("/nix/store/")?.split_at_checked(32)?;
+    let rest = rest.strip_prefix('-')?;
+    hash.bytes()
+        .all(|byte| byte.is_ascii_alphanumeric())
+        .then_some(rest)
 }
 
 /// Keeps a machine made from an offer `linked` until it is done with:
@@ -8813,24 +8830,64 @@ mod tests {
         let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
         let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
         let earlier = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
-        let asked = made_by("/old/bin/lend", "skiff", later);
-        let moved = made_by("/old/bin/hire", "tern", later);
-        let dropped = made_by("/old/bin/rent", "osprey", later);
-        let ended = made_by("/old/bin/lend", "kestrel", earlier);
+        let (old, new) = (
+            "/nix/store/".to_owned() + &"a".repeat(32),
+            "/nix/store/".to_owned() + &"b".repeat(32),
+        );
+        let asked = made_by("/usr/bin/lend", "skiff", later);
+        let moved = made_by(&format!("{old}-hire-1/bin/hire"), "tern", later);
+        let dropped = made_by(&format!("{old}-rent-1/bin/hire"), "osprey", later);
+        let ended = made_by("/usr/bin/lend", "kestrel", earlier);
         for made in [&asked, &moved, &dropped, &ended] {
             book.made(made).expect("the make is kept");
         }
-        let providers = ["/old/bin/lend".to_owned(), "/new/bin/hire".to_owned()];
+        let providers = ["/usr/bin/lend".to_owned(), format!("{new}-hire-1/bin/hire")];
+        let store = Memory::default();
+        let nowhere = facts::Sources {
+            home: "/".into(),
+            queue: None,
+            disk_guard: None,
+            declared: None,
+            reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
+        };
+        store
+            .put_machine(&facts::Machine {
+                declared: Some(crate::declared::Declared {
+                    reach: Vec::new(),
+                    probes: BTreeMap::new(),
+                    outlives: Vec::new(),
+                    costs_money: true,
+                    taints: Vec::new(),
+                    cores: None,
+                    agents: BTreeMap::new(),
+                    leaves_at: None,
+                    within: None,
+                    hosts: Vec::new(),
+                    fence: None,
+                }),
+                ..facts::measure("kestrel", &nowhere)
+            })
+            .expect("what it said is kept");
         let (to_dial, mut dialled) = mpsc::unbounded_channel();
 
-        redial_standing(&book, &providers, &Memory::default(), &to_dial);
+        redial_standing(&book, &providers, &store, &to_dial);
+
+        let leaves = store.machines()[0]
+            .declared
+            .as_ref()
+            .and_then(|declared| declared.leaves_at);
+        assert!(
+            leaves.is_some_and(|at| at <= jiff::Timestamp::now()),
+            "the machine whose time was up leaves the realm's machines: {leaves:?}"
+        );
 
         let mut sent = Vec::new();
         while let Ok((made, _)) = dialled.try_recv() {
             sent.push(made);
         }
         let moved_here = Made {
-            provider: "/new/bin/hire".to_owned(),
+            provider: providers[1].clone(),
             ..moved.clone()
         };
         assert_eq!(
@@ -8846,26 +8903,31 @@ mod tests {
     }
 
     #[test]
-    fn a_provider_is_still_asked_by_its_path_or_its_only_namesake() {
+    fn a_provider_is_still_asked_by_its_path_or_as_built_again() {
+        let at =
+            |hash: char, rest: &str| format!("/nix/store/{}-{rest}", hash.to_string().repeat(32));
         let providers = [
-            "/new/bin/lend".to_owned(),
-            "/a/bin/hire".to_owned(),
-            "/b/bin/hire".to_owned(),
+            at('b', "lend-1/bin/lend"),
+            at('b', "hire-1/bin/hire"),
+            at('c', "hire-1/bin/hire"),
+            "/usr/bin/rent".to_owned(),
         ];
+        assert_eq!(still_asked(&providers, &providers[3]), Some(&providers[3]));
         assert_eq!(
-            still_asked(&providers, "/new/bin/lend"),
-            Some(&providers[0])
+            still_asked(&providers, &at('a', "lend-1/bin/lend")),
+            Some(&providers[0]),
+            "the same program built again is still asked"
         );
         assert_eq!(
-            still_asked(&providers, "/old/bin/lend"),
-            Some(&providers[0])
-        );
-        assert_eq!(still_asked(&providers, "/a/bin/hire"), Some(&providers[1]));
-        assert_eq!(
-            still_asked(&providers, "/old/bin/hire"),
+            still_asked(&providers, &at('a', "hire-1/bin/hire")),
             None,
-            "two of its name leave it unknown"
+            "two built the same leave it unknown"
         );
-        assert_eq!(still_asked(&providers, "/old/bin/rent"), None);
+        assert_eq!(
+            still_asked(&providers, &at('a', "loan-1/bin/lend")),
+            None,
+            "another program of the same file name isn't it"
+        );
+        assert_eq!(still_asked(&providers, "/opt/bin/rent"), None);
     }
 }
