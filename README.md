@@ -102,7 +102,12 @@ The harness mesh's messages and presence, carried between machines:
   choice wherever those weights would have drawn it too, and says which
   starts they would have placed elsewhere and hindsight on both. The
   readings carry the work where it was kept, so a set that changes much
-  is flattered, and the count of changes says by how far.
+  is flattered, and the count of changes says by how far. Every other
+  kept answer, an ask of where or a run, is answered again too, and
+  counted with those that would have differed, but only starts are
+  judged. An answer today's rules wouldn't give under the weights that
+  gave it, as work on a worker that didn't name it, is counted as stale
+  and left as it was, so a rule's change isn't read as the weights'.
 - `mycelium unanswered` prints what holds the mesh up as JSON lines,
   oldest first: each question of the last two hours still waiting on a
   peer it was put to, and each hold still standing. `mycelium said`
