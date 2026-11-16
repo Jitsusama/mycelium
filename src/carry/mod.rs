@@ -30,6 +30,7 @@ pub mod easing;
 pub mod ground;
 pub mod kept;
 pub mod ordered;
+pub mod settle;
 pub mod through;
 
 use std::collections::BTreeSet;

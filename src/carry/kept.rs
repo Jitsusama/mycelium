@@ -101,6 +101,20 @@ pub fn read(file: &Path, since: jiff::Timestamp) -> io::Result<Vec<Kept>> {
     Ok(kept)
 }
 
+/// Whether `kept` is shown at `since`: ordered since, or settled since,
+/// so what its settling came to is seen for a day after it, as it is
+/// settled only a day after it was ordered (`carry::settle`).
+#[must_use]
+pub fn shown(kept: &Kept, since: jiff::Timestamp) -> bool {
+    let settled = kept
+        .line
+        .get("settle")
+        .and_then(|settle| settle.get("at"))
+        .and_then(Value::as_str)
+        .and_then(|at| at.parse::<jiff::Timestamp>().ok());
+    kept.at >= since || settled.is_some_and(|at| at >= since)
+}
+
 /// How `kept` stands, by what was `seen` of its session. A refusal says
 /// it whatever else is seen, since the session stayed to write it.
 #[must_use]
@@ -121,10 +135,11 @@ pub fn judged(kept: &Kept, seen: &Seen) -> State {
     }
 }
 
-/// The fields of a kept line the person reads. Its chain and asker stay
-/// in the file, which proves them.
-const READ: [&str; 8] = [
-    "at", "by", "session", "address", "quest", "from", "to", "why",
+/// The fields of a kept line the person reads, with what settling its
+/// carry came to once it settled. Its chain and asker stay in the file,
+/// which proves them.
+const READ: [&str; 9] = [
+    "at", "by", "session", "address", "quest", "from", "to", "why", "settle",
 ];
 
 /// What a carry's record says: what was kept of it that the person
@@ -241,7 +256,7 @@ mod tests {
 
     use super::{
         Kept, MOST_TOLD, MOST_TOLD_BYTES, Seen, State, bounded, fields, fits, heard, judged, read,
-        told,
+        shown, told,
     };
 
     /// HARBOR's carry from skiff to tern, ordered at `at`.
@@ -336,6 +351,27 @@ mod tests {
         ] {
             assert_eq!(fields(&kept, &state)["state"], json!(name), "{state:?}");
         }
+    }
+
+    #[test]
+    fn a_settled_carry_says_so_and_is_shown_a_day_after_it_settled() {
+        let mut kept = harbour();
+        let since: jiff::Timestamp = "2026-11-16T21:00:00Z".parse().expect("a time");
+        assert!(!shown(&kept, since), "ordered a day before, unsettled");
+        let settle = json!({"did": "settled", "let": 2, "at": "2026-11-16T21:00:01Z"});
+        kept.line["settle"] = settle.clone();
+        assert!(shown(&kept, since), "settled since");
+        assert_eq!(
+            fields(&kept, &State::Arrived)["settle"],
+            settle,
+            "its record says what settling came to"
+        );
+        let (heard, _) = heard(&told(&kept, None, true)).expect("heard");
+        assert_eq!(
+            heard.line["settle"], settle,
+            "and so does the record another machine shows of it"
+        );
+        assert!(shown(&heard, since), "which shows it as long");
     }
 
     #[test]

@@ -17,6 +17,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use mycelium::awake::Awake;
 use mycelium::builders::{self, Builder};
 use mycelium::carry::easing::Eases;
+use mycelium::carry::settle::Settles;
 use mycelium::carry::through::Through;
 use mycelium::client::Client;
 use mycelium::flow::Flows;
@@ -1672,6 +1673,11 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         eases: node.eases.then(|| Eases {
             folder: state.join("eases"),
             every: carry::easing::EVERY,
+        }),
+        settles: Some(Settles {
+            kept: state.join("settles.jsonl"),
+            program: carry::PI_CARRY.into(),
+            answers_within: carry::settle::ANSWERS_WITHIN,
         }),
     };
     tell!(

@@ -19,6 +19,7 @@ use tokio::task::JoinSet;
 use crate::awake::{self, Awake};
 use crate::builders::{self, Builders};
 use crate::carry::easing::{self, Eases, Easing};
+use crate::carry::settle::{self, Settler, Settles};
 use crate::carry::{chain, ease, ground, kept, ordered, through};
 use crate::daemon;
 use crate::facts::{self, Readiness};
@@ -351,6 +352,9 @@ pub struct Given {
     /// Where it keeps what it would do to ease its machine, and how
     /// often it looks, if it looks (`carry::easing`).
     pub eases: Option<Eases>,
+    /// How it lets go of the trees a carry it ordered left here, once the
+    /// carry has arrived, if it does (`carry::settle`).
+    pub settles: Option<Settles>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -524,6 +528,9 @@ where
                 Some(Change::Message(id)) => shared.read_message(&id),
                 Some(Change::Presence) => {
                     shared.read_sessions();
+                    // A session seen arriving where it was carried may
+                    // let the trees it left here go.
+                    shared.settle_moved();
                     // A held session going idle, or busy, may let it sleep.
                     shared.keep_awake(&mut awake, power.as_ref());
                 }
@@ -912,6 +919,9 @@ struct Shared<S> {
     client: Option<i32>,
     /// Where it keeps each carry an orchestrator ordered.
     carries: PathBuf,
+    /// What lets go of the trees a carry ordered from here left, once it
+    /// has arrived, if anything does.
+    settles: Option<Arc<Settler>>,
     /// The quests' scratch folders, where each machine's sessions hand
     /// over as they leave or refuse, or none where it shares no quests.
     scratch: Option<PathBuf>,
@@ -1079,6 +1089,7 @@ impl<S: Clone> Clone for Shared<S> {
             processes: self.processes.clone(),
             client: self.client,
             carries: self.carries.clone(),
+            settles: self.settles.clone(),
             scratch: self.scratch.clone(),
             hostname: Arc::clone(&self.hostname),
             unreadable: Arc::clone(&self.unreadable),
@@ -1566,6 +1577,7 @@ impl<S: Store> Shared<S> {
             health,
             scratch,
             eases: _,
+            settles,
         } = given;
         let own = own_health::Slot::new(None);
         if let Some(socket) = health {
@@ -1583,6 +1595,7 @@ impl<S: Store> Shared<S> {
             // Beside the carries it judges, so it needs no place of its own.
             fences: Arc::new(fences::Seen::at(carries.with_file_name("fences.json"))),
             carries,
+            settles: settles.map(|settles| Arc::new(Settler::new(settles))),
             scratch: sharing.as_ref().map(|places| places.scratch.clone()),
             hostname: rustix::system::uname().nodename().to_string_lossy().into(),
             unreadable: Arc::default(),
@@ -1761,7 +1774,7 @@ impl<S: Store> Shared<S> {
             .flat_map(|(machine, told)| {
                 told.iter()
                     .filter_map(kept::heard)
-                    .filter(|(carry, _)| carry.at >= since)
+                    .filter(|(carry, _)| kept::shown(carry, since))
                     .map(|(carry, seen)| (machine.clone(), carry, seen))
                     .collect::<Vec<_>>()
             });
@@ -1781,9 +1794,87 @@ impl<S: Store> Shared<S> {
             .collect()
     }
 
-    /// The carries this node ordered since `since`, newest first.
+    /// The carries this node ordered that are shown at `since`
+    /// (`kept::shown`), newest first.
     fn carries_here(&self, since: jiff::Timestamp) -> Vec<kept::Kept> {
+        let settled = match self.settles.as_ref().map(|settler| settler.settled()) {
+            Some(Ok(settled)) => settled,
+            Some(Err(error)) => {
+                let error = format!("what settling carries came to can't be read: {error}");
+                if self.unreadable.first(&error) {
+                    eprintln!("{error}");
+                }
+                HashMap::new()
+            }
+            None => HashMap::new(),
+        };
+        self.carries_looked_at()
+            .into_iter()
+            .map(|mut carry| {
+                if let (Some(said), Some(line)) =
+                    (settled.get(&carry.id), carry.line.as_object_mut())
+                {
+                    line.insert("settle".to_owned(), said.clone());
+                }
+                carry
+            })
+            .filter(|carry| kept::shown(carry, since))
+            .collect()
+    }
+
+    /// The carries this node ordered as far back as settling looks
+    /// (`settle::LOOKED_FOR`), newest first.
+    fn carries_looked_at(&self) -> Vec<kept::Kept> {
+        let now = jiff::Timestamp::now();
+        let since = now.checked_sub(settle::LOOKED_FOR).unwrap_or(now);
         kept::read(&self.carries, since).unwrap_or_default()
+    }
+
+    /// Settles each carry ordered from here that is due (`settle::due`),
+    /// off the node's loop, and only one whose settling came to nothing
+    /// kept yet, each session's newest carry alone (`settle::newest_each`).
+    /// Where what settling came to can't be read, none is, since it can't
+    /// be told which were. It watches where the sessions of the rest run,
+    /// for `settle_moved`.
+    fn settle_carries(&self) {
+        let Some(settler) = &self.settles else {
+            return;
+        };
+        let Ok(settled) = settler.settled() else {
+            return;
+        };
+        let now = jiff::Timestamp::now();
+        let runs_on = self.runs_on();
+        let mut places = HashMap::new();
+        for carry in settle::to_look_at(
+            self.carries_looked_at(),
+            |id| settled.contains_key(id),
+            &self.machine,
+        ) {
+            let session = carry.said("session");
+            let mut seen = self.handed(&carry);
+            seen.runs_on = runs_on.get(session).cloned();
+            places.insert(session.to_owned(), seen.runs_on.clone());
+            let state = settler.stands(&carry, kept::judged(&carry, &seen));
+            if settle::due(&carry, &state, &self.machine, now) {
+                let said = Arc::clone(&self.said);
+                settler.settle(&carry, move || said.sessions_moved());
+            }
+        }
+        settler.watch(places);
+    }
+
+    /// Settles as `settle_carries` does, but only once a session of a
+    /// carry not settled yet runs elsewhere than when last looked at,
+    /// since presences change far more often than carries arrive.
+    fn settle_moved(&self) {
+        if self
+            .settles
+            .as_ref()
+            .is_some_and(|settler| settler.moved(&self.runs_on()))
+        {
+            self.settle_carries();
+        }
     }
 
     /// What only this machine's handover shows of `carry`: whether its
@@ -2263,6 +2354,7 @@ impl<S: Store> Shared<S> {
         self.cross_waiting();
         self.tell_carries();
         self.said.minute_passed();
+        self.settle_carries();
         power
     }
 
@@ -4037,6 +4129,7 @@ mod tests {
             builders: builders::Given::default(),
             placements: None,
             health: None,
+            settles: None,
             scratch: None,
             eases: None,
         }
@@ -4106,6 +4199,12 @@ mod tests {
         let stimuli = Some(socket.with_file_name("stimuli.json"));
         let builders = builders_of(socket);
         let scratch = Some(socket.with_file_name("scratch"));
+        // A test that settles a carry puts its stand-in `pi-carry` here.
+        let settles = Some(Settles {
+            kept: socket.with_file_name("settles.jsonl"),
+            program: socket.with_file_name("pi-carry"),
+            answers_within: PATIENCE,
+        });
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing,
@@ -4136,6 +4235,7 @@ mod tests {
                 health: None,
                 scratch,
                 eases: None,
+                settles,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -6560,6 +6660,125 @@ esac
             stands(&client.next().await),
             json!("arrived"),
             "its session runs on tern"
+        );
+    }
+
+    /// A `pi-carry` beside `socket`, where the node there asks it, that
+    /// settles at once, letting two trees go, after writing down what it
+    /// was given, a line each time, in the file it answers.
+    fn stand_in_settling(socket: &Path) -> PathBuf {
+        // The node's own, as a socket's folder must be.
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(socket.parent().expect("its folder"))
+            .expect("its folder is made");
+        let given = socket.with_file_name("given");
+        let text = socket.with_file_name("pi-carry.sh");
+        fs::write(
+            &text,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {}\necho '{{\"kind\":\"settled\",\"let\":2}}'\n",
+                given.display()
+            ),
+        )
+        .expect("the stand-in is written");
+        // A child process puts it in place, since another test's fork
+        // holding the file open for writing would keep it from running.
+        let put = std::process::Command::new("install")
+            .args(["-m", "755"])
+            .arg(&text)
+            .arg(socket.with_file_name("pi-carry"))
+            .status()
+            .expect("install runs");
+        assert!(put.success(), "the stand-in is put in place");
+        given
+    }
+
+    #[tokio::test]
+    async fn a_carry_arrived_a_day_since_lets_the_trees_it_left_here_go() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let given = stand_in_settling(&socket);
+        let two_days_ago =
+            (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(48)).to_string();
+        let carried = |session: &str, address: &str, from: &str| {
+            json!({"at": two_days_ago, "by": "WCJQSG", "session": session, "address": address,
+                   "quest": format!("QEST-20261115-{address}"), "from": from, "to": "tern",
+                   "why": "it needs the camera"})
+            .to_string()
+        };
+        fs::write(
+            socket.with_file_name("carries.jsonl"),
+            format!(
+                "{}\n{}\n",
+                carried("s-harbour", "HARBOR", "skiff"),
+                carried("s-loomer", "LOOMER", "kestrel")
+            ),
+        )
+        .expect("the carries are kept");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        // Once the node has started, as a link carries it, since a machine
+        // no link claims as the node starts is marked out of reach.
+        store
+            .put_machine(&fenced("tern", &["remote"]))
+            .expect("what it said is kept");
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "carry"}))
+            .await;
+        assert_eq!(
+            client.next().await["records"],
+            json!([]),
+            "ordered more than a day ago, so not shown"
+        );
+
+        for (session, address) in [("s-harbour", "HARBOR"), ("s-loomer", "LOOMER")] {
+            store
+                .put_presence(
+                    session,
+                    "tern",
+                    &json!({"session": session, "addresses": [address], "groups": [],
+                            "busy": true, "state": "listening",
+                            "at": jiff::Timestamp::now().to_string(),
+                            "quest": format!("QEST-20261115-{address}")}),
+                )
+                .expect("the presence is kept");
+        }
+        let settled = tokio::time::timeout(PATIENCE, async {
+            loop {
+                let said = client.next().await;
+                if let Some(record) = said["changed"]
+                    .as_array()
+                    .and_then(|changed| changed.iter().find(|one| one["settle"].is_object()))
+                {
+                    return record.clone();
+                }
+            }
+        })
+        .await
+        .expect("its settling is shown in time");
+        assert_eq!(
+            (
+                &settled["session"],
+                &settled["state"],
+                &settled["settle"]["did"],
+                &settled["settle"]["let"]
+            ),
+            (
+                &json!("s-harbour"),
+                &json!("arrived"),
+                &json!("settled"),
+                &json!(2)
+            ),
+            "HARBOR's old trees here were let go, shown for a day after: {settled}"
+        );
+        assert_eq!(
+            fs::read_to_string(&given).expect("it ran"),
+            "settle QEST-20261115-HARBOR --session s-harbour\n",
+            "asked once, and never for a carry kestrel ordered"
         );
     }
 
