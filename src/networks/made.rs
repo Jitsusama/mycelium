@@ -30,22 +30,46 @@ impl Mycelium {
         Self::made(realm, teams, read, machines)
     }
 
-    /// The mycelium of `realm` that the node's `teams`, `sessions` and
-    /// `machines` records make, each session's made its cell as it comes
-    /// and let go, so thousands are never all held at once.
+    /// The whole mycelium of `realm` that the node's `teams`, `sessions`,
+    /// `machines`, `receptors` and `builders` records make, each session's
+    /// made its cell as it comes and let go, so thousands are never all
+    /// held at once. This is how `mycelium networks` makes what it draws
+    /// and how the node makes its `network` and `cell` records, so the two
+    /// never differ.
     #[must_use]
-    pub fn of_each(
+    pub fn of_records(
         realm: &str,
         teams: &[Value],
         sessions: impl IntoIterator<Item = Value>,
         machines: &[Value],
+        receptors: &[Value],
+        builders: &[Value],
     ) -> Self {
         let sessions = sessions.into_iter();
-        let mut read = Sessions::room_for(sessions.size_hint().0 + machines.len());
+        // Room for every cell the records make, receptors' and builders'
+        // too, since adding one to a full list copies all of it.
+        let room = sessions.size_hint().0 + machines.len() + receptors.len() + builders.len();
+        let mut read = Sessions::room_for(room);
         for session in sessions {
             read.add(&session);
         }
-        Self::made(realm, teams, read, machines)
+        Self::whole(realm, teams, read, machines, receptors, builders)
+    }
+
+    /// The whole mycelium of `realm` that the node's records make, with
+    /// what its sessions' records made as each was read: its sessions'
+    /// and machines' cells, its receptors' and its builders'.
+    fn whole(
+        realm: &str,
+        teams: &[Value],
+        sessions: Sessions,
+        machines: &[Value],
+        receptors: &[Value],
+        builders: &[Value],
+    ) -> Self {
+        Self::made(realm, teams, sessions, machines)
+            .sensing(receptors)
+            .with_builders(builders)
     }
 
     /// The same mycelium with the builders the node's `builders` records
@@ -248,9 +272,9 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
             "the node can't say its networks ({why}); it may need updating"
         )));
     }
-    Ok(Mycelium::made(realm, &teams, sessions, &machines)
-        .sensing(&receptors)
-        .with_builders(&builders))
+    Ok(Mycelium::whole(
+        realm, &teams, sessions, &machines, &receptors, &builders,
+    ))
 }
 
 /// Which of the networks' asks is for the node's receptors.

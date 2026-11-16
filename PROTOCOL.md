@@ -1197,12 +1197,12 @@ in milliseconds.
 | `carry` with `quest` and `to` | `carried`, where its sessions went, as `mycelium carry` says it |
 
 A record carries `key` (`session:<id>`, `machine:<name>`,
-`message:<id>`, `team:<address>`, `network:<name>`, `unanswered:<id>`,
-`said:<id>`, `event:<session>:<at>`, `receptor:<source>`,
-`builder:<name>`, `forage:<address>` or `murmur:<cell>:<at>`), `kind`,
-`heard` (milliseconds since the epoch) and the fields `Sessions`,
-`Machines` and `Messages` give it. A field its source named `key`,
-`kind` or `heard`, such as a
+`message:<id>`, `team:<address>`, `network:<name>`, `cell:<name>`,
+`unanswered:<id>`, `said:<id>`, `event:<session>:<at>`,
+`receptor:<source>`, `builder:<name>`, `forage:<address>` or
+`murmur:<cell>:<at>`), `kind`, `heard` (milliseconds since the epoch)
+and the fields `Sessions`, `Machines` and `Messages` give it. A field
+its source named `key`, `kind` or `heard`, such as a
 job's own `kind`, is kept under `source` rather than lost beneath the
 interface's, beside the record's own `source` where it has one. A
 session also says
@@ -1232,7 +1232,8 @@ session answering to nobody and leading nothing is in no team.
 
 The `network` kind holds each network of the realm, keyed by its name
 as the mesh names its group, such as `repo.skiff` or `machines`, made
-by the very model `mycelium networks` draws, with its fields: its
+by the very model `mycelium networks` draws, of the node's teams,
+sessions, machines, receptors and builders, with its fields: its
 `shape` (`orchestration`, `project`, `repository`, `tree`, `group`,
 `machines` or `outside`), the `short` name a person types, its `title`
 and `glyph`
@@ -1259,6 +1260,29 @@ nothing. Its records change as the sessions do, so a machine come or
 gone shows with the next change to a session. Ten thousand cells, each
 holding two trees, make their networks within 30 MB, in time that grows
 with them.
+
+The `cell` kind holds each cell of the realm, keyed by its name: a
+session's address, a machine's name, or a receptor's source and machine,
+such as `slack@kestrel`. Each is the very cell that
+`mycelium networks -o json` prints, made by the same model from the
+same records as the `network` kind, less its `kind`: its `type`
+(`session`, `machine` or `receptor`), and where it says them its
+`title`, a session's `id`, `window`, `standing` (`needs-you`, `stuck`,
+`moving`, `quiet` or `dormant`), `doing`, `asks`, `repo`, `usage`, the
+networks it `leads`, `machine`, `since`, `quest`, `plan`, `cwd` and the
+`trees` it holds, a machine's or a receptor's `state`, a machine's
+`busy` and the sessions it `runs`, a receptor's `counts`, and the
+`networks` it joined. A session's `quest`
+is the quest it works on, a field like any other; a cell is known by its
+name alone. A builder is no cell: the machines' network names it among
+its `builders`, and it is a `builder` record. A cell is heard when its
+session's, machine's or receptor's record was, and its records change
+as any of those do, so a machine's measure or a receptor's reading is
+sent at once. A watch is sent only the cells that changed, each with
+only the fields that moved. Ten thousand cells make their records
+within 80 MB while each holds two trees, most of it the records
+themselves, in time that grows with them. The target is 30 MB, once
+each record is held as the bytes it is sent as, owed by 2026-11-17.
 
 The `unanswered` kind holds what waits on the mesh, keyed by the
 message's id, as `mesh_read unanswered` and the hold leases judge it:
@@ -1446,7 +1470,7 @@ which is no trouble, and a folder not there is looked for again each
 minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine`,
-`message`, `team`, `network`, `unanswered`, `said`, `event`,
+`message`, `team`, `network`, `cell`, `unanswered`, `said`, `event`,
 `receptor`, `builder`, `carry`, `forage` or `murmur`, can't be served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
