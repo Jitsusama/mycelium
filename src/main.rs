@@ -1478,7 +1478,9 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let mut here = node.here;
     here.machine = Some(machine);
     let state = here.state.clone().unwrap_or_else(place::state);
-    let (refused, book) = (state.join("refused"), state.join("made.jsonl"));
+    let refused = state.join("refused");
+    // Each realm's node on the machine keeps the one book, its makes named.
+    let book = mycelium::made::Book::at(state.join("made.jsonl")).of_realm(&realm);
     let steers = here.steer.clone().unwrap_or_else(place::steer);
     let flows = Flows {
         to: checked(node.flows_to)?,
@@ -1508,7 +1510,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         updater: place::updater(),
         serves,
         providers,
-        book: mycelium::made::Book::at(book),
+        book,
         flows,
         parked: place::parked(),
         held,
