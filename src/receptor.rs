@@ -18,14 +18,14 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Write as _};
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use jiff::Timestamp;
 use notify::Watcher as _;
+use rustix::fs::{Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
@@ -47,6 +47,10 @@ const FOLDER_MODE: u32 = 0o700;
 
 /// Mode of a receptor's file: its owner's alone.
 const FILE_MODE: u32 = 0o600;
+
+/// The most a receptor's file may hold. Its fields take under 300 bytes,
+/// so anything larger was put there by something else.
+const LARGEST_FILE: u64 = 4096;
 
 /// What a receptor senses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -191,6 +195,44 @@ fn refused(why: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, why.into())
 }
 
+/// Whether `record` keeps every bound its fields have: a round of a
+/// second to a day, and no count past today's. Held as a record is
+/// written and again as it is read, so a file written by hand keeps them
+/// too.
+fn sound(record: &Record) -> io::Result<()> {
+    if record.every == 0 || record.every > LONGEST_ROUND_SECS {
+        return Err(refused(format!(
+            "a receptor reads every 1 to {LONGEST_ROUND_SECS} seconds, not {}",
+            record.every
+        )));
+    }
+    if record.counts.addressed > record.counts.today || record.counts.hour > record.counts.today {
+        return Err(refused(
+            "a receptor counts no more in an hour, or addressed, than today",
+        ));
+    }
+    Ok(())
+}
+
+/// `folder` made where it isn't there and opened as itself, never through
+/// a link, so its mode is set on it and on nothing a link points at.
+fn owned(folder: &Path) -> io::Result<()> {
+    fs::create_dir_all(folder)?;
+    let opened = rustix::fs::open(
+        folder,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| refused(format!("{} isn't a folder of its own", folder.display())))?;
+    rustix::fs::fchmod(&opened, Mode::from_raw_mode(FOLDER_MODE))?;
+    Ok(())
+}
+
+/// Whether `folder` is a folder itself rather than a link to one.
+fn is_own_folder(folder: &Path) -> bool {
+    fs::symlink_metadata(folder).is_ok_and(|meta| meta.file_type().is_dir())
+}
+
 /// `record` written whole to its file in `folder`, for `realm`, under a
 /// dot-name renamed into place, the folder its owner's alone and the file
 /// too. Its `since` stays the one its file already holds while the same
@@ -207,26 +249,20 @@ pub fn write(
     mut record: Record,
     living: &impl Living,
 ) -> io::Result<PathBuf> {
-    let _ = living;
     if record.realm != realm {
         return Err(refused(format!(
             "a receptor of realm {:?} can't be written in realm {realm:?}",
             record.realm
         )));
     }
-    if record.every == 0 || record.every > LONGEST_ROUND_SECS {
+    sound(&record)?;
+    if !living.lives(record.pid, record.started) {
         return Err(refused(format!(
-            "a receptor reads every 1 to {LONGEST_ROUND_SECS} seconds, not {}",
-            record.every
+            "process {} isn't running, so it can't keep a receptor",
+            record.pid
         )));
     }
-    if record.counts.addressed > record.counts.today || record.counts.hour > record.counts.today {
-        return Err(refused(
-            "a receptor counts no more in an hour, or addressed, than today",
-        ));
-    }
-    fs::create_dir_all(folder)?;
-    fs::set_permissions(folder, fs::Permissions::from_mode(FOLDER_MODE))?;
+    owned(folder)?;
     let path = file(folder, record.source);
     if let Some(was) = read_file(&path)
         && was.pid == record.pid
@@ -235,12 +271,18 @@ pub fn write(
         record.since = was.since;
     }
     let staged = folder.join(format!(".{}.{}", record.source.name(), std::process::id()));
-    let mut out = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(FILE_MODE)
-        .open(&staged)?;
+    // Whatever stands at the staged name, a link among them, is removed
+    // rather than written through, and the file is made new or not at
+    // all, so nothing a link points at is ever truncated.
+    match fs::remove_file(&staged) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
+    let mut out = fs::File::from(rustix::fs::open(
+        &staged,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(FILE_MODE),
+    )?);
     out.write_all(&serde_json::to_vec(&record).map_err(io::Error::other)?)?;
     out.sync_all()?;
     drop(out);
@@ -249,11 +291,29 @@ pub fn write(
 }
 
 /// The record `path` holds, or none where it holds none or a malformed
-/// one: a field it doesn't name, a word a field doesn't take, or a file
-/// named for another source.
+/// one: a field it doesn't name, a word a field doesn't take, a bound
+/// broken, or a file named for another source. Only a regular file of at
+/// most [`LARGEST_FILE`] is read, never through a link, and a pipe is
+/// opened without waiting on a writer and then left, so nothing planted in
+/// the folder can hold or flood its reader.
 fn read_file(path: &Path) -> Option<Record> {
-    let text = fs::read(path).ok()?;
+    let opened = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()?;
+    let file = fs::File::from(opened);
+    if !file.metadata().ok()?.file_type().is_file() {
+        return None;
+    }
+    let mut text = Vec::new();
+    file.take(LARGEST_FILE + 1).read_to_end(&mut text).ok()?;
+    if u64::try_from(text.len()).ok()? > LARGEST_FILE {
+        return None;
+    }
     let record: Record = serde_json::from_slice(&text).ok()?;
+    sound(&record).ok()?;
     let named = path.file_stem()?.to_str()?;
     (named == record.source.name()).then_some(record)
 }
@@ -301,13 +361,17 @@ pub fn started_at(pid: u32) -> Option<u64> {
 /// Every receptor `folder` holds for `realm`, by source, each judged as
 /// of `now`: one whose process is gone reads `off`, and one late past
 /// three of its rounds `failing`. A file of another realm, a malformed
-/// one or one being written is left out.
+/// one or one being written is left out, and a folder that is a link is
+/// left unread.
 pub fn judged(
     folder: &Path,
     realm: &str,
     now: Timestamp,
     living: &impl Living,
 ) -> BTreeMap<Source, Record> {
+    if !is_own_folder(folder) {
+        return BTreeMap::new();
+    }
     let Ok(files) = fs::read_dir(folder) else {
         return BTreeMap::new();
     };
@@ -363,18 +427,11 @@ const SETTLED_AFTER: Duration = Duration::from_millis(20);
 /// Keeps `held` as the receptors of `folder` stand for `realm`, judged
 /// each time a file there changes and every [`JUDGED_EVERY`] besides,
 /// telling `tell` each time they differ. The folder is made, its owner's
-/// alone, where it isn't there, so it can be watched from the start.
+/// alone, where it isn't there, so it can be watched from the start. Each
+/// judging reads the disk off the runtime, so a slow disk holds only
+/// this.
 pub async fn keep(folder: PathBuf, realm: String, held: Held, tell: watch::Sender<u64>) {
-    let judge = || {
-        let now = judged(&folder, &realm, Timestamp::now(), &Here);
-        let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
-        if *held != now {
-            *held = now;
-            tell.send_modify(|changes| *changes += 1);
-        }
-    };
-    let made = fs::create_dir_all(&folder)
-        .and_then(|()| fs::set_permissions(&folder, fs::Permissions::from_mode(FOLDER_MODE)));
+    let made = owned(&folder);
     let (heard, mut changed) = mpsc::unbounded_channel();
     // Without a watch, as on a folder that can't be made, the receptors
     // are still judged each round. The watch lasts as long as this does.
@@ -391,7 +448,18 @@ pub async fn keep(folder: PathBuf, realm: String, held: Held, tell: watch::Sende
     });
     let mut rounds = tokio::time::interval(JUDGED_EVERY);
     loop {
-        judge();
+        let (reading, of) = (folder.clone(), realm.clone());
+        let read =
+            tokio::task::spawn_blocking(move || judged(&reading, &of, Timestamp::now(), &Here));
+        // A judging that panicked leaves the receptors as last judged,
+        // to be judged again next round.
+        if let Ok(now) = read.await {
+            let mut held = held.lock().unwrap_or_else(PoisonError::into_inner);
+            if *held != now {
+                *held = now;
+                tell.send_modify(|changes| *changes += 1);
+            }
+        }
         tokio::select! {
             _ = rounds.tick() => {}
             Some(()) = changed.recv() => {
@@ -416,6 +484,8 @@ fn judged_state(record: &Record, now: Timestamp, living: &impl Living) -> State 
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
     use super::*;
 
     /// Every process lives, or none does.
@@ -615,7 +685,10 @@ mod tests {
         let folder = folder(state.path());
         let refused = super::write(&folder, "work", slack(), &Lives(false)).expect_err("refused");
         assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
-        assert!(!file(&folder, Source::Slack).exists(), "nothing was written");
+        assert!(
+            !file(&folder, Source::Slack).exists(),
+            "nothing was written"
+        );
     }
 
     #[test]
@@ -638,7 +711,7 @@ mod tests {
             rustix::fs::CWD,
             folder.join("slack.json"),
             rustix::fs::FileType::Fifo,
-            rustix::fs::Mode::from_raw_mode(0o600),
+            Mode::from_raw_mode(0o600),
             0,
         )
         .expect("a pipe");
@@ -688,7 +761,11 @@ mod tests {
         let folder = folder(state.path());
         std::os::unix::fs::symlink(&elsewhere, &folder).expect("linked");
         assert!(write(&folder, "work", slack()).is_err(), "refused");
-        let mode = fs::metadata(&elsewhere).expect("there").permissions().mode() & 0o777;
+        let mode = fs::metadata(&elsewhere)
+            .expect("there")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o755, "its mode is left as it was");
         assert_eq!(judged_soon(&folder), Some(BTreeMap::new()));
     }

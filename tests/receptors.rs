@@ -153,9 +153,7 @@ fn a_process_that_isnt_running_is_refused() {
     let pid = ended.id().to_string();
     let said = say(
         dir.path(),
-        &[
-            "slack", "--state", "quiet", "--every", "300", "--pid", &pid,
-        ],
+        &["slack", "--state", "quiet", "--every", "300", "--pid", &pid],
     );
     assert!(!said.status.success(), "a process gone can't keep it");
     assert!(!dir.path().join("receptors").join("slack.json").exists());
