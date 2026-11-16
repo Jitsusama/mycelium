@@ -1679,10 +1679,7 @@ impl<S: Store> Shared<S> {
     /// view reads it, each session standing as it does here.
     fn made_records(
         &self,
-        making: fn(
-            &network::Holding<'_>,
-            &network::Standing<'_>,
-        ) -> BTreeMap<String, serde_json::Value>,
+        making: fn(&Holding<'_>, &Standing<'_>) -> BTreeMap<String, serde_json::Value>,
     ) -> BTreeMap<String, serde_json::Value> {
         let teams = self.team_records();
         let machines = self.machine_records();
@@ -1694,7 +1691,7 @@ impl<S: Store> Shared<S> {
             let here = session.machine == self.machine;
             standing::standing(session, here, &parked, &self.boot)
         };
-        let holding = network::Holding {
+        let holding = Holding {
             teams: &teams,
             sessions: &sessions,
             machines: &machines,
@@ -6027,17 +6024,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let at = jiff::Timestamp::now().to_string();
         let put = |session: &str, state: &str, groups: &[&str]| {
-            let presence = json!({
-                "session": session, "addresses": [session.to_uppercase()], "groups": groups,
-                "busy": state == "busy", "state": state, "at": at,
-                "cwd": format!("/home/someone/src/{session}"), "repo": "skiff",
-                "doing": {"plan": "PLAN-20261116-AAAAAA", "item": 2,
-                    "next": "serve the cells", "at": at},
-            });
             store
-                .put_presence(session, "kestrel", &presence)
+                .put_presence(session, "kestrel", &planning(session, state, groups))
                 .expect("the presence is kept");
         };
         let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
@@ -6095,33 +6084,15 @@ mod tests {
             "each cell is heard as its record was: {:?}",
             listed[3]
         );
-        let served: BTreeMap<String, Value> = listed[3]
-            .iter()
-            .filter(|record| sessions(record))
-            .map(|record| {
-                let mut fields = record.clone();
-                let key = fields["key"].as_str().unwrap_or_default().to_owned();
-                if let Some(fields) = fields.as_object_mut() {
-                    fields.remove("key");
-                    fields.remove("heard");
-                }
-                (key, fields)
-            })
-            .collect();
         assert_eq!(
-            served, expected,
+            served(listed[3].iter().filter(|record| sessions(record))),
+            expected,
             "one record each, by its name, with the fields the networks view draws"
         );
 
         put("kelp01", "idle", &["#repo/skiff", "#harbor"]);
-        let kelp = |changed: &Value| {
-            changed["changed"]
-                .as_array()
-                .and_then(|each| each.iter().find(|one| one["key"] == "cell:KELP01"))
-                .is_some()
-        };
         let mut changed = client.next().await;
-        while !kelp(&changed) {
+        while sent(&changed, "cell:KELP01").is_none() {
             changed = client.next().await;
         }
         let keys: Vec<&Value> = changed["changed"]
@@ -6141,12 +6112,8 @@ mod tests {
             .ask(json!({"id": 7, "ask": "list", "kind": "cell", "fields": ["standing"]}))
             .await;
         let projected = client.next().await;
-        let kelp = projected["records"]
-            .as_array()
-            .and_then(|each| each.iter().find(|one| one["key"] == "cell:KELP01"))
-            .cloned();
         assert_eq!(
-            kelp,
+            keyed(&projected["records"], "cell:KELP01"),
             Some(json!({"key": "cell:KELP01", "kind": "cell", "standing": "quiet"})),
             "a list naming fields is sent only those of each cell: {projected}"
         );
@@ -6176,12 +6143,46 @@ mod tests {
         receptor::write(&folder, "work", reading, &receptor::Here).expect("the receptor is kept");
     }
 
-    /// The record of `key` among what a watch's `changed` sent, if any.
-    fn sent(changed: &Value, key: &str) -> Option<Value> {
-        changed["changed"]
+    /// A presence of `session` in `state` hearing `groups`, saying what its
+    /// plan does next.
+    fn planning(session: &str, state: &str, groups: &[&str]) -> Value {
+        let at = jiff::Timestamp::now().to_string();
+        json!({
+            "session": session, "addresses": [session.to_uppercase()], "groups": groups,
+            "busy": state == "busy", "state": state, "at": at,
+            "cwd": format!("/home/someone/src/{session}"), "repo": "skiff",
+            "doing": {"plan": "PLAN-20261116-AAAAAA", "item": 2,
+                "next": "serve the cells", "at": at},
+        })
+    }
+
+    /// Each of `records` by its key, holding only the fields a cell of the
+    /// networks view says.
+    fn served<'a>(records: impl Iterator<Item = &'a Value>) -> BTreeMap<String, Value> {
+        records
+            .map(|record| {
+                let mut fields = record.clone();
+                let key = fields["key"].as_str().unwrap_or_default().to_owned();
+                if let Some(fields) = fields.as_object_mut() {
+                    fields.remove("key");
+                    fields.remove("heard");
+                }
+                (key, fields)
+            })
+            .collect()
+    }
+
+    /// The record of `key` among `records`, if any.
+    fn keyed(records: &Value, key: &str) -> Option<Value> {
+        records
             .as_array()
             .and_then(|each| each.iter().find(|one| one["key"] == key))
             .cloned()
+    }
+
+    /// The record of `key` among what a watch's `changed` sent, if any.
+    fn sent(changed: &Value, key: &str) -> Option<Value> {
+        keyed(&changed["changed"], key)
     }
 
     #[tokio::test]

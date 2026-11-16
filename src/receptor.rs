@@ -28,7 +28,7 @@ use notify::Watcher as _;
 use rustix::fs::{Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
 /// The kind of a receptor's records in the daemon interface.
 pub const KIND: &str = "receptor";
