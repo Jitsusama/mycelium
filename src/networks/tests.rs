@@ -396,7 +396,8 @@ fn every_group_but_an_address_is_a_network_and_a_lone_quest_or_repo_is_not() {
 /// A busy session `address`, numbered `n`, whose presence holds `trees`.
 fn holding(address: &str, n: u8, trees: Value) -> Value {
     let mut held = session(address, n, "", "busy", &[]);
-    held["presence"] = json!({ "trees": trees });
+    held["presence"] = json!({});
+    held["presence"]["trees"] = trees;
     held
 }
 
