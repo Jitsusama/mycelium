@@ -210,9 +210,10 @@ impl Mycelium {
 fn receptor_cell(record: &Value) -> Option<Cell> {
     let source = Source::named(record["source"].as_str()?)?;
     let machine = record["machine"].as_str()?.to_owned();
-    // A record may come over a link from a node this one doesn't vouch
-    // for, so only a time is drawn as its since and only a state's word
-    // as its state: nothing else a field holds reaches the map.
+    // A record is what its receptor wrote, which nothing vouches for, so
+    // only a time is drawn as its since and only a state's word as its
+    // state: nothing else a field holds reaches the map. Its machine is
+    // the node's own word, put there as the node serves it.
     let since = record["since"]
         .as_str()
         .and_then(|said| said.parse::<jiff::Timestamp>().ok())

@@ -1213,7 +1213,20 @@ fn a_receptor_cell_keeps_only_a_time_and_a_state_word_from_another_node() {
     assert_eq!(
         (cell.since.as_deref(), cell.state.as_deref()),
         (None, None),
-        "a node's record crosses links, so a since that is no time and a state that is \
-         no state's word are left out rather than drawn"
+        "nothing vouches for what a receptor wrote, so a since that is no time and a \
+         state that is no state's word are left out rather than drawn"
+    );
+}
+
+#[test]
+fn a_receptor_cells_since_is_drawn_as_the_time_it_names() {
+    let mut offset = receptor("slack", "skiff", "quiet", 4);
+    offset["since"] = json!("2026-11-15T14:00:00-05:00");
+    let mycelium = mycelium().sensing(&[offset]);
+    let cell = mycelium.cell("slack@skiff").expect("Slack on skiff");
+    assert_eq!(
+        (cell.since.as_deref(), cell.state.as_deref()),
+        (Some("2026-11-15T19:00:00Z"), Some("quiet")),
+        "a time with an offset is drawn as the time it names, and a state's word as itself"
     );
 }
