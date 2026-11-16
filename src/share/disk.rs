@@ -464,7 +464,11 @@ mod tests {
 
         for path in ["held.md", "attachments/key.md", "attachments/away/held.md"] {
             let shared = record(path);
-            assert_eq!(quest.read(&shared).expect("read"), None, "{path} isn't read");
+            assert_eq!(
+                quest.read(&shared).expect("read"),
+                None,
+                "{path} isn't read"
+            );
             assert_eq!(
                 quest.read_piece(&shared, 0).expect("read"),
                 None,

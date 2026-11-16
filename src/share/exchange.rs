@@ -1843,7 +1843,11 @@ mod tests {
         let skiff = Machine::new("skiff");
         let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
         under_top(&kestrel, top, child);
-        put(&kestrel.places.scratch, &format!("{top}/notes/mine.md"), "mine\n");
+        put(
+            &kestrel.places.scratch,
+            &format!("{top}/notes/mine.md"),
+            "mine\n",
+        );
         {
             let mut held = kestrel.places.ledgers().hold(top).expect("held");
             held.ledger.scratch.insert("lab".to_owned());
@@ -1851,11 +1855,17 @@ mod tests {
         }
         let mut near = kestrel.exchange(&skiff);
         let said = near.look().expect("kestrel looks");
-        let Some(Say::Shares { quests, scratch, .. }) = said.first() else {
+        let Some(Say::Shares {
+            quests, scratch, ..
+        }) = said.first()
+        else {
             panic!("kestrel says first what it shares: {said:?}");
         };
         assert!(quests.iter().any(|id| id == top), "the parent is named");
-        assert!(!scratch.contains_key(top), "but not its scratch, its README alone crossing");
+        assert!(
+            !scratch.contains_key(top),
+            "but not its scratch, its README alone crossing"
+        );
 
         let named = BTreeMap::from([(top.to_owned(), BTreeSet::from(["notes".to_owned()]))]);
         for withheld in [true, false] {
