@@ -26,9 +26,10 @@ use crate::wire::{Ran, Reply, Request, Response, Run, Start, Started};
 /// holder has ten seconds to hold, and the link carries the rest.
 const ANSWERED_WITHIN: Duration = Duration::from_secs(30);
 
-/// The words that run a command on the machine a link reaches, from this
-/// one, given the command's own words there.
-pub type There = Arc<dyn Fn(&[String]) -> Vec<String> + Send + Sync>;
+/// The words that join a session on the machine a link reaches, named
+/// first, from this one, given the words that join it there, as
+/// [`Dial::joins`] says.
+pub type There = Arc<dyn Fn(&str, &[String]) -> Vec<String> + Send + Sync>;
 
 /// What a link carries of starts.
 #[derive(Clone)]
@@ -129,7 +130,7 @@ impl Asks {
             .await?
         {
             Ok(Response::Started(started)) => Ok(Response::Started(Started {
-                attach: there(&started.attach),
+                attach: there(machine, &started.attach),
                 ..started
             })),
             other => other,
@@ -227,7 +228,7 @@ impl Asks {
             options: Vec::new(),
             command: "mycelium".to_owned(),
         };
-        Arc::new(move |words: &[String]| ssh.there(words))
+        Arc::new(move |machine: &str, words: &[String]| ssh.joins(machine, words))
     }
 
     /// Takes the starts asked of `machine` for the link reaching it, until

@@ -254,19 +254,19 @@ mod tests {
         let words = ["mycelium".to_owned(), "attach".to_owned()];
         asks.know(
             "tern",
-            std::sync::Arc::new(|words: &[String]| {
+            std::sync::Arc::new(|_: &str, words: &[String]| {
                 let mut there = vec!["into-tern".to_owned()];
                 there.extend_from_slice(words);
                 there
             }),
         );
         assert_eq!(
-            asks.way("tern")(&words),
+            asks.way("tern")("tern", &words),
             ["into-tern", "mycelium", "attach"],
             "a machine the node dialled is reached as its dial says"
         );
         assert_eq!(
-            asks.way("skiff")(&words),
+            asks.way("skiff")("skiff", &words),
             [
                 "mycelium", "attach", "--on", "skiff", "--", "ssh", "-t", "--", "skiff",
                 "mycelium", "attach"

@@ -1936,7 +1936,7 @@ impl<S: Store> Shared<S> {
             return Some(words);
         }
         let there = self.asks.there(&session.machine)?;
-        Some(there(&words))
+        Some(there(&session.machine, &words))
     }
 
     /// This machine as it is now, as its realm hears it: a handful of small
@@ -2165,7 +2165,7 @@ impl<S: Store> Shared<S> {
             held: self.held.clone(),
             asking: Some(Asking::Kept(self.asks.clone(), {
                 let dial = dial.clone();
-                Arc::new(move |words: &[String]| dial.there(words))
+                Arc::new(move |machine: &str, words: &[String]| dial.joins(machine, words))
             })),
             steers: self.steers.clone(),
             health: Some(self.health.subscribe()),

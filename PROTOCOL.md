@@ -794,7 +794,18 @@ held session of this machine's has as its `window` the latest window
 joined to its holder that is still joined, or none. A held session says
 `attach` too, the words that join it from a terminal on this machine, to
 be run as given: `mycelium` here, or the dial's words for a machine a
-link of this node's reaches, and none while no link does. A session
+link of this node's reaches, and none while no link does. Over SSH,
+those are `mycelium --realm REALM attach --on MACHINE ID -- WORDS`,
+`WORDS` being SSH's to that machine's own: run here, it runs `WORDS`
+and runs them again each time SSH ends 255, as it does when its link
+drops, saying `Reconnecting to MACHINE.` and waiting 1 second, then
+twice as long each time up to 30, back to 1 after a join that held 10
+seconds. Before each try it asks this node's `Sessions`, and once they
+list the session `ended` and not parked, it says `TITLE has ended.`
+and exits 0; one they don't list, or a node that doesn't answer, is
+tried again. It exits with any other code the join ends with, and 130
+on Ctrl+C. A provider's program says no code for a dropped way, so its
+words are served as they are and run once. A session
 that runs among others in one pi host, whose presence says `hosted`
 (`host`, the host's own key, and `conversation`, the id that outlives
 the host's restarts), says its `host` and `conversation` too, and is
@@ -1087,9 +1098,10 @@ isn't placed, or doesn't start, is an error saying why, such as
 starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in
 `app.slice`, so the session outlives the node. A start placed on
 another machine is asked of it through the link this node keeps to it,
-and its `attach` comes back as the words that run that machine's own
-over the dial, such as `ssh -t kestrel mycelium --realm work attach
-<held>`. It fails with a reason when no link reaches the machine, its
+and its `attach` comes back as the words that join it over the dial,
+as a held session's `attach` says, such as `mycelium --realm work
+attach --on kestrel <held> -- ssh -t -- kestrel mycelium --realm work
+attach <held>`. It fails with a reason when no link reaches the machine, its
 mycelium is too old to start sessions, or it doesn't answer within 30
 seconds.
 

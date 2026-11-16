@@ -5,9 +5,15 @@
 //! session still running on the other machine.
 
 use std::io;
+use std::os::unix::process::ExitStatusExt;
+use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::record::Session;
+use serde_json::Value;
+
+use crate::client::Client;
+use crate::record::{Session, State};
+use crate::wire::{Request, Response};
 
 /// The code SSH ends with when it couldn't connect or its connection
 /// dropped, rather than one the command there ended with.
@@ -17,13 +23,29 @@ pub const DROPPED: i32 = 255;
 /// it waits to join again: 128 and SIGINT's number, as a shell says it.
 pub const INTERRUPTED: u8 = 130;
 
+/// How long this machine's node has to say whether a session still runs.
+const ASKED_WITHIN: Duration = Duration::from_secs(5);
+
 /// The words that join, from a terminal here, the session that `joins`
 /// joins on the machine `on`, given `there`, the words that run `joins`
-/// there.
+/// there: a `mycelium attach --on` here, in the realm and naming the
+/// session as `joins` does, carrying `there` whole after `--`, so it
+/// joins again with no link of the node's, as the link may be what
+/// dropped. Words that join nothing are `there` as they are.
 #[must_use]
 pub fn served(on: &str, joins: &[String], there: Vec<String>) -> Vec<String> {
-    let _ = (on, joins);
-    there
+    let Some(at) = joins.iter().position(|word| word == "attach") else {
+        return there;
+    };
+    let (before, after) = joins.split_at(at + 1);
+    before
+        .iter()
+        .cloned()
+        .chain(["--on".to_owned(), on.to_owned()])
+        .chain(after.iter().cloned())
+        .chain(["--".to_owned()])
+        .chain(there)
+        .collect()
 }
 
 /// How long a join waits before each try again.
@@ -74,12 +96,48 @@ pub enum Target {
     },
 }
 
+impl Target {
+    fn is(&self, session: &Session) -> bool {
+        match self {
+            Self::Held(id) => session.held.as_deref() == Some(id),
+            Self::Hosted { host, conversation } => {
+                session.host.as_deref() == Some(host)
+                    && session.conversation.as_deref() == Some(conversation)
+            }
+        }
+    }
+
+    fn id(&self) -> &str {
+        match self {
+            Self::Held(id) => id,
+            Self::Hosted { conversation, .. } => conversation,
+        }
+    }
+}
+
 /// Whether the session `target` names on `on` still runs, as `sessions`,
-/// the node's, say.
+/// the node's, say: ended only when they list it ended and not parked for
+/// its holder to start again as it is joined. One they don't list is
+/// unknown, since a link may not have carried it yet, and joining one
+/// gone indeed fails there with a code of its own, ending the join.
 #[must_use]
 pub fn still(sessions: &[Session], on: &str, target: &Target) -> Still {
-    let _ = (sessions, on, target);
-    Still::Unknown
+    let Some(session) = sessions
+        .iter()
+        .find(|session| session.machine == on && target.is(session))
+    else {
+        return Still::Unknown;
+    };
+    let parked = session.presence.get("state").and_then(Value::as_str) == Some("parked");
+    if session.state != State::Ended || parked {
+        return Still::Runs;
+    }
+    let title = session
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty());
+    Still::Ended(title.unwrap_or(target.id()).to_owned())
 }
 
 /// A session joined over a way that drops.
@@ -95,16 +153,93 @@ pub trait Joining {
     fn say(&mut self, line: &str);
 }
 
+/// A join run from this terminal by `words`, asking the node at `node`
+/// whether the session `target` still runs on `on`.
+pub struct Over {
+    /// The words that join it, as SSH to its machine.
+    pub words: Vec<String>,
+    /// This machine's node's socket.
+    pub node: PathBuf,
+    /// The machine it runs on.
+    pub on: String,
+    /// Which session it is.
+    pub target: Target,
+}
+
+impl Joining for Over {
+    async fn join(&mut self) -> io::Result<i32> {
+        let Some((program, arguments)) = self.words.split_first() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "no words to join it by",
+            ));
+        };
+        let ended = tokio::process::Command::new(program)
+            .args(arguments)
+            .status()
+            .await?;
+        // A signal that ended it is said as a shell says one.
+        Ok(ended
+            .code()
+            .or_else(|| ended.signal().map(|signal| 128 + signal))
+            .unwrap_or(1))
+    }
+
+    async fn still(&mut self) -> Still {
+        let node = self.node.clone();
+        let asked = tokio::task::spawn_blocking(move || {
+            Client::connect_within(&node, ASKED_WITHIN)?.ask(&Request::Sessions)
+        })
+        .await;
+        match asked {
+            Ok(Ok(Ok(Response::Sessions(sessions)))) => still(&sessions, &self.on, &self.target),
+            _ => Still::Unknown,
+        }
+    }
+
+    fn say(&mut self, line: &str) {
+        eprintln!("{line}");
+    }
+}
+
 /// Joins over `joining` until a try ends otherwise than as a dropped way
-/// does, answering the code it ended with.
+/// does, answering the code it ended with. After each drop it asks
+/// whether the session still runs, answering 0 once it has ended, and
+/// otherwise says it reconnects to `on` and tries again after a wait:
+/// `waits.first`, doubling with each drop in a row up to `waits.most`,
+/// and `first` again after a try that held. Ctrl+C, as `interrupted`
+/// resolves, ends it with [`INTERRUPTED`].
 pub async fn rejoin(
     on: &str,
     joining: &mut impl Joining,
     waits: Waits,
     interrupted: impl Future<Output = ()>,
 ) -> io::Result<u8> {
-    let _ = (on, waits, interrupted);
-    Ok(u8::try_from(joining.join().await?).unwrap_or(1))
+    let mut interrupted = std::pin::pin!(interrupted);
+    let mut wait = waits.first;
+    loop {
+        let began = tokio::time::Instant::now();
+        let code = tokio::select! {
+            code = joining.join() => code?,
+            () = &mut interrupted => return Ok(INTERRUPTED),
+        };
+        if code != DROPPED {
+            return Ok(u8::try_from(code).unwrap_or(1));
+        }
+        if began.elapsed() >= waits.held {
+            wait = waits.first;
+        }
+        if let Still::Ended(name) = joining.still().await {
+            joining.say(&format!("{name} has ended."));
+            return Ok(0);
+        }
+        joining.say(&format!("Reconnecting to {on}."));
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            () = &mut interrupted => return Ok(INTERRUPTED),
+        }
+        wait = (wait * 2).min(waits.most);
+    }
 }
 
 #[cfg(test)]

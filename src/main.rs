@@ -20,7 +20,7 @@ use mycelium::group::{Group, Pattern};
 use mycelium::hold::environment::ServiceManager;
 use mycelium::hold::journal::SystemJournal;
 use mycelium::hold::start::{Scope, Starter, login_shell};
-use mycelium::link::dial::{Connection, Program, Ssh, Way};
+use mycelium::link::dial::{Connection, Dial as _, Program, Ssh, Way};
 use mycelium::link::discovery::Listed;
 use mycelium::link::membership::{Membership, Proven, Realm};
 use mycelium::link::refused::Refusals;
@@ -33,7 +33,7 @@ use mycelium::store::Store as _;
 use mycelium::store::folders::Folders;
 use mycelium::web::Said;
 use mycelium::wire::{Draft, Ran, Reply, Request, Response, Run, Start};
-use mycelium::{carry, hold, hosted_attach, install, link, node, place, served};
+use mycelium::{carry, hold, hosted_attach, install, link, node, place, rejoin, served};
 
 /// The widest a line of any command's help is drawn, so it reads in a
 /// narrow pane.
@@ -407,8 +407,15 @@ enum Action {
     /// exits 3 when the host lets the conversation go back to plain pi,
     /// as a release does, and 0 on any other leaving. A held session is
     /// joined with `holds ID attach`, which `attach ID` still spells.
+    ///
+    /// With `--on MACHINE`, either is joined on that machine by the words
+    /// after `--`, or SSH to it by its name, run again each time SSH ends
+    /// 255 as a dropped link does, after saying `Reconnecting to MACHINE.`
+    /// and waiting a second, then twice as long each time up to 30. It ends
+    /// as the join there does, with its code; with 0 once this machine's
+    /// node says the session has ended; and with 130 on Ctrl+C.
     #[command(
-        after_help = "Example:\n  mycelium attach --host work-attended \\\n    --session 01a1d045-d580-7000-8000-000000000000"
+        after_help = "Example:\n  mycelium attach --host work-attended \\\n    --session 01a1d045-d580-7000-8000-000000000000\n  mycelium attach --on kestrel 5e551011"
     )]
     Attach {
         /// A held session's id, as `holds` lists it.
@@ -421,6 +428,15 @@ enum Action {
         /// The conversation's pi session id within that host.
         #[arg(long, requires = "host")]
         session: Option<String>,
+        /// The machine it runs on, when it isn't this one.
+        #[arg(long)]
+        on: Option<String>,
+        /// With `--on`, the words that join it from here, after `--`.
+        #[arg(last = true, requires = "on")]
+        words: Vec<String>,
+        /// With `--on`, the first wait to join again, in milliseconds.
+        #[arg(long, hide = true, requires = "on", default_value_t = 1000)]
+        first_wait: u64,
     },
     /// `holds`, as it was spelt before.
     #[command(hide = true)]
@@ -744,7 +760,11 @@ fn tree(action: &Action) -> Option<Result<Tree, String>> {
         }
         Action::Holds(holds) => return Some(holds_asked(holds)),
         Action::Held => Tree::Holds,
-        Action::Attach { id: Some(id), .. } => Tree::Attach(id.clone()),
+        Action::Attach {
+            id: Some(id),
+            on: None,
+            ..
+        } => Tree::Attach(id.clone()),
         Action::Again { id, command } => Tree::Again {
             id: id.clone(),
             command: command.clone(),
@@ -1283,6 +1303,27 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             }),
         ),
         Action::Flows => print_reply(&socket, &Request::Flows),
+        Action::Attach {
+            id,
+            host,
+            session,
+            on: Some(on),
+            words,
+            first_wait,
+        } => {
+            let target = match (id, host, session) {
+                (Some(id), _, _) => rejoin::Target::Held(id),
+                (None, Some(host), Some(conversation)) => {
+                    rejoin::Target::Hosted { host, conversation }
+                }
+                _ => unreachable!("an attach names a held id or a host and a session"),
+            };
+            let waits = rejoin::Waits {
+                first: std::time::Duration::from_millis(first_wait),
+                ..rejoin::Waits::default()
+            };
+            return attach_on(&realm, &socket, on, target, words, waits);
+        }
         Action::Attach {
             host: Some(host),
             session: Some(session),
@@ -2356,6 +2397,52 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
         hosted_attach::Left::Suspended | hosted_attach::Left::Restarting => {}
     }
     Ok(ExitCode::from(left.exit_code()))
+}
+
+/// Joins `target` on the machine `on` from this terminal by `words`, or
+/// else SSH to it by its name, again each time its way drops, asking the
+/// node at `socket` whether it has ended, until it ends otherwise.
+fn attach_on(
+    realm: &str,
+    socket: &Path,
+    on: String,
+    target: rejoin::Target,
+    words: Vec<String>,
+    waits: rejoin::Waits,
+) -> io::Result<ExitCode> {
+    let words = if words.is_empty() {
+        let joins = match &target {
+            rejoin::Target::Held(id) => hold::start::attach_here(realm, id),
+            rejoin::Target::Hosted { host, conversation } => {
+                hosted_attach::attach_here(realm, host, conversation)
+            }
+        };
+        let ssh = Ssh {
+            destination: on.clone(),
+            options: Vec::new(),
+            command: "mycelium".to_owned(),
+        };
+        ssh.there(&joins)
+    } else {
+        words
+    };
+    let mut over = rejoin::Over {
+        words,
+        node: socket.to_owned(),
+        on: on.clone(),
+        target,
+    };
+    let runtime = runtime()?;
+    let ended = runtime.block_on(async {
+        // Heard from here on, so Ctrl+C while it waits ends it as it says.
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        let interrupted = async move {
+            interrupt.recv().await;
+        };
+        rejoin::rejoin(&on, &mut over, waits, interrupted).await
+    })?;
+    Ok(ExitCode::from(ended))
 }
 
 fn runtime() -> io::Result<tokio::runtime::Runtime> {

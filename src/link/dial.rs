@@ -12,6 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::task::JoinHandle;
 
 use crate::link::refused;
+use crate::rejoin;
 
 /// A link's byte streams, and whatever must live as long as they do.
 pub struct Connection {
@@ -62,6 +63,14 @@ pub trait Dial: Send + Sync + 'static {
     /// terminal here, where `mycelium` names that machine's own.
     fn there(&self, words: &[String]) -> Vec<String>;
 
+    /// The words that join, from a terminal here, a session on `machine`,
+    /// given `joins`, the words that join it there: [`Dial::there`]'s, for
+    /// a way that never says it dropped, as a provider's program doesn't.
+    fn joins(&self, machine: &str, joins: &[String]) -> Vec<String> {
+        let _ = machine;
+        self.there(joins)
+    }
+
     /// Lets the machine it reaches go, once that machine has handed over,
     /// as a provider destroys a machine it lent; none for a way that can't,
     /// which SSH never does.
@@ -110,6 +119,13 @@ impl Dial for Ssh {
         }));
         there
     }
+
+    /// A `mycelium attach --on` here, joining again each time SSH ends
+    /// with its code for a dropped link ([`rejoin::DROPPED`]), so a window
+    /// outlives the link it joined over.
+    fn joins(&self, machine: &str, joins: &[String]) -> Vec<String> {
+        rejoin::served(machine, joins, self.there(joins))
+    }
 }
 
 /// `word` as a shell reads it back whole.
@@ -129,7 +145,9 @@ fn quoted(word: &str) -> String {
 /// terminal, it runs `WORDS` there in that terminal; run as `PROGRAM
 /// release PLACE`, it lets that machine go. What it says on its error
 /// output is passed on, and a line saying the other end "turned this
-/// machine away" is a refusal, waited out as SSH's are.
+/// machine away" is a refusal, waited out as SSH's are. It names no code
+/// for a way that dropped, as SSH's 255 is, so a window joined through it
+/// isn't joined again when its way drops.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
     /// The program, by its path or as found on `PATH`.
@@ -238,6 +256,13 @@ impl Dial for Way {
         match self {
             Self::Ssh(ssh) => ssh.there(words),
             Self::Program(program) => program.there(words),
+        }
+    }
+
+    fn joins(&self, machine: &str, joins: &[String]) -> Vec<String> {
+        match self {
+            Self::Ssh(ssh) => ssh.joins(machine, joins),
+            Self::Program(program) => program.joins(machine, joins),
         }
     }
 
