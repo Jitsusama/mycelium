@@ -40,6 +40,10 @@ use crate::facts::Machine;
 /// How what another machine says it is ends, beside its claim.
 const SAID: &str = ".machine";
 
+/// What the name of a file holding the carries a machine's node told of
+/// ends with, after the machine's name.
+const TOLD: &str = ".carries";
+
 /// The field naming the machine a session runs on, written only on the
 /// presence of a session elsewhere.
 pub(crate) const MACHINE: &str = "machine";
@@ -524,6 +528,30 @@ impl Store for Folders {
         write_whole(&self.claims, &file, &body)
     }
 
+    fn told_carries(&self) -> BTreeMap<String, Vec<Value>> {
+        let Ok(entries) = fs::read_dir(&*self.claims) else {
+            return BTreeMap::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let machine = told(&entry.path())?;
+                Some((machine, read(&entry.path())?))
+            })
+            .collect()
+    }
+
+    fn put_told_carries(&self, machine: &str, told: &[Value]) -> io::Result<()> {
+        let file = format!("{}{TOLD}", safe(machine)?);
+        if told.is_empty() {
+            return match fs::remove_file(self.claims.join(file)) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            };
+        }
+        write_whole(&self.claims, &file, &Value::from(told.to_vec()))
+    }
+
     fn ended(&self, pid: i32) {
         {
             let mut ended = self.ended_processes();
@@ -581,7 +609,9 @@ impl Store for Folders {
                     .iter()
                     .filter_map(|path| {
                         if path.parent() == Some(claims.as_path()) {
-                            return said(path).map(Change::Machine);
+                            return said(path)
+                                .map(Change::Machine)
+                                .or_else(|| told(path).map(Change::Carries));
                         }
                         if !is_record(path) {
                             return None;
@@ -774,6 +804,13 @@ fn records(dir: &Path) -> impl Iterator<Item = PathBuf> {
 fn said(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     let machine = name.strip_suffix(SAID)?;
+    (!machine.is_empty() && !machine.starts_with('.')).then(|| machine.to_owned())
+}
+
+/// The machine whose node's carries `path` holds, if it holds those.
+fn told(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let machine = name.strip_suffix(TOLD)?;
     (!machine.is_empty() && !machine.starts_with('.')).then(|| machine.to_owned())
 }
 
@@ -1521,6 +1558,45 @@ mod tests {
             told, "kestrel",
             "by its name, and not for when it was linked"
         );
+    }
+
+    #[tokio::test]
+    async fn the_carries_a_machine_told_of_are_kept_in_place_of_the_last_until_none() {
+        let (dir, store) = store();
+        let mut changes = store.changes().expect("the store tells its changes");
+        assert!(store.told_carries().is_empty(), "none told yet");
+        let first = [json!({"session": "s-harbour", "left": false})];
+        let again = [json!({"session": "s-harbour", "left": true})];
+        for told in [&first[..], &again[..]] {
+            store
+                .put_told_carries("kestrel", told)
+                .expect("the carries are kept");
+        }
+        fs::write(dir.path().join("claims").join("kestrel.machine"), b"[]").expect("a link writes");
+        assert_eq!(
+            store.told_carries(),
+            [("kestrel".to_owned(), again.to_vec())].into(),
+            "the last told, and not what it says of itself"
+        );
+        let told = tokio::time::timeout(PATIENCE, async {
+            loop {
+                match changes.changes.recv().await {
+                    Some(Change::Carries(name)) => return name,
+                    Some(_) => {}
+                    None => panic!("the store stopped telling"),
+                }
+            }
+        })
+        .await
+        .expect("the carries were told");
+        assert_eq!(told, "kestrel", "by the machine's name");
+        store
+            .put_told_carries("kestrel", &[])
+            .expect("the carries are let go");
+        store
+            .put_told_carries("tern", &[])
+            .expect("none to let go is no error");
+        assert!(store.told_carries().is_empty(), "none let go of them");
     }
 
     #[tokio::test]

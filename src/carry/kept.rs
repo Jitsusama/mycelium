@@ -149,13 +149,100 @@ pub fn fields(kept: &Kept, state: &State) -> Value {
     Value::Object(fields)
 }
 
+/// The most carries a node tells another machine's of at once.
+pub const MOST_TOLD: usize = 200;
+
+/// The most bytes the carries a node tells another machine's of may come
+/// to, as JSON.
+pub const MOST_TOLD_BYTES: usize = 256 << 10;
+
+/// `kept` as told to the node of another machine, so the person sees it
+/// from there: what the person reads of it, with whether its session
+/// refused, saying why, and whether it left, as only this machine's
+/// handover shows. How it stands the other machine judges for itself,
+/// from the sessions it sees.
+#[must_use]
+pub fn told(kept: &Kept, refused: Option<&str>, left: bool) -> Value {
+    let mut told: Map<String, Value> = READ
+        .iter()
+        .filter_map(|name| Some(((*name).to_owned(), kept.line.get(*name)?.clone())))
+        .collect();
+    if let Some(why) = refused {
+        told.insert("refused".to_owned(), Value::from(why));
+    }
+    told.insert("left".to_owned(), Value::from(left));
+    Value::Object(told)
+}
+
+/// The newest of `told`, given newest first, that fit what one machine
+/// tells another: at most [`MOST_TOLD`], coming to at most
+/// [`MOST_TOLD_BYTES`].
+#[must_use]
+pub fn bounded(mut told: Vec<Value>) -> Vec<Value> {
+    told.truncate(MOST_TOLD);
+    while fits(&told).is_err() {
+        told.pop();
+    }
+    told
+}
+
+/// Whether `told` is within what one machine tells another of its
+/// carries.
+///
+/// # Errors
+///
+/// Why not: too many, or too many bytes.
+pub fn fits(told: &[Value]) -> Result<(), String> {
+    if told.len() > MOST_TOLD {
+        return Err(format!(
+            "it tells of {} carries, more than the {MOST_TOLD} a machine may at once",
+            told.len()
+        ));
+    }
+    let bytes = serde_json::to_vec(told).map_or(usize::MAX, |json| json.len());
+    if bytes > MOST_TOLD_BYTES {
+        return Err(format!(
+            "its carries come to {bytes} bytes, more than the {MOST_TOLD_BYTES} a machine may \
+             tell at once"
+        ));
+    }
+    Ok(())
+}
+
+/// A carry another machine's node told of, as [`told`] says it, with what
+/// that machine saw of its session: none where it names no session or
+/// time.
+#[must_use]
+pub fn heard(told: &Value) -> Option<(Kept, Seen)> {
+    let said = told.get("at").and_then(Value::as_str)?;
+    let at: jiff::Timestamp = said.parse().ok()?;
+    let session = told.get("session").and_then(Value::as_str)?;
+    let seen = Seen {
+        refused: told
+            .get("refused")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        left: told.get("left").and_then(Value::as_bool).unwrap_or(false),
+        runs_on: None,
+    };
+    let kept = Kept {
+        id: format!("{session}:{said}"),
+        at,
+        line: told.clone(),
+    };
+    Some((kept, seen))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use serde_json::{Value, json};
 
-    use super::{Kept, Seen, State, fields, judged, read};
+    use super::{
+        Kept, MOST_TOLD, MOST_TOLD_BYTES, Seen, State, bounded, fields, fits, heard, judged, read,
+        told,
+    };
 
     /// HARBOR's carry from skiff to tern, ordered at `at`.
     fn ordered_at(at: &str) -> Value {
@@ -274,5 +361,69 @@ mod tests {
             "newest first, the day before gone, a torn line passed over"
         );
         assert_eq!(read[0], harbour(), "each whole");
+    }
+
+    #[test]
+    fn a_carry_told_to_another_machine_holds_only_what_the_person_reads() {
+        let kept = harbour();
+        let said = told(&kept, Some("it holds a lease"), true);
+        assert_eq!(
+            said,
+            json!({
+                "at": "2026-11-15T20:00:00Z", "by": "WCJQSG", "session": "s-harbour",
+                "address": "HARBOR", "quest": "QEST-20261115-HARBOR", "from": "skiff",
+                "to": "tern", "why": "it needs the camera",
+                "refused": "it holds a lease", "left": true,
+            }),
+            "its chain and asker stay with the node that proved them"
+        );
+        let (back, seen) = heard(&said).expect("heard");
+        assert_eq!(
+            (back.id.as_str(), back.at, &seen),
+            (
+                "s-harbour:2026-11-15T20:00:00Z",
+                kept.at,
+                &Seen {
+                    refused: Some("it holds a lease".to_owned()),
+                    left: true,
+                    runs_on: None,
+                }
+            ),
+            "heard as told, where it runs left for the hearer to see"
+        );
+        assert_eq!(
+            heard(&told(&kept, None, false)).map(|(_, seen)| seen),
+            Some(Seen::default()),
+            "neither refused nor left"
+        );
+        assert!(
+            heard(&json!({"session": "s-harbour", "at": "yesterday"})).is_none(),
+            "one with no time it can read is passed over"
+        );
+    }
+
+    #[test]
+    fn a_machine_tells_at_most_its_newest_carries_that_fit() {
+        let many: Vec<Value> = (0..=MOST_TOLD)
+            .map(|at| json!({"session": format!("s-{at}")}))
+            .collect();
+        assert!(fits(&many).is_err(), "one more than the most is refused");
+        let kept = bounded(many);
+        assert_eq!(
+            (kept.len(), &kept[0]["session"]),
+            (MOST_TOLD, &json!("s-0")),
+            "the newest are kept"
+        );
+        assert!(fits(&kept).is_ok(), "and they fit");
+
+        let long = "x".repeat(MOST_TOLD_BYTES / 4);
+        let heavy: Vec<Value> = (0..5).map(|at| json!({"at": at, "why": long})).collect();
+        assert!(fits(&heavy).is_err(), "too many bytes is refused");
+        let kept = bounded(heavy);
+        assert_eq!(
+            kept.iter().map(|one| one["at"].clone()).collect::<Vec<_>>(),
+            [json!(0), json!(1), json!(2)],
+            "the newest that fit, the oldest let go"
+        );
     }
 }

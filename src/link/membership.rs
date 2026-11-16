@@ -64,6 +64,12 @@ pub struct Hello {
     /// link that asked.
     #[serde(default)]
     pub carries: bool,
+    /// Whether it tells of the carries its machine's node ordered, and
+    /// keeps those the other end tells of so the person sees them from
+    /// here; an end older than this does neither, and would end a link
+    /// that told it.
+    #[serde(default)]
+    pub shows: bool,
 }
 
 /// Which machines a node links with.
@@ -105,6 +111,7 @@ impl Membership for Realm {
             updates: true,
             runs: true,
             carries: true,
+            shows: true,
         }
     }
 

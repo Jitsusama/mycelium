@@ -92,8 +92,8 @@ messages, being a union, reach every machine linked by any path.
 same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
-   "steers", "releases", "updates", "runs", "carries"}}`, first, from each
-   end. Each end's
+   "steers", "releases", "updates", "runs", "carries", "shows"}}`, first,
+   from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
    older than it says nothing of machines and is sent nothing. `starts`
@@ -102,7 +102,9 @@ same code, each line a JSON value:
    end's machine can release that machine, as a provider's program can;
    only such an end is told the machine has handed over. `updates` says
    it carries update asks, `runs` runs and `carries` carry asks; an end
-   older than any of them is asked none of it.
+   older than any of them is asked none of it. `shows` says it tells of
+   the carries its node ordered and keeps those the other end tells of;
+   an end older than it is told none.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -221,6 +223,22 @@ same code, each line a JSON value:
     against its own node's socket, as `mycelium carry` does; otherwise
     it refuses, saying why. No time limits the answer, since a carry
     waits minutes for its sessions to end.
+17. `{"Carries": {"carries": [carry]}}`: the carries the sending end's
+    node ordered within the last day, newest first, after its Machine
+    and again whenever they change, so the person sees each from every
+    machine (see A Carry an Orchestrator Orders). Each holds `at`, `by`,
+    `session`, `address`, `quest`, `from`, `to` and `why` as kept,
+    `left` saying whether its session's done file was written here
+    since, and `refused` saying why once it wrote a refusal since. At
+    most 200 cross at once, coming to at most 256 KiB as JSON; a sender
+    with more sends its newest that fit, and an end told more refuses
+    them and keeps what it held. They cross only where both hellos say
+    `shows` and neither says `releases`, and never to or from a worker,
+    since quest ids and reasons aren't work. So a lent machine's link
+    and a worker's carry none either way, and a frame sent otherwise is
+    refused. Each end
+    sends only its own node's: one it was told it never passes on, and
+    none is taken as an order.
 
 Only one link joins two machines, and whichever dialled first holds it,
 so each end carries what its own node asks of the other machine: starts,
@@ -263,7 +281,8 @@ Three seams shape a link:
   SSH key is. A machine reached so is a worker: it is asked and asks
   nothing back. Its end's starts, steers and updates are refused, its
   follows are ignored, and a presence of its naming another machine
-  isn't kept, nor a reply to an ask it wasn't sent. It is said and
+  isn't kept, nor a reply to an ask it wasn't sent, nor what it tells
+  of carries. It is said and
   served only the quests it was given, and takes back only those and
   the quests it began, which this machine holds none of; it can end
   no other. A message of its isn't kept when it names as its sender a
@@ -605,17 +624,24 @@ command line or the session's done file, so it arrives saying who
 carried it and why, never as the person.
 
 The node that kept a carry serves it in the daemon interface as a
-`carry` record for a day after it was ordered, its id the carried
-session's and `at`, holding `at`, `by`, `session`, `address`, `quest`,
-`from`, `to` and `why` as kept, and `state`, judged from what the node
-sees itself, never from what a session or its orchestrator says:
+`carry` record for a day after it was ordered, its id the machine whose
+node kept it, the carried session's and `at`, as
+`kestrel:s-harbour:2026-11-16T08:00:00Z`, holding `machine`, and `at`,
+`by`, `session`, `address`, `quest`, `from`, `to` and `why` as kept, and
+`state`, judged from what the node sees itself, never from what a
+session or its orchestrator says:
 `refused`, with `refused` saying why, once the session wrote a refusal
 since; `arrived` once it runs on `to`; `back` once it runs here again
 after its done file was written since; `carrying` once it is gone from
 here, by its presence ending or running somewhere else; and `ordered`
 until then. Its `state` and `refused` are live. The chain and asker
-stay in the file, which proves them. Each node serves only the carries
-it ordered, so a reader asks each machine's node for its own.
+stay in the file, which proves them. Each node serves the carries it
+ordered, and those each linked machine's node told of in a `Carries`
+frame while a link carried it within the last day. Of those, `refused`
+and `left` are as that node told them, since only its machine's
+handover shows them, and where the session runs is as this node sees
+it, so an arrival shows at once and a refusal within a minute. Once no
+link has carried a machine for a day, what it told is let go.
 
 ### A Machine Easing Itself
 

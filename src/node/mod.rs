@@ -246,6 +246,12 @@ fn parked_presence(session: &Session) -> bool {
             == Some("parked")
 }
 
+/// Since when a carry is shown: a day ago.
+fn shown_since() -> jiff::Timestamp {
+    let now = jiff::Timestamp::now();
+    now.checked_sub(kept::SHOWN_FOR).unwrap_or(now)
+}
+
 /// The groups the mesh put each session on `machine` in, running or
 /// parked, by its id, as its presence gives them, so an orchestrator's
 /// chain is believed only where the mesh agrees with the quests' record.
@@ -500,15 +506,7 @@ where
             Ok(()) = health.changed() => shared.keep_health(health.borrow_and_update().clone()),
             // A holder that ended without letting its session go says
             // nothing, so what is held is looked at each minute too.
-            _ = leaving.tick() => {
-                let here = shared.measure();
-                power = shared.keep_measured(&here);
-                tell_hosted(&here);
-                shared.hand_over(&here);
-                shared.keep_awake(&mut awake, power.as_ref());
-                shared.cross_waiting();
-                shared.said.minute_passed();
-            }
+            _ = leaving.tick() => power = shared.each_minute(&mut awake),
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => shared.read_message(&id),
                 Some(Change::Presence) => {
@@ -521,6 +519,7 @@ where
                     shared.said.machines_moved();
                 }
                 Some(Change::Machine(_)) => shared.said.machines_moved(),
+                Some(Change::Carries(_)) => shared.said.sessions_moved(),
                 None => break Err(io::Error::other("the store stopped telling its changes")),
             },
         }
@@ -1568,15 +1567,114 @@ impl<S: Store> Shared<S> {
     /// Nothing is shown when the file can't be read, since a carry's
     /// line is never guessed at.
     fn carry_records(&self) -> BTreeMap<String, serde_json::Value> {
-        let now = jiff::Timestamp::now();
-        let since = now.checked_sub(kept::SHOWN_FOR).unwrap_or(now);
-        let Ok(carries) = kept::read(&self.carries, since) else {
-            return BTreeMap::new();
+        let since = shown_since();
+        let runs_on = self.runs_on();
+        let here = self.carries_here(since).into_iter().map(|carry| {
+            let seen = self.handed(&carry);
+            (self.machine.clone(), carry, seen)
+        });
+        // Another machine's node tells of the carries it ordered, which
+        // are shown for the person as told, and never taken as orders.
+        let heard = self
+            .store
+            .told_carries()
+            .into_iter()
+            .filter(|(machine, _)| *machine != self.machine && self.linked_since(machine, since))
+            .flat_map(|(machine, told)| {
+                told.iter()
+                    .filter_map(kept::heard)
+                    .filter(|(carry, _)| carry.at >= since)
+                    .map(|(carry, seen)| (machine.clone(), carry, seen))
+                    .collect::<Vec<_>>()
+            });
+        here.chain(heard)
+            .map(|(machine, carry, mut seen)| {
+                seen.runs_on = runs_on.get(carry.said("session")).cloned();
+                let mut fields = kept::fields(&carry, &kept::judged(&carry, &seen));
+                if let Some(fields) = fields.as_object_mut() {
+                    fields.insert("machine".to_owned(), serde_json::Value::from(&*machine));
+                }
+                // Two machines' nodes may keep carries of the same session
+                // at the same moment, so the machine names each.
+                let id = format!("{machine}:{}", carry.id);
+                let record = daemon::record(kept::KIND, &id, carry.at.as_millisecond(), fields);
+                (daemon::key(kept::KIND, &id), record)
+            })
+            .collect()
+    }
+
+    /// The carries this node ordered since `since`, newest first.
+    fn carries_here(&self, since: jiff::Timestamp) -> Vec<kept::Kept> {
+        kept::read(&self.carries, since).unwrap_or_default()
+    }
+
+    /// What only this machine's handover shows of `carry`: whether its
+    /// session refused, saying why, and whether it left.
+    fn handed(&self, carry: &kept::Kept) -> kept::Seen {
+        let session = carry.said("session");
+        let Some(handover) = self
+            .scratch
+            .as_ref()
+            .map(|scratch| through::handover(scratch, carry.said("quest"), &self.hostname))
+        else {
+            return kept::Seen::default();
         };
+        kept::Seen {
+            refused: through::refused(&handover, session, carry.at),
+            left: through::left(&handover, session, carry.at),
+            runs_on: None,
+        }
+    }
+
+    /// Whether a link carried `machine` here since `since`.
+    fn linked_since(&self, machine: &str, since: jiff::Timestamp) -> bool {
+        self.store
+            .linked_until(machine)
+            .and_then(|at| jiff::Timestamp::from_millisecond(at).ok())
+            .is_some_and(|at| at >= since)
+    }
+
+    /// Keeps the carries this node ordered within the last day as its
+    /// links tell them, when they moved, and lets go of those another
+    /// machine told of once no link has carried it for a day.
+    ///
+    /// It reads each carry's handover files every time, which is cheap at
+    /// the carries of one day and a minute between, but not at a second
+    /// between: run more often, it would want to hear the handover's
+    /// changes instead.
+    fn tell_carries(&self) {
+        let since = shown_since();
+        let told = kept::bounded(
+            self.carries_here(since)
+                .iter()
+                .map(|carry| {
+                    let seen = self.handed(carry);
+                    kept::told(carry, seen.refused.as_deref(), seen.left)
+                })
+                .collect(),
+        );
+        let heard = self.store.told_carries();
+        let moved = heard
+            .get(&self.machine)
+            .map_or(!told.is_empty(), |was| *was != told);
+        if moved && let Err(error) = self.store.put_told_carries(&self.machine, &told) {
+            eprintln!("this machine's carries can't be told: {error}");
+        }
+        for machine in heard.keys() {
+            if *machine != self.machine
+                && !self.linked_since(machine, since)
+                && let Err(error) = self.store.put_told_carries(machine, &[])
+            {
+                eprintln!("the carries {machine} told of can't be let go: {error}");
+            }
+        }
+    }
+
+    /// Where each session seen running, or parked, runs, by its id.
+    fn runs_on(&self) -> HashMap<String, String> {
         let runs =
             |session: &Session| matches!(session.state, SessionState::Busy | SessionState::Idle);
-        let runs_on: HashMap<String, String> = self
-            .lock()
+        self.lock()
             .state
             .sessions()
             .into_iter()
@@ -1589,29 +1687,6 @@ impl<S: Store> Shared<S> {
                     .unwrap_or(&session.id)
                     .to_owned();
                 (id, session.machine)
-            })
-            .collect();
-        carries
-            .iter()
-            .map(|carry| {
-                let session = carry.said("session");
-                let handover = self
-                    .scratch
-                    .as_ref()
-                    .map(|scratch| through::handover(scratch, carry.said("quest"), &self.hostname));
-                let seen = kept::Seen {
-                    refused: handover
-                        .as_ref()
-                        .and_then(|handover| through::refused(handover, session, carry.at)),
-                    left: handover
-                        .as_ref()
-                        .is_some_and(|handover| through::left(handover, session, carry.at)),
-                    runs_on: runs_on.get(session).cloned(),
-                };
-                let fields = kept::fields(carry, &kept::judged(carry, &seen));
-                let record =
-                    daemon::record(kept::KIND, &carry.id, carry.at.as_millisecond(), fields);
-                (daemon::key(kept::KIND, &carry.id), record)
             })
             .collect()
     }
@@ -1979,6 +2054,21 @@ impl<S: Store> Shared<S> {
             .unwrap_or_default();
         let holds = awake::at_work(&self.machine, &held, &sessions, &queued);
         awake.keep(awake::wanted(holds, power));
+    }
+
+    /// What the node does each minute: it measures this machine, hands its
+    /// sessions over once it leaves soon, keeps it awake while work wants
+    /// it, and tells its links of its carries, answering what it runs on.
+    fn each_minute(&self, awake: &mut Awake) -> Option<facts::Power> {
+        let here = self.measure();
+        let power = self.keep_measured(&here);
+        tell_hosted(&here);
+        self.hand_over(&here);
+        self.keep_awake(awake, power.as_ref());
+        self.cross_waiting();
+        self.tell_carries();
+        self.said.minute_passed();
+        power
     }
 
     /// Tells each session running here that hasn't been told yet, once this
@@ -2802,6 +2892,7 @@ impl<S: Store> Shared<S> {
         ordered::keep(&self.carries, &kept)
             .map_err(|error| format!("the carry couldn't be kept, so it isn't ordered: {error}"))?;
         self.said.sessions.send_modify(|said| *said += 1);
+        self.tell_carries();
         self.steer_here(&steer, std::slice::from_ref(target))?;
         Ok(Response::Steered {
             machine: self.machine.clone(),
@@ -5814,6 +5905,25 @@ mod tests {
             "the carry as kept: {ordered}"
         );
         assert_eq!(stands(&ordered), json!("ordered"), "not gone yet");
+        assert_eq!(
+            (
+                &record["machine"],
+                record["key"]
+                    .as_str()
+                    .map(|key| key.split(':').take(3).collect::<Vec<_>>())
+            ),
+            (&json!("skiff"), Some(vec!["carry", "skiff", "s-harbour"])),
+            "kept by skiff's node, which its key names before the session: {record}"
+        );
+        let told = store.told_carries();
+        assert_eq!(
+            told["skiff"]
+                .iter()
+                .map(|carry| (&carry["session"], &carry["left"]))
+                .collect::<Vec<_>>(),
+            [(&json!("s-harbour"), &json!(false))],
+            "told to the machines skiff links as soon as it is ordered"
+        );
 
         let presence = |busy: bool| {
             json!({"session": "s-harbour", "addresses": ["HARBOR"], "groups": [],
@@ -5834,6 +5944,84 @@ mod tests {
             stands(&client.next().await),
             json!("arrived"),
             "its session runs on tern"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_carry_another_machine_told_of_is_shown_as_its_session_is_seen_here() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let now = jiff::Timestamp::now();
+        let at = now.to_string();
+        let told = |session: &str| {
+            json!({"at": at, "by": "WCJQSG", "session": session, "address": "LOOMER",
+                   "quest": "QEST-20261115-LOOMER", "from": "kestrel", "to": "tern",
+                   "why": "it needs the lens", "left": true})
+        };
+        let two_days = 2 * 24 * 60 * 60 * 1000;
+        for (machine, linked, session) in [
+            ("kestrel", now.as_millisecond(), "s-loomer"),
+            ("osprey", now.as_millisecond() - two_days, "s-gone"),
+        ] {
+            store
+                .mark_linked(machine, linked)
+                .expect("the time is kept");
+            store
+                .put_told_carries(machine, &[told(session)])
+                .expect("the carries are kept");
+        }
+        let (_stop, _node, mut client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        client
+            .ask(json!({"id": 3, "ask": "watch", "kind": "carry"}))
+            .await;
+        let records = client.next().await["records"].clone();
+        assert_eq!(
+            records
+                .as_array()
+                .expect("records")
+                .iter()
+                .map(|record| (
+                    &record["key"],
+                    &record["machine"],
+                    &record["state"],
+                    &record["why"]
+                ))
+                .collect::<Vec<_>>(),
+            [(
+                &json!(format!("carry:kestrel:s-loomer:{at}")),
+                &json!("kestrel"),
+                &json!("carrying"),
+                &json!("it needs the lens")
+            )],
+            "kestrel's, gone from there; osprey's, a day out of reach, isn't shown"
+        );
+        store
+            .put_presence(
+                "s-loomer",
+                "tern",
+                &json!({"session": "s-loomer", "addresses": ["LOOMER"], "groups": [],
+                        "busy": true, "state": "listening", "at": at,
+                        "quest": "QEST-20261115-LOOMER"}),
+            )
+            .expect("the presence is kept");
+        assert_eq!(
+            client.next().await["changed"][0]["state"],
+            json!("arrived"),
+            "skiff sees it run on tern"
+        );
+        let mut changes = store.changes().expect("a memory store tells its changes");
+        let let_go = tokio::time::timeout(PATIENCE, async {
+            while store.told_carries().contains_key("osprey") {
+                changes.changes.recv().await;
+            }
+        })
+        .await;
+        assert!(let_go.is_ok(), "osprey's carries are let go");
+        assert!(
+            store.told_carries().contains_key("kestrel"),
+            "kestrel's stay"
         );
     }
 
