@@ -81,7 +81,8 @@ pub struct Cell {
     pub alone: Option<bool>,
     /// Whether it is on the person's screen.
     pub on_screen: Option<bool>,
-    /// Whether it sleeps already.
+    /// Whether it sleeps already: parked, its process ended until it is
+    /// started again.
     pub asleep: bool,
     /// What it is part way through.
     pub busy: Option<Vec<Busy>>,
@@ -96,6 +97,9 @@ impl Cell {
         }
         match self.session.state {
             State::Idle => {}
+            // A session put to sleep has ended its process, to start
+            // again where a carry takes it.
+            State::Ended if self.asleep => {}
             State::Busy => return Some(format!("{who} is in a turn")),
             State::Ended | State::Unreachable => return Some(format!("{who} isn't running")),
         }
@@ -722,6 +726,35 @@ mod tests {
             carries(&chose(&realm, &[with_turn(), cell("s2")], &history)),
             Some(("s2", "tern")),
             "one that stays leaves the next free to go"
+        );
+    }
+
+    #[test]
+    fn a_session_put_to_sleep_goes_though_its_process_has_ended() {
+        let realm = realm();
+        let history = hot_for(&realm, 11);
+        let parked = |id: &str| {
+            let mut one = cell(id);
+            one.session.state = State::Ended;
+            one
+        };
+        assert_eq!(
+            carries(&chose(&realm, &[parked("s1")], &history)),
+            Some(("s1", "tern")),
+            "a parked session is asleep, and goes"
+        );
+        let mut elsewhere = parked("s1");
+        elsewhere.alone = Some(false);
+        assert_eq!(
+            why_not(&chose(&realm, &[elsewhere], &history)),
+            "S1's quest runs on other machines too"
+        );
+        let mut ended = parked("s1");
+        ended.asleep = false;
+        assert_eq!(
+            why_not(&chose(&realm, &[ended], &history)),
+            "S1 isn't running",
+            "one ended without parking isn't asleep, and stays"
         );
     }
 
