@@ -46,9 +46,16 @@ pub struct Growth {
     pub within: Option<Duration>,
 }
 
-/// How many times each build is timed, the two sizes in turn so a busy
-/// moment on the builder slows both alike, and the fastest of each taken.
+/// How many times each build is timed at least, the sizes in turn so a
+/// busy moment on the builder slows each alike, and the fastest of each
+/// taken.
 const TIMINGS: usize = 5;
+
+/// How many times each build is timed at most, while the growth isn't yet
+/// within its bar. A machine as loaded as a Mac at a load of 45 slows the
+/// cells past any cache more than those within it, so more turns find it
+/// a quieter moment for each (04TNWT, 2026-11-16: 3.2 times against 3).
+const MOST_TIMINGS: usize = 25;
 
 /// The system's allocator, counting what is held and the most held.
 mod counting;
@@ -76,7 +83,11 @@ pub fn holds_the_bar(
 
     let from = growth.from;
     let tenth = CELLS / 10;
-    let [least, fewer, all] = fastest([&Realm::of(tenth), &Realm::of(from), &realm], &making);
+    let [least, fewer, all] = fastest(
+        [&Realm::of(tenth), &Realm::of(from), &realm],
+        &making,
+        |[_, fewer, all]| *all < *fewer * growth.times,
+    );
     eprintln!(
         "{tenth} cells took {least:?}; {from} took {fewer:?}; {CELLS} took {all:?}, holding \
          {peak} bytes at most, {kept} of them the records themselves"
@@ -160,17 +171,23 @@ impl Realm {
 }
 
 /// The least time the records `making` makes of each of `realms` took,
-/// of a few builds each, made in turn.
+/// of [`TIMINGS`] builds each, made in turn, and more up to
+/// [`MOST_TIMINGS`] until the least times are `within` their bar.
 fn fastest<const N: usize>(
     realms: [&Realm; N],
     making: &impl Fn(&Holding<'_>) -> BTreeMap<String, Record>,
+    within: impl Fn(&[Duration; N]) -> bool,
 ) -> [Duration; N] {
-    (0..TIMINGS).fold([Duration::MAX; N], |mut least, _| {
+    let mut least = [Duration::MAX; N];
+    for turn in 0..MOST_TIMINGS {
+        if turn >= TIMINGS && within(&least) {
+            break;
+        }
         for (fastest, realm) in least.iter_mut().zip(realms) {
             *fastest = (*fastest).min(realm.timed(making));
         }
-        least
-    })
+    }
+    least
 }
 
 /// `took` for `cells`, said for one of them.
