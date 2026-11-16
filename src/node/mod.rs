@@ -33,6 +33,7 @@ use crate::link::starts::{Asking, Asks, Starting};
 use crate::link::{self, discovery::Discovery, membership::Hello, membership::Membership};
 use crate::made::{self, Book, Made};
 use crate::mesh;
+use crate::murmur::{self, Murmurs};
 use crate::offer::{self, Offer};
 use crate::own_health;
 use crate::place;
@@ -325,6 +326,9 @@ pub struct Given {
     /// The socket its machine's own health daemon answers on, if it asks
     /// one (`own_health`).
     pub health: Option<PathBuf>,
+    /// The quests' scratch folders, whose webs its cells murmur in, if it
+    /// serves their murmurs (`murmur`).
+    pub scratch: Option<PathBuf>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -333,7 +337,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 12] = [
+pub const HOLDS: [&str; 13] = [
     "session",
     "machine",
     "message",
@@ -346,6 +350,7 @@ pub const HOLDS: [&str; 12] = [
     BUILDER,
     kept::KIND,
     forage::KIND,
+    murmur::KIND,
 ];
 
 /// The kind of record that is one thing a session did, as its presence's
@@ -780,6 +785,8 @@ struct Shared<S> {
     providers: Arc<[String]>,
     /// The builders this machine sends Nix builds to, kept heard.
     builders: Arc<Builders>,
+    /// What this machine's cells murmured in the quests' webs, kept read.
+    murmurs: Arc<Murmurs>,
     /// Where it keeps each machine it makes and lets go.
     book: Book,
     /// The node's loop, which links each machine made, and lets it go
@@ -857,6 +864,7 @@ impl<S: Clone> Clone for Shared<S> {
             served: self.served.clone(),
             providers: self.providers.clone(),
             builders: self.builders.clone(),
+            murmurs: self.murmurs.clone(),
             book: self.book.clone(),
             to_dial: self.to_dial.clone(),
             flows: self.flows.clone(),
@@ -892,6 +900,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             builders,
             carries,
             forages,
+            murmurs,
         ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
@@ -939,6 +948,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // What was kept of a carry never changes; how it stands does.
             (carries, vec!["state", "refused"]),
             (forages, vec!["purpose", "status", "documents", "lineage"]),
+            (murmurs, vec!["text", "tied_to", "purpose", "settled"]),
         ])
         .into_iter()
         .chain(served)
@@ -955,6 +965,11 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
         } else {
             Vec::new()
         }
+    }
+
+    // A page reads the latest murmurs first, and most read only those.
+    fn newest_first(&self, kind: &str) -> bool {
+        kind == murmur::KIND
     }
 
     fn records(&self, kind: &str) -> Option<BTreeMap<String, serde_json::Value>> {
@@ -998,6 +1013,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             BUILDER => Some(self.builder_records()),
             kept::KIND => Some(self.carry_records()),
             forage::KIND => Some(self.forage_records()),
+            murmur::KIND => Some(self.murmur_records()),
             _ => self.served.records(kind),
         }
     }
@@ -1025,6 +1041,8 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             receptor::KIND => Some(self.said.receptors.subscribe()),
             BUILDER => Some(self.builders.told()),
             forage::KIND => Some(self.said.forages.subscribe()),
+            // A cell's purpose shows with its next murmur.
+            murmur::KIND => Some(self.murmurs.told()),
             _ => self.served.told(kind),
         }
     }
@@ -1055,6 +1073,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             })
             .chain(self.served.health())
             .chain(self.builders.health())
+            .chain(self.murmurs.health())
             .collect();
         serde_json::Map::from_iter([
             ("version".to_owned(), daemon::VERSION.into()),
@@ -1255,6 +1274,7 @@ impl<S: Store> Shared<S> {
             builders,
             placements,
             health,
+            scratch,
         } = given;
         if let Some(socket) = health {
             tokio::spawn(own_health::keep(socket, own_health::here()));
@@ -1292,6 +1312,7 @@ impl<S: Store> Shared<S> {
             client: None,
             served: Arc::new(Served::start(serves)),
             builders: Arc::new(Builders::start(builders)),
+            murmurs: Arc::new(Murmurs::start(scratch, hello.machine.clone())),
             providers: providers.into(),
             book,
             to_dial,
@@ -1569,6 +1590,15 @@ impl<S: Store> Shared<S> {
                 (daemon::key(BUILDER, &builder.name), record)
             })
             .collect()
+    }
+
+    /// Every murmur this machine's cells said in the last day, as the
+    /// daemon interface holds it, each with what its cell's session says
+    /// it works on as its purpose.
+    fn murmur_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let purposes = self.lock().state.purposes(&self.machine);
+        self.murmurs
+            .records(jiff::Timestamp::now().as_second(), &purposes)
     }
 
     /// Every machine of the realm as the daemon interface holds it, each
@@ -3170,6 +3200,7 @@ mod tests {
             builders: builders::Given::default(),
             placements: None,
             health: None,
+            scratch: None,
         }
     }
 
@@ -3234,6 +3265,7 @@ mod tests {
         let declared = socket.with_file_name("declared.json");
         let receptors = Some(socket.with_file_name("receptors"));
         let builders = builders_of(socket);
+        let scratch = Some(socket.with_file_name("scratch"));
         let node = tokio::spawn(async move {
             let given = Given {
                 sharing,
@@ -3259,6 +3291,7 @@ mod tests {
                 builders,
                 placements: None,
                 health: None,
+                scratch,
             };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
@@ -3674,6 +3707,84 @@ mod tests {
             lasting(&work, &offer(None)).is_err(),
             "and never with no end, where neither says"
         );
+    }
+
+    #[tokio::test]
+    async fn a_node_serves_its_cells_murmurs_newest_first() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (_stop, _node) = node(
+            &Memory::default(),
+            "skiff",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+        );
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 0, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert!(hello["kinds"]["murmur"]["live"].is_array(), "{hello}");
+        client
+            .ask(json!({"id": 1, "ask": "watch", "kind": "murmur"}))
+            .await;
+        let whole = client.next().await;
+        assert_eq!(whole["records"], json!([]), "none said yet: {whole}");
+        let now = jiff::Timestamp::now().as_second();
+        let web = crate::web::Web::of(&socket.with_file_name("scratch"), "QEST-20261112-HARBOR")
+            .expect("a web");
+        let say = |by: &str, words: &str, at: i64| {
+            let said = crate::web::Said::Murmur {
+                words: words.to_owned(),
+            };
+            web.say("skiff", Some(by), said, at).expect("said");
+        };
+        say("KP0L6A", "Landed is slow", now - 20);
+        say("FZ9MFJ", "the dock wakes late", now - 10);
+        let mut heard = std::collections::BTreeSet::new();
+        while heard.len() < 2 {
+            let changed = client.next().await;
+            for record in changed["changed"].as_array().into_iter().flatten() {
+                heard.insert(record["key"].as_str().unwrap_or_default().to_owned());
+            }
+        }
+        let (older, newer) = (
+            format!("murmur:KP0L6A:{}", now - 20),
+            format!("murmur:FZ9MFJ:{}", now - 10),
+        );
+        assert_eq!(
+            heard,
+            std::collections::BTreeSet::from([older.clone(), newer.clone()])
+        );
+        client
+            .ask(json!({"id": 2, "ask": "list", "kind": "murmur", "fields": ["text"]}))
+            .await;
+        let listed = client.next().await;
+        let keys: Vec<&str> = listed["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|record| record["key"].as_str())
+            .collect();
+        assert_eq!(keys, [&newer, &older], "newest first: {listed}");
+        assert_eq!(
+            listed["records"][0]["text"], "the dock wakes late",
+            "{listed}"
+        );
+        client
+            .ask(json!({"id": 3, "ask": "watch", "kind": "murmur"}))
+            .await;
+        let whole = client.next().await;
+        assert_eq!(
+            (&whole["records"][0]["key"], &whole["records"][1]["key"]),
+            (&json!(newer), &json!(older)),
+            "a watch's first answer is newest first too: {whole}"
+        );
+        client
+            .ask(json!({"id": 4, "ask": "get", "keys": [older]}))
+            .await;
+        let got = client.next().await;
+        assert_eq!(got["records"][0]["writer"], "KP0L6A", "{got}");
+        assert_eq!(got["records"][0]["machine"], "skiff", "{got}");
     }
 
     #[tokio::test]

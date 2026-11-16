@@ -10,10 +10,16 @@
 //! rewritten or taken back; a murmur is settled by a later event saying how.
 //! The quest's share carries the files between machines as it carries any
 //! of its scratch, so a machine that was away catches up by reading them.
+//!
+//! Every reader reads a web's murmurs one way, through [`Reading`], which
+//! reads each file once and then only what was appended to it, and
+//! [`murmurs`], which weaves each murmur with its ties and settling: the
+//! fold a page reads, and the node's `murmur` kind.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read as _, Seek as _, Write};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use rustix::fs::FlockOperation;
@@ -91,8 +97,10 @@ impl Web {
         })
     }
 
-    fn events_folder(&self) -> PathBuf {
-        self.folder.join("events")
+    /// The folder each writer's file is kept in.
+    #[must_use]
+    pub fn events_folder(&self) -> PathBuf {
+        events_in(&self.folder)
     }
 
     /// Appends what `writer` says, by `by` if someone there, at `at`,
@@ -141,27 +149,9 @@ impl Web {
     /// Every writer's events, each once, by when, then writer, then number.
     #[must_use]
     pub fn events(&self) -> Vec<Event> {
-        let mut events = BTreeMap::new();
-        let Ok(files) = fs::read_dir(self.events_folder()) else {
-            return Vec::new();
-        };
-        for file in files.flatten() {
-            let path = file.path();
-            if path.extension().is_none_or(|kind| kind != "jsonl") {
-                continue;
-            }
-            let Ok(held) = fs::read_to_string(&path) else {
-                continue;
-            };
-            for event in lines_of(&held) {
-                events.entry(event.id.clone()).or_insert(event);
-            }
-        }
-        let mut events: Vec<Event> = events.into_values().collect();
-        events.sort_by(|one, other| {
-            (one.at, &one.writer, one.seq).cmp(&(other.at, &other.writer, other.seq))
-        });
-        events
+        let mut reading = Reading::default();
+        reading.read(&self.events_folder());
+        reading.events()
     }
 
     /// Folds the web into `into`, written whole, unless what it holds
@@ -194,6 +184,12 @@ impl Web {
     }
 }
 
+/// The folder of the writers' files in the web kept in `web`.
+#[must_use]
+pub fn events_in(web: &Path) -> PathBuf {
+    web.join("events")
+}
+
 /// The whole lines of a writer's file that read as events; a line still
 /// being written, or cut off, is none.
 fn lines_of(held: &str) -> impl Iterator<Item = Event> + '_ {
@@ -201,6 +197,247 @@ fn lines_of(held: &str) -> impl Iterator<Item = Event> + '_ {
     whole
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
+}
+
+/// A web's writers' files, read as they grow: each file read once, then,
+/// while it is the same file grown, only what was appended since, and not
+/// opened at all while its size and time say it is as it was. A file
+/// replaced, cut shorter or gone is read again whole, or let go.
+#[derive(Debug, Default)]
+pub struct Reading {
+    files: BTreeMap<PathBuf, Kept>,
+}
+
+/// What one writer's file held when last read.
+#[derive(Debug)]
+struct Kept {
+    /// The file it was, its size and when it was written.
+    stamp: Stamp,
+    /// How far its whole lines reach, where the next read starts.
+    read_to: u64,
+    /// Its events, from its whole lines.
+    events: Vec<Event>,
+}
+
+/// What tells a file is as it was: which file, how long, when written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    file: (u64, u64),
+    size: u64,
+    written: (i64, i64),
+}
+
+impl Stamp {
+    fn of(metadata: &fs::Metadata) -> Self {
+        Self {
+            file: (metadata.dev(), metadata.ino()),
+            size: metadata.len(),
+            written: (metadata.mtime(), metadata.mtime_nsec()),
+        }
+    }
+}
+
+impl Reading {
+    /// Reads the writers' files in `folder` as they stand now, opening
+    /// only those changed since, and answers whether any were.
+    pub fn read(&mut self, folder: &Path) -> bool {
+        let mut seen = Vec::new();
+        let mut changed = false;
+        for file in fs::read_dir(folder).into_iter().flatten().flatten() {
+            let path = file.path();
+            if path.extension().is_none_or(|kind| kind != "jsonl") {
+                continue;
+            }
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
+            };
+            let stamp = Stamp::of(&metadata);
+            seen.push(path.clone());
+            let kept = self.files.get_mut(&path);
+            if kept.as_ref().is_some_and(|kept| kept.stamp == stamp) {
+                continue;
+            }
+            // The same file grown is read from where its lines ended;
+            // any other is read whole.
+            let grown =
+                kept.filter(|kept| kept.stamp.file == stamp.file && kept.stamp.size <= stamp.size);
+            if let Some(kept) = grown {
+                changed |= read_on(&path, kept, stamp);
+            } else {
+                let mut kept = Kept {
+                    stamp,
+                    read_to: 0,
+                    events: Vec::new(),
+                };
+                read_on(&path, &mut kept, stamp);
+                self.files.insert(path, kept);
+                changed = true;
+            }
+        }
+        let before = self.files.len();
+        self.files.retain(|path, _| seen.contains(path));
+        changed || self.files.len() != before
+    }
+
+    /// Every writer's events, each once, by when, then writer, then
+    /// number.
+    #[must_use]
+    pub fn events(&self) -> Vec<Event> {
+        let mut events = BTreeMap::new();
+        for kept in self.files.values() {
+            for event in &kept.events {
+                events
+                    .entry(event.id.as_str())
+                    .or_insert_with(|| event.clone());
+            }
+        }
+        let mut events: Vec<Event> = events.into_values().collect();
+        events.sort_by(|one, other| {
+            (one.at, &one.writer, one.seq).cmp(&(other.at, &other.writer, other.seq))
+        });
+        events
+    }
+}
+
+/// Reads `path` on from where `kept` last stopped, keeping its new whole
+/// lines' events and `stamp`; answers whether it read any. A file that
+/// can't be read now keeps what it held, to be read again at its next
+/// change.
+fn read_on(path: &Path, kept: &mut Kept, stamp: Stamp) -> bool {
+    let mut added = String::new();
+    let read = fs::File::open(path).and_then(|mut file| {
+        file.seek(io::SeekFrom::Start(kept.read_to))?;
+        file.read_to_string(&mut added)
+    });
+    if read.is_err() {
+        return false;
+    }
+    kept.stamp = stamp;
+    let Some(end) = added.rfind('\n') else {
+        return false;
+    };
+    kept.read_to += u64::try_from(end + 1).unwrap_or(u64::MAX);
+    let before = kept.events.len();
+    kept.events.extend(
+        added[..end]
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok()),
+    );
+    kept.events.len() != before
+}
+
+/// A murmur as its web says it now: what was said, what it is tied to and
+/// how it was settled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Murmur<'a> {
+    /// The event that said it.
+    pub said: &'a Event,
+    /// Its words.
+    pub words: &'a str,
+    /// Its ties, in the order they were made.
+    pub ties: Vec<Tied<'a>>,
+    /// The last settling said of it, and how, if any.
+    pub settled: Option<(&'a Event, &'a str)>,
+}
+
+impl Murmur<'_> {
+    /// Who said it: the one at its writer who did, else the writer.
+    #[must_use]
+    pub fn cell(&self) -> &str {
+        self.said.by.as_deref().unwrap_or(&self.said.writer)
+    }
+
+    /// What its ties name at their other ends, each once, in the order
+    /// they were made.
+    #[must_use]
+    pub fn tied_to(&self) -> Vec<&str> {
+        let mut named: Vec<&str> = Vec::new();
+        for tie in &self.ties {
+            if !named.contains(&tie.other) {
+                named.push(tie.other);
+            }
+        }
+        named
+    }
+}
+
+/// One of a murmur's ties.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tied<'a> {
+    /// The event that made it.
+    pub made: &'a Event,
+    /// Whether it runs from the murmur to the other end, or to it.
+    pub from_murmur: bool,
+    /// What it names at its other end.
+    pub other: &'a str,
+    /// How, if it says.
+    pub how: Option<&'a str>,
+}
+
+/// What a web's events weave: each murmur, newest first, with its ties and
+/// settling, and the ties between other things.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Woven<'a> {
+    /// Each murmur, newest first: by when, then writer, then id.
+    pub murmurs: Vec<Murmur<'a>>,
+    /// The ties neither of whose ends is a murmur, in order.
+    pub apart: Vec<&'a Event>,
+}
+
+/// What `events`, in order, say of their murmurs now, as every reader of
+/// a web reads them.
+#[must_use]
+pub fn murmurs(events: &[Event]) -> Woven<'_> {
+    let mut murmurs: BTreeMap<&str, Murmur<'_>> = BTreeMap::new();
+    for event in events {
+        if let Said::Murmur { words } = &event.said {
+            let murmur = Murmur {
+                said: event,
+                words,
+                ties: Vec::new(),
+                settled: None,
+            };
+            murmurs.insert(&event.id, murmur);
+        }
+    }
+    let mut apart = Vec::new();
+    for event in events {
+        match &event.said {
+            Said::Murmur { .. } => {}
+            Said::Tie { from, to, how } => {
+                // A tie from or to a murmur goes with it, where it's read.
+                let (murmur, from_murmur, other) = if murmurs.contains_key(from.as_str()) {
+                    (murmurs.get_mut(from.as_str()), true, to)
+                } else {
+                    (murmurs.get_mut(to.as_str()), false, from)
+                };
+                match murmur {
+                    Some(murmur) => murmur.ties.push(Tied {
+                        made: event,
+                        from_murmur,
+                        other: other.as_str(),
+                        how: how.as_deref(),
+                    }),
+                    None => apart.push(event),
+                }
+            }
+            Said::Settle { of, how } => {
+                // The last settling said stands, as events come in order.
+                if let Some(murmur) = murmurs.get_mut(of.as_str()) {
+                    murmur.settled = Some((event, how));
+                }
+            }
+        }
+    }
+    let mut murmurs: Vec<Murmur<'_>> = murmurs.into_values().collect();
+    murmurs.sort_by(|one, other| {
+        (other.said.at, &other.said.writer, &other.said.id).cmp(&(
+            one.said.at,
+            &one.said.writer,
+            &one.said.id,
+        ))
+    });
+    Woven { murmurs, apart }
 }
 
 /// A fold without the time it was made, to tell whether it says anything
@@ -213,12 +450,17 @@ fn without_at(folded: &Value) -> Value {
     folded
 }
 
-/// What says who, if it was someone at the writer rather than the writer.
-fn with_by(mut said: Value, by: Option<&String>) -> Value {
-    if let (Some(by), Some(fields)) = (by, said.as_object_mut()) {
-        fields.insert("by".to_owned(), json!(by));
+/// `event`'s id, writer and time with `fields`, and who said it, if it
+/// was someone at the writer rather than the writer.
+fn made(event: &Event, fields: Value) -> Value {
+    let mut made = json!({"id": event.id, "writer": event.writer, "at": event.at});
+    if let (Some(made), Value::Object(fields)) = (made.as_object_mut(), fields) {
+        made.extend(fields);
+        if let Some(by) = &event.by {
+            made.insert("by".to_owned(), json!(by));
+        }
     }
-    said
+    made
 }
 
 /// What `events`, in order, say now, as of `at`: each murmur, newest first,
@@ -227,73 +469,51 @@ fn with_by(mut said: Value, by: Option<&String>) -> Value {
 #[must_use]
 pub fn fold(events: &[Event], at: i64) -> Value {
     let mut writers: BTreeMap<&str, u64> = BTreeMap::new();
-    let mut murmurs: BTreeMap<&str, Value> = BTreeMap::new();
     for event in events {
         let last = writers.entry(&event.writer).or_default();
         *last = (*last).max(event.seq);
-        if let Said::Murmur { words } = &event.said {
-            let murmur = json!({
-                "id": event.id, "writer": event.writer, "at": event.at,
-                "words": words, "ties": [], "settled": null,
-            });
-            murmurs.insert(&event.id, with_by(murmur, event.by.as_ref()));
-        }
     }
-    let mut ties = Vec::new();
-    for event in events {
-        let made = |fields: Value| {
-            let mut made = json!({"id": event.id, "writer": event.writer, "at": event.at});
-            if let (Some(made), Some(fields)) = (made.as_object_mut(), fields.as_object()) {
-                made.extend(fields.clone());
-            }
-            with_by(made, event.by.as_ref())
-        };
-        match &event.said {
-            Said::Murmur { .. } => {}
+    let woven = murmurs(events);
+    let murmurs: Vec<Value> = woven.murmurs.iter().map(folded).collect();
+    let ties: Vec<Value> = woven
+        .apart
+        .iter()
+        .filter_map(|event| match &event.said {
             Said::Tie { from, to, how } => {
-                let how = how.as_ref().map(|how| ("how", json!(how)));
-                let tie = |end: &str, other: &str| {
-                    let mut fields = serde_json::Map::from_iter([(end.to_owned(), json!(other))]);
-                    fields.extend(how.clone().map(|(key, how)| (key.to_owned(), how)));
-                    made(Value::Object(fields))
-                };
-                // A tie from or to a murmur goes with it, where it's read.
-                if let Some(murmur) = murmurs.get_mut(from.as_str()) {
-                    push(murmur, "ties", tie("to", to));
-                } else if let Some(murmur) = murmurs.get_mut(to.as_str()) {
-                    push(murmur, "ties", tie("from", from));
-                } else {
-                    let mut fields = serde_json::Map::from_iter([("from".to_owned(), json!(from))]);
-                    fields.insert("to".to_owned(), json!(to));
-                    fields.extend(how.map(|(key, how)| (key.to_owned(), how)));
-                    ties.push(made(Value::Object(fields)));
+                let mut tie = json!({"from": from, "to": to});
+                if let Some(how) = how {
+                    tie["how"] = json!(how);
                 }
+                Some(made(event, tie))
             }
-            Said::Settle { of, how } => {
-                // The last settling said stands, as events come in order.
-                if let Some(murmur) = murmurs.get_mut(of.as_str()) {
-                    murmur["settled"] = made(json!({"how": how}));
-                }
-            }
-        }
-    }
-    let mut murmurs: Vec<Value> = murmurs.into_values().collect();
-    let order = |murmur: &Value| {
-        (
-            murmur["at"].as_i64().unwrap_or(0),
-            murmur["writer"].as_str().unwrap_or("").to_owned(),
-            murmur["id"].as_str().unwrap_or("").to_owned(),
-        )
-    };
-    murmurs.sort_by_key(|murmur| std::cmp::Reverse(order(murmur)));
+            _ => None,
+        })
+        .collect();
     json!({"at": at, "writers": writers, "murmurs": murmurs, "ties": ties})
 }
 
-/// Adds `value` to the list at `key` in `into`.
-fn push(into: &mut Value, key: &str, value: Value) {
-    if let Some(list) = into[key].as_array_mut() {
-        list.push(value);
-    }
+/// A murmur as a fold says it: its words, each tie by its other end and
+/// how, and its settling.
+fn folded(murmur: &Murmur<'_>) -> Value {
+    let ties: Vec<Value> = murmur
+        .ties
+        .iter()
+        .map(|tie| {
+            let end = if tie.from_murmur { "to" } else { "from" };
+            let mut fields = json!({ end: tie.other });
+            if let Some(how) = tie.how {
+                fields["how"] = json!(how);
+            }
+            made(tie.made, fields)
+        })
+        .collect();
+    let settled = murmur
+        .settled
+        .map_or(Value::Null, |(event, how)| made(event, json!({"how": how})));
+    made(
+        murmur.said,
+        json!({"words": murmur.words, "ties": ties, "settled": settled}),
+    )
 }
 
 #[cfg(test)]
@@ -450,6 +670,126 @@ mod tests {
             }),
             "a murmur's ties and settling go with it; others stand apart"
         );
+    }
+
+    #[test]
+    fn a_murmur_is_woven_with_its_cell_what_it_is_tied_to_and_its_settling() {
+        let event = |seq: u64, by: Option<&str>, said: Said| Event {
+            id: format!("skiff-{seq}"),
+            writer: "skiff".to_owned(),
+            seq,
+            at: 100 + i64::try_from(seq).expect("a small number"),
+            by: by.map(str::to_owned),
+            said,
+        };
+        let tie = |from: &str, to: &str| Said::Tie {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            how: None,
+        };
+        let events = [
+            // Tied before it is said, as another machine's file may be read
+            // first, it is still its tie.
+            event(1, None, tie("mycelium#211", "skiff-2")),
+            event(2, Some("KP0L6A"), murmur("Landed is slow")),
+            event(3, None, murmur("the dock wakes late")),
+            event(4, None, tie("skiff-2", "mycelium")),
+            event(5, None, tie("skiff-2", "mycelium")),
+            event(
+                6,
+                None,
+                Said::Settle {
+                    of: "skiff-2".to_owned(),
+                    how: "filed".to_owned(),
+                },
+            ),
+        ];
+        let woven = murmurs(&events);
+        let said: Vec<(&str, &str, Vec<&str>, Option<&str>)> = woven
+            .murmurs
+            .iter()
+            .map(|murmur| {
+                (
+                    murmur.said.id.as_str(),
+                    murmur.cell(),
+                    murmur.tied_to(),
+                    murmur.settled.map(|(_, how)| how),
+                )
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ("skiff-3", "skiff", vec![], None),
+                (
+                    "skiff-2",
+                    "KP0L6A",
+                    vec!["mycelium#211", "mycelium"],
+                    Some("filed")
+                ),
+            ],
+            "newest first, said by whoever said it, each tie's other end once"
+        );
+        assert!(woven.apart.is_empty(), "every tie here is a murmur's");
+    }
+
+    /// Writes `lines` over the start of `file` in place, its size and time
+    /// kept as they were, as only a reader opening it could tell.
+    fn overwritten_unseen(file: &Path, lines: &str) {
+        let written = fs::metadata(file)
+            .and_then(|metadata| metadata.modified())
+            .expect("its time");
+        let mut open = fs::OpenOptions::new()
+            .write(true)
+            .open(file)
+            .expect("it opens");
+        open.write_all(lines.as_bytes()).expect("written over");
+        open.set_modified(written).expect("its time kept");
+    }
+
+    fn words_of(reading: &Reading) -> Vec<String> {
+        reading
+            .events()
+            .into_iter()
+            .filter_map(|event| match event.said {
+                Said::Murmur { words } => Some(words),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reading_opens_a_file_only_once_it_changed_and_reads_on_from_its_end() {
+        let (dir, web) = web();
+        web.say("skiff", None, murmur("aaaa"), 100)
+            .expect("skiff says");
+        let file = web.events_folder().join("skiff.jsonl");
+        let mut reading = Reading::default();
+        assert!(reading.read(&web.events_folder()), "first, it reads");
+        let first = fs::read_to_string(&file).expect("the file");
+        overwritten_unseen(&file, &first.replace("aaaa", "bbbb"));
+        assert!(
+            !reading.read(&web.events_folder()),
+            "unchanged in size and time, it isn't opened"
+        );
+        assert_eq!(words_of(&reading), ["aaaa"]);
+        overwritten_unseen(&file, &first.replace("aaaa", "cccc"));
+        web.say("skiff", None, murmur("dddd"), 101)
+            .expect("skiff says again");
+        assert!(reading.read(&web.events_folder()), "grown, it reads on");
+        assert_eq!(
+            words_of(&reading),
+            ["aaaa", "dddd"],
+            "only what was appended is read"
+        );
+        let beside = dir.path().join("replacing.jsonl");
+        fs::write(&beside, first.replace("aaaa", "eeee")).expect("a new file");
+        fs::rename(&beside, &file).expect("moved into place");
+        assert!(reading.read(&web.events_folder()), "replaced, it reads");
+        assert_eq!(words_of(&reading), ["eeee"], "a new file is read whole");
+        fs::remove_file(&file).expect("the file goes");
+        assert!(reading.read(&web.events_folder()), "gone, it changed");
+        assert!(reading.events().is_empty(), "and its events with it");
     }
 
     #[test]

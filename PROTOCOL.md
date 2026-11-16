@@ -1175,10 +1175,11 @@ in milliseconds.
 
 A record carries `key` (`session:<id>`, `machine:<name>`,
 `message:<id>`, `team:<address>`, `network:<name>`, `unanswered:<id>`,
-`said:<id>`, `event:<session>:<at>`, `receptor:<source>` or
-`builder:<name>` or `forage:<address>`), `kind`, `heard` (milliseconds
-since the epoch) and the fields `Sessions`, `Machines` and `Messages`
-give it. A field its source named `key`, `kind` or `heard`, such as a
+`said:<id>`, `event:<session>:<at>`, `receptor:<source>`,
+`builder:<name>`, `forage:<address>` or `murmur:<cell>:<at>`), `kind`,
+`heard` (milliseconds since the epoch) and the fields `Sessions`,
+`Machines` and `Messages` give it. A field its source named `key`,
+`kind` or `heard`, such as a
 job's own `kind`, is kept under `source` rather than lost beneath the
 interface's, beside the record's own `source` where it has one. A
 session also says
@@ -1286,6 +1287,28 @@ polling the realm reads the same events as lines of `mycelium networks
 -o json`; a watch of this kind is for a reader that wants each as it
 comes.
 
+The `murmur` kind holds what this machine's cells murmured in the
+quests' webs over the last day, keyed by the cell's address and its
+`at` in seconds, a second murmur of that cell in that second keyed with
+`.2` after it, the next `.3`, in the order said. Murmurs come from the
+webs' event files today: each `<scratch>/<QUEST>/web/events/` file this
+machine writes, read as `mycelium web fold` reads them, so the two
+never disagree; a journey's or a landing's words are not murmurs yet.
+A record says the `writer`, the cell that said it, the `machine`, `at`,
+its `text`, what it is `tied_to` (each other end once, as said, from
+any machine's ties), its `purpose`, what its cell's session says it
+works on as the node holds it now, and how it was `settled`, in the
+settling's words, those two null where it has none. A
+murmur is heard at its `at`; its live fields are `text`, `tied_to`,
+`purpose` and `settled`, and a purpose that moves shows with the next
+murmur. A list, and a watch's first answer, give murmurs newest first.
+A file is opened again only once its size or time written moves, and
+read on from where it was, so ten thousand cells' murmurs are read
+within 30 MB and one more is read in a small share of that time. The
+node watches the nearest folder of each web there is, and reads them
+again each minute for murmurs passing a day; `health` says a web it
+can't read as the source `murmur`, `refused`.
+
 The `receptor` kind holds each receptor of this machine, keyed by the
 source it senses, as [Receptors](#receptors) says; its live fields are
 `state`, `read_at` and `counts`.
@@ -1392,7 +1415,7 @@ minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine`,
 `message`, `team`, `network`, `unanswered`, `said`, `event`,
-`receptor`, `builder`, `carry` or `forage`, can't be served.
+`receptor`, `builder`, `carry`, `forage` or `murmur`, can't be served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and

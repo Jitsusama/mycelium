@@ -134,7 +134,9 @@ The harness mesh's messages and presence, carried between machines:
   murmurs and ties its sessions share: each machine appends to its own
   file in the quest's `web` scratch folder, which a share carries like
   any other, and `mycelium web <QUEST> fold --into <FILE>` folds every
-  machine's into what the web says now, for a page to read.
+  machine's into what the web says now, for a page to read. The node
+  serves each murmur this machine's cells said in the last day as a
+  `murmur` record, newest first, for a page to watch.
 
 [PROTOCOL.md](PROTOCOL.md) says how, and what comes next: shared scratch,
 the node's own log, connections of its own and providers for machines

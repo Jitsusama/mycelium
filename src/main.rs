@@ -1423,6 +1423,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     };
     let (store, membership, shares) = open(here, realm)?;
     place::record_machine(&state, &membership.machine)?;
+    let scratch = Some(shares.scratch.clone());
     let given = node::Given {
         sharing: Some(shares),
         refusals: Refusals::kept_in(refused),
@@ -1456,6 +1457,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         builders,
         placements: Some(mycelium::placements::Log::at(state.join("placements"))),
         health: node.health_socket,
+        scratch,
     };
     let runtime = runtime()?;
     let ran = runtime.block_on(async {

@@ -58,6 +58,50 @@ pub trait Holds: Send + Sync + 'static {
     fn deep(&self, _kind: &str) -> Vec<&'static str> {
         Vec::new()
     }
+    /// Whether `kind`'s records are listed, and a watch's first answer
+    /// sent, newest first, by when each was heard, rather than by key;
+    /// not, unless it says.
+    fn newest_first(&self, _kind: &str) -> bool {
+        false
+    }
+}
+
+/// `records` in the order `kind`'s are listed: by key, or newest first
+/// where `holds` says, the same moment's by key.
+fn in_order<'a>(
+    holds: &impl Holds,
+    kind: &str,
+    records: impl Iterator<Item = &'a Value>,
+) -> Vec<&'a Value> {
+    let mut records: Vec<&Value> = records.collect();
+    if holds.newest_first(kind) {
+        records.sort_by_key(|record| std::cmp::Reverse(heard(record)));
+    }
+    records
+}
+
+/// The first `limit` of `records`, all where it says none, in the order
+/// `kind`'s are listed. The records are moved out, never copied; only a
+/// kind listed newest first is gathered whole to be sorted.
+fn listed(
+    holds: &impl Holds,
+    kind: &str,
+    records: BTreeMap<String, Value>,
+    limit: Option<usize>,
+) -> Vec<Value> {
+    let limit = limit.unwrap_or(usize::MAX);
+    if !holds.newest_first(kind) {
+        return records.into_values().take(limit).collect();
+    }
+    let mut all: Vec<Value> = records.into_values().collect();
+    all.sort_by_key(|record| std::cmp::Reverse(heard(record)));
+    all.truncate(limit);
+    all
+}
+
+/// When `record` was heard, or the epoch where it says not.
+fn heard(record: &Value) -> i64 {
+    record.get("heard").and_then(Value::as_i64).unwrap_or(0)
 }
 
 /// What a daemon does for its clients beyond reading: what the person says
@@ -175,9 +219,8 @@ fn answer<H: Holds + Steers>(
         } => holds
             .records(&kind)
             .map(|records| {
-                let records: Vec<Value> = records
-                    .into_values()
-                    .take(limit.unwrap_or(usize::MAX))
+                let records: Vec<Value> = listed(holds.as_ref(), &kind, records, limit)
+                    .into_iter()
                     .map(|record| match &fields {
                         Some(paths) => fields::projected(record, paths),
                         None => record,
