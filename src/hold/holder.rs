@@ -1257,7 +1257,11 @@ mod tests {
     use super::*;
 
     /// How long a test waits for what it expects to show before failing.
-    const PATIENCE: Duration = Duration::from_secs(20);
+    /// Each wait ends as soon as it is met, so only a failure waits this
+    /// long; a loaded Mac ran these tests nearly seven times slower than
+    /// Linux and drew the flood test's window past 20 s three times
+    /// (2026-11-16).
+    const PATIENCE: Duration = Duration::from_secs(60);
 
     /// A terminal joined to a holder: what it types, and what it shows.
     struct Joined {
