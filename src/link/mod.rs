@@ -3445,46 +3445,102 @@ mod tests {
         heard
     }
 
-    #[tokio::test]
-    async fn a_parent_reaches_the_other_end_only_once_its_machine_declares_no_worker() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
+    /// The quest above, and the one under it.
+    const TOP: &str = "QEST-20261007-WCJQSG";
+    const CHILD: &str = "QEST-20261115-5XF89V";
+
+    /// `TOP` and `CHILD` under it, kept in `dir`, with `CHILD` shared and
+    /// both given to the machine named, when one is.
+    fn top_and_child(dir: &std::path::Path, given: Option<&str>) -> Places {
         let home = Places {
-            quests: dir.path().join("quests"),
-            scratch: dir.path().join("scratch"),
-            home: dir.path().join("home"),
-            state: dir.path().join("state"),
+            quests: dir.join("quests"),
+            scratch: dir.join("scratch"),
+            home: dir.join("home"),
+            state: dir.join("state"),
         };
-        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
         for (quest, readme) in [
-            (top, "---\nparent: null\n---\n# Top\n".to_owned()),
-            (child, format!("---\nparent: {top}\n---\n# Child\n")),
+            (TOP, "---\nparent: null\n---\n# Top\n".to_owned()),
+            (CHILD, format!("---\nparent: {TOP}\n---\n# Child\n")),
         ] {
             std::fs::create_dir_all(home.quests.join(quest)).expect("the quest made");
             std::fs::write(home.quests.join(quest).join("README.md"), readme)
                 .expect("its README written");
+            if let Some(machine) = given {
+                home.give(machine, quest).expect("given");
+            }
         }
-        home.offer(child, &[]).expect("shared");
+        home.offer(CHILD, &[]).expect("shared");
+        home
+    }
 
-        let skiff = Memory::default();
-        let store = skiff.clone();
+    /// skiff's end of a link sharing `home`'s quests, a worker's link when
+    /// `worker`, run over a pipe; what is given back is the other end.
+    fn skiff_sharing(
+        home: Places,
+        worker: bool,
+    ) -> (
+        tokio::io::Lines<BufReader<ReadHalf<DuplexStream>>>,
+        WriteHalf<DuplexStream>,
+    ) {
         let (near, far) = tokio::io::duplex(1 << 16);
         let (reading, writing) = tokio::io::split(near);
         let _skiff_end = tokio::spawn(async move {
             run(
-                store,
+                Memory::default(),
                 &realm("skiff"),
-                connection(reading, writing),
+                Connection {
+                    worker,
+                    ..connection(reading, writing)
+                },
                 Some(home),
                 None,
             )
             .await
         });
-        let (far_reading, mut far_writing) = tokio::io::split(far);
-        let mut lines = BufReader::new(far_reading).lines();
-        let names = |frame: &Frame, quest: &str| {
-            matches!(frame, Frame::Share(Say::Shares { quests, .. })
-                if quests.iter().any(|named| named == quest))
+        let (far_reading, far_writing) = tokio::io::split(far);
+        (BufReader::new(far_reading).lines(), far_writing)
+    }
+
+    /// tern as it measures itself, ready, declaring nothing of itself.
+    fn tern_undeclared() -> Machine {
+        let nowhere = facts::Sources {
+            home: "/".into(),
+            queue: None,
+            disk_guard: None,
+            declared: "/nowhere".into(),
+            reached: "/nowhere".into(),
+            updated: "/nowhere".into(),
         };
+        let mut tern = facts::measure("tern", &nowhere);
+        tern.state = Readiness::Ready;
+        tern.declared = None;
+        tern
+    }
+
+    /// Asks for `quest`'s README from its start.
+    fn want_readme(quest: &str) -> Frame {
+        Frame::Share(Say::Want {
+            quest: quest.to_owned(),
+            file: "record/README.md".to_owned(),
+            at: Some(0),
+        })
+    }
+
+    /// Whether `frame` carries a file of `quest`.
+    fn carries_of(frame: &Frame, quest: &str) -> bool {
+        matches!(frame, Frame::Share(Say::File { quest: of, .. }) if of == quest)
+    }
+
+    /// Whether `frame` names `quest` among those shared.
+    fn names(frame: &Frame, quest: &str) -> bool {
+        matches!(frame, Frame::Share(Say::Shares { quests, .. })
+            if quests.iter().any(|named| named == quest))
+    }
+
+    #[tokio::test]
+    async fn a_parent_reaches_the_other_end_only_once_its_machine_declares_no_worker() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (mut lines, mut far_writing) = skiff_sharing(top_and_child(dir.path(), None), false);
         let shares = |frame: &Frame| matches!(frame, Frame::Share(Say::Shares { .. }));
         says(
             &mut far_writing,
@@ -3501,47 +3557,20 @@ mod tests {
         assert!(
             first
                 .last()
-                .is_some_and(|frame| names(frame, child) && !names(frame, top)),
+                .is_some_and(|frame| names(frame, CHILD) && !names(frame, TOP)),
             "before tern says what it is, skiff shares the quest, never its parent: {first:?}"
         );
 
-        let nowhere = facts::Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: "/nowhere".into(),
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
-        let mut tern = facts::measure("tern", &nowhere);
-        tern.state = Readiness::Ready;
-        tern.declared = None;
-        let want = |quest: &str| {
-            Frame::Share(Say::Want {
-                quest: quest.to_owned(),
-                file: "record/README.md".to_owned(),
-                at: Some(0),
-            })
-        };
-        let child_sent =
-            |frame: &Frame| matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == child);
-        let of_top = |frame: &Frame| match frame {
-            Frame::Share(Say::File { quest, .. }) => quest == top,
-            Frame::Share(Say::Shares { quests, .. }) => quests.iter().any(|named| named == top),
-            _ => false,
-        };
-        says(
-            &mut far_writing,
-            &[
-                Frame::Machine(Box::new(tern.clone())),
-                want(top),
-                want(child),
-            ],
-        )
-        .await;
+        let mut tern = tern_undeclared();
+        let asks = [want_readme(TOP), want_readme(CHILD)];
+        let child_sent = |frame: &Frame| carries_of(frame, CHILD);
+        says(&mut far_writing, &[Frame::Machine(Box::new(tern.clone()))]).await;
+        says(&mut far_writing, &asks).await;
         let sent = heard_until(&mut lines, child_sent).await;
         assert!(
-            !sent.iter().any(of_top),
+            !sent
+                .iter()
+                .any(|frame| carries_of(frame, TOP) || names(frame, TOP)),
             "tern declares nothing of itself, as a restarting node does, so it is sent \
              nothing of the parent: {sent:?}"
         );
@@ -3554,19 +3583,14 @@ mod tests {
         };
         tern.declared = Some(declares(false));
         says(&mut far_writing, &[Frame::Machine(Box::new(tern.clone()))]).await;
-        heard_until(&mut lines, |frame| names(frame, top)).await;
+        heard_until(&mut lines, |frame| names(frame, TOP)).await;
 
         tern.declared = Some(declares(true));
-        says(
-            &mut far_writing,
-            &[Frame::Machine(Box::new(tern)), want(top), want(child)],
-        )
-        .await;
+        says(&mut far_writing, &[Frame::Machine(Box::new(tern))]).await;
+        says(&mut far_writing, &asks).await;
         let sent = heard_until(&mut lines, child_sent).await;
         assert!(
-            !sent
-                .iter()
-                .any(|frame| matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == top)),
+            !sent.iter().any(|frame| carries_of(frame, TOP)),
             "once tern says it costs money, it is sent nothing of the parent: {sent:?}"
         );
     }
@@ -3574,60 +3598,8 @@ mod tests {
     #[tokio::test]
     async fn a_worker_is_never_sent_a_parent_whatever_its_machine_says() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let home = Places {
-            quests: dir.path().join("quests"),
-            scratch: dir.path().join("scratch"),
-            home: dir.path().join("home"),
-            state: dir.path().join("state"),
-        };
-        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
-        for (quest, readme) in [
-            (top, "---\nparent: null\n---\n# Top\n".to_owned()),
-            (child, format!("---\nparent: {top}\n---\n# Child\n")),
-        ] {
-            std::fs::create_dir_all(home.quests.join(quest)).expect("the quest made");
-            std::fs::write(home.quests.join(quest).join("README.md"), readme)
-                .expect("its README written");
-            home.give("tern", quest).expect("given to tern");
-        }
-        home.offer(child, &[]).expect("shared");
-
-        let skiff = Memory::default();
-        let store = skiff.clone();
-        let (near, far) = tokio::io::duplex(1 << 16);
-        let (reading, writing) = tokio::io::split(near);
-        let _skiff_end = tokio::spawn(async move {
-            run(
-                store,
-                &realm("skiff"),
-                Connection {
-                    worker: true,
-                    ..connection(reading, writing)
-                },
-                Some(home),
-                None,
-            )
-            .await
-        });
-        let (far_reading, mut far_writing) = tokio::io::split(far);
-        let mut lines = BufReader::new(far_reading).lines();
-        let nowhere = facts::Sources {
-            home: "/".into(),
-            queue: None,
-            disk_guard: None,
-            declared: "/nowhere".into(),
-            reached: "/nowhere".into(),
-            updated: "/nowhere".into(),
-        };
-        let mut tern = facts::measure("tern", &nowhere);
-        tern.state = Readiness::Ready;
-        let want = |quest: &str| {
-            Frame::Share(Say::Want {
-                quest: quest.to_owned(),
-                file: "record/README.md".to_owned(),
-                at: Some(0),
-            })
-        };
+        let home = top_and_child(dir.path(), Some("tern"));
+        let (mut lines, mut far_writing) = skiff_sharing(home, true);
         says(
             &mut far_writing,
             &[
@@ -3636,24 +3608,17 @@ mod tests {
                     messages: Vec::new(),
                     living: Some(Vec::new()),
                 },
-                Frame::Machine(Box::new(tern)),
-                want(top),
-                want(child),
+                Frame::Machine(Box::new(tern_undeclared())),
+                want_readme(TOP),
+                want_readme(CHILD),
             ],
         )
         .await;
-        let sent = heard_until(
-            &mut lines,
-            |frame| matches!(frame, Frame::Share(Say::File { quest, .. }) if quest == child),
-        )
-        .await;
-        let of_top = |frame: &Frame| match frame {
-            Frame::Share(Say::File { quest, .. }) => quest == top,
-            Frame::Share(Say::Shares { quests, .. }) => quests.iter().any(|named| named == top),
-            _ => false,
-        };
+        let sent = heard_until(&mut lines, |frame| carries_of(frame, CHILD)).await;
         assert!(
-            !sent.iter().any(of_top),
+            !sent
+                .iter()
+                .any(|frame| carries_of(frame, TOP) || names(frame, TOP)),
             "tern, a worker, declares nothing of itself, and still hears nothing of the \
              parent, though it was given it: {sent:?}"
         );
