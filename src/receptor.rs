@@ -25,7 +25,8 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use notify::Watcher as _;
-use rustix::fs::{Mode, OFlags};
+use rustix::fd::{AsFd, OwnedFd};
+use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -171,8 +172,8 @@ pub struct Record {
     /// The process that keeps it, so the node marks it off once that's
     /// gone.
     pub pid: u32,
-    /// When that process started, in clock ticks since boot, where the
-    /// system says (Linux), so a pid used again isn't taken for it.
+    /// When that process started, as [`started_at`] tells it where the
+    /// system says, so a pid used again isn't taken for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<u64>,
     /// What it brought in.
@@ -215,23 +216,26 @@ fn sound(record: &Record) -> io::Result<()> {
     Ok(())
 }
 
-/// `folder` made where it isn't there and opened as itself, never through
-/// a link, so its mode is set on it and on nothing a link points at.
-fn owned(folder: &Path) -> io::Result<()> {
-    fs::create_dir_all(folder)?;
-    let opened = rustix::fs::open(
+/// `folder` opened as itself, never through a link, or an error where it
+/// isn't a folder of its own.
+fn opened_folder(folder: &Path) -> io::Result<OwnedFd> {
+    rustix::fs::open(
         folder,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|_| refused(format!("{} isn't a folder of its own", folder.display())))?;
-    rustix::fs::fchmod(&opened, Mode::from_raw_mode(FOLDER_MODE))?;
-    Ok(())
+    .map_err(|_| refused(format!("{} isn't a folder of its own", folder.display())))
 }
 
-/// Whether `folder` is a folder itself rather than a link to one.
-fn is_own_folder(folder: &Path) -> bool {
-    fs::symlink_metadata(folder).is_ok_and(|meta| meta.file_type().is_dir())
+/// `folder` made where it isn't there and opened as itself, its mode set
+/// on it and on nothing a link points at. What is done in it after is
+/// done through the handle, so a folder swapped for a link meanwhile
+/// takes nothing.
+fn owned(folder: &Path) -> io::Result<OwnedFd> {
+    fs::create_dir_all(folder)?;
+    let opened = opened_folder(folder)?;
+    rustix::fs::fchmod(&opened, Mode::from_raw_mode(FOLDER_MODE))?;
+    Ok(opened)
 }
 
 /// `record` written whole to its file in `folder`, for `realm`, under a
@@ -263,23 +267,24 @@ pub fn write(
             record.pid
         )));
     }
-    owned(folder)?;
-    let path = file(folder, record.source);
-    if let Some(was) = read_file(&path)
+    let opened = owned(folder)?;
+    let name = format!("{}.json", record.source.name());
+    if let Some(was) = read_at(&opened, &name)
         && was.pid == record.pid
         && was.started == record.started
     {
         record.since = was.since;
     }
-    let staged = folder.join(format!(".{}.{}", record.source.name(), std::process::id()));
+    let staged = format!(".{}.{}", record.source.name(), std::process::id());
     // Whatever stands at the staged name, a link among them, is removed
     // rather than written through, and the file is made new or not at
     // all, so nothing a link points at is ever truncated.
-    match fs::remove_file(&staged) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-        _ => {}
+    match rustix::fs::unlinkat(&opened, &staged, AtFlags::empty()) {
+        Err(rustix::io::Errno::NOENT) | Ok(()) => {}
+        Err(error) => return Err(error.into()),
     }
-    let mut out = fs::File::from(rustix::fs::open(
+    let mut out = fs::File::from(rustix::fs::openat(
+        &opened,
         &staged,
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::from_raw_mode(FILE_MODE),
@@ -287,19 +292,25 @@ pub fn write(
     out.write_all(&serde_json::to_vec(&record).map_err(io::Error::other)?)?;
     out.sync_all()?;
     drop(out);
-    fs::rename(&staged, &path)?;
-    Ok(path)
+    rustix::fs::renameat(&opened, &staged, &opened, &name)?;
+    Ok(file(folder, record.source))
 }
 
-/// The record `path` holds, or none where it holds none or a malformed
-/// one: a field it doesn't name, a word a field doesn't take, a bound
-/// broken, or a file named for another source. Only a regular file of at
-/// most [`LARGEST_FILE`] is read, never through a link, and a pipe is
-/// opened without waiting on a writer and then left, so nothing planted in
-/// the folder can hold or flood its reader.
-fn read_file(path: &Path) -> Option<Record> {
-    let opened = rustix::fs::open(
-        path,
+/// The record the file `name` in the folder `opened` holds, or none where
+/// it holds none or a malformed one: a field it doesn't name, a word a
+/// field doesn't take, a bound broken, or a file named for another
+/// source. Only a regular file of at most [`LARGEST_FILE`] is read: its
+/// type is asked before it is opened, never through a link, and asked
+/// again of what was opened, which is opened without waiting on a writer,
+/// so nothing planted in the folder can hold or flood its reader.
+fn read_at(opened: impl AsFd, name: &str) -> Option<Record> {
+    let stat = rustix::fs::statat(&opened, name, AtFlags::SYMLINK_NOFOLLOW).ok()?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return None;
+    }
+    let opened = rustix::fs::openat(
+        &opened,
+        name,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
         Mode::empty(),
     )
@@ -315,7 +326,7 @@ fn read_file(path: &Path) -> Option<Record> {
     }
     let record: Record = serde_json::from_slice(&text).ok()?;
     sound(&record).ok()?;
-    let named = path.file_stem()?.to_str()?;
+    let named = name.strip_suffix(".json")?;
     (named == record.source.name()).then_some(record)
 }
 
@@ -340,23 +351,76 @@ impl Living for Here {
         if rustix::process::test_kill_process(id) == Err(rustix::io::Errno::SRCH) {
             return false;
         }
-        match (started, started_at(pid)) {
-            (Some(said), Some(is)) => said == is,
-            // Where the system can't say when a process started, its
-            // living is all that is known.
-            _ => true,
-        }
+        same_start(started, started_at(pid))
     }
 }
 
-/// When process `pid` started, in clock ticks since boot, as its `stat`
-/// tells it on Linux: the twentieth field after its name, which is in
-/// brackets and may hold spaces or brackets itself. None elsewhere.
+/// Whether a living process whose start is `is` now, where that can be
+/// read, is the one a receptor said started at `said`. A start said but
+/// unreadable now may be another account's process holding the pid, as
+/// macOS keeps some processes' starts from other accounts, so it isn't
+/// taken as the receptor. Where no start was said, as on a system that
+/// can't say one, its living is all that is known.
+fn same_start(said: Option<u64>, is: Option<u64>) -> bool {
+    match (said, is) {
+        (Some(said), Some(is)) => said == is,
+        (Some(_), None) => false,
+        (None, _) => true,
+    }
+}
+
+/// When process `pid` started, or None where it's gone or the system
+/// can't say. On Linux it's in clock ticks since boot, as its `stat`
+/// tells it: the twentieth field after its name, which is in brackets
+/// and may hold spaces or brackets itself. On macOS it's in seconds since
+/// the epoch, as libproc tells it.
 #[must_use]
 pub fn started_at(pid: u32) -> Option<u64> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (_, after) = stat.rsplit_once(')')?;
-    after.split_whitespace().nth(19)?.parse().ok()
+    if cfg!(target_os = "linux") {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, after) = stat.rsplit_once(')')?;
+        after.split_whitespace().nth(19)?.parse().ok()
+    } else {
+        started_as_libproc_says(pid)
+    }
+}
+
+/// When process `pid` started, in seconds since the epoch, as libproc's
+/// BSD information for it says, or None where it's gone. `ps` would say
+/// the same, but it is setuid and can't run inside a Nix build.
+#[cfg(target_os = "macos")]
+fn started_as_libproc_says(pid: u32) -> Option<u64> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    #[expect(
+        unsafe_code,
+        reason = "macOS says when a process started only through libproc"
+    )]
+    // SAFETY: the buffer is a proc_bsdinfo of exactly the size given, and
+    // it is read only once proc_pidinfo says it filled all of it.
+    let filled = unsafe {
+        let wrote = libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        );
+        if wrote == size {
+            Some(info.assume_init())
+        } else {
+            None
+        }
+    };
+    filled.map(|info| info.pbi_start_tvsec)
+}
+
+/// None: this system says nowhere when a process started, so its living
+/// is all that is known.
+#[cfg(not(target_os = "macos"))]
+fn started_as_libproc_says(_pid: u32) -> Option<u64> {
+    None
 }
 
 /// Every receptor `folder` holds for `realm`, by source, each judged as
@@ -370,23 +434,21 @@ pub fn judged(
     now: Timestamp,
     living: &impl Living,
 ) -> BTreeMap<Source, Record> {
-    if !is_own_folder(folder) {
+    let Ok(opened) = opened_folder(folder) else {
         return BTreeMap::new();
-    }
-    let Ok(files) = fs::read_dir(folder) else {
+    };
+    let Ok(files) = rustix::fs::Dir::read_from(&opened) else {
         return BTreeMap::new();
     };
     files
         .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension().is_some_and(|ext| ext == "json")
-                && !path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with('.'))
+        .filter_map(|entry| entry.file_name().to_str().ok().map(str::to_owned))
+        .filter(|name| {
+            // A JSON file not being staged under a dot-name; each read
+            // holds its name to its record's source.
+            name.strip_suffix(".json").is_some() && !name.starts_with('.')
         })
-        .filter_map(|path| read_file(&path))
+        .filter_map(|name| read_at(&opened, &name))
         .filter(|record| record.realm == realm)
         .map(|mut record| {
             record.state = judged_state(&record, now, living);
@@ -432,7 +494,10 @@ const SETTLED_AFTER: Duration = Duration::from_millis(20);
 /// judging reads the disk off the runtime, so a slow disk holds only
 /// this.
 pub async fn keep(folder: PathBuf, realm: String, held: Held, tell: impl Fn() + Send + 'static) {
-    let made = owned(&folder);
+    let making = folder.clone();
+    let made = tokio::task::spawn_blocking(move || owned(&making).map(drop))
+        .await
+        .unwrap_or_else(|_| Err(io::Error::other("making the folder panicked")));
     let (heard, mut changed) = mpsc::unbounded_channel();
     // Without a watch, as on a folder that can't be made, the receptors
     // are still judged each round. The watch lasts as long as this does.
@@ -811,11 +876,40 @@ mod tests {
     }
 
     #[test]
+    fn a_process_gone_has_no_start_and_lives_no_more() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("a process to end");
+        let pid = child.id();
+        let started = started_at(pid);
+        child.wait().expect("it ends");
+        assert_eq!(started_at(pid), None, "a pid gone has no start");
+        assert!(!Here.lives(pid, started), "a pid gone lives no more");
+    }
+
+    #[test]
     fn this_process_lives_here_and_one_started_otherwise_doesnt() {
         let me = std::process::id();
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
+            assert!(started_at(me).is_some(), "this process's start is known");
+        }
         assert!(Here.lives(me, started_at(me)));
         if let Some(started) = started_at(me) {
             assert!(!Here.lives(me, Some(started + 1)), "a pid used again");
         }
+    }
+
+    #[test]
+    fn a_start_said_is_held_to_the_start_read_and_one_unreadable_isnt_the_receptor() {
+        assert!(same_start(Some(700), Some(700)), "the same start");
+        assert!(!same_start(Some(700), Some(701)), "another start");
+        assert!(
+            !same_start(Some(700), None),
+            "a start said but unreadable now may be another account's process"
+        );
+        assert!(
+            same_start(None, Some(700)) && same_start(None, None),
+            "no start said leaves living all that is known"
+        );
     }
 }

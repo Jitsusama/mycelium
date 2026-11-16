@@ -210,7 +210,18 @@ impl Mycelium {
 fn receptor_cell(record: &Value) -> Option<Cell> {
     let source = Source::named(record["source"].as_str()?)?;
     let machine = record["machine"].as_str()?.to_owned();
-    let text = |field: &str| record[field].as_str().map(str::to_owned);
+    // A record is what its receptor wrote, which nothing vouches for, so
+    // only a time is drawn as its since and only a state's word as its
+    // state: nothing else a field holds reaches the map. Its machine is
+    // the node's own word, put there as the node serves it.
+    let since = record["since"]
+        .as_str()
+        .and_then(|said| said.parse::<jiff::Timestamp>().ok())
+        .map(|at| at.to_string());
+    let state = serde_json::from_value::<receptor::State>(record["state"].clone())
+        .ok()
+        .and_then(|state| serde_json::to_value(state).ok())
+        .and_then(|word| word.as_str().map(str::to_owned));
     Some(Cell {
         kind: "cell",
         name: format!("{}@{machine}", source.name()),
@@ -225,11 +236,11 @@ fn receptor_cell(record: &Value) -> Option<Cell> {
         usage: Usage::default(),
         leads: Vec::new(),
         machine: Some(machine),
-        since: text("since"),
+        since,
         quest: None,
         plan: None,
         cwd: None,
-        state: text("state"),
+        state,
         busy: None,
         runs: None,
         counts: serde_json::from_value::<Counts>(record["counts"].clone()).ok(),
