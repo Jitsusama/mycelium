@@ -6152,20 +6152,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_receptor_reading_is_sent_to_a_watch_of_cells_and_its_network_is_served() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("skiff").join("work.sock");
-        let store = Memory::default();
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
-        client
-            .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
-            .await;
-        client.next().await;
-
+    /// Writes beside the node at `socket` that this test's own process
+    /// reads Slack for the work realm, as a receptor says so.
+    fn slack_read_beside(socket: &Path) {
         let now = jiff::Timestamp::now();
         let pid = std::process::id();
         let reading = receptor::Record {
@@ -6185,14 +6174,34 @@ mod tests {
         };
         let folder = socket.with_file_name("receptors");
         receptor::write(&folder, "work", reading, &receptor::Here).expect("the receptor is kept");
+    }
+
+    /// The record of `key` among what a watch's `changed` sent, if any.
+    fn sent(changed: &Value, key: &str) -> Option<Value> {
+        changed["changed"]
+            .as_array()
+            .and_then(|each| each.iter().find(|one| one["key"] == key))
+            .cloned()
+    }
+
+    #[tokio::test]
+    async fn a_receptor_reading_is_sent_to_a_watch_of_cells_at_once() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
+            .await;
+        client.next().await;
+
+        slack_read_beside(&socket);
         // No session changes, so only the receptor's reading tells the
         // watch.
-        let slack = |changed: &Value| {
-            changed["changed"]
-                .as_array()
-                .and_then(|each| each.iter().find(|one| one["key"] == "cell:slack@skiff"))
-                .cloned()
-        };
+        let slack = |changed: &Value| sent(changed, "cell:slack@skiff");
         let mut changed = client.next().await;
         while slack(&changed).is_none() {
             changed = client.next().await;
@@ -6207,7 +6216,24 @@ mod tests {
             ),
             "a receptor's reading is sent to a watch of cells as its cell: {changed}"
         );
+    }
 
+    #[tokio::test]
+    async fn the_source_a_receptor_senses_is_a_network_the_node_serves() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "receptor"}))
+            .await;
+        client.next().await;
+
+        slack_read_beside(&socket);
+        while sent(&client.next().await, "receptor:slack").is_none() {}
         client
             .ask(json!({"id": 3, "ask": "get", "keys": ["network:outside.slack"]}))
             .await;

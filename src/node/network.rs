@@ -168,3 +168,33 @@ fn lean(session: &Session, standing: Option<&str>) -> Value {
     put("standing", standing.into());
     Value::Object(fields)
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn a_session_as_the_networks_read_it_keeps_what_it_is_doing() {
+        let doing = json!({"plan": "PLAN-20261115-8CYRTK", "item": 9,
+                           "next": "Serve the events", "at": "2026-11-15T15:50:00Z"});
+        let session: Session = serde_json::from_value(json!({
+            "id": "019a0000-0000-7000-8000-000000000000",
+            "address": "REEF01",
+            "machine": "kestrel",
+            "groups": [],
+            "state": "busy",
+            "doing": doing,
+            "at": "2026-11-15T15:50:00Z",
+        }))
+        .expect("a session");
+        // A cell's plan is what its session is doing, so a session read
+        // without it makes a cell with no plan.
+        assert_eq!(
+            lean(&session, Some("running"))["doing"],
+            doing,
+            "the node's session keeps its plan as the command's does"
+        );
+    }
+}
