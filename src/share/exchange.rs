@@ -471,13 +471,10 @@ pub struct Exchange {
     worker: bool,
     /// Whether every quest shared only for those under it is withheld
     /// from the other end, as from a worker ([`Self::withhold_above`]).
-    above_withheld: bool,
-    /// Whether the hold on the quests above lifted since the last look,
-    /// so what the other end last said it shares is taken up again.
-    take_again: bool,
-    /// What the other end said it holds of each quest above withheld or
-    /// not taken up, heard again once the hold lifts, since it says it
-    /// again only when it changes.
+    above: Above,
+    /// What the other end said it holds of each quest the hold on the
+    /// quests above kept from being heard, by the quest's id, heard again
+    /// once the hold lifts ([`Self::keep_back`]).
     held_back: BTreeMap<String, BTreeMap<String, State>>,
     /// The quests whose whole record was last said, rather than their
     /// README alone ([`Self::whole`]).
@@ -506,6 +503,19 @@ fn may_be_machine(name: &str) -> bool {
 const SWEEP_AGAIN: Duration = Duration::from_secs(60);
 
 /// The quests the other end said it shares.
+/// How a link stands with the quests shared only for those under them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Above {
+    /// Carried, as their README alone.
+    Carried,
+    /// Withheld from the other end, as from a worker.
+    Withheld,
+    /// Carried again since the last look, so what the other end said of
+    /// them while they were withheld is taken up
+    /// ([`Exchange::take_up_held_back`]).
+    Lifted,
+}
+
 #[derive(Debug, Default)]
 struct Theirs {
     /// Every one.
@@ -586,8 +596,7 @@ impl Exchange {
             sweep_again: BTreeMap::new(),
             above_again: true,
             worker: false,
-            above_withheld: false,
-            take_again: false,
+            above: Above::Carried,
             held_back: BTreeMap::new(),
             whole: BTreeSet::new(),
             passed_over: BTreeSet::new(),
@@ -601,22 +610,31 @@ impl Exchange {
     /// ([`Self::for_worker`]) are withheld for good, whatever its machine
     /// says of itself.
     pub fn withhold_above(&mut self, withheld: bool) {
-        let withheld = withheld || self.worker;
-        self.take_again |= self.above_withheld && !withheld;
-        self.above_withheld = withheld;
+        self.above = if withheld || self.worker {
+            Above::Withheld
+        } else if self.above == Above::Withheld {
+            Above::Lifted
+        } else {
+            self.above
+        };
+    }
+
+    /// Whether every quest shared only for those under it is withheld.
+    fn above_withheld(&self) -> bool {
+        self.above == Above::Withheld
     }
 
     /// Whether the quest `ledger` keeps is withheld from the other end: one
     /// shared only for those under it, while those are withheld.
     fn withholds(&self, ledger: &Ledger) -> bool {
-        self.above_withheld && ledger.above
+        self.above_withheld() && ledger.above
     }
 
     /// Whether quest `id`, which this end shares, is withheld from the
     /// other end, as [`Self::withholds`] says.
     fn withholds_quest(&self, id: &str) -> io::Result<bool> {
         let ledgers = self.places.ledgers();
-        Ok(self.above_withheld && ledgers.shares(id) && self.withholds(&ledgers.hold(id)?.ledger))
+        Ok(self.above_withheld() && ledgers.shares(id) && ledgers.hold(id)?.ledger.above)
     }
 
     /// Whether this link carries quest `id`'s whole record, as `ledger`
@@ -669,7 +687,7 @@ impl Exchange {
     pub fn for_worker(self) -> Self {
         Self {
             worker: true,
-            above_withheld: true,
+            above: Above::Withheld,
             ..self
         }
     }
@@ -799,20 +817,11 @@ impl Exchange {
     /// and what changed of the rest.
     pub fn look(&mut self) -> io::Result<Vec<Say>> {
         self.cloning.reap();
-        // What the other end said while the quests above were withheld is
-        // taken up once they aren't, since it says it again only when it
-        // changes; the hold stays lifted to be taken up again until all of
-        // it is.
-        let mut replayed = Vec::new();
-        if self.take_again {
-            self.take_up_theirs()?;
-            let held_back: Vec<String> = self.held_back.keys().cloned().collect();
-            for quest in held_back {
-                let files = self.held_back.get(&quest).cloned().unwrap_or_default();
-                replayed.extend(self.hear(Say::Holds { quest, files })?);
-            }
-            self.take_again = false;
-        }
+        let replayed = if self.above == Above::Lifted {
+            self.take_up_held_back()
+        } else {
+            Vec::new()
+        };
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
         let mut holds = Vec::new();
@@ -962,6 +971,7 @@ impl Exchange {
                     scratch,
                     clones,
                 });
+                self.drop_unnamed();
                 self.take_up_theirs()?;
                 Ok(Vec::new())
             }
@@ -981,7 +991,7 @@ impl Exchange {
             // is what it asks: it never holds such a quest of this end's.
             // What another end holds of one is kept for when the hold lifts.
             Say::Holds { quest, files } if self.withholds_quest(&quest)? => {
-                self.held_back.insert(quest, files);
+                self.keep_back(quest, files);
                 Ok(Vec::new())
             }
             Say::Want { quest, .. } | Say::Piece { quest, .. } | Say::File { quest, .. }
@@ -991,7 +1001,10 @@ impl Exchange {
             }
             Say::Holds { quest, files } => {
                 if !self.take_up(&quest)? {
-                    self.held_back.insert(quest, files);
+                    // Only what the hold refused is heard again, as it lifts.
+                    if self.above_withheld() {
+                        self.keep_back(quest, files);
+                    }
                     return Ok(Vec::new());
                 }
                 self.held_back.remove(&quest);
@@ -1038,7 +1051,7 @@ impl Exchange {
             .is_some_and(|theirs| theirs.above.contains(id));
         // Nothing of a quest withheld comes back, so this end's own record
         // of it isn't moved aside for it.
-        if self.spent_above(id, above)? || (above && self.above_withheld) {
+        if self.spent_above(id, above)? || (above && self.above_withheld()) {
             return Ok(false);
         }
         self.move_aside(&self.places.record(id), id, "record")?;
@@ -1046,6 +1059,64 @@ impl Exchange {
         held.ledger.above = above;
         held.keep()?;
         Ok(true)
+    }
+
+    /// Keeps what the other end said it holds of quest `id` while the
+    /// quests above are withheld, gathering each change it says, since a
+    /// Holds after the first says only what changed. A worker's is let be:
+    /// its hold never lifts.
+    fn keep_back(&mut self, id: String, files: BTreeMap<String, State>) {
+        if !self.worker {
+            self.held_back.entry(id).or_default().extend(files);
+        }
+    }
+
+    /// Takes up, once the quests above aren't withheld, what the other end
+    /// said while they were, since it says it again only when it changes:
+    /// each quest it shares, then what it held of each it still names,
+    /// returning what this end asks for. What fails is logged and tried
+    /// again at the next look, losing nothing the rest asked for.
+    fn take_up_held_back(&mut self) -> Vec<Say> {
+        let mut failed = false;
+        if let Err(error) = self.take_up_theirs() {
+            eprintln!(
+                "what {} shares isn't taken up yet, so the next look tries again: {error}",
+                self.other
+            );
+            failed = true;
+        }
+        self.drop_unnamed();
+        let mut wants = Vec::new();
+        let held_back: Vec<String> = self.held_back.keys().cloned().collect();
+        for quest in held_back {
+            let files = self.held_back.get(&quest).cloned().unwrap_or_default();
+            match self.hear(Say::Holds {
+                quest: quest.clone(),
+                files,
+            }) {
+                Ok(said) => wants.extend(said),
+                Err(error) => {
+                    eprintln!(
+                        "what {} holds of {quest} isn't taken up yet, so the next look tries \
+                         again: {error}",
+                        self.other
+                    );
+                    failed = true;
+                }
+            }
+        }
+        if !failed {
+            self.above = Above::Carried;
+        }
+        wants
+    }
+
+    /// Forgets what the other end held of each quest it no longer names,
+    /// so none is taken up here as a quest of this end's own.
+    fn drop_unnamed(&mut self) {
+        let named = self.theirs.as_ref().map(|theirs| &theirs.quests);
+        self.held_back
+            .retain(|quest, _| named.is_some_and(|named| named.contains(quest)));
     }
 
     /// Takes up what the other end last said it shares: each quest, then
@@ -2014,6 +2085,75 @@ mod tests {
                 .as_deref(),
             Some(TOP_README),
             "and its README asked for, though skiff says nothing new of it"
+        );
+    }
+
+    #[test]
+    fn what_a_withheld_end_held_of_a_parent_it_no_longer_names_is_let_be() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        under_top(&skiff, top, child);
+        let own = kestrel.places.quests.join(top).join("README.md");
+        put(
+            &kestrel.places.quests,
+            &format!("{top}/README.md"),
+            "kestrel's own\n",
+        );
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        near.withhold_above(true);
+        let said = far.look().expect("skiff looks");
+        carry(said, &mut far, &mut near);
+        // Skiff stops naming the parent before the hold lifts.
+        near.hear(Say::Shares {
+            quests: vec![child.to_owned()],
+            scratch: BTreeMap::new(),
+            clones: BTreeMap::new(),
+            ended: BTreeSet::new(),
+            above: BTreeSet::new(),
+        })
+        .expect("kestrel hears");
+
+        near.withhold_above(false);
+        near.look().expect("kestrel looks");
+        assert!(
+            !kestrel.places.ledgers().shares(top),
+            "what skiff held of a parent it no longer names isn't taken up"
+        );
+        assert_eq!(
+            fs::read_to_string(own).ok().as_deref(),
+            Some("kestrel's own\n"),
+            "so kestrel's own record of it stays"
+        );
+    }
+
+    #[test]
+    fn each_change_a_withheld_end_says_of_a_parent_is_kept_for_when_the_hold_lifts() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let top = "QEST-20261007-WCJQSG";
+        let mut near = kestrel.exchange(&skiff);
+        near.withhold_above(true);
+        near.hear(Say::Shares {
+            quests: vec![top.to_owned()],
+            scratch: BTreeMap::new(),
+            clones: BTreeMap::new(),
+            ended: BTreeSet::new(),
+            above: BTreeSet::from([top.to_owned()]),
+        })
+        .expect("kestrel hears");
+        // A Holds after the first says only what changed.
+        for key in ["README.md", "JOURNEY.md"] {
+            near.hear(Say::Holds {
+                quest: top.to_owned(),
+                files: BTreeMap::from([(key.to_owned(), State::default())]),
+            })
+            .expect("kestrel hears");
+        }
+        assert_eq!(
+            near.held_back.get(top).map(|files| files.len()),
+            Some(2),
+            "each file skiff said it holds is kept, not the last said alone"
         );
     }
 
