@@ -4739,7 +4739,7 @@ mod tests {
     #[tokio::test]
     async fn an_ordered_carry_takes_the_stricter_of_the_fence_claimed_and_shown() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("optimus").join("work.sock");
+        let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let (_stop, _node, _client) =
             harbour_claiming(&store, &socket, &orchestrations(), &[], "fence").await;
