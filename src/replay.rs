@@ -14,6 +14,11 @@
 //! a run's load passes with its asker. Answers that named no machine are
 //! left as they were, starts and asks alike.
 //!
+//! An answer the rules placing work now would no longer give under the
+//! weights that gave it, as a worker refusing work that names none, is
+//! left as it was and counted apart, neither a start nor an ask: what
+//! the rules changed since is never read as the replayed weights' doing.
+//!
 //! Those readings carry the work where it was kept, so a changed choice
 //! is judged on a machine that never carried it: a replay flatters a set
 //! that changes much, and how many it changed is said beside its
@@ -48,6 +53,10 @@ pub struct Replay {
     /// judged in hindsight: this says only how often the weights would
     /// have told an asker something else.
     pub answered: Vec<Change>,
+    /// How many kept answers that named a machine the rules now wouldn't
+    /// draw under the weights that gave them. Each is left as it was and
+    /// counted in neither `starts` nor `asks`.
+    pub stale: usize,
     /// Hindsight on the starts as they were placed.
     pub kept: Hindsight,
     /// Hindsight on the starts as the weights would have placed them.
@@ -75,18 +84,23 @@ pub fn replay(records: &[Record], readings: &[Reading], weights: &Weights) -> Re
     let mut changed = Vec::new();
     let mut asks = 0;
     let mut answered = Vec::new();
+    let mut stale = 0;
     let mut replayed = Vec::with_capacity(records.len());
     for record in records {
         let Some((kept, at)) = answer(record) else {
             replayed.push(record.clone());
             continue;
         };
-        let decision =
-            placement::decide_as(&record.work, &record.machines, &record.loads, at, weights);
-        let drawn = decision
-            .judged
-            .iter()
-            .any(|judged| judged.machine == kept && judged.chance > 0.0);
+        let decide = |weights| {
+            placement::decide_as(&record.work, &record.machines, &record.loads, at, weights)
+        };
+        if !draws(&decide(&record.decision.weights), kept) {
+            stale += 1;
+            replayed.push(record.clone());
+            continue;
+        }
+        let decision = decide(weights);
+        let drawn = draws(&decision, kept);
         let change = Change {
             at: record.at.clone(),
             kept: kept.to_owned(),
@@ -118,6 +132,7 @@ pub fn replay(records: &[Record], readings: &[Reading], weights: &Weights) -> Re
         changed,
         asks,
         answered,
+        stale,
         kept: hindsight::judge(records, readings),
         replayed: hindsight::judge(&replayed, readings),
     }
@@ -130,6 +145,14 @@ fn answer(record: &Record) -> Option<(&str, jiff::Timestamp)> {
         placed_on(&record.decision.placement)?,
         record.at.parse().ok()?,
     ))
+}
+
+/// Whether `decision` might have drawn `machine`.
+fn draws(decision: &placement::Decision, machine: &str) -> bool {
+    decision
+        .judged
+        .iter()
+        .any(|judged| judged.machine == machine && judged.chance > 0.0)
 }
 
 /// The machine `placement` put work on, if it did.
@@ -319,6 +342,44 @@ mod tests {
             (1, 1),
             "the ask is judged neither as kept nor as replayed"
         );
+    }
+
+    #[test]
+    fn an_answer_the_rules_since_would_refuse_is_left_out_of_what_the_weights_change() {
+        // Placed on a paid machine before a worker refused work that
+        // doesn't name it: no weights would draw it there now, which is
+        // the rule's doing, not theirs.
+        let mut cloud = machine("osprey", "linux", 32, &["internet"]);
+        cloud.declared.as_mut().expect("declared").costs_money = true;
+        let home = pressed(machine("kestrel", "linux", 32, &["internet"]), 90.0);
+        let realm = vec![home, cloud];
+        let mut started = kept("kestrel", realm, Loads::new());
+        started.decision.placement = Placement::Placed {
+            machine: "osprey".to_owned(),
+            passed: Vec::new(),
+        };
+        let asked = Record {
+            start: false,
+            ..started.clone()
+        };
+        let readings = [a_minute_on(&[("kestrel", 0.9), ("osprey", 0.1)])];
+        for weights in [
+            Weights::STARTING,
+            Weights {
+                cpu: 3.0,
+                ..Weights::STARTING
+            },
+        ] {
+            let replay = replay(&[started.clone(), asked.clone()], &readings, &weights);
+            assert_eq!(replay.stale, 2, "under {weights:?}");
+            assert_eq!((replay.starts, replay.asks), (0, 0), "under {weights:?}");
+            assert_eq!(
+                (&replay.changed[..], &replay.answered[..]),
+                (&[][..], &[][..]),
+                "under {weights:?}"
+            );
+            assert_eq!(replay.replayed, replay.kept, "under {weights:?}");
+        }
     }
 
     #[test]
