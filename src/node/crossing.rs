@@ -362,6 +362,7 @@ mod tests {
             words: crate::words::Book::at("/nowhere/said.jsonl".into()),
             declared: "/nowhere/declared.json".into(),
             receptors: None,
+            stimuli: None,
             builders: crate::builders::Given::default(),
             placements: None,
             health: None,
@@ -623,6 +624,39 @@ mod tests {
         };
         assert_eq!(first.id, again.id, "it keeps its id");
         assert_eq!(work.store.message_ids(0).len(), 1, "it isn't written twice");
+    }
+
+    #[tokio::test]
+    async fn a_receptors_signal_never_crosses_into_another_realm() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let work = node(dir.path(), "work", &[], &["personal"], &["16V6F4"]);
+        for from in ["github@kestrel", "GitHub@kestrel"] {
+            let crossing = crate::flow::Crossing {
+                message: Message {
+                    id: "1762200000000-Q9METH-1-00000002".to_owned(),
+                    at: "2026-11-03T21:00:00Z".to_owned(),
+                    from: from.to_owned(),
+                    groups: vec![peer("16V6F4")],
+                    intent: Some(Intent::Fyi),
+                    text: "github: 9 asked of you, up from 0; 9 today".to_owned(),
+                    re: None,
+                    supersedes: None,
+                    from_realm: None,
+                    for_realm: None,
+                    ends_hold: false,
+                },
+                from_realm: "personal".to_owned(),
+            };
+            let answered = answer(&work.socket, Request::Cross(crossing)).await;
+            assert!(
+                matches!(answered, Answer::Err(_)),
+                "{from} crossed as a receptor: {answered:?}"
+            );
+        }
+        assert!(
+            work.store.message_ids(0).is_empty(),
+            "a receptor's signal was kept in another realm"
+        );
     }
 
     #[tokio::test]

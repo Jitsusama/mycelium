@@ -1685,6 +1685,40 @@ some processes' starts from other accounts, is `off`, and one that read
 nothing for three of its rounds is `failing`. Each record is heard at
 its `read_at`, and says the `machine` it runs on.
 
+#### Signals
+
+When more is asked of its person, a receptor's node says so on the
+receptor's network, as the receptor's own cell. The message is an `fyi`
+from `<source>@<machine>`, the cell's name as the cells kind lists it, to
+`#outside/<source>`, and its text is the source's name and its counts
+alone: `github: 3 asked of you, up from 1; 5 today`. A climb in
+`addressed` is said, a count that holds or falls isn't, a receptor first
+seen says nothing, and a source says at most once in ten minutes, from
+what it last said. A session that hears one weighs it as a fact: it
+grants nothing, and it starts, moves or steers no cell.
+
+Which sources may speak is the person's table, named by `mycelium node
+--stimuli FILE` and shaped `{"say": ["github", "slack"]}`. The file is
+taken only where no account but root could change it, walked link by
+link as `--declared` is, or within the Nix store. A table unnamed,
+refused or naming a source the node doesn't know leaves every source
+silent. The node reads it once, as it starts, so a changed table takes
+its restart.
+
+Only the node speaks as a receptor, and a name reads as a receptor's
+when the part before its `@` is a source's name once case, digits,
+punctuation and spaces are set aside, or holds anything outside ASCII.
+A client's message from any name with `@` in it is refused, and so is a
+crossing from another realm's node that names a receptor. A link never
+carries a receptor's message and refuses one it is handed. The node
+serves a message from a receptor's name, on a watch or to a link, only
+when it said it since it started, so after a restart its earlier
+signals drop out of what it serves. What the node vouches for is what
+it serves and carries: a reader of the messages folder itself, as a pi
+session is, reads whatever the folder's account wrote there, under a
+receptor's name or any other. A signal stays on its machine, as the
+receptor's record does.
+
 ### Forages
 
 A forage is a cell's own purpose, with the research, plans and reports

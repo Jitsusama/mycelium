@@ -20,8 +20,17 @@ use crate::wire::Draft;
 const MACHINE_TARGETS: [&str; 3] = ["#machine", "#all", "#global"];
 
 /// Whether a mesh message is its machine's alone: sent to the machine-wide
-/// group, or answering a message that was, as `earlier` finds it.
+/// group, or answering a message that was, as `earlier` finds it, or said
+/// by one of its receptors, whose signals stay on their machine as the
+/// receptors' records do.
 pub fn stays_here(body: &Value, earlier: impl Fn(&str) -> Option<Value>) -> bool {
+    if body
+        .get("from")
+        .and_then(Value::as_str)
+        .is_some_and(crate::stimuli::speaks_as_receptor)
+    {
+        return true;
+    }
     let to_machine = |body: &Value| {
         body.get("to").and_then(Value::as_array).is_some_and(|to| {
             to.iter()
@@ -502,6 +511,25 @@ mod tests {
         assert!(
             !stays_here(&json!({"to": ["#quest/4uhc5q"]}), earlier),
             "a quest's group crosses"
+        );
+    }
+
+    #[test]
+    fn a_receptors_signal_stays_on_its_machine() {
+        let nothing = |_: &str| None;
+        assert!(
+            stays_here(
+                &json!({"from": "github@skiff", "to": ["#outside/github"]}),
+                nothing
+            ),
+            "a receptor's signal crossed a link"
+        );
+        assert!(
+            !stays_here(
+                &json!({"from": "mycelium@skiff", "to": ["#outside/github"]}),
+                nothing
+            ),
+            "a name with @ that no receptor holds stayed as if it were one"
         );
     }
 

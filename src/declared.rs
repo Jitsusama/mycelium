@@ -289,7 +289,7 @@ const HOPS: usize = 40;
 /// each link passed through belongs to one of them and lets no other
 /// write, but for a sticky folder, where nobody else may move what isn't
 /// theirs. Within the Nix store nothing changes, so nothing there is asked.
-fn sealed(file: &Path, declarers: &[u32]) -> Result<(), String> {
+pub(crate) fn sealed(file: &Path, declarers: &[u32]) -> Result<(), String> {
     let given = std::path::absolute(file).map_err(|error| format!("it isn't there: {error}"))?;
     let mut at = PathBuf::from("/");
     trusted(

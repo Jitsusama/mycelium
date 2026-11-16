@@ -500,6 +500,12 @@ struct Node {
     /// reads and how its agents run, so the journal shows it too.
     #[arg(long)]
     declared: Option<PathBuf>,
+    /// The person's table of which receptors' climbs the node says on
+    /// their networks, as a file only root or the Nix store holds; one
+    /// any other account could write is refused. Unnamed, or refused,
+    /// every source is silent. PROTOCOL.md says its shape.
+    #[arg(long)]
+    stimuli: Option<PathBuf>,
     /// A realm this realm's text may cross into, one way, where a session
     /// names it; given again for each. PROTOCOL.md says what crosses.
     #[arg(long = "flow-to")]
@@ -1524,6 +1530,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         words: mycelium::words::Book::at(state.join("said.jsonl")),
         declared: declared.clone(),
         receptors: Some(mycelium::receptor::folder(&state)),
+        stimuli: node.stimuli,
         builders,
         placements: Some(mycelium::placements::Log::at(state.join("placements"))),
         health: node.health_socket,
