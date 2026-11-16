@@ -99,6 +99,7 @@ pub mod placements;
 pub mod reach;
 pub mod receptor;
 pub mod record;
+pub mod replay;
 pub mod room;
 pub mod run;
 pub mod served;
