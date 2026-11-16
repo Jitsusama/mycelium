@@ -9,9 +9,10 @@
 //! so its presence's time moves; most take a step and use more, and a
 //! few stop working, as Joel's did over 90 s on 2026-11-15.
 //!
-//! The changes are found as each of a number of watches finds them, a
-//! few times each, and the median time for all of them said, with the
-//! bytes one watch's serialize to.
+//! The changes are found as each of a number of watches finds them from
+//! one build, which works each moved record's change out once for all of
+//! them, a few times each, and the median time for all of them said, with
+//! the bytes one watch's serialize to.
 //!
 //! ```sh
 //! nix develop -c cargo bench --bench watched -- --cells 1000,10000 --watchers 1,50
@@ -23,7 +24,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use mycelium::daemon::{changes, record};
+use mycelium::daemon::{Build, Record, record};
 use serde_json::{Value, json};
 
 /// What to measure.
@@ -69,11 +70,11 @@ fn main() {
 }
 
 /// A kind's records by key, each shared, as a watch holds them.
-type Shared = BTreeMap<String, Arc<Value>>;
+type Shared = BTreeMap<String, Arc<Record>>;
 
 /// How many records changed from `before` to `after` asked `deep`, and
 /// the bytes they serialize to, with the median time over `runs` for
-/// `watchers` watches, each holding `before`, to find them.
+/// `watchers` watches, each holding `before`, to find them from one build.
 fn found(
     before: &Shared,
     after: &Shared,
@@ -83,11 +84,13 @@ fn found(
 ) -> ((usize, usize), Duration) {
     let mut took = Vec::new();
     let mut said = (0, 0);
+    let held = Arc::new(before.clone());
     for _ in 0..runs.max(1) {
+        let build = Build::after(after.clone(), Some(Arc::clone(&held)));
         let finding = Instant::now();
         let mut found = Vec::new();
         for _ in 0..watchers.max(1) {
-            found = changes(before, after, deep).0;
+            found = build.changes(before, None, deep).0;
         }
         took.push(finding.elapsed());
         let bytes = serde_json::to_vec(&found).map_or(0, |bytes| bytes.len());
@@ -126,8 +129,8 @@ fn made(cells: usize) -> (Shared, Shared) {
         let working = if random.below(20) == 0 { !busy } else { busy };
         let is = session(&id, beat, working, stepped, more, quest);
         let key = mycelium::daemon::key("session", &id);
-        before.insert(key.clone(), Arc::new(was));
-        after.insert(key, Arc::new(is));
+        before.insert(key.clone(), Arc::new(Record::from(was)));
+        after.insert(key, Arc::new(Record::from(is)));
     }
     (before, after)
 }

@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, Lines};
 use tokio::sync::{mpsc, watch};
@@ -26,7 +27,7 @@ mod records;
 mod watching;
 
 pub use ask::{Ask, Refusal, What, read, refused};
-pub use records::{Built, changes, key, record};
+pub use records::{Build, Built, Record, changes, key, record};
 use watching::{Watching, keep_watching};
 
 /// How many answers wait for a slow reader before a watch waits too; a
@@ -39,7 +40,7 @@ pub trait Holds: Send + Sync + 'static {
     fn kinds(&self) -> BTreeMap<String, Vec<&'static str>>;
     /// Every record of `kind` it holds now, by key, or none for a kind it
     /// doesn't hold.
-    fn records(&self, kind: &str) -> Option<BTreeMap<String, Value>>;
+    fn records(&self, kind: &str) -> Option<BTreeMap<String, Record>>;
     /// What changes each time `kind`'s records may have, or none for a
     /// kind it doesn't hold.
     fn told(&self, kind: &str) -> Option<watch::Receiver<u64>>;
@@ -71,11 +72,11 @@ pub trait Holds: Send + Sync + 'static {
 fn in_order<'a>(
     holds: &impl Holds,
     kind: &str,
-    records: impl Iterator<Item = &'a Value>,
-) -> Vec<&'a Value> {
-    let mut records: Vec<&Value> = records.collect();
+    records: impl Iterator<Item = &'a Record>,
+) -> Vec<&'a Record> {
+    let mut records: Vec<&Record> = records.collect();
     if holds.newest_first(kind) {
-        records.sort_by_key(|record| std::cmp::Reverse(heard(record)));
+        records.sort_by_key(|record| std::cmp::Reverse(record.heard()));
     }
     records
 }
@@ -86,22 +87,17 @@ fn in_order<'a>(
 fn listed(
     holds: &impl Holds,
     kind: &str,
-    records: BTreeMap<String, Value>,
+    records: BTreeMap<String, Record>,
     limit: Option<usize>,
-) -> Vec<Value> {
+) -> Vec<Record> {
     let limit = limit.unwrap_or(usize::MAX);
     if !holds.newest_first(kind) {
         return records.into_values().take(limit).collect();
     }
-    let mut all: Vec<Value> = records.into_values().collect();
-    all.sort_by_key(|record| std::cmp::Reverse(heard(record)));
+    let mut all: Vec<Record> = records.into_values().collect();
+    all.sort_by_key(|record| std::cmp::Reverse(record.heard()));
     all.truncate(limit);
     all
-}
-
-/// When `record` was heard, or the epoch where it says not.
-fn heard(record: &Value) -> i64 {
-    record.get("heard").and_then(Value::as_i64).unwrap_or(0)
 }
 
 /// What a daemon does for its clients beyond reading: what the person says
@@ -149,11 +145,11 @@ where
     loop {
         let now = match asked.take() {
             Some(Ok(ask)) => answer(&holds, ask, &answering, &mut watches),
-            Some(Err((id, refusal))) => Some(refused(&id, &refusal)),
+            Some(Err((id, refusal))) => Some(refused(&id, &refusal).to_string()),
             None => None,
         };
         if let Some(now) = now
-            && say(&mut writing, now.to_string()).await.is_err()
+            && say(&mut writing, now).await.is_err()
         {
             break;
         }
@@ -197,38 +193,57 @@ fn offered(holds: &impl Holds, kind: &str, deep: Vec<String>) -> Vec<String> {
     deep
 }
 
+/// A list's answer, its fields in the order a `Value` gives its keys.
+#[derive(Serialize)]
+struct Listed<'a, R> {
+    id: &'a Value,
+    records: Vec<R>,
+    took: Value,
+}
+
 /// The records of `kind` a list asks for, at most `limit` of them and only
-/// their `fields` if it names them, answered under `id`.
+/// their `fields` if it names them, answered under `id` as begun at
+/// `begun`, serialized. Asked for all their fields, the records are
+/// written as the bytes they are held as, none parsed.
 fn list_answer(
     holds: &impl Holds,
     id: &Value,
-    kind: String,
-    limit: Option<usize>,
-    fields: Option<&[String]>,
-) -> Result<Value, Refusal> {
+    (kind, limit, fields): (String, Option<usize>, Option<&[String]>),
+    begun: std::time::Instant,
+) -> Result<String, Refusal> {
     let Some(records) = holds.records(&kind) else {
         return Err(Refusal::UnknownKind(kind));
     };
-    let records: Vec<Value> = listed(holds, &kind, records, limit)
-        .into_iter()
-        .map(|record| match fields {
-            Some(paths) => fields::projected(record, paths),
-            None => record,
-        })
-        .collect();
-    Ok(json!({"id": id, "records": records}))
+    let records = listed(holds, &kind, records, limit);
+    let said = match fields {
+        Some(paths) => serde_json::to_string(&Listed {
+            id,
+            records: records
+                .iter()
+                .map(|record| fields::projected(record.value(), paths))
+                .collect(),
+            took: took(begun),
+        }),
+        None => serde_json::to_string(&Listed {
+            id,
+            records,
+            took: took(begun),
+        }),
+    };
+    // Records always serialize, being serialized already.
+    Ok(said.unwrap_or_default())
 }
 
-/// The answer to `ask`, now, or none for a watch, which answers through
-/// `answering` for as long as it lasts, a steer, which answers through it
-/// once its session's machine has it, or an unwatch, which answers not at
-/// all.
+/// The answer to `ask`, now and serialized, or none for a watch, which
+/// answers through `answering` for as long as it lasts, a steer, which
+/// answers through it once its session's machine has it, or an unwatch,
+/// which answers not at all.
 fn answer<H: Holds + Steers>(
     holds: &Arc<H>,
     ask: Ask,
     answering: &mpsc::Sender<String>,
     watches: &mut HashMap<String, Watching>,
-) -> Option<Value> {
+) -> Option<String> {
     let begun = std::time::Instant::now();
     let Ask { id, what } = ask;
     let answered = match what {
@@ -243,7 +258,10 @@ fn answer<H: Holds + Steers>(
             kind,
             limit,
             fields,
-        } => list_answer(holds.as_ref(), &id, kind, limit, fields.as_deref()),
+        } => match list_answer(holds.as_ref(), &id, (kind, limit, fields.as_deref()), begun) {
+            Ok(said) => return Some(said),
+            Err(refusal) => Err(refusal),
+        },
         What::Watch {
             kind,
             keys,
@@ -329,7 +347,7 @@ fn answer<H: Holds + Steers>(
     if let Some(fields) = answer.as_object_mut() {
         fields.insert("took".to_owned(), took(begun));
     }
-    Some(answer)
+    Some(answer.to_string())
 }
 
 /// Answers `id` through `answering` once `answered` ends, under the field
@@ -375,14 +393,14 @@ fn hello(holds: &impl Holds, id: &Value) -> Value {
 
 /// The records of `keys` held, in the order asked.
 fn got(holds: &impl Holds, keys: &[String]) -> Vec<Value> {
-    let mut by_kind: BTreeMap<&str, BTreeMap<String, Value>> = BTreeMap::new();
+    let mut by_kind: BTreeMap<&str, BTreeMap<String, Record>> = BTreeMap::new();
     keys.iter()
         .filter_map(|key| {
             let (kind, _) = key.split_once(':')?;
             if !by_kind.contains_key(kind) {
                 by_kind.insert(kind, holds.records(kind)?);
             }
-            by_kind.get(kind)?.get(key).cloned()
+            by_kind.get(kind)?.get(key).map(Record::value)
         })
         .collect()
 }

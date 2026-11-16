@@ -2,12 +2,9 @@
 //! bar what the node makes of them is held to: within the memory each
 //! test names, and in time that grows with the cells rather than faster.
 //! Its networks are held within the 30 MB the map and the launcher hold
-//! them to, each cell holding two trees. Its cells, a record each, are
-//! held within 80 MB, since ten thousand records of a dozen and more
-//! fields hold more than 30 MB themselves, until each is held as the
-//! bytes it is sent as, owed by 2026-11-17. The time is the processor's
-//! own for this
-//! thread, not the clock's, so a builder busy with other work, which only
+//! them to, each cell holding two trees. Its cells, a record each held
+//! as the bytes it is sent as, are held within 30 MB too. The time is the
+//! processor's own for this thread, not the clock's, so a builder busy with other work, which only
 //! makes this thread wait its turn, can't fail it. The time itself, 100 ms
 //! on the machine the bar is set for, is no builder's to hold, since
 //! builders run it several times slower, so each test says it, and holds
@@ -25,6 +22,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use mycelium::daemon::Record;
 use mycelium::node::Holding;
 use mycelium::record::Session;
 use serde_json::{Value, json};
@@ -64,7 +62,7 @@ pub fn holds_the_bar(
     formed: &str,
     at_most: usize,
     growth: &Growth,
-    making: impl Fn(&Holding<'_>) -> BTreeMap<String, Value>,
+    making: impl Fn(&Holding<'_>) -> BTreeMap<String, Record>,
 ) {
     let realm = Realm::of(CELLS);
     let before = HELD.load(Ordering::Relaxed);
@@ -140,7 +138,7 @@ impl Realm {
 
     /// How long the processor took making the records `making` makes of
     /// it, on this thread.
-    fn timed(&self, making: &impl Fn(&Holding<'_>) -> BTreeMap<String, Value>) -> Duration {
+    fn timed(&self, making: &impl Fn(&Holding<'_>) -> BTreeMap<String, Record>) -> Duration {
         let holding = self.holding();
         let begun = thread_time();
         drop(making(&holding));
@@ -153,7 +151,7 @@ impl Realm {
 fn fastest(
     fewer: &Realm,
     all: &Realm,
-    making: &impl Fn(&Holding<'_>) -> BTreeMap<String, Value>,
+    making: &impl Fn(&Holding<'_>) -> BTreeMap<String, Record>,
 ) -> (Duration, Duration) {
     (0..TIMINGS).fold((Duration::MAX, Duration::MAX), |(least, most), _| {
         (least.min(fewer.timed(making)), most.min(all.timed(making)))

@@ -7,14 +7,12 @@
 //! `builders`, and it is a `builder` record of its own.
 //!
 //! Every cell is made again at each change, as the networks are, and a
-//! watch is sent only the cells that changed (`daemon::changes`): ten
-//! thousand build within 80 MB, in time that grows with them, as
-//! `tests/cells.rs` shows; 30 MB once each record is held as the bytes
-//! it is sent as, owed by 2026-11-17.
+//! watch is sent only the cells that changed (`daemon::changes`). Each is
+//! held as the bytes it is sent as, made one at a time, so ten thousand
+//! build within 30 MB, in time that grows with them, as `tests/cells.rs`
+//! shows.
 
 use std::collections::BTreeMap;
-
-use serde_json::Value;
 
 use super::network::{self, Holding, Made, Standing};
 use crate::daemon;
@@ -32,7 +30,7 @@ pub const LIVE: [&str; 18] = [
 /// Every cell the node's records make, by key, each session standing as
 /// `standing` says: its sessions', its machines' and its receptors'. Each
 /// is heard when its own record was.
-pub fn records(held: &Holding<'_>, standing: &Standing<'_>) -> BTreeMap<String, Value> {
+pub fn records(held: &Holding<'_>, standing: &Standing<'_>) -> BTreeMap<String, daemon::Record> {
     let Made {
         mut mycelium,
         heard,
