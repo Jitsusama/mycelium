@@ -470,15 +470,17 @@ mod here {
         use std::ffi::c_int;
         use std::ptr;
 
-        use crate::busy::MachCore;
+        use crate::busy::{self, MachCore};
 
         /// `PROCESSOR_CPU_LOAD_INFO`: each core's ticks by state.
         const CPU_LOAD_INFO: c_int = 2;
         /// `KERN_SUCCESS`.
         const SUCCEEDED: c_int = 0;
-        /// `CPU_STATE_MAX`: the states each core's ticks are kept in.
-        const STATES: usize = 4;
 
+        #[expect(
+            unsafe_code,
+            reason = "the Mach calls a core's ticks are said through, which no crate here binds"
+        )]
         unsafe extern "C" {
             static mach_task_self_: u32;
             fn mach_host_self() -> u32;
@@ -533,15 +535,27 @@ mod here {
             // SAFETY: on success the kernel lent `words` ints at `info`,
             // read here before they are given back.
             let counts = unsafe { std::slice::from_raw_parts(info.cast::<u32>(), words) };
-            let cores = counts
-                .chunks_exact(STATES)
-                .take(processors)
-                .map(|core| [core[0], core[1], core[2], core[3]])
-                .collect();
+            let cores = busy::mach_cores(counts, processors);
             // SAFETY: gives back the whole array lent above, once, after
             // its last read.
             unsafe { vm_deallocate(task, info.addr(), words * size_of::<c_int>()) };
             Some(cores)
+        }
+
+        #[cfg(test)]
+        mod tests {
+            #[test]
+            fn the_mach_host_counts_every_core_it_has() {
+                let cores = super::cores().expect("the host says its cores' ticks");
+                let had = std::thread::available_parallelism().expect("a core count");
+                assert_eq!(cores.len(), had.get(), "one count for each core");
+                assert!(
+                    cores.iter().any(|&[user, system, idle, nice]| {
+                        u64::from(user) + u64::from(system) + u64::from(idle) + u64::from(nice) > 0
+                    }),
+                    "a running host has counted some time: {cores:?}"
+                );
+            }
         }
     }
 
