@@ -3674,6 +3674,7 @@ mod tests {
             keep: Box::new(()),
             refused: None,
             releases: false,
+            worker: false,
             hello_within: Some(link::dial::HELLO_WITHIN),
         }
     }

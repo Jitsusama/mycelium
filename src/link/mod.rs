@@ -251,6 +251,7 @@ pub async fn run(
         mut writing,
         keep: _keep,
         releases,
+        worker,
         hello_within,
         ..
     } = connection;
@@ -278,7 +279,9 @@ pub async fn run(
     };
     let reach = reach_start(&store, &other.machine);
     admitted(&store, &other.machine)?;
+    // A worker is sent and served nothing this machine shares.
     let exchange = shares
+        .filter(|_| !worker)
         .map(|places| Exchange::new(places, membership.hello().machine, other.machine.clone()));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
     let (answering, mut answered) = mpsc::unbounded_channel();
@@ -289,6 +292,7 @@ pub async fn run(
         here: membership.hello().machine,
         realm: membership.hello().realm,
         proven: membership.proves(),
+        worker,
         handover: Handover {
             releases: other.releases,
             ..Handover::default()
@@ -532,6 +536,9 @@ struct End<S> {
     /// Whether the other end is proven to be its machine, so may ask this
     /// one to update.
     proven: bool,
+    /// Whether the other end is a worker, which asks nothing of this
+    /// machine and speaks only for its own sessions ([`Connection::worker`]).
+    worker: bool,
     /// Where either machine's handover stands.
     handover: Handover,
     /// When this end last heard the other, and whether it should have.
@@ -716,16 +723,18 @@ impl<S: Store> End<S> {
                 steer,
                 checked,
             } => {
-                let reply =
-                    match self.following.as_mut() {
-                        Some(following) => following.deliver(&address, &steer, checked).map(|()| {
-                            Response::Steered {
+                let reply = match self.following.as_mut() {
+                    _ if self.worker => Err(format!("{} takes no steers from a worker", self.here)),
+                    Some(following) => {
+                        following
+                            .deliver(&address, &steer, checked)
+                            .map(|()| Response::Steered {
                                 machine: self.here.clone(),
                                 by: None,
-                            }
-                        }),
-                        None => Err(format!("{} carries no steers over this link", self.here)),
-                    };
+                            })
+                    }
+                    None => Err(format!("{} carries no steers over this link", self.here)),
+                };
                 send(writing, &Frame::Started { ask, reply }).await?;
             }
             Frame::Update { ask } => self.update(ask),
@@ -741,7 +750,9 @@ impl<S: Store> End<S> {
                 checked,
             } => self.carry(ask, (quest, to), checked),
             Frame::Follow { talks } => {
-                if let Some(following) = self.following.as_mut() {
+                // A worker following a talk here would read what this
+                // machine's sessions say in it.
+                if let Some(following) = self.following.as_mut().filter(|_| !self.worker) {
                     following.follow(talks);
                 }
             }
@@ -905,7 +916,8 @@ impl<S: Store> End<S> {
     }
 
     /// Keeps the presence the other end sent of `session`, with the leases
-    /// it holds and the id the link holds it by.
+    /// it holds and the id the link holds it by, unless a worker said it of
+    /// another machine's.
     fn hear_presence(
         &mut self,
         session: &str,
@@ -913,6 +925,14 @@ impl<S: Store> End<S> {
         leases: Option<Vec<Value>>,
         held: Option<String>,
     ) {
+        if self.worker && !speaks_for(&body, &self.other) {
+            eprintln!(
+                "{} spoke for {session}, a session of another machine's, which a worker can't, \
+                 so it isn't kept",
+                self.other
+            );
+            return;
+        }
         // The held id is the link's to say, never the presence's.
         if let Some(fields) = body.as_object_mut() {
             fields.remove(mesh::HELD_AS);
@@ -972,8 +992,13 @@ impl<S: Store> End<S> {
     /// from the link's own work, since starting waits on the holder.
     fn answer(&self, ask: u64, start: Start) {
         let answering = self.answering.clone();
-        let Some(node) = self.node.clone() else {
-            let refused = Err(format!("{} starts nothing over this link", self.here));
+        let node = self.node.clone().filter(|_| !self.worker);
+        let Some(node) = node else {
+            let refused = Err(if self.worker {
+                format!("{} starts nothing for a worker", self.here)
+            } else {
+                format!("{} starts nothing over this link", self.here)
+            });
             // The link outlives this call, so its loop is there to send it.
             let _ = answering.send((ask, refused));
             return;
@@ -991,7 +1016,9 @@ impl<S: Store> End<S> {
     /// other end is proven to be its machine, so nobody else may ask.
     fn update(&self, ask: u64) {
         let answering = self.answering.clone();
-        let refused = if self.proven {
+        let refused = if self.worker {
+            Err(format!("{} updates nothing for a worker", self.here))
+        } else if self.proven {
             self.node
                 .clone()
                 .ok_or_else(|| format!("{} updates over no link", self.here))
@@ -1364,6 +1391,13 @@ fn millis(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
+/// Whether a presence a worker said speaks only for a session of its own
+/// machine, `worker`: one that names no machine, or names that one.
+fn speaks_for(body: &Value, worker: &str) -> bool {
+    body.get(store::folders::MACHINE)
+        .is_none_or(|machine| machine.as_str() == Some(worker))
+}
+
 fn refusal(reason: String) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, reason)
 }
@@ -1439,6 +1473,7 @@ mod tests {
             keep: Box::new(()),
             refused: None,
             releases: false,
+            worker: false,
             hello_within: Some(dial::HELLO_WITHIN),
         }
     }
@@ -2323,6 +2358,137 @@ mod tests {
             "holding all the other machine said, it may be released"
         );
         assert_eq!(skiff.endings("lent", 0), 0, "a handover is no drop");
+    }
+
+    /// What a worker, tern, says to the machine that dialled it: its hello,
+    /// an ask for a file of `quest`, a presence of its own and one naming
+    /// the dialler's, the message `message`, then a start, a steer and an
+    /// update, asked as 1, 2 and 3.
+    fn a_workers_frames(quest: &str, message: &str) -> Vec<Frame> {
+        let start: Start =
+            serde_json::from_value(json!({"work": {}, "command": ["pi"]})).expect("a start");
+        let presence = |session: &str, body: Value| Frame::Presence {
+            session: session.to_owned(),
+            body,
+            leases: None,
+            held: None,
+        };
+        vec![
+            Frame::Hello(realm("tern").hello()),
+            Frame::Have {
+                messages: Vec::new(),
+                living: Some(Vec::new()),
+            },
+            Frame::Share(Say::Want {
+                quest: quest.to_owned(),
+                file: "README.md".to_owned(),
+                at: None,
+            }),
+            presence("sak9fz", json!({"session": "sak9fz"})),
+            presence("walgit", json!({"session": "walgit", "machine": "skiff"})),
+            Frame::Message {
+                id: message.to_owned(),
+                body: json!({"id": message, "to": ["@WCJQSG"], "text": "done"}),
+            },
+            Frame::Start { ask: 1, start },
+            Frame::Steer {
+                ask: 2,
+                address: "wcjqsg".to_owned(),
+                steer: json!({"text": "stop", "from": "joel", "id": "t1"}),
+                checked: true,
+            },
+            Frame::Update { ask: 3 },
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_worker_is_asked_and_asks_nothing_back() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let here = Places {
+            quests: dir.path().join("quests"),
+            scratch: dir.path().join("scratch"),
+            home: dir.path().join("home"),
+            state: dir.path().join("state"),
+        };
+        let quest = "QEST-20261013-4UHC5Q";
+        std::fs::create_dir_all(here.quests.join(quest)).expect("the quest made");
+        std::fs::write(here.quests.join(quest).join("README.md"), "# Ours\n")
+            .expect("its README written");
+        here.ledgers()
+            .hold(quest)
+            .expect("its ledger held")
+            .keep()
+            .expect("the quest shared");
+
+        let skiff = Memory::default();
+        let store = skiff.clone();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        let _skiff_end = tokio::spawn(async move {
+            run(
+                store,
+                &realm("skiff"),
+                Connection {
+                    worker: true,
+                    ..connection(reading, writing)
+                },
+                Some(here),
+                None,
+            )
+            .await
+        });
+        let (far_reading, mut far_writing) = tokio::io::split(far);
+        let mut lines = BufReader::new(far_reading).lines();
+
+        let message = recent(0, "SAK9FZ", 0);
+        for frame in a_workers_frames(quest, &message) {
+            send(&mut far_writing, &frame)
+                .await
+                .expect("the worker speaks");
+        }
+
+        let mut answers = BTreeMap::new();
+        let mut said = Vec::new();
+        tokio::time::timeout(PATIENCE, async {
+            while answers.len() < 3 {
+                let line = lines
+                    .next_line()
+                    .await
+                    .expect("the pipe reads")
+                    .expect("skiff answers");
+                match serde_json::from_str::<Frame>(&line).expect("a frame") {
+                    Frame::Started { ask, reply } => {
+                        answers.insert(ask, reply);
+                    }
+                    other => said.push(other),
+                }
+            }
+        })
+        .await
+        .expect("skiff answers each ask");
+
+        assert_eq!(
+            answers,
+            BTreeMap::from([
+                (1, Err("skiff starts nothing for a worker".to_owned())),
+                (2, Err("skiff takes no steers from a worker".to_owned())),
+                (3, Err("skiff updates nothing for a worker".to_owned())),
+            ]),
+            "a worker can't start, steer or update anything on the machine that dialled it"
+        );
+        assert!(
+            !said.iter().any(|frame| matches!(frame, Frame::Share(_))),
+            "nor is anything skiff shares said or sent to it: {said:?}"
+        );
+        until(&skiff, |store| {
+            store.message(&message).is_some()
+                && store.presences().iter().any(|p| p.session == "sak9fz")
+        })
+        .await;
+        assert!(
+            !skiff.presences().iter().any(|p| p.session == "walgit"),
+            "its messages and its own sessions cross, but not a presence naming another machine"
+        );
     }
 
     #[tokio::test]

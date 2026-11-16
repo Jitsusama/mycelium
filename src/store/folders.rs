@@ -42,7 +42,7 @@ const SAID: &str = ".machine";
 
 /// The field naming the machine a session runs on, written only on the
 /// presence of a session elsewhere.
-const MACHINE: &str = "machine";
+pub(crate) const MACHINE: &str = "machine";
 
 /// The field saying since when, in milliseconds since the epoch, no link
 /// has reached the machine of a session elsewhere.

@@ -260,7 +260,12 @@ Three seams shape a link:
   since it may first make the machine and put the far end there, and
   it ends when it can't. Its error output is passed on, and a line
   saying the other end "turned this machine away" is taken as a refused
-  SSH key is. Either way, the far `mycelium link` looks each minute at
+  SSH key is. A machine reached so is a worker: it is asked and asks
+  nothing back. Its end's starts, steers and updates are refused, its
+  follows are ignored, nothing this machine shares is said or served to
+  it, and a presence of its naming another machine isn't kept, while
+  messages and its own sessions' presence cross as any machine's do.
+  Either way, the far `mycelium link` looks each minute at
   the `mycelium` its search path names, and once that is another build
   than the one it runs, as after its machine's configuration changes,
   it ends, so its dialler starts the new one. A

@@ -26,6 +26,12 @@ pub struct Connection {
     /// Whether the way in can release the machine it reaches once that
     /// machine hands over ([`Dial::release`]).
     pub releases: bool,
+    /// Whether the machine reached is a worker: one a provider lent this
+    /// machine, which it asks of and which asks nothing back. Its end
+    /// starts, steers and updates nothing here, is sent and served nothing
+    /// this machine shares, and speaks only for its own sessions, while
+    /// the mesh's messages and presence cross as with any machine.
+    pub worker: bool,
     /// How long the other end has to say hello before the link gives up:
     /// [`HELLO_WITHIN`] for an end that answers at once, or none for a way
     /// in that ends itself when it can't reach the other end, however long
@@ -158,6 +164,7 @@ impl Dial for Program {
         // end there, which takes minutes, and it ends when it can't.
         std::future::ready(carried(program).map(|connection| Connection {
             releases: true,
+            worker: true,
             hello_within: None,
             ..connection
         }))
@@ -251,6 +258,7 @@ fn carried(mut command: tokio::process::Command) -> io::Result<Connection> {
         keep: Box::new(child),
         refused,
         releases: false,
+        worker: false,
         hello_within: Some(HELLO_WITHIN),
     })
 }
