@@ -530,11 +530,9 @@ where
     // for them.
     let stopping = std::time::Instant::now();
     seeing_fences.abort();
-    if let Some(easing) = easing {
-        easing.abort();
-    }
-    if let Some(keeping) = &keeping_receptors {
-        keeping.abort();
+    // Neither the easing nor the keeping of receptors outlives the node.
+    for task in [&easing, &keeping_receptors].into_iter().flatten() {
+        task.abort();
     }
     links.shutdown().await;
     let ended = stopping.elapsed();
