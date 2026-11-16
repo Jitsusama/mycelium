@@ -421,7 +421,9 @@ mod tests {
 
         for path in ["attachments/away/planted.md", "held.md"] {
             assert!(
-                quest.write(&record(path), Some(b"crossed\n"), None).is_err(),
+                quest
+                    .write(&record(path), Some(b"crossed\n"), None)
+                    .is_err(),
                 "{path}, reached through a link, is refused"
             );
         }
