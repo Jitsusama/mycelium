@@ -795,7 +795,9 @@ carries a `memory-pressure` or `cpu-pressure` the work doesn't
 tolerate, or its `room` is unknown or was said more than three minutes
 ago (three of the minutes a link carries it in), which earns it no
 processor or memory headroom. Then the most preferences met goes first,
-then the most headroom, then by name. Headroom is one sum, its weights
+then the most headroom, then by name; of the first and each as good but
+for headroom within 0.05 of it (`NEAR_BEST`), one is chosen at random,
+so asks alike spread rather than herd. Headroom is one sum, its weights
 named in `src/placement.rs` to be tuned:
 
 ```text

@@ -12,7 +12,8 @@
 //! its queue's, or whose room hasn't been said lately, goes after every
 //! other that qualifies; the rest are ranked by the preferences each meets,
 //! then by their [`headroom`], where each taint that would rather not is
-//! only a weight. A start this node placed counts against its machine
+//! only a weight, and one of those near the best is chosen at random. A
+//! start this node placed counts against its machine
 //! until the machine's room shows it ([`Starts`]), so a burst spreads.
 //!
 //! Where no machine of the realm takes work, an offer may
@@ -26,6 +27,7 @@
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::hash::{BuildHasher, RandomState};
 
 use serde::{Deserialize, Serialize};
 
@@ -204,6 +206,10 @@ pub const STARTS_COUNT_FOR: jiff::SignedDuration = jiff::SignedDuration::from_mi
 /// quiet never wins on what it said long ago.
 pub const ROOM_HEARD_WITHIN: jiff::SignedDuration = jiff::SignedDuration::from_mins(3);
 
+/// How far below the best headroom a machine may be and still be chosen at
+/// random beside it.
+pub const NEAR_BEST: f64 = 0.05;
+
 /// What a processor's whole headroom is worth: all of it free of pressure.
 pub const CPU_WEIGHT: f64 = 1.0;
 
@@ -334,11 +340,23 @@ impl Starts {
 /// Places `work` among `machines`, each carrying its `loads`.
 #[must_use]
 pub fn place(work: &Work, machines: &[Machine], loads: &Loads) -> Placement {
-    place_at(work, machines, loads, jiff::Timestamp::now())
+    place_at(work, machines, loads, jiff::Timestamp::now(), &mut |many| {
+        // Each `RandomState` is seeded afresh, so its hash of nothing is a
+        // fresh draw.
+        let draw = RandomState::new().hash_one(());
+        usize::try_from(draw % u64::try_from(many.max(1)).unwrap_or(1)).unwrap_or(0)
+    })
 }
 
-/// Places `work` among `machines` as of `now`.
-fn place_at(work: &Work, machines: &[Machine], loads: &Loads, now: jiff::Timestamp) -> Placement {
+/// Places `work` among `machines` as of `now`, with `pick` choosing which
+/// of the machines near the best, given how many, takes it.
+fn place_at(
+    work: &Work,
+    machines: &[Machine],
+    loads: &Loads,
+    now: jiff::Timestamp,
+    pick: &mut dyn FnMut(usize) -> usize,
+) -> Placement {
     let mut judged: Vec<Judged> = machines
         .iter()
         .map(|one| {
@@ -347,20 +365,34 @@ fn place_at(work: &Work, machines: &[Machine], loads: &Loads, now: jiff::Timesta
         })
         .collect();
     // Machines that qualify, those not over first, then by how many
-    // preferences each meets, earliest most, then by the headroom it has;
-    // a name settles the rest, so one ask answers the same as the next.
-    let chosen = judged
-        .iter()
-        .enumerate()
-        .filter(|(_, one)| one.hard.is_empty())
-        .min_by(|(_, one), (_, other)| {
-            (one.over || one.unheard)
-                .cmp(&(other.over || other.unheard))
-                .then_with(|| other.preferred.cmp(&one.preferred))
-                .then_with(|| other.headroom.total_cmp(&one.headroom))
-                .then_with(|| one.name.cmp(&other.name))
-        })
-        .map(|(at, _)| at);
+    // preferences each meets, earliest most, then by the headroom it has,
+    // then by name. Of the best and those as good but for headroom within
+    // the band, one at random, so asks alike spread rather than herd.
+    let mut ranked: Vec<usize> = (0..judged.len())
+        .filter(|&at| judged[at].hard.is_empty())
+        .collect();
+    ranked.sort_by(|&one, &other| {
+        let (one, other) = (&judged[one], &judged[other]);
+        (one.over || one.unheard)
+            .cmp(&(other.over || other.unheard))
+            .then_with(|| other.preferred.cmp(&one.preferred))
+            .then_with(|| other.headroom.total_cmp(&one.headroom))
+            .then_with(|| one.name.cmp(&other.name))
+    });
+    let chosen = ranked.first().map(|&best| {
+        let best = &judged[best];
+        let near: Vec<usize> = ranked
+            .iter()
+            .copied()
+            .take_while(|&at| {
+                let one = &judged[at];
+                (one.over || one.unheard) == (best.over || best.unheard)
+                    && one.preferred == best.preferred
+                    && one.headroom >= best.headroom - NEAR_BEST
+            })
+            .collect();
+        near[pick(near.len()).min(near.len() - 1)]
+    });
     if let Some(at) = chosen {
         let machine = judged.remove(at).name;
         let passed = judged
@@ -662,7 +694,45 @@ mod tests {
     /// Places `work` among `machines` that carry nothing beyond what they
     /// say of themselves, half a minute after they said their room.
     fn place(work: &Work, machines: &[Machine]) -> Placement {
-        place_at(work, machines, &Loads::new(), now())
+        place_at(work, machines, &Loads::new(), now(), &mut first)
+    }
+
+    /// Of the machines near the best, the best.
+    fn first(_: usize) -> usize {
+        0
+    }
+
+    #[test]
+    fn work_goes_at_random_to_one_of_the_machines_near_the_best() {
+        let realm = [
+            machine("skiff", "linux", 31, &[]),
+            machine("kestrel", "linux", 32, &[]),
+            machine("tern", "linux", 20, &[]),
+            over(machine("osprey", "linux", 32, &[]), &[Limit::Cpu]),
+        ];
+        let mut near = Vec::new();
+        for chosen in 0..2 {
+            let placement = place_at(
+                &needing(Vec::new()),
+                &realm,
+                &Loads::new(),
+                now(),
+                &mut |many| {
+                    near.push(many);
+                    chosen
+                },
+            );
+            assert_eq!(
+                placed(&placement),
+                Some(["kestrel", "skiff"][chosen]),
+                "the best first, then the next"
+            );
+        }
+        assert_eq!(
+            near,
+            [2, 2],
+            "kestrel and skiff are within the band, but neither tern, further off, nor osprey, over"
+        );
     }
 
     /// A machine as it might say itself: `system` on `x86_64` with eight
@@ -1017,7 +1087,8 @@ mod tests {
                 &needing(Vec::new()),
                 &[crowded, idle()],
                 &loads,
-                now()
+                now(),
+                &mut first
             )),
             Some("kestrel"),
             "the fewer sessions"
@@ -1045,9 +1116,15 @@ mod tests {
         let mut at = now();
         for _ in 0..10 {
             let loads = starts.loads(&realm, std::iter::empty(), at);
-            let chosen = placed(&place_at(&needing(Vec::new()), &realm, &loads, at))
-                .expect("placed")
-                .to_owned();
+            let chosen = placed(&place_at(
+                &needing(Vec::new()),
+                &realm,
+                &loads,
+                at,
+                &mut first,
+            ))
+            .expect("placed")
+            .to_owned();
             starts.placed(&chosen, at);
             *landed.entry(chosen).or_default() += 1;
             at += jiff::SignedDuration::from_secs(1);
@@ -1139,13 +1216,14 @@ mod tests {
         let realm = [machine("skiff", "linux", 8, &[]), sandbox];
         let mut work = needing(Vec::new());
         assert_eq!(
-            placed(&place_at(&work, &realm, &Loads::new(), now)),
+            placed(&place_at(&work, &realm, &Loads::new(), now, &mut first)),
             Some("sandbox"),
             "work that says nothing of how long it runs may go where there is room"
         );
 
         work.lasts = Some(jiff::SignedDuration::from_hours(1));
-        let Placement::Placed { machine, passed } = place_at(&work, &realm, &Loads::new(), now)
+        let Placement::Placed { machine, passed } =
+            place_at(&work, &realm, &Loads::new(), now, &mut first)
         else {
             panic!("work that outlasts the sandbox goes elsewhere")
         };
@@ -1164,7 +1242,7 @@ mod tests {
         work.may_wait = true;
         assert!(
             matches!(
-                place_at(&work, &realm, &Loads::new(), leaves),
+                place_at(&work, &realm, &Loads::new(), leaves, &mut first),
                 Placement::Refused { .. }
             ),
             "once it has left, nothing goes there, and nothing waits for it"
