@@ -1552,7 +1552,7 @@ source it senses, as [Receptors](#receptors) says; its live fields are
 
 The `forage` kind holds each forage of this machine's cells, keyed by
 the cell's address, as [Forages](#forages) says; its live fields are
-`purpose`, `status`, `documents` and `lineage`.
+`purpose`, `status`, `documents`, `waits` and `lineage`.
 
 A team's `glyph` is the shape every view draws it by: `square`,
 `triangle`, `plus`, `hexagon`, `circle`, `down-triangle` or `star`.
@@ -1772,15 +1772,41 @@ cells', and a reader gathers them as `mycelium forage` does.
 | --- | --- |
 | `cell`, `session`, `machine` | the cell, by its address, its session's id, and the machine it runs on |
 | `quest` | the quest its purpose is written in, by id |
-| `purpose` | the first sentence of the quest's Summary, at most 280 characters |
+| `purpose` | the first sentence of the quest's Summary in its own words, at most 280 characters, or null |
 | `status` | the quest's status, such as `active` |
 | `documents` | each of its documents: `id`, `kind`, `title`, `stage`, and how many steps are `ticked` and `open` |
+| `waits` | only when there are any, what the quest waits on its person for: `id`, `title`, `why`, `minutes`, `when`, whether it's `ready`, and when it was `raised` |
 | `lineage` | `started_by`, the cell it answers to, and `parent`, the quest its own sits under |
 
 A quest's id names a folder in the store, so one that isn't a plain
 name of letters, digits, `-` and `_` is read as nothing, and a file is
 read only when it's a regular file, never through a link. A quest the
 store holds no record of gives its cells no forage.
+
+The purpose is the quest's own words, so the node passes over what
+isn't. Template guidance, a paragraph or a line that is one span in
+`_` or `*` italics, is no purpose, and the words after it are. A
+sentence ends at `.`, `!` or `?` before a space, but not inside paired
+double quotes, where it ends at the closing quote when anything but a
+lower-case letter follows. The first sentence is the purpose, a quote
+in it kept whole, since a quest often opens with its person's own ask.
+A Summary of nothing but guidance gives a `purpose` of null, which
+`mycelium forage` says as "Its quest says no purpose yet." In the
+front matter, a value left as YAML's null (`null`, `Null`, `NULL` or
+`~`) says nothing, as an empty one does, while a quoted `"null"` is the
+word. A `#` after a space or tab starts a comment, outside quotes.
+
+Waits come from the launcher's waiting folder, `mission/waiting` under
+the state home unless the node's `--waiting` names another: a file a
+quest, named by the last part of its id, such as `KESTRL.json`,
+holding `quest` and its `items`. The node reads it with the quest,
+and again whenever a watch on the folder hears it change, or hears
+the folder made anew. A file that is a link, longer than 256 KB, not
+JSON, or naming no `quest` or another gives no waits. An item without
+an `id` and `title` is left out, keeping the rest, and any other field
+null or written wrong says nothing. Cleared waits aren't read, and a
+forage whose quest waits on nothing has no `waits`. The mesh's own waits, the
+questions and holds still unanswered, are `mycelium unanswered`'s.
 
 A plan grows past 400 KB, so the node reads a quest off its runtime,
 once a cell asks for it, and then only as it changes: a watch on the

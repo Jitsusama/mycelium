@@ -289,6 +289,8 @@ pub struct Given {
     pub refusals: Refusals,
     /// This machine's sessions' steer inboxes.
     pub steers: PathBuf,
+    /// The quests' waiting files, which its cells' forages say.
+    pub waiting: PathBuf,
     /// How it keeps its machine awake while it holds sessions.
     pub awake: Awake,
     /// The socket its machine's updater takes asks on.
@@ -1163,7 +1165,10 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (builders, vec!["state", "said", "heard_at"]),
             // What was kept of a carry never changes; how it stands does.
             (carries, vec!["state", "refused"]),
-            (forages, vec!["purpose", "status", "documents", "lineage"]),
+            (
+                forages,
+                vec!["purpose", "status", "documents", "waits", "lineage"],
+            ),
             (murmurs, vec!["text", "tied_to", "purpose", "settled"]),
             (ties, tie::LIVE.to_vec()),
         ])
@@ -1510,6 +1515,7 @@ impl<S: Store> Shared<S> {
             starter,
             refusals,
             steers,
+            waiting,
             awake,
             updater,
             serves,
@@ -1540,7 +1546,7 @@ impl<S: Store> Shared<S> {
         }
         let said = Arc::<Said>::default();
         let inner = Arc::new(Mutex::new(Inner::after(&flows, &hello.realm)));
-        let forages = forage::Held::default();
+        let forages: forage::Held = Arc::new(Mutex::new(forage::Shelf::with_waits(waiting)));
         let to_read = sharing
             .as_ref()
             .map(|places| keep_forages(places, &forages, &said, &inner, &hello.machine));
@@ -3912,6 +3918,7 @@ mod tests {
             starter,
             refusals: Refusals::default(),
             steers,
+            waiting: "/nowhere/waiting".into(),
             awake: Awake::by(None),
             updater: "/nowhere".into(),
             serves: BTreeMap::new(),
@@ -4008,6 +4015,7 @@ mod tests {
                 starter,
                 refusals: Refusals::default(),
                 steers,
+                waiting: "/nowhere/waiting".into(),
                 awake: Awake::by(None),
                 updater,
                 serves,

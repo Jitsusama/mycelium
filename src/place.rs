@@ -151,6 +151,12 @@ pub fn steer() -> PathBuf {
         .join("steer")
 }
 
+/// The quests' waiting files on this machine, one a quest, where the
+/// launcher keeps what each waits on its person for.
+pub fn waiting() -> PathBuf {
+    state_home().join("mission").join("waiting")
+}
+
 /// Where pi's hosts on this machine each keep their record of the
 /// sessions they hold, a file named by the host's process and its start.
 pub fn hosts() -> PathBuf {
