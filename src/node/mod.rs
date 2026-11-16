@@ -2897,8 +2897,6 @@ mod tests {
         socket.with_file_name("update.sock")
     }
 
-    /// The providers of a node on `socket`, beside it: one a test may put
-    /// in place, and one never there.
     /// The builders of a node on `socket`: those a lent machines file
     /// beside it names, as a test may write one, never dialled.
     fn builders_of(socket: &Path) -> builders::Given {
@@ -2913,6 +2911,8 @@ mod tests {
         }
     }
 
+    /// The providers of a node on `socket`, beside it: one a test may put
+    /// in place, and one never there.
     fn providers_of(socket: &Path) -> Vec<String> {
         ["provider", "absent"]
             .map(|name| socket.with_file_name(name).display().to_string())

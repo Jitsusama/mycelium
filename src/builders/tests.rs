@@ -70,6 +70,49 @@ fn a_builder_several_files_name_is_one_saying_what_the_first_says() {
 }
 
 #[test]
+fn a_builder_is_one_whatever_case_or_last_dot_its_host_is_named_in() {
+    let (standing, beside, lent) = (
+        file("standing", Path::new("/standing"), false),
+        file("beside", Path::new("/beside"), false),
+        file("lent", Path::new("/lent"), true),
+    );
+    let read = [
+        (&standing, lines("ssh-ng://builder@Kestrel. x86_64-linux")),
+        (&beside, lines("kestrel.local x86_64-linux")),
+        (&lent, lines("ssh-ng://hook@kestrel x86_64-linux")),
+    ];
+    let builders = merged(&read);
+    assert_eq!(builders.len(), 1, "one kestrel: {builders:?}");
+    assert_eq!(builders[0].name, "kestrel");
+    assert_eq!(builders[0].lines, ["standing", "beside", "lent"]);
+    assert!(
+        builders[0].lent,
+        "a lent line keeps every other from dialling it"
+    );
+    assert_eq!(
+        builders[0].reached,
+        Some(("kestrel".to_owned(), None)),
+        "its lender's health goes by the lent line's host"
+    );
+}
+
+#[test]
+fn a_builder_named_by_its_address_goes_by_a_label() {
+    let standing = file("standing", Path::new("/standing"), false);
+    let read = [(
+        &standing,
+        lines("192.0.2.7 x86_64-linux\nssh://[2001:db8::1] aarch64-linux\nskiff x86_64-linux"),
+    )];
+    let builders = merged(&read);
+    let names: Vec<&str> = builders.iter().map(|one| one.name.as_str()).collect();
+    assert_eq!(names, ["address-1", "address-2", "skiff"]);
+    let said = serde_json::to_string(&builders).expect("it is said");
+    for unsaid in ["192.0.2.7", "2001:db8"] {
+        assert!(!said.contains(unsaid), "{unsaid} is said: {said}");
+    }
+}
+
+#[test]
 fn a_builder_says_nothing_of_its_keys_or_its_address() {
     let standing = file("standing", Path::new("/standing"), false);
     let read = [(
@@ -222,6 +265,84 @@ async fn builders_are_heard_as_they_stand_and_a_lent_one_is_never_dialled() {
             json!({"name": "builders lent", "file": lent.display().to_string(), "state": "answering"}),
         ],
         "a file not there is no trouble"
+    );
+}
+
+/// A stand-in for SSH and the builder it reaches, which greets each time
+/// it is dialled: SSH's program, and where it keeps each host asked of.
+async fn greeting(folder: &Path) -> (String, PathBuf) {
+    let listening = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a listener binds");
+    let port = listening.local_addr().expect("an address").port();
+    tokio::spawn(async move {
+        while let Ok((mut ssh, _)) = listening.accept().await {
+            let _ = ssh.write_all(b"SSH-2.0-x\r\n").await;
+        }
+    });
+    ssh_keeping(folder, port)
+}
+
+#[tokio::test]
+async fn a_builder_dialled_lately_isnt_dialled_again_though_a_read_missed_it() {
+    let folder = tempfile::tempdir().expect("a temporary folder");
+    let (ssh, asked) = greeting(folder.path()).await;
+    let standing = folder.path().join("standing");
+    write(&standing, "skiff x86_64-linux");
+    let kept = Builders::start(Given {
+        files: vec![file("standing", &standing, false)],
+        lent_health: None,
+        ssh,
+    });
+    until(&kept, |builders| {
+        builders.len() == 1 && builders[0].state == "answering"
+    })
+    .await;
+
+    // Read while its file was being written, it names none.
+    write(&standing, "");
+    until(&kept, <[Builder]>::is_empty).await;
+    write(&standing, "skiff x86_64-linux");
+    let back = until(&kept, |builders| builders.len() == 1).await;
+    assert_eq!(back[0].state, "answering", "it stands as it was heard");
+    assert_eq!(
+        std::fs::read_to_string(&asked).expect("SSH was asked"),
+        "skiff\n",
+        "skiff isn't dialled again within five minutes"
+    );
+}
+
+#[tokio::test]
+async fn a_builder_once_lent_is_never_dialled_though_its_lent_file_goes() {
+    let folder = tempfile::tempdir().expect("a temporary folder");
+    let (ssh, asked) = greeting(folder.path()).await;
+    let (standing, lent) = (folder.path().join("standing"), folder.path().join("lent"));
+    write(&standing, "kestrel x86_64-linux\nskiff x86_64-linux");
+    write(&lent, "ssh-ng://hook@Kestrel x86_64-linux");
+    let kept = Builders::start(Given {
+        files: vec![
+            file("standing", &standing, false),
+            file("lent", &lent, true),
+        ],
+        lent_health: None,
+        ssh,
+    });
+    until(&kept, |builders| {
+        builders.len() == 2 && builders.iter().all(|one| one.state != "unheard")
+    })
+    .await;
+
+    // A lent file that can't be read for a while names none.
+    std::fs::remove_file(&lent).expect("the lent file goes");
+    let unlent = until(&kept, |builders| {
+        builders.iter().all(|one| one.lines == ["standing"])
+    })
+    .await;
+    assert!(unlent[0].lent, "kestrel is still heard as lent: {unlent:?}");
+    assert_eq!(
+        std::fs::read_to_string(&asked).expect("SSH was asked"),
+        "skiff\n",
+        "kestrel is never dialled"
     );
 }
 

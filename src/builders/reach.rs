@@ -27,8 +27,9 @@ pub enum Route {
         /// Its port.
         port: u16,
     },
-    /// Through this host first, by a jump.
-    Through(String),
+    /// Through another host first, by a jump; which isn't kept, as the
+    /// way into a network is never said.
+    Jumped,
     /// By a command SSH runs, which isn't run here.
     Proxied,
 }
@@ -58,12 +59,7 @@ pub fn route(said: &str) -> Option<Route> {
         let value = value.trim();
         match key.to_ascii_lowercase().as_str() {
             "proxycommand" if value != "none" => return Some(Route::Proxied),
-            "proxyjump" if value != "none" => {
-                let first = value.split(',').next().unwrap_or(value);
-                let host = first.rsplit('@').next().unwrap_or(first);
-                let host = host.split(':').next().unwrap_or(host);
-                return Some(Route::Through(host.to_owned()));
-            }
+            "proxyjump" if value != "none" => return Some(Route::Jumped),
             "hostname" => hostname = Some(value.to_owned()),
             "port" => port = value.parse().ok()?,
             _ => {}
@@ -110,7 +106,9 @@ pub async fn answered(ssh: &str, host: &str, port: Option<u16>) -> Answered {
     if let Some(port) = port {
         asking.arg("-p").arg(port.to_string());
     }
+    // After `--`, a host is never read as an option.
     asking
+        .arg("--")
         .arg(host)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -123,9 +121,10 @@ pub async fn answered(ssh: &str, host: &str, port: Option<u16>) -> Answered {
     };
     match route(&String::from_utf8_lossy(&said)) {
         Some(Route::Direct { hostname, port }) => greets(&hostname, port).await,
-        Some(Route::Through(between)) => Answered::Unknown(format!(
-            "it is reached through {between}, which isn't dialled, so as not to wake it"
-        )),
+        Some(Route::Jumped) => Answered::Unknown(
+            "it is reached through a jump host, which isn't dialled, so as not to wake it"
+                .to_owned(),
+        ),
         Some(Route::Proxied) => {
             Answered::Unknown("it is reached by a proxy command, which isn't run".to_owned())
         }
@@ -149,8 +148,7 @@ mod tests {
         );
         assert_eq!(
             route("hostname 127.0.0.1\nport 31022\nproxyjump builder@kestrel:2200,skiff\n"),
-            Some(Route::Through("kestrel".to_owned())),
-            "the first hop, the one dialled first"
+            Some(Route::Jumped),
         );
         assert_eq!(
             route("hostname skiff\nproxycommand nc %h %p\n"),
@@ -227,7 +225,7 @@ mod tests {
         assert_eq!(
             answered(&jumped, "skiff", None).await,
             Answered::Unknown(
-                "it is reached through kestrel, which isn't dialled, so as not to wake it"
+                "it is reached through a jump host, which isn't dialled, so as not to wake it"
                     .to_owned()
             )
         );

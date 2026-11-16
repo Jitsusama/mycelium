@@ -44,30 +44,26 @@ fn file_of(template: &str, host: &str) -> Option<PathBuf> {
 }
 
 /// How the builder of `host` stands at `now`, in seconds since the epoch,
-/// as its lender's health file by `template` says.
+/// as its lender's health file by `template` says. Neither the file's path
+/// nor why it couldn't be read is said, as either may say where things are
+/// on this machine.
 #[must_use]
 pub fn lent(template: Option<&str>, host: &str, now: i64) -> Lent {
     let Some(template) = template else {
         return Lent::Unknown("nothing says where its lender keeps its health".to_owned());
     };
     let Some(file) = file_of(template, host) else {
-        return Lent::Unknown(format!("{host} names no health file"));
+        return Lent::Unknown("its host names no health file".to_owned());
     };
     let text = match std::fs::read(&file) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Lent::NotRunning("its lender says nothing of it".to_owned());
         }
-        Err(error) => return Lent::Unknown(format!("{}: {error}", file.display())),
+        Err(_) => return Lent::Unknown("its lender's health can't be read".to_owned()),
     };
-    let health: Health = match serde_json::from_slice(&text) {
-        Ok(health) => health,
-        Err(error) => {
-            return Lent::Unknown(format!(
-                "{} isn't a lender's health: {error}",
-                file.display()
-            ));
-        }
+    let Ok(health) = serde_json::from_slice::<Health>(&text) else {
+        return Lent::Unknown("its lender's health isn't as a lender writes it".to_owned());
     };
     let old = now - health.at;
     if old > SAYS_FOR {
@@ -118,7 +114,11 @@ mod tests {
             lent(template, "plover", 1_030),
             Lent::NotRunning("its lender says nothing of it".to_owned())
         );
-        assert!(matches!(lent(template, "heron", 1_030), Lent::Unknown(_)));
+        assert_eq!(
+            lent(template, "heron", 1_030),
+            Lent::Unknown("its lender's health isn't as a lender writes it".to_owned()),
+            "its file's path isn't said"
+        );
         assert!(matches!(lent(template, "..", 1_030), Lent::Unknown(_)));
         assert!(matches!(lent(None, "kestrel", 1_030), Lent::Unknown(_)));
     }

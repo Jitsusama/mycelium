@@ -61,18 +61,22 @@ struct Places {
 }
 
 impl Places {
-    /// Where each of `networks` and `cells` is.
+    /// Where each of `networks` and `cells` is. A builder isn't placed, so
+    /// one named as a machine or a session never hides it, and is found by
+    /// its name only where nothing else goes by it.
     fn of(networks: &[Network], cells: &[Cell]) -> Self {
-        let placed = |names: Vec<&String>| {
-            names
-                .into_iter()
-                .enumerate()
-                .map(|(place, name)| (name.clone(), place))
-                .collect()
-        };
         Self {
-            networks: placed(networks.iter().map(|each| &each.name).collect()),
-            cells: placed(cells.iter().map(|each| &each.name).collect()),
+            networks: networks
+                .iter()
+                .enumerate()
+                .map(|(place, each)| (each.name.clone(), place))
+                .collect(),
+            cells: cells
+                .iter()
+                .enumerate()
+                .filter(|(_, each)| each.is != Is::Builder)
+                .map(|(place, each)| (each.name.clone(), place))
+                .collect(),
         }
     }
 }

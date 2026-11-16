@@ -862,6 +862,17 @@ fn builders_are_drawn_beside_the_machines_and_are_none_of_them() {
 }
 
 #[test]
+fn a_builder_named_as_a_machine_hides_no_machine() {
+    let named_so = [
+        json!({"key": "builder:skiff", "name": "skiff", "systems": ["x86_64-linux"],
+                          "jobs": 1, "lines": ["beside"], "lent": false, "state": "answering"}),
+    ];
+    let mycelium = mycelium().with_builders(&named_so);
+    let skiff = mycelium.cell("skiff").expect("skiff");
+    assert_eq!(skiff.is, Is::Machine, "the machine is found by its name");
+}
+
+#[test]
 fn the_networks_asks_fit_one_write_a_node_takes_whole() {
     let asked = together(&asks());
 
