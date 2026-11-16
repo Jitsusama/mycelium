@@ -1185,8 +1185,10 @@ moved inside it, a dropped one as null, rather than all of it; the rest
 of `deep` is taken for nothing, and what it held back comes the same
 way. A session offers `presence`, most of its record, whose time moves
 at every beat: of Joel's 80 sessions' changes held back over 90 s on
-2026-11-15, 128 KB of 207 KB was presence that hadn't moved. Asked
-again with another `deep`, a watch starts over, its records whole. A
+2026-11-15, 128 KB of 207 KB was presence that hadn't moved. A field
+that becomes null and one dropped are both said as null, so a reader
+takes null for either. Asked again with another `deep`, in whatever
+order, a watch starts over, its records whole. A
 node whose `hello` offers nothing `deep` says every change whole. An ask
 it can't answer gets `{"id", "error": {"code", "message"}}`, the code
 one of `unknown-ask`, `unknown-kind` or `not-an-ask`, or `refused` for an

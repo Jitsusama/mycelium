@@ -134,12 +134,18 @@ async fn say(writing: &mut (impl AsyncWrite + Unpin), answer: String) -> std::io
 }
 
 /// Those of `deep` that `kind` offers deep, as its hello says, so a
-/// client reads its changes as that told it to; the rest go whole.
+/// client reads its changes as that told it to; the rest go whole. They
+/// come sorted and once each, so the same fields asked in another order
+/// keep a watch on rather than starting it over.
 fn offered(holds: &impl Holds, kind: &str, deep: Vec<String>) -> Vec<String> {
     let offered = holds.deep(kind);
-    deep.into_iter()
+    let mut deep: Vec<String> = deep
+        .into_iter()
         .filter(|field| offered.contains(&field.as_str()))
-        .collect()
+        .collect();
+    deep.sort_unstable();
+    deep.dedup();
+    deep
 }
 
 /// The answer to `ask`, now, or none for a watch, which answers through
@@ -201,6 +207,11 @@ fn answer<H: Holds + Steers>(
             }
             match holds.told(&kind) {
                 Some(told) => {
+                    // The watch it replaces stops first, so nothing it
+                    // was about to send follows the new one's records.
+                    if let Some(earlier) = watches.remove(&id.to_string()) {
+                        earlier.task.abort();
+                    }
                     let (sends, sent) = watch::channel(when);
                     let task = tokio::spawn(keep_watching(
                         Arc::clone(holds),
@@ -217,9 +228,7 @@ fn answer<H: Holds + Steers>(
                         when: sends,
                         task,
                     };
-                    if let Some(earlier) = watches.insert(id.to_string(), running) {
-                        earlier.task.abort();
-                    }
+                    watches.insert(id.to_string(), running);
                     return None;
                 }
                 None => Err(Refusal::UnknownKind(kind)),
