@@ -1660,8 +1660,8 @@ change to the folder and every 30 seconds besides: a receptor whose
 process is gone, whose pid now names a process that started at another
 time, or whose start was kept but can't be read now, as macOS keeps
 some processes' starts from other accounts, is `off`, and one that read
-nothing for three of its rounds is `failing`. Each record is heard at its `read_at`, and says
-the `machine` it runs on.
+nothing for three of its rounds is `failing`. Each record is heard at
+its `read_at`, and says the `machine` it runs on.
 
 ### Forages
 
