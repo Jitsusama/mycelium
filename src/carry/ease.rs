@@ -86,6 +86,8 @@ pub struct Cell {
     pub asleep: bool,
     /// What it is part way through.
     pub busy: Option<Vec<Busy>>,
+    /// How much of it a carry takes, in bytes: its log's size.
+    pub size: Option<u64>,
 }
 
 impl Cell {
@@ -352,7 +354,9 @@ fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> V
 }
 
 /// The first of `cells` that may go to one of `peers`, placed as any work
-/// is and onto ground as firm, or why none may.
+/// is and onto ground as firm, or why none may. The smallest go first,
+/// since they take least to carry; those whose size can't be told go
+/// last.
 fn carried(
     here: &Here,
     cells: &[Cell],
@@ -370,8 +374,10 @@ fn carried(
         may_wait: false,
         lasts: Some(SignedDuration::MAX),
     };
+    let mut smallest_first: Vec<&Cell> = cells.iter().collect();
+    smallest_first.sort_by_key(|cell| cell.size.map_or((1, 0), |size| (0, size)));
     let mut why_not = Vec::new();
-    for cell in cells {
+    for cell in smallest_first {
         let who = &cell.session.address;
         if let Some(why) = cell.stays(here.name) {
             why_not.push(why);
@@ -549,6 +555,7 @@ mod tests {
             on_screen: Some(false),
             asleep: true,
             busy: Some(Vec::new()),
+            size: None,
         }
     }
 
@@ -755,6 +762,33 @@ mod tests {
             why_not(&chose(&realm, &[ended], &history)),
             "S1 isn't running",
             "one ended without parking isn't asleep, and stays"
+        );
+    }
+
+    #[test]
+    fn the_smallest_session_to_carry_goes_first() {
+        let realm = realm();
+        let history = hot_for(&realm, 11);
+        let sized = |id: &str, size: Option<u64>| Cell { size, ..cell(id) };
+        let cells = [
+            sized("s1", None),
+            sized("s2", Some(900 << 10)),
+            sized("s3", Some(100 << 10)),
+        ];
+        assert_eq!(
+            carries(&chose(&realm, &cells, &history)),
+            Some(("s3", "tern")),
+            "the smallest record goes first, whatever order they came in"
+        );
+        assert_eq!(
+            carries(&chose(&realm, &cells[..2], &history)),
+            Some(("s2", "tern")),
+            "one whose size can't be told goes after those whose can"
+        );
+        assert_eq!(
+            carries(&chose(&realm, &cells[..1], &history)),
+            Some(("s1", "tern")),
+            "and goes when it is the only one"
         );
     }
 
