@@ -184,7 +184,8 @@ pub fn aliases<'a>(sessions: impl IntoIterator<Item = &'a Session>) -> HashMap<S
 /// said, uppercase. A message older than a day still names who it
 /// answers.
 ///
-/// `messages` come oldest first, as the node holds them, so only the
+/// `messages` come in the order they were sent, as the node holds them,
+/// each time in one form so its words sort as it was sent, so only the
 /// last day's are read through, found by halving, and of the older ones
 /// only those an answer names, since each message a watched realm
 /// sends folds them again.
@@ -287,7 +288,9 @@ fn senders<'m>(before: &[&'m Message], today: &[&'m Message]) -> HashMap<&'m str
 /// How the fold's own maps hash, by its names, ids and numbers: a
 /// multiply and a rotate a word, as rustc's own maps do, rather than the
 /// standard library's `SipHash`, whose guard against a crafted key the
-/// fold, reading only what the node holds, has no need of.
+/// fold has little need of: names and ids come from peers over links,
+/// but a crafted collision costs only the fold's own time, once the
+/// node's lock is let go.
 type Quick = BuildHasherDefault<Quickly>;
 
 /// A hash as [`Quick`] makes it.

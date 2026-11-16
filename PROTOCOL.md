@@ -1313,7 +1313,11 @@ reads. The `machine` kind holds every machine of the
 realm, this one as its last minute's measure found it, each saying
 whether it is `here`. The `message` kind holds each group's latest 100
 messages, so a quiet group's last words stay beside a busy one's, and a
-message is heard when it was sent and never changes. The `team` kind
+message is heard when it was sent and never changes. The node holds
+each message's `at` in UTC to the millisecond, as
+`2026-11-16T17:00:00.000Z`, whatever offset or precision it came with,
+so the order of the words is the order sent; an `at` that is no time
+is held as when the node heard it. The `team` kind
 holds each orchestrator's team, keyed by its address: the living
 sessions answering to it as `members`, its `lead` working on its quest,
 its `title` as a served `quest` names it (else its lead's), the name it

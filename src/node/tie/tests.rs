@@ -2,7 +2,7 @@ use serde_json::json;
 
 use super::*;
 
-/// When the tests stand: 17 November 2026, 12:00 UTC.
+/// When the tests stand: 23 November 2026, 12:00 UTC.
 const NOW: i64 = 1_795_435_200_000;
 
 /// A minute, in milliseconds.
@@ -56,6 +56,25 @@ fn read(talk: Talk) -> BTreeMap<String, Value> {
         .into_iter()
         .map(|(key, record)| (key, record.value()))
         .collect()
+}
+
+#[test]
+fn a_message_of_the_day_written_with_an_offset_still_ties() {
+    let mut state = crate::state::State::default();
+    state.add_messages(vec![
+        said("m1", "OSPREY", 25 * HOUR, &["peer.tern"], None),
+        Message {
+            at: "2026-11-22T10:00:00-12:00".to_owned(),
+            ..said("m2", "KP0L6A", 14 * HOUR, &["peer.hnp07b"], None)
+        },
+        said("m3", "HNP07B", MINUTE, &["quest.x"], None),
+    ]);
+    let records = read(talk(state.messages(), &HashMap::new(), NOW));
+    assert_eq!(
+        records["tie:HNP07B~KP0L6A"]["heard"],
+        json!(NOW - 14 * HOUR),
+        "sent 14 hours ago, though its words sort before a day ago's: {records:?}"
+    );
 }
 
 #[test]
