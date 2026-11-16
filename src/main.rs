@@ -1755,7 +1755,11 @@ fn placements(asked: PlacementsAsked) -> io::Result<()> {
     } = asked;
     let weights: Option<mycelium::placement::Weights> = replay
         .as_deref()
-        .map(|path| serde_json::from_slice(&std::fs::read(path)?).map_err(io::Error::other))
+        .map(|path| {
+            let named = |why: String| io::Error::other(format!("{}: {why}", path.display()));
+            let said = std::fs::read_to_string(path).map_err(|error| named(error.to_string()))?;
+            mycelium::placement::Weights::read(&said).map_err(named)
+        })
         .transpose()?;
     let state = here.state.unwrap_or_else(place::state);
     let now = jiff::Zoned::now();

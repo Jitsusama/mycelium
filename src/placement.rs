@@ -267,6 +267,48 @@ impl Weights {
         filling: FILLING_WEIGHT,
         near_best: NEAR_BEST,
     };
+
+    /// Reads weights `said` as a JSON object, each left out taking its
+    /// starting weight. A field that isn't a weight, a weight that isn't a
+    /// number or is below zero, and a weight said twice are each refused by
+    /// name, so a misspelt knob is never quietly the starting one and a
+    /// negative one never turns its sense around.
+    ///
+    /// # Errors
+    ///
+    /// Why `said` isn't a set of weights, in a line for a person.
+    pub fn read(said: &str) -> Result<Self, String> {
+        let serde_json::Value::Object(fields) =
+            serde_json::from_str(said).map_err(|error| error.to_string())?
+        else {
+            return Err("weights are a JSON object, such as {\"session\": 1.0}".to_owned());
+        };
+        let serde_json::Value::Object(known) =
+            serde_json::to_value(Self::STARTING).map_err(|error| error.to_string())?
+        else {
+            return Err("the starting weights didn't say themselves as an object".to_owned());
+        };
+        for (name, weight) in &fields {
+            // Quoted, so a name can't write to a terminal it's said on.
+            if !known.contains_key(name) {
+                let names: Vec<&str> = known.keys().map(String::as_str).collect();
+                return Err(format!(
+                    "{name:?} isn't a weight; the weights are {}",
+                    names.join(", ")
+                ));
+            }
+            // JSON holds no infinity or NaN, so a number is finite here.
+            let Some(number) = weight.as_f64() else {
+                return Err(format!("{name} is {weight}, not a number"));
+            };
+            if number < 0.0 {
+                return Err(format!("{name} is {number}, below zero"));
+            }
+        }
+        // Read again from the text, which, unlike the object, still holds a
+        // weight said twice for serde to refuse by name.
+        serde_json::from_str(said).map_err(|error| error.to_string())
+    }
 }
 
 impl Default for Weights {
@@ -978,6 +1020,75 @@ pub(crate) mod tests {
         assert!(
             decision.is_ok_and(|decision| decision.weights == Weights::STARTING),
             "a decision kept before weights were said was weighed by the starting ones"
+        );
+    }
+
+    #[test]
+    fn weights_read_refuse_what_isnt_a_weight_by_name() {
+        assert_eq!(
+            Weights::read(r#"{"session": 1.0}"#),
+            Ok(Weights {
+                session: 1.0,
+                ..Weights::STARTING
+            })
+        );
+        let misspelt = Weights::read(r#"{"sesion": 1.0}"#).expect_err("a misspelt weight");
+        assert!(
+            misspelt.contains("sesion") && misspelt.contains("session"),
+            "names what was said and what the weights are: {misspelt}"
+        );
+        let worded = Weights::read(r#"{"cpu": "high"}"#).expect_err("a word for a weight");
+        assert!(worded.contains("cpu"), "names the weight: {worded}");
+        let listed = Weights::read("[1.0]").expect_err("a list");
+        assert!(listed.contains("object"), "says what weights are: {listed}");
+        for (said, why) in [
+            (r#"{"cpu": null}"#, "null for a weight"),
+            (r#"{"cpu": true}"#, "true for a weight"),
+            (r#"{"near_best": -0.05}"#, "a weight below zero"),
+            (r#"{"cpu": 1.0, "cpu": 2.0}"#, "a weight said twice"),
+        ] {
+            let refused = Weights::read(said).expect_err(why);
+            let named = if said.contains("near_best") {
+                "near_best"
+            } else {
+                "cpu"
+            };
+            assert!(
+                refused.contains(named),
+                "{why} is refused by name: {refused}"
+            );
+        }
+        let escaped = Weights::read("{\"\\u001b[2J\": 1.0}").expect_err("an escape");
+        assert!(
+            !escaped.contains('\u{1b}'),
+            "a name is said quoted: {escaped}"
+        );
+    }
+
+    #[test]
+    fn weights_read_take_nothing_said_and_whole_numbers_as_weights() {
+        assert_eq!(Weights::read("{}"), Ok(Weights::STARTING));
+        assert_eq!(
+            Weights::read(r#"{"cpu": 2, "near_best": 0}"#),
+            Ok(Weights {
+                cpu: 2.0,
+                near_best: 0.0,
+                ..Weights::STARTING
+            })
+        );
+    }
+
+    #[test]
+    fn a_kept_decision_still_reads_a_weight_it_doesnt_know() {
+        let kept = serde_json::json!({
+            "placement": {"refused": {"misses": []}},
+            "judged": [],
+            "weights": {"session": 1.0, "one_from_later": 3.0},
+        });
+        let decision: Result<Decision, _> = serde_json::from_value(kept);
+        assert!(
+            decision.is_ok_and(|decision| decision.weights.session > 0.9),
+            "a record kept by a later node is read leniently"
         );
     }
 

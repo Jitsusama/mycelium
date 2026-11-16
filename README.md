@@ -97,7 +97,8 @@ The harness mesh's messages and presence, carried between machines:
   headroom; how many cores each busy session used on each machine, in
   the middle and at the high; and flags for regrets past a tenth and for
   herds. `--replay WEIGHTS.json` places each kept start again under
-  other weights, any left out taking the starting ones, keeping the kept
+  other weights, any left out taking the starting ones and any it
+  doesn't know, or that isn't a number, refused by name, keeping the kept
   choice wherever those weights would have drawn it too, and says which
   starts they would have placed elsewhere and hindsight on both. The
   readings carry the work where it was kept, so a set that changes much
