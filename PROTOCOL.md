@@ -770,9 +770,10 @@ in lower case with a last dot and a trailing `.local` dropped, as its
 `name`, or `address-` and a number for a host given as an address, which
 is never served; a builder several files name is one, its facts from
 the first file given that names it, dialled files before lent ones.
-One any lent file names is lent, and stays so while the node runs. It says its `systems`, `jobs`, `speed`,
-`supported` and `mandatory` features, the `lines` naming it, whether
-it is `lent`, its `state`, why where it says (`said`) and `heard_at`.
+One any lent file names is lent, and stays so while the node runs. It
+says its `systems`, `jobs`, `speed`, `supported` and `mandatory`
+features, the `lines` naming it, whether it is `lent`, its `state`, why
+where it says (`said`) and `heard_at`.
 No key path, host key or uri query is ever kept or served.
 
 A builder it may dial is heard at most every five minutes: `ssh -G`
@@ -781,15 +782,16 @@ when that port sends an `SSH-` greeting within 3 seconds, never a login
 or a build, and otherwise `not answering`. One reached through a jump
 host or a proxy command is `unknown` and never dialled, so nothing is
 woken, and the jump host isn't named. A builder dialled isn't dialled
-again within five minutes, whatever its files say meanwhile. A lent builder costs while it runs and idles off, so is never
-dialled: its lender's health file says how it stands, at the path
-`--lent-health` gives with `{host}` for its host, such as
-`/run/{host}/health.json`, a JSON object of `at` (seconds since the
-epoch) and `state`. It is `running` while that file is under two
-minutes old and its state isn't `none`, `not running` otherwise, and
-`unknown` with no file to read; neither the file's path nor why it
-couldn't be read is served. A lent builder another file names too goes
-by its lent line's host. A builder not yet heard is `unheard`.
+again within five minutes, whatever its files say meanwhile. A lent
+builder costs while it runs and idles off, so is never dialled: its
+lender's health file says how it stands, at the path `--lent-health`
+gives with `{host}` for its host, such as `/run/{host}/health.json`, a
+JSON object of `at` (seconds since the epoch) and `state`. It is
+`running` while that file is under two minutes old and its state isn't
+`none`, `not running` otherwise, and `unknown` with no file to read;
+neither the file's path nor why it couldn't be read is served. A lent
+builder another file names too goes by its lent line's host. A builder
+not yet heard is `unheard`.
 
 `"Offers"` asks each program the node was given as `--provider PROGRAM`
 what it could make, all at once, as `PROGRAM offers`. The program writes
