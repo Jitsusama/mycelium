@@ -87,7 +87,7 @@ pub(super) async fn keep_watching<H: Holds>(
         ) else {
             continue;
         };
-        let Ok(said) = serde_json::to_string(&Changed {
+        let Ok(said) = serde_json::to_string(&Since {
             id: &id,
             changed: &changed,
             gone: &gone,
@@ -112,7 +112,7 @@ struct Whole<'a> {
 /// bytes every watch sent the same change sends, and the keys gone. Its
 /// fields are in the order a `Value` gives its keys.
 #[derive(Serialize)]
-struct Changed<'a> {
+struct Since<'a> {
     changed: &'a [Arc<Change>],
     gone: &'a [String],
     id: &'a Value,
@@ -244,7 +244,7 @@ mod tests {
         let mut answers = vec![whole(&json!(1), records).expect("records serialize")];
         for now in rest {
             if let Some((changed, gone)) = answer((when, None), &[], &mut sent, now) {
-                let changed = Changed {
+                let changed = Since {
                     id: &json!(1),
                     changed: &changed,
                     gone: &gone,
