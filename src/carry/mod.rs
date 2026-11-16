@@ -230,7 +230,7 @@ pub fn carry(
         Stood::Doing,
         format!("finding {quest}'s sessions here"),
     );
-    let sessions = said.or_failed(Step::Find, find(hands, quest, here, to, why.is_some()))?;
+    let sessions = said.or_failed(Step::Find, find(hands, quest, here, to, why))?;
     let names: Vec<&str> = sessions.iter().map(|one| one.address.as_str()).collect();
     said.line(
         Step::Find,
@@ -371,15 +371,20 @@ fn start_each(
 
 /// The quest's sessions on `here` that can carry their own work: those
 /// running, and those parked this boot, which wake for it; or why the
-/// carry can't go to `to`. An `ordered` carry needs one at least, since
-/// only the node's taking a session's steer proves who may order it.
+/// carry can't go to `to`. A carry ordered for `why` needs one at least,
+/// since only the node's taking a session's steer proves who may order
+/// it, and a reason that says something.
 fn find(
     hands: &mut impl Hands,
     quest: &str,
     here: &str,
     to: &str,
-    ordered: bool,
+    why: Option<&str>,
 ) -> Result<Vec<Session>, String> {
+    let ordered = why.is_some();
+    if why.is_some_and(|why| why.trim().is_empty()) {
+        return Err("an ordered carry says why, and a blank reason says nothing".to_owned());
+    }
     if to == here {
         return Err(format!("{quest} is on {here} already"));
     }
@@ -425,19 +430,28 @@ fn push(
         || json!({"act": "carry", "to": to, "from": "person"}),
         |why| json!({"act": ordered::ACT, "to": to, "why": why}),
     );
-    let mut by = None;
+    let mut by: Option<String> = None;
     for session in sessions {
         let proved = hands
             .steer(&session.address, steer.clone())
             .map_err(|why| format!("{} wasn't told: {why}", session.address))?;
-        if why.is_some() {
-            by = Some(proved.ok_or_else(|| {
-                format!(
-                    "the node didn't say who ordered {}'s carry, so it can't arrive as theirs",
-                    session.address
-                )
-            })?);
+        if why.is_none() {
+            continue;
         }
+        let proved = proved.ok_or_else(|| {
+            format!(
+                "the node didn't say who ordered {}'s carry, so it can't arrive as theirs",
+                session.address
+            )
+        })?;
+        if let Some(first) = by.as_ref().filter(|first| **first != proved) {
+            return Err(format!(
+                "the node proved {first} ordered one session's carry and {proved} {}'s, so \
+                 none arrives as either's",
+                session.address
+            ));
+        }
+        by = Some(proved);
     }
     let ordered = by.zip(why).map(|(by, why)| Ordered {
         by,
@@ -519,7 +533,9 @@ fn closed(hands: &mut impl Hands, here: &str, sessions: &[Session]) -> Result<()
 /// never reads as the person's own.
 fn arriving(quest: &str, from: &str, to: &str, one: &Done, ordered: Option<&Ordered>) -> Start {
     let arrive = if ordered.is_some() {
-        r#"pi-carry arrive "$1" --from "$2" --session "$3" --by "$5" --why "$6""#
+        // Each joined to its value, so a reason opening with a dash
+        // isn't read as an option of pi-carry's.
+        r#"pi-carry arrive "$1" --from "$2" --session "$3" --by="$5" --why="$6""#
     } else {
         r#"pi-carry arrive "$1" --from "$2" --session "$3""#
     };
@@ -616,11 +632,11 @@ fn plural(count: usize, thing: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use serde_json::{Value, json};
 
-    use super::{Carried, Done, Failed, Hands, PI_CARRY, Refused, Step, carry};
+    use super::{Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, carry};
     use crate::placement::Need;
     use crate::record::{Session, State};
     use crate::wire::{Start, Started};
@@ -649,6 +665,8 @@ mod tests {
         refuses: Option<String>,
         /// Who the node proves ordered an `ordered-carry`.
         by: Option<String>,
+        /// Who it proves ordered one session's instead, by its address.
+        by_each: BTreeMap<String, String>,
         /// The sessions that refuse their carry once told, and why.
         refusing: Vec<Refused>,
         /// What each session told refused.
@@ -688,7 +706,7 @@ mod tests {
         }
         fn steer(&mut self, address: &str, steer: Value) -> Result<Option<String>, String> {
             let by = (steer["act"] == "ordered-carry")
-                .then(|| self.by.clone())
+                .then(|| self.by_each.get(address).or(self.by.as_ref()).cloned())
                 .flatten();
             self.steered.push((address.to_owned(), steer));
             let id = self
@@ -1143,7 +1161,7 @@ mod tests {
                  the node proved, for its reason"
             );
             assert!(
-                start.command[2].contains(r#"--by "$5" --why "$6""#),
+                start.command[2].contains(r#"--by="$5" --why="$6""#),
                 "which pi-carry arrive is told: {}",
                 start.command[2]
             );
@@ -1158,6 +1176,103 @@ mod tests {
             unproved.started.is_empty(),
             "and nothing arrives as anyone's: {lines:?}"
         );
+    }
+
+    #[test]
+    fn a_reason_opening_with_a_dash_reaches_pi_carry_as_the_reason() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let said = dir.path().join("said");
+        // By its whole path, since the arrival runs on a PATH holding only
+        // the stand-in.
+        let shell = std::env::var_os("BASH")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::split_paths(&std::env::var_os("PATH")?)
+                    .map(|folder| folder.join("sh"))
+                    .find(|sh| sh.is_file())
+            })
+            .expect("a shell");
+        let fake = dir.path().join("pi-carry");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!{}\nprintf '%s\\n' \"$@\" > {}\n",
+                shell.display(),
+                said.display()
+            ),
+        )
+        .expect("a stand-in pi-carry");
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("it runs");
+        let one = Done {
+            session: QUEST.to_owned(),
+        };
+        let ordered = Ordered {
+            by: "WCJQSG".to_owned(),
+            why: "--force: it needs the camera".to_owned(),
+        };
+        let start = super::arriving(QUEST, "skiff", "tern", &one, Some(&ordered));
+        let ran = std::process::Command::new(&shell)
+            .args(&start.command[1..])
+            .env("PATH", dir.path())
+            .status()
+            .expect("the arrival runs");
+        assert!(ran.success(), "it ran: {ran}");
+        let said = std::fs::read_to_string(&said).expect("pi-carry was run");
+        assert_eq!(
+            said.lines().skip(6).collect::<Vec<_>>(),
+            ["--by=WCJQSG", "--why=--force: it needs the camera"],
+            "each value joined to its option: {said}"
+        );
+    }
+
+    #[test]
+    fn a_carry_ordered_without_a_reason_is_refused() {
+        for why in ["", "  \t"] {
+            let mut realm = Realm {
+                by: Some("WCJQSG".to_owned()),
+                ..realm()
+            };
+            let mut lines = Vec::new();
+            let done = carry(
+                &mut realm,
+                QUEST,
+                "skiff",
+                "tern",
+                Some(why),
+                &mut |line: &Value| {
+                    lines.push(line.clone());
+                },
+            );
+            assert_eq!(done, Err(Failed { step: Step::Find }), "{why:?} is refused");
+            assert_eq!(
+                last_said(&lines),
+                "an ordered carry says why, and a blank reason says nothing",
+                "saying so"
+            );
+            assert!(realm.steered.is_empty(), "before any session is told");
+        }
+    }
+
+    #[test]
+    fn a_carry_the_node_proves_two_orchestrators_ordered_is_refused() {
+        let mut realm = Realm {
+            by: Some("WCJQSG".to_owned()),
+            by_each: [("NAPS02".to_owned(), "OSPHT4".to_owned())].into(),
+            ..realm()
+        };
+        let (done, lines) = ordered(&mut realm);
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Push }),
+            "it fails at the push"
+        );
+        let said = last_said(&lines);
+        assert!(
+            said.contains("WCJQSG") && said.contains("OSPHT4"),
+            "naming both rather than stamping the last: {said}"
+        );
+        assert!(realm.started.is_empty(), "and nothing arrives as either's");
     }
 
     #[test]

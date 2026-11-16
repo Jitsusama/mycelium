@@ -512,18 +512,26 @@ orchestrator's own session, takes the steps above with the steer
 `ordered-carry` in place of `carry`. The node answers each such steer
 `{"Steered": {"machine", "by"}}`, `by` the orchestrator it proved, and
 the carry is refused if `by` is missing, since a session it started
-couldn't arrive as anyone's. With no session of the quest here, it is
-refused too: only a session's steer proves who orchestrates it, so
-only the person carries what the quest left. A session that won't go,
-as one holding a lease, mid-push or mid-rebase, or with background work
-running, writes `<session>.refused.json` in the handover folder,
-`{"session", "why", "at"}` with `at` in RFC 3339, and the carry fails
-at once with `<address> refused its carry: <why>`, never waiting it
-out; one written before this carry began counts for nothing. Each
-session it carried starts with `pi-carry arrive ... --by <address>
---why <reason>` after the person's arrival words, `by` taken from the
-node's answer, never from the command line or the session's done file,
-so it arrives saying who carried it and why, never as the person.
+couldn't arrive as anyone's, or if it differs between sessions, rather
+than stamping the last. A blank reason is refused, by the command and
+by the node. With no session of the quest here, it is refused too:
+only a session's steer proves who orchestrates it, so only the person
+carries what the quest left. A session that won't go, as one holding a
+lease, mid-push or mid-rebase, or with background work running, writes
+`<session>.refused.json` in the handover folder, `{"session", "why",
+"at"}` and nothing more, with `at` in RFC 3339 and `session` the one
+the file is named for, and the carry fails at once with `<address>
+refused its carry: <why>`, never waiting it out. The harness writes it
+whole, beside the folder's files and renamed into place. Only a file
+changed since this carry began, saying a time since, counts; one
+changed before is passed over unread, and one that can't be read yet
+is read again at the next look. One naming another session than its
+file stops the carry. Each session it carried starts with `pi-carry
+arrive ... --by=<address> --why=<reason>` after the person's arrival
+words, each value joined to its option so a reason opening with a dash
+is still the reason, `by` taken from the node's answer, never from the
+command line or the session's done file, so it arrives saying who
+carried it and why, never as the person.
 
 ## Realm Flows
 

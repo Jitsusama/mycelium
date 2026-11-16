@@ -123,7 +123,7 @@ enum Action {
         to: String,
         /// Why its orchestrator orders it, which only the orchestrator's
         /// own session may.
-        #[arg(long)]
+        #[arg(long, value_parser = reason)]
         why: Option<String>,
     },
     /// Prints every session the node knows of.
@@ -2010,6 +2010,15 @@ fn need(said: &str) -> Result<Need, String> {
     })
 }
 
+/// A reason that says something.
+fn reason(said: &str) -> Result<String, String> {
+    if said.trim().is_empty() {
+        Err("a reason says something, and a blank one says nothing".to_owned())
+    } else {
+        Ok(said.to_owned())
+    }
+}
+
 fn intent(name: &str) -> Result<Intent, String> {
     serde_json::from_value(serde_json::Value::String(name.to_owned()))
         .map_err(|_| format!("{name:?} is not hold, question, finding, fyi or pivot"))
@@ -2142,6 +2151,19 @@ mod tests {
             }),
             "{said}"
         );
+    }
+
+    #[test]
+    fn a_carry_is_ordered_only_with_a_reason_that_says_something() {
+        let carrying = |why: &str| {
+            Command::try_parse_from([
+                "mycelium", "--realm", "work", "carry", "QEST-1", "--to", "tern", "--why", why,
+            ])
+        };
+        for blank in ["", "  "] {
+            assert!(carrying(blank).is_err(), "{blank:?} is refused");
+        }
+        assert!(carrying("it needs the camera").is_ok(), "a reason is taken");
     }
 
     #[test]

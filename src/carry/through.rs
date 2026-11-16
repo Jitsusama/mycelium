@@ -173,14 +173,22 @@ const REFUSED: &str = ".refused.json";
 
 /// A refusal as the harness writes it: the session, why, and when.
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Refusal {
     session: String,
     why: String,
     at: jiff::Timestamp,
 }
 
-/// The refusals in `handover` written since `since`, by session. One
-/// that can't be read stops the carry, since its session meant to.
+/// The refusals in `handover` written since `since`, by session: each
+/// file changed since, saying a time since, whose session is the one
+/// its name gives. One changed before is passed over unread, whatever
+/// it holds. One changed since that can't be read is passed over this
+/// time and read again at the next look, so a refusal caught half
+/// written still gives its reason once whole, though the harness writes
+/// each whole, beside it and renamed into place. One that names another
+/// session than its file stops the carry, since it can't be told whose
+/// it is.
 fn refusals(handover: &Path, since: jiff::Timestamp) -> Result<Vec<Refused>, String> {
     let entries = match fs::read_dir(handover) {
         Ok(entries) => entries,
@@ -191,13 +199,29 @@ fn refusals(handover: &Path, since: jiff::Timestamp) -> Result<Vec<Refused>, Str
     for entry in entries.flatten() {
         let path = entry.path();
         let named = path.file_name().and_then(OsStr::to_str).unwrap_or("");
-        if !named.ends_with(REFUSED) {
+        let Some(session) = named.strip_suffix(REFUSED) else {
+            continue;
+        };
+        let changed = fs::metadata(&path)
+            .and_then(|file| file.modified())
+            .ok()
+            .and_then(|changed| jiff::Timestamp::try_from(changed).ok());
+        if changed.is_none_or(|changed| changed < since) {
             continue;
         }
-        let read =
-            fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let one: Refusal = serde_json::from_str(&read)
-            .map_err(|error| format!("{} isn't a carry's refusal: {error}", path.display()))?;
+        let Some(one) = fs::read_to_string(&path)
+            .ok()
+            .and_then(|read| serde_json::from_str::<Refusal>(&read).ok())
+        else {
+            continue;
+        };
+        if one.session != session {
+            return Err(format!(
+                "{} names {}, not its own session, so whose refusal it is can't be told",
+                path.display(),
+                one.session
+            ));
+        }
         if one.at >= since {
             refused.push(Refused {
                 session: one.session,
@@ -388,18 +412,70 @@ mod tests {
             .expect("a refusal");
         }
         write_done(handover, "s-done");
-        assert_eq!(
-            refusals(handover, began).expect("read"),
+        let since = || {
             [Refused {
                 session: "s-since".to_owned(),
                 why: "it holds a lease".to_owned(),
-            }],
+            }]
+        };
+        assert_eq!(
+            refusals(handover, began).expect("read"),
+            since(),
             "an earlier carry's refusal, and a done file, aren't this one's"
         );
-        fs::write(handover.join("s-odd.refused.json"), "{}").expect("misshapen");
+
+        let old = handover.join("s-old.refused.json");
+        fs::write(&old, "{\"session\": \"s-o").expect("broken");
+        let before = SystemTime::from(began) - Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(&old)
+            .and_then(|file| file.set_modified(before))
+            .expect("dated before the carry");
+        assert_eq!(
+            refusals(handover, began).expect("read"),
+            since(),
+            "a file changed before the carry is passed over unread, broken or not"
+        );
+
+        let half = handover.join("s-half.refused.json");
+        fs::write(&half, r#"{"session": "s-half", "why": "it is mid-re"#).expect("half");
+        assert_eq!(
+            refusals(handover, began).expect("read"),
+            since(),
+            "one caught half written waits for the next look"
+        );
+        fs::write(
+            &half,
+            r#"{"session": "s-half", "why": "it is mid-rebase", "at": "2026-11-15T16:00:02Z"}"#,
+        )
+        .expect("whole");
+        assert_eq!(
+            refusals(handover, began).expect("read")[0].why,
+            "it is mid-rebase",
+            "and gives its reason once whole"
+        );
+        fs::remove_file(&half).expect("removed");
+
+        fs::write(
+            handover.join("s-more.refused.json"),
+            r#"{"session": "s-more", "why": "a lease", "at": "2026-11-15T16:00:02Z", "by": "x"}"#,
+        )
+        .expect("with more");
+        assert_eq!(
+            refusals(handover, began).expect("read"),
+            since(),
+            "one saying more than a refusal does isn't read as one"
+        );
+
+        fs::write(
+            handover.join("s-odd.refused.json"),
+            r#"{"session": "s-since", "why": "a lease", "at": "2026-11-15T16:00:02Z"}"#,
+        )
+        .expect("another's name");
         assert!(
             refusals(handover, began).is_err(),
-            "one that can't be read stops the carry"
+            "one naming another session than its file stops the carry"
         );
     }
 
