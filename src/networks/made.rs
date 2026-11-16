@@ -377,7 +377,9 @@ fn session_cell(session: &Value) -> Option<Cell> {
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .filter(|group| Shape::of_group(group).is_some())
+        // A tree's network is made only of the trees its cells hold, so a
+        // group named as one is passed over.
+        .filter(|group| Shape::of_group(group).is_some_and(|shape| shape != Shape::Tree))
         .map(str::to_owned)
         .chain(trees.iter().filter_map(Tree::network))
         .collect();
@@ -537,8 +539,8 @@ fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>)
 }
 
 /// Each tree's network's short name as its tree says it, such as
-/// `oars@jsama/tides`, since a repository's name may hold a dot and its
-/// branch a slash, so the network's name can't be cut into them.
+/// `oars@jsama/tides`, since a repository's key holds a colon and a slash
+/// and its branch a slash, so the network's name can't be cut into them.
 fn shortened_trees(networks: &mut [Network], sessions: &[Cell]) {
     let mut shorts: HashMap<String, String> = HashMap::new();
     for tree in sessions.iter().flat_map(|cell| &cell.trees) {

@@ -130,7 +130,7 @@ impl Shape {
     ];
 
     /// The shape a network's name says, as a group's or a tree's
-    /// (`tree.<repo>.<branch>`), or none for a peer's own address.
+    /// (`tree.<repo>:<branch>`), or none for a peer's own address.
     fn of_group(group: &str) -> Option<Self> {
         match group.split_once('.').map_or(group, |(first, _)| first) {
             "peer" => None,
@@ -343,12 +343,14 @@ impl Tree {
         self.repo.rsplit([':', '/']).next().unwrap_or(&self.repo)
     }
 
-    /// The network it is while two cells or more hold it, such as
-    /// `tree.oars.jsama/tides`, or none for one saying neither its branch
-    /// nor its commit.
+    /// The network it is while two cells or more hold it, on whichever
+    /// machines: its repository's whole key and its branch or whole
+    /// commit, such as `tree.github:harbour/oars:jsama/tides`, read up to
+    /// the last colon, since a branch can't hold one. None for one saying
+    /// neither its branch nor its commit.
     fn network(&self) -> Option<String> {
         let at = self.branch.as_deref().or(self.commit.as_deref())?;
-        Some(format!("tree.{}.{at}", self.repo_name()))
+        Some(format!("tree.{}:{at}", self.repo))
     }
 
     /// What a person types to reach that network: its repository's name
