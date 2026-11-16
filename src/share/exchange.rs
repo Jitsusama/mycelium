@@ -139,7 +139,25 @@ impl Places {
 
     /// Gives quest `id` to worker `worker`, so the two share it over their
     /// link; a worker is otherwise given none of this machine's quests.
+    ///
+    /// # Errors
+    ///
+    /// When `id` isn't a quest's id or `worker` can't be a machine's name,
+    /// so a mark is never written outside `given`, or when it can't be
+    /// written.
     pub fn give(&self, worker: &str, id: &str) -> io::Result<()> {
+        if !is_quest(id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{id} isn't a quest's id, so it can't be given"),
+            ));
+        }
+        if !may_be_machine(worker) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{worker:?} can't be a machine's name, so nothing is given to it"),
+            ));
+        }
         let given = self.given_to(worker);
         fs::create_dir_all(&given)?;
         fs::write(given.join(id), "")
@@ -219,6 +237,27 @@ impl Places {
         Ok(format!(
             "{quest} is shared, with {with}; each link carries it from its next look"
         ))
+    }
+
+    /// Shares `quest` as [`Self::offer`] does, asked for machine `to`,
+    /// and gives it to `to`, so a worker there is served it; nothing
+    /// above it is given, so a worker is served the quest alone.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::offer`], or when the gift can't be marked.
+    pub fn offer_to(&self, to: &str, quest: &str, scratch: &[String]) -> io::Result<String> {
+        let said = self.offer(quest, scratch)?;
+        self.give(to, quest).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "{quest} is shared with this machine's links, but it couldn't be given \
+                     to {to}, so a worker there isn't served it: {error}"
+                ),
+            )
+        })?;
+        Ok(said)
     }
 
     /// The quests above `id` whose records are on this machine, nearest
@@ -443,6 +482,17 @@ pub struct Exchange {
 
 /// A shared quest's README, as its ledger keys it.
 const README: &str = "record/README.md";
+
+/// Whether `name` can be a machine's, as a hostname is: letters, digits,
+/// dots and dashes, starting with neither, so it is one folder's name.
+fn may_be_machine(name: &str) -> bool {
+    name.bytes()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-')
+}
 
 /// How long an ended quest's scratch found in use is let be before it is
 /// tried again: reading every process's open files once a second, for as
@@ -2771,6 +2821,73 @@ mod tests {
 
     fn readme(machine: &Machine, id: &str) -> Option<String> {
         fs::read_to_string(machine.places.quests.join(id).join("README.md")).ok()
+    }
+
+    #[test]
+    fn a_quest_shared_to_a_worker_reaches_it_alone() {
+        let skiff = Machine::new("skiff");
+        let tern = Machine::new("tern");
+        let (top, quest) = ("QEST-20261013-TOPQST", QUEST);
+        // The parent is shared in its own right, as a peer would be served
+        // it whole, so its README's absence on tern is the worker's
+        // withholding and not a quest nothing shared.
+        shared(&skiff, top, "---\nparent: null\n---\n# Top\n");
+        fs::create_dir_all(skiff.places.quests.join(quest)).expect("the quest made");
+        fs::write(
+            skiff.places.quests.join(quest).join("README.md"),
+            format!("---\nparent: {top}\n---\n# Under it\n"),
+        )
+        .expect("its README written");
+
+        skiff
+            .places
+            .offer_to("tern", quest, &[])
+            .expect("the quest shared to tern");
+        let mut near = skiff.exchange(&tern).for_worker();
+        let mut far = tern.exchange(&skiff);
+        talk(&mut near, &mut far);
+
+        assert_eq!(
+            readme(&tern, quest),
+            Some(format!("---\nparent: {top}\n---\n# Under it\n")),
+            "the quest shared to the worker reaches it"
+        );
+        assert_eq!(
+            readme(&tern, top),
+            None,
+            "nothing of the quest above it does, not even its README"
+        );
+    }
+
+    #[test]
+    fn a_gift_is_marked_only_for_a_quest_and_a_machine_name() {
+        let skiff = Machine::new("skiff");
+        shared(&skiff, QUEST, "# Shared\n");
+        for (to, quest) in [
+            ("../tern", QUEST),
+            (".", QUEST),
+            ("", QUEST),
+            ("tern", "../x"),
+        ] {
+            assert!(
+                skiff.places.give(to, quest).is_err(),
+                "giving {quest:?} to {to:?} is refused"
+            );
+        }
+        assert!(
+            !skiff.places.state.join("tern").exists() && !skiff.places.state.join("x").exists(),
+            "and nothing is written outside the gifts' folder"
+        );
+        let refused = skiff
+            .places
+            .offer_to("../tern", QUEST, &[])
+            .expect_err("a share to no machine's name is refused");
+        assert!(
+            refused
+                .to_string()
+                .contains("is shared with this machine's links, but it couldn't be given"),
+            "the refusal says the quest stays shared: {refused}"
+        );
     }
 
     #[test]

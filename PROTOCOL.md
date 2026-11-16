@@ -295,7 +295,9 @@ Three seams shape a link:
   follows are ignored, and a presence of its naming another machine
   isn't kept, nor a reply to an ask it wasn't sent, nor what it tells
   of carries. It is said and
-  served only the quests it was given, and takes back only those and
+  served only the quests it was given, each by a `mycelium share --to`
+  naming it, which gives that quest alone and none above it, and takes
+  back only those and
   the quests it began, which this machine holds none of; it can end
   no other. A message of its isn't kept when it names as its sender a
   session another machine holds, or when this machine already holds
