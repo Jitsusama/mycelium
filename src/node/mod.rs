@@ -1017,6 +1017,9 @@ struct Inner {
     /// The held sessions waiting to come back, and those on their first
     /// turn, kept only while the node runs (see [`turns`]).
     turns: Turns,
+    /// The starts placed lately, each load on its machine until its room
+    /// shows it, kept only while the node runs.
+    starts: placement::Starts,
 }
 
 /// Watches a folder of records, of what is held or what is parked, or,
@@ -1565,15 +1568,34 @@ impl<S: Store> Shared<S> {
         all
     }
 
+    /// Places `work` among the realm's machines, each weighed with the
+    /// sessions on it and the starts placed there that its room doesn't
+    /// yet show. A `start` placed is kept as one, under the same lock, so
+    /// a burst of asks spreads rather than piling on whichever led.
+    fn place(&self, work: &Work, start: bool) -> Placement {
+        let machines = self.machines();
+        let now = jiff::Timestamp::now();
+        let mut inner = self.lock();
+        let inner = &mut *inner;
+        let sessions = inner.state.sessions();
+        let running = sessions
+            .iter()
+            .filter(|one| matches!(one.state, SessionState::Busy | SessionState::Idle))
+            .map(|one| one.machine.as_str());
+        let loads = inner.starts.loads(&machines, running, now);
+        let placement = placement::place(work, &machines, &loads);
+        if start && let Placement::Placed { machine, .. } = &placement {
+            inner.starts.placed(machine, now);
+        }
+        placement
+    }
+
     fn answer(&self, request: Request) -> Reply {
         match request {
             Request::Sessions => Ok(Response::Sessions(self.lock().state.sessions())),
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
             Request::Machines => Ok(Response::Machines(self.machines())),
-            Request::Place(work) => Ok(Response::Placement(placement::place(
-                &work,
-                &self.machines(),
-            ))),
+            Request::Place(work) => Ok(Response::Placement(self.place(&work, false))),
             Request::Messages { groups, limit } => {
                 Ok(Response::Messages(self.lock().state.recent(&groups, limit)))
             }
@@ -2098,7 +2120,7 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        match placement::place(&asked.work, &self.machines()) {
+        match self.place(&asked.work, true) {
             Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
             Placement::Pending { misses } | Placement::Refused { misses } if asked.may_cost => {
                 self.start_on_made(asked, &misses).await
@@ -2168,7 +2190,7 @@ impl<S: Store> Shared<S> {
             })?;
         let mut there = asked.work.clone();
         there.needs.push(Need::Machine(made.machine.clone()));
-        match placement::place(&there, &self.machines()) {
+        match self.place(&there, true) {
             Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 let its: Vec<Miss> = misses

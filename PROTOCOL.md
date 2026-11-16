@@ -783,20 +783,45 @@ keys of the taints it `tolerates`; whether it `may_wait` for a machine
 out of reach; and how long it `lasts`, as an ISO 8601 duration such as
 `PT2H` (`2h` reads too). A machine carries the taints its configuration
 declares, and while they last, `on-battery`, `memory-pressure` (past
-its queue's memory limit) and `disk-pressure` (its `disk_band` past
+its queue's memory limit), `cpu-pressure` (past its queue's processor
+limit) and `disk-pressure` (its `disk_band` past
 `healthy`), each `prefer_not`, and `low-battery` (on its battery below
 20%, when it is let sleep), which is `never`. A machine qualifies when
 it is in reach, leaves after the work ends (now, for work that doesn't
 say how long it lasts), is what each need asks (a fact it never said
 meets none), and carries no `never` taint the work doesn't tolerate. Of
-those, one with no `prefer_not` taint goes first, then the most
-preferences met, then the most memory free, then by name. The answer is
+those, one that is over goes after every one that isn't: over, it
+carries a `memory-pressure` or `cpu-pressure` the work doesn't
+tolerate, or its `room` is unknown or was said more than three minutes
+ago (three of the minutes a link carries it in), which earns it no
+processor or memory headroom. Then the most preferences met goes first,
+then the most headroom, then by name. Headroom is one sum, its weights
+named in `src/placement.rs` to be tuned:
+
+```text
+headroom = 1.0 * (1 - cpu pressure / 100)      CPU_WEIGHT
+         + 1.0 * memory_available / memory     MEMORY_WEIGHT
+         + 0.5 * disk_free / disk              DISK_WEIGHT
+         - 0.5 * (sessions + starts) / cores   SESSION_WEIGHT
+         - 1.0 * each other prefer_not taint   RATHER_NOT_WEIGHT
+```
+
+A share it never said counts as none, and `cores` is its declared
+`cores`, else its `cpu`'s, else one. Its `sessions` are those busy or
+idle there, and its `starts` those this node placed there by `"Start"`
+that its room doesn't yet show: each counts until the machine says its
+room after it, or for five minutes at most, kept in memory only, so a
+burst of starts spreads across machines alike rather than piling on
+whichever led. A `prefer_not` taint such as `disk-pressure` is only a
+weight, so a machine idle beside one busy may take work despite it. The
+answer is
 `{"placed": {"machine", "passed"}}`, `{"pending": {"misses"}}` when
 only a machine out of reach would do and the work may wait, or
 `{"refused": {"misses"}}`; each miss names a `machine` and `because`:
 `{"lacks": need}`, `{"unknown": need}`, `{"refuses": taint}`,
 `{"rather_not": taint}`, `"ranked"`, `"unreachable"`,
-`{"leaves_first": time}` or, for an offer, `{"lives_only": duration}`.
+`{"leaves_first": time}`, `"unheard"` (its room unknown or said too
+long ago) or, for an offer, `{"lives_only": duration}`.
 Placement only
 chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only
