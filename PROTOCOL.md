@@ -214,10 +214,11 @@ same code, each line a JSON value:
 
 Only one link joins two machines, and whichever dialled first holds it,
 so each end carries what its own node asks of the other machine: starts,
-steers and updates, and runs from the dialling end only. The dialling end runs in its node and takes them
-there. The dialled end runs in a process SSH started, outside its node,
-so it holds a `Carry` connection to its node's socket (see The Socket),
-asked again every five seconds while the node can't be reached. Its node
+steers and updates, and runs from the dialling end only. The dialling
+end runs in its node and takes them there. The dialled end runs in a
+process SSH started, outside its node, so it holds a `Carry`
+connection to its node's socket (see The Socket), asked again every
+five seconds while the node can't be reached. Its node
 joins a session there, or one it started, over the way its own dial to
 that machine reaches it, or else over SSH by the machine's name.
 
@@ -1093,10 +1094,11 @@ never on one made for it, in `folder` as for `"Start"`, through the
 person's login shell there without a terminal, and with nothing on its
 input. This machine runs it as the node's own; another, through the link
 reaching it, as A Link says. The node judges who asks, as `by`,
-`"Person"` or `{"Agent": kind}`: an agent, in the strictest fence the presences of its process and its
-forebears say, and in a strict one where it can't tell; an agent too
-where its process runs as one of the machine's agents, may gain no
-privileges the node may, or sees other mounts; else the person. A
+`"Person"` or `{"Agent": kind}`: an agent, in the strictest fence the
+presences of its process and its forebears say, and in a strict one
+where it can't tell; an agent too where its process runs as one of
+the machine's agents, may gain no privileges the node may, or sees
+other mounts; else the person. A
 `by` the request says only makes it stricter, and an agent runs
 fenced at least. An agent's run goes only where an ordered carry could
 land it (A Carry an Orchestrator Orders), and there runs as its
