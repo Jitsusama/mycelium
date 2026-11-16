@@ -137,6 +137,25 @@ impl Places {
         held.keep()
     }
 
+    /// Gives quest `id` to worker `worker`, so the two share it over their
+    /// link; a worker is otherwise given none of this machine's quests.
+    pub fn give(&self, worker: &str, id: &str) -> io::Result<()> {
+        let given = self.given_to(worker);
+        fs::create_dir_all(&given)?;
+        fs::write(given.join(id), "")
+    }
+
+    /// Whether quest `id` was given to worker `worker`.
+    #[must_use]
+    pub fn given(&self, worker: &str, id: &str) -> bool {
+        is_quest(id) && self.given_to(worker).join(id).exists()
+    }
+
+    /// Where the quests given to `worker` are marked, one empty file each.
+    fn given_to(&self, worker: &str) -> PathBuf {
+        self.state.join("given").join(worker)
+    }
+
     /// This machine's ledgers.
     #[must_use]
     pub fn ledgers(&self) -> Ledgers {
@@ -409,6 +428,9 @@ pub struct Exchange {
     /// only for those under them are spent, so an idle look reads no
     /// README.
     above_again: bool,
+    /// Whether the other end is a worker, which shares only the quests it
+    /// was given and those it began.
+    worker: bool,
 }
 
 /// A shared quest's README, as its ledger keys it.
@@ -468,6 +490,7 @@ impl Exchange {
             users: Box::new(Processes),
             sweep_again: BTreeMap::new(),
             above_again: true,
+            worker: false,
         }
     }
 
@@ -475,6 +498,44 @@ impl Exchange {
     #[must_use]
     pub fn places(&self) -> &Places {
         &self.places
+    }
+
+    /// This end's talk with a worker: it serves the worker only the quests
+    /// given to it ([`Places::give`]), and takes from it only those and the
+    /// quests it began, which this machine held none of, so a worker can
+    /// neither read nor write over a quest of this machine's it wasn't
+    /// given.
+    #[must_use]
+    pub fn for_worker(self) -> Self {
+        Self {
+            worker: true,
+            ..self
+        }
+    }
+
+    /// Whether quest `id` is said and served to the other end.
+    fn serves(&self, id: &str) -> bool {
+        !self.worker || self.places.given(&self.other, id)
+    }
+
+    /// Whether what the other end says of quest `id` is taken: anything
+    /// from a machine that isn't a worker, and from a worker, a quest
+    /// given to it, or one it began, which is given to it as it is taken.
+    fn takes(&self, id: &str) -> io::Result<bool> {
+        if self.serves(id) {
+            return Ok(true);
+        }
+        let began_there =
+            is_quest(id) && !self.places.record(id).exists() && !self.places.ledgers().shares(id);
+        if began_there {
+            self.places.give(&self.other, id)?;
+        } else {
+            eprintln!(
+                "{} spoke of {id}, a quest of this machine's it wasn't given, so it isn't taken",
+                self.other
+            );
+        }
+        Ok(began_there)
     }
 
     /// How many files this end has asked of the other and not yet taken.
@@ -580,7 +641,8 @@ impl Exchange {
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
         let mut holds = Vec::new();
-        let quests = ledgers.quests()?;
+        let mut quests = ledgers.quests()?;
+        quests.retain(|id| self.serves(id));
         let decide = std::mem::take(&mut self.above_again)
             || quests.len() != self.told.len()
             || quests.iter().any(|id| !self.told.contains_key(id));
@@ -697,12 +759,23 @@ impl Exchange {
         };
         match say {
             Say::Shares {
-                quests,
-                scratch,
-                clones,
-                ended,
-                above,
+                mut quests,
+                mut scratch,
+                mut clones,
+                mut ended,
+                mut above,
             } => {
+                let mut taken = BTreeSet::new();
+                for id in &quests {
+                    if self.takes(id)? {
+                        taken.insert(id.clone());
+                    }
+                }
+                quests.retain(|id| taken.contains(id));
+                scratch.retain(|id, _| taken.contains(id));
+                clones.retain(|id, _| taken.contains(id));
+                ended.retain(|id| taken.contains(id));
+                above.retain(|id| taken.contains(id));
                 self.theirs = Some(Theirs {
                     quests: quests.iter().cloned().collect(),
                     ended,
@@ -724,6 +797,18 @@ impl Exchange {
                 for (id, clones) in clones {
                     self.clone_what(&id, &clones)?;
                 }
+                Ok(Vec::new())
+            }
+            Say::Holds { quest, .. } | Say::Piece { quest, .. } | Say::File { quest, .. }
+                if !self.takes(&quest)? =>
+            {
+                Ok(Vec::new())
+            }
+            Say::Want { quest, .. } if !self.serves(&quest) => {
+                eprintln!(
+                    "{} asked for a file of {quest}, a quest it wasn't given, so it isn't sent",
+                    self.other
+                );
                 Ok(Vec::new())
             }
             Say::Holds { quest, files } => {
@@ -2395,6 +2480,71 @@ mod tests {
             mode_of(&kestrel, "attachments/hub.env"),
             0o600,
             "still as only its owner may read it"
+        );
+    }
+
+    /// Writes quest `id`'s README on `machine` as `text` and shares it.
+    fn shared(machine: &Machine, id: &str, text: &str) {
+        let record = machine.places.quests.join(id);
+        fs::create_dir_all(&record).expect("the quest made");
+        fs::write(record.join("README.md"), text).expect("its README written");
+        machine
+            .places
+            .ledgers()
+            .hold(id)
+            .expect("its ledger held")
+            .keep()
+            .expect("the quest shared");
+    }
+
+    fn readme(machine: &Machine, id: &str) -> Option<String> {
+        fs::read_to_string(machine.places.quests.join(id).join("README.md")).ok()
+    }
+
+    #[test]
+    fn a_worker_is_served_only_the_quests_it_was_given_and_hands_back_its_own() {
+        let skiff = Machine::new("skiff");
+        let tern = Machine::new("tern");
+        let (given, ungiven, began) = (QUEST, "QEST-20261014-KEEPME", "QEST-20261015-TERNQS");
+        shared(&skiff, given, "# Given\n");
+        shared(&skiff, ungiven, "# Ours\n");
+        skiff.places.give("tern", given).expect("the quest given");
+        shared(&tern, began, "# Begun there\n");
+
+        let mut near = skiff.exchange(&tern).for_worker();
+        let mut far = tern.exchange(&skiff);
+        talk(&mut near, &mut far);
+
+        assert_eq!(
+            readme(&tern, given).as_deref(),
+            Some("# Given\n"),
+            "the quest given to the worker reaches it"
+        );
+        assert_eq!(
+            readme(&tern, ungiven),
+            None,
+            "a quest of skiff's it wasn't given never does"
+        );
+        assert_eq!(
+            readme(&skiff, began).as_deref(),
+            Some("# Begun there\n"),
+            "the quest the worker began, which skiff held none of, comes back"
+        );
+        assert!(
+            skiff.places.given("tern", began),
+            "and is the worker's to keep sharing"
+        );
+
+        shared(&tern, ungiven, "# Theirs\n");
+        talk(&mut near, &mut far);
+        assert_eq!(
+            readme(&skiff, ungiven).as_deref(),
+            Some("# Ours\n"),
+            "nor can the worker write over a quest of skiff's it wasn't given"
+        );
+        assert!(
+            !skiff.places.given("tern", ungiven),
+            "nor take it by saying it shares it"
         );
     }
 }

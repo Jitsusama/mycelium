@@ -1541,6 +1541,8 @@ fn serve_link(
             keep: Box::new(()),
             refused: None,
             releases: false,
+            worker: false,
+            named: None,
             hello_within: Some(link::dial::HELLO_WITHIN),
         };
         // A build installed since this end began ends it, for its dialler
