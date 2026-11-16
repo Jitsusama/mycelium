@@ -419,7 +419,12 @@ where
 {
     store::out_of_reach_of_unclaimed(&store)?;
     let (to_dial, mut made) = mpsc::unbounded_channel();
-    let (shared, kept) = Shared::of(store.clone(), membership.hello(), given, to_dial);
+    let (shared, kept) = Shared::of(
+        store.clone(),
+        (membership.hello(), socket.path.clone()),
+        given,
+        to_dial,
+    );
     let seeing_fences = tokio::spawn(shared.clone().see_fences());
     let Kept {
         sharing,
@@ -773,6 +778,12 @@ struct Shared<S> {
     placements: Option<Arc<placements::Log>>,
     /// The strictest fence each session here was seen to run in.
     fences: Arc<fences::Seen>,
+    /// This node's own socket, which a carry the person asks of it runs
+    /// its steps through, as `mycelium carry` does.
+    node: PathBuf,
+    /// Where this machine keeps quests, which a carry the person asks of
+    /// it shares, if it shares any.
+    shares: Option<Arc<Places>>,
     /// Held while the record of orchestrations is read and kept again, so
     /// two claims at once never undo each other.
     claiming: Arc<Mutex<()>>,
@@ -863,6 +874,8 @@ impl<S: Clone> Clone for Shared<S> {
             declared: self.declared.clone(),
             placements: self.placements.clone(),
             fences: self.fences.clone(),
+            node: self.node.clone(),
+            shares: self.shares.clone(),
             claiming: self.claiming.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
@@ -1113,6 +1126,15 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Steers for Shared<S> {
             )),
         }
     }
+
+    async fn carry(&self, quest: &str, to: &str) -> Result<serde_json::Value, String> {
+        match Shared::carry_back(self, quest, to).await? {
+            Response::Carried(carried) => Ok(carried),
+            other => Err(format!(
+                "its machine answered {other:?}, not where its sessions went"
+            )),
+        }
+    }
 }
 
 /// `value` as JSON, or null for what can't be, which a node's own records
@@ -1255,7 +1277,7 @@ impl<S: Store> Shared<S> {
     /// loop keeps apart.
     fn of(
         store: S,
-        hello: Hello,
+        (hello, node): (Hello, PathBuf),
         given: Given,
         to_dial: mpsc::UnboundedSender<(Made, Arc<Notify>)>,
     ) -> (Self, Kept) {
@@ -1318,6 +1340,8 @@ impl<S: Store> Shared<S> {
             talks: Arc::default(),
             declared,
             placements: placements.map(Arc::new),
+            node,
+            shares: sharing.clone().map(Arc::new),
             claiming: Arc::default(),
             client: None,
             served: Arc::new(Served::start(serves)),
@@ -2060,6 +2084,35 @@ impl<S: Store> Shared<S> {
         Ok(Response::Updated(ending))
     }
 
+    /// Carries `quest` to machine `to` in one act, where the person's own
+    /// login asks: from the one machine its sessions run on, by this
+    /// node's carry steps when that's here, or through the link reaching
+    /// it, vouched for as the person's. Answers where its sessions went.
+    async fn carry_back(&self, quest: &str, to: &str) -> Reply {
+        let (client, processes) = (self.client, self.processes.clone());
+        tokio::task::spawn_blocking(move || {
+            asker::persons_own(client, &processes, "carry a quest")
+        })
+        .await
+        .map_err(|error| format!("who asks couldn't be told: {error}"))??;
+        let from = crate::carry::runs_on(&self.lock().state.sessions(), quest)?;
+        if from != self.machine {
+            return self.asks.carry(&from, quest, to, true).await;
+        }
+        let shares = self
+            .shares
+            .clone()
+            .ok_or_else(|| format!("{} shares no quests, so it carries none", self.machine))?;
+        let (node, here) = (self.node.clone(), self.machine.clone());
+        let (quest, to) = (quest.to_owned(), to.to_owned());
+        tokio::task::spawn_blocking(move || {
+            through::for_the_person(node, (*shares).clone(), (&quest, &here, &to))
+        })
+        .await
+        .map_err(|error| format!("its carry stopped: {error}"))?
+        .map(Response::Carried)
+    }
+
     /// Puts what the person says into the inbox of the session going by
     /// `address`, on the one machine it runs on: here, or through the link
     /// reaching that machine. A parked session counts as running there,
@@ -2345,7 +2398,7 @@ impl<S: Store> Shared<S> {
     /// orchestrations, where the person's own login asks.
     async fn frees(&self, quest: String) -> Reply {
         let (client, processes) = (self.client, self.processes.clone());
-        tokio::task::spawn_blocking(move || asker::persons_own(client, &processes))
+        tokio::task::spawn_blocking(move || asker::persons_own(client, &processes, "free a quest"))
             .await
             .map_err(|error| format!("who asks couldn't be told: {error}"))??;
         self.rerecord(move |record| record.free(&quest).map(|_| ()))
@@ -4939,6 +4992,90 @@ mod tests {
         );
     }
 
+    /// What the node `client` speaks to answers as it is asked, under id
+    /// `id`, to carry `quest` to `to`.
+    async fn carries(client: &mut Speaking, id: u64, quest: &str, to: &str) -> Value {
+        client
+            .ask(json!({"id": id, "ask": "carry", "quest": quest, "to": to}))
+            .await;
+        client.next().await
+    }
+
+    #[tokio::test]
+    async fn only_the_persons_own_login_carries_a_quest_in_one_act() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let at = jiff::Timestamp::now().to_string();
+        store.start_here(
+            "s-harbour",
+            json!({"session": "s-harbour", "addresses": ["HARBOR"], "groups": [],
+                   "busy": false, "state": "listening", "at": at,
+                   "quest": "QEST-20261115-HARBOR",
+                   "owner": {"pid": 7003, "startTicks": started_at(7003)}}),
+            true,
+        );
+        let far = json!({"session": "s-far", "addresses": ["FARAWY"], "groups": [],
+                         "busy": true, "state": "working", "at": at,
+                         "quest": "QEST-20261115-FARAWY"});
+        let places = dir.path().join("places");
+        let sharing = Places {
+            quests: places.join("quests"),
+            scratch: places.join("scratch"),
+            home: places.join("home"),
+            state: places.join("state"),
+        };
+        let (_stop, _node) = node_sharing(
+            &store,
+            "skiff",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+            Some(sharing),
+        );
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        // Once the node has started, as a link carries it, since a session
+        // of a machine no link claims as the node starts is let go.
+        store
+            .put_presence("s-far", "tern", &far)
+            .expect("tern's session is kept");
+        listed(socket.clone(), "s-far").await;
+
+        asks_below(&socket, 7003);
+        assert_eq!(
+            carries(&mut client, 2, "QEST-20261115-HARBOR", "osprey").await["error"]["message"],
+            json!(
+                "this asks from mycelium-pi-f3d9.scope, an agent's, so it can't carry a quest: \
+                 only the person's own login does"
+            ),
+            "an agent carries nothing in the person's one act"
+        );
+        asks_as_the_person(&socket);
+        assert_eq!(
+            carries(&mut client, 3, "QEST-20261115-HARBOR", "osprey").await["error"]["message"],
+            json!(
+                "QEST-20261115-HARBOR wasn't carried to osprey: its find failed: osprey isn't a \
+                 machine of the realm in reach; those are none"
+            ),
+            "the person's carry runs the node's own carry steps, which say why it stopped"
+        );
+        assert_eq!(
+            carries(&mut client, 4, "QEST-20261115-5HJZ8Z", "tern").await["error"]["message"],
+            json!(
+                "no session of QEST-20261115-5HJZ8Z runs on any machine in reach, so there's \
+                 nothing to carry"
+            ),
+            "a quest nothing runs is carried from nowhere"
+        );
+        assert_eq!(
+            carries(&mut client, 5, "QEST-20261115-FARAWY", "skiff").await["error"]["message"],
+            json!("no link reaches tern now"),
+            "a quest running on another machine is carried from there, over its link"
+        );
+    }
+
     #[tokio::test]
     async fn only_the_persons_own_login_frees_a_quest() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -7030,6 +7167,59 @@ mod tests {
             assert_eq!(ended["ended"], json!({"Exited": 3}), "{machine}: {ended}");
         }
         stop(nodes).await;
+    }
+
+    #[tokio::test]
+    async fn a_quest_running_on_another_machine_is_carried_from_there_over_a_proved_link() {
+        for (proven, why) in [
+            (true, "kestrel carries no sessions over this link"),
+            (
+                false,
+                "kestrel carries a session only when asked over a link its key proved, which \
+                 this one isn't",
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let far_socket = dir.path().join("kestrel").join("work.sock");
+            let near_socket = dir.path().join("skiff").join("work.sock");
+            let far_store = Memory::default();
+            far_store.start_here(
+                "s-far",
+                json!({"session": "s-far", "addresses": ["FARAWY"], "groups": [],
+                       "busy": true, "state": "working",
+                       "at": jiff::Timestamp::now().to_string(),
+                       "quest": "QEST-20261115-FARAWY"}),
+                true,
+            );
+            let far = node(
+                &far_store,
+                "kestrel",
+                Vec::<Piped>::new(),
+                None,
+                &far_socket,
+            );
+            let dial = Piped {
+                store: far_store,
+                socket: far_socket,
+                held: dir.path().join("held"),
+                proven,
+                asks_back: false,
+            };
+            let near = node(&Memory::default(), "skiff", vec![dial], None, &near_socket);
+            listed(near_socket.clone(), "s-far").await;
+            asks_as_the_person(&near_socket);
+            let mut client = Speaking::to(&near_socket).await;
+            client.ask(json!({"id": 1, "ask": "hello"})).await;
+            client.next().await;
+            assert_eq!(
+                carries(&mut client, 2, "QEST-20261115-FARAWY", "skiff").await["error"]["message"],
+                json!(why),
+                "skiff asks kestrel, where the quest runs, which judges the ask itself \
+                 (proven: {proven})"
+            );
+            drop(client);
+            stop([near, far]).await;
+        }
     }
 
     /// Stops each of `nodes`, checking it stops cleanly.

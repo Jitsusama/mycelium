@@ -528,13 +528,14 @@ pub fn may_say(asker: Option<i32>, processes: &Processes, said: &Value) -> Resul
 }
 
 /// Whether process `asker` is the person's own login, as `processes` tell
-/// it, as only the person frees a quest an orchestrator holds.
+/// it, as only the person frees a quest an orchestrator holds or carries
+/// a quest in one act: what it may then `do`, as a person says it.
 ///
 /// # Errors
 ///
 /// When the asker is an agent's, or nothing can be told of it.
-pub fn persons_own(asker: Option<i32>, processes: &Processes) -> Result<(), String> {
-    let only = "so it can't free a quest: only the person's own login does";
+pub fn persons_own(asker: Option<i32>, processes: &Processes, does: &str) -> Result<(), String> {
+    let only = format!("so it can't {does}: only the person's own login does");
     let Some(pid) = asker else {
         return Err(format!("nothing names the process that asks, {only}"));
     };

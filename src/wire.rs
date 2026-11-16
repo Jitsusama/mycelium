@@ -330,6 +330,9 @@ pub enum Response {
     /// one JSON object naming its `step`, such as `done` or `refused`, and
     /// the commit the machine runs after it.
     Updated(serde_json::Value),
+    /// How the person's carry asked for ended: the carry's last line,
+    /// naming the machine it went to and each session started there.
+    Carried(serde_json::Value),
     /// The orchestrations asked for, recorded.
     Orchestrated,
     /// Events follow, one per line.

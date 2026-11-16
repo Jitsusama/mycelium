@@ -40,6 +40,12 @@ enum Carried {
         checked: bool,
     },
     Update,
+    Carry {
+        quest: String,
+        to: String,
+        #[serde(default)]
+        checked: bool,
+    },
 }
 
 impl TryFrom<Asked> for Carried {
@@ -54,6 +60,7 @@ impl TryFrom<Asked> for Carried {
                 checked: steer.checked,
             },
             Asked::Update => Self::Update,
+            Asked::Carry { quest, to, checked } => Self::Carry { quest, to, checked },
             Asked::Run(..) => {
                 return Err("it dialled this machine, and a run goes only where this \
                             machine dialled"
@@ -77,6 +84,7 @@ impl From<Carried> for Asked {
                 checked,
             }),
             Carried::Update => Self::Update,
+            Carried::Carry { quest, to, checked } => Self::Carry { quest, to, checked },
         }
     }
 }

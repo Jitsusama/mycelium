@@ -18,6 +18,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 use crate::client::Client;
 use crate::link::dial::{Dial, Ssh};
 use crate::placement::Need;
+use crate::share::exchange::Places;
 use crate::steer::Steer;
 use crate::wire::{Ran, Reply, Request, Response, Run, Start, Started};
 
@@ -75,6 +76,14 @@ pub(super) enum Asked {
     /// Run a command there, handing what it says to the sender as it
     /// comes; answered once the run is asked of the other end.
     Run(Run, mpsc::Sender<Ran>),
+    /// Carry `quest`'s sessions off that machine to the machine `to`, as
+    /// the person asks, once this machine's node `checked` the person
+    /// asked.
+    Carry {
+        quest: String,
+        to: String,
+        checked: bool,
+    },
 }
 
 /// Something asked of another machine, and where its answer goes.
@@ -147,6 +156,21 @@ impl Asks {
     /// machine's `updated` fact says how it ended.
     pub async fn update(&self, machine: &str) -> Reply {
         self.send(machine, Asked::Update, None).await?
+    }
+
+    /// Asks `machine` to carry `quest`'s sessions to the machine `to`, as
+    /// the person asked here, through the link reaching it, answering
+    /// where each went. The person's proof goes as `checked`, which this
+    /// machine's node says only once it saw the person's own login ask. A
+    /// carry waits for its sessions to end, so the answer is waited on for
+    /// as long as the link stands.
+    pub async fn carry(&self, machine: &str, quest: &str, to: &str, checked: bool) -> Reply {
+        let asked = Asked::Carry {
+            quest: quest.to_owned(),
+            to: to.to_owned(),
+            checked,
+        };
+        self.send(machine, asked, None).await?
     }
 
     /// Sends `asked` to `machine` through the link reaching it, and waits
@@ -358,6 +382,25 @@ async fn said(
         .ok()
         .flatten()
         .ok_or_else(|| "its node stopped answering".to_owned())
+}
+
+/// Carries `quest`'s sessions from `here` to `to`, as the other end asks
+/// for the person, through this machine's node at `node`, answering where
+/// each went.
+pub(super) async fn carry(
+    node: PathBuf,
+    shares: Places,
+    here: String,
+    (quest, to): (String, String),
+) -> Reply {
+    let carried = tokio::task::spawn_blocking(move || {
+        crate::carry::through::for_the_person(node, shares, (&quest, &here, &to))
+    })
+    .await;
+    match carried {
+        Ok(carried) => carried.map(Response::Carried),
+        Err(error) => Err(format!("its carry stopped: {error}")),
+    }
 }
 
 /// Hands an update the other end asks of `here` to this machine's node at

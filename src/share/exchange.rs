@@ -471,6 +471,12 @@ impl Exchange {
         }
     }
 
+    /// Where this machine keeps the quests it shares.
+    #[must_use]
+    pub fn places(&self) -> &Places {
+        &self.places
+    }
+
     /// How many files this end has asked of the other and not yet taken.
     /// Once the other end has said all it holds, none means this end holds
     /// all of it, as frames cross in the order they are said.

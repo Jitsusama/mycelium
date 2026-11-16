@@ -176,6 +176,40 @@ struct Refusal {
     at: jiff::Timestamp,
 }
 
+/// Carries `quest` from `here` to `to` as the person asks, through the
+/// node at `socket` with the quest's share in `shares`, answering the
+/// carry's last line, where each session went. It waits as `mycelium
+/// carry` does, for each session to carry itself and end, so it blocks
+/// for minutes.
+///
+/// # Errors
+///
+/// Why it went no further, as the step that failed said it.
+pub fn for_the_person(
+    socket: PathBuf,
+    shares: Places,
+    (quest, here, to): (&str, &str, &str),
+) -> Result<Value, String> {
+    let mut hands = Through::new(socket, shares, quest, PATIENCE);
+    let mut last = None;
+    let carried = super::carry(&mut hands, quest, here, to, None, &mut |line| {
+        last = Some(line.clone());
+    });
+    if let Ok(carried) = carried {
+        return serde_json::to_value(carried).map_err(|error| error.to_string());
+    }
+    let said = |field| {
+        last.as_ref()
+            .and_then(|line: &Value| line.get(field)?.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    };
+    Err(format!(
+        "{quest} wasn't carried to {to}: its {} failed: {}",
+        said("step"),
+        said("said")
+    ))
+}
+
 /// The refusals in `handover` written since `since`, by session: each
 /// file changed since, saying a time since, whose session is the one
 /// its name gives. One changed before is passed over unread, whatever

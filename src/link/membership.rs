@@ -57,6 +57,13 @@ pub struct Hello {
     /// that asked.
     #[serde(default)]
     pub runs: bool,
+    /// Whether it carries the person's carry of a quest's sessions off
+    /// its machine, running the carry there when its key proved the
+    /// machine and the asking end saw the person ask, and refusing it
+    /// otherwise; an end older than this does neither, and would end a
+    /// link that asked.
+    #[serde(default)]
+    pub carries: bool,
 }
 
 /// Which machines a node links with.
@@ -97,6 +104,7 @@ impl Membership for Realm {
             releases: false,
             updates: true,
             runs: true,
+            carries: true,
         }
     }
 
