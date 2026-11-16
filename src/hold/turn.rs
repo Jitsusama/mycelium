@@ -8,7 +8,9 @@
 //! waits lets the program start at once, so no session is ever left
 //! waiting on a node that won't answer.
 
+use std::iter::Peekable;
 use std::path::Path;
+use std::str::Chars;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -19,17 +21,26 @@ use crate::wire::Request;
 const RESUMING: [&str; 2] = ["--session", "--session-id"];
 
 /// The session `command` resumes, by id, wherever its words name one
-/// after `--session` or `--session-id`, whole or within a shell's words,
-/// as `sh -c "... exec pi --session <id>"` does. A session named by its
-/// log's path, as `.../2026-11-14T22-23-37-209Z_<id>.jsonl`, is the id
-/// that path ends in.
+/// after `--session` or `--session-id`, whole or within the script a
+/// shell runs, as `sh -c "... exec pi --session <id>"` does. A word is
+/// only ever read whole: one holding a person's words, as
+/// `QUEST_WORKFLOW_FIRST_TEXT=fix --session ...` does, names nothing. A
+/// session named by its log's path, as
+/// `.../2026-11-14T22-23-37-209Z_<id>.jsonl`, is the id that path ends in.
 #[must_use]
 pub fn resumed(command: &[String]) -> Option<String> {
-    let words: Vec<&str> = command
+    let words: Vec<String> = command
         .iter()
-        .flat_map(|word| word.split_whitespace())
-        .map(|word| word.trim_matches(['"', '\'']))
+        .enumerate()
+        .flat_map(|(at, word)| {
+            if is_script(command, at) {
+                script_words(word, &command[at + 1..])
+            } else {
+                vec![word.clone()]
+            }
+        })
         .collect();
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
     let named = words.iter().enumerate().find_map(|(at, word)| {
         if let Some((flag, id)) = word.split_once('=')
             && RESUMING.contains(&flag)
@@ -43,6 +54,142 @@ pub fn resumed(command: &[String]) -> Option<String> {
     })?;
     let id = Path::new(named).file_stem()?.to_str()?.rsplit('_').next()?;
     (!id.is_empty() && !id.starts_with('-')).then(|| id.to_owned())
+}
+
+/// The shells whose `-c` takes a script, by their program's file name.
+const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "dash", "ksh", "mksh"];
+
+/// What ends a word in a script outside quotes, besides a space.
+const BETWEEN_WORDS: &str = ";&|()<>";
+
+/// Whether the word `at` in `command` is a script a shell runs: the one
+/// after its `-c`, alone or among other flags as `-lc` and `-lic` are,
+/// where the program those flags follow is a shell. Another program's
+/// `-c`, as pi's own, takes no script, so its next word stays whole.
+fn is_script(command: &[String], at: usize) -> bool {
+    let Some(before) = at.checked_sub(1) else {
+        return false;
+    };
+    let flags = &command[before];
+    let short = flags
+        .strip_prefix('-')
+        .is_some_and(|letters| letters.chars().all(|letter| letter.is_ascii_alphabetic()));
+    if !short || !flags.contains('c') {
+        return false;
+    }
+    command[..before]
+        .iter()
+        .rev()
+        .find(|word| !word.starts_with('-'))
+        .and_then(|program| Path::new(program).file_name()?.to_str())
+        .is_some_and(|name| SHELLS.contains(&name))
+}
+
+/// The words a shell makes of `script`, its quotes taken off: what's
+/// within quotes, `"..."`, `'...'` or bash's `$'...'`, or after a
+/// backslash, stays within its word. A positional parameter, `$3` or
+/// `${3}`, is what `given` holds there, `$0` first, as a script handed
+/// its arguments reads them; nothing else is expanded.
+fn script_words(script: &str, given: &[String]) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    // The quote open: ', ", or $ for bash's $'...', whose backslash
+    // escapes its next letter.
+    let mut quote: Option<char> = None;
+    let mut letters = script.chars().peekable();
+    while let Some(letter) = letters.next() {
+        let held = match quote {
+            Some('\'') if letter == '\'' => {
+                quote = None;
+                None
+            }
+            Some('\'') => Some(letter.to_string()),
+            Some(open) => match letter {
+                '"' if open == '"' => {
+                    quote = None;
+                    None
+                }
+                '\'' if open == '$' => {
+                    quote = None;
+                    None
+                }
+                '\\' => escaped(&mut letters, open == '"'),
+                '$' if open == '"' => Some(parameter(&mut letters, given)),
+                _ => Some(letter.to_string()),
+            },
+            None => match letter {
+                '\'' | '"' => {
+                    quote = Some(letter);
+                    Some(String::new())
+                }
+                '$' if letters.peek() == Some(&'\'') => {
+                    letters.next();
+                    quote = Some('$');
+                    Some(String::new())
+                }
+                '\\' => escaped(&mut letters, false),
+                '$' => Some(parameter(&mut letters, given)),
+                _ if letter.is_whitespace() || BETWEEN_WORDS.contains(letter) => {
+                    words.extend(word.take());
+                    None
+                }
+                _ => Some(letter.to_string()),
+            },
+        };
+        if let Some(held) = held {
+            word.get_or_insert_with(String::new).push_str(&held);
+        }
+    }
+    words.extend(word);
+    words
+}
+
+/// What a backslash makes of the letter after it: nothing of a newline,
+/// which only continues the line, else that letter. Within double
+/// quotes (`quoted`) only `$`, `` ` ``, `"` and `\` are escaped; before
+/// any other letter the backslash stays.
+fn escaped(letters: &mut Peekable<Chars<'_>>, quoted: bool) -> Option<String> {
+    match letters.next() {
+        None | Some('\n') => None,
+        Some(letter) if quoted && !"$`\"\\".contains(letter) => Some(format!("\\{letter}")),
+        Some(letter) => Some(letter.to_string()),
+    }
+}
+
+/// What follows a `$` in a script: the positional parameter it names,
+/// `$3` or `${3}`, from `given`, `$0` first, empty when unset; any other
+/// `$` stays as it is.
+fn parameter(letters: &mut Peekable<Chars<'_>>, given: &[String]) -> String {
+    let at = match letters.peek() {
+        Some(digit) if digit.is_ascii_digit() => {
+            letters.next().and_then(|digit| digit.to_digit(10))
+        }
+        Some('{') => {
+            // Only `${`, digits, then `}` names one; anything else in the
+            // braces leaves the `$` as it is, and the letters unread.
+            let mut ahead = letters.clone();
+            ahead.next();
+            let mut digits = String::new();
+            while let Some(digit) = ahead.next_if(char::is_ascii_digit) {
+                digits.push(digit);
+            }
+            if ahead.next() == Some('}') {
+                *letters = ahead;
+                digits.parse::<u32>().ok()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    match at {
+        Some(at) => usize::try_from(at)
+            .ok()
+            .and_then(|at| given.get(at))
+            .cloned()
+            .unwrap_or_default(),
+        None => "$".to_owned(),
+    }
 }
 
 /// Waits until the node serving `socket` gives `session` its turn, or
@@ -107,6 +254,10 @@ mod tests {
             (words(&["pi", "--session"]), None),
             (words(&["pi", "--session", "--model"]), None),
         ];
+        resumes(cases);
+    }
+
+    fn resumes<const N: usize>(cases: [(Vec<String>, Option<&str>); N]) {
         for (command, session) in cases {
             assert_eq!(
                 resumed(&command).as_deref(),
@@ -114,6 +265,98 @@ mod tests {
                 "{command:?} resumes {session:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_word_holding_a_persons_words_names_no_session() {
+        let cases = [
+            (
+                words(&[
+                    "env",
+                    "QUEST_WORKFLOW_FIRST_TEXT=fix --session 01a1-no",
+                    "pi",
+                ]),
+                None,
+            ),
+            (
+                words(&[
+                    "env",
+                    "QUEST_WORKFLOW_FIRST_TEXT=fix --session 01a1-no",
+                    "pi",
+                    "--session",
+                    "01a1-kl",
+                ]),
+                Some("01a1-kl"),
+            ),
+            (
+                words(&[
+                    "sh",
+                    "-c",
+                    "QUEST_WORKFLOW_FIRST_TEXT='fix --session 01a1-no' exec pi",
+                ]),
+                None,
+            ),
+            (
+                words(&[
+                    "sh",
+                    "-c",
+                    "T=\"say \\\"--session 01a1-no\\\"\" exec pi --session '01a1-mn'",
+                ]),
+                Some("01a1-mn"),
+            ),
+            (words(&["pi", "fix --session 01a1-no"]), None),
+            // pi's own -c takes no script, so a person's words after it stay whole.
+            (words(&["pi", "-c", "fix --session 01a1-no"]), None),
+        ];
+        resumes(cases);
+    }
+
+    #[test]
+    fn a_shells_script_names_its_session_as_the_shell_reads_it() {
+        let cases = [
+            (
+                words(&["/bin/bash", "-lc", "cd ~/src && exec pi --session 01a1-op"]),
+                Some("01a1-op"),
+            ),
+            (
+                words(&["zsh", "-lic", "T=\"it's --session 01a1-no\" exec pi"]),
+                None,
+            ),
+            (
+                words(&[
+                    "bash",
+                    "-c",
+                    "T=$'don\\'t use --session 01a1-no now' exec pi",
+                ]),
+                None,
+            ),
+            // A carry's start names the session it resumes as its third argument.
+            (
+                words(&[
+                    "sh",
+                    "-c",
+                    "pi-carry arrive \"$1\" --session \"${3}\" || exit; exec pi --session \"$3\"",
+                    "pi-carry",
+                    "QEST-1",
+                    "tern",
+                    "01a1-qr",
+                ]),
+                Some("01a1-qr"),
+            ),
+            (
+                words(&["sh", "-c", "(cd x;exec pi --session 01a1-st)"]),
+                Some("01a1-st"),
+            ),
+            (
+                words(&["sh", "-c", "exec pi --session 01a1-uv>log"]),
+                Some("01a1-uv"),
+            ),
+            (
+                words(&["sh", "-c", "exec pi --session \\\n  01a1-wx"]),
+                Some("01a1-wx"),
+            ),
+        ];
+        resumes(cases);
     }
 
     #[tokio::test]
