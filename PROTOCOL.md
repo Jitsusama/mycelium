@@ -1242,7 +1242,8 @@ A record carries `key` (`session:<id>`, `machine:<name>`,
 `message:<id>`, `team:<address>`, `network:<name>`, `cell:<name>`,
 `unanswered:<id>`, `said:<id>`, `event:<session>:<at>`,
 `receptor:<source>`, `builder:<name>`, `forage:<address>`,
-`murmur:<cell>:<at>`, `tie:<cell>~<cell>` or `tie:<cell>`), `kind`, `heard` (milliseconds since the epoch)
+`murmur:<cell>:<at>`, `tie:<cell>~<cell>` or `tie:<cell>`), `kind`,
+`heard` (milliseconds since the epoch)
 and the fields `Sessions`, `Machines` and `Messages` give it. A field
 its source named `key`, `kind` or `heard`, such as a
 job's own `kind`, is kept under `source` rather than lost beneath the
