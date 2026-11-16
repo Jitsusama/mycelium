@@ -152,6 +152,7 @@ impl Realm {
     /// What the node holds of it.
     fn holding(&self) -> Holding<'_> {
         Holding {
+            machine: "",
             teams: &self.teams,
             sessions: &self.sessions,
             machines: &self.machines,

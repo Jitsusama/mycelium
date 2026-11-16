@@ -1384,8 +1384,8 @@ struct Inner {
 }
 
 /// Watches a folder of records, of what is held or what is parked, or,
-/// when it can't be watched, says so and leaves `what` it holds read only
-/// with presence.
+/// when it can't be watched, says so: `what` it holds is then read again
+/// only as a presence changes, so its change waits on the next one.
 fn watch(
     folder: &Path,
     what: &str,
@@ -1396,7 +1396,7 @@ fn watch(
     match hold::watch(folder) {
         Ok((watcher, changed)) => (Some(watcher), changed),
         Err(error) => {
-            eprintln!("{what} isn't watched, so is read only with presence: {error}");
+            eprintln!("{what} isn't watched, so is read again only as a presence changes: {error}");
             (None, mpsc::unbounded_channel().1)
         }
     }
@@ -2002,6 +2002,7 @@ impl<S: Store> Shared<S> {
             standing::standing(session, here, &parked, &self.boot)
         };
         let holding = Holding {
+            machine: &self.machine,
             teams: &teams,
             sessions: &sessions,
             machines: &machines,
@@ -7516,6 +7517,56 @@ mod tests {
         assert!(
             parked["changed"][0]["told"].as_str().is_some(),
             "which a shut launcher reads: {parked}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cell_here_is_dormant_only_once_its_park_is_marked() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let now = jiff::Timestamp::now().to_string();
+        let boot = store::folders::boot_id();
+        let parked = json!({
+            "session": "napper", "addresses": ["NAPPER"], "groups": [],
+            "busy": false, "state": "parked", "at": now, "owner": {"bootId": boot},
+        });
+        store.start_here("napper", parked, false);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
+            .await;
+        let records = client.next().await;
+        assert!(
+            records["records"].is_array(),
+            "the cells come whole first: {records}"
+        );
+        let napper = |records: &Value, field: &str| -> Option<Value> {
+            records[field]
+                .as_array()?
+                .iter()
+                .find(|record| record["key"] == "cell:NAPPER")
+                .map(|record| record["standing"].clone())
+        };
+        assert_eq!(
+            napper(&records, "records"),
+            None,
+            "ended with nothing marked to wake it, it's no cell: {records}"
+        );
+
+        fs::write(parks_of(&socket).join("napper.json"), "{}").expect("a marker");
+        // The machine's own cell may change first, as it's measured again.
+        let mut marked = client.next().await;
+        while napper(&marked, "changed").is_none() {
+            marked = client.next().await;
+        }
+        assert_eq!(
+            napper(&marked, "changed"),
+            Some(json!("dormant")),
+            "its park marked, it's dormant: {marked}"
         );
     }
 

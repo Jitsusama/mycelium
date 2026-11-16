@@ -626,6 +626,54 @@ fn a_tree_two_cells_hold_is_a_network_and_one_cells_own_is_on_the_cell() {
 }
 
 #[test]
+fn a_session_here_whose_process_ended_is_dormant_only_on_its_nodes_word() {
+    // Seven sessions here ended with their quests active and nothing to wake
+    // them, yet the map drew each dormant for hours, since their presences
+    // still said parked (16 Nov). Here, only the node's own standing counts;
+    // a session elsewhere has only its presence's word, which this node
+    // can't check. A node that says no `here` is believed as before. Read
+    // as the command reads a node, only the fields it asks for.
+    let ended = |address: &str, n: u8, here: Option<bool>| {
+        let mut record = session(address, n, "Ended", "ended", &["repo.oars"]);
+        record["presence"] = json!({"state": "parked"});
+        if let Some(here) = here {
+            record["here"] = json!(here);
+        }
+        pruned(&record, &RECORD)
+    };
+    let mut wakes = ended("WAKES1", 1, Some(true));
+    wakes["standing"] = json!("parked");
+    // Parking, its process not yet gone: its presence's word stands.
+    let mut parking = ended("LIVES1", 5, Some(true));
+    parking["state"] = json!("idle");
+    parking["standing"] = json!("running");
+    let sessions = [
+        wakes,
+        ended("DEAD01", 2, Some(true)),
+        ended("AWAY01", 3, Some(false)),
+        ended("OLDER1", 4, None),
+        parking,
+    ];
+    let mycelium = Mycelium::of("home", &[], &sessions, &[]);
+    let cells: Vec<(&str, Option<&str>)> = mycelium
+        .cells
+        .iter()
+        .map(|cell| (cell.name.as_str(), cell.standing))
+        .collect();
+    assert_eq!(
+        cells,
+        [
+            ("WAKES1", Some("dormant")),
+            ("AWAY01", Some("dormant")),
+            ("OLDER1", Some("dormant")),
+            ("LIVES1", Some("dormant")),
+        ],
+        "one here ended with nothing to wake it is no cell; one here still running, one \
+         elsewhere and one from a node that says no here are dormant as their presences say"
+    );
+}
+
+#[test]
 fn cells_are_the_living_and_dormant_sessions_then_the_machines() {
     let mycelium = mycelium();
     let cells: Vec<(&str, Is, Option<&str>)> = mycelium
