@@ -80,6 +80,25 @@ fn in_order<'a>(
     records
 }
 
+/// The first `limit` of `records`, all where it says none, in the order
+/// `kind`'s are listed. The records are moved out, never copied; only a
+/// kind listed newest first is gathered whole to be sorted.
+fn listed(
+    holds: &impl Holds,
+    kind: &str,
+    records: BTreeMap<String, Value>,
+    limit: Option<usize>,
+) -> Vec<Value> {
+    let limit = limit.unwrap_or(usize::MAX);
+    if !holds.newest_first(kind) {
+        return records.into_values().take(limit).collect();
+    }
+    let mut all: Vec<Value> = records.into_values().collect();
+    all.sort_by_key(|record| std::cmp::Reverse(heard(record)));
+    all.truncate(limit);
+    all
+}
+
 /// When `record` was heard, or the epoch where it says not.
 fn heard(record: &Value) -> i64 {
     record.get("heard").and_then(Value::as_i64).unwrap_or(0)
@@ -200,18 +219,7 @@ fn answer<H: Holds + Steers>(
         } => holds
             .records(&kind)
             .map(|records| {
-                let limit = limit.unwrap_or(usize::MAX);
-                // The records are moved out, never copied; only a kind
-                // listed newest first is gathered whole to be sorted.
-                let listed: Vec<Value> = if holds.newest_first(&kind) {
-                    let mut all: Vec<Value> = records.into_values().collect();
-                    all.sort_by_key(|record| std::cmp::Reverse(heard(record)));
-                    all.truncate(limit);
-                    all
-                } else {
-                    records.into_values().take(limit).collect()
-                };
-                let records: Vec<Value> = listed
+                let records: Vec<Value> = listed(holds.as_ref(), &kind, records, limit)
                     .into_iter()
                     .map(|record| match &fields {
                         Some(paths) => fields::projected(record, paths),
