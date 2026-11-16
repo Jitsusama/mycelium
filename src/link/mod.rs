@@ -3507,13 +3507,12 @@ mod tests {
             home: "/".into(),
             queue: None,
             disk_guard: None,
-            declared: "/nowhere".into(),
+            declared: None,
             reached: "/nowhere".into(),
             updated: "/nowhere".into(),
         };
         let mut tern = facts::measure("tern", &nowhere);
         tern.state = Readiness::Ready;
-        tern.declared = None;
         tern
     }
 
