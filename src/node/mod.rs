@@ -65,6 +65,7 @@ mod fences;
 mod glyph;
 mod network;
 pub use network::{Holding, Standing, records as network_records};
+mod signals;
 mod standing;
 mod team;
 mod tie;
@@ -330,6 +331,9 @@ pub struct Given {
     /// The folder its receptors each say how they stand in, if it serves
     /// any (`receptor`).
     pub receptors: Option<PathBuf>,
+    /// The person's table of which receptors' climbs are said, as a
+    /// sealed file (`stimuli`); unnamed, every source is silent.
+    pub stimuli: Option<PathBuf>,
     /// The machines files naming the builders this machine sends Nix
     /// builds to, and how each is heard.
     pub builders: builders::Given,
@@ -449,6 +453,7 @@ where
         to_dial,
     );
     let seeing_fences = tokio::spawn(shared.clone().see_fences());
+    let signalling = tokio::spawn(shared.clone().signal_receptors());
     let easing = eases.map(|eases| tokio::spawn(shared.clone().ease(eases)));
     let Kept {
         sharing,
@@ -535,6 +540,7 @@ where
     // for them.
     let stopping = std::time::Instant::now();
     seeing_fences.abort();
+    signalling.abort();
     // Neither the easing nor the keeping of receptors outlives the node.
     for task in [&easing, &keeping_receptors].into_iter().flatten() {
         task.abort();
@@ -949,6 +955,12 @@ struct Shared<S> {
     built: Arc<daemon::Built>,
     /// Its receptors, as last judged.
     receptors: receptor::Held,
+    /// The person's table of which receptors' climbs are said
+    /// (`stimuli`), if one is named.
+    stimuli: Option<PathBuf>,
+    /// The ids of the signals this node said as its receptors this run,
+    /// the only messages from a receptor's name it takes (`signals`).
+    spoken: Arc<Mutex<HashSet<String>>>,
     /// Its cells' forages, as last read from the quest store.
     forages: forage::Held,
     /// Asks for a quest a cell works on to be read, when it hasn't been;
@@ -1066,6 +1078,8 @@ impl<S: Clone> Clone for Shared<S> {
             health: self.health.clone(),
             built: self.built.clone(),
             receptors: self.receptors.clone(),
+            stimuli: self.stimuli.clone(),
+            spoken: Arc::clone(&self.spoken),
             forages: self.forages.clone(),
             to_read: self.to_read.clone(),
         }
@@ -1489,6 +1503,7 @@ impl<S: Store> Shared<S> {
             words,
             declared,
             receptors,
+            stimuli,
             builders,
             placements,
             health,
@@ -1558,6 +1573,8 @@ impl<S: Store> Shared<S> {
             health: own,
             built: Arc::default(),
             receptors: held,
+            stimuli,
+            spoken: Arc::default(),
             forages,
             to_read,
         };
@@ -1596,6 +1613,7 @@ impl<S: Store> Shared<S> {
         let (waiting, messages): (Vec<Message>, Vec<Message>) = unread
             .iter()
             .filter_map(|id| mesh::message(&self.store.message(id)?))
+            .filter(|message| self.takes(message))
             .partition(|message| message.for_realm.is_some());
         self.lock().state.add_messages(messages);
         self.wait_to_cross(waiting);
@@ -2071,6 +2089,9 @@ impl<S: Store> Shared<S> {
         let Some(message) = self.store.message(id).as_ref().and_then(mesh::message) else {
             return;
         };
+        if !self.takes(&message) {
+            return;
+        }
         if message.for_realm.is_some() {
             self.wait_to_cross(vec![message]);
             return;
@@ -3635,6 +3656,11 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             Ok(Request::Free { quest }) => shared.frees(quest).await.into(),
             Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
             Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
+            // A receptor's cell is named `<source>@<machine>`, and only the
+            // node holding it speaks as it, so no client is a name with @.
+            Ok(Request::Send(draft)) if draft.from.contains('@') => Answer::Err(
+                "only the node speaks as a name with @ in it, such as a receptor's".to_owned(),
+            ),
             Ok(Request::Send(draft))
                 if draft
                     .realm
@@ -3870,6 +3896,7 @@ mod tests {
             words: words::Book::at("/nowhere/said.jsonl".into()),
             declared: "/nowhere/declared.json".into(),
             receptors: None,
+            stimuli: None,
             builders: builders::Given::default(),
             placements: None,
             health: None,
@@ -3939,6 +3966,7 @@ mod tests {
         let words = words::Book::at(socket.with_file_name("said.jsonl"));
         let declared = socket.with_file_name("declared.json");
         let receptors = Some(socket.with_file_name("receptors"));
+        let stimuli = Some(socket.with_file_name("stimuli.json"));
         let builders = builders_of(socket);
         let scratch = Some(socket.with_file_name("scratch"));
         let node = tokio::spawn(async move {
@@ -3964,6 +3992,7 @@ mod tests {
                 words,
                 declared,
                 receptors,
+                stimuli,
                 builders,
                 placements: None,
                 health: None,
@@ -7023,6 +7052,12 @@ mod tests {
     /// Writes beside the node at `socket` that this test's own process
     /// reads Slack for the work realm, as a receptor says so.
     fn slack_read_beside(socket: &Path) {
+        slack_asking_beside(socket, 1);
+    }
+
+    /// A slack receptor reading beside `socket`, `addressed` of its five
+    /// today asking its person.
+    fn slack_asking_beside(socket: &Path, addressed: u32) {
         let now = jiff::Timestamp::now();
         let pid = std::process::id();
         let reading = receptor::Record {
@@ -7037,7 +7072,7 @@ mod tests {
             counts: receptor::Counts {
                 hour: 2,
                 today: 5,
-                addressed: 1,
+                addressed,
             },
         };
         let folder = socket.with_file_name("receptors");
@@ -7144,6 +7179,102 @@ mod tests {
             (&got["records"][0]["shape"], &got["records"][0]["cells"]),
             (&json!("outside"), &json!(["slack@skiff"])),
             "the source a receptor senses is a network the node serves: {got}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_receptors_climb_the_table_names_is_said_as_its_cell_and_a_planted_one_isnt() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        fs::create_dir_all(dir.path().join("skiff")).expect("the node's folder");
+        fs::set_permissions(dir.path().join("skiff"), fs::Permissions::from_mode(0o700))
+            .expect("the node's folder is its own");
+        fs::write(socket.with_file_name("stimuli.json"), r#"{"say": ["slack"]}"#)
+            .expect("the table is written");
+        let store = Memory::default();
+        let planted = Draft {
+            from: "slack@skiff".to_owned(),
+            groups: vec![Group::new("outside.slack").expect("a valid group")],
+            intent: Some(Intent::Fyi),
+            text: "slack: 9 asked of you, up from 0; 9 today".to_owned(),
+            re: None,
+            realm: None,
+        };
+        let (planted, body) = mesh::written(&planted, 1);
+        store.send_here(&planted, body);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut receptors = Speaking::to(&socket).await;
+        receptors.ask(json!({"id": 1, "ask": "hello"})).await;
+        receptors.next().await;
+        receptors
+            .ask(json!({"id": 2, "ask": "watch", "kind": "receptor"}))
+            .await;
+        receptors.next().await;
+        let mut messages = Speaking::to(&socket).await;
+        messages.ask(json!({"id": 1, "ask": "hello"})).await;
+        messages.next().await;
+        messages
+            .ask(json!({"id": 2, "ask": "watch", "kind": "message"}))
+            .await;
+        let records = messages.next().await["records"].clone();
+        assert_eq!(
+            records,
+            json!([]),
+            "a message planted in the store as a receptor was taken"
+        );
+
+        slack_asking_beside(&socket, 1);
+        while sent(&receptors.next().await, "receptor:slack").is_none() {}
+        slack_asking_beside(&socket, 3);
+        let changed = messages.next().await;
+        let said = &changed["changed"][0];
+        assert_eq!(
+            (&said["from"], &said["groups"], &said["intent"], &said["text"]),
+            (
+                &json!("slack@skiff"),
+                &json!(["outside.slack"]),
+                &json!("fyi"),
+                &json!("slack: 3 asked of you, up from 1; 5 today")
+            ),
+            "a climb the table names wasn't said as its receptor's cell: {changed}"
+        );
+        assert!(
+            said["re"].is_null(),
+            "a receptor's signal answered something: {changed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_cant_send_as_a_receptor() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let answered = tokio::task::spawn_blocking(move || {
+            let mut sender = Client::connect(&socket).expect("the sender connects");
+            let forged = Draft {
+                from: "slack@skiff".to_owned(),
+                groups: vec![Group::new("outside.slack").expect("a valid group")],
+                intent: Some(Intent::Fyi),
+                text: "slack: 9 asked of you, up from 0; 9 today".to_owned(),
+                re: None,
+                realm: None,
+            };
+            sender
+                .ask(&Request::Send(forged))
+                .expect("the node answers")
+        });
+        let answered = tokio::time::timeout(PATIENCE, answered)
+            .await
+            .expect("the node answers in time")
+            .expect("the client runs");
+        assert!(
+            answered.is_err(),
+            "a client sent as a receptor: {answered:?}"
+        );
+        assert!(
+            store.message_ids(0).is_empty(),
+            "a forged receptor's message was stored"
         );
     }
 

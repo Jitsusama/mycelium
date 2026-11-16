@@ -71,6 +71,7 @@ use crate::hold;
 use crate::mesh;
 use crate::own_health;
 use crate::share::exchange::{Exchange, Places, Say};
+use crate::stimuli;
 use crate::store::{self, Change, Claim, Store};
 use crate::wire::{Ran, Reply, Response, Run, Start};
 use dial::Connection;
@@ -877,7 +878,19 @@ impl<S: Store> End<S> {
             }
             Frame::Message { id, body } => {
                 self.has.insert(id.clone());
-                if body.get("id").and_then(Value::as_str) == Some(id.as_str()) {
+                let as_receptor = body
+                    .get("from")
+                    .and_then(Value::as_str)
+                    .is_some_and(stimuli::speaks_as_receptor);
+                if as_receptor {
+                    self.kept(
+                        &id,
+                        Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "only its own machine's node speaks as a receptor",
+                        )),
+                    );
+                } else if body.get("id").and_then(Value::as_str) == Some(id.as_str()) {
                     self.kept(&id, self.store.put_message(&id, &body));
                 } else {
                     self.kept(
@@ -3158,6 +3171,56 @@ mod tests {
         assert!(
             !skiff.presences().iter().any(|p| p.session == "walgit"),
             "its messages and its own sessions cross, but not a presence naming another machine"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_peer_link_cant_say_a_message_as_a_receptor() {
+        let skiff = Memory::default();
+        let store = skiff.clone();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        let _skiff_end = tokio::spawn(async move {
+            run(
+                store,
+                &realm("skiff"),
+                connection(reading, writing),
+                None,
+                None,
+            )
+            .await
+        });
+        let (_far_reading, mut far_writing) = tokio::io::split(far);
+
+        let (forged, theirs, ours) = (
+            recent(0, "github@tern", 0),
+            recent(0, "github@skiff", 1),
+            recent(0, "OSPR01", 2),
+        );
+        let message = |id: &str, from: &str| Frame::Message {
+            id: id.to_owned(),
+            body: json!({"id": id, "from": from, "to": ["#outside/github"],
+                         "intent": "fyi", "text": "github: 9 asked of you, up from 1; 9 today"}),
+        };
+        for frame in [
+            Frame::Hello(realm("tern").hello()),
+            Frame::Have {
+                messages: Vec::new(),
+                living: Some(Vec::new()),
+            },
+            message(&forged, "github@tern"),
+            message(&theirs, "github@skiff"),
+            message(&ours, "OSPR01"),
+        ] {
+            send(&mut far_writing, &frame)
+                .await
+                .expect("the peer speaks");
+        }
+
+        until(&skiff, |store| store.message(&ours).is_some()).await;
+        assert!(
+            skiff.message(&forged).is_none() && skiff.message(&theirs).is_none(),
+            "a link said a message as a receptor, its own machine's or this one's"
         );
     }
 

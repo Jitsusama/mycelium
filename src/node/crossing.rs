@@ -362,6 +362,7 @@ mod tests {
             words: crate::words::Book::at("/nowhere/said.jsonl".into()),
             declared: "/nowhere/declared.json".into(),
             receptors: None,
+            stimuli: None,
             builders: crate::builders::Given::default(),
             placements: None,
             health: None,
