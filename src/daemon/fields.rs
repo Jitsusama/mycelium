@@ -19,7 +19,7 @@ use std::borrow::Cow;
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-use super::records::{Pieces, fields, object};
+use super::split::{Piece, fields, object};
 
 /// The most fields one list may ask for, so an ask can't make the node
 /// match every key of every record against thousands of paths.
@@ -71,20 +71,21 @@ pub fn projected(record: &str, paths: &[String]) -> Box<RawValue> {
 /// nothing included.
 fn kept(json: &str, paths: &[&str]) -> Option<String> {
     let fields = fields(json)?;
-    let kept: Pieces<'_, '_> = fields
+    let kept: Vec<Piece<'_, '_>> = fields
         .iter()
-        .filter_map(|(key, value)| {
-            if paths.contains(&key.as_str()) {
-                return Some((key.as_str(), Cow::Borrowed(value.get())));
+        .filter_map(|field| {
+            let name: &str = &field.name;
+            if paths.contains(&name) {
+                return Some(Piece::of(field, Cow::Borrowed(field.value)));
             }
             let under: Vec<&str> = paths
                 .iter()
-                .filter_map(|path| path.strip_prefix(key.as_str())?.strip_prefix('.'))
+                .filter_map(|path| path.strip_prefix(name)?.strip_prefix('.'))
                 .collect();
             if under.is_empty() {
                 return None;
             }
-            Some((key.as_str(), Cow::Owned(kept(value.get(), &under)?)))
+            Some(Piece::of(field, Cow::Owned(kept(field.value, &under)?)))
         })
         .collect();
     (!kept.is_empty()).then(|| object(&kept))

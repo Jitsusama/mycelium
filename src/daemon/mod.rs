@@ -11,7 +11,8 @@
 //!
 //! Here is what a daemon holds and does, and the answering of one
 //! connection; what is asked is read in `ask`, a record's shape and its
-//! changes are `records`, and a running watch is `watching`.
+//! changes are `records`, a record's fields are told apart in its bytes
+//! in `split`, and a running watch is `watching`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -24,6 +25,7 @@ use tokio::sync::{mpsc, watch};
 mod ask;
 pub mod fields;
 mod records;
+mod split;
 mod watching;
 
 pub use ask::{Ask, Refusal, What, read, refused};

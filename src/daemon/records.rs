@@ -2,6 +2,7 @@
 //! them, and each kind's records built once for every watch of it.
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -10,6 +11,7 @@ use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
 use super::Holds;
+use super::split::{self, Field, Piece};
 
 /// A record held as the bytes it is sent as, and when it was heard. A
 /// parsed record keeps a map for every object in it, five times its bytes
@@ -366,25 +368,33 @@ fn found<'a>(
 /// rest and copied.
 fn differs(key: &str, was: Option<&Record>, now: &Record, deep: &[String]) -> Change {
     let (Some(was), Some(now_fields)) = (
-        was.and_then(|was| fields(was.as_str())),
-        fields(now.as_str()),
+        was.and_then(|was| split::fields(was.as_str())),
+        split::fields(now.as_str()),
     ) else {
         return Change::whole(key, now);
     };
     let mut changed = moved(&was, &now_fields, |field, before, after| {
         if deep.iter().any(|named| named == field)
-            && let (Some(before), Some(after)) = (fields(before.get()), fields(after.get()))
+            && let (Some(before), Some(after)) = (split::fields(before), split::fields(after))
         {
-            let inside = moved(&before, &after, |_, _, inside| Cow::Borrowed(inside.get()));
-            return Cow::Owned(object(&inside));
+            let inside = moved(&before, &after, |_, _, inside| Cow::Borrowed(inside));
+            return Cow::Owned(split::object(&inside));
         }
-        Cow::Borrowed(after.get())
+        Cow::Borrowed(after)
     });
-    changed.insert("key", Cow::Owned(quoted(key)));
+    let keyed = Piece {
+        name: "key",
+        written: "key",
+        value: Cow::Owned(quoted(key)),
+    };
+    match changed.binary_search_by(|piece| piece.name.cmp("key")) {
+        Ok(at) => changed[at] = keyed,
+        Err(at) => changed.insert(at, keyed),
+    }
     Change {
         key: key.to_owned(),
-        carries: changed.keys().map(|field| (*field).to_owned()).collect(),
-        bytes: RawValue::from_string(object(&changed))
+        carries: changed.iter().map(|piece| piece.name.to_owned()).collect(),
+        bytes: RawValue::from_string(split::object(&changed))
             .unwrap_or_else(|_| RawValue::NULL.to_owned()),
     }
 }
@@ -394,61 +404,55 @@ impl Change {
     pub(super) fn whole(key: &str, now: &Record) -> Self {
         Self {
             key: key.to_owned(),
-            carries: fields(now.as_str())
-                .map(|fields| fields.into_keys().collect())
+            carries: split::fields(now.as_str())
+                .map(|fields| {
+                    let names = fields.into_iter().map(|field| field.name.into_owned());
+                    names.collect()
+                })
                 .unwrap_or_default(),
             bytes: now.bytes.clone(),
         }
     }
 }
 
-/// An object's fields, each as its bytes, or none where `json` is no
-/// object.
-type Fields<'a> = BTreeMap<String, &'a RawValue>;
-
-/// `json`'s fields as its bytes, where it is an object.
-pub(super) fn fields(json: &str) -> Option<Fields<'_>> {
-    serde_json::from_str(json).ok()
-}
-
-/// A change's fields by name, each as the bytes it is sent as, in the
-/// order a value's object keeps them.
-pub(super) type Pieces<'f, 'v> = BTreeMap<&'f str, Cow<'v, str>>;
-
 /// The fields of `now` that differ from `was`'s, each as `said` says it
-/// from both, and each `was` had that `now` lacks, as null.
+/// from its name and both values, and each `was` had that `now` lacks, as
+/// null, in the order of their names. Both hold their fields in that
+/// order, so they are walked side by side.
 fn moved<'f, 'v>(
-    was: &'f Fields<'v>,
-    now: &'f Fields<'v>,
-    said: impl Fn(&str, &'v RawValue, &'v RawValue) -> Cow<'v, str>,
-) -> Pieces<'f, 'v> {
-    let mut changed: Pieces<'f, 'v> = now
-        .iter()
-        .filter_map(|(field, value)| match was.get(field) {
-            Some(before) if before.get() == value.get() => None,
-            Some(before) => Some((field.as_str(), said(field, before, value))),
-            None => Some((field.as_str(), Cow::Borrowed(value.get()))),
-        })
-        .collect();
-    for field in was.keys().filter(|field| !now.contains_key(*field)) {
-        changed.insert(field.as_str(), Cow::Borrowed("null"));
-    }
-    changed
-}
-
-/// `pieces` as one object's bytes, as a value's object would write them.
-pub(super) fn object(pieces: &Pieces<'_, '_>) -> String {
-    let mut written = String::from("{");
-    for (at, (field, bytes)) in pieces.iter().enumerate() {
-        if at > 0 {
-            written.push(',');
+    was: &'f [Field<'v>],
+    now: &'f [Field<'v>],
+    said: impl Fn(&str, &'v str, &'v str) -> Cow<'v, str>,
+) -> Vec<Piece<'f, 'v>> {
+    let mut changed = Vec::new();
+    let (mut before, mut after) = (0, 0);
+    loop {
+        let order = match (was.get(before), now.get(after)) {
+            (None, None) => return changed,
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(then), Some(new)) => then.name.cmp(&new.name),
+        };
+        match order {
+            Ordering::Less => {
+                changed.push(Piece::of(&was[before], Cow::Borrowed("null")));
+                before += 1;
+            }
+            Ordering::Greater => {
+                let new = &now[after];
+                changed.push(Piece::of(new, Cow::Borrowed(new.value)));
+                after += 1;
+            }
+            Ordering::Equal => {
+                let (then, new) = (&was[before], &now[after]);
+                if then.value != new.value {
+                    changed.push(Piece::of(new, said(&new.name, then.value, new.value)));
+                }
+                before += 1;
+                after += 1;
+            }
         }
-        written.push_str(&quoted(field));
-        written.push(':');
-        written.push_str(bytes);
     }
-    written.push('}');
-    written
 }
 
 /// `text` as a JSON string.
@@ -617,6 +621,26 @@ mod tests {
             vec![json!({"key": "session:kestrel", "presence": {"cwd": null}})],
             "a field inside one asked deep that becomes null is said as null, as one dropped \
              is, so a reader takes null for either"
+        );
+    }
+
+    #[test]
+    fn a_field_named_with_escapes_is_asked_deep_and_compared_by_its_name() {
+        let one = |at: u32| -> Shared {
+            let record = json!({
+                "key": "session:\"a\"",
+                "say \"hi\"": {"tab\there": at, "same\\": "\u{1F980}", "z": 1},
+                "say": "kept",
+            });
+            Shared::from([("session:\"a\"".to_owned(), Arc::new(Record::from(record)))])
+        };
+        assert_eq!(
+            said(changes(&one(1), &one(2), &["say \"hi\"".to_owned()])),
+            (
+                vec![json!({"key": "session:\"a\"", "say \"hi\"": {"tab\there": 2}})],
+                Vec::new()
+            ),
+            "a name is matched as it reads, not as it is escaped"
         );
     }
 
