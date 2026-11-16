@@ -673,6 +673,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
 | `{"Carry": {"machine"}}` | `"Carrying"`, then what it asks of `machine` |
+| `"Health"` | `{"Health": health}`, then another each time it moves |
 | `{"Turn": {"session"}}` | `"Turn"`, once a holder may resume `session` (A Held Session) |
 
 A `Send` naming another realm, and a `Cross`, may be refused by a flow,
@@ -702,6 +703,12 @@ back `{"ask", "reply"}` with the other end's reply. A run isn't carried:
 it goes only where this machine dialled. It lasts until either
 hangs up, or until another link reaching the machine takes its place;
 an ask still waiting then hears that the link dropped.
+
+A `Health` connection is how the end of a link another machine dialled
+says this machine's own health in its facts. The node answers with the
+health it keeps, or `null` while it is unknown, then again each time it
+moves, until the client hangs up or sends anything more. A node too old
+to know the request refuses it, and the link says no health.
 
 A session's `state` is `busy`, `idle`, `ended`, or `unreachable` while no
 link reaches its machine. Beside its `id`, `address`, `machine` and
@@ -791,10 +798,12 @@ moves only when a word does, and holds under a kilobyte. A key the
 daemon lets go (`summary`, or `part:NAME`) is let go too. The health is
 absent, not `null`, while no daemon is given or answers, before one has
 said the whole, and from a node too old to say, and absent reads as
-unknown. A daemon that goes away is asked again after two seconds, and
-then after twice as long each time it still doesn't answer, up to a
-minute. The record says the health its node last heard as of its last
-measure, once a minute here and each time a link says its machine.
+unknown. A daemon that goes away having said the whole is asked again
+after two seconds, and one that never said it after twice as long each
+time, up to a minute. A line past 64 KiB ends the watch, as a daemon
+going away does. A word moving is said at once: the node keeps it in
+its last measure, and each link says its machine again, a link another
+machine dialled hearing it over a `Health` connection to its node.
 
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,

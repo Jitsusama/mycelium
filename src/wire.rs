@@ -109,6 +109,11 @@ pub enum Request {
         /// The machine the link reaches.
         machine: String,
     },
+    /// This machine's own health as its health daemon says it, now and
+    /// then each time a word moves, for as long as the connection stays:
+    /// a link another machine dialled, which runs outside the node,
+    /// carries it in this machine's facts.
+    Health,
     /// A turn for the holder about to resume `session`, answered once it
     /// may start it: at once for a session no record names, else once
     /// fewer than a few resumed sessions are on their first turn. A
@@ -333,6 +338,9 @@ pub enum Response {
     Present,
     /// Asks follow, one per line, each to be answered on a line back.
     Carrying,
+    /// This machine's own health, or none while it is unknown: one at
+    /// first, and another each time it moves.
+    Health(Option<crate::own_health::Health>),
     /// The session asked about may start now.
     Turn,
 }

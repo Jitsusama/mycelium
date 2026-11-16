@@ -68,6 +68,7 @@ use crate::facts::{self, Machine, Readiness};
 use crate::handover;
 use crate::hold;
 use crate::mesh;
+use crate::own_health;
 use crate::share::exchange::{Exchange, Places, Say};
 use crate::store::{self, Change, Claim, Store};
 use crate::wire::{Ran, Reply, Response, Run, Start};
@@ -285,6 +286,7 @@ pub async fn run(
         following: inboxes.clone().map(Following::new),
         inboxes,
         held: starting.as_ref().map(|starting| starting.held.clone()),
+        health: health_of(starting.as_ref()),
         node: starting.map(|starting| starting.node),
         answering,
         asks: HashMap::new(),
@@ -302,10 +304,7 @@ pub async fn run(
 
     end.open(&mut writing).await?;
 
-    // The start has just said all of it, so the first keep is a minute on.
-    let mut keeping =
-        tokio::time::interval_at(tokio::time::Instant::now() + KEEP_EVERY, KEEP_EVERY);
-    let mut looking = tokio::time::interval(LOOK_EVERY);
+    let (mut keeping, mut looking) = paces();
     let result = loop {
         let step = tokio::select! {
             frame = frames.recv() => match frame {
@@ -323,6 +322,7 @@ pub async fn run(
             }
             Some(said) = run_said.recv() => end.run_said(said, &mut writing).await,
             _ = looking.tick() => end.look(&mut writing).await,
+            () = own_health::moved(&mut end.health.told) => end.send_machine(&mut writing).await,
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => end.send_messages(vec![id], &mut writing).await,
                 Some(Change::Presence) => end.send_presence(&mut writing).await,
@@ -341,6 +341,13 @@ pub async fn run(
     };
     end.leave(&result);
     result
+}
+
+/// When a link keeps what it said, a minute on since the start has just
+/// said all of it, and when it looks at what it carries.
+fn paces() -> (tokio::time::Interval, tokio::time::Interval) {
+    let keeping = tokio::time::interval_at(tokio::time::Instant::now() + KEEP_EVERY, KEEP_EVERY);
+    (keeping, tokio::time::interval(LOOK_EVERY))
 }
 
 /// The next of what `asked` holds, or never when there is none.
@@ -406,6 +413,26 @@ fn asked_of(
             (Some(asked), Some(Box::new(carrying)))
         }
         None => (None, None),
+    }
+}
+
+/// This machine's own health as a link says it, when the link carries
+/// what this machine is: the node's own, for a link it keeps, or watched
+/// over its socket, for one another machine dialled, which runs apart.
+/// None otherwise.
+fn health_of(starting: Option<&Starting>) -> OwnHealth {
+    let (told, watching) =
+        match starting.map(|starting| (starting, &starting.health, &starting.asking)) {
+            Some((_, Some(health), _)) => (Some(health.clone()), None),
+            Some((starting, None, Some(Asking::Dialled))) => {
+                let (health, watching) = own_health::from_node(starting.node.clone());
+                (Some(health), Some(watching))
+            }
+            _ => (None, None),
+        };
+    OwnHealth {
+        told,
+        _watching: watching,
     }
 }
 
@@ -521,7 +548,19 @@ struct End<S> {
     held: Option<PathBuf>,
     carried: HashSet<String>,
     exchange: Option<Exchange>,
+    /// This machine's own health, as its node keeps it, which a word
+    /// moving has said again at once rather than with the next minute's
+    /// keep.
+    health: OwnHealth,
     _claim: Claim,
+}
+
+/// This machine's own health as an end of a link says it.
+struct OwnHealth {
+    /// The health, if this end says it.
+    told: Option<own_health::Told>,
+    /// The watch of the node's health, for an end that runs apart from it.
+    _watching: Option<own_health::Watching>,
 }
 
 /// The runs an end carries: those it asked of the other machine, and those
@@ -969,11 +1008,16 @@ impl<S: Store> End<S> {
             return Ok(());
         }
         let (here, realm) = (self.here.clone(), self.realm.clone());
-        let machine = tokio::task::spawn_blocking(move || {
+        let mut machine = tokio::task::spawn_blocking(move || {
             facts::measure_in(&here, &realm, &facts::Sources::here())
         })
         .await
         .map_err(io::Error::other)?;
+        machine.health = self
+            .health
+            .told
+            .as_ref()
+            .and_then(|health| health.borrow().clone());
         self.handover.leaves = machine
             .declared
             .as_ref()
@@ -1649,6 +1693,49 @@ mod tests {
             "what it said stays, as of when the link last carried it"
         );
         assert_eq!(skiff.endings("kestrel", 0), 1, "and the drop is counted");
+    }
+
+    #[tokio::test]
+    async fn a_word_of_its_machines_own_health_moving_is_said_at_once() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        let slot = own_health::Slot::new(None);
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _near = end(&skiff, "skiff", near);
+        let starting = Starting {
+            node: dir.path().join("node.sock"),
+            held: dir.path().join("held"),
+            asking: None,
+            steers: dir.path().join("steer"),
+            health: Some(slot.subscribe()),
+        };
+        let (reading, writing) = tokio::io::split(far);
+        let kestrel_end = kestrel.clone();
+        let _far = tokio::spawn(async move {
+            run(
+                kestrel_end,
+                &realm("kestrel"),
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+            .map(|_| ())
+        });
+        until(&skiff, |store| !store.machines().is_empty()).await;
+        assert_eq!(skiff.machines()[0].health, None, "unknown until said");
+
+        let health = own_health::Health {
+            health: "watch".to_owned(),
+            parts: BTreeMap::from([("code".to_owned(), "watch".to_owned())]),
+        };
+        slot.send_replace(Some(health.clone()));
+        // Far sooner than the minute's keep, which would say it anyway.
+        until(&skiff, |store| {
+            store.machines()[0].health.as_ref() == Some(&health)
+        })
+        .await;
     }
 
     #[tokio::test]
