@@ -1403,9 +1403,10 @@ sent in the last `hour` and `today`, to any group, and how many `ties`
 it has, heard when it last sent or was talked to. A tie or a cell with
 no message in a day is gone. The kind is told as each message comes
 and each minute, as a message leaves an hour or a day. Ten thousand
-cells with fifty thousand ties make their records within 70 MB, in
-time that grows with them. The target is 30 MB, once each record is held as the
-bytes it is sent as, owed by 2026-11-17.
+cells with fifty thousand ties make their records within 30 MB, each
+held as the bytes it is sent as, in time that grows with them. The
+node folds the messages it holds once it lets them go, so a watch
+holds it only to take them.
 
 The `unanswered` kind holds what waits on the mesh, keyed by the
 message's id, as `mesh_read unanswered` and the hold leases judge it:

@@ -1105,7 +1105,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             kept::KIND => Some(self.carry_records()),
             forage::KIND => Some(self.forage_records()),
             murmur::KIND => Some(self.murmur_records()),
-            tie::KIND => Some(self.tie_records()),
+            tie::KIND => return Some(self.tie_records()),
             _ => self.served.records(kind),
         }?;
         // Each held as its bytes as soon as it is made, so the kind is never
@@ -1835,7 +1835,7 @@ impl<S: Store> Shared<S> {
     /// messages held say of the last day, taken shared while the node is
     /// locked and folded once it is let go, since a fold of a busy day
     /// takes milliseconds that every other reader would wait out.
-    fn tie_records(&self) -> BTreeMap<String, serde_json::Value> {
+    fn tie_records(&self) -> BTreeMap<String, daemon::Record> {
         let now = jiff::Timestamp::now().as_millisecond();
         let (aliases, messages) = {
             let inner = self.lock();

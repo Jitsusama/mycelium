@@ -431,7 +431,9 @@ impl<'m, 'a, S: BuildHasher> Names<'m, 'a, S> {
 /// The records of `talk`, by key, each heard at its last message: a tie
 /// keyed by its ends joined, `tie:<A>~<B>`, and a cell's talk by its
 /// name, `tie:<A>`. The key alone names them, as no field need again.
-pub fn records(talk: Talk) -> BTreeMap<String, Value> {
+/// Each is held as its bytes as soon as it is made, so the kind is never
+/// held whole parsed.
+pub fn records(talk: Talk) -> BTreeMap<String, daemon::Record> {
     let Talk {
         ties,
         cells,
@@ -462,7 +464,7 @@ pub fn records(talk: Talk) -> BTreeMap<String, Value> {
         ]);
         record(&id, tie.at, fields)
     });
-    let mut records: BTreeMap<String, Value> = made.collect();
+    let mut records: BTreeMap<String, daemon::Record> = made.collect();
     records.extend(cells.into_iter().map(|cell| {
         let fields = Map::from_iter([
             ("hour".to_owned(), Value::from(cell.hour)),
@@ -474,10 +476,11 @@ pub fn records(talk: Talk) -> BTreeMap<String, Value> {
     records
 }
 
-/// The record keyed `id`, heard at `heard`, holding `fields`.
-fn record(id: &str, heard: i64, fields: Map<String, Value>) -> (String, Value) {
+/// The record keyed `id`, heard at `heard`, holding `fields`, as its
+/// bytes.
+fn record(id: &str, heard: i64, fields: Map<String, Value>) -> (String, daemon::Record) {
     let record = daemon::record(KIND, id, heard, Value::Object(fields));
-    (daemon::key(KIND, id), record)
+    (daemon::key(KIND, id), daemon::Record::from(record))
 }
 
 #[cfg(test)]

@@ -47,7 +47,15 @@ fn answering(re: &str, message: Message) -> Message {
 /// The records `messages` make as now stands, no session going by
 /// another address.
 fn made(messages: &[Message]) -> BTreeMap<String, Value> {
-    records(talk(messages, &HashMap::new(), NOW))
+    read(talk(messages, &HashMap::new(), NOW))
+}
+
+/// The records of `talk`, each parsed to read its fields.
+fn read(talk: Talk) -> BTreeMap<String, Value> {
+    records(talk)
+        .into_iter()
+        .map(|(key, record)| (key, record.value()))
+        .collect()
 }
 
 #[test]
@@ -142,7 +150,7 @@ fn a_session_going_by_several_addresses_is_one_cell() {
         said("m2", "KP0L6A", MINUTE, &["peer.4c3144b7"], None),
         said("m3", "KP0L6A", MINUTE, &["peer.hnp07b"], None),
     ];
-    let records = records(talk(&messages, &aliases([&session]), NOW));
+    let records = read(talk(&messages, &aliases([&session]), NOW));
     assert_eq!(records.len(), 3, "one tie and two cells: {records:?}");
     assert_eq!(records["tie:HNP07B~KP0L6A"]["today"], json!([1, 2]));
 }

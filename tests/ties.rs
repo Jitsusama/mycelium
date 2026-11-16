@@ -19,11 +19,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use mycelium::daemon::Record;
 use mycelium::group::Group;
 use mycelium::node::{talk, tie_records};
 use mycelium::record::{Intent, Message};
 use mycelium::state::{KEPT_MESSAGES, State};
-use serde_json::Value;
 
 use counting::{HELD, PEAK, thread_time};
 
@@ -38,10 +38,8 @@ const SIZES: [usize; 3] = [100, 1_000, 10_000];
 const TIES_EACH: usize = 5;
 
 /// The most the records of ten thousand cells may hold while made, in
-/// bytes: 70 MB, while each record is held parsed. The target is 30 MB,
-/// once each record is held as the bytes it is sent as, owed by
-/// 2026-11-17 12:00.
-const AT_MOST: usize = 70_000_000;
+/// bytes: 30 MB, each record held as the bytes it is sent as.
+const AT_MOST: usize = 30_000_000;
 
 /// How many times the time or the memory per cell may grow from a
 /// thousand cells to ten thousand, a ceiling for the worst. The target is
@@ -151,7 +149,10 @@ fn the_fold_holds_the_nodes_lock_briefly_over_all_it_holds() {
     eprintln!(
         "{KEPT_MESSAGES} messages held, {HELD_TODAY} today: taken in {locked:?}, folded in {folded:?} once let go"
     );
-    assert!(locked < LOCKED_WITHIN, "taking them held the lock {locked:?}");
+    assert!(
+        locked < LOCKED_WITHIN,
+        "taking them held the lock {locked:?}"
+    );
 }
 
 /// The messages of a realm of cells, as the node holds them.
@@ -203,7 +204,7 @@ impl Realm {
     }
 
     /// Its tie records.
-    fn records(&self) -> BTreeMap<String, Value> {
+    fn records(&self) -> BTreeMap<String, Record> {
         tie_records(talk(&self.messages, &self.aliases, NOW))
     }
 
