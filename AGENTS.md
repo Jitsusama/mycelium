@@ -54,6 +54,9 @@ How this repository keeps Joel's repository standard:
   tests, `checks.aarch64-darwin.mycelium`, built on a Mac through
   core.nix's `nix-offload there`, since what compiles on Linux can fail
   on macOS (its `mode_t` is 16 bits, not 32); there is no hosted CI.
+  Where `nix-offload` can't reach a Mac, the same check is built on one
+  with plain `nix build`. Where no Mac answers at all, the merge says so
+  in its Validation, and the Mac build runs before core.nix takes it.
 - **Linters:** clippy with pedantic and rustc's own lints, as
   `Cargo.toml` sets them; rustfmt; nixfmt, deadnix and statix; taplo;
   rumdl, as `.rumdl.toml` sets it; shellcheck with every optional check.
