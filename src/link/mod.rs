@@ -290,12 +290,7 @@ pub async fn run(
     if let Some(Asking::Kept(asks, there)) = starting.as_ref().and_then(|s| s.asking.as_ref()) {
         asks.know(&other.machine, there.clone());
     }
-    let Some(claim) = store.claim(&other.machine)? else {
-        return Err(refusal(format!(
-            "a link to {} already carries it here",
-            other.machine
-        )));
-    };
+    let claim = claimed(&store, &other.machine)?;
     let reach = reach_start(&store, &other.machine);
     admitted(&store, &other.machine)?;
     let exchange = shares.map(|places| exchange_with(places, membership, &other.machine, worker));
@@ -491,6 +486,13 @@ fn pinned(store: &impl Store, named: Option<&OnceLock<String>>, said: &str) -> i
 
 /// Keeps that this store is linked with `machine` as of now, and forgets
 /// why a link with it was last refused.
+/// This link's hold on `machine`, refused when another link carries it.
+fn claimed(store: &impl Store, machine: &str) -> io::Result<Claim> {
+    store
+        .claim(machine)?
+        .ok_or_else(|| refusal(format!("a link to {machine} already carries it here")))
+}
+
 fn admitted(store: &impl Store, machine: &str) -> io::Result<()> {
     store.mark_linked(machine, now())?;
     if let Err(error) = store.link_admitted(machine) {
@@ -714,16 +716,7 @@ impl<S: Store> End<S> {
             && let Some(refused) = self.refused_of_worker(&frame)
         {
             return match refused {
-                Refused::Answered(ask, why) => {
-                    send(
-                        writing,
-                        &Frame::Started {
-                            ask,
-                            reply: Err(why),
-                        },
-                    )
-                    .await
-                }
+                Refused::Answered(answer) => send(writing, &answer).await,
                 Refused::Dropped(why) => {
                     eprintln!("{why}, so it isn't taken");
                     Ok(())
@@ -821,18 +814,13 @@ impl<S: Store> End<S> {
     fn refused_of_worker(&self, frame: &Frame) -> Option<Refused> {
         let other = &self.other;
         match frame {
-            Frame::Start { ask, .. } => Some(Refused::Answered(
-                *ask,
-                format!("{} starts nothing for a worker", self.here),
-            )),
-            Frame::Steer { ask, .. } => Some(Refused::Answered(
-                *ask,
-                format!("{} takes no steers from a worker", self.here),
-            )),
-            Frame::Update { ask } => Some(Refused::Answered(
-                *ask,
-                format!("{} updates nothing for a worker", self.here),
-            )),
+            Frame::Start { ask, .. } => Some(self.refused(*ask, "starts nothing for")),
+            Frame::Steer { ask, .. } => Some(self.refused(*ask, "takes no steers from")),
+            Frame::Update { ask } => Some(self.refused(*ask, "updates nothing for")),
+            Frame::Run { ask, .. } => Some(Refused::Answered(Box::new(Frame::Ran {
+                ask: *ask,
+                ran: Ran::Failed(format!("{} runs nothing for a worker", self.here)),
+            }))),
             // Following a talk here would read what this machine's
             // sessions say in it.
             Frame::Follow { .. } => Some(Refused::Dropped(format!(
@@ -858,8 +846,22 @@ impl<S: Store> End<S> {
             | Frame::Machine(_)
             | Frame::Replies(_)
             | Frame::HandedOver
-            | Frame::Started { .. } => None,
+            | Frame::Started { .. }
+            // What a run this machine asked of the worker says, and how a
+            // run the worker asked here, which is refused, is let go.
+            | Frame::Ran { .. }
+            | Frame::Taken { .. }
+            | Frame::Unrun { .. } => None,
         }
+    }
+
+    /// The answer refusing a worker's `ask`: this machine `does` nothing
+    /// for it, such as "starts nothing for".
+    fn refused(&self, ask: u64, does: &str) -> Refused {
+        Refused::Answered(Box::new(Frame::Started {
+            ask,
+            reply: Err(format!("{} {does} a worker", self.here)),
+        }))
     }
 
     /// Why a worker's message `id` isn't taken, if it isn't: one this
@@ -1124,20 +1126,17 @@ impl<S: Store> End<S> {
 
     /// Delivers a steer the other end carries to the session it names here,
     /// saying it reached this machine, where this end carries steers.
-    fn steered(
-        &mut self,
-        address: &str,
-        steer: &Value,
-        checked: bool,
-    ) -> Result<Response, String> {
+    fn steered(&mut self, address: &str, steer: &Value, checked: bool) -> Result<Response, String> {
         let here = self.here.clone();
         match self.following.as_mut() {
-            Some(following) => following
-                .deliver(address, steer, checked)
-                .map(|()| Response::Steered {
-                    machine: here,
-                    by: None,
-                }),
+            Some(following) => {
+                following
+                    .deliver(address, steer, checked)
+                    .map(|()| Response::Steered {
+                        machine: here,
+                        by: None,
+                    })
+            }
             None => Err(format!("{here} carries no steers over this link")),
         }
     }
@@ -1530,7 +1529,7 @@ fn speaks_for(body: &Value, worker: &str) -> bool {
 /// Why a worker's frame isn't taken.
 enum Refused {
     /// An ask, answered with why.
-    Answered(u64, String),
+    Answered(Box<Frame>),
     /// Anything else, let go and said here.
     Dropped(String),
 }
@@ -2536,6 +2535,11 @@ mod tests {
                 checked: true,
             },
             Frame::Update { ask: 3 },
+            Frame::Run {
+                ask: 4,
+                run: serde_json::from_value(json!({"work": {}, "command": ["true"]}))
+                    .expect("a run"),
+            },
         ]
     }
 
@@ -2586,9 +2590,10 @@ mod tests {
         }
 
         let mut answers = BTreeMap::new();
+        let mut ran = None;
         let mut said = Vec::new();
         tokio::time::timeout(PATIENCE, async {
-            while answers.len() < 3 {
+            while answers.len() < 3 || ran.is_none() {
                 let line = lines
                     .next_line()
                     .await
@@ -2598,6 +2603,7 @@ mod tests {
                     Frame::Started { ask, reply } => {
                         answers.insert(ask, reply);
                     }
+                    Frame::Ran { ask, ran: said } => ran = Some((ask, said)),
                     other => said.push(other),
                 }
             }
@@ -2613,6 +2619,11 @@ mod tests {
                 (3, Err("skiff updates nothing for a worker".to_owned())),
             ]),
             "a worker can't start, steer or update anything on the machine that dialled it"
+        );
+        assert_eq!(
+            ran,
+            Some((4, Ran::Failed("skiff runs nothing for a worker".to_owned()))),
+            "nor run anything there"
         );
         assert!(
             !said.iter().any(|frame| matches!(frame, Frame::Share(_))
