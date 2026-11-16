@@ -693,6 +693,9 @@ fn redial_standing(
             );
             made.provider.clone_from(asked);
             // The loop that reads it hasn't started, so it holds the sender.
+            // Nothing is told on this Notify: no start waits on a machine
+            // made before the node did, so none finds it unwanted, and it is
+            // let go at its time or once its work hands over.
             let _ = to_dial.send((made, Arc::new(Notify::new())));
         } else {
             eprintln!(
