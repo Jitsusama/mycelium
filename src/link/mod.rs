@@ -56,7 +56,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -235,6 +235,23 @@ pub enum Ending {
     HandedOver,
 }
 
+/// This machine's end of sharing quests with `other`. A worker is sent and
+/// served only the quests it was given, and those it began, which this
+/// machine held none of.
+fn exchange_with(
+    places: Places,
+    membership: &impl Membership,
+    other: &str,
+    worker: bool,
+) -> Exchange {
+    let exchange = Exchange::new(places, membership.hello().machine, other.to_owned());
+    if worker {
+        exchange.for_worker()
+    } else {
+        exchange
+    }
+}
+
 /// Runs this end of a link until the other end leaves, then marks every
 /// session it carried here out of reach. With `shares`, it carries the
 /// files of the quests this machine shares too, and with `starting`, it
@@ -252,6 +269,7 @@ pub async fn run(
         keep: _keep,
         releases,
         worker,
+        named,
         hello_within,
         ..
     } = connection;
@@ -266,6 +284,7 @@ pub async fn run(
         hello_within,
     )
     .await?;
+    pinned(&store, named.as_deref(), &other.machine)?;
     // A dial that reached the machine says how a command runs there, even
     // when a link that machine dialled holds it and carries the starts.
     if let Some(Asking::Kept(asks, there)) = starting.as_ref().and_then(|s| s.asking.as_ref()) {
@@ -279,10 +298,7 @@ pub async fn run(
     };
     let reach = reach_start(&store, &other.machine);
     admitted(&store, &other.machine)?;
-    // A worker is sent and served nothing this machine shares.
-    let exchange = shares
-        .filter(|_| !worker)
-        .map(|places| Exchange::new(places, membership.hello().machine, other.machine.clone()));
+    let exchange = shares.map(|places| exchange_with(places, membership, &other.machine, worker));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
     let (answering, mut answered) = mpsc::unbounded_channel();
     let (runs, mut run_said) = Runs::new();
@@ -452,6 +468,25 @@ fn health_of(starting: Option<&Starting>) -> OwnHealth {
         told,
         _watching: watching,
     }
+}
+
+/// Holds the other end to the name its way in pinned, `named`, if it pins
+/// one, pinning the first it says where none was yet, so a machine dialled
+/// as one can't say hello as another; one that does is refused, and why is
+/// kept in `store`.
+fn pinned(store: &impl Store, named: Option<&OnceLock<String>>, said: &str) -> io::Result<()> {
+    let Some(named) = named else {
+        return Ok(());
+    };
+    let pinned = named.get_or_init(|| said.to_owned());
+    if pinned == said {
+        return Ok(());
+    }
+    let why = format!("{pinned} said hello as {said}, which its way in doesn't reach");
+    if let Err(error) = store.refuse_link(pinned, &why) {
+        eprintln!("why {pinned} was refused isn't kept: {error}");
+    }
+    Err(refusal(why))
 }
 
 /// Keeps that this store is linked with `machine` as of now, and forgets
@@ -675,6 +710,26 @@ impl<S: Store> End<S> {
         writing: &mut (impl AsyncWrite + Unpin),
     ) -> io::Result<()> {
         self.hearing.heard = now();
+        if self.worker
+            && let Some(refused) = self.refused_of_worker(&frame)
+        {
+            return match refused {
+                Refused::Answered(ask, why) => {
+                    send(
+                        writing,
+                        &Frame::Started {
+                            ask,
+                            reply: Err(why),
+                        },
+                    )
+                    .await
+                }
+                Refused::Dropped(why) => {
+                    eprintln!("{why}, so it isn't taken");
+                    Ok(())
+                }
+            };
+        }
         match frame {
             Frame::Hello(_) => return Err(refusal("the other end said hello twice".to_owned())),
             Frame::Have { messages, living } => {
@@ -723,18 +778,7 @@ impl<S: Store> End<S> {
                 steer,
                 checked,
             } => {
-                let reply = match self.following.as_mut() {
-                    _ if self.worker => Err(format!("{} takes no steers from a worker", self.here)),
-                    Some(following) => {
-                        following
-                            .deliver(&address, &steer, checked)
-                            .map(|()| Response::Steered {
-                                machine: self.here.clone(),
-                                by: None,
-                            })
-                    }
-                    None => Err(format!("{} carries no steers over this link", self.here)),
-                };
+                let reply = self.steered(&address, &steer, checked);
                 send(writing, &Frame::Started { ask, reply }).await?;
             }
             Frame::Update { ask } => self.update(ask),
@@ -750,9 +794,7 @@ impl<S: Store> End<S> {
                 checked,
             } => self.carry(ask, (quest, to), checked),
             Frame::Follow { talks } => {
-                // A worker following a talk here would read what this
-                // machine's sessions say in it.
-                if let Some(following) = self.following.as_mut().filter(|_| !self.worker) {
+                if let Some(following) = self.following.as_mut() {
                     following.follow(talks);
                 }
             }
@@ -770,6 +812,84 @@ impl<S: Store> End<S> {
             }
         }
         Ok(())
+    }
+
+    /// Why a worker may not say `frame`, if it may not: it is asked and
+    /// asks nothing back, and speaks only for its own sessions
+    /// ([`Connection::worker`]). Every frame is named, so one added later
+    /// is weighed here rather than let through.
+    fn refused_of_worker(&self, frame: &Frame) -> Option<Refused> {
+        let other = &self.other;
+        match frame {
+            Frame::Start { ask, .. } => Some(Refused::Answered(
+                *ask,
+                format!("{} starts nothing for a worker", self.here),
+            )),
+            Frame::Steer { ask, .. } => Some(Refused::Answered(
+                *ask,
+                format!("{} takes no steers from a worker", self.here),
+            )),
+            Frame::Update { ask } => Some(Refused::Answered(
+                *ask,
+                format!("{} updates nothing for a worker", self.here),
+            )),
+            // Following a talk here would read what this machine's
+            // sessions say in it.
+            Frame::Follow { .. } => Some(Refused::Dropped(format!(
+                "{other}, a worker, asked to follow talks here"
+            ))),
+            Frame::Presence { session, body, .. } if !speaks_for(body, other) => {
+                Some(Refused::Dropped(format!(
+                    "{other} spoke for {session}, a session of another machine's, which a worker can't"
+                )))
+            }
+            Frame::Replies(replies) if !self.carries(&replies.address) => {
+                Some(Refused::Dropped(format!(
+                    "{other} replied in a talk of {}, which isn't a session of its own",
+                    replies.address
+                )))
+            }
+            Frame::Message { id, body } => self.message_refused(id, body),
+            Frame::Hello(_)
+            | Frame::Have { .. }
+            | Frame::Presence { .. }
+            | Frame::Ended { .. }
+            | Frame::Share(_)
+            | Frame::Machine(_)
+            | Frame::Replies(_)
+            | Frame::HandedOver
+            | Frame::Started { .. } => None,
+        }
+    }
+
+    /// Why a worker's message `id` isn't taken, if it isn't: one this
+    /// machine already holds isn't written over, and one from a session
+    /// another machine holds would put words in that session's mouth.
+    fn message_refused(&self, id: &str, body: &Value) -> Option<Refused> {
+        let other = &self.other;
+        if self.store.message(id).is_some() {
+            return Some(Refused::Dropped(format!(
+                "{other} said {id} again, which a worker can't write over"
+            )));
+        }
+        let from = body.get("from").and_then(Value::as_str)?;
+        let someone_elses = self.store.presences().iter().any(|presence| {
+            presence.session.eq_ignore_ascii_case(from)
+                && presence.elsewhere.as_deref() != Some(other.as_str())
+        });
+        someone_elses.then(|| {
+            Refused::Dropped(format!(
+                "{other} said {id} as {from}, a session of another machine's, which a worker can't"
+            ))
+        })
+    }
+
+    /// Whether `address` is a session of the other end's own that this
+    /// link carries here.
+    fn carries(&self, address: &str) -> bool {
+        self.carried
+            .iter()
+            .any(|session| session.eq_ignore_ascii_case(address))
     }
 
     /// Asks the other machine to start what this machine's node placed
@@ -916,8 +1036,7 @@ impl<S: Store> End<S> {
     }
 
     /// Keeps the presence the other end sent of `session`, with the leases
-    /// it holds and the id the link holds it by, unless a worker said it of
-    /// another machine's.
+    /// it holds and the id the link holds it by.
     fn hear_presence(
         &mut self,
         session: &str,
@@ -925,14 +1044,6 @@ impl<S: Store> End<S> {
         leases: Option<Vec<Value>>,
         held: Option<String>,
     ) {
-        if self.worker && !speaks_for(&body, &self.other) {
-            eprintln!(
-                "{} spoke for {session}, a session of another machine's, which a worker can't, \
-                 so it isn't kept",
-                self.other
-            );
-            return;
-        }
         // The held id is the link's to say, never the presence's.
         if let Some(fields) = body.as_object_mut() {
             fields.remove(mesh::HELD_AS);
@@ -959,9 +1070,14 @@ impl<S: Store> End<S> {
         let Some(inboxes) = self.inboxes.clone().filter(|_| self.said.steers) else {
             return Ok(());
         };
-        let talks = tokio::task::spawn_blocking(move || crate::steer::open_talks(&inboxes))
+        let mut talks = tokio::task::spawn_blocking(move || crate::steer::open_talks(&inboxes))
             .await
             .map_err(io::Error::other)?;
+        // A worker hears only of its own sessions' talks, never which talks
+        // this machine's sessions have open.
+        if self.worker {
+            talks.retain(|talk| self.carries(&talk.address));
+        }
         if talks.is_empty() {
             return Ok(());
         }
@@ -992,13 +1108,8 @@ impl<S: Store> End<S> {
     /// from the link's own work, since starting waits on the holder.
     fn answer(&self, ask: u64, start: Start) {
         let answering = self.answering.clone();
-        let node = self.node.clone().filter(|_| !self.worker);
-        let Some(node) = node else {
-            let refused = Err(if self.worker {
-                format!("{} starts nothing for a worker", self.here)
-            } else {
-                format!("{} starts nothing over this link", self.here)
-            });
+        let Some(node) = self.node.clone() else {
+            let refused = Err(format!("{} starts nothing over this link", self.here));
             // The link outlives this call, so its loop is there to send it.
             let _ = answering.send((ask, refused));
             return;
@@ -1011,14 +1122,32 @@ impl<S: Store> End<S> {
         });
     }
 
+    /// Delivers a steer the other end carries to the session it names here,
+    /// saying it reached this machine, where this end carries steers.
+    fn steered(
+        &mut self,
+        address: &str,
+        steer: &Value,
+        checked: bool,
+    ) -> Result<Response, String> {
+        let here = self.here.clone();
+        match self.following.as_mut() {
+            Some(following) => following
+                .deliver(address, steer, checked)
+                .map(|()| Response::Steered {
+                    machine: here,
+                    by: None,
+                }),
+            None => Err(format!("{here} carries no steers over this link")),
+        }
+    }
+
     /// Hands an update the other end asks of this machine to its node, away
     /// from the link's own work, since it takes minutes: only when the
     /// other end is proven to be its machine, so nobody else may ask.
     fn update(&self, ask: u64) {
         let answering = self.answering.clone();
-        let refused = if self.worker {
-            Err(format!("{} updates nothing for a worker", self.here))
-        } else if self.proven {
+        let refused = if self.proven {
             self.node
                 .clone()
                 .ok_or_else(|| format!("{} updates over no link", self.here))
@@ -1398,6 +1527,14 @@ fn speaks_for(body: &Value, worker: &str) -> bool {
         .is_none_or(|machine| machine.as_str() == Some(worker))
 }
 
+/// Why a worker's frame isn't taken.
+enum Refused {
+    /// An ask, answered with why.
+    Answered(u64, String),
+    /// Anything else, let go and said here.
+    Dropped(String),
+}
+
 fn refusal(reason: String) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, reason)
 }
@@ -1475,6 +1612,7 @@ mod tests {
             releases: false,
             worker: false,
             hello_within: Some(dial::HELLO_WITHIN),
+            named: None,
         }
     }
 
@@ -2477,8 +2615,9 @@ mod tests {
             "a worker can't start, steer or update anything on the machine that dialled it"
         );
         assert!(
-            !said.iter().any(|frame| matches!(frame, Frame::Share(_))),
-            "nor is anything skiff shares said or sent to it: {said:?}"
+            !said.iter().any(|frame| matches!(frame, Frame::Share(_))
+                && serde_json::to_string(frame).is_ok_and(|json| json.contains(quest))),
+            "nor is a quest skiff shares and didn't give it said or sent to it: {said:?}"
         );
         until(&skiff, |store| {
             store.message(&message).is_some()
@@ -2488,6 +2627,111 @@ mod tests {
         assert!(
             !skiff.presences().iter().any(|p| p.session == "walgit"),
             "its messages and its own sessions cross, but not a presence naming another machine"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worker_puts_no_words_in_another_machines_session_nor_rewrites_a_message() {
+        let skiff = Memory::default();
+        skiff
+            .put_presence("ospr01", "osprey", &json!({"session": "ospr01"}))
+            .expect("osprey's session kept");
+        let held = recent(0, "WCJQSG", 0);
+        skiff.send_here(
+            &held,
+            json!({"id": held, "to": ["@SAK9FZ"], "text": "ours"}),
+        );
+        let store = skiff.clone();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        let _skiff_end = tokio::spawn(async move {
+            run(
+                store,
+                &realm("skiff"),
+                Connection {
+                    worker: true,
+                    ..connection(reading, writing)
+                },
+                None,
+                None,
+            )
+            .await
+        });
+        let (_far_reading, mut far_writing) = tokio::io::split(far);
+
+        let (posing, own) = (recent(0, "OSPR01", 1), recent(0, "SAK9FZ", 2));
+        let message = |id: &str, from: &str, text: &str| Frame::Message {
+            id: id.to_owned(),
+            body: json!({"id": id, "from": from, "to": ["@WCJQSG"], "text": text}),
+        };
+        for frame in [
+            Frame::Hello(realm("tern").hello()),
+            Frame::Have {
+                messages: Vec::new(),
+                living: Some(Vec::new()),
+            },
+            Frame::Presence {
+                session: "sak9fz".to_owned(),
+                body: json!({"session": "sak9fz"}),
+                leases: None,
+                held: None,
+            },
+            message(&posing, "OSPR01", "osprey says so"),
+            message(&held, "SAK9FZ", "theirs"),
+            message(&own, "SAK9FZ", "done"),
+        ] {
+            send(&mut far_writing, &frame)
+                .await
+                .expect("the worker speaks");
+        }
+
+        until(&skiff, |store| store.message(&own).is_some()).await;
+        assert!(
+            skiff.message(&posing).is_none(),
+            "a message from a session osprey holds isn't the worker's to say"
+        );
+        assert_eq!(
+            skiff
+                .message(&held)
+                .and_then(|body| body["text"].as_str().map(str::to_owned)),
+            Some("ours".to_owned()),
+            "nor is a message skiff holds written over"
+        );
+    }
+
+    #[test]
+    fn a_machine_dialled_as_one_is_refused_saying_hello_as_another() {
+        let store = Memory::default();
+        let named = OnceLock::from("kestrel".to_owned());
+        let refused =
+            pinned(&store, Some(&named), "osprey").expect_err("osprey isn't who was dialled");
+        assert_eq!(
+            refused.kind(),
+            io::ErrorKind::PermissionDenied,
+            "it is refused: {refused}"
+        );
+        assert!(
+            store
+                .link_refused("kestrel")
+                .is_some_and(|why| why.contains("osprey")),
+            "and why is kept under the machine dialled"
+        );
+        pinned(&store, Some(&named), "kestrel").expect("kestrel may say its own name");
+    }
+
+    #[test]
+    fn a_redialled_machine_keeps_the_name_it_first_said() {
+        let store = Memory::default();
+        let named = OnceLock::new();
+        pinned(&store, Some(&named), "tern").expect("the first hello is pinned");
+        assert!(
+            pinned(&store, Some(&named), "skiff").is_err(),
+            "a redial saying another name is refused"
+        );
+        assert_eq!(
+            named.get().map(String::as_str),
+            Some("tern"),
+            "tern stays pinned"
         );
     }
 

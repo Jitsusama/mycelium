@@ -5,6 +5,7 @@
 
 use std::io;
 use std::process::Stdio;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -32,6 +33,12 @@ pub struct Connection {
     /// this machine shares, and speaks only for its own sessions, while
     /// the mesh's messages and presence cross as with any machine.
     pub worker: bool,
+    /// The name the machine reached must say in its hello, where the way
+    /// in pins it rather than taking the other end's word: a made
+    /// machine's, known before it links, or else the first one said over
+    /// that way. None for a way whose ends prove their own names, as
+    /// SSH's known hosts and the realm's keys do.
+    pub named: Option<Arc<OnceLock<String>>>,
     /// How long the other end has to say hello before the link gives up:
     /// [`HELLO_WITHIN`] for an end that answers at once, or none for a way
     /// in that ends itself when it can't reach the other end, however long
@@ -129,6 +136,10 @@ pub struct Program {
     pub program: String,
     /// Which machine it reaches, in the program's own words.
     pub place: String,
+    /// The name the machine it reaches says for itself: the one its
+    /// provider said it made, or else the first it says, kept across
+    /// redials so a machine can't come back as another.
+    pub named: Arc<OnceLock<String>>,
 }
 
 impl Program {
@@ -143,6 +154,7 @@ impl Program {
             Some((program, place)) if !program.is_empty() && !place.is_empty() => Ok(Self {
                 program: program.to_owned(),
                 place: place.to_owned(),
+                named: Arc::default(),
             }),
             _ => Err(format!(
                 "{via} isn't a program and a place, written PROGRAM:PLACE, such as aquifer-link:sandbox-1"
@@ -165,6 +177,7 @@ impl Dial for Program {
         std::future::ready(carried(program).map(|connection| Connection {
             releases: true,
             worker: true,
+            named: Some(self.named.clone()),
             hello_within: None,
             ..connection
         }))
@@ -259,6 +272,7 @@ fn carried(mut command: tokio::process::Command) -> io::Result<Connection> {
         refused,
         releases: false,
         worker: false,
+        named: None,
         hello_within: Some(HELLO_WITHIN),
     })
 }
@@ -304,6 +318,7 @@ mod tests {
             Ok(Program {
                 program: "aquifer-link".to_owned(),
                 place: "sandbox-1:2".to_owned(),
+                named: Arc::default(),
             }),
             "the place is everything after the first colon"
         );
@@ -345,6 +360,7 @@ mod tests {
         let way = Way::Program(Program {
             program,
             place: "sandbox-1".to_owned(),
+            named: Arc::default(),
         });
 
         let mut connection = way.dial("work").await.expect("the program starts");
@@ -413,6 +429,7 @@ mod tests {
         let way = Way::Program(Program {
             program,
             place: "sandbox-1".to_owned(),
+            named: Arc::default(),
         });
 
         let released = way.release().await.expect("a program can release");
@@ -437,6 +454,7 @@ mod tests {
         let way = Way::Program(Program {
             program: provider(dir.path(), "exit 3\n"),
             place: "sandbox-1".to_owned(),
+            named: Arc::default(),
         });
 
         let released = way.release().await.expect("a program can release");

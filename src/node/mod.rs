@@ -471,6 +471,9 @@ where
                 let dial = Arc::new(Program {
                     program: made.provider.clone(),
                     place: made.place.clone(),
+                    // The provider said what it made, so the machine's
+                    // own word for its name isn't taken.
+                    named: Arc::new(std::sync::OnceLock::from(made.machine.clone())),
                 });
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
                 let linked = keep_linked(dial.clone(), store.clone(), membership.clone(), carries);
@@ -3675,6 +3678,7 @@ mod tests {
             refused: None,
             releases: false,
             worker: false,
+            named: None,
             hello_within: Some(link::dial::HELLO_WITHIN),
         }
     }

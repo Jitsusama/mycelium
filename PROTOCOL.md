@@ -262,9 +262,15 @@ Three seams shape a link:
   saying the other end "turned this machine away" is taken as a refused
   SSH key is. A machine reached so is a worker: it is asked and asks
   nothing back. Its end's starts, steers and updates are refused, its
-  follows are ignored, nothing this machine shares is said or served to
-  it, and a presence of its naming another machine isn't kept, while
-  messages and its own sessions' presence cross as any machine's do.
+  follows are ignored, and a presence of its naming another machine
+  isn't kept, nor a reply to an ask it wasn't sent. It is said and
+  served only the quests it was given, and takes back only those and
+  the quests it began, which this machine holds none of; it can end
+  no other. A message of its isn't kept when it names as its sender a
+  session another machine holds, or when this machine already holds
+  one by that id, while its own sessions' messages and presence cross
+  as any machine's do. The name it first says hello as is the one it
+  is held to: a redial of the same place saying another is refused.
   Either way, the far `mycelium link` looks each minute at
   the `mycelium` its search path names, and once that is another build
   than the one it runs, as after its machine's configuration changes,
