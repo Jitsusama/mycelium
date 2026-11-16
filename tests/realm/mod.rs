@@ -29,7 +29,7 @@ use mycelium::node::Holding;
 use mycelium::record::Session;
 use serde_json::{Value, json};
 
-use counting::{HELD, PEAK};
+use counting::{HELD, PEAK, thread_time};
 
 /// How many cells the bar is held at.
 pub const CELLS: usize = 10_000;
@@ -53,62 +53,7 @@ const TIMINGS: usize = 5;
 
 /// The system's allocator, counting what is held and the most held.
 #[expect(unsafe_code, reason = "an allocator is unsafe to implement")]
-mod counting {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// The system's allocator, counting.
-    struct Counting;
-
-    /// How many bytes are held now.
-    pub static HELD: AtomicUsize = AtomicUsize::new(0);
-
-    /// The most bytes held since it was last reset.
-    pub static PEAK: AtomicUsize = AtomicUsize::new(0);
-
-    /// That `bytes` more are held.
-    fn took(bytes: usize) {
-        let held = HELD.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        PEAK.fetch_max(held, Ordering::Relaxed);
-    }
-
-    /// That `bytes` fewer are held.
-    fn gave(bytes: usize) {
-        HELD.fetch_sub(bytes, Ordering::Relaxed);
-    }
-
-    // SAFETY: each call is the system allocator's own, only counted.
-    unsafe impl GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            // SAFETY: the caller keeps `alloc`'s contract, which this passes on.
-            let made = unsafe { System.alloc(layout) };
-            if !made.is_null() {
-                took(layout.size());
-            }
-            made
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            // SAFETY: the caller keeps `dealloc`'s contract, which this passes on.
-            unsafe { System.dealloc(ptr, layout) };
-            gave(layout.size());
-        }
-
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            // SAFETY: the caller keeps `realloc`'s contract, which this passes on.
-            let made = unsafe { System.realloc(ptr, layout, new_size) };
-            if !made.is_null() {
-                took(new_size);
-                gave(layout.size());
-            }
-            made
-        }
-    }
-
-    /// Every allocation this test makes, counted.
-    #[global_allocator]
-    static COUNTING: Counting = Counting;
-}
+mod counting;
 
 /// That the records `making` makes of ten thousand cells hold to the bar,
 /// more than `more_than` of them, as `formed` says they should be, the
@@ -201,16 +146,6 @@ impl Realm {
         drop(making(&holding));
         thread_time().saturating_sub(begun)
     }
-}
-
-/// How long the processor has run this thread, which waiting for it
-/// doesn't count towards.
-fn thread_time() -> Duration {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
-    Duration::new(
-        u64::try_from(now.tv_sec).unwrap_or(0),
-        u32::try_from(now.tv_nsec).unwrap_or(0),
-    )
 }
 
 /// The least time the records `making` makes of `fewer` and of `all`

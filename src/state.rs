@@ -30,6 +30,16 @@ impl State {
         self.sessions.values().cloned().collect()
     }
 
+    /// Every session, by id, as held.
+    pub fn each_session(&self) -> impl Iterator<Item = &Session> {
+        self.sessions.values()
+    }
+
+    /// Every message held, in the order they were sent.
+    pub fn messages(&self) -> impl Iterator<Item = &Message> {
+        self.messages.iter()
+    }
+
     /// What each session says it works on, by its address, for those that
     /// say: a session on `machine` before one of the same address
     /// elsewhere, as a cell there is the one murmuring there.

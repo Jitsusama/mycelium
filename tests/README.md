@@ -28,7 +28,13 @@ The rest of the tests sit beside the code they prove, in `src/`.
   2026-11-17), in time that grows with the cells, the memory counted by
   an allocator of its own, which only a program of its own may hold
 - `realm/`: the realm of ten thousand cells both are built for, and the
-  bar they are held to
+  bar they are held to, with the counting allocator and thread time
+  (`counting.rs`) that `ties.rs` shares
+- `ties.rs`: the node's tie records made for a hundred, a thousand and
+  ten thousand cells, five power-law ties a cell, within 70 MB (30 MB
+  once records are held as bytes, by 2026-11-17), the time and memory
+  a cell each growing within a ceiling of three times from a thousand,
+  against a target of 1.2
 - `shared.rs`: a quest shared and waited for, printing one JSON line
   however the wait ends and failing unless the machine holds it
 - `receptors.rs`: what `mycelium receptors say` leaves on disk, its

@@ -1241,8 +1241,9 @@ in milliseconds.
 A record carries `key` (`session:<id>`, `machine:<name>`,
 `message:<id>`, `team:<address>`, `network:<name>`, `cell:<name>`,
 `unanswered:<id>`, `said:<id>`, `event:<session>:<at>`,
-`receptor:<source>`, `builder:<name>`, `forage:<address>` or
-`murmur:<cell>:<at>`), `kind`, `heard` (milliseconds since the epoch)
+`receptor:<source>`, `builder:<name>`, `forage:<address>`,
+`murmur:<cell>:<at>`, `tie:<cell>~<cell>` or `tie:<cell>`), `kind`,
+`heard` (milliseconds since the epoch)
 and the fields `Sessions`, `Machines` and `Messages` give it. A field
 its source named `key`, `kind` or `heard`, such as a
 job's own `kind`, is kept under `source` rather than lost beneath the
@@ -1325,6 +1326,31 @@ only the fields that moved. Ten thousand cells make their records
 within 80 MB while each holds two trees, most of it the records
 themselves, in time that grows with them. The target is 30 MB, once
 each record is held as the bytes it is sent as, owed by 2026-11-17.
+
+The `tie` kind holds who talked with whom in the last day, made from the
+messages the node holds: never what a message said, nor its id, only
+who sent it, when, its `intent` and its groups. A message ties its
+sender to each peer it names (`peer.<address>`) and to the sender of
+the message it answers (`re`), where that is held, each once, and no
+one to themself; one only to named groups, answering nothing, ties no
+one. A cell is named by its session's own address wherever it goes by
+another, and otherwise as said, uppercase. A tie is keyed by its two
+ends sorted and joined, `tie:<A>~<B>`, which alone names them, and
+says each end's messages on it in the last hour as `hour` and in the
+last day as `today`, in the order of its key, the `intents` and
+`groups` its messages had, sorted, and its `strength`, and is heard at
+its last message. Each message adds one to the strength, which halves every two
+hours, said as it stood when the tie was heard rather than now, so a
+tie changes only as its talk does; a reader fades it to now by
+2^-((now - heard) / 2 h). A cell that talked or was talked to has a
+record of its own, keyed by it, `tie:<A>`, saying every message it
+sent in the last `hour` and `today`, to any group, and how many `ties`
+it has, heard when it last sent or was talked to. A tie or a cell with
+no message in a day is gone. The kind is told as each message comes
+and each minute, as a message leaves an hour or a day. Ten thousand
+cells with fifty thousand ties make their records within 70 MB, in
+time that grows with them. The target is 30 MB, once each record is held as the
+bytes it is sent as, owed by 2026-11-17.
 
 The `unanswered` kind holds what waits on the mesh, keyed by the
 message's id, as `mesh_read unanswered` and the hold leases judge it:
