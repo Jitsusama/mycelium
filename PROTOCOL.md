@@ -805,17 +805,21 @@ headroom = 1.0 * (1 - cpu pressure / 100)      CPU_WEIGHT
          + 1.0 * memory_available / memory     MEMORY_WEIGHT
          + 0.5 * disk_free / disk              DISK_WEIGHT
          - 0.5 * (sessions + starts) / cores   SESSION_WEIGHT
+         - 0.25 * a disk filling               FILLING_WEIGHT
          - 1.0 * each other prefer_not taint   RATHER_NOT_WEIGHT
 ```
 
 A share it never said counts as none, and `cores` is its declared
-`cores`, else its `cpu`'s, else one. Its `sessions` are those busy or
-idle there, and its `starts` those this node placed there by `"Start"`
+`cores`, else its `cpu`'s, else one. Its `sessions` are those busy
+there, since an idle one's memory is already gone from
+`memory_available`, and its `starts` those this node placed there by `"Start"`
 that its room doesn't yet show: each counts until the machine says its
 room after it, or for five minutes at most, kept in memory only, so a
 burst of starts spreads across machines alike rather than piling on
 whichever led. A `prefer_not` taint such as `disk-pressure` is only a
-weight, so a machine idle beside one busy may take work despite it. The
+weight, so a machine idle beside one busy may take work despite it;
+a disk `filling` costs a quarter of one `nearly-full` or
+`critically-full`, its guard clearing what has waited a while. The
 answer is
 `{"placed": {"machine", "passed"}}`, `{"pending": {"misses"}}` when
 only a machine out of reach would do and the work may wait, or

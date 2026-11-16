@@ -1041,6 +1041,16 @@ fn watch(
     }
 }
 
+/// The machines of those of `sessions` that weigh on their machine beyond
+/// what its room already shows, one for each: only those busy, since an
+/// idle one costs memory its room already counts as taken.
+fn running(sessions: &[Session]) -> impl Iterator<Item = &str> {
+    sessions
+        .iter()
+        .filter(|one| one.state == SessionState::Busy)
+        .map(|one| one.machine.as_str())
+}
+
 impl Inner {
     /// What a node of `realm` holds as it starts: nothing, but the crossings
     /// its log says were judged before it restarted, which aren't handed
@@ -1578,11 +1588,7 @@ impl<S: Store> Shared<S> {
         let mut inner = self.lock();
         let inner = &mut *inner;
         let sessions = inner.state.sessions();
-        let running = sessions
-            .iter()
-            .filter(|one| matches!(one.state, SessionState::Busy | SessionState::Idle))
-            .map(|one| one.machine.as_str());
-        let loads = inner.starts.loads(&machines, running, now);
+        let loads = inner.starts.loads(&machines, running(&sessions), now);
         let placement = placement::place(work, &machines, &loads);
         if start && let Placement::Placed { machine, .. } = &placement {
             inner.starts.placed(machine, now);
@@ -2911,6 +2917,71 @@ mod tests {
             .expect("the link is dialled again once its refusal is withdrawn")
             .expect("the link is kept");
         keeping.abort();
+    }
+
+    #[test]
+    fn only_a_busy_session_weighs_on_its_machine() {
+        let now = jiff::Timestamp::now();
+        let heard = |name: &str, cpu: f64, free: u64| facts::Machine {
+            name: name.to_owned(),
+            cpu: facts::Cpu {
+                model: None,
+                cores: Some(8),
+            },
+            memory: Some(64 << 30),
+            declared: None,
+            room: Some(room::Room {
+                said_at: now.to_string(),
+                memory_available: free << 30,
+                pressure: room::Pressure {
+                    cpu,
+                    memory: 0.0,
+                    io: 0.0,
+                },
+                takes: room::Takes {
+                    builds: 1,
+                    vm_tests: 1,
+                },
+                over: Some(Vec::new()),
+            }),
+            ..kestrel_at("2026-10-29T06:00:00Z")
+        };
+        let machines = [heard("kestrel", 0.0, 48), heard("skiff", 30.0, 40)];
+        let many = |state: &str| -> Vec<Session> {
+            (0..40)
+                .map(|one| {
+                    serde_json::from_value(serde_json::json!({
+                        "id": format!("{one:04x}"),
+                        "address": format!("{one:06X}"),
+                        "machine": "kestrel",
+                        "groups": [],
+                        "state": state,
+                        "at": now.to_string(),
+                    }))
+                    .expect("a session")
+                })
+                .collect()
+        };
+        let placed = |sessions: &[Session]| {
+            let loads = placement::Starts::default().loads(&machines, running(sessions), now);
+            match placement::place(&work(Vec::new()), &machines, &loads) {
+                Placement::Placed { machine, .. } => machine,
+                missed => panic!("placed nowhere: {missed:?}"),
+            }
+        };
+        assert_eq!(placed(&[]), "kestrel", "the machine with more room");
+        for state in ["idle", "ended", "unreachable"] {
+            assert_eq!(
+                placed(&many(state)),
+                "kestrel",
+                "forty {state} take nothing its room doesn't already show"
+            );
+        }
+        assert_eq!(
+            placed(&many("busy")),
+            "skiff",
+            "forty busy weigh on their machine's processors"
+        );
     }
 
     #[test]

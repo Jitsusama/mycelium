@@ -226,14 +226,29 @@ pub const SESSION_WEIGHT: f64 = 0.5;
 /// machine is over, which rank it after every machine that isn't.
 pub const RATHER_NOT_WEIGHT: f64 = 1.0;
 
-/// How much room `machine` has for more work, carrying `load` and
-/// `rather_not` taints that would rather not have the work, where its room
-/// was `heard` lately: one sum of what is free of its processor, memory and
-/// disk, less what its sessions and starts take of its cores and what each
-/// taint costs, each by its weight. A share never said counts as none.
-/// This is the one place placement weighs a machine's room, to be tuned.
+/// What a disk filling costs, beside one nearly or critically full, which
+/// costs as any taint that would rather not: a guard clearing what has
+/// waited a while is no reason to keep work off.
+pub const FILLING_WEIGHT: f64 = 0.25;
+
+/// What `taint`, which would rather not have the work, costs `machine`.
+fn costs(machine: &Machine, taint: &Taint) -> f64 {
+    if taint.key == DISK_PRESSURE && machine.disk_band == Some(Band::Filling) {
+        FILLING_WEIGHT
+    } else {
+        RATHER_NOT_WEIGHT
+    }
+}
+
+/// How much room `machine` has for more work, carrying `load` and taints
+/// that would rather not have the work costing `rather_not` between them,
+/// where its room was `heard` lately: one sum of what is free of its
+/// processor, memory and disk, less what its sessions and starts take of
+/// its cores and what its taints cost, each by its weight. A share never
+/// said counts as none. This is the one place placement weighs a
+/// machine's room, to be tuned.
 #[must_use]
-pub fn headroom(machine: &Machine, load: Load, rather_not: usize, heard: bool) -> f64 {
+pub fn headroom(machine: &Machine, load: Load, rather_not: f64, heard: bool) -> f64 {
     #[expect(
         clippy::cast_precision_loss,
         reason = "a share needs no more precision than a double gives bytes"
@@ -258,10 +273,9 @@ pub fn headroom(machine: &Machine, load: Load, rather_not: usize, heard: bool) -
         .unwrap_or(1)
         .max(1);
     let carried = f64::from(load.sessions.saturating_add(load.placed)) / f64::from(cores);
-    let taints = f64::from(u32::try_from(rather_not).unwrap_or(u32::MAX));
     CPU_WEIGHT * cpu + MEMORY_WEIGHT * memory + DISK_WEIGHT * disk
         - SESSION_WEIGHT * carried
-        - RATHER_NOT_WEIGHT * taints
+        - rather_not
 }
 
 /// Whether `machine`'s room was said within [`ROOM_HEARD_WITHIN`] of `now`.
@@ -626,8 +640,14 @@ fn judge(work: &Work, machine: &Machine, load: Load, now: jiff::Timestamp) -> Ju
         }
     }
     let is_over = |taint: &&Taint| [MEMORY_PRESSURE, CPU_PRESSURE].contains(&taint.key.as_str());
+    // Over is read from the room even where it is unheard, and harmlessly:
+    // a machine unheard ranks with those over either way.
     let over = rather_not.iter().any(|taint| is_over(&taint));
-    let weighed = rather_not.iter().filter(|taint| !is_over(taint)).count();
+    let weighed = rather_not
+        .iter()
+        .filter(|taint| !is_over(taint))
+        .map(|taint| costs(machine, taint))
+        .sum();
     let lately = heard(machine, now);
     Judged {
         name: machine.name.clone(),
@@ -946,7 +966,7 @@ mod tests {
     fn a_machine_whose_disk_is_filling_goes_after_one_with_room() {
         let mut skiff = machine("skiff", "linux", 30, &[]);
         let mut tern = machine("tern", "linux", 2, &[]);
-        skiff.disk_band = Some(Band::Filling);
+        skiff.disk_band = Some(Band::NearlyFull);
         tern.disk_band = Some(Band::Healthy);
         let realm = [skiff.clone(), tern.clone()];
         assert_eq!(
@@ -1102,6 +1122,32 @@ mod tests {
             Some("tern"),
             "a disk filling is only a weight, outweighed by a machine idle beside one busy"
         );
+    }
+
+    #[test]
+    fn a_disk_weighs_by_how_full_it_is() {
+        let mut tern = machine("tern", "linux", 32, &[]);
+        let osprey = pressed(machine("osprey", "linux", 32, &[]), 40.0);
+        tern.disk_band = Some(Band::Filling);
+        assert_eq!(
+            placed(&place(
+                &needing(Vec::new()),
+                &[osprey.clone(), tern.clone()]
+            )),
+            Some("tern"),
+            "a disk filling costs little, outweighed by a processor far less pressed"
+        );
+        for band in [Band::NearlyFull, Band::CriticallyFull] {
+            tern.disk_band = Some(band);
+            assert_eq!(
+                placed(&place(
+                    &needing(Vec::new()),
+                    &[osprey.clone(), tern.clone()]
+                )),
+                Some("osprey"),
+                "a disk {band:?} costs as any taint that would rather not"
+            );
+        }
     }
 
     #[test]
