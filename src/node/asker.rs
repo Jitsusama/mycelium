@@ -27,7 +27,9 @@ use std::process::Command;
 
 use serde_json::Value;
 
+use crate::declared::Kind;
 use crate::steer::claims_the_person;
+use crate::wire::By;
 
 /// How the names of the units the machine runs its agents in begin, below
 /// the person's service manager's own unit: pi's hosts, the scope each
@@ -512,6 +514,65 @@ pub fn claimed_above(asker: Option<i32>, processes: &Processes, claims: &[Claim]
                 .map(|claim| claim.session.clone())
         })
         .collect()
+}
+
+/// Who process `asker` is, for a command it asks to run, as `processes`
+/// tell it, where `above` is the fence each session claiming it says it
+/// runs in, or none where that can't be read. It is an agent when it
+/// runs as one, as [`Processes::tell`] says, or below a session, or it
+/// was fenced as the node wasn't: it may gain no privileges where the
+/// node may, or it sees other mounts. An agent runs in the strictest
+/// fence above it, at least the agent fence, and strictly fenced where
+/// none is claimed. An asker nothing can be told of is a strictly fenced
+/// agent too, so a doubt only ever makes a run stricter.
+///
+/// Like [`may_say`], this fences habit, not an agent set on it.
+#[must_use]
+pub fn judge(asker: Option<i32>, processes: &Processes, above: &[Option<Kind>]) -> By {
+    let fence = above
+        .iter()
+        .map(|kind| kind.unwrap_or(Kind::Strict))
+        .max()
+        .map_or(Kind::Strict, |kind| kind.max(Kind::Fence));
+    let Some(pid) = asker else {
+        return By::Agent(Kind::Strict);
+    };
+    if !above.is_empty() {
+        return By::Agent(fence);
+    }
+    match processes.tell(pid) {
+        Told::Person => {}
+        Told::Agent(_) => return By::Agent(fence),
+        Told::Untold => return By::Agent(Kind::Strict),
+    }
+    if let Processes::Folder(procs) = processes
+        && (gains_less(procs, pid) || mounts_otherwise(procs, pid))
+    {
+        return By::Agent(fence);
+    }
+    By::Person
+}
+
+/// Whether process `pid` may gain no privileges, as a fence sets, while
+/// the node itself may.
+fn gains_less(procs: &Path, pid: i32) -> bool {
+    let barred = |process: &str| {
+        fs::read_to_string(procs.join(process).join("status")).is_ok_and(|status| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("NoNewPrivs:"))
+                .is_some_and(|value| value.trim() == "1")
+        })
+    };
+    barred(&pid.to_string()) && !barred("self")
+}
+
+/// Whether process `pid` sees other mounts than the node does, as one a
+/// fence put in a namespace of its own does, or can't be told where the
+/// node's own can.
+fn mounts_otherwise(procs: &Path, pid: i32) -> bool {
+    let mounts = |process: &str| fs::read_link(procs.join(process).join("ns").join("mnt")).ok();
+    mounts("self").is_some_and(|own| mounts(&pid.to_string()) != Some(own))
 }
 
 #[cfg(test)]
@@ -1038,5 +1099,70 @@ mod tests {
             ),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn a_command_that_left_pi_behind_still_runs_as_an_agent() {
+        // Each forked twice, so pi is no longer among its forebears.
+        let procs = procs(&[
+            (40, "sh", 1, "agents.slice/pi-host-work-attended.service"),
+            (41, "sh", 1, "session.slice/quickshell.service"),
+            (42, "sh", 1, "session.slice/quickshell.service"),
+            (43, "sh", 1, "session.slice/quickshell.service"),
+        ]);
+        let processes = folder(procs.path());
+        assert_eq!(
+            judge(Some(40), &processes, &[]),
+            By::Agent(Kind::Strict),
+            "one an agent's unit holds, below no session, runs strictly fenced"
+        );
+        let status = procs.path().join("41").join("status");
+        let said = fs::read_to_string(&status).expect("its status");
+        fs::write(&status, format!("{said}NoNewPrivs:\t1\n")).expect("it is barred");
+        assert_eq!(
+            judge(Some(41), &processes, &[]),
+            By::Agent(Kind::Strict),
+            "one barred from gaining privileges, as a fence bars it, runs strictly fenced"
+        );
+        assert_eq!(
+            judge(Some(42), &processes, &[Some(Kind::None), Some(Kind::Fence)]),
+            By::Agent(Kind::Fence),
+            "one below sessions runs in the strictest fence they claim, at least the agent fence"
+        );
+        assert_eq!(
+            judge(Some(42), &processes, &[Some(Kind::Fence), None]),
+            By::Agent(Kind::Strict),
+            "a session whose fence can't be read claims the strict one"
+        );
+        assert_eq!(judge(Some(43), &processes, &[]), By::Person);
+        assert_eq!(
+            judge(None, &processes, &[]),
+            By::Agent(Kind::Strict),
+            "one the kernel doesn't name"
+        );
+        assert_eq!(
+            judge(Some(44), &processes, &[]),
+            By::Agent(Kind::Strict),
+            "one nothing can be read of"
+        );
+    }
+
+    #[test]
+    fn a_command_that_sees_other_mounts_than_the_node_runs_as_an_agent() {
+        let procs = procs(&[
+            (41, "sh", 1, "session.slice/quickshell.service"),
+            (42, "sh", 1, "session.slice/quickshell.service"),
+        ]);
+        let mounts = |process: &str, mounts: &str| {
+            let ns = procs.path().join(process).join("ns");
+            fs::create_dir_all(&ns).expect("its folder is made");
+            std::os::unix::fs::symlink(mounts, ns.join("mnt")).expect("its mounts are told");
+        };
+        mounts("self", "mnt:[4026531832]");
+        mounts("41", "mnt:[4026532901]");
+        mounts("42", "mnt:[4026531832]");
+        let processes = folder(procs.path());
+        assert_eq!(judge(Some(41), &processes, &[]), By::Agent(Kind::Strict));
+        assert_eq!(judge(Some(42), &processes, &[]), By::Person);
     }
 }

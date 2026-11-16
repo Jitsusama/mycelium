@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::declared::Kind;
 use crate::facts::Machine;
 use crate::flow::{Crossing, Refusal};
 use crate::group::{Group, Pattern};
@@ -160,6 +161,34 @@ pub struct Run {
     /// The command and its arguments, run through the login shell there,
     /// with nothing on its standard input.
     pub command: Vec<String>,
+    /// Who asks it, as the machine it was asked of judged them. A node
+    /// takes what is said here only as stricter than what it judges, and
+    /// a run from another machine that says nothing as a strictly fenced
+    /// agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<By>,
+    /// The machine it was asked of, for the record of runs alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+/// Who asks a run: the person, or an agent and the fence it runs in.
+/// Ordered from loosest to strictest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum By {
+    /// The person's own login.
+    Person,
+    /// An agent, in this fence.
+    Agent(Kind),
+}
+
+impl std::fmt::Display for By {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            By::Person => f.write_str("the person"),
+            By::Agent(kind) => write!(f, "a {kind} agent"),
+        }
+    }
 }
 
 /// What a run says as it goes: its output as it comes, then how it ended.

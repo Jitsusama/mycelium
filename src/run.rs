@@ -3,19 +3,102 @@
 //! bounded piece at a time, so a command writing faster than its reader
 //! takes is slowed by its own pipes rather than growing the node, and its
 //! exit comes last. A reader that lets go stops it, and everything it
-//! started, with the terminate signal.
+//! started, with the terminate signal, and kills what outlives that by
+//! [`GRACE`]. Each run is kept in a record of runs, a line as it starts
+//! and a line as it ends, on each machine it crosses.
 
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use rustix::process::{Pid, Signal};
+use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::mpsc;
 
 use crate::wire::Ran;
+
+/// How long what a run started has to end once asked to stop, before it
+/// is killed.
+pub const GRACE: Duration = Duration::from_secs(10);
+
+/// How often a stopped run is looked at while it has yet to end.
+const LOOKS_EVERY: Duration = Duration::from_millis(100);
+
+/// Where a node keeps its record of runs, and the accounts whose files may
+/// say how a fenced command runs (`declared::launcher`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Given {
+    /// The record of runs, a JSON line each as a run starts and ends.
+    pub journal: PathBuf,
+    /// The accounts trusted to declare a fence's launcher: root alone, as
+    /// the node's command sets it, so nothing an agent can write does.
+    pub declarers: Vec<u32>,
+}
+
+impl Given {
+    /// What a node keeping its state in `state` is given.
+    #[must_use]
+    pub fn at(state: &Path) -> Self {
+        Self {
+            journal: state.join("runs.jsonl"),
+            declarers: vec![0],
+        }
+    }
+}
+
+impl Default for Given {
+    fn default() -> Self {
+        Self::at(Path::new("/nowhere"))
+    }
+}
+
+/// Keeps `line` in the record of runs at `journal`, and tells the
+/// machine's journal of it too.
+pub fn journal(journal: &Path, line: &Value) {
+    eprintln!("run: {line}");
+    let kept = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(journal)
+        // One write a line, so two runs kept at once never interleave.
+        .and_then(|mut kept| kept.write_all(format!("{line}\n").as_bytes()));
+    if let Err(error) = kept {
+        eprintln!("the run isn't kept in {}: {error}", journal.display());
+    }
+}
+
+/// Hands on what run `id` says, from `said`, and keeps how it ended in the
+/// record of runs at `file`: as it said, or stopped once its reader let go.
+#[must_use]
+pub fn journaled(file: PathBuf, id: String, mut said: mpsc::Receiver<Ran>) -> mpsc::Receiver<Ran> {
+    let (ran, heard) = mpsc::channel(BACKLOG);
+    tokio::spawn(async move {
+        let hung_up = json!({"Stopped": "its asker let go"});
+        let ended = loop {
+            let next = tokio::select! {
+                next = said.recv() => next.unwrap_or_else(|| {
+                    Ran::Failed("the run ended without saying how".to_owned())
+                }),
+                () = ran.closed() => break hung_up,
+            };
+            let ends = next.ends().then(|| json!(next));
+            if ran.send(next).await.is_err() {
+                break hung_up;
+            }
+            if let Some(ended) = ends {
+                break ended;
+            }
+        };
+        let at = jiff::Timestamp::now().to_string();
+        journal(&file, &json!({"run": id, "at": at, "ended": ended}));
+    });
+    heard
+}
 
 /// The most of a command's output one [`Ran`] carries.
 pub const PIECE: usize = 64 * 1024;
@@ -57,7 +140,12 @@ fn spawn(words: &[String], folder: PathBuf) -> io::Result<tokio::process::Child>
 /// Hands on what `child` says until it ends, and answers how it did, or
 /// nothing once `ran`'s reader has let go and it is stopped.
 async fn follow(mut child: tokio::process::Child, ran: &mpsc::Sender<Ran>) -> Option<Ran> {
-    let group = child.id();
+    let group = Group(
+        child
+            .id()
+            .and_then(|group| i32::try_from(group).ok())
+            .and_then(Pid::from_raw),
+    );
     let (mut out, mut err) = (child.stdout.take(), child.stderr.take());
     let (mut out_piece, mut err_piece) = (vec![0; PIECE], vec![0; PIECE]);
     while out.is_some() || err.is_some() {
@@ -77,11 +165,49 @@ async fn follow(mut child: tokio::process::Child, ran: &mpsc::Sender<Ran>) -> Op
         }
     }
     tokio::select! {
-        status = child.wait() => Some(match status {
-            Ok(status) => Ran::Exited(code(status)),
-            Err(error) => Ran::Failed(format!("its end couldn't be told: {error}")),
-        }),
+        status = child.wait() => {
+            group.ended();
+            Some(match status {
+                Ok(status) => Ran::Exited(code(status)),
+                Err(error) => Ran::Failed(format!("its end couldn't be told: {error}")),
+            })
+        }
         () = ran.closed() => stop(group, child).await,
+    }
+}
+
+/// The process group a run leads, stopped once this is dropped, unless
+/// the run ended on its own: so a run whose task is cut short leaves
+/// nothing running.
+struct Group(Option<Pid>);
+
+impl Group {
+    /// The run ended on its own, so what it left behind is left be.
+    fn ended(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        let Some(group) = self.0 else { return };
+        // A group that has already ended has nothing to stop.
+        let _ = rustix::process::kill_process_group(group, Signal::TERM);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            let killed_at = tokio::time::Instant::now() + GRACE;
+            // Looked at only while it lasts, so a group id used again
+            // long after is never killed.
+            while rustix::process::test_kill_process_group(group).is_ok() {
+                if tokio::time::Instant::now() >= killed_at {
+                    let _ = rustix::process::kill_process_group(group, Signal::KILL);
+                    return;
+                }
+                tokio::time::sleep(LOOKS_EVERY).await;
+            }
+        });
     }
 }
 
@@ -99,16 +225,10 @@ async fn read_some<'a>(
     }
 }
 
-/// Stops the process group `group` leads, which `child` began, and waits
-/// for `child` to end so it leaves no zombie.
-async fn stop(group: Option<u32>, mut child: tokio::process::Child) -> Option<Ran> {
-    if let Some(pid) = group
-        .and_then(|group| i32::try_from(group).ok())
-        .and_then(rustix::process::Pid::from_raw)
-    {
-        // A group that has already ended has nothing to stop.
-        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::TERM);
-    }
+/// Stops `group`, which `child` leads, and waits for `child` to end so it
+/// leaves no zombie.
+async fn stop(group: Group, mut child: tokio::process::Child) -> Option<Ran> {
+    drop(group);
     let _ = child.wait().await;
     None
 }
@@ -134,7 +254,6 @@ pub fn bytes(piece: &str) -> Result<Vec<u8>, base64::DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     /// How long a test waits on a run before failing.
     const PATIENCE: Duration = Duration::from_secs(10);
@@ -243,7 +362,7 @@ mod tests {
             .await
             .expect("the run stops once its reader lets go")
             .expect("the run ends cleanly");
-        let pid = rustix::process::Pid::from_raw(pid).expect("a real pid");
+        let pid = Pid::from_raw(pid).expect("a real pid");
         tokio::time::timeout(PATIENCE, async {
             while rustix::process::test_kill_process(pid).is_ok() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -251,5 +370,73 @@ mod tests {
         })
         .await
         .expect("its child is stopped too");
+    }
+
+    /// Starts `script` in `folder`, whose child writes its pid to `mark`,
+    /// and waits for it to say it started: its reader, its task and the
+    /// child's pid.
+    async fn started(
+        script: &str,
+        folder: &Path,
+    ) -> (mpsc::Receiver<Ran>, tokio::task::JoinHandle<()>, Pid) {
+        let mark = folder.join("pid");
+        let script = script.replace("MARK", &mark.display().to_string());
+        let (ran, mut said) = mpsc::channel(BACKLOG);
+        let run = tokio::spawn(here(sh(&script), folder.to_owned(), ran));
+        let first = tokio::time::timeout(PATIENCE, said.recv())
+            .await
+            .expect("the run says something");
+        assert!(matches!(first, Some(Ran::Out(_))), "{first:?}");
+        let pid: i32 = std::fs::read_to_string(&mark)
+            .expect("its child said its pid")
+            .trim()
+            .parse()
+            .expect("a pid");
+        (said, run, Pid::from_raw(pid).expect("a real pid"))
+    }
+
+    /// Waits up to `within` for `pid` to end.
+    async fn ends(pid: Pid, within: Duration) {
+        tokio::time::timeout(within, async {
+            while rustix::process::test_kill_process(pid).is_ok() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("it ends in time");
+    }
+
+    #[tokio::test]
+    async fn what_a_stop_doesnt_end_is_killed_once_its_grace_is_up() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        // Its child ignores the terminate signal, as the shell does.
+        let (said, run, pid) = started(
+            "trap '' TERM; sleep 600 & echo $! > MARK; echo started; wait",
+            folder.path(),
+        )
+        .await;
+        let asked = tokio::time::Instant::now();
+        drop(said);
+        ends(pid, GRACE + PATIENCE).await;
+        assert!(
+            asked.elapsed() >= GRACE.saturating_sub(Duration::from_secs(1)),
+            "the terminate signal alone didn't end it"
+        );
+        tokio::time::timeout(PATIENCE, run)
+            .await
+            .expect("the run stops")
+            .expect("the run ends cleanly");
+    }
+
+    #[tokio::test]
+    async fn a_run_cut_short_stops_all_it_started() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let (_said, run, pid) = started(
+            "sleep 600 & echo $! > MARK; echo started; wait",
+            folder.path(),
+        )
+        .await;
+        run.abort();
+        ends(pid, PATIENCE).await;
     }
 }

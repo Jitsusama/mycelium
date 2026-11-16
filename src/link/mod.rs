@@ -796,6 +796,7 @@ impl<S: Store> End<S> {
     /// Hands a run the other end asks of this machine to its node, only
     /// when the other end is proven to be its machine, as for an update.
     fn run_here(&mut self, ask: u64, run: Run) {
+        let run = arrived(run, &self.other);
         let node = if self.proven {
             self.node
                 .clone()
@@ -1232,14 +1233,56 @@ fn refusal(reason: String) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, reason)
 }
 
+/// `run`, asked over the link from `from`, as this end hands it to its
+/// node: one that doesn't say who asks is taken as a strictly fenced
+/// agent's, and the machine it came from is the one at the other end,
+/// whatever it says.
+fn arrived(mut run: Run, from: &str) -> Run {
+    run.by
+        .get_or_insert(crate::wire::By::Agent(crate::declared::Kind::Strict));
+    run.from = Some(from.to_owned());
+    run
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
     use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 
     use super::*;
+    use crate::declared::Kind;
     use crate::link::membership::{Realm, VERSION};
     use crate::store::memory::Memory;
+    use crate::wire::By;
+
+    #[test]
+    fn a_run_from_another_machine_that_doesnt_say_who_asks_runs_strictly_fenced() {
+        let said: Run = serde_json::from_value(json!({
+            "work": {"needs": [], "prefers": [], "tolerates": [], "may_wait": false},
+            "command": ["true"],
+            "from": "tern"
+        }))
+        .expect("a run as an older node says it");
+        let run = arrived(said.clone(), "skiff");
+        assert_eq!(run.by, Some(By::Agent(Kind::Strict)));
+        assert_eq!(
+            run.from.as_deref(),
+            Some("skiff"),
+            "it came from the machine at the other end"
+        );
+        let person = arrived(
+            Run {
+                by: Some(By::Person),
+                ..said
+            },
+            "skiff",
+        );
+        assert_eq!(
+            person.by,
+            Some(By::Person),
+            "as the asking machine judged it"
+        );
+    }
 
     /// How long a test waits for a link to carry something before failing.
     /// Each waits on what it waits for, so this only bounds how long a
