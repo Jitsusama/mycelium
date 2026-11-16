@@ -24,7 +24,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use mycelium::daemon::Record;
-use mycelium::node::Holding;
+use mycelium::node::{Formed, Holding};
 use mycelium::record::Session;
 use serde_json::{Value, json};
 
@@ -133,6 +133,9 @@ struct Realm {
     machines: BTreeMap<String, Value>,
     receptors: BTreeMap<String, Value>,
     builders: BTreeMap<String, Value>,
+    /// The tree networks formed, kept in a folder of its own.
+    formed: Formed,
+    _keeps: tempfile::TempDir,
 }
 
 impl Realm {
@@ -140,12 +143,15 @@ impl Realm {
     /// machine for every twenty-five, a receptor sensing Slack, and a
     /// builder.
     fn of(cells: usize) -> Self {
+        let keeps = tempfile::tempdir().expect("a folder");
         Self {
             teams: teams(cells),
             sessions: (0..cells).map(|n| session(n, cells)).collect(),
             machines: machines(cells),
             receptors: receptors(),
             builders: builders(),
+            formed: Formed::at(keeps.path().join("formed.json")),
+            _keeps: keeps,
         }
     }
 
@@ -158,6 +164,7 @@ impl Realm {
             machines: &self.machines,
             receptors: &self.receptors,
             builders: &self.builders,
+            formed: &self.formed,
         }
     }
 

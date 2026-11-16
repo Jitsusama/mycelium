@@ -1478,7 +1478,8 @@ A record carries `key` (`session:<id>`, `machine:<name>`,
 `message:<id>`, `team:<address>`, `network:<name>`, `cell:<name>`,
 `unanswered:<id>`, `said:<id>`, `event:<session>:<at>`,
 `receptor:<source>`, `builder:<name>`, `forage:<address>`,
-`murmur:<cell>:<at>`, `tie:<cell>~<cell>` or `tie:<cell>`), `kind`,
+`murmur:<cell>:<at>`, `tie:<cell>~<cell>`, `tie:<cell>` or
+`ended:<session>`), `kind`,
 `heard` (milliseconds since the epoch)
 and the fields `Sessions`, `Machines` and `Messages` give it. A field
 its source named `key`, `kind` or `heard`, such as a
@@ -1524,9 +1525,10 @@ where something says them, the network it is `within`, its `cells` and
 the `machines` they run on, the machines' own network's `builders`
 beside its machines, and `counts` of its sessions as
 `needs-you`, `stuck`, `moving`, `quiet` and `dormant`. A tree is a
-network only while two cells or more hold it at once, as each
-session's presence lists its `trees` (each `key`, `repo` and a
-worktree's `branch` or a snapshot's `commit`). Its name is
+network once two cells or more hold it at once, as each session's
+presence lists its `trees` (each `key`, `repo` and a worktree's
+`branch` or a snapshot's `commit`), and stays one while any cell
+holds it, though the node restarts. Its name is
 `tree.<repo>:<branch>`, or `tree.<repo>:<commit>` for a snapshot, the
 repository's whole key and the whole commit, read up to the last colon
 since a branch holds none; its short name is the repository's last
@@ -1534,15 +1536,28 @@ part and the branch, `<name>@<branch>`, or the commit cut to seven,
 saying the owner, `<owner>/<name>@<branch>`, or else the whole key,
 where two trees' short names would be one. The machine is no part of
 it: cells on two machines holding one branch share one tree. A tree one
-cell holds alone is no network, only among that cell record's `trees`,
-and a group named as a tree joins none. A tree whose every cell is
-parked counts them `dormant`, so it draws after the living ones. A
-network is
-heard when the latest of its cells was, or its team where its cells say
-nothing. Its records change as the sessions do, so a machine come or
-gone shows with the next change to a session. Ten thousand cells, each
-holding two trees, make their networks within 30 MB, in time that grows
-with them.
+cell holds alone, which no two have held at once, is no network, only
+among that cell record's `trees`, and a group named as a tree joins
+none. The `formed` kind holds each tree network formed, keyed by its
+name, as the node keeps them in `formed-<realm>.json` beside
+`carries.jsonl`: its `name`, `at`, when the node first saw two cells
+hold it, and `left`, when it first saw the last cell gone, or null,
+each in milliseconds since the epoch; it is heard at `left`, or else
+`at`. The node looks each minute, and as `network`, `cell` or `formed`
+is asked, so a tree two cells hold for less than a minute with nobody
+asking may form no network. One no cell holds isn't drawn, and fades
+ten minutes after `left`, so a cell back within them rejoins it; past
+them none serves it, and a cell back alone forms it no more. A watch
+of `formed` is told as the node sees one form, be left, be held again
+or fade, so within the minute, or at once where a `network` or `cell`
+ask saw it. Each node keeps its own, formed as its own
+record of the realm holds them; a link doesn't carry them. A tree
+whose every cell is parked counts them `dormant`, so it draws after
+the living ones. A network is heard when the latest of its cells was,
+or its team where its cells say nothing. Its records change as the
+sessions do, so a machine come or gone shows with the next change to a
+session. Ten thousand cells, each holding two trees, make their
+networks within 30 MB, in time that grows with them.
 
 The `cell` kind holds each cell of the realm, keyed by its name: a
 session's address, a machine's name, or a receptor's source and machine,
@@ -1594,6 +1609,31 @@ cells with fifty thousand ties make their records within 30 MB, each
 held as the bytes it is sent as, in time that grows with them. The
 node folds the messages it holds once it lets them go, so a watch
 holds it only to take them.
+
+The `ended` kind holds each session of this machine's whose work
+stopped while its quest goes on, keyed `ended:<session>`, so whoever
+orchestrates the quest can be told. A session counts once this node
+has seen its process ended for ten minutes, unparked or parked with
+nothing left to wake it (its node doesn't say it stands `parked`),
+and not carried from here in the last half hour (unless the carry was
+refused or came back) nor waiting its turn to resume, while its
+presence was written within a day either way and its quest, the one
+quest whose record attaches it in the quests this node serves, is
+`active`, names an `orchestrator` that reads as an address, and has
+no session of the realm running on it, though other quests attach
+that one too. A session running there restarts the ten minutes.
+Where the carries or the park markers can't be read, none is told.
+A record says the
+`session`, its `address`, the `quest`, the quest's `orchestrator`,
+uppercase, `at`, when the session last changed, and `why`: `ended`, or
+`parked-unwakeable`; it is heard when the node first saw the end. It
+grants nothing, a notice to an address and never an order. It is gone
+while a session runs on the quest, and comes back ten minutes after
+the work stops again with the same `session` and `at`, which a teller
+tells once; gone too once the quest is no longer active, or a day
+after the node first saw it. Its quest and orchestrator change
+only as the quests' record does. A node serving no quests holds none.
+It is told as the sessions or the quests change, and each minute.
 
 The `unanswered` kind holds what waits on the mesh, keyed by the
 message's id, as `mesh_read unanswered` and the hold leases judge it:
@@ -1781,8 +1821,9 @@ which is no trouble, and a folder not there is looked for again each
 minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine`,
-`message`, `team`, `network`, `cell`, `unanswered`, `said`, `event`,
-`receptor`, `builder`, `carry`, `forage` or `murmur`, can't be served.
+`message`, `team`, `network`, `formed`, `cell`, `unanswered`, `said`,
+`event`, `receptor`, `builder`, `carry`, `forage` or `murmur`, can't
+be served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and

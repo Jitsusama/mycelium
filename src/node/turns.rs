@@ -151,6 +151,11 @@ impl Turns {
         Asked::Wait { ticket, go: gone }
     }
 
+    /// The sessions waiting for their turn to come back.
+    pub fn waiting(&self) -> impl Iterator<Item = &str> {
+        self.waiting.iter().map(|waiting| waiting.session.as_str())
+    }
+
     /// Takes `ticket` out of the queue, for a holder that stopped waiting.
     pub fn leave(&mut self, ticket: u64) {
         self.waiting.retain(|waiting| waiting.ticket != ticket);

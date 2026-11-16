@@ -15,9 +15,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{Map, Value};
 
+use super::formed::Formed;
 use super::{json_of, millis_at};
 use crate::daemon;
-use crate::networks::{self, Mycelium};
+use crate::networks::{self, Mycelium, Shape};
 use crate::receptor::Source;
 use crate::record::Session;
 use crate::swarm;
@@ -26,7 +27,8 @@ use crate::swarm;
 pub const KIND: &str = "network";
 
 /// What the node's records hold: its `teams`, `machines`, `receptors` and
-/// `builders` records, by key, its `sessions`, and the machine it runs on.
+/// `builders` records, by key, its `sessions`, the machine it runs on, and
+/// the tree networks `formed`.
 pub struct Holding<'a> {
     /// The machine the node runs on, whose sessions' standing is its own
     /// judgement rather than their presences' word.
@@ -41,6 +43,8 @@ pub struct Holding<'a> {
     pub receptors: &'a BTreeMap<String, Value>,
     /// Its builders' records.
     pub builders: &'a BTreeMap<String, Value>,
+    /// The tree networks formed, which each making keeps up to date.
+    pub formed: &'a Formed,
 }
 
 /// How a session stands, by the word the daemon interface says it with,
@@ -90,7 +94,8 @@ pub(super) struct Made {
 }
 
 /// The mycelium `held` makes, each session standing as `standing` says,
-/// made as `mycelium networks` makes it (`Mycelium::of_records`).
+/// made as `mycelium networks` makes it (`Mycelium::of_records`), with
+/// the tree networks formed told how many cells hold each now.
 pub(super) fn made(held: &Holding<'_>, standing: &Standing<'_>) -> Made {
     let mut heard: HashMap<String, i64> = HashMap::new();
     let mut hear = |name: String, at: Option<i64>| {
@@ -128,7 +133,17 @@ pub(super) fn made(held: &Holding<'_>, standing: &Standing<'_>) -> Made {
         .iter()
         .map(|session| lean(session, held.machine, standing(session)));
     // The realm names none of its networks' or cells' fields.
-    let mycelium = Mycelium::of_records("", &teams, each, &machines, &receptors, &builders);
+    let now = jiff::Timestamp::now().as_millisecond();
+    let formed = held.formed.names(now);
+    let mycelium =
+        Mycelium::of_records("", &teams, each, &machines, &receptors, &builders, &formed);
+    let holding: BTreeMap<String, usize> = mycelium
+        .networks
+        .iter()
+        .filter(|network| network.shape == Shape::Tree)
+        .map(|network| (network.name.clone(), network.cells.len()))
+        .collect();
+    held.formed.saw(&holding, now);
     Made { mycelium, heard }
 }
 
@@ -228,6 +243,8 @@ mod tests {
             ended("AWAY03", "osprey"),
         ];
         let none = BTreeMap::new();
+        let dir = tempfile::tempdir().expect("a folder");
+        let formed = Formed::at(dir.path().join("formed.json"));
         let held = Holding {
             machine: "kestrel",
             teams: &none,
@@ -235,6 +252,7 @@ mod tests {
             machines: &none,
             receptors: &none,
             builders: &none,
+            formed: &formed,
         };
         // Only the first is parked as this node judges it.
         let standing = |session: &Session| (session.address == "WAKE01").then_some("parked");
