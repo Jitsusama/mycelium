@@ -1101,9 +1101,9 @@ in milliseconds.
 A record carries `key` (`session:<id>`, `machine:<name>`,
 `message:<id>`, `team:<address>`, `network:<name>`, `unanswered:<id>`,
 `said:<id>`, `event:<session>:<at>`, `receptor:<source>` or
-`builder:<name>`), `kind`, `heard` (milliseconds since the epoch) and
-the fields `Sessions`, `Machines` and `Messages` give it. A field its
-source named `key`, `kind` or `heard`, such as a
+`builder:<name>` or `forage:<address>`), `kind`, `heard` (milliseconds
+since the epoch) and the fields `Sessions`, `Machines` and `Messages`
+give it. A field its source named `key`, `kind` or `heard`, such as a
 job's own `kind`, is kept under `source` rather than lost beneath the
 interface's, beside the record's own `source` where it has one. A
 session also says
@@ -1217,6 +1217,10 @@ The `receptor` kind holds each receptor of this machine, keyed by the
 source it senses, as [Receptors](#receptors) says; its live fields are
 `state`, `read_at` and `counts`.
 
+The `forage` kind holds each forage of this machine's cells, keyed by
+the cell's address, as [Forages](#forages) says; its live fields are
+`purpose`, `status`, `documents` and `lineage`.
+
 A team's `glyph` is the shape every view draws it by: `square`,
 `triangle`, `plus`, `hexagon`, `circle`, `down-triangle` or `star`.
 Its first choice is its `orchestration.<address>` name hashed as the map
@@ -1315,7 +1319,7 @@ minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine`,
 `message`, `team`, `network`, `unanswered`, `said`, `event`,
-`receptor`, `builder` or `carry`, can't be served.
+`receptor`, `builder`, `carry` or `forage`, can't be served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and
@@ -1373,6 +1377,37 @@ process is gone, or whose pid now names a process that started at
 another time, is `off`, and one that read nothing for three of its
 rounds is `failing`. Each record is heard at its `read_at`, and says
 the `machine` it runs on.
+
+### Forages
+
+A forage is a cell's own purpose, with the research, plans and reports
+it keeps for it. The node serves one for each cell of this machine that
+works on a quest, keyed by the cell's address and gone with the cell,
+read from the machine's quest store. A quest is never a record of its
+own, and nothing of a forage crosses a link: each node serves its own
+cells', and a reader gathers them as `mycelium forage` does.
+
+| Field | What it is |
+| --- | --- |
+| `cell`, `session`, `machine` | the cell, by its address, its session's id, and the machine it runs on |
+| `quest` | the quest its purpose is written in, by id |
+| `purpose` | the first sentence of the quest's Summary, at most 280 characters |
+| `status` | the quest's status, such as `active` |
+| `documents` | each of its documents: `id`, `kind`, `title`, `stage`, and how many steps are `ticked` and `open` |
+| `lineage` | `started_by`, the cell it answers to, and `parent`, the quest its own sits under |
+
+A quest's id names a folder in the store, so one that isn't a plain
+name of letters, digits, `-` and `_` is read as nothing, and a file is
+read only when it's a regular file, never through a link. A quest the
+store holds no record of gives its cells no forage.
+
+A plan grows past 400 KB, so the node reads a quest off its runtime,
+once a cell asks for it, and then only as it changes: a watch on the
+quest's folder and its documents' folders hears each write, and a
+document whose length and time are unchanged isn't read again unless a
+watch heard it written. Every five minutes each quest held is looked at
+again, for a change a watch missed, and those no cell works on any more
+are let go.
 
 ## A Held Session
 

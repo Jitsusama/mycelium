@@ -5,6 +5,9 @@ across one: what it reads from its environment, what it leaves on disk,
 and how much memory it holds.
 The rest of the tests sit beside the code they prove, in `src/`.
 
+- `forages.rs`: the node's forage records made for ten thousand cells
+  within 30 MB, what was read for them included, in time that grows
+  with the cells
 - `held.rs`: a holder told to end as its scope's stop tells it, with a
   window joined, ending as its program does
 - `made.rs`: a machine made for a start from a provider's offer, linked,

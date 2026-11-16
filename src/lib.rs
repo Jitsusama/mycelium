@@ -75,6 +75,7 @@ pub mod declared;
 pub mod disk;
 pub mod facts;
 pub mod flow;
+pub mod forage;
 pub mod group;
 pub mod handover;
 pub mod health;
