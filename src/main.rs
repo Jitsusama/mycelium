@@ -193,6 +193,24 @@ enum Action {
         #[command(flatten)]
         here: Here,
     },
+    /// Prints how evenly the realm's machines carry its work.
+    ///
+    /// One JSON line says each machine's load, the larger of the memory it
+    /// uses and how long its work stalls, whether it is over or has room,
+    /// its busy and idle sessions, how far the loads spread, and what is
+    /// wrong: a machine over while another has room, one resource spent
+    /// while the other idles, or facts too old to place by. With
+    /// `--follow`, a line each minute, each saying the flags seen in most
+    /// of the last ten, also kept in the state folder's `balance`, one file
+    /// a day.
+    #[command(after_help = "Example:\n  mycelium balance --follow")]
+    Balance {
+        /// Reads each minute until stopped, keeping each line.
+        #[arg(long)]
+        follow: bool,
+        #[command(flatten)]
+        here: Here,
+    },
     /// Speaks in a quest's web of murmurs and ties.
     ///
     /// A web is what a quest's sessions on every machine share: this says
@@ -985,6 +1003,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Unanswered => print_records(&socket, mycelium::unanswered::KIND),
         Action::Said => print_records(&socket, mycelium::words::KIND),
         Action::Health { here } => health(&socket, here, realm),
+        Action::Balance { follow, here } => balance(&socket, here, follow),
         Action::Swarm {
             words,
             output,
@@ -1359,6 +1378,63 @@ fn health(socket: &Path, here: Here, realm: String) -> io::Result<()> {
         &read,
         |machine| store.endings(machine, day_ago),
         |machine| store.link_refused(machine),
+    ))
+}
+
+/// How often `balance --follow` reads the realm: as often as a link says
+/// another machine's facts.
+const BALANCE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Prints how evenly the realm's machines carry its work, as
+/// [`mycelium::balance`] reads it, once or, following, each minute.
+fn balance(socket: &Path, here: Here, follow: bool) -> io::Result<()> {
+    if !follow {
+        return print_line(&balance_read(socket)?);
+    }
+    let kept = here.state.unwrap_or_else(place::state).join("balance");
+    std::fs::create_dir_all(&kept)?;
+    let mut watch = mycelium::balance::Watch::default();
+    loop {
+        // A node restarting or slow to answer misses a minute, not the
+        // watch, so say why and read again at the next.
+        match balance_read(socket) {
+            Ok(mut reading) => {
+                reading.held = Some(watch.take(&reading));
+                let day = jiff::Zoned::now().date();
+                let mut line = serde_json::to_string(&reading).map_err(io::Error::other)?;
+                line.push('\n');
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(kept.join(format!("{day}.jsonl")))?
+                    .write_all(line.as_bytes())?;
+                print_line(&reading)?;
+            }
+            Err(error) => eprintln!("mycelium balance: couldn't read the node: {error}"),
+        }
+        std::thread::sleep(BALANCE_EVERY);
+    }
+}
+
+/// Reads the realm's balance from the node's machines and sessions.
+fn balance_read(socket: &Path) -> io::Result<mycelium::balance::Reading> {
+    let mut client = Client::connect_within(socket, HEALTH_WITHIN)?;
+    let Response::Machines(machines) = client.ask(&Request::Machines)?.map_err(io::Error::other)?
+    else {
+        return Err(io::Error::other(
+            "the node answered machines with something else",
+        ));
+    };
+    let Response::Sessions(sessions) = client.ask(&Request::Sessions)?.map_err(io::Error::other)?
+    else {
+        return Err(io::Error::other(
+            "the node answered sessions with something else",
+        ));
+    };
+    Ok(mycelium::balance::read(
+        &machines,
+        &sessions,
+        jiff::Timestamp::now(),
     ))
 }
 
