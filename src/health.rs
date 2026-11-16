@@ -213,4 +213,36 @@ mod tests {
             "a refusal says why while no link reaches the machine, and a link up outranks it"
         );
     }
+
+    #[test]
+    fn a_presence_left_saying_it_runs_is_counted_for_a_day() {
+        let machines = [machine("skiff", Readiness::Ready)];
+        let busy = json!({"state": "busy", "busy": true});
+        let written = |id: &str, at: &str| {
+            let mut one = session(id, "skiff", "ended", &busy);
+            at.clone_into(&mut one.at);
+            one
+        };
+        let sessions = [
+            written("lately", "2026-11-12T07:00:00Z"),
+            written("at-the-edge", "2026-11-11T08:00:01Z"),
+            written("yesterday", "2026-11-11T07:59:59Z"),
+            written("last-week", "2026-11-05T08:00:00Z"),
+            written("unreadable", "sometime"),
+        ];
+        let read = Read {
+            realm: "personal",
+            at: 1_794_470_400,
+            here: "skiff",
+            machines: &machines,
+            sessions: &sessions,
+            slowest: Duration::ZERO,
+        };
+        let line = line(&read, |_| 0, |_| None);
+        assert_eq!(
+            line["deadPresences"], 3,
+            "a presence last written within the day is counted, and one whose time can't be \
+             read too, so it is seen rather than hidden; one older than a day is not"
+        );
+    }
 }
