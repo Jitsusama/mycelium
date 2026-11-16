@@ -308,53 +308,58 @@ fn found<'a>(
     (changed, gone)
 }
 
-/// What a watch is sent of `now`, keyed `key`: all of it, where it is new,
-/// else its fields that differ from `was`'s, as [`differs_in`] says them.
+/// What a watch is sent of `now`, keyed `key`: all of it, where it is new
+/// or no object, else its fields that differ from `was`'s, with its key,
+/// and each field `was` had that `now` lacks, as null. A field `deep`
+/// names, an object both before and after, is said the same way, one
+/// level in. Each field is compared as its bytes, as a record is, and
+/// only one that moved is parsed: a cell's trees, most of its bytes, are
+/// read only when they change.
 fn differs(key: &str, was: Option<&Record>, now: &Record, deep: &[String]) -> Value {
-    match was {
-        None => now.value(),
-        Some(was) => differs_in(key, &was.value(), &now.value(), deep),
-    }
-}
-
-/// `now`'s fields that differ from `was`'s, with its key, and each field
-/// `was` had that `now` lacks, as null. A field `deep` names, an object
-/// both before and after, is said the same way, one level in. A watch
-/// asking nothing deep takes the flat path alone, so it costs what it
-/// did before deep was offered.
-fn differs_in(key: &str, was: &Value, now: &Value, deep: &[String]) -> Value {
-    let (Some(was), Some(now)) = (was.as_object(), now.as_object()) else {
-        return now.clone();
+    let Some((was, now_fields)) =
+        was.and_then(|was| Some((fields(was.as_str())?, fields(now.as_str())?)))
+    else {
+        return now.value();
     };
-    let mut changed = if deep.is_empty() {
-        moved(was, now, |_, _, after| after.clone())
-    } else {
-        moved(was, now, |field, before, after| {
-            match (before.as_object(), after.as_object()) {
-                (Some(before), Some(after)) if deep.iter().any(|named| named == field) => {
-                    Value::Object(moved(before, after, |_, _, inside| inside.clone()))
-                }
-                _ => after.clone(),
-            }
-        })
-    };
+    let mut changed = moved(&was, &now_fields, |field, before, after| {
+        if deep.iter().any(|named| named == field)
+            && let (Some(before), Some(after)) = (fields(before.get()), fields(after.get()))
+        {
+            return Value::Object(moved(&before, &after, |_, _, inside| parsed(inside)));
+        }
+        parsed(after)
+    });
     changed.insert("key".to_owned(), Value::String(key.to_owned()));
     Value::Object(changed)
 }
 
+/// An object's fields, each as its bytes, or none where `json` is no
+/// object.
+type Fields<'a> = BTreeMap<String, &'a RawValue>;
+
+/// `json`'s fields as its bytes, where it is an object.
+fn fields(json: &str) -> Option<Fields<'_>> {
+    serde_json::from_str(json).ok()
+}
+
+/// `raw` parsed, or null where it can't be.
+fn parsed(raw: &RawValue) -> Value {
+    serde_json::from_str(raw.get()).unwrap_or(Value::Null)
+}
+
 /// The fields of `now` that differ from `was`'s, each as `said` says it
-/// from both values, and each `was` had that `now` lacks, as null.
+/// from both, and each `was` had that `now` lacks, as null.
 fn moved(
-    was: &Map<String, Value>,
-    now: &Map<String, Value>,
-    said: impl Fn(&str, &Value, &Value) -> Value,
+    was: &Fields<'_>,
+    now: &Fields<'_>,
+    said: impl Fn(&str, &RawValue, &RawValue) -> Value,
 ) -> Map<String, Value> {
     let mut changed: Map<String, Value> = now
         .iter()
         .filter_map(|(field, value)| match was.get(field) {
-            Some(before) if before == value => None,
+            Some(before) if before.get() == value.get() => None,
             Some(before) => Some((field.clone(), said(field, before, value))),
-            None => Some((field.clone(), value.clone())),
+            None => Some((field.clone(), parsed(value))),
         })
         .collect();
     for field in was.keys().filter(|field| !now.contains_key(*field)) {
