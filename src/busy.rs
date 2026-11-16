@@ -51,6 +51,44 @@ pub fn linux(stat: &str) -> Option<Ticks> {
     })
 }
 
+/// The counts a Mac's Mach host keeps of each core's time, in its
+/// `CPU_STATE_*` order: user, system, idle and nice.
+pub type MachCore = [u32; 4];
+
+/// How many counts the Mach host keeps of each core: `CPU_STATE_MAX`.
+const MACH_STATES: usize = 4;
+
+/// The first `processors` cores' counts in `counts`, the words the Mach
+/// host lends, [`MACH_STATES`] to a core. A core the words run out
+/// before is left out, and so are words past the last core.
+#[must_use]
+pub fn mach_cores(counts: &[u32], processors: usize) -> Vec<MachCore> {
+    counts
+        .as_chunks::<MACH_STATES>()
+        .0
+        .iter()
+        .take(processors)
+        .copied()
+        .collect()
+}
+
+/// The counts of every core a Mac's Mach host says, summed. Each core's
+/// count is its own 32 bits and wraps after about 490 days at 100 a
+/// second; a sum gone backwards starts the stretch again, as on Linux.
+#[must_use]
+pub fn mac(cores: &[MachCore]) -> Ticks {
+    cores.iter().fold(
+        Ticks { busy: 0, total: 0 },
+        |sum, &[user, system, idle, nice]| {
+            let busy = u64::from(user) + u64::from(system) + u64::from(nice);
+            Ticks {
+                busy: sum.busy + busy,
+                total: sum.total + busy + u64::from(idle),
+            }
+        },
+    )
+}
+
 /// How finely use is said: in hundredths.
 const HUNDREDTHS: f64 = 100.0;
 
@@ -125,6 +163,70 @@ mod tests {
         assert_eq!(linux("cpu  4705 356\n"), None, "too few counts");
         assert_eq!(linux("cpu  a b c d e f g h\n"), None, "not numbers");
         assert_eq!(linux("intr 1 2 3\n"), None, "no processor line");
+    }
+
+    #[test]
+    fn a_macs_cores_count_busy_and_idle_time() {
+        // User, system, idle and nice, for each of two cores.
+        let cores = [[10, 5, 80, 5], [20, 0, 70, 10]];
+        assert_eq!(
+            mac(&cores),
+            Ticks {
+                busy: 10 + 5 + 5 + 20 + 10,
+                total: 200,
+            },
+            "nice is busy, as on Linux"
+        );
+        assert_eq!(mac(&[]), Ticks { busy: 0, total: 0 }, "no cores said");
+        assert_eq!(
+            mac(&[[u32::MAX; 4]; 2]),
+            Ticks {
+                busy: 6 * u64::from(u32::MAX),
+                total: 8 * u64::from(u32::MAX),
+            },
+            "each core's 32 bits sum past 32 bits"
+        );
+    }
+
+    #[test]
+    fn the_mach_hosts_words_are_cut_into_its_cores() {
+        let words = [1, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(
+            mach_cores(&words, 2),
+            [[1, 2, 3, 4], [5, 6, 7, 8]],
+            "four counts to a core, in order"
+        );
+        assert_eq!(
+            mach_cores(&words, 1),
+            [[1, 2, 3, 4]],
+            "words past the cores said are left"
+        );
+        assert_eq!(
+            mach_cores(&words[..6], 2),
+            [[1, 2, 3, 4]],
+            "a core the words run out before is left out"
+        );
+        assert_eq!(mach_cores(&[], 4), Vec::<MachCore>::new(), "no words");
+    }
+
+    #[test]
+    fn a_macs_core_wrapping_starts_the_stretch_again() {
+        let start = Instant::now();
+        let mut sampler = Sampler::default();
+        let near = u32::MAX - 100;
+        sampler.take(start, mac(&[[near, 0, near, 0]]));
+        let said = sampler.take(start + WINDOW, mac(&[[near + 50, 0, near + 50, 0]]));
+        assert_eq!(said, Some(0.5), "half busy before the wrap");
+        assert_eq!(
+            sampler.take(start + WINDOW * 2, mac(&[[10, 0, 90, 0]])),
+            Some(0.5),
+            "its 32 bits wrapped and the sum went back: keep what was said"
+        );
+        assert_eq!(
+            sampler.take(start + WINDOW * 3, mac(&[[30, 0, 170, 0]])),
+            Some(0.2),
+            "measured again from the count after the wrap"
+        );
     }
 
     fn at(busy: u64, total: u64) -> Ticks {

@@ -457,10 +457,106 @@ mod here {
         said("/usr/bin/pmset", &["-g", "batt"]).and_then(|said| macos::power(&said))
     }
 
-    /// Not counted yet: a Mac says it only through the Mach host's
-    /// processor info, which waits on its own change.
+    /// What the Mach host has counted of its cores' time.
     pub(super) fn ticks() -> Option<crate::busy::Ticks> {
-        None
+        mach::cores().map(|cores| crate::busy::mac(&cores))
+    }
+
+    mod mach {
+        //! The Mach host's count of each core's time. A Mac says it
+        //! nowhere else: no file holds it, and `top` or `iostat` would
+        //! have to watch for a second each time asked.
+
+        use std::ffi::c_int;
+        use std::ptr;
+
+        use crate::busy::{self, MachCore};
+
+        /// `PROCESSOR_CPU_LOAD_INFO`: each core's ticks by state.
+        const CPU_LOAD_INFO: c_int = 2;
+        /// `KERN_SUCCESS`.
+        const SUCCEEDED: c_int = 0;
+
+        #[expect(
+            unsafe_code,
+            reason = "the Mach calls a core's ticks are said through, which no crate here binds"
+        )]
+        unsafe extern "C" {
+            static mach_task_self_: u32;
+            fn mach_host_self() -> u32;
+            fn mach_port_deallocate(task: u32, name: u32) -> c_int;
+            fn host_processor_info(
+                host: u32,
+                flavor: c_int,
+                processors: *mut u32,
+                info: *mut *mut c_int,
+                words: *mut u32,
+            ) -> c_int;
+            fn vm_deallocate(task: u32, address: usize, size: usize) -> c_int;
+        }
+
+        /// Each core's ticks, or none where the host won't say. The host
+        /// port it asks through is given back, and so is the array the
+        /// kernel lent the answer in, so asking every few seconds keeps
+        /// nothing.
+        #[expect(
+            unsafe_code,
+            reason = "Mach says a core's ticks only through these calls, and no crate here binds them"
+        )]
+        pub(in super::super) fn cores() -> Option<Vec<MachCore>> {
+            // SAFETY: a process's own task port, set before main runs.
+            let task = unsafe { mach_task_self_ };
+            // SAFETY: takes no arguments; the right it hands back is given
+            // back below.
+            let host = unsafe { mach_host_self() };
+            let mut processors: u32 = 0;
+            let mut info: *mut c_int = ptr::null_mut();
+            let mut words: u32 = 0;
+            // SAFETY: each out pointer is to a live local of the type the
+            // call writes.
+            let said = unsafe {
+                host_processor_info(
+                    host,
+                    CPU_LOAD_INFO,
+                    &raw mut processors,
+                    &raw mut info,
+                    &raw mut words,
+                )
+            };
+            // SAFETY: gives back the send right mach_host_self made. A
+            // failure leaves one right more, which nothing can mend.
+            unsafe { mach_port_deallocate(task, host) };
+            if said != SUCCEEDED || info.is_null() {
+                return None;
+            }
+            // Widened, never narrowed, on a Mac's 64 bits, so nothing from
+            // here returns before the array is given back.
+            let (words, processors) = (words as usize, processors as usize);
+            // SAFETY: on success the kernel lent `words` ints at `info`,
+            // read here before they are given back.
+            let counts = unsafe { std::slice::from_raw_parts(info.cast::<u32>(), words) };
+            let cores = busy::mach_cores(counts, processors);
+            // SAFETY: gives back the whole array lent above, once, after
+            // its last read.
+            unsafe { vm_deallocate(task, info.addr(), words * size_of::<c_int>()) };
+            Some(cores)
+        }
+
+        #[cfg(test)]
+        mod tests {
+            #[test]
+            fn the_mach_host_counts_every_core_it_has() {
+                let cores = super::cores().expect("the host says its cores' ticks");
+                let had = std::thread::available_parallelism().expect("a core count");
+                assert_eq!(cores.len(), had.get(), "one count for each core");
+                assert!(
+                    cores.iter().any(|&[user, system, idle, nice]| {
+                        u64::from(user) + u64::from(system) + u64::from(idle) + u64::from(nice) > 0
+                    }),
+                    "a running host has counted some time: {cores:?}"
+                );
+            }
+        }
     }
 
     pub(super) fn read() -> Read {
