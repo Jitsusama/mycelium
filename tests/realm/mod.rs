@@ -9,8 +9,8 @@
 //! thread, not the clock's, so a builder busy with other work, which only
 //! makes this thread wait its turn, can't fail it. The time itself, 100 ms
 //! on the machine the bar is set for, is no builder's to hold, since
-//! builders run it several times slower, so each test says it rather than
-//! holds it:
+//! builders run it several times slower, so each test says it, and holds
+//! it only to a ceiling a builder meets, where the test names one:
 //!
 //! ```sh
 //! nix develop -c cargo test --release --test networks --test cells -- --nocapture
@@ -33,27 +33,22 @@ use counting::{HELD, PEAK};
 /// How many cells the bar is held at.
 pub const CELLS: usize = 10_000;
 
-/// How many cells the time is first taken at, to see how it grows.
-const FEWER: usize = CELLS / 10;
-
-/// How many times longer ten times the cells may take. Work that grows
-/// with them takes about ten times as long; work that grows with their
-/// square takes more once it is a third of the build at ten thousand, as
-/// a scan of every session for each repository once was.
-#[cfg(not(target_env = "musl"))]
-const GROWS_AT_MOST: u32 = 15;
-
-/// How many times longer ten times the cells may take under musl, whose
-/// allocator slows as the heap grows: up to about thirty on a busy
-/// builder for work that grows with the cells, so only work that grows
-/// with their square and is most of the build, about a hundred, is told.
-#[cfg(target_env = "musl")]
-const GROWS_AT_MOST: u32 = 50;
+/// How the time to make the records may grow: from `from` cells to
+/// [`CELLS`], at most `times` as long, and at [`CELLS`] within `within`
+/// of the processor's time where it is named, so a slow constant can't
+/// hide behind a good ratio.
+pub struct Growth {
+    /// How many cells the time is first taken at.
+    pub from: usize,
+    /// How many times longer [`CELLS`] may take.
+    pub times: u32,
+    /// The most [`CELLS`] may take, if any.
+    pub within: Option<Duration>,
+}
 
 /// How many times each build is timed, the two sizes in turn so a busy
 /// moment on the builder slows both alike, and the fastest of each taken.
 const TIMINGS: usize = 5;
-
 
 /// The system's allocator, counting what is held and the most held.
 #[expect(unsafe_code, reason = "an allocator is unsafe to implement")]
@@ -116,11 +111,13 @@ mod counting {
 
 /// That the records `making` makes of ten thousand cells hold to the bar,
 /// more than `more_than` of them, as `formed` says they should be, the
-/// build holding at most `at_most` bytes beyond what it was given.
+/// build holding at most `at_most` bytes beyond what it was given and
+/// taking as long as `growth` lets it.
 pub fn holds_the_bar(
     more_than: usize,
     formed: &str,
     at_most: usize,
+    growth: &Growth,
     making: impl Fn(&Holding<'_>) -> BTreeMap<String, Value>,
 ) {
     let realm = Realm::of(CELLS);
@@ -131,9 +128,10 @@ pub fn holds_the_bar(
     let kept = HELD.load(Ordering::Relaxed) - before;
     drop(records);
 
-    let (fewer, all) = fastest(&Realm::of(FEWER), &realm, &making);
+    let from = growth.from;
+    let (fewer, all) = fastest(&Realm::of(from), &realm, &making);
     eprintln!(
-        "{FEWER} cells took {fewer:?}; {CELLS} took {all:?}, holding {peak} bytes at most, \
+        "{from} cells took {fewer:?}; {CELLS} took {all:?}, holding {peak} bytes at most, \
          {kept} of them the records themselves"
     );
 
@@ -148,10 +146,16 @@ pub fn holds_the_bar(
         "the records of {CELLS} cells held {peak} bytes at most, past {at_most}"
     );
     assert!(
-        all < fewer * GROWS_AT_MOST,
-        "the records of {CELLS} cells took {all:?}, past {GROWS_AT_MOST} times \
-         the {fewer:?} of {FEWER}"
+        all < fewer * growth.times,
+        "the records of {CELLS} cells took {all:?}, past {} times the {fewer:?} of {from}",
+        growth.times
     );
+    if let Some(within) = growth.within {
+        assert!(
+            all < within,
+            "the records of {CELLS} cells took {all:?}, past {within:?}"
+        );
+    }
 }
 
 /// A realm of cells, as the node holds its records.
