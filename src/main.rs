@@ -1557,7 +1557,7 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         steers,
         // A dialled link runs apart from the node, so asks it.
         health: None,
-        declared: place::declared(),
+        declared: None,
     };
     match far {
         Some(far) => {

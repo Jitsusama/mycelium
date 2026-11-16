@@ -105,8 +105,9 @@ pub struct Sources {
     pub queue: Option<PathBuf>,
     /// Its disk guard's status, if it keeps one anywhere.
     pub disk_guard: Option<PathBuf>,
-    /// What its configuration declares.
-    pub declared: PathBuf,
+    /// What its configuration declares, or none where nothing it declares
+    /// is to be trusted, so its facts say only what is measured.
+    pub declared: Option<PathBuf>,
     /// Its node's record of which probed networks answered.
     pub reached: PathBuf,
     /// Its updater's last update's ending.
@@ -121,7 +122,7 @@ impl Sources {
             home: std::env::home_dir().unwrap_or_else(std::env::temp_dir),
             queue: place::queue(),
             disk_guard: place::disk_guard(),
-            declared: place::declared(),
+            declared: Some(place::declared()),
             reached: place::reached(),
             updated: place::updated(),
         }
@@ -214,7 +215,7 @@ pub fn measure_in(name: &str, realm: &str, sources: &Sources) -> Machine {
 pub fn measure(name: &str, sources: &Sources) -> Machine {
     let read = here::read();
     let now = jiff::Timestamp::now();
-    let declared = declared::read(&sources.declared);
+    let declared = sources.declared.as_deref().and_then(declared::read);
     // A machine given a share of its host lists the host's processors, so
     // what it declares it is given comes first.
     let cpu = Cpu {
@@ -274,7 +275,10 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
 /// once a minute, never as each session changes.
 #[must_use]
 pub fn power(sources: &Sources) -> Option<Power> {
-    let host = declared::read(&sources.declared)
+    let host = sources
+        .declared
+        .as_deref()
+        .and_then(declared::read)
         .and_then(|declared| declared.within)
         .and_then(|within| within::told(&within.file, jiff::Timestamp::now()));
     match host {
@@ -681,7 +685,7 @@ mod tests {
             home: "/".into(),
             queue: None,
             disk_guard: None,
-            declared: "/nowhere".into(),
+            declared: None,
             reached: "/nowhere".into(),
             updated: "/nowhere".into(),
         };
@@ -834,7 +838,7 @@ mod tests {
                 home: home.path().to_owned(),
                 queue: Some(home.path().join("queue.json")),
                 disk_guard: Some(home.path().join("status.json")),
-                declared: home.path().join("declared.json"),
+                declared: Some(home.path().join("declared.json")),
                 reached: home.path().join("reached.json"),
                 updated: home.path().join("last.json"),
             },
@@ -901,7 +905,7 @@ mod tests {
                 home: home.path().to_owned(),
                 queue: None,
                 disk_guard: None,
-                declared,
+                declared: Some(declared),
                 reached: home.path().join("reached.json"),
                 updated: home.path().join("last.json"),
             },
@@ -931,7 +935,7 @@ mod tests {
             home: home.path().to_owned(),
             queue: None,
             disk_guard: None,
-            declared,
+            declared: Some(declared),
             reached: home.path().join("reached.json"),
             updated: home.path().join("last.json"),
         };
@@ -974,7 +978,7 @@ mod tests {
             home: home.path().to_owned(),
             queue: None,
             disk_guard: None,
-            declared: home.path().join("declared.json"),
+            declared: Some(home.path().join("declared.json")),
             reached: home.path().join("reached.json"),
             updated: home.path().join("last.json"),
         };
@@ -1009,7 +1013,7 @@ mod tests {
             home: home.path().to_owned(),
             queue: None,
             disk_guard: None,
-            declared,
+            declared: Some(declared),
             reached: home.path().join("reached.json"),
             updated: home.path().join("last.json"),
         };

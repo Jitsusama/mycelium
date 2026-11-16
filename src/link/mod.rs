@@ -446,11 +446,61 @@ fn asked_of(
     }
 }
 
-/// The file this machine's declaration is read from: the node's, for a
-/// link it keeps, so both say the machine alike; the account's own for a
-/// link with no node behind it, which says only facts.
-fn declared_of(starting: Option<&Starting>) -> PathBuf {
-    starting.map_or_else(crate::place::declared, |starting| starting.declared.clone())
+/// Where this machine's declaration is read from: the node's file, for a
+/// link it keeps, so both say the machine alike; the node itself, for a
+/// link another machine dialled; the account's own file for a link with no
+/// node behind it, which says only facts.
+fn declared_of(starting: Option<&Starting>) -> Declaring {
+    match starting {
+        None => Declaring::File(crate::place::declared()),
+        Some(Starting {
+            declared: Some(file),
+            ..
+        }) => Declaring::File(file.clone()),
+        Some(Starting {
+            declared: None,
+            node,
+            ..
+        }) => Declaring::Node(node.clone()),
+    }
+}
+
+/// How long an end of a link waits for its node to say what it measures
+/// this machine to be. The node answers from a few small files, so one
+/// slower than this is stuck, and the end says what it measures itself.
+const MEASURED_WITHIN: Duration = Duration::from_secs(5);
+
+/// What the node on `node` measures this machine to be, or none where no
+/// node answers there in time, as while it restarts.
+async fn measured_by(node: &std::path::Path) -> Option<Machine> {
+    let asked = async {
+        let (reading, mut writing) = tokio::net::UnixStream::connect(node)
+            .await
+            .ok()?
+            .into_split();
+        let mut ask = serde_json::to_vec(&crate::wire::Request::Machine).ok()?;
+        ask.push(b'\n');
+        writing.write_all(&ask).await.ok()?;
+        let line = BufReader::new(reading).lines().next_line().await.ok()??;
+        match serde_json::from_str::<Reply>(&line).ok()? {
+            Ok(Response::Machine(machine)) => Some(*machine),
+            _ => None,
+        }
+    };
+    tokio::time::timeout(MEASURED_WITHIN, asked)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Where an end of a link reads what its machine declares.
+enum Declaring {
+    /// From this file.
+    File(PathBuf),
+    /// From the node on this socket, asked for what it measures this
+    /// machine to be, as a link another machine dialled does, since it
+    /// runs apart from the node and is started by whatever SSH runs.
+    Node(PathBuf),
 }
 
 /// This machine's own health as a link says it, when the link carries
@@ -618,8 +668,8 @@ struct End<S> {
     /// moving has said again at once rather than with the next minute's
     /// keep.
     health: OwnHealth,
-    /// What this machine's configuration declares, as its node reads it.
-    declared: PathBuf,
+    /// Where what this machine's configuration declares is read from.
+    declared: Declaring,
     _claim: Claim,
 }
 
@@ -1265,14 +1315,32 @@ impl<S: Store> End<S> {
             return Ok(());
         }
         let (here, realm) = (self.here.clone(), self.realm.clone());
+        let declared = match &self.declared {
+            Declaring::File(file) => Some(file.clone()),
+            Declaring::Node(node) => match measured_by(node).await {
+                Some(machine) => return self.say_machine(machine, writing).await,
+                // Nothing the account's files declare is said for it:
+                // anything running as the account could have written them.
+                None => None,
+            },
+        };
         let sources = facts::Sources {
-            declared: self.declared.clone(),
+            declared,
             ..facts::Sources::here()
         };
-        let mut machine =
+        let machine =
             tokio::task::spawn_blocking(move || facts::measure_in(&here, &realm, &sources))
                 .await
                 .map_err(io::Error::other)?;
+        self.say_machine(machine, writing).await
+    }
+
+    /// Says `machine`, this end's own, with the health this end watches.
+    async fn say_machine(
+        &mut self,
+        mut machine: Machine,
+        writing: &mut (impl AsyncWrite + Unpin),
+    ) -> io::Result<()> {
         machine.health = self
             .health
             .told
@@ -1987,7 +2055,7 @@ mod tests {
             asking: None,
             steers: dir.path().join("steer"),
             health: Some(slot.subscribe()),
-            declared: dir.path().join("declared.json"),
+            declared: Some(dir.path().join("declared.json")),
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2015,6 +2083,110 @@ mod tests {
             store.machines()[0].health.as_ref() == Some(&health)
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn a_dialled_end_says_what_its_node_measures_its_machine_to_be() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let declared = dir.path().join("declared.json");
+        std::fs::write(
+            &declared,
+            r#"{"reach": [], "outlives": [], "costs_money": false,
+                "taints": [{"key": "node-says", "effect": "never", "why": "its node's file"}]}"#,
+        )
+        .expect("the node's declaration is written");
+        let node = dir.path().join("node.sock");
+        let _node = measuring_node(&node, &declared);
+        let skiff = dialled_by_kestrel(dir.path(), node);
+
+        until(&skiff, |store| {
+            store.machines().first().is_some_and(|kestrel| {
+                kestrel
+                    .declared
+                    .as_ref()
+                    .is_some_and(|said| said.taints.iter().any(|taint| taint.key == "node-says"))
+            })
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_dialled_end_whose_node_doesnt_answer_says_only_what_it_measures() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let skiff = dialled_by_kestrel(dir.path(), dir.path().join("node.sock"));
+
+        until(&skiff, |store| !store.machines().is_empty()).await;
+        assert!(
+            skiff.machines()[0].declared.is_none(),
+            "with no node to ask, nothing kestrel declares is said"
+        );
+    }
+
+    /// Skiff's store, hearing kestrel's end of a link skiff dialled, which
+    /// runs apart from kestrel's node on `node`, as SSH starts it.
+    fn dialled_by_kestrel(dir: &std::path::Path, node: PathBuf) -> Memory {
+        let skiff = Memory::default();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let near_end = end(&skiff, "skiff", near);
+        let starting = Starting {
+            node,
+            held: dir.join("held"),
+            asking: Some(Asking::Dialled),
+            steers: dir.join("steer"),
+            health: None,
+            declared: None,
+        };
+        let (reading, writing) = tokio::io::split(far);
+        tokio::spawn(async move {
+            let _near_end = near_end;
+            run(
+                Memory::default(),
+                &realm("kestrel"),
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+            .map(|_| ())
+        });
+        skiff
+    }
+
+    /// A node on `socket` that answers only what it measures its machine
+    /// to be, reading what that declares from `declared`, and hangs up on
+    /// any other ask.
+    fn measuring_node(
+        socket: &std::path::Path,
+        declared: &std::path::Path,
+    ) -> tokio::task::JoinHandle<()> {
+        let listener = tokio::net::UnixListener::bind(socket).expect("the node listens");
+        let declared = declared.to_owned();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (reading, mut writing) = stream.into_split();
+                let Ok(Some(line)) = BufReader::new(reading).lines().next_line().await else {
+                    continue;
+                };
+                if serde_json::from_str::<crate::wire::Request>(&line).ok()
+                    != Some(crate::wire::Request::Machine)
+                {
+                    continue;
+                }
+                let sources = facts::Sources {
+                    home: "/".into(),
+                    queue: None,
+                    disk_guard: None,
+                    declared: Some(declared.clone()),
+                    reached: "/nowhere".into(),
+                    updated: "/nowhere".into(),
+                };
+                let measured = facts::measure_in("kestrel", "work", &sources);
+                let reply: Reply = Ok(Response::Machine(Box::new(measured)));
+                let mut said = serde_json::to_vec(&reply).expect("a reply");
+                said.push(b'\n');
+                writing.write_all(&said).await.expect("the node answers");
+            }
+        })
     }
 
     #[tokio::test]
@@ -2057,7 +2229,7 @@ mod tests {
             home: "/".into(),
             queue: None,
             disk_guard: None,
-            declared: "/nowhere".into(),
+            declared: None,
             reached: "/nowhere".into(),
             updated: "/nowhere".into(),
         };
@@ -2742,7 +2914,7 @@ mod tests {
             asking: None,
             steers: dir.join("inboxes"),
             health: None,
-            declared: dir.join("declared.json"),
+            declared: Some(dir.join("declared.json")),
         }
     }
 

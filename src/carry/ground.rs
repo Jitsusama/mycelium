@@ -187,7 +187,7 @@ mod tests {
             home: "/".into(),
             queue: None,
             disk_guard: None,
-            declared: "/nowhere".into(),
+            declared: None,
             reached: "/nowhere".into(),
             updated: "/nowhere".into(),
         };
