@@ -6,49 +6,15 @@
 
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
-use std::path::Path;
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::process::Child;
+use std::time::Duration;
 
-use notify::{RecursiveMode, Watcher};
+use process::{made, mycelium};
+
+mod process;
 
 /// How long the node has to start.
 const PATIENCE: Duration = Duration::from_secs(30);
-
-/// Waits up to `within` for `path` to be there, hearing each change under
-/// `root`.
-fn made(root: &Path, path: &Path, within: Duration) {
-    let (telling, told) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(telling).expect("a watcher");
-    watcher
-        .watch(root, RecursiveMode::Recursive)
-        .expect("the folder is watched");
-    let deadline = Instant::now() + within;
-    while !path.exists() {
-        let left = deadline.saturating_duration_since(Instant::now());
-        assert!(!left.is_zero(), "{} was never made", path.display());
-        // A watch that fails or times out has the path looked at again.
-        let _ = told.recv_timeout(left);
-    }
-}
-
-/// `mycelium` run with `args`, its folders under `home`.
-fn mycelium(home: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_mycelium"));
-    command
-        .args(["--realm", "work"])
-        .args(args)
-        .env("HOME", home)
-        .env("XDG_RUNTIME_DIR", home.join("r"))
-        .env("XDG_CONFIG_HOME", home.join("c"))
-        .env("XDG_STATE_HOME", home.join("s"))
-        .env("XDG_DATA_HOME", home.join("d"))
-        .env("XDG_CACHE_HOME", home.join("k"))
-        .env_remove("INVOCATION_ID")
-        .stdin(Stdio::null());
-    command
-}
 
 /// A node that is stopped once the test is done with it, however it ends.
 struct Running(Child);

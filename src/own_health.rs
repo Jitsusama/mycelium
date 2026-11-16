@@ -422,6 +422,20 @@ mod tests {
             .clone()
     }
 
+    /// A slot kept from a stand-in daemon of the test's own, once the
+    /// node has connected to it: the folder its socket is in, its
+    /// listener, what tells the slot and what the daemon writes with.
+    async fn kept() -> (tempfile::TempDir, UnixListener, Told, OwnedWriteHalf) {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("system.sock");
+        let listener = UnixListener::bind(&socket).expect("the stand-in listens");
+        let slot = slot();
+        let told = slot.subscribe();
+        tokio::spawn(keep(socket, slot));
+        let writing = daemon(&listener).await;
+        (dir, listener, told, writing)
+    }
+
     /// A slot of a test's own, so no test hears another's daemon.
     fn slot() -> Slot {
         watch::Sender::new(None)
@@ -437,13 +451,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_line_past_the_longest_lets_the_daemon_go() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("system.sock");
-        let listener = UnixListener::bind(&socket).expect("the stand-in listens");
-        let slot = slot();
-        let mut told = slot.subscribe();
-        tokio::spawn(keep(socket, slot));
-        let mut writing = daemon(&listener).await;
+        let (_dir, _listener, mut told, mut writing) = kept().await;
         say(
             &mut writing,
             &json!({"id": 1, "records": [summary("good")]}),
@@ -540,13 +548,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_whole_and_each_part_are_kept_as_the_daemon_says_them() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("system.sock");
-        let listener = UnixListener::bind(&socket).expect("the stand-in listens");
-        let slot = slot();
-        let mut told = slot.subscribe();
-        tokio::spawn(keep(socket, slot));
-        let mut writing = daemon(&listener).await;
+        let (_dir, _listener, mut told, mut writing) = kept().await;
         say(
             &mut writing,
             &json!({"id": 1, "records": [summary("watch")]}),
@@ -618,13 +620,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_daemon_that_goes_away_leaves_no_health() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("system.sock");
-        let listener = UnixListener::bind(&socket).expect("the stand-in listens");
-        let slot = slot();
-        let mut told = slot.subscribe();
-        tokio::spawn(keep(socket, slot));
-        let mut writing = daemon(&listener).await;
+        let (_dir, listener, mut told, mut writing) = kept().await;
         say(&mut writing, &json!({"id": 1, "records": [summary("bad")]})).await;
         until(&mut told, Option::is_some).await;
         drop(writing);

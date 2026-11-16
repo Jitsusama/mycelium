@@ -28,9 +28,12 @@ The rest of the tests sit beside the code they prove, in `src/`.
   built for ten thousand cells within 30 MB, each cell holding two
   trees, in time that grows with the cells, the memory counted by
   an allocator of its own, which only a program of its own may hold
+- `process/`: the `mycelium` command with its folders under a test's own
+  home, and the wait for a path it makes, that `declared.rs`,
+  `named.rs` and `stopped.rs` share
 - `realm/`: the realm of ten thousand cells both are built for, and the
   bar they are held to, with the counting allocator and thread time
-  (`counting.rs`) that `ties.rs` shares
+  (`counting.rs`) that `ties.rs`, `forages.rs` and `murmurs.rs` share
 - `rejoined.rs`: a window's join of a session on another machine, run
   again each time SSH drops after saying it reconnects, ending as the
   join there ends, once the node says the session has, or on Ctrl+C

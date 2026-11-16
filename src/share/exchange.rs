@@ -1821,6 +1821,25 @@ mod tests {
         fs::write(at, text).expect("written");
     }
 
+    /// Writes `text` as quest `id`'s README on `machine`.
+    fn written(machine: &Machine, id: &str, text: &str) {
+        put(&machine.places.quests, &format!("{id}/README.md"), text);
+    }
+
+    /// A child quest offered on `machine`, with the top quest above it
+    /// there too but not offered, as `(top, child)`.
+    fn child_of_top_offered(machine: &Machine) -> (&'static str, &'static str) {
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        written(machine, top, "---\nparent: null\n---\n# Top\n");
+        written(
+            machine,
+            child,
+            &format!("---\nparent: {top}\n---\n# Child\n"),
+        );
+        machine.places.offer(child, &[]).expect("shared");
+        (top, child)
+    }
+
     /// Shares quest `id` on `machine` on its own, as a ledger kept for it
     /// says.
     fn share(machine: &Machine, id: &str) {
@@ -2732,18 +2751,13 @@ mod tests {
         let skiff = Machine::new("skiff");
         let (top, middle) = ("QEST-20261007-WCJQSG", "QEST-20261013-4UHC5Q");
         let (grandchild, sibling) = ("QEST-20261115-5XF89V", "QEST-20261115-AAAAAA");
-        let put = |quest: &str, text: String| {
-            let at = kestrel.places.quests.join(quest).join("README.md");
-            fs::create_dir_all(at.parent().expect("a file has a folder")).expect("made");
-            fs::write(at, text).expect("written");
-        };
         let under = |parent: &str, status: &str| {
             format!("---\nparent: {parent}\nstatus: {status}\n---\n# Under\n")
         };
-        put(top, "---\nparent: null\n---\n# Top\n".to_owned());
-        put(middle, under(top, "active"));
-        put(grandchild, under(middle, "active"));
-        put(sibling, under(top, "active"));
+        written(&kestrel, top, "---\nparent: null\n---\n# Top\n");
+        written(&kestrel, middle, &under(top, "active"));
+        written(&kestrel, grandchild, &under(middle, "active"));
+        written(&kestrel, sibling, &under(top, "active"));
         kestrel.places.offer(grandchild, &[]).expect("shared");
         kestrel.places.offer(sibling, &[]).expect("shared");
         let shares = |machine: &Machine, quest: &str| machine.places.ledgers().shares(quest);
@@ -2756,7 +2770,7 @@ mod tests {
             "both ends share each quest and those above it"
         );
 
-        put(grandchild, under(middle, "concluded"));
+        written(&kestrel, grandchild, &under(middle, "concluded"));
         for _ in 0..4 {
             talk(&mut near, &mut far);
         }
@@ -2772,7 +2786,7 @@ mod tests {
         );
 
         kestrel.places.offer(top, &[]).expect("shared on its own");
-        put(sibling, under(top, "concluded"));
+        written(&kestrel, sibling, &under(top, "concluded"));
         for _ in 0..4 {
             talk(&mut near, &mut far);
         }
@@ -2794,15 +2808,7 @@ mod tests {
     fn a_parent_whose_files_arrive_after_the_quest_under_it_stays_shared() {
         let kestrel = Machine::new("kestrel");
         let skiff = Machine::new("skiff");
-        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
-        let put = |quest: &str, text: String| {
-            let at = kestrel.places.quests.join(quest).join("README.md");
-            fs::create_dir_all(at.parent().expect("a file has a folder")).expect("made");
-            fs::write(at, text).expect("written");
-        };
-        put(top, "---\nparent: null\n---\n# Top\n".to_owned());
-        put(child, format!("---\nparent: {top}\n---\n# Child\n"));
-        kestrel.places.offer(child, &[]).expect("shared");
+        let (top, child) = child_of_top_offered(&kestrel);
         let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
         near.watch.hear_anything();
         far.watch.hear_anything();
@@ -2837,15 +2843,7 @@ mod tests {
     fn an_idle_look_decides_no_parent_spent_until_a_readme_changes() {
         let kestrel = Machine::new("kestrel");
         let skiff = Machine::new("skiff");
-        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
-        let put = |quest: &str, text: String| {
-            let at = kestrel.places.quests.join(quest).join("README.md");
-            fs::create_dir_all(at.parent().expect("a file has a folder")).expect("made");
-            fs::write(at, text).expect("written");
-        };
-        put(top, "---\nparent: null\n---\n# Top\n".to_owned());
-        put(child, format!("---\nparent: {top}\n---\n# Child\n"));
-        kestrel.places.offer(child, &[]).expect("shared");
+        let (top, child) = child_of_top_offered(&kestrel);
         let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
         // Again, so skiff, sharing them now, says so.
         talk(&mut near, &mut far);
@@ -2854,7 +2852,7 @@ mod tests {
         near.look().expect("looks");
 
         // Unheard, so no look knows the README changed.
-        put(child, "---\nparent: null\n---\n# Child, alone\n".to_owned());
+        written(&kestrel, child, "---\nparent: null\n---\n# Child, alone\n");
         near.look().expect("looks");
         assert!(
             kestrel.places.ledgers().shares(top),
