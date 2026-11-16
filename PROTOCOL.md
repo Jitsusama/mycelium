@@ -507,6 +507,32 @@ on it: every record here is a file the person's account writes, so it
 holds against a fenced session only where the fence keeps it
 read-only.
 
+`mycelium carry QEST-... --to <machine> --why <reason>`, run from the
+orchestrator's own session, takes the steps above with the steer
+`ordered-carry` in place of `carry`. The node answers each such steer
+`{"Steered": {"machine", "by"}}`, `by` the orchestrator it proved, and
+the carry is refused if `by` is missing, since a session it started
+couldn't arrive as anyone's, or if it differs between sessions, rather
+than stamping the last. A blank reason is refused, by the command and
+by the node. With no session of the quest here, it is refused too:
+only a session's steer proves who orchestrates it, so only the person
+carries what the quest left. A session that won't go, as one holding a
+lease, mid-push or mid-rebase, or with background work running, writes
+`<session>.refused.json` in the handover folder, `{"session", "why",
+"at"}` and nothing more, with `at` in RFC 3339 and `session` the one
+the file is named for, and the carry fails at once with `<address>
+refused its carry: <why>`, never waiting it out. The harness writes it
+whole, beside the folder's files and renamed into place. Only a file
+changed since this carry began, saying a time since, counts; one
+changed before is passed over unread, and one that can't be read yet
+is read again at the next look. One naming another session than its
+file stops the carry. Each session it carried starts with `pi-carry
+arrive ... --by=<address> --why=<reason>` after the person's arrival
+words, each value joined to its option so a reason opening with a dash
+is still the reason, `by` taken from the node's answer, never from the
+command line or the session's done file, so it arrives saying who
+carried it and why, never as the person.
+
 ## Realm Flows
 
 Realms are kept apart, but a machine's configuration may open a flow: a
@@ -573,7 +599,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Offers"` | `{"Offers": {"offers", "unanswered"}}`, asked of each provider now |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"Start": {"work", "folder", "command", "may_cost"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
-| `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine"}}`, where it was put |
+| `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |

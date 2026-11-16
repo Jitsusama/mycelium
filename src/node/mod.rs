@@ -983,7 +983,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
 impl<S: Store + Clone + Send + Sync + 'static> daemon::Steers for Shared<S> {
     async fn steer(&self, address: &str, said: &serde_json::Value) -> Result<String, String> {
         match Shared::steer(self, address, said).await? {
-            Response::Steered { machine } => Ok(machine),
+            Response::Steered { machine, .. } => Ok(machine),
             other => Err(format!(
                 "its machine answered {other:?}, not that it was steered"
             )),
@@ -1804,7 +1804,7 @@ impl<S: Store> Shared<S> {
         if person {
             self.keep_word(&steer, &machine);
         }
-        Ok(Response::Steered { machine })
+        Ok(Response::Steered { machine, by: None })
     }
 
     /// The id of the session this connection's client asks for. Each
@@ -2046,7 +2046,7 @@ impl<S: Store> Shared<S> {
         let steer = Steer::new(&address, &serde_json::Value::Object(body))?;
         let kept = serde_json::json!({
             "at": jiff::Timestamp::now().to_string(),
-            "by": order.by,
+            "by": order.by.clone(),
             "asker": asker,
             "session": session,
             "address": address,
@@ -2065,6 +2065,7 @@ impl<S: Store> Shared<S> {
         self.steer_here(&steer, std::slice::from_ref(target))?;
         Ok(Response::Steered {
             machine: self.machine.clone(),
+            by: Some(order.by),
         })
     }
 
@@ -2795,7 +2796,8 @@ mod tests {
         assert_eq!(
             ask(near_socket.to_owned(), asked).await,
             Ok(Response::Steered {
-                machine: "kestrel".to_owned()
+                machine: "kestrel".to_owned(),
+                by: None,
             }),
             "a session on another machine is steered there"
         );
@@ -4327,7 +4329,8 @@ mod tests {
         assert_eq!(
             order(ordered).await,
             Ok(Response::Steered {
-                machine: "skiff".to_owned()
+                machine: "skiff".to_owned(),
+                by: Some("WCJQSG".to_owned()),
             }),
             "its orchestrator, by the record, orders the carry"
         );

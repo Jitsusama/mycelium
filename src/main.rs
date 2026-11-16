@@ -109,6 +109,9 @@ enum Action {
     /// with its handover, and each session starts again there, held, once
     /// `pi-carry arrive` has its trees. Prints a JSON line for each step,
     /// `{"step", "state", "said"}`, and last where each session went.
+    /// With `--why`, the quest's orchestrator orders it, and each session
+    /// arrives as carried by it for that reason; one that refuses stops
+    /// the carry with its own.
     #[command(after_help = "Example:\n  mycelium carry QEST-20261112-HARBOR --to tern")]
     Carry {
         #[command(flatten)]
@@ -118,6 +121,10 @@ enum Action {
         /// The machine it goes to, by name.
         #[arg(long)]
         to: String,
+        /// Why its orchestrator orders it, which only the orchestrator's
+        /// own session may.
+        #[arg(long, value_parser = reason)]
+        why: Option<String>,
     },
     /// Prints every session the node knows of.
     ///
@@ -1096,9 +1103,15 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Link { here } => run_link(here, realm, socket, None),
         Action::Ssh { here, from } => return run_asked(here, realm, socket, from),
         Action::Share(sharing) => share(sharing, realm, &socket),
-        Action::Carry { here, quest, to } => {
+        Action::Carry {
+            here,
+            quest,
+            to,
+            why,
+        } => {
             let (_, membership, shares) = open(here, realm)?;
-            carry(&socket, shares, &quest, &membership.machine, &to)
+            let carrying = (quest.as_str(), membership.machine.as_str(), to.as_str());
+            carry(&socket, shares, carrying, why.as_deref())
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
         Action::Unanswered => print_records(&socket, mycelium::unanswered::KIND),
@@ -1784,8 +1797,6 @@ fn steer_swarm(
     writeln!(io::stdout().lock(), "{said}")
 }
 
-/// Carries `quest` to the machine `to`, a JSON line on standard output
-/// for each step as it goes and the last saying where each session went.
 /// Shares `quest`, and if told `to`, waits as long as `within` seconds for
 /// that machine to hold it, printing what it found as a JSON line whatever
 /// it was, and failing with why unless held.
@@ -1830,10 +1841,19 @@ fn share(sharing: Sharing, realm: String, socket: &Path) -> io::Result<()> {
     }
 }
 
-fn carry(socket: &Path, shares: Places, quest: &str, machine: &str, to: &str) -> io::Result<()> {
+/// Carries `quest` from `machine`, as its node names it, to the machine
+/// `to`, as the person or, given `why`, as its orchestrator, a JSON line
+/// on standard output for each step as it goes and the last saying where
+/// each session went.
+fn carry(
+    socket: &Path,
+    shares: Places,
+    (quest, machine, to): (&str, &str, &str),
+    why: Option<&str>,
+) -> io::Result<()> {
     let mut hands = Through::new(socket.to_owned(), shares, quest, carry::through::PATIENCE);
     let mut failed = None;
-    let carried = carry::carry(&mut hands, quest, machine, to, &mut |line| {
+    let carried = carry::carry(&mut hands, quest, machine, to, why, &mut |line| {
         if let Err(error) = print_line(line) {
             failed.get_or_insert(error);
         }
@@ -2095,6 +2115,15 @@ fn need(said: &str) -> Result<Need, String> {
     })
 }
 
+/// A reason that says something.
+fn reason(said: &str) -> Result<String, String> {
+    if said.trim().is_empty() {
+        Err("a reason says something, and a blank one says nothing".to_owned())
+    } else {
+        Ok(said.to_owned())
+    }
+}
+
 fn intent(name: &str) -> Result<Intent, String> {
     serde_json::from_value(serde_json::Value::String(name.to_owned()))
         .map_err(|_| format!("{name:?} is not hold, question, finding, fyi or pivot"))
@@ -2227,6 +2256,19 @@ mod tests {
             }),
             "{said}"
         );
+    }
+
+    #[test]
+    fn a_carry_is_ordered_only_with_a_reason_that_says_something() {
+        let carrying = |why: &str| {
+            Command::try_parse_from([
+                "mycelium", "--realm", "work", "carry", "QEST-1", "--to", "tern", "--why", why,
+            ])
+        };
+        for blank in ["", "  "] {
+            assert!(carrying(blank).is_err(), "{blank:?} is refused");
+        }
+        assert!(carrying("it needs the camera").is_ok(), "a reason is taken");
     }
 
     #[test]
