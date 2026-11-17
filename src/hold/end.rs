@@ -231,6 +231,17 @@ mod tests {
         UnixListener::bind(socket(dir, id)).expect("its socket answers")
     }
 
+    /// Waits until nothing answers on `socket`. A process another test
+    /// forks carries every open file until it runs its program, so a
+    /// listener dropped here can answer a moment longer.
+    fn unanswered(socket: &Path) {
+        let until = Instant::now() + GRACE;
+        while std::os::unix::net::UnixStream::connect(socket).is_ok() {
+            assert!(Instant::now() < until, "{} still answers", socket.display());
+            std::thread::sleep(LOOKS_EVERY);
+        }
+    }
+
     fn runs(pid: u32) -> bool {
         self::pid(pid).is_some_and(|it| rustix::process::test_kill_process(it).is_ok())
     }
@@ -292,6 +303,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a folder");
         let (holder, program) = (holder(), program("echo ready; sleep 1000 & wait"));
         drop(holds(dir.path(), "stale", holder, program));
+        unanswered(&socket(dir.path(), "stale"));
 
         let error = end(dir.path(), "stale", GRACE).expect_err("its holder doesn't answer");
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
