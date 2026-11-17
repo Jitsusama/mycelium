@@ -1879,12 +1879,12 @@ field keying a record whose `key` is missing or empty; a record with
 neither refuses its file, as one with no `key` does with no `or`. Of two
 records of a file keyed alike, the first is kept. A folder's file puts
 its `by` field in front, so `waiting:QEST-A:login` is record `login` of
-the file whose `quest` is `QEST-A`. A file that says how something stands, rather than listing
-things, is held `whole` instead of naming its `records`: one record, its
-id the machine's name, holding every field of the file. One whose name
-ends `.jsonl` is of JSON lines, as a program appending what happens
-keeps one: its record holds `lines`, each whole line in the order
-written, as a talk's does. Each record's
+the file whose `quest` is `QEST-A`. A file that says how something
+stands, rather than listing things, is held `whole` instead of naming
+its `records`: one record, its id the machine's name, holding every
+field of the file. One whose name ends `.jsonl` is of JSON lines, as a
+program appending what happens keeps one: its record holds `lines`,
+each whole line in the order written, as a talk's does. Each record's
 fields pass as they are, beside the interface's
 own, `heard` being when its file was last written, and none is marked
 live. The node reads a source whole whenever a change reaches its
