@@ -391,7 +391,7 @@ pub fn started_at(pid: u32) -> Option<u64> {
 #[cfg(target_os = "macos")]
 fn started_as_libproc_says(pid: u32) -> Option<u64> {
     let pid = libc::c_int::try_from(pid).ok()?;
-    let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+    let size = libc::c_int::try_from(size_of::<libc::proc_bsdinfo>()).ok()?;
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
     #[expect(
         unsafe_code,
