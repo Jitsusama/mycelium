@@ -2006,8 +2006,9 @@ without an `id`, or with an empty one, is known by its title, as the
 launcher knows it, so two such items with one title share an id and
 count as one wait, as the launcher counts them; and any other field
 null or written wrong says nothing. Cleared waits aren't read, and a
-forage whose quest waits on nothing has no `waits`. The mesh's own waits, the questions and holds
-still unanswered, are `mycelium unanswered`'s.
+forage whose quest waits on nothing has no `waits`. The mesh's own
+waits, the questions and holds still unanswered, are
+`mycelium unanswered`'s.
 
 A plan grows past 400 KB, so the node reads a quest off its runtime,
 once a cell asks for it, and then only as it changes: a watch on the
