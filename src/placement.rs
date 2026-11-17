@@ -511,6 +511,11 @@ pub struct Decision {
 
 /// How one machine was judged for work.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a field of the placement log apart, so a record kept before one was \
+              judged still reads, and replay and hindsight read each by name"
+)]
 pub struct Judgement {
     /// The machine.
     pub machine: String,
