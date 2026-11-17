@@ -64,9 +64,11 @@ const MACH_STATES: usize = 4;
 #[must_use]
 pub fn mach_cores(counts: &[u32], processors: usize) -> Vec<MachCore> {
     counts
-        .chunks_exact(MACH_STATES)
+        .as_chunks::<MACH_STATES>()
+        .0
+        .iter()
         .take(processors)
-        .filter_map(|core| MachCore::try_from(core).ok())
+        .copied()
         .collect()
 }
 
