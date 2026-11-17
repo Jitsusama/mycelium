@@ -655,7 +655,7 @@ mod tests {
 
     /// A kit in `folder` of three tools only their owner writes, one of
     /// them oddly named, and the folder it resolves to.
-    fn kit_of_three(folder: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    fn kit_of_three(folder: &Path) -> (PathBuf, PathBuf) {
         let kit = folder.join("kit");
         let bin = kit.join("bin");
         fs::create_dir_all(&bin).expect("its bin");
