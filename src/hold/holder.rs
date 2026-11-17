@@ -1329,10 +1329,21 @@ mod tests {
         }
     }
 
+    /// How long a flood may take to pass through the holder. Sixteen
+    /// megabytes through a terminal took over a minute on a Mac whose load
+    /// was 82, and the flood can't be smaller: it must pass what a window
+    /// may fall behind by, which reads of up to 8 KB make 8 MB.
+    const FLOODED_WITHIN: Duration = Duration::from_secs(300);
+
     /// Waits until `path` exists, failing past the test's patience.
     async fn appears(path: &Path) {
+        appears_within(path, PATIENCE).await;
+    }
+
+    /// Waits until `path` exists, failing past `patience`.
+    async fn appears_within(path: &Path, patience: Duration) {
         let mut look = tokio::time::interval(Duration::from_millis(20));
-        let found = tokio::time::timeout(PATIENCE, async {
+        let found = tokio::time::timeout(patience, async {
             while !path.exists() {
                 look.tick().await;
             }
@@ -1599,7 +1610,7 @@ mod tests {
         window.sees("42 set").await;
         // The window reads nothing while the program floods, as one whose
         // terminal has stalled, so it falls behind and misses output.
-        appears(&root.path().join("flooded")).await;
+        appears_within(&root.path().join("flooded"), FLOODED_WITHIN).await;
         window.sees("drawn whole").await;
     }
 
