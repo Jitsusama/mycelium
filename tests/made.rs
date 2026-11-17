@@ -56,19 +56,30 @@ fn mycelium(home: &Path) -> Command {
     command
 }
 
+/// Every fence, each shut but for no door, as a machine declares it.
+const SHUT: &str = r#"{"none": {"builders": [], "forges": [], "secrets": []}, "fence": {"builders": [], "forges": [], "secrets": []}, "strict": {"builders": [], "forges": [], "secrets": []}}"#;
+
 /// The folders of a machine at `home`, its runtime folder open to it
-/// alone, declaring `declared`.
+/// alone, declaring `declared`, or nothing it reaches where that is none,
+/// and either way every fence [`SHUT`]. Where the node can't tell who
+/// asks, as on macOS or where the tests run with no new privileges, it
+/// takes the asker for a strictly fenced agent, which is offered only
+/// ground as firm as here's, so each machine runs its fences as shut as
+/// the others'.
 fn machine(home: &Path, declared: Option<&str>) {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(home.join("r"))
         .expect("its runtime folder is made");
-    if let Some(declared) = declared {
-        let config = home.join("c").join("mycelium");
-        fs::create_dir_all(&config).expect("its configuration's folder is made");
-        fs::write(config.join("declared.json"), declared).expect("what it declares is written");
-    }
+    let mut said: serde_json::Value = serde_json::from_str(
+        declared.unwrap_or(r#"{"reach": [], "outlives": [], "costs_money": false, "taints": []}"#),
+    )
+    .expect("what it declares is JSON");
+    said["fence"] = serde_json::from_str(SHUT).expect("the fences are JSON");
+    let config = home.join("c").join("mycelium");
+    fs::create_dir_all(&config).expect("its configuration's folder is made");
+    fs::write(config.join("declared.json"), said.to_string()).expect("what it declares is written");
 }
 
 /// Waits up to `within` until `holds` says `path` is as wanted, hearing
@@ -117,7 +128,7 @@ const FREE: &str = "0.000";
 /// asked each time, and saying what it released.
 fn provider(root: &Path, lent: &Path, until: jiff::Timestamp, hourly: &str) -> PathBuf {
     let offer = format!(
-        r#"{{"shape": "small", "facts": {{"declared": {{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": []}}}}, "costs": {{"hourly": "{hourly}", "currency": "USD"}}, "lasts": 3600}}"#
+        r#"{{"shape": "small", "facts": {{"declared": {{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": [], "fence": {SHUT}}}}}, "costs": {{"hourly": "{hourly}", "currency": "USD"}}, "lasts": 3600}}"#
     );
     let made = format!(r#"{{"place": "p1", "machine": "lent", "until": "{until}"}}"#);
     let at = |name: &str| lent.join(name).display().to_string();
