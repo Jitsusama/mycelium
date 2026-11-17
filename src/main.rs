@@ -329,8 +329,9 @@ enum Action {
     ///
     /// It goes to every group named, from who `--from` says.
     #[command(
-        override_usage = "mycelium send [OPTIONS] --from <FROM> --text <TEXT>\n       <GROUPS>...",
-        after_help = "Example:\n  mycelium send --from HARBOR --text merged peer.kelp01"
+        override_usage = "mycelium send [OPTIONS] --from <FROM> [--text <TEXT>]\n       <GROUPS>...",
+        after_help = "Examples:\n  mycelium send --from HARBOR --text merged peer.kelp01\n  \
+                      echo merged | mycelium send --from HARBOR peer.kelp01"
     )]
     Send {
         /// Who sends it.
@@ -343,9 +344,11 @@ enum Action {
         /// The groups it goes to, such as `peer.4uhc5q`.
         #[arg(required = true)]
         groups: Vec<Group>,
-        /// What is said.
+        /// What is said. Given as `-`, or left out while standard input
+        /// isn't a terminal, it is read from standard input, so it never
+        /// sits in a command line every process here can read.
         #[arg(long)]
-        text: String,
+        text: Option<String>,
         /// The realm it is for, by a flow, if not this one.
         #[arg(long = "to-realm")]
         to_realm: Option<String>,
@@ -1392,17 +1395,22 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             groups,
             text,
             to_realm,
-        } => print_answer(
-            &socket,
-            &Request::Send(Draft {
-                from,
-                groups,
-                intent,
-                text,
-                re: None,
-                realm: to_realm,
-            }),
-        ),
+        } => {
+            use std::io::IsTerminal as _;
+            let input = io::stdin();
+            let terminal = input.is_terminal();
+            print_answer(
+                &socket,
+                &Request::Send(Draft {
+                    from,
+                    groups,
+                    intent,
+                    text: said_text(text, input.lock(), terminal)?,
+                    re: None,
+                    realm: to_realm,
+                }),
+            )
+        }
         Action::Flows => print_reply(&socket, &Request::Flows),
         Action::Attach(asked) => return attach_asked(&realm, &socket, asked),
         Action::Holder {
@@ -1426,6 +1434,20 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
 }
 
 /// Steers the session going by `address` with what standard input says.
+/// The most a message read from standard input may hold.
+const SAID_MOST: u64 = 256 * 1024;
+
+/// What a message says: `text` as given, or what `input` holds where
+/// `text` is `-`, or left out while `input` isn't a `terminal`.
+///
+/// # Errors
+///
+/// Not yet written.
+fn said_text(text: Option<String>, _input: impl io::Read, _terminal: bool) -> io::Result<String> {
+    let _ = SAID_MOST;
+    text.ok_or_else(|| io::Error::other("nothing is said"))
+}
+
 fn steer(socket: &Path, address: String) -> io::Result<()> {
     let steer = serde_json::from_reader(io::stdin().lock())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -2865,9 +2887,70 @@ mod tests {
     use std::io;
 
     use super::{
-        Action, Command, HELP_WIDTH, SwarmAsked, Tree, in_place, kit, reader_left, swarm_asked,
-        tree, write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, in_place, kit, reader_left,
+        said_text, swarm_asked, tree, write_line,
     };
+
+    #[test]
+    fn a_message_is_read_from_input_so_its_words_sit_in_no_command_line() {
+        let said = |text: Option<&str>, input: &[u8], terminal: bool| {
+            said_text(text.map(str::to_owned), input, terminal).map_err(|error| error.kind())
+        };
+        assert_eq!(
+            said(Some("merged"), b"", true),
+            Ok("merged".to_owned()),
+            "words given are said as they are"
+        );
+        assert_eq!(
+            said(Some("-"), b"merged, at last\n", true),
+            Ok("merged, at last".to_owned()),
+            "`-` reads them from input, its last line's end left off"
+        );
+        assert_eq!(
+            said(None, b"two\nlines\r\n", false),
+            Ok("two\nlines".to_owned()),
+            "as does leaving them out with input piped"
+        );
+        assert_eq!(
+            said(None, b"", true),
+            Err(io::ErrorKind::InvalidInput),
+            "left out at a terminal, nothing waits on typing"
+        );
+        assert_eq!(
+            said(Some("-"), b"\n", false),
+            Err(io::ErrorKind::InvalidInput),
+            "nothing read is nothing said"
+        );
+        let most = usize::try_from(SAID_MOST).expect("it fits");
+        assert_eq!(
+            said(Some("-"), "a".repeat(most).as_bytes(), false).map(|text| text.len()),
+            Ok(most),
+            "as much as a message may hold is said"
+        );
+        assert_eq!(
+            said(Some("-"), "a".repeat(most + 1).as_bytes(), false),
+            Err(io::ErrorKind::InvalidInput),
+            "and no more"
+        );
+        assert_eq!(
+            said(Some("-"), b"\xff\xfe", false),
+            Err(io::ErrorKind::InvalidData),
+            "words that aren't UTF-8 aren't said"
+        );
+    }
+
+    #[test]
+    fn a_send_parses_with_its_words_left_out() {
+        let parsed =
+            Command::try_parse_from(["mycelium", "send", "--from", "HARBOR", "peer.kelp01"]);
+        assert!(
+            matches!(
+                parsed.map(|command| command.action),
+                Ok(Some(Action::Send { text: None, .. }))
+            ),
+            "its words come from input"
+        );
+    }
 
     /// A reader that has gone, as `| head` is once it has read enough.
     struct Gone;
