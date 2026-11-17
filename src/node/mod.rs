@@ -528,15 +528,7 @@ where
                 links.spawn(keep_linked(dial, store.clone(), membership.clone(), carries));
             }
             Some((made, unwanted)) = made.recv() => {
-                // Booked before it's dialled, so no start finds it unbooked.
-                shared.book_for(&made);
-                let dial = Arc::new(Program {
-                    program: made.provider.clone(),
-                    place: made.place.clone(),
-                    // The provider said what it made, so the machine's
-                    // own word for its name isn't taken.
-                    named: Arc::new(std::sync::OnceLock::from(made.machine.clone())),
-                });
+                let dial = shared.book_for(&made);
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
                 let linked = keep_linked(dial.clone(), store.clone(), membership.clone(), carries);
                 let keeping = Keeping { book: shared.book.clone(), store: store.clone() };
@@ -3989,11 +3981,20 @@ impl<S: Store> Shared<S> {
     }
 
     /// Books `made` for whoever its make was told asked, so only that
-    /// asker's starts and runs, and the person's, are placed there.
-    fn book_for(&self, made: &Made) {
+    /// asker's starts and runs, and the person's, are placed there, and
+    /// gives the dial that links it. Booked before it is dialled, so no
+    /// start finds it among the realm's machines unbooked.
+    fn book_for(&self, made: &Made) -> Arc<Program> {
         self.lock()
             .booked
             .insert(made.machine.clone(), made.asker.clone());
+        Arc::new(Program {
+            program: made.provider.clone(),
+            place: made.place.clone(),
+            // The provider said what it made, so the machine's own word
+            // for its name isn't taken.
+            named: Arc::new(std::sync::OnceLock::from(made.machine.clone())),
+        })
     }
 
     /// Which booked machines a start or run asked now may be placed on:
