@@ -1172,10 +1172,14 @@ lives, or as long as the offer lives where the work doesn't say. It
 makes none where neither says, since no machine is made without an
 end. The program is told who asked in `MYCELIUM_ASKER`: the address
 of the session the kernel and pi's records prove asks, as a steer's
-orchestrator is proved; else `person` for the person's own login; else
-`unknown`, as for an agent no session is proved for, or a session this
-node lists no address for. A provider serving only some refuses the
-rest by failing, and nothing is made. Like the judging of a run, this
+orchestrator is proved, as that session's own presence says it; else
+`person` for the person's own login; else `unknown`, as for an agent
+no session is proved for, a session whose presence says no address of
+capitals and digits, or any agent on a Mac, which proves no session.
+The node's journal says why for each `unknown`. A provider serving
+only some refuses the rest by failing, and nothing is made; one
+serving only some should refuse where the variable is missing too, as
+it is from a node older than it. Like the judging of a run, this
 fences habit, not an agent set on passing as another, which runs as
 the same account; an agent's process left with no agent above it is
 judged the person's. A start relayed from another machine's node makes

@@ -793,6 +793,28 @@ async fn keep_made(
 /// # Errors
 ///
 /// When neither says, since no machine is made without an end.
+/// Who a provider is told asks for a machine ([`made::ASKER`]), and why
+/// it is told [`made::UNKNOWN`] where it is.
+struct Asker {
+    told: String,
+    unknown_because: Option<String>,
+}
+
+/// Whether `said` reads as a mesh address, as a provider is told who asks
+/// by one: capital letters and digits, at most [`ADDRESS_MOST`], so none
+/// reads as [`made::PERSON`] or [`made::UNKNOWN`] whatever its case.
+fn is_address(said: &str) -> bool {
+    !said.is_empty()
+        && said.len() <= ADDRESS_MOST
+        && said
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+}
+
+/// The longest a mesh address is read as, which a quest's six letters and
+/// a session's eight hex digits fit.
+const ADDRESS_MOST: usize = 16;
+
 fn lasting(work: &Work, offer: &Offer) -> Result<Duration, String> {
     let wanted = work
         .lasts
@@ -3282,11 +3304,12 @@ impl<S: Store> Shared<S> {
     /// realm takes, from the cheapest offer that would, and starts it there
     /// once it links.
     async fn start_on_made(&self, asked: Start, misses: &[Miss]) -> Reply {
+        let who = self.asker_of_a_make().await;
         let offers = self.offers().await;
         let offer = placement::to_make(&asked.work, &offers.offers, &self.machines())
             .map_err(|offered| nothing_offered(misses, &offered, &offers.unanswered))?
             .clone();
-        self.start_made_of(asked, &offer).await
+        self.start_made_of(asked, &offer, &who).await
     }
 
     /// Makes a machine for `asked`, which never said it may cost, from an
@@ -3294,6 +3317,7 @@ impl<S: Store> Shared<S> {
     /// Where none would, answers `nowhere`, saying so where one that costs
     /// would have done, so the asker knows to say it may cost.
     async fn start_on_free(&self, asked: Start, nowhere: String) -> Reply {
+        let who = self.asker_of_a_make().await;
         let offers = self.offers().await.offers;
         let free: Vec<Offer> = offers
             .iter()
@@ -3303,7 +3327,7 @@ impl<S: Store> Shared<S> {
         let machines = self.machines();
         if let Ok(offer) = placement::to_make(&asked.work, &free, &machines) {
             let offer = offer.clone();
-            return self.start_made_of(asked, &offer).await;
+            return self.start_made_of(asked, &offer, &who).await;
         }
         match placement::to_make(&asked.work, &offers, &machines) {
             Ok(costs) => Err(format!(
@@ -3314,11 +3338,20 @@ impl<S: Store> Shared<S> {
         }
     }
 
-    /// Makes a machine of `offer` for `asked` and starts it there once it
-    /// links. A machine made that nothing starts on is let go.
-    async fn start_made_of(&self, asked: Start, offer: &Offer) -> Reply {
-        let who = self.asker_of_a_make().await;
-        let made = made::make(offer, lasting(&asked.work, offer)?, &who).await?;
+    /// Makes a machine of `offer` for `asked`, telling its provider `who`
+    /// asks, and starts it there once it links. A machine made that
+    /// nothing starts on is let go.
+    async fn start_made_of(&self, asked: Start, offer: &Offer, who: &Asker) -> Reply {
+        let lasting = lasting(&asked.work, offer)?;
+        if let Some(why) = &who.unknown_because {
+            eprintln!(
+                "{} from {} is asked for by no one known, so it is told {}: {why}",
+                offer.shape,
+                offer.provider,
+                made::UNKNOWN
+            );
+        }
+        let made = made::make(offer, lasting, &who.told).await?;
         if let Err(error) = self.book.made(&made) {
             eprintln!(
                 "{} was made, but the book doesn't say so: {error}",
@@ -3505,34 +3538,42 @@ impl<S: Store> Shared<S> {
     /// ([`made::ASKER`]): the address of the session the kernel and pi's
     /// records prove asks ([`Self::asking_session`]), else `person` where
     /// [`asker::judge`] tells the person's own login, else `unknown`, so a
-    /// provider serving only some refuses it. A proved session this node
-    /// lists no address for, or whose address reads as one of those two
-    /// words, is `unknown` too. Like the judging of a run, this fences
-    /// habit, not an agent set on passing as another. A start relayed by
-    /// another machine's node never makes one, since the link pins it to
-    /// this machine by name, which no offer meets.
-    async fn asker_of_a_make(&self) -> String {
-        let unknown = || made::UNKNOWN.to_owned();
+    /// provider serving only some refuses it. The address is the first
+    /// the proved session's own presence says, and a proved session whose
+    /// presence says none that reads as an address ([`is_address`]) is
+    /// `unknown` too, so no presence is told as the person. Like the
+    /// judging of a run, this fences habit, not an agent set on passing as
+    /// another. A Mac proves no session, so every agent's make there is
+    /// `unknown`. A start relayed by another machine's node never makes
+    /// one, since the link pins it to this machine by name, which no offer
+    /// meets. It is read before any provider is asked what it offers, so
+    /// an asker that ends meanwhile is still told as it was.
+    async fn asker_of_a_make(&self) -> Asker {
+        let unknown = |why: String| Asker {
+            told: made::UNKNOWN.to_owned(),
+            unknown_because: Some(why),
+        };
+        let told = |told: &str| Asker {
+            told: told.to_owned(),
+            unknown_because: None,
+        };
         match self.asking_session().await {
             Ok(session) => {
-                let sessions = self.lock().state.sessions();
-                let address = self.address_of(&sessions, &session);
-                if address == session || address == made::PERSON || address == made::UNKNOWN {
-                    unknown()
-                } else {
-                    address.to_owned()
+                let standing = self.standing();
+                let address = standing
+                    .iter()
+                    .find(|presence| presence.session == session)
+                    .and_then(|presence| presence.body.get("addresses")?.get(0)?.as_str())
+                    .filter(|address| is_address(address));
+                match address {
+                    Some(address) => told(address),
+                    None => unknown(format!("{session} says no address")),
                 }
             }
             Err(why) => match self.judged().await {
-                Ok((By::Person, _)) => made::PERSON.to_owned(),
-                Ok((By::Agent(_), _)) => {
-                    eprintln!("a make is said to be asked by no one known: {why}");
-                    unknown()
-                }
-                Err(judging) => {
-                    eprintln!("a make is said to be asked by no one known: {why}; {judging}");
-                    unknown()
-                }
+                Ok((By::Person, _)) => told(made::PERSON),
+                Ok((By::Agent(_), _)) => unknown(why),
+                Err(judging) => unknown(format!("{why}; {judging}")),
             },
         }
     }
@@ -4696,7 +4737,7 @@ mod tests {
             &r#"#!/bin/sh
 case "$1" in
 offers) echo '{"shape": "cell", "costs": {"hourly": "0", "currency": "USD"}, "lasts": 600, "facts": {"declared": {"reach": ["basin"], "outlives": [], "costs_money": false, "taints": []}}}' ;;
-make) printf '%s\n' "$ASKER" > TOLD; exit 1 ;;
+make) printf '%s\n' "$ASKER" > 'TOLD'; exit 1 ;;
 esac
 "#
                 .replace("ASKER", made::ASKER)
@@ -4779,6 +4820,56 @@ esac
             "WCJQSG\n",
             "the session whose pi the asker runs below, by its address, not one it claims"
         );
+    }
+
+    #[tokio::test]
+    async fn a_provider_is_never_told_a_session_only_claimed_above_the_asker() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let told = dir.path().join("told");
+        // It claims the pi the asker runs below, but holds no log of it,
+        // so nothing proves the pi is its own.
+        let forged = json!({
+            "session": "s-forged", "addresses": ["P9R1KI"], "busy": false,
+            "state": "listening", "at": jiff::Timestamp::now().to_string(),
+            "owner": {"pid": 7009, "startTicks": started_at(7009)},
+        });
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[forged]).await;
+        provider_telling(&socket, &told);
+        asks_below(&socket, 7009);
+        assert_eq!(
+            told_asker(&socket, &told).await,
+            "unknown\n",
+            "a claim nothing proves can't name who asks"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_proved_session_whose_address_reads_as_a_word_is_unknown() {
+        for address in ["person", "Person", "", "unknown"] {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let socket = dir.path().join("skiff").join("work.sock");
+            let told = dir.path().join("told");
+            let store = Memory::default();
+            let (_stop, _node, _client) =
+                orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+            let mut presence = (*store
+                .presences()
+                .into_iter()
+                .find(|one| one.session == "s-steward")
+                .expect("the steward stands")
+                .body)
+                .clone();
+            presence["addresses"] = json!([address]);
+            store.start_here("s-steward", presence, true);
+            provider_telling(&socket, &told);
+            asks_below(&socket, 7001);
+            assert_eq!(
+                told_asker(&socket, &told).await,
+                "unknown\n",
+                "a presence saying {address:?} as its address is told as no one"
+            );
+        }
     }
 
     #[tokio::test]
