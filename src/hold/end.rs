@@ -316,10 +316,10 @@ mod tests {
         // A holder killed outright leaves what its program said as it
         // parked, and a wake written since.
         let said = [
-            super::super::wake(dir.path(), "stale"),
-            super::super::again(dir.path(), "stale"),
-            super::super::next(dir.path(), "stale"),
-            super::super::steers(dir.path(), "stale"),
+            wake(dir.path(), "stale"),
+            again(dir.path(), "stale"),
+            next(dir.path(), "stale"),
+            steers(dir.path(), "stale"),
         ];
         for file in &said {
             fs::write(file, b"[]").expect("it is written");
