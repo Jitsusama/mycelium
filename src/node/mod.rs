@@ -62,6 +62,7 @@ pub use asker::Processes;
 mod cell;
 pub use cell::records as cell_records;
 mod crossing;
+mod ended;
 mod fences;
 mod formed;
 pub use formed::Formed;
@@ -382,6 +383,7 @@ pub const HOLDS: [&str; 16] = [
     murmur::KIND,
     tie::KIND,
     formed::KIND,
+    ended::KIND,
 ];
 
 /// The kind of record that is one thing a session did, as its presence's
@@ -1163,6 +1165,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             murmurs,
             ties,
             formed,
+            ended,
         ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
@@ -1217,6 +1220,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (murmurs, vec!["text", "tied_to", "purpose", "settled"]),
             (ties, tie::LIVE.to_vec()),
             (formed, vec!["left"]),
+            (ended, ended::LIVE.to_vec()),
         ])
         .into_iter()
         .chain(served)
@@ -1284,6 +1288,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             forage::KIND => Some(self.forage_records()),
             murmur::KIND => Some(self.murmur_records()),
             tie::KIND => return Some(self.tie_records()),
+            ended::KIND => Some(self.ended_records()),
             _ => self.served.records(kind),
         }?;
         // Each held as its bytes as soon as it is made, so the kind is never
@@ -1320,8 +1325,10 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // a word kept tells its watchers too. A carry stands as its
             // session is seen, so it changes as sessions do, and a carry
             // kept tells its watchers too. A refusal comes as its session
-            // ends the turn that wrote it, which its presence says.
-            words::KIND | kept::KIND => Some(self.said.sessions.subscribe()),
+            // ends the turn that wrote it, which its presence says. A
+            // session ends as its presence says, or its process is seen
+            // gone; a quest concluded shows with the next session's change.
+            words::KIND | kept::KIND | ended::KIND => Some(self.said.sessions.subscribe()),
             receptor::KIND => Some(self.said.receptors.subscribe()),
             BUILDER => Some(self.builders.told()),
             forage::KIND => Some(self.said.forages.subscribe()),
@@ -2034,6 +2041,32 @@ impl<S: Store> Shared<S> {
             );
         }
         self.said.sessions_moved();
+    }
+
+    /// The sessions here that ended while their quest goes on, as
+    /// [`ended`] says, each standing as it does here, against the quests
+    /// this node serves; none where it serves none.
+    fn ended_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let quests: Vec<serde_json::Value> = self
+            .served
+            .records("quest")
+            .unwrap_or_default()
+            .into_values()
+            .collect();
+        let parked = standing::parked(&self.parked);
+        let sessions = self.lock().state.sessions();
+        let standing = |session: &Session| {
+            let here = session.machine == self.machine;
+            standing::standing(session, here, &parked, &self.boot)
+        };
+        let now = jiff::Timestamp::now().as_millisecond();
+        ended::records(ended::ended(
+            &sessions,
+            &self.machine,
+            &standing,
+            &quests,
+            (now, &millis_at),
+        ))
     }
 
     /// The swarm's teams as the daemon interface holds them, titled and
@@ -8243,6 +8276,91 @@ esac
             napper(&marked, "changed"),
             Some(json!("dormant")),
             "its park marked, it's dormant: {marked}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_here_that_ended_on_an_orchestrated_quest_is_told_until_its_work_is_taken_up()
+    {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let now = jiff::Timestamp::now().to_string();
+        let boot = store::folders::boot_id();
+        let presence = |session: &str, state: &str| {
+            json!({
+                "session": session, "addresses": [session.to_uppercase()], "groups": [],
+                "busy": false, "state": state, "at": now, "owner": {"bootId": boot},
+            })
+        };
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        let hello = client.next().await;
+        assert_eq!(
+            hello["kinds"]["ended"],
+            json!({"live": []}),
+            "hello names the kind, whose records never change: {hello}"
+        );
+        client
+            .ask(json!({"id": 3, "ask": "watch", "kind": "quest"}))
+            .await;
+        client.next().await;
+        let quests = json!({"quests": [{
+            "id": "QEST-20261116-HARBOR", "address": "HARBOR", "status": "active",
+            "orchestrator": "oars", "sessions": ["napper", "runner"],
+        }]});
+        let beside = socket.with_file_name(".quests.json.new");
+        fs::write(&beside, quests.to_string()).expect("the quests are written");
+        fs::rename(&beside, socket.with_file_name("quests.json")).expect("renamed into place");
+        client.next().await;
+        // Parked, its process ended, and not marked: nothing can wake it.
+        store.start_here("napper", presence("napper", "parked"), false);
+
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "ended"}))
+            .await;
+        // Whole first, then as it changes, since the node may hear the
+        // session after the watch began.
+        let mut said = client.next().await;
+        assert!(
+            said["records"].is_array(),
+            "the records come whole first: {said}"
+        );
+        let napper = |said: &Value| {
+            ["records", "changed"]
+                .iter()
+                .filter_map(|field| said[*field].as_array())
+                .flatten()
+                .find(|record| record["key"] == "ended:napper")
+                .cloned()
+        };
+        let told = loop {
+            if let Some(told) = napper(&said) {
+                break told;
+            }
+            said = client.next().await;
+        };
+        assert_eq!(
+            (&told["orchestrator"], &told["why"], &told["quest"]),
+            (
+                &json!("OARS"),
+                &json!("parked-unwakeable"),
+                &json!("QEST-20261116-HARBOR")
+            ),
+            "a park nothing can wake is told to the quest's orchestrator: {told}"
+        );
+
+        // A session taking the quest up again ends the telling.
+        store.start_here("runner", presence("runner", "listening"), true);
+        let mut changed = client.next().await;
+        while changed["gone"].as_array().is_none_or(Vec::is_empty) {
+            changed = client.next().await;
+        }
+        assert_eq!(
+            changed["gone"],
+            json!(["ended:napper"]),
+            "once the quest's work is taken up, nobody is told it stopped: {changed}"
         );
     }
 
