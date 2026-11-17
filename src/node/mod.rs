@@ -13834,6 +13834,42 @@ esac
         );
     }
 
+    #[tokio::test]
+    async fn the_links_a_node_keeps_hold_its_machine_saturated_as_it_does() {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            bare("/nowhere/steer".into(), None),
+            to_dial,
+        );
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let dial = shared.book_for(&made_by("/nowhere/lend", "kestrel", later));
+        // What the node shares is cloned into each task that says its
+        // verdict, so the start is taken from a clone: one band must hold
+        // across them.
+        let kept = shared.clone().starting(&dial, Path::new("/nowhere/node"));
+        // The node's band saturates only after the link is given its start,
+        // so a band copied at the start is caught as well as a fresh one.
+        assert!(
+            shared.saturation.judge(placement::SATURATES_AT + 5.0),
+            "the node's own measure saturates its machine"
+        );
+        let band = kept
+            .saturation
+            .expect("a link the node keeps is given a band");
+        let inside = f64::midpoint(placement::UNSATURATES_UNDER, placement::SATURATES_AT);
+        assert!(
+            band.judge(inside),
+            "and the link holds it saturated still inside the band, as the node's own \
+             band does, rather than judging afresh by a band of its own"
+        );
+    }
+
     #[test]
     fn a_provider_is_still_asked_by_its_path_or_as_built_again() {
         let at =
