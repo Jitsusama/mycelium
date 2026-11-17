@@ -406,11 +406,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nothing_is_written_through_a_link_in_the_record() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        let quest = Quest::new(dir.path().join("record"), PathBuf::from("/home/jitsusama"));
-        let elsewhere = dir.path().join("elsewhere");
+    /// A quest in `dir` whose record links outside itself twice: its
+    /// `attachments/away` to the folder answered beside it, and its
+    /// `held.md` to that folder's own, which reads "held".
+    fn linked_away(dir: &Path) -> (Quest, PathBuf) {
+        let quest = Quest::new(dir.join("record"), PathBuf::from("/home/jitsusama"));
+        let elsewhere = dir.join("elsewhere");
         fs::create_dir_all(quest.record.join("attachments")).expect("the record made");
         fs::create_dir_all(&elsewhere).expect("elsewhere made");
         fs::write(elsewhere.join("held.md"), "held\n").expect("written");
@@ -418,6 +419,13 @@ mod tests {
             .expect("a folder linked");
         std::os::unix::fs::symlink(elsewhere.join("held.md"), quest.record.join("held.md"))
             .expect("a file linked");
+        (quest, elsewhere)
+    }
+
+    #[test]
+    fn nothing_is_written_through_a_link_in_the_record() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (quest, elsewhere) = linked_away(dir.path());
 
         for path in ["attachments/away/planted.md", "held.md"] {
             assert!(
@@ -447,15 +455,7 @@ mod tests {
     #[test]
     fn nothing_is_read_through_a_link_in_the_record() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let quest = Quest::new(dir.path().join("record"), PathBuf::from("/home/jitsusama"));
-        let elsewhere = dir.path().join("elsewhere");
-        fs::create_dir_all(quest.record.join("attachments")).expect("the record made");
-        fs::create_dir_all(&elsewhere).expect("elsewhere made");
-        fs::write(elsewhere.join("held.md"), "held\n").expect("written");
-        std::os::unix::fs::symlink(&elsewhere, quest.record.join("attachments/away"))
-            .expect("a folder linked");
-        std::os::unix::fs::symlink(elsewhere.join("held.md"), quest.record.join("held.md"))
-            .expect("a file linked");
+        let (quest, elsewhere) = linked_away(dir.path());
         std::os::unix::fs::symlink(
             elsewhere.join("held.md"),
             quest.record.join("attachments/key.md"),
