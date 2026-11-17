@@ -1581,7 +1581,12 @@ them none serves it, and a cell back alone forms it no more. A watch
 of `formed` is told as the node sees one form, be left, be held again
 or fade, so within the minute, or at once where a `network` or `cell`
 ask saw it. Each node keeps its own, formed as its own
-record of the realm holds them; a link doesn't carry them. A tree
+record of the realm holds them; a link doesn't carry them. A file
+that can't be read forms none. One that doesn't parse is moved aside
+as the node starts, as `formed-<realm>.json.bad.<millis>`, so none
+is lost under another. One that can't be opened, or moved, is left
+as it is and never written, so what forms is kept only while the
+node runs. A tree
 whose every cell is parked counts them `dormant`, so it draws after
 the living ones. A network is heard when the latest of its cells was,
 or its team where its cells say nothing. Its records change as the
