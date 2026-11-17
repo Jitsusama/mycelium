@@ -19,17 +19,26 @@ use crate::wire::Request;
 const RESUMING: [&str; 2] = ["--session", "--session-id"];
 
 /// The session `command` resumes, by id, wherever its words name one
-/// after `--session` or `--session-id`, whole or within a shell's words,
-/// as `sh -c "... exec pi --session <id>"` does. A session named by its
-/// log's path, as `.../2026-11-14T22-23-37-209Z_<id>.jsonl`, is the id
-/// that path ends in.
+/// after `--session` or `--session-id`, whole or within the script a
+/// shell runs, as `sh -c "... exec pi --session <id>"` does. A word is
+/// only ever read whole: one holding a person's words, as
+/// `QUEST_WORKFLOW_FIRST_TEXT=fix --session ...` does, names nothing. A
+/// session named by its log's path, as
+/// `.../2026-11-14T22-23-37-209Z_<id>.jsonl`, is the id that path ends in.
 #[must_use]
 pub fn resumed(command: &[String]) -> Option<String> {
-    let words: Vec<&str> = command
+    let words: Vec<String> = command
         .iter()
-        .flat_map(|word| word.split_whitespace())
-        .map(|word| word.trim_matches(['"', '\'']))
+        .enumerate()
+        .flat_map(|(at, word)| {
+            if at > 0 && command[at - 1] == "-c" {
+                script_words(word)
+            } else {
+                vec![word.clone()]
+            }
+        })
         .collect();
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
     let named = words.iter().enumerate().find_map(|(at, word)| {
         if let Some((flag, id)) = word.split_once('=')
             && RESUMING.contains(&flag)
@@ -43,6 +52,36 @@ pub fn resumed(command: &[String]) -> Option<String> {
     })?;
     let id = Path::new(named).file_stem()?.to_str()?.rsplit('_').next()?;
     (!id.is_empty() && !id.starts_with('-')).then(|| id.to_owned())
+}
+
+/// The words a shell makes of `script`, its quotes taken off: what's
+/// within quotes, or after a backslash, stays within its word. Nothing
+/// is expanded, since a session's id is written out where it's named.
+fn script_words(script: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    let mut quote: Option<char> = None;
+    let mut letters = script.chars();
+    while let Some(letter) = letters.next() {
+        match (quote, letter) {
+            (Some(open), _) if letter == open => quote = None,
+            (Some('"') | None, '\\') => {
+                let held = word.get_or_insert_with(String::new);
+                held.extend(letters.next());
+            }
+            (Some(_), _) => word.get_or_insert_with(String::new).push(letter),
+            (None, '"' | '\'') => {
+                quote = Some(letter);
+                word.get_or_insert_with(String::new);
+            }
+            (None, _) if letter.is_whitespace() || ";&|".contains(letter) => {
+                words.extend(word.take());
+            }
+            (None, _) => word.get_or_insert_with(String::new).push(letter),
+        }
+    }
+    words.extend(word);
+    words
 }
 
 /// Waits until the node serving `socket` gives `session` its turn, or
