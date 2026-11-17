@@ -861,9 +861,10 @@ since that end knows no sessions or quests.
 ### A Machine Easing Itself
 
 A node run with `--eases` looks each minute at what its machine would
-do to ease itself, judging only by what it reads, and does none of it.
-It reads the realm's balance as `mycelium balance --follow` does and
-holds what is seen in most of the last ten readings. Once its machine
+do to ease itself, judging only by what it reads, and does none of it
+but where `--eases-carry` says to make its carries. It reads the
+realm's balance as `mycelium balance --follow` does and holds what
+is seen in most of the last ten readings. Once its machine
 has been held over for ten minutes while another has room, it would
 put its sessions that wait to sleep where they are. If the readings
 five minutes on still say over, it would carry one session to a peer
@@ -891,6 +892,39 @@ bytes, and `cpu` in cores over the last ten minutes. What it would
 have done counts in its memory, and a carry in its lines too, so a
 session it would have put to sleep counts as asleep, and one it would
 have carried as gone. Nothing reaches the record of carries.
+
+Run with `--eases-carry` too, the node makes each carry it chooses,
+as it would an orchestrator's ordered carry and onto ground as firm,
+but by `node@<machine>`, its own name, never the person's or an
+orchestrator's. The session is found as an order finds it: the one
+session here by its address, in capitals, and not in a turn. Its
+quest is the one open quest the quests' record holds it in, never
+what its presence claims; where the record is unread, holds it in
+none or several, names it by more than letters, digits, dashes and
+underscores, or names another than the quest its presence claims,
+it isn't carried, each said apart. The look judges a session's
+fence as the carry does, so one claiming none, or looser than its
+process has shown, is never chosen. Carries from here are judged
+and kept one at a time. A session carried by anyone within the day
+stays, whether this node kept the carry or another machine's node
+told of it, and one whose carry was refused isn't chosen again within
+the day, across the node's restarts too, and may be once the day
+is past. Its record
+of carries keeps it first, with `by` and `asker` that name, the
+session, its address and quest, `from`, `to`, `why`, a `source`
+saying the node chose it by its own machine's reading, and that
+`reading`; then the session's inbox is told `ordered-carry` with
+`from` and `by` that name. Its line in `eases` then says
+`would: false`, and where the carry was refused, `refused` says
+why: one refused for ground no firmer, a machine not the realm's,
+or a session no longer here is neither kept nor told, and one whose
+inbox refused it stays kept. A refused carry still counts as one
+made, toward the half hour and the six a day. It still puts no
+session to sleep, so the sleep it would have made only delays a
+carry by the minutes it waits to see whether sleeping eased it.
+An orchestrator's order after the node's carry still stands, as
+one order after another does. A session's harness takes such a carry only from
+its own machine's node, and lands it saying which node chose it.
 
 Whether its own machine is over it judges only from what the kernel
 says, read afresh each look and kept in memory: the `some` `avg10`
@@ -927,9 +961,9 @@ what the node remembers: what it did since it began, and from when it
 began, each carry its own lines in `eases` say it made, or would have,
 within the day, and each carry the record of carries keeps `by`
 `node@<machine>` and `from` here, a session in both counted once.
-Nothing writes such a carry yet; only a node that acts on its choices
-will. Its own lines are read from each day's file from yesterday's on,
-a name that isn't a day's passed over, and a line it can't read, torn
+Only a node run with `--eases-carry` writes such a carry. Its own
+lines are read from each day's file from yesterday's on, a name
+that isn't a day's passed over, and a line it can't read, torn
 by a stop part way, counting for none; a line kept after a torn one
 starts a line of its own, and a carry is kept however full its day's
 file is. A torn line in the record of carries counts for none too,

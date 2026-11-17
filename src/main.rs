@@ -637,6 +637,12 @@ struct Node {
     /// it.
     #[arg(long)]
     eases: bool,
+    /// Make the carries `--eases` chooses, under this node's own name,
+    /// each to ground as firm as an ordered carry's; it still puts no
+    /// session to sleep. Its sessions' harness must read a carry from
+    /// `node@<machine>`, or a carry is kept and told but never taken.
+    #[arg(long, requires = "eases")]
+    eases_carry: bool,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -1873,6 +1879,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         eases: node.eases.then(|| Eases {
             folder: state.join("eases"),
             every: carry::easing::EVERY,
+            carries: node.eases_carry,
         }),
         settles: Some(Settles {
             kept: state.join("settles.jsonl"),
@@ -3203,6 +3210,26 @@ mod tests {
         assert!(
             holder("/nix/store/kit").is_ok(),
             "the holder takes a whole path"
+        );
+    }
+
+    #[test]
+    fn a_node_makes_its_carries_only_while_it_eases() {
+        let node = |words: &[&str]| {
+            Command::try_parse_from([["mycelium", "node"].as_slice(), words].concat())
+        };
+        assert_eq!(
+            node(&["--eases-carry"]).err().map(|error| error.kind()),
+            Some(clap::error::ErrorKind::MissingRequiredArgument),
+            "a node can't make carries it doesn't choose"
+        );
+        assert!(
+            node(&["--eases", "--eases-carry"]).is_ok(),
+            "one that eases can"
+        );
+        assert!(
+            node(&["--eases"]).is_ok(),
+            "and one may ease only saying so"
         );
     }
 

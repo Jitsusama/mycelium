@@ -32,6 +32,14 @@ pub fn as_shown(claimed: Option<Kind>, shown: Kind, address: &str) -> Result<Opt
     }
 }
 
+/// The fence a carry would judge a session by, `claimed` by its presence
+/// and `shown` by its process; none where the carry would refuse it for
+/// its fence, a claim missing or looser than what shows.
+#[must_use]
+pub fn judged_as_carried(claimed: Option<Kind>, shown: Kind) -> Option<Kind> {
+    as_shown(claimed, shown, "").ok().flatten()
+}
+
 /// Whether a session running in the fence `kind`, as its presence says,
 /// may be carried from here, as this machine declares itself, to `to`,
 /// as `there` last said itself where the realm knows it. Refused, saying
@@ -279,6 +287,23 @@ mod tests {
             Ok(None),
             "no claim is left for the ground to refuse"
         );
+    }
+
+    #[test]
+    fn a_look_judges_a_fence_as_a_carry_would() {
+        for (claimed, shown, judged) in [
+            (None, Kind::Strict, None),
+            (Some(Kind::None), Kind::Fence, None),
+            (Some(Kind::Fence), Kind::Strict, None),
+            (Some(Kind::Strict), Kind::None, Some(Kind::Strict)),
+            (Some(Kind::Fence), Kind::Fence, Some(Kind::Fence)),
+        ] {
+            assert_eq!(
+                judged_as_carried(claimed, shown),
+                judged,
+                "claimed {claimed:?} and shown {shown}"
+            );
+        }
     }
 
     fn doors(builders: &[&str], forges: &[&str], secrets: &[&str]) -> Doors {

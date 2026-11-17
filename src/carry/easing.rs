@@ -52,6 +52,9 @@ pub struct Eases {
     pub folder: PathBuf,
     /// How often it looks.
     pub every: Duration,
+    /// Whether it makes the carries it chooses, under its own name, or
+    /// only says them.
+    pub carries: bool,
 }
 
 /// What a node read for one look at its sessions.
@@ -447,7 +450,8 @@ pub struct Easing {
     watch: Watch,
     history: History,
     asleep: BTreeSet<String>,
-    gone: BTreeSet<String>,
+    /// Each session a look chose to carry, with when.
+    gone: BTreeMap<String, Timestamp>,
     /// The reason of the last line kept for doing nothing, with the doubt
     /// it said.
     said: Option<(String, Option<String>)>,
@@ -530,9 +534,14 @@ impl Easing {
                 self.asleep.remove(&cell.session.id);
             }
         }
+        // One chosen to carry is passed over while its carry pins it, and
+        // may be chosen again once that is past, though its carry was
+        // refused and it never left.
+        self.gone
+            .retain(|_, chosen| now.duration_since(*chosen) < ease::PIN);
         let cells: Vec<Cell> = cells
             .into_iter()
-            .filter(|cell| !self.gone.contains(&cell.session.id))
+            .filter(|cell| !self.gone.contains_key(&cell.session.id))
             .map(|mut cell| {
                 cell.asleep |= self.asleep.contains(&cell.session.id);
                 cell
@@ -555,7 +564,7 @@ impl Easing {
             }
             Choice::Carry { session, to, .. } => {
                 self.said = None;
-                self.gone.insert(session.clone());
+                self.gone.insert(session.clone(), now);
                 self.history.moved(Moved {
                     session: session.clone(),
                     from: here.name.to_owned(),
@@ -580,6 +589,46 @@ impl Easing {
             line["orchestrators_unknown"] = json!(why);
         }
         Some(line)
+    }
+}
+
+/// Says where a carry the node chose to ease its machine came from, for
+/// its record.
+pub const SOURCE: &str = "this node's own reading of its machine's room, against the realm's \
+                          rooms as its links carry them";
+
+/// A carry a look chose, to act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chosen {
+    /// The session, by id.
+    pub session: String,
+    /// The machine it goes to.
+    pub to: String,
+    /// Why, in one line.
+    pub why: String,
+}
+
+/// The carry `line` chose, where it chose one.
+#[must_use]
+pub fn chosen(line: &Value) -> Option<Chosen> {
+    if line["choice"] != "carry" {
+        return None;
+    }
+    let text = |key: &str| line[key].as_str().map(str::to_owned);
+    Some(Chosen {
+        session: text("session")?,
+        to: text("to")?,
+        why: text("why")?,
+    })
+}
+
+/// Says on `line` how acting on its carry went: `would` false where the
+/// node acted, with why it `refused` where the carry didn't reach the
+/// session.
+pub fn acted(line: &mut Value, done: &Result<(), String>) {
+    line["would"] = json!(false);
+    if let Err(why) = done {
+        line["refused"] = json!(why);
     }
 }
 
@@ -988,6 +1037,10 @@ mod tests {
         };
         let today = [
             carry(60, "s-today"),
+            json!({"at": ago(30).to_string(), "would": false, "choice": "carry",
+                   "session": "s-refused", "to": "tern", "why": "over",
+                   "refused": "tern isn't one of this realm's machines"})
+            .to_string(),
             json!({"at": NOW, "choice": "nothing", "why": "cool"}).to_string(),
             "not a line".to_owned(),
         ];
@@ -1013,9 +1066,10 @@ mod tests {
             said,
             [
                 ("s-yesterday", "skiff", "tern", true),
-                ("s-today", "skiff", "tern", true)
+                ("s-today", "skiff", "tern", true),
+                ("s-refused", "skiff", "tern", true)
             ],
-            "its carries within the day, whatever day's file holds them"
+            "its carries within the day, whatever day's file holds them, a refused one too"
         );
         assert_eq!(
             eased_lately(&state.path().join("nowhere"), "skiff", now()),
@@ -1531,6 +1585,25 @@ mod tests {
     }
 
     #[test]
+    fn a_session_chosen_to_carry_is_passed_over_only_within_the_day() {
+        let waiting = Cell {
+            asleep: false,
+            ..cell("s1")
+        };
+        for (minutes, carries) in [(60, 0), (25 * 60, 1)] {
+            let mut easing = Easing::default();
+            easing.gone.insert("s1".to_owned(), ago(minutes));
+            let lines = looks(&mut easing, std::slice::from_ref(&waiting));
+            let chose = chosen(&lines);
+            assert_eq!(
+                chose.iter().filter(|&&one| one == "carry").count(),
+                carries,
+                "chosen {minutes} minutes since: {chose:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_node_says_what_it_would_do_once_each_and_counts_it_as_done() {
         let waiting = Cell {
             asleep: false,
@@ -1647,6 +1720,54 @@ mod tests {
             left,
             ["2026-11-02.jsonl", "2026-11-16.jsonl", "notes.jsonl"],
             "the day 15 days back goes; 14 days back and what isn't a day stay"
+        );
+    }
+
+    #[test]
+    fn only_a_carry_a_look_chose_is_acted_on() {
+        let carry = json!({"at": NOW, "would": true, "choice": "carry",
+                           "session": "s-harbour", "to": "tern", "why": "skiff is over"});
+        assert_eq!(
+            super::chosen(&carry),
+            Some(Chosen {
+                session: "s-harbour".to_owned(),
+                to: "tern".to_owned(),
+                why: "skiff is over".to_owned(),
+            }),
+            "a carry is acted on"
+        );
+        for line in [
+            json!({"at": NOW, "would": true, "choice": "sleep", "sessions": ["s-harbour"]}),
+            json!({"at": NOW, "would": true, "choice": "nothing", "why": "cool"}),
+            json!({"at": NOW, "would": true, "choice": "carry", "session": "s-harbour",
+                   "why": "skiff is over"}),
+            json!({"at": NOW, "would": true, "choice": "carry", "session": 7,
+                   "to": "tern", "why": "skiff is over"}),
+        ] {
+            assert_eq!(super::chosen(&line), None, "nor anything else: {line}");
+        }
+    }
+
+    #[test]
+    fn a_line_says_how_its_carry_went() {
+        let line = || json!({"at": NOW, "would": true, "choice": "carry"});
+        let mut carried = line();
+        acted(&mut carried, &Ok(()));
+        assert_eq!(
+            carried,
+            json!({"at": NOW, "would": false, "choice": "carry"}),
+            "a carry the node made no longer says it would"
+        );
+        let mut refused = line();
+        acted(
+            &mut refused,
+            &Err("tern would land looser there".to_owned()),
+        );
+        assert_eq!(
+            refused,
+            json!({"at": NOW, "would": false, "choice": "carry",
+                   "refused": "tern would land looser there"}),
+            "and one refused says why"
         );
     }
 }
