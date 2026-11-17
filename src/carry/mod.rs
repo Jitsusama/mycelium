@@ -124,6 +124,13 @@ pub struct Failed {
 pub struct Done {
     /// The session's id.
     pub session: String,
+    /// What stands for this session's last start on another machine from
+    /// here, as the mark that said so, where it ever started: a carry
+    /// taken again after its start went unanswered asks under the name
+    /// it asked before, and joins that start, where one carried since
+    /// asks afresh.
+    #[serde(skip)]
+    pub started_before: Option<String>,
 }
 
 /// A session's refusal of its carry, as it writes it beside where its
@@ -708,7 +715,26 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done, ordered: Option<&Orde
         command,
         may_cost: false,
         carries: false,
+        once: Some(arrival_name(quest, to, one)),
     }
+}
+
+/// The name `one`'s start on `to` is asked under: the same for a carry
+/// taken again before it started, so the node answers that start where
+/// it landed unanswered, and another once it has started, so a later
+/// carry starts it again. Its hash is blake3's, the same from every
+/// build, so a carry taken again after an update names the same start.
+fn arrival_name(quest: &str, to: &str, one: &Done) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for part in [quest, to, &one.session] {
+        hasher.update(&part.len().to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    if let Some(before) = &one.started_before {
+        hasher.update(b"started");
+        hasher.update(before.as_bytes());
+    }
+    format!("carry-{}", &hasher.finalize().to_hex()[..16])
 }
 
 /// A session's arrival, as a start's command says it: the quest it was
@@ -849,8 +875,13 @@ mod tests {
         /// The done files in the handover, each with whether it was
         /// marked started.
         handover: Vec<(Done, bool)>,
+        /// How many times each session, by id, was marked started.
+        marks: BTreeMap<String, usize>,
         /// The session, by id, whose start there fails.
         refuses: Option<String>,
+        /// The session, by id, whose start there lands but whose answer
+        /// never comes back, as a loaded node's over a link.
+        unanswered: Option<String>,
         /// Who the node proves ordered an `ordered-carry`.
         by: Option<String>,
         /// Who it proves ordered one session's instead, by its address.
@@ -894,9 +925,14 @@ mod tests {
         fn write(&mut self, session: &str) {
             let one = Done {
                 session: session.to_owned(),
+                started_before: self.marks.get(session).map(usize::to_string),
             };
-            match self.handover.iter_mut().find(|(at, _)| at == &one) {
-                Some(there) => there.1 = false,
+            match self
+                .handover
+                .iter_mut()
+                .find(|(at, _)| at.session == one.session)
+            {
+                Some(there) => *there = (one, false),
                 None => self.handover.push((one, false)),
             }
         }
@@ -953,7 +989,9 @@ mod tests {
             let there = self.handover.iter_mut().find(|(at, _)| at == one);
             there
                 .map(|there| there.1 = true)
-                .ok_or_else(|| format!("{} has no done file to mark", one.session))
+                .ok_or_else(|| format!("{} has no done file to mark", one.session))?;
+            *self.marks.entry(one.session.clone()).or_default() += 1;
+            Ok(())
         }
         fn ties(&mut self) -> Result<Vec<Value>, String> {
             self.ties_asked += 1;
@@ -1016,11 +1054,25 @@ mod tests {
             Ok(())
         }
         fn start(&mut self, start: Start) -> Result<Started, String> {
-            if self.refuses.as_deref() == start.command.get(6).map(String::as_str) {
+            let session = start.command.get(6).cloned();
+            if self.refuses.is_some() && self.refuses == session {
                 return Err("the machine there refused it".to_owned());
             }
-            let held = format!("h{}", self.started.len());
-            self.started.push(start);
+            // As the node does, an ask under a name it started already
+            // is answered with that start, never a second.
+            let joined = start.once.as_ref().and_then(|once| {
+                self.started
+                    .iter()
+                    .position(|one| one.once.as_ref() == Some(once))
+            });
+            let held = format!("h{}", joined.unwrap_or(self.started.len()));
+            if joined.is_none() {
+                self.started.push(start);
+            }
+            if self.unanswered.is_some() && self.unanswered == session {
+                self.unanswered = None;
+                return Err("the node answered nothing in 35 s".to_owned());
+            }
             Ok(Started {
                 machine: "tern".to_owned(),
                 held: held.clone(),
@@ -1244,6 +1296,7 @@ mod tests {
     fn an_earlier_carrys_cells_go_before_any_session_is_told_and_a_failed_ones_stay() {
         let done = |session: &str| Done {
             session: session.to_owned(),
+            started_before: None,
         };
         let mut realm = realm();
         // An earlier carry's, which finished; one whose session refused
@@ -1521,6 +1574,7 @@ mod tests {
         );
         let one = Done {
             session: "s-busy01".to_owned(),
+            started_before: None,
         };
         let start = super::arriving(QUEST, "skiff", "tern", &one, None);
         let path = format!(
@@ -1766,6 +1820,7 @@ mod tests {
         );
         let one = Done {
             session: QUEST.to_owned(),
+            started_before: None,
         };
         let ordered = Ordered {
             by: "WCJQSG".to_owned(),
@@ -1944,6 +1999,47 @@ mod tests {
             arrivals(&realm.started),
             ["s-fresh5"],
             "what the first carry started there starts no more: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_carry_taken_again_after_a_start_went_unanswered_joins_the_start_that_landed() {
+        let mut realm = Realm {
+            unanswered: Some("s-naps02".to_owned()),
+            ..realm()
+        };
+        let (done, _) = carried(&mut realm, "tern");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Start }),
+            "it fails at the start, which landed all the same"
+        );
+        let (done, lines) = carried(&mut realm, "tern");
+        done.expect("taken again, it goes through");
+        assert_eq!(
+            arrivals(&realm.started),
+            ["s-busy01", "s-naps02", "s-gone", QUEST],
+            "the one that landed unanswered starts once, joined when asked again: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_session_carried_again_after_it_started_asks_its_start_afresh() {
+        let mut realm = realm();
+        carried(&mut realm, "tern").0.expect("the first carry");
+        let first: Vec<Start> = std::mem::take(&mut realm.started);
+        assert!(
+            first.iter().all(|one| one.once.is_some()),
+            "each start is asked under a name: {first:?}"
+        );
+        // Back on skiff, and carried to tern again.
+        realm.sessions = vec![session("BUSY01", "skiff", QUEST, "busy", &json!({}))];
+        carried(&mut realm, "tern").0.expect("the second carry");
+        assert_eq!(arrivals(&realm.started), ["s-busy01"], "it starts again");
+        assert!(
+            first.iter().all(|one| one.once != realm.started[0].once),
+            "under a name the first carry's starts didn't have: {:?}",
+            realm.started[0].once
         );
     }
 

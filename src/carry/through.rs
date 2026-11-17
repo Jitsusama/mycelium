@@ -373,13 +373,21 @@ fn unstarted(handover: &Path) -> Result<Vec<Done>, String> {
         let Some(session) = named.strip_suffix(DONE) else {
             continue;
         };
-        if marked(&path, &handover.join(format!("{session}{STARTED}"))) {
+        let mark = handover.join(format!("{session}{STARTED}"));
+        if marked(&path, &mark) {
             continue;
         }
         let read =
             fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let one: Done = serde_json::from_str(&read)
+        let mut one: Done = serde_json::from_str(&read)
             .map_err(|error| format!("{} isn't a carry's done file: {error}", path.display()))?;
+        // When it was last marked started, to the nanosecond: a carry
+        // taken again before it starts sees the same, one since another.
+        one.started_before = fs::metadata(&mark)
+            .and_then(|file| file.modified())
+            .ok()
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since| since.as_nanos().to_string());
         done.push(one);
     }
     done.sort_by(|one, other| one.session.cmp(&other.session));
@@ -581,6 +589,42 @@ mod tests {
             ["s-first"],
             "a done file newer than its mark is a carry of its own"
         );
+    }
+
+    #[test]
+    fn a_carry_taken_again_sees_the_same_last_start_and_one_since_another() {
+        let handover = tempfile::tempdir().expect("a handover");
+        let handover = handover.path();
+        let before = || {
+            unstarted(handover)
+                .expect("read")
+                .into_iter()
+                .map(|one| one.started_before)
+                .collect::<Vec<_>>()
+        };
+        write_done(handover, "s-first");
+        assert_eq!(before(), [None], "never started from here");
+        mark_started(handover, "s-first").expect("marked");
+        let mark = handover.join("s-first.started");
+        let earlier = SystemTime::now() - Duration::from_secs(120);
+        fs::File::options()
+            .write(true)
+            .open(&mark)
+            .and_then(|file| file.set_modified(earlier))
+            .expect("marked before it was carried again");
+        write_done(handover, "s-first");
+        let first = before();
+        assert!(first[0].is_some(), "carried since it started: {first:?}");
+        write_done(handover, "s-first");
+        assert_eq!(before(), first, "the same, taken again before it starts");
+        mark_started(handover, "s-first").expect("marked");
+        fs::File::options()
+            .write(true)
+            .open(&mark)
+            .and_then(|file| file.set_modified(earlier + Duration::from_secs(60)))
+            .expect("marked again");
+        write_done(handover, "s-first");
+        assert_ne!(before(), first, "another once it started again");
     }
 
     /// What `session`'s cell brings, with one tie.

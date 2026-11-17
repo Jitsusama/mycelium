@@ -384,6 +384,7 @@ pub fn start(machine: &str, folder: Option<PathBuf>, seed: &Seed, from: Option<&
         command: command(&first_words(seed, from)),
         may_cost: false,
         carries: false,
+        once: None,
     }
 }
 

@@ -196,6 +196,13 @@ pub struct Start {
     /// says of it is never taken, so no agent's start is taken for a carry.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub carries: bool,
+    /// The asker's own name for this one start, which it asks again
+    /// under when no answer came: an ask under a name the same asker
+    /// already asked joins that start, landing or landed, rather than
+    /// starting and counting another. A node that knows no such name
+    /// passes over it and starts each ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub once: Option<String>,
 }
 
 /// New work to start a session on: the session's first words come from
