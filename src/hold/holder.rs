@@ -1335,11 +1335,6 @@ mod tests {
     /// may fall behind by, which reads of up to 8 KB make 8 MB.
     const FLOODED_WITHIN: Duration = Duration::from_secs(300);
 
-    /// Waits until `path` exists, failing past the test's patience.
-    async fn appears(path: &Path) {
-        appears_within(path, PATIENCE).await;
-    }
-
     /// Waits until `path` exists, failing past `patience`.
     async fn appears_within(path: &Path, patience: Duration) {
         let mut look = tokio::time::interval(Duration::from_millis(20));
