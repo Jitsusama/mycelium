@@ -1438,14 +1438,41 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
 const SAID_MOST: u64 = 256 * 1024;
 
 /// What a message says: `text` as given, or what `input` holds where
-/// `text` is `-`, or left out while `input` isn't a `terminal`.
+/// `text` is `-`, or left out while `input` isn't a `terminal`, its last
+/// line's end left off. Words read so never sit in a command line, which
+/// every process on the machine can read.
 ///
 /// # Errors
 ///
-/// Not yet written.
-fn said_text(text: Option<String>, _input: impl io::Read, _terminal: bool) -> io::Result<String> {
-    let _ = SAID_MOST;
-    text.ok_or_else(|| io::Error::other("nothing is said"))
+/// When `text` is left out at a terminal, input can't be read, isn't
+/// UTF-8, holds nothing, or holds more than [`SAID_MOST`].
+fn said_text(text: Option<String>, input: impl io::Read, terminal: bool) -> io::Result<String> {
+    use std::io::Read as _;
+    let refused = |why: &str| io::Error::new(io::ErrorKind::InvalidInput, why.to_owned());
+    match text {
+        Some(text) if text != "-" => return Ok(text),
+        None if terminal => {
+            return Err(refused(
+                "say what is said with --text, or on standard input",
+            ));
+        }
+        _ => {}
+    }
+    let mut read = String::new();
+    input.take(SAID_MOST + 1).read_to_string(&mut read)?;
+    if u64::try_from(read.len()).unwrap_or(u64::MAX) > SAID_MOST {
+        return Err(refused(&format!(
+            "what is said on standard input is over {} KB",
+            SAID_MOST / 1024
+        )));
+    }
+    let said = read.strip_suffix('\n').map_or(read.as_str(), |line| {
+        line.strip_suffix('\r').unwrap_or(line)
+    });
+    if said.is_empty() {
+        return Err(refused("nothing is said on standard input"));
+    }
+    Ok(said.to_owned())
 }
 
 fn steer(socket: &Path, address: String) -> io::Result<()> {
