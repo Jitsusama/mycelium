@@ -8352,6 +8352,23 @@ esac
         );
     }
 
+    /// Reads what `watching` is told until it has listed each of `keys`.
+    async fn until_listed(watching: &mut Speaking, keys: &[&str]) {
+        let mut listed = HashSet::new();
+        while listed.len() < keys.len() {
+            let said = watching.next().await;
+            for record in ["records", "changed"]
+                .iter()
+                .filter_map(|field| said[*field].as_array())
+                .flatten()
+            {
+                if let Some(key) = record["key"].as_str().filter(|key| keys.contains(key)) {
+                    listed.insert(key.to_owned());
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn a_session_here_that_ended_on_an_orchestrated_quest_is_told_while_the_quest_is_active()
     {
@@ -8390,7 +8407,7 @@ esac
         };
         serve(&quests);
         client.next().await;
-        let mut sessions = Speaking::to(&socket).await;
+        let mut sessions = Speaking::greeted(&socket).await;
         sessions
             .ask(json!({"id": 4, "ask": "watch", "kind": "session"}))
             .await;
@@ -8401,19 +8418,7 @@ esac
         store.start_here("sleeper", presence("sleeper", "parked"), false);
         // The node holds both before the ended kind is first built, so
         // that build is when it first sees them end.
-        let mut held = HashSet::new();
-        while held.len() < 2 {
-            let said = sessions.next().await;
-            for record in ["records", "changed"]
-                .iter()
-                .filter_map(|field| said[*field].as_array())
-                .flatten()
-            {
-                if let Some(key @ ("session:napper" | "session:sleeper")) = record["key"].as_str() {
-                    held.insert(key.to_owned());
-                }
-            }
-        }
+        until_listed(&mut sessions, &["session:napper", "session:sleeper"]).await;
 
         client
             .ask(json!({"id": 2, "ask": "watch", "kind": "ended"}))

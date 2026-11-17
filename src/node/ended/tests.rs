@@ -241,7 +241,10 @@ fn an_end_is_told_only_while_nobody_works_its_quest_and_settles_anew_after() {
         ids(&stopped, NOW + 2 * SETTLED_AFTER).is_empty(),
         "work stopping again settles before it's told"
     );
-    assert!(ids(&stopped, NOW + 3 * SETTLED_AFTER - 1).is_empty());
+    assert_eq!(
+        ids(&stopped, NOW + 3 * SETTLED_AFTER - 1),
+        Vec::<String>::new()
+    );
     assert_eq!(
         ids(&stopped, NOW + 3 * SETTLED_AFTER),
         ["gone01"],
