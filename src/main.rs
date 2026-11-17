@@ -35,6 +35,15 @@ use mycelium::web::Said;
 use mycelium::wire::{Draft, Ran, Reply, Request, Response, Run, Start};
 use mycelium::{carry, hold, hosted_attach, install, link, node, place, rejoin, served};
 
+/// Says a line on stderr as `eprintln!` does, but never panics where
+/// nobody reads it any more, as a caller's `2>&1 | head` leaves it, so the
+/// exit code the command means still reaches its caller.
+macro_rules! tell {
+    ($($said:tt)*) => {{
+        let _ = writeln!(io::stderr().lock(), $($said)*);
+    }};
+}
+
 /// The widest a line of any command's help is drawn, so it reads in a
 /// narrow pane.
 const HELP_WIDTH: usize = 60;
@@ -1209,7 +1218,7 @@ fn main() -> ExitCode {
         Err(error) => {
             // Said where nobody reads any more, as a caller's `2>&1 | head`
             // leaves it, the failure still ends as one rather than a panic.
-            let _ = writeln!(io::stderr().lock(), "mycelium: {error}");
+            tell!("mycelium: {error}");
             ExitCode::FAILURE
         }
     }
@@ -1534,7 +1543,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
             every: carry::easing::EVERY,
         }),
     };
-    eprintln!(
+    tell!(
         "mycelium: {}",
         mycelium::declared::said_at_start(&declared, &given.runs.declarers)
     );
@@ -1614,7 +1623,7 @@ fn serve_link(
                 ended.map(|_| ())
             }
             newer = install::replaced(running) => {
-                eprintln!("{} is installed now, so this link ends for it", newer.display());
+                tell!("{} is installed now, so this link ends for it", newer.display());
                 Ok(())
             }
         }
@@ -1652,7 +1661,7 @@ fn keep_refused(state: &Path, from: &str, original: Option<&str>, why: &str) {
         .open(state.join("refused-keys.jsonl"))
         .and_then(|mut file| writeln!(file, "{line}"));
     if let Err(error) = kept {
-        eprintln!("mycelium: the refusal wasn't kept: {error}");
+        tell!("mycelium: the refusal wasn't kept: {error}");
     }
 }
 
@@ -1749,11 +1758,11 @@ fn balance(socket: &Path, realm: &str, asked: BalanceAsked) -> io::Result<()> {
                 // The latest whole is for a node to serve; missing it a
                 // minute loses nothing the day's line doesn't keep.
                 if let Err(error) = mycelium::balance::keep_latest(&kept, &reading) {
-                    eprintln!("mycelium balance: couldn't keep the latest reading: {error}");
+                    tell!("mycelium balance: couldn't keep the latest reading: {error}");
                 }
                 print(&reading)?;
             }
-            Err(error) => eprintln!("mycelium balance: couldn't read the node: {error}"),
+            Err(error) => tell!("mycelium balance: couldn't read the node: {error}"),
         }
         std::thread::sleep(BALANCE_EVERY);
     }
@@ -2228,7 +2237,7 @@ fn run_there(socket: &Path, asked: Running) -> io::Result<ExitCode> {
         Ok(Response::Running { .. }) => {}
         Ok(other) => return Err(io::Error::other(format!("the node answered {other:?}"))),
         Err(why) => {
-            eprintln!("mycelium: {why}");
+            tell!("mycelium: {why}");
             return Ok(ExitCode::from(DIDNT_RUN));
         }
     }
@@ -2248,11 +2257,11 @@ fn run_there(socket: &Path, asked: Running) -> io::Result<ExitCode> {
                 return Ok(ExitCode::from(u8::try_from(code).unwrap_or(DIDNT_RUN)));
             }
             Some(Ran::Failed(why)) => {
-                eprintln!("mycelium: {why}");
+                tell!("mycelium: {why}");
                 return Ok(ExitCode::from(DIDNT_RUN));
             }
             None => {
-                eprintln!("mycelium: the node hung up before the run ended");
+                tell!("mycelium: the node hung up before the run ended");
                 return Ok(ExitCode::from(DIDNT_RUN));
             }
         }
@@ -2355,7 +2364,7 @@ fn attach(dir: &Path, id: &str) -> io::Result<()> {
     // press now.
     runtime.shutdown_background();
     joined?;
-    eprintln!("mycelium: the session held as {id} has ended");
+    tell!("mycelium: the session held as {id} has ended");
     Ok(())
 }
 
@@ -2382,11 +2391,11 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
     runtime.shutdown_background();
     let left = left?;
     match &left {
-        hosted_attach::Left::Detached(why) => eprintln!("mycelium: {why}"),
+        hosted_attach::Left::Detached(why) => tell!("mycelium: {why}"),
         hosted_attach::Left::Released => {
-            eprintln!("mycelium: the pi host {host} let the conversation go back to plain pi");
+            tell!("mycelium: the pi host {host} let the conversation go back to plain pi");
         }
-        hosted_attach::Left::Gone => eprintln!("mycelium: the pi host {host} has gone"),
+        hosted_attach::Left::Gone => tell!("mycelium: the pi host {host} has gone"),
         // Joining here comes back from a suspend or a restart by itself.
         hosted_attach::Left::Suspended | hosted_attach::Left::Restarting => {}
     }
@@ -2620,13 +2629,20 @@ mod tests {
     }
 
     #[test]
-    fn a_line_its_reader_left_says_the_pipe_broke_so_the_answer_ends_quietly() {
-        let wrote = write_line(&mut Gone, &serde_json::json!({ "sessions": [1, 2, 3] }));
-        assert_eq!(
-            wrote.map_err(|error| error.kind()),
-            Err(io::ErrorKind::BrokenPipe),
-            "a broken pipe, not an error of its own, or `| head` reads as a failure"
-        );
+    fn a_line_its_reader_left_keeps_the_broken_pipe() {
+        // Past stdout's line buffer, as a realm's sessions are, the pipe
+        // breaks inside the JSON rather than at its newline.
+        let long = serde_json::json!({ "sessions": "s".repeat(4096) });
+        for wrote in [
+            write_line(&mut Gone, &long),
+            write_line(&mut io::LineWriter::new(Gone), &long),
+        ] {
+            assert_eq!(
+                wrote.map_err(|error| error.kind()),
+                Err(io::ErrorKind::BrokenPipe),
+                "a broken pipe, not an error of its own, or `| head` reads as a failure"
+            );
+        }
     }
 
     #[test]

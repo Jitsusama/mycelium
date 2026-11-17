@@ -40,8 +40,6 @@ The rest of the tests sit beside the code they prove, in `src/`.
   thousand and the time within five, against a target of 1.2; and the
   node's lock held within 5 ms to take the 50,000 messages it keeps
   for the fold
-- `said.rs`: a command's failure said to a pipe nobody reads any more
-  ending as a failure, not a panic
 - `shared.rs`: a quest shared and waited for, printing one JSON line
   however the wait ends and failing unless the machine holds it
 - `receptors.rs`: what `mycelium receptors say` leaves on disk, its
@@ -53,3 +51,5 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `ssh.rs`: what another machine's link key may run, as SSH runs it
 - `stopped.rs`: a node told to stop while a client watches it, letting
   go, taking its socket away and ending well
+- `unread.rs`: a command's failure said to a pipe nobody reads any more
+  ending as a failure, not a panic
