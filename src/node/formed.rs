@@ -46,6 +46,9 @@ impl Kept {
 /// The tree networks formed, by name, as kept in their file.
 pub struct Formed {
     file: PathBuf,
+    /// Whether what forms is written to `file`: not where what stood there
+    /// couldn't be read or moved aside, so it is left for the next start.
+    keeps: bool,
     held: Mutex<BTreeMap<String, Kept>>,
     /// Told each time what has formed changes.
     said: watch::Sender<u64>,
@@ -61,27 +64,30 @@ impl Formed {
 
     /// What `file` says has formed, nothing where it doesn't exist yet or
     /// can't be read, since a network lost only shows again once two
-    /// cells share its tree.
+    /// cells share its tree. One that doesn't parse is moved aside first,
+    /// so what it held can still be seen once it is written anew. One that
+    /// can't be opened, or moved aside, is left where it is and never
+    /// written, since a read that failed may pass at the next start: what
+    /// forms is then kept only while the node runs.
     pub fn at(file: PathBuf) -> Self {
-        let held = match fs::read(&file) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-                eprintln!(
-                    "{} can't be read ({error}); no network is formed",
-                    file.display()
-                );
-                BTreeMap::new()
-            }),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => BTreeMap::new(),
+        let (held, keeps) = match fs::read(&file) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(held) => (held, true),
+                Err(error) => (BTreeMap::new(), set_aside(&file, &error.to_string())),
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (BTreeMap::new(), true),
             Err(error) => {
                 eprintln!(
-                    "{} can't be read ({error}); no network is formed",
+                    "{} can't be read ({error}); no network is formed from it, and it is \
+                     left as it is, so what forms is kept only while the node runs",
                     file.display()
                 );
-                BTreeMap::new()
+                (BTreeMap::new(), false)
             }
         };
         Self {
             file,
+            keeps,
             held: Mutex::new(held),
             said: watch::Sender::new(0),
         }
@@ -137,7 +143,10 @@ impl Formed {
             changed |= !stays;
             stays
         });
-        if changed && let Err(error) = keep(&self.file, &held) {
+        if changed
+            && self.keeps
+            && let Err(error) = keep(&self.file, &held)
+        {
             eprintln!(
                 "{} can't be kept ({error}); a restart forgets what formed or faded since",
                 self.file.display()
@@ -173,11 +182,54 @@ impl Formed {
     }
 }
 
-/// Writes `held` to `file` whole, beside it first and renamed into place,
-/// so a reader never finds it half written.
+/// Moves `file`, which doesn't parse for `why`, aside beside it as
+/// `<file>.bad.<millis>`, a name no earlier one holds, saying so, since the
+/// next network to form or fade would write over it. Says whether it
+/// moved, and so whether `file` may be written.
+fn set_aside(file: &Path, why: &str) -> bool {
+    let millis = jiff::Timestamp::now().as_millisecond();
+    let named = |n: u32| {
+        let mut aside = file.as_os_str().to_owned();
+        aside.push(format!(".bad.{millis}"));
+        if n > 0 {
+            aside.push(format!("-{n}"));
+        }
+        PathBuf::from(aside)
+    };
+    // Two set aside in one millisecond would take a hundred node starts.
+    let free = (0..100).map(named).find(|aside| !aside.exists());
+    match free.map_or_else(
+        || Err(io::Error::other("every name beside it is taken")),
+        |aside| fs::rename(file, &aside).map(|()| aside),
+    ) {
+        Ok(aside) => {
+            eprintln!(
+                "{} can't be read ({why}); no network is formed from it, and it is kept as {}",
+                file.display(),
+                aside.display()
+            );
+            true
+        }
+        Err(error) => {
+            eprintln!(
+                "{} can't be read ({why}); no network is formed from it, and it can't be \
+                 kept aside ({error}), so it is left as it is and what forms is kept only \
+                 while the node runs",
+                file.display()
+            );
+            false
+        }
+    }
+}
+
+/// Writes `held` to `file` whole, beside it first, flushed to the disk and
+/// renamed into place, so a reader never finds it half written, even after
+/// the machine stops at once.
 fn keep(file: &Path, held: &BTreeMap<String, Kept>) -> io::Result<()> {
     let beside = file.with_extension("json.new");
-    fs::write(&beside, serde_json::to_vec(held)?)?;
+    let mut written = fs::File::create(&beside)?;
+    io::Write::write_all(&mut written, &serde_json::to_vec(held)?)?;
+    written.sync_all()?;
     fs::rename(&beside, file)
 }
 
@@ -227,6 +279,74 @@ mod tests {
                 &json!(start + 1)
             ),
             "kept as when it formed: {fields}"
+        );
+    }
+
+    /// What each file set aside beside `dir`'s `formed.json` holds.
+    fn set_aside(dir: &Path) -> Vec<Vec<u8>> {
+        let mut aside: Vec<PathBuf> = fs::read_dir(dir)
+            .expect("it reads")
+            .map(|entry| entry.expect("an entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("formed.json.bad"))
+            })
+            .collect();
+        aside.sort();
+        aside
+            .iter()
+            .map(|path| fs::read(path).expect("it reads"))
+            .collect()
+    }
+
+    #[test]
+    fn a_file_that_cant_be_read_is_kept_aside_before_anything_writes() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let file = dir.path().join("formed.json");
+        let torn = br#"{"tree.github:harbour/oars:jsama/tides":{"at":17"#;
+        fs::write(&file, torn).expect("a torn file");
+        let formed = Formed::at(file.clone());
+        let start = 1_763_300_000_000;
+        assert!(formed.names(start).is_empty(), "nothing is read from it");
+        assert!(formed.saw(&holding(&[(TIDES, 2)]), start));
+        assert_eq!(
+            set_aside(dir.path()),
+            vec![torn.to_vec()],
+            "what was lost can still be seen once a network forms anew"
+        );
+        assert_eq!(
+            Formed::at(file.clone()).names(start),
+            BTreeSet::from([TIDES.to_owned()]),
+            "and the file holds what formed since"
+        );
+        fs::write(&file, b"also torn").expect("a second torn file");
+        Formed::at(file);
+        assert_eq!(
+            set_aside(dir.path()),
+            vec![torn.to_vec(), b"also torn".to_vec()],
+            "a second is kept beside the first, never over it"
+        );
+    }
+
+    #[test]
+    fn a_file_that_cant_be_opened_is_left_where_it_is_and_never_written() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let file = dir.path().join("formed.json");
+        fs::create_dir(&file).expect("a folder where the file goes");
+        let formed = Formed::at(file.clone());
+        let start = 1_763_300_000_000;
+        assert!(formed.saw(&holding(&[(TIDES, 2)]), start));
+        assert_eq!(
+            formed.names(start),
+            BTreeSet::from([TIDES.to_owned()]),
+            "it forms while the node runs"
+        );
+        assert!(file.is_dir(), "what stood there is left as it was");
+        assert!(set_aside(dir.path()).is_empty(), "and not moved aside");
+        assert!(
+            !dir.path().join("formed.json.new").exists(),
+            "nor written beside, since a read that failed may pass next start"
         );
     }
 
