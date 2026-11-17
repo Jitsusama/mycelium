@@ -52,8 +52,9 @@ const LONGEST_WAITING: u64 = 256 * 1024;
 /// How often every quest held is looked at again, for a change a watch
 /// missed, and the quests no cell works on any more let go.
 const ROUND: Duration = Duration::from_secs(300);
-/// How often a waiting folder no watch hears is read again, so a wait
-/// reaches its person within moments even on a machine past its watches.
+/// How often the waiting folder is looked at, as a watch can miss it made
+/// or removed, and one no watch hears read again, so a wait reaches its
+/// person within moments even on a machine past its watches.
 const HARK: Duration = Duration::from_secs(5);
 
 /// One document of a quest, as its front matter and its checkboxes say.
@@ -657,9 +658,16 @@ struct WaitingFolder {
     /// change at instead, and which folder it is, by device and inode, so
     /// one removed and made anew is heard anew.
     heard: Option<(PathBuf, (u64, u64))>,
+    /// The files the folder held when last read, said again once they're
+    /// gone, so a quest whose file went reads its waits again however it
+    /// went: removed alone, with the folder, or with no watch hearing.
+    files: BTreeSet<PathBuf>,
     /// Whether the folder was read with no watch hearing it, so is read
-    /// again each round rather than each turn, which would never wait.
+    /// again each hark rather than each turn, which would never wait.
     deaf: bool,
+    /// Whether the next turn reads the folder again and listens to it
+    /// afresh, though it seems the same folder.
+    again: bool,
     /// Whether a watch hears the folder's parent, as it does while the
     /// folder isn't there, to hear it made.
     awaited: bool,
@@ -676,28 +684,29 @@ impl WaitingFolder {
         Self {
             folder,
             heard: None,
+            files: BTreeSet::new(),
             deaf: false,
+            again: false,
             awaited: false,
         }
     }
 
-    /// Listens afresh on the next turn wherever no watch may hear: a
-    /// folder read unheard is read again, and its parent heard again, as
-    /// a watch on it may have died with no word.
+    /// Reads the folder again and listens to it afresh on the next turn,
+    /// as a watch may have died with no word, or one remade on the same
+    /// inode never been heard; and hears a missing folder's parent anew.
     fn round(&mut self) {
-        if self.deaf {
-            self.heard = None;
-            self.deaf = false;
-        }
+        self.again = self.heard.is_some();
         if self.heard.is_none() {
             self.awaited = false;
         }
     }
 
-    /// Whether no watch hears the folder, nor its parent while it's
-    /// missing, so it is read again every hark rather than every round.
-    fn unheard(&self) -> bool {
-        self.folder.is_some() && (self.deaf || (self.heard.is_none() && !self.awaited))
+    /// Reads a folder no watch hears again on the next turn. The turn
+    /// also looks whether the folder came or went, as a watch can miss
+    /// either, as a Mac's was seen to; a watch on a missing folder's
+    /// parent is left as it is.
+    fn hark(&mut self) {
+        self.again = self.again || self.deaf;
     }
 
     /// The quests `held` holds whose waiting file is among `touched`.
@@ -716,10 +725,10 @@ impl WaitingFolder {
             .collect()
     }
 
-    /// Forgets the watch on the folder when `touched` holds the folder
-    /// itself, as when it is removed or made: a watch dies with its folder,
-    /// and one made anew may take the same inode, so only a change heard
-    /// says to listen afresh.
+    /// Reads the folder again and listens to it afresh when `touched`
+    /// holds the folder itself, as when it is removed or made: a watch
+    /// dies with its folder, one made anew may take the same inode, and a
+    /// Mac may say the folder for a change to its files.
     fn heard_of(&mut self, touched: &[PathBuf]) {
         let Some(folder) = &self.folder else {
             return;
@@ -729,14 +738,15 @@ impl WaitingFolder {
             .iter()
             .any(|path| path == folder || real.is_some_and(|real| path == real))
         {
-            self.heard = None;
+            self.again = true;
         }
     }
 
     /// Has `watcher` hear the folder as it stands: the folder while it's
     /// there, its parent while it isn't, and a folder made anew afresh.
-    /// Says the files in a folder heard anew, which may have been written
-    /// before any watch heard them.
+    /// Says the files in a folder read anew, which may have been written
+    /// before any watch heard them, and those it held when last read and
+    /// holds no longer.
     fn listen(&mut self, watcher: &mut impl notify::Watcher) -> Vec<PathBuf> {
         let Some(folder) = &self.folder else {
             return Vec::new();
@@ -747,8 +757,9 @@ impl WaitingFolder {
             .map(|meta| (meta.dev(), meta.ino()));
         let parent = folder.parent().filter(|parent| parent.is_dir());
         match (&self.heard, now) {
-            (Some((_, was)), Some(now)) if *was == now => Vec::new(),
+            (Some((_, was)), Some(now)) if *was == now && !self.again => Vec::new(),
             (_, Some(now)) => {
+                self.again = false;
                 // A watch on a folder since removed is gone or stale.
                 let _ = watcher.unwatch(folder);
                 self.deaf = watcher
@@ -762,18 +773,24 @@ impl WaitingFolder {
                     let _ = watcher.unwatch(parent);
                     self.awaited = false;
                 }
-                fs::read_dir(folder)
+                let files: BTreeSet<PathBuf> = fs::read_dir(folder)
                     .map(|entries| {
                         entries
                             .filter_map(Result::ok)
                             .map(|entry| folder.join(entry.file_name()))
                             .collect()
                     })
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                let said = files.union(&self.files).cloned().collect();
+                self.files = files;
+                said
             }
             (_, None) => {
+                // The files of a folder now gone are said, so their quests
+                // read their waits again, whether or not a watch heard.
                 self.heard = None;
                 self.deaf = false;
+                self.again = false;
                 if !self.awaited
                     && let Some(parent) = parent
                 {
@@ -781,7 +798,7 @@ impl WaitingFolder {
                         .watch(parent, notify::RecursiveMode::NonRecursive)
                         .is_ok();
                 }
-                Vec::new()
+                std::mem::take(&mut self.files).into_iter().collect()
             }
         }
     }
@@ -867,10 +884,11 @@ pub async fn keep(
                 }
                 continue;
             }
-            _ = harks.tick(), if waiting.unheard() => {
-                // A folder no watch hears, as on a machine past its
-                // watches, is read again on the next turn.
-                waiting.round();
+            _ = harks.tick(), if waiting.folder.is_some() && watcher.is_some() => {
+                // The next turn looks whether the folder came or went, and
+                // reads one no watch hears again, as on a machine past its
+                // watches.
+                waiting.hark();
             }
             _ = rounds.tick() => {
                 waiting.round();
@@ -1982,16 +2000,188 @@ mod tests {
         );
         waiting.round();
         assert_eq!(waiting.listen(&mut Deaf), file, "read again each round");
-        assert!(waiting.unheard(), "a folder no watch hears is harked to");
-        fs::remove_dir_all(&folder).expect("removed");
-        waiting.listen(&mut Deaf);
-        assert!(
-            waiting.unheard(),
-            "a folder whose parent no watch hears too"
+        waiting.hark();
+        assert_eq!(waiting.listen(&mut Deaf), file, "read again each hark");
+        fs::remove_file(&file[0]).expect("removed");
+        waiting.hark();
+        assert_eq!(
+            waiting.listen(&mut Deaf),
+            file,
+            "a file gone from a folder no watch hears is said"
         );
-        assert!(
-            !WaitingFolder::of(&Held::default()).unheard(),
-            "a node reading no waits harks to nothing"
+        waiting.hark();
+        assert_eq!(waiting.listen(&mut Deaf), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn a_waiting_folder_read_unheard_and_removed_is_said_gone() {
+        let mission = Store::new("waits-deaf-gone");
+        mission.write("waiting/KESTRL.json", "{}");
+        let folder = mission.0.join("waiting");
+        let held: Held = Arc::new(Mutex::new(Shelf::with_waits(folder.clone())));
+        let mut waiting = WaitingFolder::of(&held);
+        let file = vec![folder.join("KESTRL.json")];
+        assert_eq!(waiting.listen(&mut Deaf), file);
+        waiting.hark();
+        fs::remove_dir_all(&folder).expect("removed");
+        assert_eq!(waiting.listen(&mut Deaf), file, "its files said gone");
+    }
+
+    /// A watcher that takes every watch and tells nothing, keeping what it
+    /// was asked, as one that misses a change, as a Mac's was seen to.
+    #[derive(Default)]
+    struct Asked(Vec<String>);
+
+    impl notify::Watcher for Asked {
+        fn new<F: notify::EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self::default())
+        }
+
+        fn watch(&mut self, path: &Path, _: notify::RecursiveMode) -> notify::Result<()> {
+            self.0.push(format!("watch {}", path.display()));
+            Ok(())
+        }
+
+        fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+            self.0.push(format!("unwatch {}", path.display()));
+            Ok(())
+        }
+
+        fn kind() -> notify::WatcherKind {
+            notify::WatcherKind::NullWatcher
+        }
+    }
+
+    #[test]
+    fn a_hark_leaves_a_missing_folders_parent_heard() {
+        let mission = Store::new("waits-parent");
+        let folder = mission.0.join("waiting");
+        let held: Held = Arc::new(Mutex::new(Shelf::with_waits(folder.clone())));
+        let mut waiting = WaitingFolder::of(&held);
+        let mut asked = Asked::default();
+        waiting.listen(&mut asked);
+        assert_eq!(asked.0, vec![format!("watch {}", mission.0.display())]);
+        waiting.hark();
+        waiting.listen(&mut asked);
+        assert_eq!(asked.0.len(), 1, "the parent's watch kept: {:?}", asked.0);
+    }
+
+    #[test]
+    fn a_waiting_folder_replaced_unheard_says_the_files_it_lost() {
+        let mission = Store::new("waits-replaced");
+        mission.write("waiting/KESTRL.json", "{}");
+        let folder = mission.0.join("waiting");
+        let held: Held = Arc::new(Mutex::new(Shelf::with_waits(folder.clone())));
+        let mut waiting = WaitingFolder::of(&held);
+        assert_eq!(waiting.listen(&mut Mute), vec![folder.join("KESTRL.json")]);
+        // Held open, the old folder's inode can't be the new one's.
+        let old = mission.0.join("old");
+        fs::rename(&folder, &old).expect("moved");
+        mission.write("waiting/OSPREY.json", "{}");
+        assert_eq!(
+            waiting.listen(&mut Mute),
+            vec![folder.join("KESTRL.json"), folder.join("OSPREY.json")],
+            "the new file and the one gone"
+        );
+    }
+
+    #[test]
+    fn an_event_at_the_waiting_folder_reads_it_again() {
+        let mission = Store::new("waits-said");
+        mission.write("waiting/KESTRL.json", "{}");
+        let folder = mission.0.join("waiting");
+        let held: Held = Arc::new(Mutex::new(Shelf::with_waits(folder.clone())));
+        let mut waiting = WaitingFolder::of(&held);
+        let file = vec![folder.join("KESTRL.json")];
+        assert_eq!(waiting.listen(&mut Mute), file);
+        assert_eq!(waiting.listen(&mut Mute), Vec::<PathBuf>::new());
+        waiting.heard_of(std::slice::from_ref(&folder));
+        assert_eq!(
+            waiting.listen(&mut Mute),
+            file,
+            "read again, not every quest"
+        );
+    }
+
+    /// A watcher that takes every watch and tells nothing, as one that
+    /// misses a change, as a Mac's was seen to miss a folder made late.
+    struct Mute;
+
+    impl notify::Watcher for Mute {
+        fn new<F: notify::EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self)
+        }
+
+        fn watch(&mut self, _: &Path, _: notify::RecursiveMode) -> notify::Result<()> {
+            Ok(())
+        }
+
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+            Ok(())
+        }
+
+        fn kind() -> notify::WatcherKind {
+            notify::WatcherKind::NullWatcher
+        }
+    }
+
+    #[test]
+    fn a_missing_waiting_folder_is_looked_for_though_its_parent_is_heard() {
+        let mission = Store::new("waits-missed");
+        let folder = mission.0.join("waiting");
+        let held: Held = Arc::new(Mutex::new(Shelf::with_waits(folder.clone())));
+        let mut waiting = WaitingFolder::of(&held);
+        assert_eq!(waiting.listen(&mut Mute), Vec::<PathBuf>::new());
+        mission.write("waiting/KESTRL.json", "{}");
+        assert_eq!(
+            waiting.listen(&mut Mute),
+            vec![folder.join("KESTRL.json")],
+            "read once it's found"
+        );
+    }
+
+    #[test]
+    fn a_waiting_folder_removed_unheard_has_its_quests_read_again() {
+        let store = Store::new("waits-gone-quests");
+        store.write("QEST-20261116-KESTRL/README.md", README);
+        let mission = Store::new("waits-gone");
+        let folder = mission.0.join("waiting");
+        let perch = json!([{"id": "perch", "title": "Watch the river"}]);
+        mission.write(
+            "waiting/KESTRL.json",
+            &waiting("QEST-20261116-KESTRL", &perch),
+        );
+        let held: Held = Arc::new(Mutex::new(Shelf::with_waits(folder.clone())));
+        held.lock()
+            .expect("held")
+            .read(&store.0, "QEST-20261116-KESTRL");
+        assert_eq!(
+            held.lock()
+                .expect("held")
+                .quest("QEST-20261116-KESTRL")
+                .map(|quest| quest.waits.len()),
+            Some(1),
+            "its wait read"
+        );
+        let mut waiting = WaitingFolder::of(&held);
+        assert_eq!(waiting.listen(&mut Mute), vec![folder.join("KESTRL.json")]);
+        fs::remove_dir_all(&folder).expect("removed");
+        let touched = waiting.listen(&mut Mute);
+        assert_eq!(
+            touched,
+            vec![folder.join("KESTRL.json")],
+            "its file said gone"
+        );
+        let due = waiting.changed(&held, &touched);
+        assert_eq!(due, vec!["QEST-20261116-KESTRL".to_owned()]);
+        let mut holding = held.lock().expect("held");
+        holding.read(&store.0, "QEST-20261116-KESTRL");
+        assert_eq!(
+            holding
+                .quest("QEST-20261116-KESTRL")
+                .map(|quest| quest.waits.len()),
+            Some(0),
+            "its waits are gone with their file"
         );
     }
 
