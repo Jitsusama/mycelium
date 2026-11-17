@@ -3,6 +3,10 @@
 //! Quickshell read the socket themselves; nothing here is how a person uses
 //! the network.
 
+// Everything said here goes through `tell!` or a written line, so a reader
+// that left ends a command quietly or as a failure, never a panic.
+#![deny(clippy::print_stderr, clippy::print_stdout)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::os::fd::AsFd;
@@ -2252,7 +2256,12 @@ fn run_there(socket: &Path, asked: Running) -> io::Result<ExitCode> {
                 out.write_all(&piece(&said)?)?;
                 out.flush()?;
             }
-            Some(Ran::Err(said)) => io::stderr().lock().write_all(&piece(&said)?)?,
+            // What the run says on its stderr nobody may read any more, as
+            // a caller's `2>/dev/full` or a gone pipe leaves it; the run goes
+            // on regardless, so its own exit code still reaches the caller.
+            Some(Ran::Err(said)) => {
+                let _ = io::stderr().lock().write_all(&piece(&said)?);
+            }
             Some(Ran::Exited(code)) => {
                 return Ok(ExitCode::from(u8::try_from(code).unwrap_or(DIDNT_RUN)));
             }
