@@ -1597,7 +1597,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_queue_short_of_a_processor_only_weighs_against_what_isnt_a_build() {
-        // As equilibrius stood on 16 Nov: its queue said no build beside a
+        // As a Mac lent to builds stood on 16 Nov: its queue said no build beside a
         // VM test for want of a processor, while it was 43% busy.
         let kestrel = over(
             pressed(machine("kestrel", "macos", 40, &[]), 43.0),
