@@ -2352,13 +2352,13 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
     };
     let joining = started.attach.join(" ");
     if !asked_folder.is_some_and(|asked| started.folder.ends_with(asked)) {
-        eprintln!(
+        tell!(
             "mycelium sprout: {} began it in {}, not the folder asked; if that is its home, its guard ends it",
             started.machine,
             started.folder.display()
         );
     }
-    eprintln!(
+    tell!(
         "mycelium sprout: started on {} in {}; join it with: {joining}",
         started.machine,
         started.folder.display()
