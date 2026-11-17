@@ -279,8 +279,8 @@ pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String
     if let Some(spare) = runs.iter().find(|word| spares_a_tree(word)) {
         return Err(format!(
             "its {kind} sessions' launcher in {} says {spare}, which spares a tree shared \
-             to the asker; this node can't yet say which trees are shared, so it never asks \
-             that: take it out of the declaration",
+             to the asker; only the node asks that, of a run it found in such a tree: take \
+             it out of the declaration",
             file.display()
         ));
     }
@@ -305,11 +305,13 @@ fn spares_a_tree(word: &str) -> bool {
 /// `launcher`, words [`launcher`] gave, asking the fence to spare the work
 /// tree its run stands in: `--shared-tree` before the `--` that ends them.
 /// The node asks it only of a run it found, itself, in a tree of a quest
-/// shared with the machine that asks.
+/// shared with the machine that asks. Words with no `--` are left as they
+/// are, sparing nothing, since nowhere in them is the launcher's own.
 #[must_use]
 pub fn sparing(mut launcher: Vec<String>) -> Vec<String> {
-    let end = launcher.len().saturating_sub(1);
-    launcher.insert(end, SHARED_TREE.to_owned());
+    if let Some(end) = launcher.iter().rposition(|word| word == "--") {
+        launcher.insert(end, SHARED_TREE.to_owned());
+    }
     launcher
 }
 
@@ -837,8 +839,8 @@ mod tests {
                 launcher(&file, Kind::Strict, &declarers()),
                 Err(format!(
                     "its strictly fenced sessions' launcher in {} says {spare}, which spares \
-                     a tree shared to the asker; this node can't yet say which trees are \
-                     shared, so it never asks that: take it out of the declaration",
+                     a tree shared to the asker; only the node asks that, of a run it found \
+                     in such a tree: take it out of the declaration",
                     file.display()
                 )),
                 "{spare} is refused"
@@ -851,6 +853,31 @@ mod tests {
                 "{kept} spares nothing"
             );
         }
+    }
+
+    #[test]
+    fn a_spare_is_asked_among_the_launchers_own_options_or_not_at_all() {
+        let words = |words: &[&str]| {
+            words
+                .iter()
+                .map(|&word| word.to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sparing(words(&["/nix/store/pi-fence", "--kind", "strict", "--"])),
+            words(&[
+                "/nix/store/pi-fence",
+                "--kind",
+                "strict",
+                "--shared-tree",
+                "--"
+            ])
+        );
+        assert_eq!(
+            sparing(words(&["/nix/store/pi-fence", "--kind", "strict"])),
+            words(&["/nix/store/pi-fence", "--kind", "strict"]),
+            "with no -- to end its options, nothing is the launcher's own"
+        );
     }
 
     #[test]

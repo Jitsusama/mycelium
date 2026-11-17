@@ -57,6 +57,7 @@ impl Given {
             trees: crate::node::Trees {
                 root: PathBuf::from("/nowhere/trees"),
                 records: PathBuf::from("/nowhere/cut"),
+                sessions: PathBuf::from("/nowhere/sessions"),
             },
         }
     }
@@ -145,19 +146,36 @@ pub fn words(
     words
 }
 
+/// Where a run starts.
+#[derive(Debug)]
+pub enum Folder {
+    /// The folder at a path, entered by it.
+    At(PathBuf),
+    /// A folder the node opened to judge where the run stands, entered as
+    /// it is opened, wherever its path now leads.
+    Opened(std::os::fd::OwnedFd),
+}
+
+impl From<PathBuf> for Folder {
+    fn from(path: PathBuf) -> Self {
+        Self::At(path)
+    }
+}
+
 /// Runs `words`, the first the program, in `folder`, as `session` where
 /// the node proved that session asks, handing what it says to `ran` as it
 /// says it and then how it ended; stops it once `ran`'s reader lets go.
 pub async fn here(
     words: Vec<String>,
-    folder: PathBuf,
+    folder: impl Into<Folder>,
     session: Option<String>,
     ran: mpsc::Sender<Ran>,
 ) {
-    let ended = match command(&words, folder, session.as_deref()).and_then(|mut run| run.spawn()) {
-        Ok(child) => follow(child, &ran).await,
-        Err(error) => Some(Ran::Failed(format!("it didn't start: {error}"))),
-    };
+    let ended =
+        match command(&words, folder.into(), session.as_deref()).and_then(|mut run| run.spawn()) {
+            Ok(child) => follow(child, &ran).await,
+            Err(error) => Some(Ran::Failed(format!("it didn't start: {error}"))),
+        };
     if let Some(ended) = ended {
         // A reader that let go meanwhile hears nothing.
         let _ = ran.send(ended).await;
@@ -170,16 +188,33 @@ pub async fn here(
 /// stand in, is `session` alone, never the node's own.
 fn command(
     words: &[String],
-    folder: PathBuf,
+    folder: Folder,
     session: Option<&str>,
 ) -> io::Result<tokio::process::Command> {
     let (program, arguments) = words
         .split_first()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nothing to run"))?;
     let mut command = tokio::process::Command::new(program);
+    match folder {
+        Folder::At(path) => {
+            command.current_dir(path);
+        }
+        Folder::Opened(opened) => {
+            // The child enters the folder by what was opened, between its
+            // fork and its exec, so a link swapped since the node judged
+            // the folder leads it nowhere else. fchdir is one system call,
+            // safe there: it takes no lock and allocates nothing.
+            #[expect(
+                unsafe_code,
+                reason = "a child enters an opened folder only between fork and exec"
+            )]
+            unsafe {
+                command.pre_exec(move || rustix::process::fchdir(&opened).map_err(io::Error::from));
+            }
+        }
+    }
     command
         .args(arguments)
-        .current_dir(folder)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -431,7 +466,8 @@ mod tests {
     fn a_run_never_inherits_the_nodes_own_session() {
         let words = sh("true");
         let envs = |session| {
-            let run = command(&words, std::env::temp_dir(), session).expect("words to run");
+            let run =
+                command(&words, Folder::At(std::env::temp_dir()), session).expect("words to run");
             run.as_std()
                 .get_envs()
                 .filter(|(key, _)| *key == "PI_SESSION_ID")
@@ -456,6 +492,44 @@ mod tests {
         assert!(
             matches!(&ended, Ran::Failed(why) if why.starts_with("it didn't start")),
             "{ended:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_in_an_opened_folder_starts_there_wherever_its_path_now_leads() {
+        use rustix::fs::{Mode, OFlags};
+        use std::fs;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let judged = dir.path().join("judged");
+        fs::create_dir(&judged).expect("made");
+        let opened = rustix::fs::open(
+            &judged,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect("opened");
+        // Its path now leads elsewhere, as a swapped link would leave it.
+        let moved = dir.path().join("moved");
+        fs::rename(&judged, &moved).expect("moved");
+        fs::create_dir(&judged).expect("made again");
+        let (ran, mut said) = mpsc::channel(BACKLOG);
+        tokio::spawn(here(sh("pwd -P"), Folder::Opened(opened), None, ran));
+        let mut out = Vec::new();
+        loop {
+            match tokio::time::timeout(PATIENCE, said.recv())
+                .await
+                .expect("the run says more")
+                .expect("the run ends with its end")
+            {
+                Ran::Out(piece) => out.extend(bytes(&piece).expect("base64")),
+                Ran::Exited(0) => break,
+                other => panic!("it ran amiss: {other:?}"),
+            }
+        }
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            format!("{}\n", moved.canonicalize().expect("it resolves").display()),
+            "it started in the folder opened, not the one its path now names"
         );
     }
 

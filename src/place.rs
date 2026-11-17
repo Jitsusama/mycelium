@@ -158,15 +158,15 @@ pub fn waiting() -> PathBuf {
 }
 
 /// Where the harness's work broker on this machine cuts its work trees,
-/// a folder a tree, and records the sessions holding each.
+/// a folder a tree, and records the sessions holding each, and where pi
+/// records the quest each session works.
 pub fn trees() -> crate::node::Trees {
-    let work = state_home()
-        .join("pi")
-        .join("agentic-harness.pi")
-        .join("work");
+    let harness = state_home().join("pi").join("agentic-harness.pi");
+    let work = harness.join("work");
     crate::node::Trees {
         root: work.join("trees"),
         records: work.join("cut"),
+        sessions: harness.join("quest-workflow").join("sessions"),
     }
 }
 

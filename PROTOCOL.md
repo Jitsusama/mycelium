@@ -1564,11 +1564,16 @@ machine declaring no `runs` for it refuses it, as does one whose
 of it, as a word of its own refuses every run, so pi-fence refuses a
 run started in a work tree its asker doesn't hold. Only the node says
 it, before the `--`, and only for an agent's run another machine
-asked, whose folder, its links and `..` followed as this machine
-finds them, lies in a work tree a session of a quest holds, as the
-work broker records it, where that quest's ledger names the asking
-machine; the run starts there. Any other run from another machine
-starting in a work tree is refused, saying why, and runs nothing. A
+asked, whose folder, opened and named as the kernel names the open
+folder, lies in a work tree the work broker records a session as
+holding, where pi's own record of that session here says it works a
+quest whose ledger names the asking machine. Nothing a share carries
+in, a README's sessions or trees among it, binds a tree to a quest,
+and a quest shared only as one above another spares none. The run
+starts in the folder opened, not by its path again, so a link
+swapped since leads it nowhere else, and the record of runs keeps
+the quest as `spared`. Any other run from another machine starting
+in a work tree is refused, saying why, and runs nothing. A
 run a client here says another machine asked is refused where the
 client is an agent's, as for `by`, since only a link that machine
 dialled says so. A run is told no
@@ -1593,7 +1598,8 @@ up stops it: its process group is sent the terminate signal, then the
 kill signal if any of it still runs 10 seconds on. Each machine a run
 crosses keeps it in `runs.jsonl` in mycelium's folder, and logs each
 line: `{"run", "at", "by", "sessions", "from", "on", "folder",
-"command"}` as it starts, then `{"run", "at", "ended"}`, the last `Ran`
+"command", "spared"}` as it starts, `"spared"` only where the node
+spared it a shared quest's tree, then `{"run", "at", "ended"}`, the last `Ran`
 or `{"Stopped": why}` where its asker let go.
 `mycelium run` prints what it writes as it comes and exits with its
 code, or 255 when it couldn't run.
