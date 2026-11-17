@@ -2615,9 +2615,19 @@ impl<S: Store> Shared<S> {
     /// yet show. A `start` placed is kept as one, under the same lock, so
     /// a burst of asks spreads rather than piling on whichever led. Each
     /// placement is kept in its log, where it keeps one, once the lock is
-    /// let go.
-    fn place(&self, work: &Work, start: bool) -> Placement {
+    /// let go. Work an agent asks, running in the fence `fence`, is refused
+    /// every machine whose ground is looser than here, so nothing is carried
+    /// to a machine that would refuse to run it once it got there. Those
+    /// machines still count for what the realm reaches, and the record
+    /// keeps why each was refused, so a replay refuses them too.
+    fn place(&self, work: &Work, start: bool, fence: Option<crate::declared::Kind>) -> Placement {
         let machines = self.machines();
+        let refused = fence
+            .map(|kind| {
+                let here = crate::declared::read(&self.declared);
+                ground::looser(kind, here.as_ref(), &self.machine, &machines)
+            })
+            .unwrap_or_default();
         // This machine is measured first, so work asked on a worker stays
         // there unless it names another.
         let work = &placement::asked_on(work, &machines[0], &machines);
@@ -2627,7 +2637,7 @@ impl<S: Store> Shared<S> {
             let inner = &mut *inner;
             let sessions = inner.state.sessions();
             let loads = inner.starts.loads(&machines, running(&sessions), now);
-            let decision = placement::decide(work, &machines, &loads);
+            let decision = placement::decide_refusing(work, &machines, &loads, &refused);
             if start && let Placement::Placed { machine, .. } = &decision.placement {
                 inner.starts.placed(machine, now);
             }
@@ -2642,6 +2652,7 @@ impl<S: Store> Shared<S> {
             work: work.clone(),
             machines,
             loads,
+            refused,
             decision,
         };
         let day = now.to_zoned(jiff::tz::TimeZone::system()).date();
@@ -2659,7 +2670,7 @@ impl<S: Store> Shared<S> {
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
             Request::Machines => Ok(Response::Machines(self.machines())),
             Request::Builders => Ok(Response::Builders(self.builders.builders())),
-            Request::Place(work) => Ok(Response::Placement(self.place(&work, false))),
+            Request::Place(_) => Err("a placement is answered by `place_asked`".to_owned()),
             Request::Messages { groups, limit } => {
                 Ok(Response::Messages(self.lock().state.recent(&groups, limit)))
             }
@@ -3615,7 +3626,7 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let (misses, nowhere) = match self.place(&asked.work, true) {
+        let (misses, nowhere) = match self.place(&asked.work, true, None) {
             Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
             Placement::Pending { misses } => {
                 let nowhere = format!(
@@ -3744,7 +3755,7 @@ impl<S: Store> Shared<S> {
             })?;
         let mut there = asked.work.clone();
         there.needs.push(Need::Machine(made.machine.clone()));
-        match self.place(&there, true) {
+        match self.place(&there, true, None) {
             Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 let its: Vec<Miss> = misses
@@ -3810,9 +3821,15 @@ impl<S: Store> Shared<S> {
             By::Person => By::Person,
         };
         asked.by = Some(by);
+        let fence = match by {
+            By::Agent(kind) => Some(kind),
+            By::Person => None,
+        };
         // A run ends when its asker stops waiting, so it isn't kept as a
-        // start the machine's room has yet to show.
-        let machine = match self.place(&asked.work, false) {
+        // start the machine's room has yet to show. An agent's is placed
+        // only on ground as firm as here, where it stands in the fence its
+        // launcher sets.
+        let machine = match self.place(&asked.work, false, fence) {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } => {
                 return Err(format!(
@@ -3821,20 +3838,14 @@ impl<S: Store> Shared<S> {
                 ));
             }
             Placement::Refused { misses } => {
+                if let Some(why) = looser_named(&asked.work, &misses) {
+                    return Err(format!(
+                        "this asks as {by}, so it runs nothing on looser ground: {why}"
+                    ));
+                }
                 return Err(format!("nowhere: {}", placement::said(&misses)));
             }
         };
-        // Here, an agent's run stands on this machine's own ground, in the
-        // fence its launcher sets.
-        if let By::Agent(kind) = by
-            && machine != self.machine
-        {
-            let there = self.others().into_iter().find(|one| one.name == machine);
-            let here = crate::declared::read(&self.declared);
-            ground::firm(Some(kind), here.as_ref(), &machine, there.as_ref()).map_err(|why| {
-                format!("this asks as {by}, so it runs nothing on looser ground: {why}")
-            })?;
-        }
         let from = asked.from.clone().unwrap_or_else(|| self.machine.clone());
         let id = format!(
             "{}.{}",
@@ -3918,6 +3929,18 @@ impl<S: Store> Shared<S> {
                 Err(judging) => unknown(format!("{why}; {judging}")),
             },
         }
+    }
+
+    /// Places `work` as [`Node::place`] does for whoever asks, held to an
+    /// agent's ground where an agent asks, as a run of its would be, so
+    /// what it is told would take the work is where the work can run.
+    async fn place_asked(&self, work: &Work) -> Reply {
+        let (judged, _) = self.judged().await?;
+        let fence = match judged {
+            By::Agent(kind) => Some(kind.max(crate::declared::Kind::Fence)),
+            By::Person => None,
+        };
+        Ok(Response::Placement(self.place(work, false, fence)))
     }
 
     /// Who asks a run, as [`asker::judge`] tells it, and the sessions
@@ -4114,12 +4137,29 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
                 Answer::Err("a receptor's signal stays in its own realm".to_owned())
             }
             Ok(Request::Cross(crossing)) => shared.take(crossing),
+            Ok(Request::Place(work)) => shared.place_asked(&work).await.into(),
             asked => asked.and_then(|request| shared.answer(request)).into(),
         };
         if write(&mut writing, &reply).await.is_err() {
             return;
         }
     }
+}
+
+/// Why the machine `work` names refused it for its looser ground, where
+/// one did, so an agent naming such a machine is told so plainly rather
+/// than among every other machine's reasons.
+fn looser_named(work: &Work, misses: &[Miss]) -> Option<String> {
+    misses
+        .iter()
+        .filter(|miss| work.needs.contains(&Need::Machine(miss.machine.clone())))
+        .flat_map(|miss| &miss.because)
+        .find_map(|because| match because {
+            placement::Because::Refuses(taint) if taint.key == placement::LOOSER_GROUND => {
+                Some(taint.why.clone())
+            }
+            _ => None,
+        })
 }
 
 /// Runs what a client asks, writing where it runs and then what it says as
@@ -9780,6 +9820,81 @@ esac
             run_through(socket, run_of("tern", "true")).await.err(),
             unlinked,
             "a machine as firm as here's goes as far as the link"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fenced_agent_is_never_offered_looser_ground() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        let looser = "tern refuses: tern's strictly fenced session opens builders cloud, which \
+                      here's doesn't, so the session would land looser there";
+        // Work that would rather go to tern, so ranking alone would send it
+        // there: only its looser ground keeps it here.
+        let toward_tern = Work {
+            prefers: vec![Need::Machine("tern".to_owned())],
+            ..work(Vec::new())
+        };
+        let place = |socket: PathBuf| {
+            let toward_tern = toward_tern.clone();
+            async move {
+                let asked = tokio::task::spawn_blocking(move || {
+                    Client::connect(&socket)
+                        .expect("the client connects")
+                        .ask(&Request::Place(toward_tern))
+                        .expect("the node answers")
+                });
+                let answer = tokio::time::timeout(PATIENCE, asked)
+                    .await
+                    .expect("the node answers in time")
+                    .expect("the client asks");
+                let Ok(Response::Placement(placement)) = answer else {
+                    panic!("a placement: {answer:?}");
+                };
+                placement
+            }
+        };
+        asks_below(&socket, 7001);
+        let Placement::Placed { machine, passed } = place(socket.clone()).await else {
+            panic!("here takes it");
+        };
+        assert_eq!(
+            machine, "skiff",
+            "an agent is placed here, never on looser ground"
+        );
+        assert!(
+            placement::said(&passed).contains(looser),
+            "and is told why not there: {}",
+            placement::said(&passed)
+        );
+        let unnamed = Run {
+            work: work(Vec::new()),
+            ..run_of("skiff", "true")
+        };
+        assert_eq!(
+            run_through(socket.clone(), unnamed).await.err(),
+            Some(
+                "this asks as a strictly fenced agent, so it runs here only in that fence: \
+                 this machine declares no way to run a command as its strictly fenced \
+                 sessions run"
+                    .to_owned()
+            ),
+            "an agent's run naming no machine stays here, on its own ground"
+        );
+        asks_as_person(&socket);
+        let Placement::Placed { passed, .. } = place(socket).await else {
+            panic!("somewhere takes the person's");
+        };
+        assert!(
+            !placement::said(&passed).contains("looser"),
+            "the person's work isn't held to an agent's ground: {}",
+            placement::said(&passed)
         );
     }
 

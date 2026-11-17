@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::facts::Machine;
-use crate::placement::{Decision, Loads, Work};
+use crate::placement::{Decision, Loads, Miss, Work};
 
 /// How many days back a day's file is kept, counted from the newest: two
 /// weeks of placements is enough to tune weights on, and each line
@@ -35,6 +35,11 @@ pub struct Record {
     pub machines: Vec<Machine>,
     /// Every machine's load beyond what its room says.
     pub loads: Loads,
+    /// The machines refused before they were judged, and why: those whose
+    /// ground is looser than the asker's fence, so a replay refuses them
+    /// too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<Miss>,
     /// How each machine was judged, and where the work went.
     pub decision: Decision,
 }
@@ -119,6 +124,7 @@ mod tests {
             },
             machines: Vec::new(),
             loads: Loads::new(),
+            refused: Vec::new(),
             decision: Decision {
                 placement: Placement::Placed {
                     machine: machine.to_owned(),

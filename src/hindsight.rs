@@ -393,6 +393,7 @@ mod tests {
             },
             machines: Vec::new(),
             loads: Loads::new(),
+            refused: Vec::new(),
             decision: Decision {
                 placement: Placement::Placed {
                     machine: chosen.to_owned(),

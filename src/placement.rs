@@ -232,6 +232,14 @@ pub const CPU_SATURATED: &str = "cpu-saturated";
 /// session started there is slow for everyone on it.
 pub const SATURATED_PRESSURE: f64 = 80.0;
 
+/// The key of the taint a machine whose home's disk is critically full
+/// carries, which takes no work: what it starts would fail to write.
+pub const DISK_FULL: &str = "disk-full";
+
+/// The key of the refusal an agent's work meets on a machine whose ground
+/// is looser than where it asks, which would refuse to run it there.
+pub const LOOSER_GROUND: &str = "looser-ground";
+
 /// The key of the taint a machine past its queue's processor limit carries.
 pub const CPU_PRESSURE: &str = "cpu-pressure";
 
@@ -548,6 +556,20 @@ pub fn place(work: &Work, machines: &[Machine], loads: &Loads) -> Placement {
 /// each was judged.
 #[must_use]
 pub fn decide(work: &Work, machines: &[Machine], loads: &Loads) -> Decision {
+    decide_refusing(work, machines, loads, &[])
+}
+
+/// As [`decide`], each machine named in `refused` refused for its reasons
+/// besides its own, whatever the work tolerates, as one whose ground is
+/// looser than an agent asking stands on. Each still counts as one of the
+/// realm's machines, as where the person's lasting machines reach.
+#[must_use]
+pub fn decide_refusing(
+    work: &Work,
+    machines: &[Machine],
+    loads: &Loads,
+    refused: &[Miss],
+) -> Decision {
     let mut draw = |many: usize| {
         // Each `RandomState` is seeded afresh, so its hash of nothing is a
         // fresh draw.
@@ -555,7 +577,15 @@ pub fn decide(work: &Work, machines: &[Machine], loads: &Loads) -> Decision {
         usize::try_from(draw % u64::try_from(many.max(1)).unwrap_or(1)).unwrap_or(0)
     };
     let now = jiff::Timestamp::now();
-    decide_at(work, machines, loads, now, &mut draw, &Weights::STARTING)
+    decide_at(
+        work,
+        machines,
+        loads,
+        refused,
+        now,
+        &mut draw,
+        &Weights::STARTING,
+    )
 }
 
 /// Places `work` among `machines` as of `now`, with `pick` choosing which
@@ -568,7 +598,7 @@ fn place_at(
     now: jiff::Timestamp,
     pick: &mut dyn FnMut(usize) -> usize,
 ) -> Placement {
-    decide_at(work, machines, loads, now, pick, &Weights::STARTING).placement
+    decide_at(work, machines, loads, &[], now, pick, &Weights::STARTING).placement
 }
 
 /// Decides where `work` would go among `machines` as of `now`, weighed by
@@ -579,19 +609,21 @@ pub fn decide_as(
     work: &Work,
     machines: &[Machine],
     loads: &Loads,
+    refused: &[Miss],
     now: jiff::Timestamp,
     weights: &Weights,
 ) -> Decision {
-    decide_at(work, machines, loads, now, &mut |_| 0, weights)
+    decide_at(work, machines, loads, refused, now, &mut |_| 0, weights)
 }
 
 /// Decides where `work` goes among `machines` as of `now`, weighed by
-/// `weights`, with `pick` choosing which of the machines near the best,
-/// given how many, takes it.
+/// `weights`, each named in `refused` refused besides, with `pick`
+/// choosing which of the machines near the best, given how many, takes it.
 fn decide_at(
     work: &Work,
     machines: &[Machine],
     loads: &Loads,
+    refused: &[Miss],
     now: jiff::Timestamp,
     pick: &mut dyn FnMut(usize) -> usize,
     weights: &Weights,
@@ -608,6 +640,12 @@ fn decide_at(
             {
                 judged.hard.push(worker_refuses());
             }
+            judged.hard.extend(
+                refused
+                    .iter()
+                    .filter(|miss| miss.machine == one.name)
+                    .flat_map(|miss| miss.because.iter().cloned()),
+            );
             judged
         })
         .collect();
@@ -891,6 +929,16 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
             "its disk guard says its disk is filling",
         ));
     }
+    if machine.disk_band == Some(Band::CriticallyFull) {
+        taints.push(Taint {
+            key: DISK_FULL.to_owned(),
+            effect: Effect::Never,
+            why: format!(
+                "its disk guard says its disk is critically full, so what it starts would \
+                 fail to write (work that frees it may tolerate {DISK_FULL})"
+            ),
+        });
+    }
     taints
 }
 
@@ -1117,6 +1165,7 @@ pub(crate) mod tests {
             &work,
             &realm,
             &Loads::new(),
+            &[],
             now(),
             &mut first,
             &Weights::STARTING,
@@ -1166,14 +1215,14 @@ pub(crate) mod tests {
             },
         )]);
         let work = needing(Vec::new());
-        let starting = decide_as(&work, &realm, &loads, now(), &Weights::STARTING);
+        let starting = decide_as(&work, &realm, &loads, &[], now(), &Weights::STARTING);
         assert_eq!(placed(&starting.placement), Some("skiff"));
         assert_eq!(starting.weights, Weights::STARTING);
         let heavier = Weights {
             session: 1.0,
             ..Weights::STARTING
         };
-        let decided = decide_as(&work, &realm, &loads, now(), &heavier);
+        let decided = decide_as(&work, &realm, &loads, &[], now(), &heavier);
         assert_eq!(
             placed(&decided.placement),
             Some("kestrel"),
@@ -1520,6 +1569,38 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn a_machine_whose_disk_is_critically_full_takes_no_work() {
+        let mut skiff = machine("skiff", "linux", 30, &[]);
+        skiff.disk_band = Some(Band::CriticallyFull);
+        let lone = [skiff.clone()];
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &lone)),
+            None,
+            "work started on a full disk fails to write, so it waits instead"
+        );
+        let mut filling = needing(Vec::new());
+        filling.tolerates = vec![DISK_PRESSURE.to_owned()];
+        assert_eq!(
+            placed(&place(&filling, &lone)),
+            None,
+            "minding no filling disk isn't minding no full one"
+        );
+        let mut full = needing(Vec::new());
+        full.tolerates = vec![DISK_PRESSURE.to_owned(), DISK_FULL.to_owned()];
+        assert_eq!(
+            placed(&place(&full, &lone)),
+            Some("skiff"),
+            "unless the work says it minds neither"
+        );
+        skiff.disk_band = Some(Band::NearlyFull);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[skiff])),
+            Some("skiff"),
+            "a disk nearly full only weighs against its machine"
+        );
+    }
+
     /// `machine` working as hard as `cpu` percent of the last ten seconds
     /// waited on a processor, as its queue says.
     pub(crate) fn pressed(mut machine: Machine, cpu: f64) -> Machine {
@@ -1541,6 +1622,7 @@ pub(crate) mod tests {
             &needing(Vec::new()),
             &[kestrel.clone(), osprey.clone()],
             &Loads::new(),
+            &[],
             now(),
             &mut first,
             &Weights::STARTING,
@@ -1633,6 +1715,7 @@ pub(crate) mod tests {
             &needing(Vec::new()),
             &[stale, tern],
             &Loads::new(),
+            &[],
             now(),
             &mut first,
             &Weights::STARTING,
@@ -1811,6 +1894,7 @@ pub(crate) mod tests {
             &needing(Vec::new()),
             &[odd, pressed_odd, unknown],
             &Loads::new(),
+            &[],
             now(),
             &mut first,
             &Weights::STARTING,
@@ -1843,17 +1927,15 @@ pub(crate) mod tests {
             Some("tern"),
             "a disk filling costs little, outweighed by a processor far less pressed"
         );
-        for band in [Band::NearlyFull, Band::CriticallyFull] {
-            tern.disk_band = Some(band);
-            assert_eq!(
-                placed(&place(
-                    &needing(Vec::new()),
-                    &[osprey.clone(), tern.clone()]
-                )),
-                Some("osprey"),
-                "a disk {band:?} costs as any taint that would rather not"
-            );
-        }
+        tern.disk_band = Some(Band::NearlyFull);
+        assert_eq!(
+            placed(&place(
+                &needing(Vec::new()),
+                &[osprey.clone(), tern.clone()]
+            )),
+            Some("osprey"),
+            "a disk nearly full costs as any taint that would rather not"
+        );
     }
 
     #[test]
@@ -1999,6 +2081,42 @@ pub(crate) mod tests {
                 Placement::Refused { .. }
             ),
             "once it has left, nothing goes there, and nothing waits for it"
+        );
+    }
+
+    #[test]
+    fn a_machine_refused_still_counts_where_the_persons_machines_reach() {
+        let mut cloud = machine("cloud", "linux", 60, &["home", "internet"]);
+        cloud.declared.as_mut().expect("declared").costs_money = true;
+        let realm = [
+            machine("kestrel", "linux", 2, &["internet"]),
+            machine("osprey", "linux", 60, &["home", "internet"]),
+            cloud,
+        ];
+        let looser = Miss {
+            machine: "osprey".to_owned(),
+            because: vec![Because::Refuses(Taint {
+                key: LOOSER_GROUND.to_owned(),
+                effect: Effect::Never,
+                why: "its ground is looser".to_owned(),
+            })],
+        };
+        let mut tolerant = needing(vec![Need::Reach("home".to_owned())]);
+        tolerant.tolerates.push(LOOSER_GROUND.to_owned());
+        let Placement::Refused { misses } =
+            decide_refusing(&tolerant, &realm, &Loads::new(), &[looser]).placement
+        else {
+            panic!("nowhere takes it");
+        };
+        let said = said(&misses);
+        assert!(
+            said.contains("osprey refuses: its ground is looser"),
+            "the refused machine says why, whatever the work tolerates: {said}"
+        );
+        assert!(
+            said.contains("cloud refuses"),
+            "and a worker still refuses work for a network the person's refused machine \
+             reaches: {said}"
         );
     }
 

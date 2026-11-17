@@ -8,8 +8,9 @@
 
 use std::collections::BTreeSet;
 
-use crate::declared::{Declared, Doors, Kind};
+use crate::declared::{Declared, Doors, Effect, Kind, Taint};
 use crate::facts::{Machine, Readiness};
+use crate::placement::{Because, LOOSER_GROUND, Miss};
 
 /// The fence the session `address` is judged to run in: the one its
 /// presence `claimed`, refused where its process `shown` it stricter,
@@ -54,6 +55,44 @@ pub fn firm(
             "{to} is out of reach, so nothing is carried there now"
         ));
     }
+    stands(kind, here, to, there)
+}
+
+/// Each of `machines` work asked by an agent running in the fence `kind`
+/// may not be placed on from `this`, as this machine declares itself in
+/// `here`, refused saying why: every other machine whose ground isn't as
+/// firm, as [`firm`] judges it, so placement never offers a machine that
+/// would refuse to run the work once it got there. This one is never
+/// among them, since the asker already stands on its ground, and a machine
+/// out of reach is judged by its ground alone, so placement can still say
+/// it would do once it is back.
+#[must_use]
+pub fn looser(kind: Kind, here: Option<&Declared>, this: &str, machines: &[Machine]) -> Vec<Miss> {
+    machines
+        .iter()
+        .filter(|machine| machine.name != this)
+        .filter_map(|machine| {
+            let why = stands(Some(kind), here, &machine.name, machine).err()?;
+            Some(Miss {
+                machine: machine.name.clone(),
+                because: vec![Because::Refuses(Taint {
+                    key: LOOSER_GROUND.to_owned(),
+                    effect: Effect::Never,
+                    why,
+                })],
+            })
+        })
+        .collect()
+}
+
+/// Whether `there`, as it last said itself, runs sessions in the fence
+/// `kind` with no door wider than this machine's, as `here` declares it.
+fn stands(
+    kind: Option<Kind>,
+    here: Option<&Declared>,
+    to: &str,
+    there: &Machine,
+) -> Result<(), String> {
     let kind = kind.ok_or(
         "the session doesn't say which fence it runs in, so where it lands can't be judged",
     )?;
@@ -111,7 +150,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::facts;
+    use crate::{facts, placement};
 
     #[test]
     fn a_session_claiming_a_looser_fence_than_its_process_shows_is_refused() {
@@ -287,6 +326,64 @@ mod tests {
                     .to_owned()
             ),
             "a machine whose doors are wider names each"
+        );
+    }
+
+    fn named(name: &str, machine: Machine) -> Machine {
+        Machine {
+            name: name.to_owned(),
+            ..machine
+        }
+    }
+
+    #[test]
+    fn an_agent_is_offered_only_machines_on_ground_as_firm() {
+        let machines = vec![
+            named("kestrel", tern(None, Readiness::Ready)),
+            named("osprey", tern(None, Readiness::Ready)),
+            named(
+                "skiff",
+                tern(Some(strict(doors(&[], &[], &[]))), Readiness::Unreachable),
+            ),
+            named(
+                "wren",
+                tern(Some(strict(doors(&["remote"], &[], &[]))), Readiness::Ready),
+            ),
+            tern(
+                Some(strict(doors(&["remote", "big"], &[], &[]))),
+                Readiness::Ready,
+            ),
+        ];
+        // This machine, though it declares no fence; one in reach on firm
+        // ground; and one out of reach on firm ground, which placement may
+        // still say would do, are none of them refused.
+        let misses = looser(Kind::Strict, Some(&here()), "kestrel", &machines);
+        let refused: Vec<(&str, String)> = misses
+            .iter()
+            .map(|miss| {
+                (
+                    miss.machine.as_str(),
+                    placement::said(std::slice::from_ref(miss)),
+                )
+            })
+            .collect();
+        assert_eq!(
+            refused,
+            [
+                (
+                    "osprey",
+                    "osprey refuses: osprey declares no fence, so the session can't be told to \
+                     land as strictly fenced there"
+                        .to_owned()
+                ),
+                (
+                    "tern",
+                    "tern refuses: tern's strictly fenced session opens builders big, which \
+                     here's doesn't, so the session would land looser there"
+                        .to_owned()
+                ),
+            ],
+            "each machine on looser ground refuses, saying why"
         );
     }
 }
