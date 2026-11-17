@@ -1038,26 +1038,21 @@ impl Exchange {
                 len,
                 body,
                 mode,
-            } => {
-                self.unkeep(&quest, &file);
-                self.piece(&quest, &file, &state, (at, len), &body, mode)
-            }
+            } => self.piece(&quest, &file, &state, (at, len), &body, mode),
             Say::File {
                 quest,
                 file,
                 state,
                 body,
                 mode,
-            } => {
-                self.unkeep(&quest, &file);
-                self.file(&quest, &file, &state, body.as_deref(), mode)
-            }
+            } => self.file(&quest, &file, &state, body.as_deref(), mode),
         }
     }
 
-    /// Lets go what was kept back of file `key` of quest `id`, as it comes
-    /// live: frames cross in order, so it is newer than anything kept, and
-    /// no replay may hear the older over it.
+    /// Lets go what was kept back of file `key` of quest `id` once it is
+    /// taken whole: frames cross in order, so it is newer than anything
+    /// kept, and no replay may hear the older over it. A piece is let be
+    /// until then, since one gone astray asks for nothing.
     fn unkeep(&mut self, id: &str, key: &str) {
         if let Some(kept) = self.held_back.get_mut(id) {
             kept.remove(key);
@@ -1488,6 +1483,7 @@ impl Exchange {
                 format!("{key} of {id} doesn't hold what its hash says"),
             ));
         }
+        self.unkeep(id, key);
         let mut held = self.places.ledgers().hold(id)?;
         let quest = self.quest(id, &held.ledger);
         let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
@@ -2350,6 +2346,42 @@ mod tests {
     }
 
     #[test]
+    fn a_piece_gone_astray_once_the_hold_lifts_leaves_what_was_kept() {
+        let top = "QEST-20261007-WCJQSG";
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (mut near, readme, changed, body) = told_of_a_changed_parent(&kestrel, &skiff, top);
+        near.withhold_above(true);
+        near.hear(Say::Holds {
+            quest: top.to_owned(),
+            files: BTreeMap::from([(readme.to_owned(), changed.clone())]),
+        })
+        .expect("kestrel hears");
+
+        // A later piece of a crossing kestrel holds none of, as skiff's
+        // answer to a Want made before the hold, goes astray.
+        near.withhold_above(false);
+        near.hear(Say::Piece {
+            quest: top.to_owned(),
+            file: readme.to_owned(),
+            state: changed,
+            at: PIECE,
+            len: 2 * PIECE,
+            body: STANDARD.encode(body),
+            mode: None,
+        })
+        .expect("kestrel hears");
+        let said = near.look().expect("kestrel looks");
+        assert!(
+            said.iter().any(|say| matches!(
+                say,
+                Say::Want { quest, file, at: Some(0) } if quest == top && file == readme
+            )),
+            "what was kept of the README is still asked for: {said:?}"
+        );
+    }
+
+    #[test]
     fn a_file_heard_once_the_hold_lifts_is_not_undone_by_what_was_kept() {
         let top = "QEST-20261007-WCJQSG";
         let kestrel = Machine::new("kestrel");
@@ -2426,6 +2458,12 @@ mod tests {
         let mut worker = kestrel.exchange(&skiff).for_worker();
         worker.hear(shares()).expect("kestrel hears");
         worker.hear(holds()).expect("kestrel hears");
+        assert!(
+            worker.held_back.is_empty(),
+            "but a worker's is let be, its hold never lifting"
+        );
+        let mut worker = kestrel.exchange(&skiff).for_worker();
+        worker.hear(shares()).expect("kestrel hears");
         worker
             .hear(Say::File {
                 quest: top.to_owned(),
@@ -2437,7 +2475,7 @@ mod tests {
             .expect("kestrel hears");
         assert!(
             worker.held_back.is_empty(),
-            "but a worker's is let be, its hold never lifting"
+            "nor a file of it that a worker sends"
         );
     }
 
