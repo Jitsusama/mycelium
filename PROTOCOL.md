@@ -336,10 +336,9 @@ clones and data. A folder holding more than 10,000 files or 1 GiB, or a
 file over 64 MiB, is refused when named, and so are `tmp/` and build
 output. Within a named folder, hidden files, links, `target/` and
 `node_modules/` stay home, and below a quest's record or scratch folder
-nothing is read or written through a link, whether the file is one or a
-folder it is in: such a file reads as absent, and a write to one is
-refused. A folder
-once named stays shared. The
+the node follows no link it finds as it reads or writes a file, whether
+the file is one or a folder it is in: such a file reads as absent, and a
+write to one is refused. A folder once named stays shared. The
 scratch's `handover/` crosses whenever it is there as the quest is
 shared, named or not, under the same limits, since a carry or a spawn
 leaves there what the other machine needs to start. Sharing a quest
