@@ -884,6 +884,7 @@ fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) -> Vec<St
             store::left(store, &made.machine, now);
         }
     }
+    gone
 }
 
 /// Who a provider is told asks for a machine ([`made::ASKER`]), and why
