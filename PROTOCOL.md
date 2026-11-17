@@ -1875,9 +1875,11 @@ the next, by its path `within` the login's `runtime` folder, going down
 from it. `records` names the field holding them: an array of
 objects, each keyed by its `key` field, or an object of them, each keyed
 by its own key. An array's source may name an `or` beside its `key`, the
-field keying a record whose `key` is missing or empty; a record with
-neither refuses its file, as one with no `key` does with no `or`. Of two
-records of a file keyed alike, the first is kept. A folder's file puts
+field keying a record whose `key` is missing or empty. One whose `or` is
+missing or empty too is keyed by its `key` even empty, so naming an `or`
+refuses nothing that served without one; one with neither field refuses
+its file, as one with no `key` does with no `or`. Of two records keyed
+alike, the last is kept. A folder's file puts
 its `by` field in front, so `waiting:QEST-A:login` is record `login` of
 the file whose `quest` is `QEST-A`. A file that says how something
 stands, rather than listing things, is held `whole` instead of naming

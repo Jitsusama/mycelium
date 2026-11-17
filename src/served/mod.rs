@@ -213,8 +213,8 @@ fn source_of(kind: &str, said: Said, held: &[&str], here: &Here) -> Result<Sourc
     if said.talks.is_none() && said.records.is_some() == said.whole {
         return Err("it names its `records`, or is held `whole`, and only one");
     }
-    if said.whole && (said.folder.is_some() || said.key.is_some()) {
-        return Err("a file held whole is one record, so it names no folder or `key`");
+    if said.whole && (said.folder.is_some() || said.key.is_some() || said.or.is_some()) {
+        return Err("a file held whole is one record, so it names no folder, `key` or `or`");
     }
     if said.or.is_some() && said.key.is_none() {
         return Err("an `or` stands in for a `key`, so it needs one");
@@ -451,29 +451,23 @@ fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String
                 .key
                 .as_deref()
                 .ok_or_else(|| named(format!("`{field}` is a list, so it needs a `key`")))?;
-            let id = |record: &Value| match &source.or {
-                Some(or) => {
-                    let named_by = |field: &str| record.get(field).and_then(id_of);
-                    named_by(key)
-                        .filter(|id| !id.is_empty())
-                        .or_else(|| named_by(or).filter(|id| !id.is_empty()))
-                        .ok_or_else(|| named(format!("a record has no `{key}` or `{or}`")))
-                }
-                None => record
-                    .get(key)
-                    .and_then(id_of)
-                    .ok_or_else(|| named(format!("a record has no `{key}`"))),
+            // A key, else a full `or`, else the key even empty, so naming
+            // an `or` refuses no file that served without one.
+            let id_of_record = |record: &Value| {
+                let named_by = |field: &str| record.get(field).and_then(id_of);
+                let Some(or) = &source.or else {
+                    return named_by(key).ok_or_else(|| named(format!("a record has no `{key}`")));
+                };
+                named_by(key)
+                    .filter(|id| !id.is_empty())
+                    .or_else(|| named_by(or).filter(|id| !id.is_empty()))
+                    .or_else(|| named_by(key))
+                    .ok_or_else(|| named(format!("a record has no `{key}` or `{or}`")))
             };
-            // Of two keyed alike, the first is kept, as a reader reads them.
-            let mut seen = HashSet::new();
-            let mut kept = Vec::new();
-            for record in records {
-                let id = keyed(id(record)?);
-                if seen.insert(id.clone()) {
-                    kept.push((id, record.clone()));
-                }
-            }
-            kept
+            records
+                .iter()
+                .map(|record| Ok((keyed(id_of_record(record)?), record.clone())))
+                .collect::<Result<Vec<_>, String>>()?
         }
         Some(Value::Object(records)) => records
             .iter()
@@ -1144,7 +1138,7 @@ mod tests {
     }
 
     #[test]
-    fn a_record_with_no_key_is_keyed_by_its_or_and_the_first_of_two_keyed_alike_kept() {
+    fn a_record_with_no_key_is_keyed_by_its_or() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let keyed_or = Source {
             file: None,
@@ -1163,6 +1157,7 @@ mod tests {
                 {"title": "Pick a hedge", "said": "first"},
                 {"id": "", "title": "Pick a post"},
                 {"title": "Pick a hedge", "said": "again"},
+                {"id": "", "title": ""},
             ]}),
         );
         let held = read("waiting", &keyed_or);
@@ -1170,20 +1165,22 @@ mod tests {
         assert_eq!(
             held.records.keys().collect::<Vec<_>>(),
             [
+                "waiting:QEST-KESTRL:",
                 "waiting:QEST-KESTRL:Pick a hedge",
                 "waiting:QEST-KESTRL:Pick a post",
                 "waiting:QEST-KESTRL:fly",
             ],
-            "one with no `id`, or an empty one, is keyed by its `title`"
+            "one with no `id`, or an empty one, is keyed by its `title`, \
+             and one with both empty by its empty `id`, as with no `or`"
         );
         assert_eq!(
-            held.records["waiting:QEST-KESTRL:Pick a hedge"]["said"], "first",
-            "of two keyed alike, the first is kept, as a reader reads them"
+            held.records["waiting:QEST-KESTRL:Pick a hedge"]["said"], "again",
+            "of two keyed alike, the last is kept, as without an `or`"
         );
 
         write(
             &dir.path().join("OSPREY.json"),
-            &json!({"quest": "QEST-OSPREY", "items": [{"said": "nothing"}]}),
+            &json!({"quest": "QEST-OSPREY", "items": [{"title": "", "said": "nothing"}]}),
         );
         let held = read("waiting", &keyed_or);
         assert!(
@@ -1193,7 +1190,7 @@ mod tests {
             "one with neither is said: {:?}",
             held.refused
         );
-        assert_eq!(held.records.len(), 3, "and the other file still served");
+        assert_eq!(held.records.len(), 4, "and the other file still served");
 
         let keyed = Source {
             or: None,
@@ -1591,21 +1588,16 @@ mod tests {
             fs::write(&config, sources.to_string()).expect("written");
             configured(&config, &["session"], &here).expect_err("refused")
         };
-        for (sources, why) in [
-            (
-                json!({"file": "/a", "records": "r", "or": "title"}),
-                "no key",
-            ),
-            (
-                json!({"file": "/a", "whole": true, "or": "title"}),
-                "held whole",
-            ),
-        ] {
-            assert!(
-                refuses(json!({"waiting": sources})).contains("stands in for a `key`"),
-                "an `or` needs a `key`: {why}"
-            );
-        }
+        assert!(
+            refuses(json!({"waiting": {"file": "/a", "records": "r", "or": "title"}}))
+                .contains("stands in for a `key`"),
+            "an `or` needs a `key`"
+        );
+        assert!(
+            refuses(json!({"waiting": {"file": "/a", "whole": true, "or": "title"}}))
+                .contains("names no folder, `key` or `or`"),
+            "a file held whole names no `or`, and isn't told to add a `key`"
+        );
         assert!(
             refuses(json!({"talk": {"talks": "/s", "or": "title"}})).contains("nothing else"),
             "talks have no `or`"
