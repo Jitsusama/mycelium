@@ -531,7 +531,7 @@ where
                 let dial = shared.book_for(&made);
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
                 let linked = keep_linked(dial.clone(), store.clone(), membership.clone(), carries);
-                let keeping = shared.keeping();
+                let keeping = shared.keeping(&made.machine);
                 links.spawn(keep_made(dial, made, keeping, unwanted, linked));
             }
             Some(()) = held.recv() => {
@@ -676,11 +676,13 @@ async fn keep_linked(
 }
 
 /// Where a machine made from an offer is kept: the book of what was made
-/// and let go, and the store of the realm's machines it leaves once let
-/// go.
+/// and let go, the store of the realm's machines it leaves once let go,
+/// and its booking, taken away then, so no start is held to a machine
+/// that is gone.
 struct Keeping<S> {
     book: Book,
     store: S,
+    unbook: Box<dyn FnOnce() + Send>,
 }
 
 /// Tells `to_dial` of each machine `book` says this node made before it
@@ -784,7 +786,11 @@ fn past_the_hash(path: &str) -> Option<&str> {
 async fn keep_made(
     dial: Arc<Program>,
     made: Made,
-    Keeping { book, store }: Keeping<impl Store>,
+    Keeping {
+        book,
+        store,
+        unbook,
+    }: Keeping<impl Store>,
     unwanted: Arc<Notify>,
     linked: impl Future<Output = ()>,
 ) {
@@ -809,6 +815,7 @@ async fn keep_made(
     };
     eprintln!("{} was let go: {why}", made.machine);
     store::left(&store, &made.machine, jiff::Timestamp::now());
+    unbook();
     if let Err(error) = book.released(&made, &why) {
         eprintln!(
             "{} was let go, but the book doesn't say so: {error}",
@@ -830,16 +837,18 @@ const ENDED_LET_GO_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins
 /// reaches is alive, so it stays; one this realm's book names is booked
 /// as let go, the realm listing it or not, while one that names no realm
 /// is nobody's to book, so it only leaves this realm's machines, once.
-fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) {
+/// Answers the names of those booked as let go.
+fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) -> Vec<String> {
     let standing = match book.standing() {
         Ok(standing) => standing,
         Err(error) => {
             eprintln!(
                 "the book of machines made can't be read, so none whose time is up is let go: {error}"
             );
-            return;
+            return Vec::new();
         }
     };
+    let mut gone = Vec::new();
     let machines = store.machines();
     let ended = |made: &Made| made.until + ENDED_LET_GO_AFTER <= now;
     let why = "its time was up and no link reached it";
@@ -856,6 +865,7 @@ fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) {
                 made.machine
             );
         }
+        gone.push(made.machine.clone());
     }
     for made in standing.unnamed.iter().filter(|made| ended(made)) {
         // One that declared nothing has no time to leave by, as
@@ -2601,7 +2611,9 @@ impl<S: Store> Shared<S> {
         self.network_records();
         self.said.minute_passed();
         self.settle_carries();
-        let_go_ended(&self.book, &self.store, jiff::Timestamp::now());
+        for machine in let_go_ended(&self.book, &self.store, jiff::Timestamp::now()) {
+            self.lock().booked.remove(&machine);
+        }
         power
     }
 
@@ -4042,10 +4054,14 @@ impl<S: Store> Shared<S> {
 
     /// Where a machine made is kept: this node's book and store, and its
     /// booking, let go with it.
-    fn keeping(&self) -> Keeping<S> {
+    fn keeping(&self, machine: &str) -> Keeping<S> {
+        let (shared, machine) = (self.clone(), machine.to_owned());
         Keeping {
             book: self.book.clone(),
             store: self.store.clone(),
+            unbook: Box::new(move || {
+                shared.lock().booked.remove(&machine);
+            }),
         }
     }
 
@@ -11579,7 +11595,7 @@ esac
         keep_made(
             dial,
             made,
-            shared.keeping(),
+            shared.keeping("kestrel"),
             unwanted,
             std::future::pending(),
         )
