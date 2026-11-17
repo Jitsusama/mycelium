@@ -36,6 +36,7 @@ pub(super) const RECORD: Kept = Only(&[
     ("events", Whole),
     ("glyph", Whole),
     ("groups", Whole),
+    ("here", Whole),
     ("id", Whole),
     ("jobs", Whole),
     ("key", Whole),

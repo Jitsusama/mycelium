@@ -26,8 +26,11 @@ use crate::swarm;
 pub const KIND: &str = "network";
 
 /// What the node's records hold: its `teams`, `machines`, `receptors` and
-/// `builders` records, by key, and its `sessions`.
+/// `builders` records, by key, its `sessions`, and the machine it runs on.
 pub struct Holding<'a> {
+    /// The machine the node runs on, whose sessions' standing is its own
+    /// judgement rather than their presences' word.
+    pub machine: &'a str,
     /// Its teams' records.
     pub teams: &'a BTreeMap<String, Value>,
     /// Its sessions.
@@ -123,7 +126,7 @@ pub(super) fn made(held: &Holding<'_>, standing: &Standing<'_>) -> Made {
     let each = held
         .sessions
         .iter()
-        .map(|session| lean(session, standing(session)));
+        .map(|session| lean(session, held.machine, standing(session)));
     // The realm names none of its networks' or cells' fields.
     let mycelium = Mycelium::of_records("", &teams, each, &machines, &receptors, &builders);
     Made { mycelium, heard }
@@ -146,12 +149,13 @@ pub(super) fn record(
     daemon::Record::from(daemon::record(kind, name, heard, fields))
 }
 
-/// `session`'s record as the networks read it, `standing` as it does:
-/// only the fields they read, as a client listing sessions for them asks
-/// for, and its presence only what they read of it. Made from the fields
-/// themselves rather than the record whole, which at thousands of cells
-/// took most of the build.
-fn lean(session: &Session, standing: Option<&str>) -> Value {
+/// `session`'s record as the networks read it, `standing` as it does on
+/// the node running on `machine`: only the fields they read, as a client
+/// listing sessions for them asks for, and its presence only what they
+/// read of it, with whether it runs `here`, as the node's own session
+/// records say. Made from the fields themselves rather than the record
+/// whole, which at thousands of cells took most of the build.
+fn lean(session: &Session, machine: &str, standing: Option<&str>) -> Value {
     let mut fields = Map::new();
     let mut put = |key: &str, value: Value| {
         if !value.is_null() {
@@ -171,6 +175,7 @@ fn lean(session: &Session, standing: Option<&str>) -> Value {
     put("doing", json_of(&session.doing));
     put("presence", networks::kept_presence(&session.presence));
     put("standing", standing.into());
+    put("here", (session.machine == machine).into());
     Value::Object(fields)
 }
 
@@ -197,9 +202,54 @@ mod tests {
         // A cell's plan is what its session is doing, so a session read
         // without it makes a cell with no plan.
         assert_eq!(
-            lean(&session, Some("running"))["doing"],
+            lean(&session, "kestrel", Some("running"))["doing"],
             doing,
             "the node's session keeps its plan as the command's does"
+        );
+    }
+
+    #[test]
+    fn the_node_draws_a_session_here_dormant_on_its_own_word_and_one_elsewhere_on_its_presences() {
+        let ended = |address: &str, machine: &str| -> Session {
+            serde_json::from_value(json!({
+                "id": format!("019a0000-0000-7000-8000-0000000000{}", &address[4..]),
+                "address": address,
+                "machine": machine,
+                "groups": [],
+                "state": "ended",
+                "presence": {"state": "parked"},
+                "at": "2026-11-15T15:50:00Z",
+            }))
+            .expect("a session")
+        };
+        let sessions = [
+            ended("WAKE01", "kestrel"),
+            ended("DEAD02", "kestrel"),
+            ended("AWAY03", "osprey"),
+        ];
+        let none = BTreeMap::new();
+        let held = Holding {
+            machine: "kestrel",
+            teams: &none,
+            sessions: &sessions,
+            machines: &none,
+            receptors: &none,
+            builders: &none,
+        };
+        // Only the first is parked as this node judges it.
+        let standing = |session: &Session| (session.address == "WAKE01").then_some("parked");
+        let made = made(&held, &standing);
+        let mut cells: Vec<(&str, Option<&str>)> = made
+            .mycelium
+            .cells
+            .iter()
+            .map(|cell| (cell.name.as_str(), cell.standing))
+            .collect();
+        cells.sort_unstable();
+        assert_eq!(
+            cells,
+            [("AWAY03", Some("dormant")), ("WAKE01", Some("dormant"))],
+            "the one here nothing can wake has ended, and the one elsewhere is as it says"
         );
     }
 }

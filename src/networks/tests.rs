@@ -631,16 +631,24 @@ fn a_session_here_is_dormant_only_while_its_node_says_it_can_wake() {
     // them, yet the map drew each dormant for hours, since their presences
     // still said parked (16 Nov). Here, only the node's own standing counts;
     // a session elsewhere has only its presence's word, which this node
-    // can't check.
-    let ended = |address: &str, n: u8, here: bool| {
+    // can't check. A node that says no `here` is believed as before. Read
+    // as the command reads a node, only the fields it asks for.
+    let ended = |address: &str, n: u8, here: Option<bool>| {
         let mut record = session(address, n, "Ended", "ended", &["repo.oars"]);
         record["presence"] = json!({"state": "parked"});
-        record["here"] = json!(here);
-        record
+        if let Some(here) = here {
+            record["here"] = json!(here);
+        }
+        pruned(&record, &RECORD)
     };
-    let mut wakes = ended("WAKES1", 1, true);
+    let mut wakes = ended("WAKES1", 1, Some(true));
     wakes["standing"] = json!("parked");
-    let sessions = [wakes, ended("DEAD01", 2, true), ended("AWAY01", 3, false)];
+    let sessions = [
+        wakes,
+        ended("DEAD01", 2, Some(true)),
+        ended("AWAY01", 3, Some(false)),
+        ended("OLDER1", 4, None),
+    ];
     let mycelium = Mycelium::of("home", &[], &sessions, &[]);
     let cells: Vec<(&str, Option<&str>)> = mycelium
         .cells
@@ -649,7 +657,11 @@ fn a_session_here_is_dormant_only_while_its_node_says_it_can_wake() {
         .collect();
     assert_eq!(
         cells,
-        [("WAKES1", Some("dormant")), ("AWAY01", Some("dormant"))],
+        [
+            ("WAKES1", Some("dormant")),
+            ("AWAY01", Some("dormant")),
+            ("OLDER1", Some("dormant")),
+        ],
         "one here that nothing can wake has ended, and is no cell"
     );
 }

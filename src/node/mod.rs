@@ -2002,6 +2002,7 @@ impl<S: Store> Shared<S> {
             standing::standing(session, here, &parked, &self.boot)
         };
         let holding = Holding {
+            machine: &self.machine,
             teams: &teams,
             sessions: &sessions,
             machines: &machines,
