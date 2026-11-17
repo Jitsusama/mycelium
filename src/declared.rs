@@ -68,6 +68,16 @@ pub struct Declared {
         deserialize_with = "fence_or_none"
     )]
     pub fence: Option<BTreeMap<Kind, Doors>>,
+    /// The basin it is one of, as each cell a basin makes says it, so a
+    /// map can draw the basin once rather than every cell in it; none
+    /// where it is no basin's, or says it in any shape but a name. It is
+    /// the cell's own word, so it is only ever drawn, never weighed.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "basin_or_none"
+    )]
+    pub basin: Option<String>,
 }
 
 /// The fence an agent session runs in, as the harness names it.
@@ -117,6 +127,26 @@ fn fence_or_none<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<BTreeMap<Kind, Doors>>, D::Error> {
     Ok(Option::<serde_json::Value>::deserialize(said)?
         .and_then(|fence| serde_json::from_value(fence).ok()))
+}
+
+/// The longest name a basin is read by, a DNS label's.
+const BASIN_LONGEST: usize = 63;
+
+/// A basin as declared, or none where it isn't a name as a DNS label is
+/// one, lower-case letters, digits and hyphens, at most 63 of them,
+/// starting and ending with no hyphen, which spoils only the basin, never
+/// the rest of what's declared.
+fn basin_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(said)?
+        .and_then(|basin| basin.as_str().map(str::to_owned))
+        .filter(|name| {
+            (1..=BASIN_LONGEST).contains(&name.len())
+                && !name.starts_with('-')
+                && !name.ends_with('-')
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        }))
 }
 
 /// One machine within another, as either declares it: the other machine,
@@ -972,6 +1002,7 @@ mod tests {
                 within: None,
                 hosts: Vec::new(),
                 fence: None,
+                basin: None,
             }),
             "it reads as declared"
         );
@@ -991,6 +1022,7 @@ mod tests {
             within: None,
             hosts: Vec::new(),
             fence: None,
+            basin: None,
         };
         assert!(
             !lasting.is_worker(),
@@ -1175,6 +1207,99 @@ mod tests {
             read(&file),
             None,
             "a time this build can't read is never guessed"
+        );
+    }
+
+    #[test]
+    fn a_cell_names_the_basin_it_is_one_of() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        fs::write(
+            &file,
+            r#"{"reach": ["internet", "aquifer"], "outlives": [],
+                "costs_money": true, "taints": [], "basin": "shoal"}"#,
+        )
+        .expect("the configuration is written");
+        let declared = read(&file).expect("it reads");
+        assert_eq!(
+            declared.basin.as_deref(),
+            Some("shoal"),
+            "the basin reads as declared"
+        );
+        let longest = format!("b{}", "-1".repeat(31));
+        for named in ["basin-1", "9", longest.as_str()] {
+            fs::write(
+                &file,
+                format!(
+                    r#"{{"reach": [], "outlives": [], "costs_money": false, "taints": [],
+                        "basin": "{named}"}}"#
+                ),
+            )
+            .expect("written");
+            assert_eq!(
+                read(&file).expect("it reads").basin.as_deref(),
+                Some(named),
+                "{named} is a basin's name"
+            );
+        }
+        let said = serde_json::to_value(&declared).expect("it says itself");
+        assert_eq!(
+            said["basin"], "shoal",
+            "and is said again when the declaration is written out"
+        );
+        for misshapen in [
+            "7",
+            r#"{"name": "shoal"}"#,
+            r#""""#,
+            r#""Shoal Basin""#,
+            r#""Shoal""#,
+            r#""shoal<script>""#,
+            r#""-""#,
+            r#""-shoal""#,
+            r#""shoal-""#,
+        ] {
+            fs::write(
+                &file,
+                format!(
+                    r#"{{"reach": ["internet"], "outlives": [], "costs_money": true,
+                        "taints": [], "basin": {misshapen}}}"#
+                ),
+            )
+            .expect("written");
+            let spoiled = read(&file).expect("a misshapen basin spoils only itself");
+            assert_eq!(spoiled.basin, None, "{misshapen} names no basin");
+            assert!(
+                spoiled.costs_money,
+                "{misshapen} leaves the rest of the declaration standing"
+            );
+        }
+        fs::write(
+            &file,
+            format!(
+                r#"{{"reach": [], "outlives": [], "costs_money": false, "taints": [],
+                    "basin": "{}"}}"#,
+                "b".repeat(64)
+            ),
+        )
+        .expect("written");
+        assert_eq!(
+            read(&file).expect("it reads").basin,
+            None,
+            "a basin's name past 63 characters names none"
+        );
+        fs::write(
+            &file,
+            r#"{"reach": [], "outlives": [], "costs_money": false, "taints": []}"#,
+        )
+        .expect("written");
+        let lasting = read(&file).expect("it reads");
+        assert_eq!(lasting.basin, None, "a machine of no basin names none");
+        assert!(
+            serde_json::to_value(&lasting)
+                .expect("it says itself")
+                .get("basin")
+                .is_none(),
+            "and says nothing of one"
         );
     }
 }

@@ -13082,6 +13082,7 @@ esac
                     within: None,
                     hosts: Vec::new(),
                     fence: None,
+                    basin: None,
                 }),
                 ..facts::measure("kestrel", &facts::Sources::nowhere())
             })
