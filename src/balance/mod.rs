@@ -8,9 +8,13 @@
 //! stalls, each from 0 to 1, as Dominant Resource Fairness weighs a share.
 //! Its processors count by how busy its cores are where its node says so,
 //! and by pressure where that is more or the node doesn't say, since
-//! pressure is zero until every core is busy. [`MEASURES`] names this
-//! definition, `balance/2`; `balance/1` counted the processors by pressure
-//! alone, and a better one will be a new name, never this one changed.
+//! pressure is zero until every core is busy. A machine is over past its
+//! queue's memory limit or at [`OVER_CPU_PRESSURE`], as placement counts
+//! it: a queue keeping a build from a VM test for want of a processor
+//! isn't over for the sessions and runs placement places. [`MEASURES`]
+//! names this definition, `balance/3`; `balance/2` also called that
+//! queue over, `balance/1` counted the processors by pressure alone, and
+//! a better one will be a new name, never this one changed.
 //!
 //! A reading flags, at once, a machine over while another has room (what
 //! placement exists to prevent), a machine stranded (one resource spent,
@@ -27,13 +31,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::facts::{Machine, Readiness};
 use crate::record::{Session, State};
+use crate::room::Limit;
 
 mod shown;
 
 pub use shown::said;
 
 /// The name of these measures' definitions, said in every reading.
-pub const MEASURES: &str = "balance/2";
+pub const MEASURES: &str = "balance/3";
 
 /// Processor pressure, in percent, at which a machine is over: the
 /// harness queue's own line, past which it starts no build beside a VM
@@ -127,8 +132,8 @@ pub struct Load {
     /// `stall`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load: Option<f64>,
-    /// Whether it is over: its queue says it is past a limit, or its
-    /// processor pressure is at [`OVER_CPU_PRESSURE`].
+    /// Whether it is over: its queue says it is past its memory limit, or
+    /// its processor pressure is at [`OVER_CPU_PRESSURE`].
     pub over: bool,
     /// Whether it has room for more: not over, stalling under
     /// [`ROOM_STALL`] and using under [`ROOM_MEMORY`] of its memory.
@@ -243,7 +248,9 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
         .flatten()
         .reduce(f64::max);
     let over = room.is_some_and(|room| {
-        room.over.as_ref().is_some_and(|over| !over.is_empty())
+        room.over
+            .as_ref()
+            .is_some_and(|over| over.contains(&Limit::Memory))
             || room.pressure.cpu >= OVER_CPU_PRESSURE
     });
     let has_room = !over
@@ -497,6 +504,45 @@ mod tests {
         assert_eq!(
             reading.measures, MEASURES,
             "a reading names its definitions"
+        );
+    }
+
+    #[test]
+    fn a_queue_short_of_a_processor_for_a_build_isnt_over() {
+        // As the Mac was for 48 of 70 minutes on 16 November: its queue
+        // kept a build from a VM test for want of a processor while its
+        // pressure was low, and placement no longer counts that over.
+        let mut short = machine("osprey", 12, 48, 30, 43.0, 0);
+        if let Some(room) = short.room.as_mut() {
+            room.over = Some(vec![Limit::Cpu]);
+        }
+        let mut full = machine("skiff", 8, 32, 1, 5.0, 0);
+        if let Some(room) = full.room.as_mut() {
+            room.over = Some(vec![Limit::Memory]);
+        }
+        let realm = [machine("kestrel", 16, 64, 40, 4.6, 0), short, full];
+        let reading = read(&realm, &[], now());
+        assert!(
+            !of(&reading, "osprey").over,
+            "a build's processor isn't over"
+        );
+        assert!(of(&reading, "skiff").over, "its queue's memory limit is");
+        let hot: Vec<&Flag> = reading
+            .flags
+            .iter()
+            .filter(|flag| matches!(flag, Flag::HotWhileCool { .. }))
+            .collect();
+        assert_eq!(
+            hot,
+            [&Flag::HotWhileCool {
+                hot: "skiff".to_owned(),
+                cool: "kestrel".to_owned(),
+            }],
+            "only the machine past its memory limit is hot"
+        );
+        assert_eq!(
+            reading.measures, "balance/3",
+            "a new definition, a new name"
         );
     }
 

@@ -74,7 +74,9 @@ The harness mesh's messages and presence, carried between machines:
 - `mycelium balance` says how evenly the realm's machines carry its
   work: a row for each machine's load (the largest of the memory it
   uses, how busy its processors are and how long its work stalls),
-  whether it is over or has room, and its busy and idle sessions; how
+  whether it is over (past its queue's memory limit, or at processor
+  pressure 70, as placement counts it) or has room, and its busy and
+  idle sessions; how
   far the loads spread; and a sentence for each thing wrong, saying what
   follows: a machine over while another has room, one resource spent
   while the other idles, loads spread too far, or facts too old to
