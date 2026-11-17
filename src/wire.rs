@@ -180,7 +180,8 @@ pub struct Run {
     /// agent's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<By>,
-    /// The machine it was asked of, for the record of runs alone.
+    /// The machine it was asked of, for the record of runs, and so that a
+    /// run asked elsewhere is told no session here (`PI_SESSION_ID`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
 }

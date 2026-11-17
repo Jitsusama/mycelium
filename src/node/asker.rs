@@ -571,22 +571,7 @@ pub fn session_of(
     processes: &Processes,
     owners: &[(String, i32)],
 ) -> Result<String, String> {
-    let Some(pid) = asker else {
-        return Err(
-            "nothing names the process that asks, so no session can be told to ask".to_owned(),
-        );
-    };
-    let owning = processes.lineage(pid).into_iter().find_map(|process| {
-        let sessions: Vec<&str> = owners
-            .iter()
-            .filter(|(_, owner)| *owner == process)
-            .map(|(session, _)| session.as_str())
-            .collect();
-        (!sessions.is_empty()).then_some(sessions)
-    });
-    let Some(sessions) = owning else {
-        return Err("this asks from no session this node knows".to_owned());
-    };
+    let (pid, sessions) = owning(asker, processes, owners)?;
     if let [one] = sessions.as_slice() {
         return Ok((*one).to_owned());
     }
@@ -597,6 +582,57 @@ pub fn session_of(
             sessions.len()
         )),
     }
+}
+
+/// The session whose work trees a run `asker` asks for may stand in, as
+/// [`session_of`] tells who asks, but only where the process proved to
+/// own it owns no other: a pi host's sessions share one process, and
+/// which of them a command runs for is only what its environment says,
+/// which any command there may set. So a host's session is never told
+/// to a fence as the one a run stands for, whatever its command names.
+///
+/// # Errors
+///
+/// When [`session_of`] would refuse, or the session's process owns
+/// others too.
+pub fn session_alone(
+    asker: Option<i32>,
+    processes: &Processes,
+    owners: &[(String, i32)],
+) -> Result<String, String> {
+    match owning(asker, processes, owners)?.1.as_slice() {
+        [one] => Ok((*one).to_owned()),
+        sessions => Err(format!(
+            "this asks from a process {} sessions share, so none is proved alone",
+            sessions.len()
+        )),
+    }
+}
+
+/// The asker's process and the sessions of `owners` owned by the nearest
+/// of it and its forebears to own any.
+fn owning<'a>(
+    asker: Option<i32>,
+    processes: &Processes,
+    owners: &'a [(String, i32)],
+) -> Result<(i32, Vec<&'a str>), String> {
+    let Some(pid) = asker else {
+        return Err(
+            "nothing names the process that asks, so no session can be told to ask".to_owned(),
+        );
+    };
+    processes
+        .lineage(pid)
+        .into_iter()
+        .find_map(|process| {
+            let sessions: Vec<&str> = owners
+                .iter()
+                .filter(|(_, owner)| *owner == process)
+                .map(|(session, _)| session.as_str())
+                .collect();
+            (!sessions.is_empty()).then_some((pid, sessions))
+        })
+        .ok_or_else(|| "this asks from no session this node knows".to_owned())
 }
 
 /// What `process`, a lookup of a process's name and parent, tells of `pid`
@@ -980,6 +1016,47 @@ mod tests {
         assert!(
             told().is_err(),
             "never a session of another process, whatever it names"
+        );
+    }
+
+    #[test]
+    fn no_session_of_a_hosts_is_proved_alone_whatever_its_command_names() {
+        let procs = procs(&[
+            (80, "mycelium", 79, "jobs.slice/jobs.service"),
+            (79, "bash", 78, "jobs.slice/jobs.service"),
+            (
+                78,
+                "node",
+                1,
+                "agents.slice/pi-host-work-background.service",
+            ),
+            (70, "mycelium", 69, "agents.slice/pi-a.scope"),
+            (69, "pi", 1, "agents.slice/pi-a.scope"),
+        ]);
+        fs::write(
+            procs.path().join("80").join("environ"),
+            "PI_SESSION_ID=s-two\0",
+        )
+        .expect("its environment is written");
+        let owners = [
+            ("s-one".to_owned(), 78),
+            ("s-two".to_owned(), 78),
+            ("s-alone".to_owned(), 69),
+        ];
+        let processes = folder(procs.path());
+        assert!(
+            session_alone(Some(80), &processes, &owners)
+                .is_err_and(|why| why.contains("2 sessions share")),
+            "a host's command may name any session of its host, so none is proved"
+        );
+        assert_eq!(
+            session_alone(Some(70), &processes, &owners),
+            Ok("s-alone".to_owned()),
+            "a session its process owns alone is proved by the process"
+        );
+        assert!(
+            session_alone(None, &processes, &owners).is_err(),
+            "nor where nothing names the asker"
         );
     }
 

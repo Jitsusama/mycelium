@@ -3101,6 +3101,24 @@ impl<S: Store> Shared<S> {
         .map_err(|error| format!("who asks couldn't be told: {error}"))?
     }
 
+    /// The session whose work trees a run asked here may stand in, as
+    /// [`asker::session_alone`] proves it from the presences here.
+    async fn session_alone(&self) -> Result<String, String> {
+        let claims = self.claims();
+        let (client, processes, hosts, logs) = (
+            self.client,
+            self.processes.clone(),
+            self.hosts.clone(),
+            self.logs.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            let owners = asker::proved(&claims, &processes, &hosts, &logs)?;
+            asker::session_alone(client, &processes, &owners)
+        })
+        .await
+        .map_err(|error| format!("who asks couldn't be told: {error}"))?
+    }
+
     /// The fence `session` shows it runs in, by its owner's process,
     /// proved from the presences here as [`Self::asking_session`] proves
     /// who asks.
@@ -3896,7 +3914,11 @@ impl<S: Store> Shared<S> {
             // asks, never one its words name; none where none is proved,
             // or asked from another machine, so the fence grants none.
             let session = match by {
-                By::Agent(_) if asked.from.is_none() => self.asking_session().await.ok(),
+                By::Agent(_) if asked.from.is_none() => self
+                    .session_alone()
+                    .await
+                    .inspect_err(|why| eprintln!("a run here is told no session: {why}"))
+                    .ok(),
                 _ => None,
             };
             let (ran, said) = mpsc::channel(run::BACKLOG);
@@ -10010,6 +10032,17 @@ esac
              reach only what runs inside it"
         );
         assert_eq!(proved.ended, Some(Ran::Exited(0)));
+        let mut far = run_of("skiff", NAMES_ANOTHER);
+        far.from = Some("tern".to_owned());
+        let relayed = run_through(socket.clone(), far)
+            .await
+            .expect("a run relayed from another machine runs here");
+        assert_eq!(
+            String::from_utf8_lossy(&relayed.out),
+            "the fence runs for none\nit says s-other\n",
+            "a run asked of another machine is told no session here, \
+             since this machine proved no one asked it"
+        );
         asks_as_person(&socket);
         let person = run_through(socket, run_of("skiff", "echo ${PI_SESSION_ID-none}"))
             .await
