@@ -81,10 +81,15 @@ fn heard(root: &Path, path: &Path, within: Duration, holds: impl Fn(&str) -> boo
         .expect("the folder is watched");
     let deadline = Instant::now() + within;
     loop {
-        let text = fs::read_to_string(path).unwrap_or_default();
-        if path.exists() && holds(&text) {
-            return text;
+        // Only what was read counts: a path looked at after a failed read
+        // may have come to be in between, and its text is not yet known.
+        let read = fs::read_to_string(path);
+        if let Ok(text) = read.as_deref()
+            && holds(text)
+        {
+            return text.to_owned();
         }
+        let text = read.unwrap_or_default();
         let left = deadline.saturating_duration_since(Instant::now());
         assert!(
             !left.is_zero(),
