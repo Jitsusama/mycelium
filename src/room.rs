@@ -18,7 +18,9 @@
 //! here, which would drift from the queue's own rules. Placement's
 //! saturation is a different question, asked of sessions rather than of
 //! the queue's builds: whether so much waits on the processors that a
-//! session started there is slow, which no queue rule answers.
+//! session started there is slow, which no queue rule answers. The
+//! machine's own node judges it across its measures and says it in its
+//! room as `saturated`, which a queue's record never carries.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -41,6 +43,12 @@ pub struct Room {
     /// The queue's limits the machine is at or past now, none when it is
     /// under none, or unknown from a queue too old to say.
     pub over: Option<Vec<Limit>>,
+    /// Whether the machine's own node judges its processors saturated,
+    /// over time rather than by this pressure alone (placement's
+    /// `Saturation`): unknown from a queue's record as read, or from a
+    /// node too old to judge, when placement judges the pressure itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saturated: Option<bool>,
 }
 
 /// A limit of the queue's that a machine can be past.
@@ -187,6 +195,7 @@ fn said(record: &[u8], now: i64) -> Option<Room> {
                 .filter_map(|limit| serde_json::from_value(limit.as_str().into()).ok())
                 .collect()
         }),
+        saturated: None,
     })
 }
 
@@ -257,6 +266,7 @@ mod tests {
                     vm_tests: 1,
                 },
                 over: Some(vec![Limit::Memory]),
+                saturated: None,
             }),
             "its free memory in bytes, its pressure, what it would start, and \
              the limits it is past that this build knows"
