@@ -399,7 +399,7 @@ pub fn kit_said_at_start(kit: &Kit) -> String {
 
 /// `text` with each control character escaped, so a name within it can't
 /// start a line of its own, and the rest, such as its apostrophes, as is.
-fn controls_escaped(text: &str) -> String {
+pub(crate) fn controls_escaped(text: &str) -> String {
     text.chars()
         .map(|c| {
             if c.is_control() {

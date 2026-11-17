@@ -89,14 +89,16 @@ pub fn line(
         "slowestAsk": u64::try_from(slowest).unwrap_or(u64::MAX),
     });
     // A kit this machine's node refused stays off every path until the
-    // node starts again, so the read says why while it lasts.
+    // node starts again, so the read says why while it lasts, escaped as
+    // the node's start-up line says it, since a planted file's name can be
+    // in it.
     if let Some(why) = read
         .machines
         .iter()
         .find(|machine| machine.name == read.here)
         .and_then(|machine| machine.kit.as_ref()?.refused.as_ref())
     {
-        line["kitRefused"] = json!(why);
+        line["kitRefused"] = json!(crate::declared::controls_escaped(why));
     }
     line
 }
@@ -277,10 +279,15 @@ mod tests {
             json!(why),
             "a kit this machine's node refused says why"
         );
-        let others = read(&[kitted("skiff", None), kitted("tern", Some(why))]);
+        let others = read(&[kitted("tern", Some(why)), kitted("skiff", None)]);
         assert!(
             others.get("kitRefused").is_none(),
             "a kit carried here, or refused on another machine, says nothing: {others}"
+        );
+        assert_eq!(
+            read(&[kitted("skiff", Some("its bin holds \"x\nkit ok\""))])["kitRefused"],
+            json!("its bin holds \"x\\nkit ok\""),
+            "a name in why can't start a line of its own"
         );
     }
 
