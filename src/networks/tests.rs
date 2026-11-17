@@ -466,6 +466,38 @@ fn a_tree_is_named_by_its_whole_repo_key_and_no_group_joins_one() {
 }
 
 #[test]
+fn a_tree_two_cells_formed_stays_a_network_while_one_holds_it() {
+    let name = "tree.github:harbour/oars:jsama/tides";
+    let formed = std::collections::BTreeSet::from([name.to_owned()]);
+    let unformed = std::collections::BTreeSet::new();
+    let one = || [holding("ROWS01", 1, json!([tides()]))];
+    let made = |sessions: Vec<Value>, formed| {
+        Mycelium::of_records("home", &[], sessions, &[], &[], &[], formed)
+    };
+    assert_eq!(
+        trees(&made(one().to_vec(), &unformed)),
+        [],
+        "a tree one cell holds, never shared, is no network"
+    );
+    let kept = made(one().to_vec(), &formed);
+    assert_eq!(
+        trees(&kept),
+        [(name, "oars@jsama/tides", vec!["ROWS01".to_owned()])],
+        "formed once two held it, it stays while one does"
+    );
+    assert_eq!(
+        kept.cell("ROWS01").expect("Rows").networks,
+        [name.to_owned()],
+        "and its cell is on it"
+    );
+    assert_eq!(
+        trees(&made(Vec::new(), &formed)),
+        [],
+        "with no cell holding it, it is drawn no more"
+    );
+}
+
+#[test]
 fn two_trees_whose_short_names_clash_are_told_apart_by_their_owners() {
     let theirs = json!({
         "key": "worktree-github-other-oars-jsama-tides",

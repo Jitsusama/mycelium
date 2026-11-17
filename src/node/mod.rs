@@ -63,6 +63,8 @@ mod cell;
 pub use cell::records as cell_records;
 mod crossing;
 mod fences;
+mod formed;
+pub use formed::Formed;
 mod glyph;
 mod network;
 pub use network::{Holding, Standing, records as network_records};
@@ -363,7 +365,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 15] = [
+pub const HOLDS: [&str; 16] = [
     "session",
     "machine",
     "message",
@@ -379,6 +381,7 @@ pub const HOLDS: [&str; 15] = [
     forage::KIND,
     murmur::KIND,
     tie::KIND,
+    formed::KIND,
 ];
 
 /// The kind of record that is one thing a session did, as its presence's
@@ -950,6 +953,8 @@ struct Shared<S> {
     placements: Option<Arc<placements::Log>>,
     /// The strictest fence each session here was seen to run in.
     fences: Arc<fences::Seen>,
+    /// The tree networks formed, kept across restarts.
+    formed: Arc<Formed>,
     /// This node's own socket, which a carry the person asks of it runs
     /// its steps through, as `mycelium carry` does.
     node: PathBuf,
@@ -1102,6 +1107,7 @@ impl<S: Clone> Clone for Shared<S> {
             declared: self.declared.clone(),
             placements: self.placements.clone(),
             fences: self.fences.clone(),
+            formed: self.formed.clone(),
             node: self.node.clone(),
             shares: self.shares.clone(),
             claiming: self.claiming.clone(),
@@ -1156,6 +1162,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             forages,
             murmurs,
             ties,
+            formed,
         ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
@@ -1209,6 +1216,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             ),
             (murmurs, vec!["text", "tied_to", "purpose", "settled"]),
             (ties, tie::LIVE.to_vec()),
+            (formed, vec!["left"]),
         ])
         .into_iter()
         .chain(served)
@@ -1235,6 +1243,12 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
     fn records(&self, kind: &str) -> Option<BTreeMap<String, daemon::Record>> {
         let made = match kind {
             network::KIND => return Some(self.network_records()),
+            formed::KIND => {
+                // The making is what forms a network, so it runs first.
+                self.network_records();
+                let now = jiff::Timestamp::now().as_millisecond();
+                return Some(self.formed.records(now));
+            }
             cell::KIND => return Some(self.cell_records()),
             "session" => {
                 let parked = standing::parked(&self.parked);
@@ -1289,6 +1303,10 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // change, so a machine come or gone shows with the next.
             // An event comes with its session's presence.
             "session" | team::KIND | network::KIND | EVENT => Some(self.said.sessions.subscribe()),
+            // A network forms, is left and fades as a making sees it,
+            // which the minute's pass makes too, so one fading on time
+            // alone is told.
+            formed::KIND => Some(self.formed.told()),
             "machine" => Some(self.said.machines.subscribe()),
             // A cell is a session's, a machine's or a receptor's, so is
             // told as any of them changes, and a machine's shows at once.
@@ -1594,6 +1612,8 @@ impl<S: Store> Shared<S> {
             processes: processes.into(),
             // Beside the carries it judges, so it needs no place of its own.
             fences: Arc::new(fences::Seen::at(carries.with_file_name("fences.json"))),
+            // Beside the carries too, its realm's own in the machine's state.
+            formed: Arc::new(Formed::beside(&carries, &hello.realm)),
             carries,
             settles: settles.map(|settles| Arc::new(Settler::new(settles))),
             scratch: sharing.as_ref().map(|places| places.scratch.clone()),
@@ -2132,6 +2152,7 @@ impl<S: Store> Shared<S> {
             machines: &machines,
             receptors: &receptors,
             builders: &builders,
+            formed: &self.formed,
         };
         making(&holding, &standing)
     }
@@ -2344,7 +2365,8 @@ impl<S: Store> Shared<S> {
 
     /// What the node does each minute: it measures this machine, hands its
     /// sessions over once it leaves soon, keeps it awake while work wants
-    /// it, and tells its links of its carries, answering what it runs on.
+    /// it, tells its links of its carries and judges which tree networks
+    /// stand, answering what it runs on.
     fn each_minute(&self, awake: &mut Awake) -> Option<facts::Power> {
         let here = self.measure();
         let power = self.keep_measured(&here);
@@ -2353,6 +2375,9 @@ impl<S: Store> Shared<S> {
         self.keep_awake(awake, power.as_ref());
         self.cross_waiting();
         self.tell_carries();
+        // A making is what forms, leaves and fades a tree's network, so
+        // one runs each minute though nobody asks.
+        self.network_records();
         self.said.minute_passed();
         self.settle_carries();
         power
@@ -7343,6 +7368,166 @@ esac
                 break;
             }
         }
+    }
+
+    /// Waits on `client`'s watch until a record keyed `key` comes, as
+    /// `holds` says it must be, and gives it.
+    async fn watched_until(
+        client: &mut Speaking,
+        key: &str,
+        holds: impl Fn(&Value) -> bool,
+    ) -> Value {
+        loop {
+            let said = client.next().await;
+            let records = said["records"].as_array().into_iter().flatten();
+            let changed = said["changed"].as_array().into_iter().flatten();
+            if let Some(one) = records
+                .chain(changed)
+                .find(|one| one["key"] == key && holds(one))
+            {
+                break one.clone();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tree_two_cells_formed_stays_while_one_holds_it_though_the_node_restarts() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let holding = |store: &Memory, session: &str| {
+            let presence = json!({
+                "session": session, "addresses": [session.to_uppercase()], "groups": [],
+                "busy": true, "state": "busy", "at": jiff::Timestamp::now().to_string(),
+                "trees": [{"key": "worktree-github-harbour-oars-jsama-tides",
+                            "repo": "github:harbour/oars", "branch": "jsama/tides"}],
+            });
+            store
+                .put_presence(session, "kestrel", &presence)
+                .expect("the presence is kept");
+        };
+        let tides = "tree.github:harbour/oars:jsama/tides";
+        let network = format!("network:{tides}");
+        let cells = |record: &Value, many: usize| {
+            record["cells"]
+                .as_array()
+                .is_some_and(|cells| cells.len() == many)
+        };
+
+        let both = Memory::default();
+        let (stop, running) = node(&both, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 0, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(json!({"id": 1, "ask": "watch", "kind": "network"}))
+            .await;
+        holding(&both, "reef01");
+        holding(&both, "kelp01");
+        watched_until(&mut client, &network, |one| cells(one, 2)).await;
+        drop(client);
+        stop_one((stop, running)).await;
+        assert!(
+            socket.with_file_name("formed-work.json").exists()
+                && !socket.with_file_name("formed.json").exists(),
+            "each realm's node keeps its formed networks in a file of its own"
+        );
+
+        let one = Memory::default();
+        let (_stop, _running) = node(&one, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 0, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
+            .await;
+        holding(&one, "reef01");
+        watched_until(&mut client, "cell:REEF01", |_| true).await;
+        client
+            .ask(json!({"id": 3, "ask": "list", "kind": "network"}))
+            .await;
+        let listed = loop {
+            let said = client.next().await;
+            if said["id"] == 3 {
+                break said;
+            }
+        };
+        let kept = listed["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|one| one["key"] == network.as_str());
+        assert_eq!(
+            kept.map(|one| &one["cells"]),
+            Some(&json!(["REEF01"])),
+            "formed before the node restarted, it stays while one cell holds it: {listed}"
+        );
+        client
+            .ask(json!({"id": 4, "ask": "list", "kind": "formed"}))
+            .await;
+        let formed = loop {
+            let said = client.next().await;
+            if said["id"] == 4 {
+                break said;
+            }
+        };
+        assert!(
+            formed["records"].as_array().is_some_and(|records| {
+                records.iter().any(|one| {
+                    one["key"] == format!("formed:{tides}") && one["at"].as_i64().is_some()
+                })
+            }),
+            "and the node says when it formed: {formed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tree_two_cells_hold_is_formed_though_only_formed_networks_are_asked() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _running) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 0, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(json!({"id": 1, "ask": "watch", "kind": "session"}))
+            .await;
+        for session in ["reef01", "kelp01"] {
+            let presence = json!({
+                "session": session, "addresses": [session.to_uppercase()], "groups": [],
+                "busy": true, "state": "busy", "at": jiff::Timestamp::now().to_string(),
+                "trees": [{"key": "worktree-github-harbour-oars-jsama-tides",
+                            "repo": "github:harbour/oars", "branch": "jsama/tides"}],
+            });
+            store
+                .put_presence(session, "kestrel", &presence)
+                .expect("the presence is kept");
+        }
+        watched_until(&mut client, "session:kelp01", |_| true).await;
+        client
+            .ask(json!({"id": 2, "ask": "list", "kind": "formed"}))
+            .await;
+        let formed = loop {
+            let said = client.next().await;
+            if said["id"] == 2 {
+                break said;
+            }
+        };
+        assert!(
+            formed["records"].as_array().is_some_and(|records| {
+                records
+                    .iter()
+                    .any(|one| one["key"] == "formed:tree.github:harbour/oars:jsama/tides")
+            }),
+            "asked alone, formed networks are made first: {formed}"
+        );
+    }
+
+    /// Stops one node, as [`stop`] stops two.
+    async fn stop_one((stop, node): Running) {
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
     }
 
     #[tokio::test]

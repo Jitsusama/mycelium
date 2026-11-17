@@ -35,7 +35,8 @@ impl Mycelium {
     /// made its cell as it comes and let go, so thousands are never all
     /// held at once. This is how `mycelium networks` makes what it draws
     /// and how the node makes its `network` and `cell` records, so the two
-    /// never differ.
+    /// never differ. A tree network named in `formed`, the node's `formed`
+    /// records, stays while one cell holds its tree.
     #[must_use]
     pub fn of_records(
         realm: &str,
@@ -44,12 +45,14 @@ impl Mycelium {
         machines: &[Value],
         receptors: &[Value],
         builders: &[Value],
+        formed: &BTreeSet<String>,
     ) -> Self {
         let sessions = sessions.into_iter();
         // Room for every cell the records make, receptors' and builders'
         // too, since adding one to a full list copies all of it.
         let room = sessions.size_hint().0 + machines.len() + receptors.len() + builders.len();
         let mut read = Sessions::room_for(room);
+        read.formed.clone_from(formed);
         for session in sessions {
             read.add(&session);
         }
@@ -103,6 +106,7 @@ impl Mycelium {
             quests,
             renamed,
             mut events,
+            formed,
         } = sessions;
         events.sort_by(|one, other| other.at.cmp(&one.at).then(one.cell.cmp(&other.cell)));
         // A team under an address its orchestrator was renamed from is one
@@ -135,7 +139,7 @@ impl Mycelium {
             cell.networks.truncate(kept);
         }
         sessions.sort_by(|one, other| one.since.cmp(&other.since).then(one.name.cmp(&other.name)));
-        let mut networks = joined(teams, &sessions, &quests);
+        let mut networks = joined(teams, &sessions, &quests, &formed);
         networks.push(machines_network(machines, &sessions));
         let names: BTreeSet<&str> = networks.iter().map(|each| each.name.as_str()).collect();
         let leads = led(teams);
@@ -279,19 +283,25 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
     // so each is made its cell as it is read rather than all held first.
     let (mut teams, mut sessions, mut machines) = (Vec::new(), Sessions::default(), Vec::new());
     let (mut receptors, mut builders) = (Vec::new(), Vec::new());
-    let answers = kept::answered(reading, BUILDERS_ASKED, |id, record| match id {
+    let answers = kept::answered(reading, FORMED_ASKED, |id, record| match id {
         1 => teams.push(record),
         2 => sessions.add(&record),
         3 => machines.push(record),
         RECEPTORS_ASKED => receptors.push(record),
-        _ => builders.push(record),
+        BUILDERS_ASKED => builders.push(record),
+        _ => {
+            if let Some(name) = record["name"].as_str() {
+                sessions.formed.insert(name.to_owned());
+            }
+        }
     })?;
-    // A node too old to hold receptors or know builders refuses their
-    // asks, and is read for the rest; its mycelium senses nothing outside
-    // and is drawn without builders.
+    // A node too old to hold receptors, know builders or keep the networks
+    // formed refuses their asks, and is read for the rest; its mycelium
+    // senses nothing outside, is drawn without builders, and shows a tree
+    // only while two cells hold it.
     if let Some(why) = answers
         .iter()
-        .filter(|(id, _)| **id != RECEPTORS_ASKED && **id != BUILDERS_ASKED)
+        .filter(|(id, _)| ![RECEPTORS_ASKED, BUILDERS_ASKED, FORMED_ASKED].contains(*id))
         .find_map(|(_, answer)| answer["error"]["message"].as_str())
     {
         return Err(io::Error::other(format!(
@@ -306,20 +316,27 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
 /// Which of the networks' asks is for the node's receptors.
 const RECEPTORS_ASKED: u64 = 4;
 
-/// Which of the networks' asks is for the node's builders: the last, so
-/// also how many there are.
+/// Which of the networks' asks is for the node's builders.
 const BUILDERS_ASKED: u64 = 5;
 
+/// Which of the networks' asks is for the networks the node keeps
+/// formed: the last, so also how many there are.
+const FORMED_ASKED: u64 = 6;
+
+/// The kind of the records of the networks a node keeps formed.
+pub const FORMED: &str = "formed";
+
 /// What the networks ask a node: its teams, sessions, machines,
-/// receptors and builders, of only the fields read. A node sends only
-/// those, and an older one, which sends every field whatever is asked, is
-/// read for only those as it streams.
-pub(super) fn asks() -> [Value; 5] {
+/// receptors, builders and the networks it keeps formed, of only the
+/// fields read. A node sends only those, and an older one, which sends
+/// every field whatever is asked, is read for only those as it streams.
+pub(super) fn asks() -> [Value; 6] {
     let fields = kept::paths(&kept::RECORD);
     let [teams, sessions, machines, receptors] = ["team", "session", "machine", receptor::KIND]
         .map(|kind| json!({"ask": "list", "kind": kind, "fields": fields}));
     let builders = json!({"ask": "list", "kind": "builder", "fields": BUILDER_FIELDS});
-    [teams, sessions, machines, receptors, builders]
+    let formed = json!({"ask": "list", "kind": FORMED, "fields": ["name"]});
+    [teams, sessions, machines, receptors, builders, formed]
 }
 
 /// What the networks read of a builder's record.
@@ -361,6 +378,8 @@ struct Sessions {
     quests: BTreeMap<String, String>,
     renamed: BTreeMap<String, String>,
     events: Vec<EventLine>,
+    /// The tree networks two cells formed, which one keeps.
+    formed: BTreeSet<String>,
 }
 
 impl Sessions {
@@ -545,8 +564,14 @@ fn network_of(name: &str, shape: Shape, cells: &[&Cell]) -> Network {
 
 /// The networks `sessions` joined, each team of the swarm's one among
 /// them, with or without a cell, and a project's, a repository's or a
-/// tree's only where two cells share it: one cell's own is no network.
-fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>) -> Vec<Network> {
+/// tree's only where two cells share it: one cell's own is no network,
+/// but for a tree's in `formed`, which two cells shared before.
+fn joined(
+    teams: &[Value],
+    sessions: &[Cell],
+    quests: &BTreeMap<String, String>,
+    formed: &BTreeSet<String>,
+) -> Vec<Network> {
     let mut holding: BTreeMap<&str, Vec<&Cell>> = BTreeMap::new();
     for cell in sessions {
         for name in &cell.networks {
@@ -571,7 +596,7 @@ fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>)
     titled_by_teams(&mut networks, teams, quests);
     titled_by_quests(&mut networks, quests);
     titled_by_repos(&mut networks, sessions);
-    networks.extend(shared_trees(sessions));
+    networks.extend(shared_trees(sessions, formed));
     networks
 }
 
@@ -583,8 +608,9 @@ fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>)
 /// as `harbour/oars@jsama/tides`. Most trees are one cell's own, and ten
 /// thousand cells hold tens of thousands, so only a shared tree is named:
 /// the trees are found alike by sorting them where they are held, in the
-/// order their sessions are.
-fn shared_trees(sessions: &[Cell]) -> Vec<Network> {
+/// order their sessions are. One of `formed`, which two cells shared
+/// before, stays a network while one cell holds it.
+fn shared_trees(sessions: &[Cell], formed: &BTreeSet<String>) -> Vec<Network> {
     let mut held: Vec<(&Tree, &Cell)> = sessions
         .iter()
         .flat_map(|cell| cell.trees.iter().map(move |tree| (tree, cell)))
@@ -598,7 +624,7 @@ fn shared_trees(sessions: &[Cell]) -> Vec<Network> {
         let (Some(name), Some(said)) = (tree.network(), tree.shorts()) else {
             continue;
         };
-        if cells.len() > 1 {
+        if cells.len() > 1 || formed.contains(&name) {
             trees.push((network_of(&name, Shape::Tree, &cells), said, 0));
         }
     }

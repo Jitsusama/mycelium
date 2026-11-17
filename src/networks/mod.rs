@@ -28,8 +28,8 @@ mod kept;
 mod made;
 mod shown;
 
-pub use made::read;
 use made::slug;
+pub use made::{FORMED, read};
 pub use shown::{cell, cells, network, overview};
 
 /// The machines' own network's name.
@@ -107,7 +107,7 @@ pub enum Shape {
     Project,
     /// A repository its cells work in.
     Repository,
-    /// A work tree two cells or more hold at once.
+    /// A work tree two cells or more held at once, while one still does.
     Tree,
     /// A group its cells named and joined.
     Group,
@@ -343,8 +343,8 @@ impl Tree {
         self.repo.rsplit([':', '/']).next().unwrap_or(&self.repo)
     }
 
-    /// The network it is while two cells or more hold it, on whichever
-    /// machines: its repository's whole key and its branch or whole
+    /// The network it is once two cells or more hold it, and while one
+    /// still does, on whichever machines: its repository's whole key and its branch or whole
     /// commit, such as `tree.github:harbour/oars:jsama/tides`, read up to
     /// the last colon, since a branch can't hold one. None for one saying
     /// neither its branch nor its commit.

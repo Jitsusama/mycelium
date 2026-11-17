@@ -1507,9 +1507,10 @@ where something says them, the network it is `within`, its `cells` and
 the `machines` they run on, the machines' own network's `builders`
 beside its machines, and `counts` of its sessions as
 `needs-you`, `stuck`, `moving`, `quiet` and `dormant`. A tree is a
-network only while two cells or more hold it at once, as each
-session's presence lists its `trees` (each `key`, `repo` and a
-worktree's `branch` or a snapshot's `commit`). Its name is
+network once two cells or more hold it at once, as each session's
+presence lists its `trees` (each `key`, `repo` and a worktree's
+`branch` or a snapshot's `commit`), and stays one while any cell
+holds it, though the node restarts. Its name is
 `tree.<repo>:<branch>`, or `tree.<repo>:<commit>` for a snapshot, the
 repository's whole key and the whole commit, read up to the last colon
 since a branch holds none; its short name is the repository's last
@@ -1517,15 +1518,28 @@ part and the branch, `<name>@<branch>`, or the commit cut to seven,
 saying the owner, `<owner>/<name>@<branch>`, or else the whole key,
 where two trees' short names would be one. The machine is no part of
 it: cells on two machines holding one branch share one tree. A tree one
-cell holds alone is no network, only among that cell record's `trees`,
-and a group named as a tree joins none. A tree whose every cell is
-parked counts them `dormant`, so it draws after the living ones. A
-network is
-heard when the latest of its cells was, or its team where its cells say
-nothing. Its records change as the sessions do, so a machine come or
-gone shows with the next change to a session. Ten thousand cells, each
-holding two trees, make their networks within 30 MB, in time that grows
-with them.
+cell holds alone, which no two have held at once, is no network, only
+among that cell record's `trees`, and a group named as a tree joins
+none. The `formed` kind holds each tree network formed, keyed by its
+name, as the node keeps them in `formed-<realm>.json` beside
+`carries.jsonl`: its `name`, `at`, when the node first saw two cells
+hold it, and `left`, when it first saw the last cell gone, or null,
+each in milliseconds since the epoch; it is heard at `left`, or else
+`at`. The node looks each minute, and as `network`, `cell` or `formed`
+is asked, so a tree two cells hold for less than a minute with nobody
+asking may form no network. One no cell holds isn't drawn, and fades
+ten minutes after `left`, so a cell back within them rejoins it; past
+them none serves it, and a cell back alone forms it no more. A watch
+of `formed` is told as the node sees one form, be left, be held again
+or fade, so within the minute, or at once where a `network` or `cell`
+ask saw it. Each node keeps its own, formed as its own
+record of the realm holds them; a link doesn't carry them. A tree
+whose every cell is parked counts them `dormant`, so it draws after
+the living ones. A network is heard when the latest of its cells was,
+or its team where its cells say nothing. Its records change as the
+sessions do, so a machine come or gone shows with the next change to a
+session. Ten thousand cells, each holding two trees, make their
+networks within 30 MB, in time that grows with them.
 
 The `cell` kind holds each cell of the realm, keyed by its name: a
 session's address, a machine's name, or a receptor's source and machine,
@@ -1764,8 +1778,9 @@ which is no trouble, and a folder not there is looked for again each
 minute. A source it can't read, or one of a folder's files, is a source
 `refused` in `health`, with why, while the records it could read are
 still served. A kind the node holds itself, `session`, `machine`,
-`message`, `team`, `network`, `cell`, `unanswered`, `said`, `event`,
-`receptor`, `builder`, `carry`, `forage` or `murmur`, can't be served.
+`message`, `team`, `network`, `formed`, `cell`, `unanswered`, `said`,
+`event`, `receptor`, `builder`, `carry`, `forage` or `murmur`, can't
+be served.
 
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and
