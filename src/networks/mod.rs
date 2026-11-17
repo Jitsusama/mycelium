@@ -17,7 +17,7 @@
 //! one model every view renders, the terminal's in `shown` and a page's or
 //! an agent's from the JSON lines of [`Mycelium::lines`].
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -34,6 +34,20 @@ pub use shown::{cell, cells, network, overview};
 
 /// The machines' own network's name.
 pub const MACHINES: &str = "machines";
+
+/// The name of each tree network the trees `presence` holds would make,
+/// such as `tree.github:harbour/oars:jsama/tides`. A tree saying no
+/// repository, or neither branch nor commit, names none.
+#[must_use]
+pub fn tree_networks(presence: &Value) -> BTreeSet<String> {
+    presence["trees"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tree| Tree::deserialize(tree).ok())
+        .filter_map(|tree| tree.network())
+        .collect()
+}
 
 /// The mycelium of one realm, as its node holds it now.
 #[derive(Debug, Default, Serialize)]

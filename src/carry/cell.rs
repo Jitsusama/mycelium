@@ -1,7 +1,10 @@
-//! What a carried session's cell brings with it: its name and the ties
-//! this node holds of it. The ties were made from messages this node
-//! held, so they go beside the session's done file for the node it
-//! arrives on to keep, as names and counts only, never what was said.
+//! What a carried session's cell brings with it: its name, the ties
+//! this node holds of it, and when each tree network its trees make
+//! formed here. The ties were made from messages this node held, so
+//! they go beside the session's done file for the node it arrives on to
+//! keep, as names and counts only, never what was said. A tree network
+//! goes so the node it arrives on keeps the time it first formed, rather
+//! than forming it afresh.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -24,6 +27,26 @@ pub struct Brought {
     /// The cell's own record of its talk, `tie:<cell>`, or none where it
     /// has none.
     pub talk: Option<Value>,
+    /// Each `formed:<network>` record this node holds of a tree network
+    /// the session's trees make, whole as the formed kind sends it.
+    pub formed: Vec<Value>,
+}
+
+/// Each of `formed`, every formed network the node holds, that is a
+/// tree network the trees `presence` holds make.
+#[must_use]
+pub fn formed_of(presence: &Value, formed: &[Value]) -> Vec<Value> {
+    let networks = crate::networks::tree_networks(presence);
+    formed
+        .iter()
+        .filter(|one| {
+            one["key"]
+                .as_str()
+                .and_then(|key| key.strip_prefix("formed:"))
+                .is_some_and(|name| networks.contains(name))
+        })
+        .cloned()
+        .collect()
 }
 
 /// What the cell of the session `session`, going by `address`, brings
@@ -54,6 +77,7 @@ pub fn brought(session: &str, address: &str, ties: &[Value]) -> Brought {
             .find(|tie| key(tie).is_some_and(|key| key == cell))
             .cloned(),
         cell,
+        formed: Vec::new(),
     }
 }
 
@@ -61,7 +85,47 @@ pub fn brought(session: &str, address: &str, ties: &[Value]) -> Brought {
 mod tests {
     use serde_json::json;
 
-    use super::brought;
+    use super::{brought, formed_of};
+
+    const TIDES: &str = "formed:tree.github:harbour/oars:jsama/tides";
+
+    #[test]
+    fn a_cell_brings_the_formed_networks_its_sessions_trees_make() {
+        let presence = json!({"trees": [
+            {"key": "oars-tides", "repo": "github:harbour/oars", "branch": "jsama/tides"},
+            {"key": "oars-pinned", "repo": "github:harbour/oars", "commit": "6b88106c"},
+            {"key": "oars-nowhere", "repo": "github:harbour/oars"},
+        ]});
+        // As the formed kind sends them: keyed by name, with when it
+        // formed and when it was left.
+        let record = |key: &str, at: i64| {
+            let name = key.strip_prefix("formed:").unwrap_or(key);
+            json!({"key": key, "kind": "formed", "name": name, "at": at, "left": null})
+        };
+        let formed = [
+            record(TIDES, 1_763_300_000_000),
+            json!({"key": "formed:tree.github:harbour/oars:6b88106c", "kind": "formed",
+                   "name": "tree.github:harbour/oars:6b88106c", "at": 2, "left": 9}),
+            record("formed:tree.github:harbour/sails:jsama/tides", 3),
+            record("formed:tree.github:harbour/oars:jsama/tidesX", 4),
+            record("formed:tree.github:harbour/oars", 5),
+            json!({"kind": "formed", "name": "tree.github:harbour/oars:jsama/tides", "at": 6}),
+        ];
+        assert_eq!(
+            formed_of(&presence, &formed),
+            [formed[0].clone(), formed[1].clone()],
+            "a worktree's and a snapshot's networks, whole; none of another tree, nor one \
+             whose name only begins alike, nor of a tree saying neither branch nor commit"
+        );
+        assert!(
+            formed_of(&json!({}), &formed).is_empty(),
+            "a session holding no tree brings none"
+        );
+        assert!(
+            formed_of(&json!({"trees": "oars"}), &formed).is_empty(),
+            "nor one whose trees aren't a list"
+        );
+    }
 
     #[test]
     fn a_cell_brings_each_tie_at_its_ends_and_its_own_talk() {
@@ -99,12 +163,13 @@ mod tests {
     }
 
     #[test]
-    fn a_cells_file_says_only_its_four_fields() {
-        let cell = brought(
+    fn a_cells_file_says_only_its_five_fields() {
+        let mut cell = brought(
             "s-busy01",
             "BUSY01",
             &[json!({"key": "tie:BUSY01", "kind": "tie", "ties": 0})],
         );
+        cell.formed = vec![json!({"key": TIDES, "kind": "formed", "at": 1})];
         assert_eq!(
             serde_json::to_value(&cell).expect("said"),
             json!({
@@ -112,6 +177,7 @@ mod tests {
                 "cell": "BUSY01",
                 "ties": [],
                 "talk": {"key": "tie:BUSY01", "kind": "tie", "ties": 0},
+                "formed": [{"key": TIDES, "kind": "formed", "at": 1}],
             }),
             "the fields the node it arrives on reads"
         );

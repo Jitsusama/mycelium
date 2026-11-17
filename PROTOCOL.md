@@ -485,14 +485,20 @@ in order and says each step:
    is a folder is passed over, though one at the name of a session it
    will carry stops the carry, saying so. Then it writes `<session>.cell.json`
    there for each it will carry, replacing whole any an earlier carry
-   put there: `{"session", "cell", "ties", "talk"}`, where `cell` is
+   put there: `{"session", "cell", "ties", "talk", "formed"}`, where `cell` is
    the session's address, uppercase; `ties` every `tie` record it
    holds with the cell at an end, whole and unfaded; and `talk` its
-   `tie:<cell>` record, or null. Nothing else of the cell travels, and
-   an address holding `~` brings no ties. The ties are as they stood
-   before any session was told, so talk in a session's last turn
-   stays behind. Where a cell can't be taken away, or the ties can't
-   be said or written, nothing is carried. A session that refuses
+   `tie:<cell>` record, or null; and `formed` each `formed` record,
+   whole, of a tree network the trees its presence holds make, so the
+   node it arrives on can keep when that formed. The file lies where
+   sessions can write, so that node reads it as a claim, keeping a
+   formed record only for a network the arriving session's own trees
+   make. Nothing else of the cell travels, and an address holding `~`
+   brings no ties. The ties are as they stood before any session was
+   told, so talk in a session's last turn stays behind. Formed
+   networks are asked for only where a session's trees make one.
+   Where a cell can't be taken away, or the ties or formed networks
+   can't be said or written, nothing is carried. A session that refuses
    writes no done file, and the node takes its cell away then, unless
    an earlier attempt's done file not yet started waits beside it; the
    others' cells stay, since they may still be carrying. One that
@@ -1634,7 +1640,8 @@ them none serves it, and a cell back alone forms it no more. A watch
 of `formed` is told as the node sees one form, be left, be held again
 or fade, so within the minute, or at once where a `network` or `cell`
 ask saw it. Each node keeps its own, formed as its own
-record of the realm holds them; a link doesn't carry them. A file
+record of the realm holds them; a link doesn't carry them, though a
+carried session's cell brings those its trees make. A file
 that can't be read forms none. One that doesn't parse is moved aside
 as the node starts, as `formed-<realm>.json.bad.<millis>`, so none
 is lost under another. One that can't be opened, or moved, is left

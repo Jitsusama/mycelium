@@ -198,6 +198,13 @@ pub trait Hands {
     ///
     /// When the node can't say.
     fn ties(&mut self) -> Result<Vec<Value>, String>;
+    /// Every `formed` record the node holds: each tree network formed
+    /// here, with when it formed.
+    ///
+    /// # Errors
+    ///
+    /// When the node can't say.
+    fn formed(&mut self) -> Result<Vec<Value>, String>;
     /// Puts what a carried session's cell brings beside its done file,
     /// whole, for the node it arrives on to keep.
     ///
@@ -563,15 +570,27 @@ fn bring_cells(hands: &mut impl Hands, sessions: &[Session]) -> Result<BTreeSet<
     let ties = hands
         .ties()
         .map_err(|why| format!("the node didn't say its ties: {why}"))?;
-    for (id, session) in &carried {
+    let in_a_network = carried
+        .iter()
+        .any(|(_, session)| !crate::networks::tree_networks(&session.presence).is_empty());
+    let formed = if in_a_network {
         hands
-            .bring(&cell::brought(id, &session.address, &ties))
-            .map_err(|why| {
-                format!(
-                    "{}'s ties weren't put beside its work: {why}",
-                    session.address
-                )
-            })?;
+            .formed()
+            .map_err(|why| format!("the node didn't say which tree networks formed: {why}"))?
+    } else {
+        Vec::new()
+    };
+    for (id, session) in &carried {
+        let brought = cell::Brought {
+            formed: cell::formed_of(&session.presence, &formed),
+            ..cell::brought(id, &session.address, &ties)
+        };
+        hands.bring(&brought).map_err(|why| {
+            format!(
+                "{}'s cell wasn't put beside its work: {why}",
+                session.address
+            )
+        })?;
     }
     Ok(keeping)
 }
@@ -793,6 +812,12 @@ mod tests {
         unsaid_ties: Option<String>,
         /// How many times the ties were asked for.
         ties_asked: usize,
+        /// Every formed network the node holds.
+        formed: Vec<Value>,
+        /// Why the node can't say its formed networks, where it can't.
+        unsaid_formed: Option<String>,
+        /// How many times the formed networks were asked for.
+        formed_asked: usize,
         /// Why what a cell brings can't be put beside its work, where not.
         unbrought: Option<String>,
         /// What each cell brought, with how many sessions were told
@@ -878,6 +903,12 @@ mod tests {
             self.unsaid_ties
                 .clone()
                 .map_or_else(|| Ok(self.ties.clone()), Err)
+        }
+        fn formed(&mut self) -> Result<Vec<Value>, String> {
+            self.formed_asked += 1;
+            self.unsaid_formed
+                .clone()
+                .map_or_else(|| Ok(self.formed.clone()), Err)
         }
         fn bring(&mut self, brought: &Brought) -> Result<(), String> {
             if let Some(why) = &self.unbrought {
@@ -1069,7 +1100,15 @@ mod tests {
 
     #[test]
     fn each_carried_sessions_cell_brings_its_ties_before_any_is_told() {
-        let mut realm = realm();
+        let mut realm = realm_in_a_tree();
+        let formed = |name: &str, at: i64| {
+            json!({"key": format!("formed:{name}"), "kind": "formed",
+                   "name": name, "at": at, "left": null})
+        };
+        realm.formed = vec![
+            formed("tree.github:harbour/oars:jsama/tides", 7),
+            formed("tree.github:harbour/sails:main", 8),
+        ];
         realm.ties = vec![
             json!({"key": "tie:BUSY01~KESTRL", "kind": "tie", "strength": 2.5}),
             json!({"key": "tie:AAAAAA~NAPS02", "kind": "tie", "strength": 1.0}),
@@ -1078,21 +1117,30 @@ mod tests {
         ];
         let (done, lines) = carried(&mut realm, "tern");
         assert!(done.is_ok(), "carried: {}", last_said(&lines));
-        let cell = |session: &str, cell: &str, ties: &[usize], talk: Option<usize>| Brought {
-            session: session.to_owned(),
-            cell: cell.to_owned(),
-            ties: ties.iter().map(|at| realm.ties[*at].clone()).collect(),
-            talk: talk.map(|at| realm.ties[at].clone()),
-        };
+        let cell =
+            |session: &str, cell: &str, ties: &[usize], talk: Option<usize>, formed: &[usize]| {
+                Brought {
+                    session: session.to_owned(),
+                    cell: cell.to_owned(),
+                    ties: ties.iter().map(|at| realm.ties[*at].clone()).collect(),
+                    talk: talk.map(|at| realm.ties[at].clone()),
+                    formed: formed.iter().map(|at| realm.formed[*at].clone()).collect(),
+                }
+            };
         assert_eq!(
             realm.brought,
             [
-                (cell("s-busy01", "BUSY01", &[0], Some(2)), 0),
-                (cell("s-naps02", "NAPS02", &[1], None), 0),
+                (cell("s-busy01", "BUSY01", &[0], Some(2), &[0]), 0),
+                (cell("s-naps02", "NAPS02", &[1], None, &[]), 0),
             ],
-            "each session to be carried brings its own ties before any session is told"
+            "each session to be carried brings its own ties, and the networks its trees \
+             formed, before any session is told"
         );
-        assert_eq!(realm.ties_asked, 1, "the ties are asked for once");
+        assert_eq!(
+            (realm.ties_asked, realm.formed_asked),
+            (1, 1),
+            "the ties and the formed networks are asked for once"
+        );
     }
 
     #[test]
@@ -1127,8 +1175,8 @@ mod tests {
         let mut realm = realm();
         assert_eq!(super::bring_cells(&mut realm, &[]), Ok(BTreeSet::new()));
         assert_eq!(
-            (realm.ties_asked, realm.brought.len()),
-            (0, 0),
+            (realm.ties_asked, realm.formed_asked, realm.brought.len()),
+            (0, 0, 0),
             "a quest with no session here asks nothing and brings nothing"
         );
         let mut unnamed = session("BUSY01", "skiff", QUEST, "busy", &json!({}));
@@ -1140,9 +1188,16 @@ mod tests {
             Ok(BTreeSet::new())
         );
         assert_eq!(
-            (realm.ties_asked, realm.brought.len()),
-            (0, 0),
+            (realm.ties_asked, realm.formed_asked, realm.brought.len()),
+            (0, 0, 0),
             "nor one whose presence names no session to carry"
+        );
+        let treeless = realm.sessions[0].clone();
+        assert!(super::bring_cells(&mut realm, &[treeless]).is_ok());
+        assert_eq!(
+            (realm.ties_asked, realm.formed_asked, realm.brought.len()),
+            (1, 0, 1),
+            "a session whose trees make no network asks no formed networks"
         );
     }
 
@@ -1158,10 +1213,17 @@ mod tests {
             ),
             (
                 Realm {
+                    unsaid_formed: Some("no answer".to_owned()),
+                    ..realm_in_a_tree()
+                },
+                "the node didn't say which tree networks formed: no answer",
+            ),
+            (
+                Realm {
                     unbrought: Some("the disk is full".to_owned()),
                     ..realm()
                 },
-                "BUSY01's ties weren't put beside its work: the disk is full",
+                "BUSY01's cell wasn't put beside its work: the disk is full",
             ),
             (
                 Realm {
@@ -1179,7 +1241,19 @@ mod tests {
                 realm.steered.is_empty() && realm.shared.is_empty() && realm.started.is_empty(),
                 "no session told, and nothing shared or started: {why}"
             );
+            assert!(realm.brought.is_empty(), "no cell brought: {why}");
         }
+    }
+
+    /// The realm, its first session holding a worktree, so its trees
+    /// make a network.
+    fn realm_in_a_tree() -> Realm {
+        let mut realm = realm();
+        let tides = json!({"trees": [
+            {"key": "oars-tides", "repo": "github:harbour/oars", "branch": "jsama/tides"},
+        ]});
+        realm.sessions[0] = session("BUSY01", "skiff", QUEST, "busy", &tides);
+        realm
     }
 
     #[test]
