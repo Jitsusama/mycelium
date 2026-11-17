@@ -490,13 +490,16 @@ in order and says each step:
    holds with the cell at an end, whole and unfaded; and `talk` its
    `tie:<cell>` record, or null; and `formed` each `formed` record,
    whole, of a tree network the trees its presence holds make, so the
-   node it arrives on can keep when that formed. The file lies where
-   sessions can write, so that node reads it as a claim, keeping a
-   formed record only for a network the arriving session's own trees
-   make. Nothing else of the cell travels, and an address holding `~`
-   brings no ties. The ties are as they stood before any session was
-   told, so talk in a session's last turn stays behind. Formed
-   networks are asked for only where a session's trees make one.
+   node it arrives on can keep when that formed: at most 64, earliest
+   `at` first, those at one time by name, and one whose `at` isn't a
+   whole number last, so one left out forms afresh there. The file
+   lies where sessions can write, so that node reads it as a claim,
+   keeping at most 64 formed records itself, each only for a network
+   the arriving session's own trees make. Nothing else of the cell
+   travels, and an address holding `~` brings no ties. The ties are as
+   they stood before any session was told, so talk in a session's last
+   turn stays behind. Formed networks are asked for only where a
+   session's trees make one.
    Where a cell can't be taken away, or the ties or formed networks
    can't be said or written, nothing is carried. A session that refuses
    writes no done file, and the node takes its cell away then, unless
