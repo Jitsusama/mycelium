@@ -2045,7 +2045,8 @@ mod tests {
                 r#"printf '%s' '["sh"]' > "$MYCELIUM_AGAIN"; "#,
                 r#"printf '%s' '["merged"]' > "$MYCELIUM_STEERS"; "#,
                 r#"printf '%s' '["sh"]' > "${MYCELIUM_AGAIN%.again}.next"; "#,
-                "kill -TERM $$\r",
+                // An interactive shell lets a TERM pass, so it's killed.
+                "kill -9 $$\r",
             ))
             .await;
         assert_eq!(exited(holder).await, None, "a killed program gives no code");
