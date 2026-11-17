@@ -232,6 +232,10 @@ pub const CPU_SATURATED: &str = "cpu-saturated";
 /// session started there is slow for everyone on it.
 pub const SATURATED_PRESSURE: f64 = 80.0;
 
+/// The key of the taint a machine whose home's disk is critically full
+/// carries, which takes no work: what it starts would fail to write.
+pub const DISK_FULL: &str = "disk-full";
+
 /// The key of the taint a machine past its queue's processor limit carries.
 pub const CPU_PRESSURE: &str = "cpu-pressure";
 
@@ -891,6 +895,15 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
             "its disk guard says its disk is filling",
         ));
     }
+    if machine.disk_band == Some(Band::CriticallyFull) {
+        taints.push(Taint {
+            key: DISK_FULL.to_owned(),
+            effect: Effect::Never,
+            why: "its disk guard says its disk is critically full, so what it starts would \
+                  fail to write"
+                .to_owned(),
+        });
+    }
     taints
 }
 
@@ -1517,6 +1530,38 @@ pub(crate) mod tests {
             placed(&place(&needing(Vec::new()), &[skiff, tern])),
             Some("skiff"),
             "a disk no guard bands is no reason to pass a machine by"
+        );
+    }
+
+    #[test]
+    fn a_machine_whose_disk_is_critically_full_takes_no_work() {
+        let mut skiff = machine("skiff", "linux", 30, &[]);
+        skiff.disk_band = Some(Band::CriticallyFull);
+        let lone = [skiff.clone()];
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &lone)),
+            None,
+            "work started on a full disk fails to write, so it waits instead"
+        );
+        let mut filling = needing(Vec::new());
+        filling.tolerates = vec![DISK_PRESSURE.to_owned()];
+        assert_eq!(
+            placed(&place(&filling, &lone)),
+            None,
+            "minding no filling disk isn't minding no full one"
+        );
+        let mut full = needing(Vec::new());
+        full.tolerates = vec![DISK_PRESSURE.to_owned(), DISK_FULL.to_owned()];
+        assert_eq!(
+            placed(&place(&full, &lone)),
+            Some("skiff"),
+            "unless the work says it minds neither"
+        );
+        skiff.disk_band = Some(Band::NearlyFull);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[skiff])),
+            Some("skiff"),
+            "a disk nearly full only weighs against its machine"
         );
     }
 

@@ -1176,7 +1176,9 @@ its queue's memory limit), `cpu-pressure` (past its queue's processor
 limit), `cpu-saturated` (its `room` at processor pressure 80 or more)
 and `disk-pressure` (its `disk_band` past
 `healthy`), each `prefer_not`, and `low-battery` (on its battery below
-20%, when it is let sleep), which is `never`. A machine qualifies when
+20%, when it is let sleep) and `disk-full` (its `disk_band`
+`critically_full`, where what it starts would fail to write), each
+`never`. A machine qualifies when
 it is in reach, leaves after the work ends (now, for work that doesn't
 say how long it lasts), is what each need asks (a fact it never said
 meets none), and carries no `never` taint the work doesn't tolerate.
