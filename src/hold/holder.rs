@@ -117,6 +117,74 @@ const WINDOW_VARIABLES: [&str; 5] = [
     "MYCELIUM_APP_ID",
 ];
 
+/// The variable naming the agent a program signs with over ssh.
+const AGENT: &str = "SSH_AUTH_SOCK";
+
+/// Variables naming other agents a program could sign with, which a held
+/// program is never given: it signs only through the agents' proxy.
+const OTHER_AGENTS: [&str; 1] = ["SSH_TPM_AUTH_SOCK"];
+
+/// The agents' proxy's socket in the person's runtime folder: the one
+/// agent a held program may sign with, which offers only the keys and
+/// machines the person allowed agents, as hosted sessions are given.
+const PROXY: &str = "pi-agent.sock";
+
+/// The variable saying the agent again, for the login shell a node's
+/// start runs through to name once the person's profile has run, since
+/// a profile names the person's own agent ([`super::start`]): the
+/// proxy, or empty for none.
+const AGENT_SAID: &str = "MYCELIUM_AGENT";
+
+/// What an agent's start says of agents, given the agents' proxy if one
+/// is known, and whether it runs `through_login`, the login shell's
+/// script that names the agent again once the profile has run: each
+/// variable with its value, or none to take it away. On Linux it names
+/// only the proxy, or no agent where none is known, and never another,
+/// and says it again for the script only where there is one, so the
+/// word is never left for what it starts. A Mac runs no proxy, and its
+/// hosted sessions sign with the person's agent, so there an agent's
+/// is left as the person's session has it. A program running as the
+/// person could still reach their agent's socket by its path: this is
+/// what it is told to sign with, not a fence.
+pub fn agents(
+    proxy: Option<&Path>,
+    through_login: bool,
+) -> Vec<(&'static str, Option<std::ffi::OsString>)> {
+    if cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    let named = proxy.map(|proxy| proxy.as_os_str().to_owned());
+    let mut said = vec![(AGENT, named.clone())];
+    if through_login {
+        said.push((AGENT_SAID, Some(named.unwrap_or_default())));
+    }
+    said.extend(OTHER_AGENTS.map(|other| (other, None)));
+    said
+}
+
+/// The agents' proxy's socket in the runtime folder this process has,
+/// for a start that has no person's environment of its own to read.
+#[must_use]
+pub fn agents_proxy_here() -> Option<PathBuf> {
+    agents_proxy(&[], std::env::var("XDG_RUNTIME_DIR").ok().as_deref())
+}
+
+/// The agents' proxy's socket, in the runtime folder `person` (the
+/// person's environment as it is now) names, else the holder's `own`;
+/// none where neither names one, so a held program is given no agent at
+/// all rather than whichever the person's session has.
+fn agents_proxy(person: &[(String, String)], own: Option<&str>) -> Option<PathBuf> {
+    let named = person
+        .iter()
+        .find(|(name, _)| name == "XDG_RUNTIME_DIR")
+        .map(|(_, runtime)| runtime.as_str());
+    [named, own]
+        .into_iter()
+        .flatten()
+        .find(|runtime| !runtime.is_empty())
+        .map(|runtime| Path::new(runtime).join(PROXY))
+}
+
 /// What to hold.
 pub struct Holding<'a> {
     /// The realm's folder of held sessions.
@@ -275,13 +343,12 @@ fn starting(
     };
     // The person's environment goes first, so what the holder says and
     // takes away below is its own whatever that environment holds.
+    let person = holding.environment.now();
+    let proxy = agents_proxy(&person, std::env::var("XDG_RUNTIME_DIR").ok().as_deref());
     let mut command = pty_process::Command::new(program)
         .args(arguments)
         .current_dir(holding.folder)
-        .envs(keeping_path(
-            holding.environment.now(),
-            std::env::var("PATH").ok().as_deref(),
-        ))
+        .envs(keeping_path(person, std::env::var("PATH").ok().as_deref()))
         .env("MYCELIUM_REALM", holding.realm)
         .env("MYCELIUM_HELD", holding.id)
         .env("MYCELIUM_WAKE", &files.waking)
@@ -289,6 +356,12 @@ fn starting(
         .env("MYCELIUM_STEERS", &files.steering);
     for variable in WINDOW_VARIABLES {
         command = command.env_remove(variable);
+    }
+    for (variable, value) in agents(proxy.as_deref(), !holding.through.is_empty()) {
+        command = match value {
+            Some(value) => command.env(variable, value),
+            None => command.env_remove(variable),
+        };
     }
     Ok(command)
 }
@@ -301,7 +374,10 @@ fn starting(
 /// parked in `MYCELIUM_WAKE`, the file it may name its next command in
 /// as it parks in `MYCELIUM_AGAIN`, and the file it may say where its
 /// steers land in as it parks in `MYCELIUM_STEERS`, which wakes it too as
-/// one lands that would give it a turn. A program exiting with [`PARKED`] is
+/// one lands that would give it a turn. On Linux it is told to sign over
+/// ssh only through the agents' proxy in the runtime folder, never the
+/// person's own agent, a login shell's profile notwithstanding
+/// ([`agents`]). A program exiting with [`PARKED`] is
 /// started again on the same terminal when woken, with the command named
 /// for it from outside if any was (see [`super::name_next`]), else with
 /// the one it named itself; one that wrote its wake file before it went is restarting,
@@ -2254,6 +2330,125 @@ mod tests {
             .types("echo \"[$TRIAL_MODEL in $MYCELIUM_REALM, ${KITTY_PID:-no} window]\"\r")
             .await;
         window.sees("[newest in harbour, no window]").await;
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_start_on_a_mac_leaves_the_persons_agent() {
+        let proxy = Path::new("/run/user/4242/pi-agent.sock");
+        assert_eq!(
+            [agents(Some(proxy), true), agents(None, false)],
+            [Vec::new(), Vec::new()],
+            "a Mac runs no proxy, so its sessions sign as the person's do"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_start_names_the_proxy_or_no_agent_and_never_another() {
+        let proxy = Path::new("/run/user/4242/pi-agent.sock");
+        let said = |value: &str| Some(std::ffi::OsString::from(value));
+        assert_eq!(
+            agents(Some(proxy), false),
+            [
+                ("SSH_AUTH_SOCK", said("/run/user/4242/pi-agent.sock")),
+                ("SSH_TPM_AUTH_SOCK", None),
+            ],
+            "with no login script to read it, the agent isn't said again"
+        );
+        assert_eq!(
+            agents(Some(proxy), true),
+            [
+                ("SSH_AUTH_SOCK", said("/run/user/4242/pi-agent.sock")),
+                ("MYCELIUM_AGENT", said("/run/user/4242/pi-agent.sock")),
+                ("SSH_TPM_AUTH_SOCK", None),
+            ],
+            "the proxy, said again for after the profile, and no other agent"
+        );
+        assert_eq!(
+            agents(None, true),
+            [
+                ("SSH_AUTH_SOCK", None),
+                ("MYCELIUM_AGENT", said("")),
+                ("SSH_TPM_AUTH_SOCK", None),
+            ],
+            "where no proxy is known, no agent at all, the person's taken away"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn a_held_program_signs_only_through_the_agents_proxy() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let person = Given(vec![
+            ("XDG_RUNTIME_DIR", "/run/user/4242"),
+            ("SSH_AUTH_SOCK", "/run/user/4242/every-key.sock"),
+            ("SSH_TPM_AUTH_SOCK", "/run/user/4242/every-key.sock"),
+        ]);
+        let (dir, held, _holder) = holding_sh_in(root.path(), Vec::new(), person).await;
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window
+            .types(
+                "echo \"[agent $SSH_AUTH_SOCK, ${SSH_TPM_AUTH_SOCK-no} other, \
+                 ${MYCELIUM_AGENT-unsaid}]\"\r",
+            )
+            .await;
+        window
+            .sees("[agent /run/user/4242/pi-agent.sock, no other, unsaid]")
+            .await;
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn a_program_held_through_a_login_shell_signs_through_the_proxy_after_its_profile() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        // A login shell whose profile names the person's own agents again,
+        // as a real one does, and then runs the script it is given. A
+        // child writes it, so no fork here holds it open as it runs.
+        let shell = root.path().join("login-shell");
+        crate::stand_in::program(
+            &shell,
+            "#!/bin/sh\nSSH_AUTH_SOCK=/run/user/4242/every-key.sock\n\
+             SSH_TPM_AUTH_SOCK=/run/user/4242/every-key.sock\n\
+             export SSH_AUTH_SOCK SSH_TPM_AUTH_SOCK\nshift\nexec /bin/sh -c \"$@\"\n",
+        );
+        let mut through = crate::hold::start::login_shell("harbour", None);
+        through[0] = shell.display().to_string();
+        let person = Given(vec![
+            ("XDG_RUNTIME_DIR", "/run/user/4242"),
+            ("SSH_AUTH_SOCK", "/run/user/4242/every-key.sock"),
+        ]);
+        let (dir, held, _holder) = holding_sh_in(root.path(), through, person).await;
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window
+            .types(
+                "echo \"[agent $SSH_AUTH_SOCK, ${SSH_TPM_AUTH_SOCK-no} other, \
+                 ${MYCELIUM_AGENT-unsaid}]\"\r",
+            )
+            .await;
+        window
+            .sees("[agent /run/user/4242/pi-agent.sock, no other, unsaid]")
+            .await;
+    }
+
+    #[test]
+    fn the_agents_proxy_is_in_the_persons_runtime_folder_else_the_holders_else_none() {
+        let person = |runtime: &str| vec![("XDG_RUNTIME_DIR".to_owned(), runtime.to_owned())];
+        assert_eq!(
+            agents_proxy(&person("/run/user/4242"), Some("/run/user/7")),
+            Some(PathBuf::from("/run/user/4242/pi-agent.sock")),
+            "the person's runtime folder as it is now"
+        );
+        assert_eq!(
+            agents_proxy(&[], Some("/run/user/7")),
+            Some(PathBuf::from("/run/user/7/pi-agent.sock")),
+            "the holder's own, where the person's session says none"
+        );
+        assert_eq!(
+            agents_proxy(&person(""), Some("")),
+            None,
+            "none where neither says one, so no agent is named"
+        );
     }
 
     #[tokio::test]

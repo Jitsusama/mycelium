@@ -632,6 +632,7 @@ mod tests {
             vec!["sh".to_owned(), "-c".to_owned(), "pwd -P".to_owned()],
             folder,
             None,
+            crate::wire::By::Person,
             ran,
         ));
         let mut out = Vec::new();

@@ -238,8 +238,12 @@ const YIELDING_ON_A_MAC: [&str; 3] = ["/usr/sbin/taskpolicy", "-c", "utility"];
 /// the wrong one; puts the kit's tools, if it is given one, first on the
 /// path, after it too, since a profile (or a Mac's `path_helper`) sets
 /// the path afresh and a non-interactive one may never read the file that
-/// adds the person's own; then runs the program.
-const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then PATH="$2/bin${PATH:+:$PATH}"; export PATH; fi; shift 2; exec "$@""#;
+/// adds the person's own; names again the agent a holder said in
+/// `MYCELIUM_AGENT`, after it as well, since a profile names the
+/// person's own agent, and takes away every other (none where it says
+/// none, and nothing changed where nothing said one); then runs the
+/// program.
+const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then PATH="$2/bin${PATH:+:$PATH}"; export PATH; fi; if [ "${MYCELIUM_AGENT+said}" = said ]; then if [ -n "$MYCELIUM_AGENT" ]; then SSH_AUTH_SOCK="$MYCELIUM_AGENT"; export SSH_AUTH_SOCK; else unset SSH_AUTH_SOCK; fi; unset SSH_TPM_AUTH_SOCK MYCELIUM_AGENT; fi; shift 2; exec "$@""#;
 
 /// The words that run a program held in `realm` through the person's
 /// login shell, as a terminal would run it, so it has their environment
@@ -436,6 +440,8 @@ mod tests {
             .arg("-c")
             .args(&words[script + 1..])
             .args(["sh", "-c", program])
+            // Whatever this test runs in, only the profile says an agent.
+            .env_remove("MYCELIUM_AGENT")
             .envs(profile.iter().copied())
             .output()
             .expect("the stand-in shell runs");
@@ -520,6 +526,38 @@ mod tests {
             ],
             "only the words a held session yields with are left out of a run"
         );
+    }
+
+    #[test]
+    fn a_held_program_signs_with_the_agent_its_holder_said_whatever_the_profile_names() {
+        let program = r#"printf '%s|%s|%s' "${SSH_AUTH_SOCK-none}" "${SSH_TPM_AUTH_SOCK-none}" "${MYCELIUM_AGENT-gone}""#;
+        // As a profile names the person's own agent before the script.
+        let person = [
+            ("SSH_AUTH_SOCK", "/run/user/4242/every-key.sock"),
+            ("SSH_TPM_AUTH_SOCK", "/run/user/4242/every-key.sock"),
+        ];
+        let with = |agent: &'static str| {
+            let mut profile = person.to_vec();
+            profile.push(("MYCELIUM_AGENT", agent));
+            profile
+        };
+        for words in [login_shell("harbour", None), login_run("harbour", None)] {
+            assert_eq!(
+                run_through(&words, program, &with("/run/user/4242/pi-agent.sock")),
+                "/run/user/4242/pi-agent.sock|none|gone",
+                "the proxy the holder said, no other agent, and the word itself gone"
+            );
+            assert_eq!(
+                run_through(&words, program, &with("")),
+                "none|none|gone",
+                "no agent at all where the holder said none"
+            );
+            assert_eq!(
+                run_through(&words, program, &person),
+                "/run/user/4242/every-key.sock|/run/user/4242/every-key.sock|gone",
+                "what said no agent, as a Mac's hold, is left as the profile has it"
+            );
+        }
     }
 
     #[test]
