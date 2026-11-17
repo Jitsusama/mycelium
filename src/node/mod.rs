@@ -5629,6 +5629,7 @@ esac
             records: Some("quests".to_owned()),
             whole: None,
             key: Some("id".to_owned()),
+            or: None,
             by: None,
         }
     }

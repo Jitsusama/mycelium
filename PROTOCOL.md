@@ -1863,7 +1863,7 @@ object of sources by kind:
 {
   "quest": {"file": "/full/path/quests.json", "records": "quests", "key": "id"},
   "waiting": {"folder": "/full/path/waiting", "records": "items",
-              "key": "id", "by": "quest"},
+              "key": "id", "or": "title", "by": "quest"},
   "queue": {"file": "jobs/queue.json", "within": "runtime", "whole": true},
   "talk": {"talks": "/full/path/steer"}
 }
@@ -1874,9 +1874,12 @@ by its full path, or for one kept where it differs from one machine to
 the next, by its path `within` the login's `runtime` folder, going down
 from it. `records` names the field holding them: an array of
 objects, each keyed by its `key` field, or an object of them, each keyed
-by its own key. A folder's file puts its `by` field in front, so
-`waiting:QEST-A:login` is record `login` of the file whose `quest` is
-`QEST-A`. A file that says how something stands, rather than listing
+by its own key. An array's source may name an `or` beside its `key`, the
+field keying a record whose `key` is missing or empty; a record with
+neither refuses its file, as one with no `key` does with no `or`. Of two
+records of a file keyed alike, the first is kept. A folder's file puts
+its `by` field in front, so `waiting:QEST-A:login` is record `login` of
+the file whose `quest` is `QEST-A`. A file that says how something stands, rather than listing
 things, is held `whole` instead of naming its `records`: one record, its
 id the machine's name, holding every field of the file. One whose name
 ends `.jsonl` is of JSON lines, as a program appending what happens

@@ -63,6 +63,9 @@ pub struct Source {
     /// The field keying each record in an array. An object's records are
     /// keyed by their own keys.
     pub key: Option<String>,
+    /// The field keying a record in an array instead, when its `key` is
+    /// missing or empty.
+    pub or: Option<String>,
     /// For a folder, the field of each file put in front of its records'
     /// keys, so two files' records never share one.
     pub by: Option<String>,
@@ -98,6 +101,8 @@ struct Said {
     whole: bool,
     #[serde(default)]
     key: Option<String>,
+    #[serde(default)]
+    or: Option<String>,
     #[serde(default)]
     by: Option<String>,
 }
@@ -194,7 +199,11 @@ fn source_of(kind: &str, said: Said, held: &[&str], here: &Here) -> Result<Sourc
         return Err("it names a `file`, a `folder` or `talks`, and only one");
     }
     if said.talks.is_some()
-        && (said.records.is_some() || said.whole || said.key.is_some() || said.by.is_some())
+        && (said.records.is_some()
+            || said.whole
+            || said.key.is_some()
+            || said.or.is_some()
+            || said.by.is_some())
     {
         return Err("a talk is one record of its lines, so talks name nothing else");
     }
@@ -206,6 +215,9 @@ fn source_of(kind: &str, said: Said, held: &[&str], here: &Here) -> Result<Sourc
     }
     if said.whole && (said.folder.is_some() || said.key.is_some()) {
         return Err("a file held whole is one record, so it names no folder or `key`");
+    }
+    if said.or.is_some() && said.key.is_none() {
+        return Err("an `or` stands in for a `key`, so it needs one");
     }
     let start = match said.within {
         None => None,
@@ -237,6 +249,7 @@ fn source_of(kind: &str, said: Said, held: &[&str], here: &Here) -> Result<Sourc
         records: said.records,
         whole: said.whole.then(|| here.machine.clone()),
         key: said.key,
+        or: said.or,
         by: said.by,
     })
 }
@@ -438,16 +451,29 @@ fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String
                 .key
                 .as_deref()
                 .ok_or_else(|| named(format!("`{field}` is a list, so it needs a `key`")))?;
-            records
-                .iter()
-                .map(|record| {
-                    let id = record
-                        .get(key)
-                        .and_then(id_of)
-                        .ok_or_else(|| named(format!("a record has no `{key}`")))?;
-                    Ok((keyed(id), record.clone()))
-                })
-                .collect::<Result<Vec<_>, String>>()?
+            let id = |record: &Value| match &source.or {
+                Some(or) => {
+                    let named_by = |field: &str| record.get(field).and_then(id_of);
+                    named_by(key)
+                        .filter(|id| !id.is_empty())
+                        .or_else(|| named_by(or).filter(|id| !id.is_empty()))
+                        .ok_or_else(|| named(format!("a record has no `{key}` or `{or}`")))
+                }
+                None => record
+                    .get(key)
+                    .and_then(id_of)
+                    .ok_or_else(|| named(format!("a record has no `{key}`"))),
+            };
+            // Of two keyed alike, the first is kept, as a reader reads them.
+            let mut seen = HashSet::new();
+            let mut kept = Vec::new();
+            for record in records {
+                let id = keyed(id(record)?);
+                if seen.insert(id.clone()) {
+                    kept.push((id, record.clone()));
+                }
+            }
+            kept
         }
         Some(Value::Object(records)) => records
             .iter()
@@ -969,6 +995,7 @@ mod tests {
             records: Some("quests".to_owned()),
             whole: None,
             key: Some("id".to_owned()),
+            or: None,
             by: None,
         }
     }
@@ -1089,6 +1116,7 @@ mod tests {
             records: Some("items".to_owned()),
             whole: None,
             key: Some("id".to_owned()),
+            or: None,
             by: Some("quest".to_owned()),
         };
         write(
@@ -1115,6 +1143,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_record_with_no_key_is_keyed_by_its_or_and_the_first_of_two_keyed_alike_kept() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let keyed_or = Source {
+            file: None,
+            folder: Some(dir.path().to_owned()),
+            talks: None,
+            records: Some("items".to_owned()),
+            whole: None,
+            key: Some("id".to_owned()),
+            or: Some("title".to_owned()),
+            by: Some("quest".to_owned()),
+        };
+        write(
+            &dir.path().join("KESTRL.json"),
+            &json!({"quest": "QEST-KESTRL", "items": [
+                {"id": "fly", "title": "Say whether it hovers"},
+                {"title": "Pick a hedge", "said": "first"},
+                {"id": "", "title": "Pick a post"},
+                {"title": "Pick a hedge", "said": "again"},
+            ]}),
+        );
+        let held = read("waiting", &keyed_or);
+        assert_eq!(held.refused, None, "it reads");
+        assert_eq!(
+            held.records.keys().collect::<Vec<_>>(),
+            [
+                "waiting:QEST-KESTRL:Pick a hedge",
+                "waiting:QEST-KESTRL:Pick a post",
+                "waiting:QEST-KESTRL:fly",
+            ],
+            "one with no `id`, or an empty one, is keyed by its `title`"
+        );
+        assert_eq!(
+            held.records["waiting:QEST-KESTRL:Pick a hedge"]["said"], "first",
+            "of two keyed alike, the first is kept, as a reader reads them"
+        );
+
+        write(
+            &dir.path().join("OSPREY.json"),
+            &json!({"quest": "QEST-OSPREY", "items": [{"said": "nothing"}]}),
+        );
+        let held = read("waiting", &keyed_or);
+        assert!(
+            held.refused.as_ref().is_some_and(
+                |why| why.contains("OSPREY.json") && why.contains("no `id` or `title`")
+            ),
+            "one with neither is said: {:?}",
+            held.refused
+        );
+        assert_eq!(held.records.len(), 3, "and the other file still served");
+
+        let keyed = Source {
+            or: None,
+            ..keyed_or
+        };
+        assert!(
+            read("waiting", &keyed)
+                .refused
+                .is_some_and(|why| why.contains("KESTRL.json") && why.contains("no `id`")),
+            "with no `or`, one with no `id` is said, as before"
+        );
+    }
+
     #[tokio::test]
     async fn a_record_whose_act_is_done_is_shown_no_more() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -1125,6 +1217,7 @@ mod tests {
             records: Some("items".to_owned()),
             whole: None,
             key: Some("id".to_owned()),
+            or: None,
             by: Some("quest".to_owned()),
         };
         let now = jiff::Timestamp::now().to_string();
@@ -1176,6 +1269,7 @@ mod tests {
             records: Some("items".to_owned()),
             whole: None,
             key: Some("id".to_owned()),
+            or: None,
             by: Some("quest".to_owned()),
         };
         write(
@@ -1220,6 +1314,7 @@ mod tests {
             records: None,
             whole: None,
             key: None,
+            or: None,
             by: None,
         }
     }
@@ -1484,6 +1579,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_configured_or_stands_in_beside_a_key_alone() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let config = dir.path().join("serves.json");
+        let here = Here {
+            machine: "skiff".to_owned(),
+            runtime: None,
+        };
+        let refuses = |sources: Value| {
+            fs::write(&config, sources.to_string()).expect("written");
+            configured(&config, &["session"], &here).expect_err("refused")
+        };
+        for (sources, why) in [
+            (
+                json!({"file": "/a", "records": "r", "or": "title"}),
+                "no key",
+            ),
+            (
+                json!({"file": "/a", "whole": true, "or": "title"}),
+                "held whole",
+            ),
+        ] {
+            assert!(
+                refuses(json!({"waiting": sources})).contains("stands in for a `key`"),
+                "an `or` needs a `key`: {why}"
+            );
+        }
+        assert!(
+            refuses(json!({"talk": {"talks": "/s", "or": "title"}})).contains("nothing else"),
+            "talks have no `or`"
+        );
+        fs::write(
+            &config,
+            json!({"wait": {"file": "/w.json", "records": "items", "key": "id", "or": "title"}})
+                .to_string(),
+        )
+        .expect("written");
+        assert_eq!(
+            configured(&config, &["session"], &here),
+            Ok(BTreeMap::from([(
+                "wait".to_owned(),
+                Source {
+                    records: Some("items".to_owned()),
+                    or: Some("title".to_owned()),
+                    ..quests(Path::new("/w.json"))
+                }
+            )])),
+            "an `or` beside a `key` is served"
+        );
+    }
+
     /// Waits until `served` holds `kind`'s records as `wanted` says, telling
     /// `told` each time they may have changed.
     async fn until(
@@ -1625,6 +1771,7 @@ mod tests {
             records: Some("items".to_owned()),
             whole: None,
             key: Some("id".to_owned()),
+            or: None,
             by: Some("quest".to_owned()),
         };
         assert_eq!(
