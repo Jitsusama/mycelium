@@ -7,10 +7,12 @@
 //! A machine's taints are those its configuration declares and those its
 //! conditions set while they last: running on its battery, running on it
 //! below the mark at which it is let sleep, which refuses all new work,
-//! being past its queue's memory or processor limit, or its disk filling.
-//! A taint that refuses keeps work off a machine. A machine past a limit of
-//! its queue's, or whose room hasn't been said lately, goes after every
-//! other that qualifies; the rest are ranked by the preferences each meets,
+//! being past its queue's memory or processor limit, its processors
+//! saturated, or its disk filling. A taint that refuses keeps work off a
+//! machine. Those that qualify rank in tiers: heard lately and neither
+//! past a limit of its queue's nor saturated, then past a limit, then
+//! saturated, then those whose room hasn't been said lately. Within a
+//! tier, machines are ranked by the preferences each meets,
 //! then by their [`headroom`], where each taint that would rather not is
 //! only a weight, and one of those near the best is chosen at random. A
 //! start this node placed counts against its machine
@@ -220,7 +222,9 @@ pub const DISK_PRESSURE: &str = "disk-pressure";
 /// at [`SATURATED_PRESSURE`] or more, as its room last said. It goes after
 /// every machine that isn't, so work goes to one that can run it at once,
 /// and never refuses work, since every machine saturated still runs what
-/// it must somewhere.
+/// it must somewhere. A machine declaring it for itself ranks saturated
+/// while its room is heard, as one declaring `memory-pressure` ranks over:
+/// a key means one thing whoever sets it.
 pub const CPU_SATURATED: &str = "cpu-saturated";
 
 /// The processor pressure, in percent of the last ten seconds, at which a
@@ -416,9 +420,12 @@ pub fn headroom(
         - rather_not
 }
 
-/// Whether `machine`'s room was said within [`ROOM_HEARD_WITHIN`] of `now`.
+/// Whether `machine`'s room was said within [`ROOM_HEARD_WITHIN`] of `now`,
+/// either way: a room dated further ahead than that is no more heard than
+/// one as far behind, or a clock set wrong would keep it heard, and so
+/// saturated, for good.
 fn heard(machine: &Machine, now: jiff::Timestamp) -> bool {
-    said_at(machine).is_some_and(|said| now.duration_since(said) <= ROOM_HEARD_WITHIN)
+    said_at(machine).is_some_and(|said| now.duration_since(said).abs() <= ROOM_HEARD_WITHIN)
 }
 
 /// When `machine` last said its room, where it has and the time reads.
@@ -513,6 +520,10 @@ pub struct Judgement {
     pub over: bool,
     /// Whether its room hadn't been said lately.
     pub unheard: bool,
+    /// Whether its processors were saturated, as its room said lately.
+    /// Records kept before it was judged read as not.
+    #[serde(default)]
+    pub saturated: bool,
     /// How many of the work's preferences it met.
     pub preferred: usize,
     /// The room it had for more work, as [`headroom`] weighs it.
@@ -595,8 +606,7 @@ fn decide_at(
             judged
         })
         .collect();
-    // Machines that qualify, those not saturated first, then those not
-    // over, then by how many
+    // Machines that qualify, by their tier first, then by how many
     // preferences each meets, earliest most, then by the headroom it has,
     // then by name. Of the best and those as good but for headroom within
     // the band, one at random, so asks alike spread rather than herd.
@@ -605,9 +615,8 @@ fn decide_at(
         .collect();
     ranked.sort_by(|&one, &other| {
         let (one, other) = (&judged[one], &judged[other]);
-        one.saturated
-            .cmp(&other.saturated)
-            .then_with(|| (one.over || one.unheard).cmp(&(other.over || other.unheard)))
+        tier(one)
+            .cmp(&tier(other))
             .then_with(|| other.preferred.cmp(&one.preferred))
             .then_with(|| other.headroom.total_cmp(&one.headroom))
             .then_with(|| one.name.cmp(&other.name))
@@ -619,8 +628,7 @@ fn decide_at(
             .copied()
             .take_while(|&at| {
                 let one = &judged[at];
-                one.saturated == best.saturated
-                    && (one.over || one.unheard) == (best.over || best.unheard)
+                tier(one) == tier(best)
                     && one.preferred == best.preferred
                     && one.headroom >= best.headroom - weights.near_best
             })
@@ -636,6 +644,7 @@ fn decide_at(
             qualifies: one.hard.is_empty(),
             over: one.over,
             unheard: one.unheard,
+            saturated: one.saturated,
             preferred: one.preferred.iter().filter(|&&met| met).count(),
             headroom: one.headroom,
             chance: if near.contains(&at) { chance } else { 0.0 },
@@ -646,6 +655,23 @@ fn decide_at(
         placement: placement(work, judged, chosen),
         judged: judgements,
         weights: *weights,
+    }
+}
+
+/// Which tier `one` ranks in, first first: heard and neither over nor
+/// saturated, heard and over, heard and saturated, then unheard. A
+/// saturated machine goes after one only over, since over here is often
+/// a build queue short of a processor, which says nothing of sessions,
+/// while saturated is every session there waiting. An unheard machine
+/// goes last of all, since a room nobody has said lately can't show it has
+/// any, and its headroom, from its disk alone, isn't comparable with a
+/// room's.
+const fn tier(one: &Judged) -> u8 {
+    match (one.unheard, one.saturated, one.over) {
+        (false, false, false) => 0,
+        (false, false, true) => 1,
+        (false, true, _) => 2,
+        (true, _, _) => 3,
     }
 }
 
@@ -982,17 +1008,22 @@ fn judge(
     // Over is read from the room even where it is unheard, and harmlessly:
     // a machine unheard ranks with those over either way.
     let over = rather_not.iter().any(|taint| is_over(&taint));
+    let lately = heard(machine, now);
+    // A room unheard says nothing of its processors now, so it neither
+    // ranks the machine saturated nor is given as why it was passed.
+    if !lately {
+        rather_not.retain(|taint| taint.key != CPU_SATURATED);
+    }
     let is_saturated = |taint: &&Taint| taint.key == CPU_SATURATED;
-    // Saturation ranks a machine rather than costing it headroom, as
-    // being over does.
+    // Saturation ranks a machine rather than costing it a taint's weight,
+    // as being over does. Its processor pressure still weighs in its
+    // headroom, so of two saturated machines the less pressed goes first.
     let weighed = rather_not
         .iter()
         .filter(|taint| !is_over(taint) && !is_saturated(taint))
         .map(|taint| costs(machine, taint, weights))
         .sum();
-    let lately = heard(machine, now);
-    // A room unheard says nothing of its processors now.
-    let saturated = lately && rather_not.iter().any(|taint| is_saturated(&taint));
+    let saturated = rather_not.iter().any(|taint| is_saturated(&taint));
     Judged {
         name: machine.name.clone(),
         hard,
@@ -1073,7 +1104,7 @@ pub(crate) mod tests {
         let realm = [
             machine("kestrel", "linux", 32, &[]),
             machine("skiff", "linux", 32, &[]),
-            pressed(machine("tern", "linux", 32, &[]), 90.0),
+            pressed(machine("tern", "linux", 32, &[]), 75.0),
             machine("osprey", "macos", 32, &[]),
         ];
         let work = needing(vec![Need::System("linux".to_owned())]);
@@ -1501,10 +1532,28 @@ pub(crate) mod tests {
     fn a_saturated_machine_is_never_chosen_while_another_is_not() {
         let kestrel = pressed(machine("kestrel", "macos", 60, &[]), 85.0);
         let osprey = pressed(machine("osprey", "linux", 8, &[]), 40.0);
+        let decision = decide_at(
+            &needing(Vec::new()),
+            &[kestrel.clone(), osprey.clone()],
+            &Loads::new(),
+            now(),
+            &mut first,
+            &Weights::STARTING,
+        );
+        let chances: Vec<(&str, bool, f64)> = decision
+            .judged
+            .iter()
+            .map(|one| (one.machine.as_str(), one.saturated, one.chance))
+            .collect();
+        assert_eq!(
+            chances,
+            [("kestrel", true, 0.0), ("osprey", false, 1.0)],
+            "a saturated machine is never drawn beside one that isn't, however near its room"
+        );
         let Placement::Placed {
             machine: chosen,
             passed,
-        } = place(&needing(Vec::new()), &[kestrel.clone(), osprey.clone()])
+        } = decision.placement
         else {
             panic!("one takes it");
         };
@@ -1523,12 +1572,78 @@ pub(crate) mod tests {
             Some("kestrel"),
             "every machine saturated, the work still goes to the one with most room"
         );
+        let at_the_line = pressed(osprey.clone(), SATURATED_PRESSURE);
+        assert_eq!(
+            placed(&place(
+                &needing(Vec::new()),
+                &[kestrel.clone(), at_the_line]
+            )),
+            Some("kestrel"),
+            "a machine at the line itself is saturated"
+        );
+        let over_only = over(osprey.clone(), &[Limit::Cpu]);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[kestrel.clone(), over_only])),
+            Some("osprey"),
+            "a machine only over goes before one saturated"
+        );
         let mut tolerant = needing(Vec::new());
         tolerant.tolerates.push(CPU_SATURATED.to_owned());
         assert_eq!(
             placed(&place(&tolerant, &[kestrel, osprey])),
             Some("kestrel"),
             "work that minds no saturation weighs it as any other room"
+        );
+    }
+
+    #[test]
+    fn a_machine_unheard_goes_after_one_heard_saturated() {
+        let kestrel = pressed(machine("kestrel", "macos", 60, &[]), 90.0);
+        let mut osprey = machine("osprey", "linux", 60, &[]);
+        osprey.room = None;
+        let Placement::Placed {
+            machine: chosen,
+            passed,
+        } = place(&needing(Vec::new()), &[kestrel.clone(), osprey])
+        else {
+            panic!("one takes it");
+        };
+        assert_eq!(
+            chosen, "kestrel",
+            "a room saturated but heard says more than one never said"
+        );
+        assert_eq!(passed[0].because, [Because::Unheard], "osprey says why");
+
+        let tern = pressed(machine("tern", "linux", 2, &[]), 75.0);
+        let mut ahead = kestrel.clone();
+        ahead.room.as_mut().expect("a room").said_at = "2026-10-29T06:10:30Z".to_owned();
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[ahead, tern.clone()])),
+            Some("tern"),
+            "a room dated ten minutes ahead is no more heard than one ten behind"
+        );
+        let mut stale = kestrel;
+        stale.room.as_mut().expect("a room").said_at = "2026-10-29T05:50:00Z".to_owned();
+        let decision = decide_at(
+            &needing(Vec::new()),
+            &[stale, tern],
+            &Loads::new(),
+            now(),
+            &mut first,
+            &Weights::STARTING,
+        );
+        assert_eq!(placed(&decision.placement), Some("tern"));
+        assert!(
+            !decision.judged[0].saturated,
+            "a room said ten minutes ago says nothing of its processors now"
+        );
+        let Placement::Placed { passed, .. } = decision.placement else {
+            panic!("tern takes it");
+        };
+        assert_eq!(
+            passed[0].because,
+            [Because::Unheard],
+            "and is passed for being unheard, not for an old pressure"
         );
     }
 
@@ -1646,7 +1761,7 @@ pub(crate) mod tests {
 
         let mut filling = machine("tern", "linux", 56, &[]);
         filling.disk_band = Some(Band::Filling);
-        let healthy = pressed(machine("osprey", "linux", 4, &[]), 80.0);
+        let healthy = pressed(machine("osprey", "linux", 4, &[]), 75.0);
         assert_eq!(
             placed(&place(&needing(Vec::new()), &[healthy, filling])),
             Some("tern"),
@@ -1667,7 +1782,10 @@ pub(crate) mod tests {
             Some("skiff"),
             "a tenth busy has more room than nine tenths"
         );
-        let pressed_quiet = pressed(machine("skiff", "linux", 32, &[]), 95.0);
+        // Pressed short of saturated, so the two rank in one tier and
+        // only their headroom tells them apart.
+        busy.cpu.busy = Some(0.5);
+        let pressed_quiet = pressed(machine("skiff", "linux", 32, &[]), 79.0);
         assert_eq!(
             placed(&place(&needing(Vec::new()), &[busy, pressed_quiet])),
             Some("kestrel"),

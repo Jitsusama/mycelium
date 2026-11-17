@@ -1179,16 +1179,17 @@ and `disk-pressure` (its `disk_band` past
 20%, when it is let sleep), which is `never`. A machine qualifies when
 it is in reach, leaves after the work ends (now, for work that doesn't
 say how long it lasts), is what each need asks (a fact it never said
-meets none), and carries no `never` taint the work doesn't tolerate. Of
-those, one saturated goes after every one that isn't: it carries a
-`cpu-saturated` the work doesn't tolerate, from a `room` said lately,
-so work starts where it runs at once, and still goes to the roomiest
-where every machine is saturated, never refused. Then one that is over
-goes after every one that isn't: over, it
-carries a `memory-pressure` or `cpu-pressure` the work doesn't
-tolerate, or its `room` is unknown or was said more than three minutes
-ago (three of the minutes a link carries it in), which earns it no
-processor or memory headroom. Then the most preferences met goes first,
+meets none), and carries no `never` taint the work doesn't tolerate.
+Those rank in four tiers, each after the one before: heard and neither
+over nor saturated; heard and over; heard and saturated; then unheard.
+Heard, its `room` was said within three minutes either way (three of
+the minutes a link carries it in); an unheard room earns no processor
+or memory headroom. Over, it carries a `memory-pressure` or
+`cpu-pressure` the work doesn't tolerate. Saturated, it carries a
+`cpu-saturated` the work doesn't tolerate, so work starts where it runs
+at once, and still goes to the roomiest where every machine is
+saturated, never refused; an unheard room is never saturated, nor
+passed for it. Within a tier, the most preferences met goes first,
 then the most headroom, then by name; of the first and each as good but
 for headroom within 0.05 of it (`NEAR_BEST`), one is chosen at random,
 so asks alike spread rather than herd. Headroom is one sum, its weights

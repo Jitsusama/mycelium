@@ -15,7 +15,10 @@
 //!
 //! Whether the machine is under pressure is the queue's own verdict, the
 //! limits it is past by name, never the queue's numbers judged again
-//! here, which would drift from the queue's own rules.
+//! here, which would drift from the queue's own rules. Placement's
+//! saturation is a different question, asked of sessions rather than of
+//! the queue's builds: whether so much waits on the processors that a
+//! session started there is slow, which no queue rule answers.
 
 use std::collections::BTreeSet;
 use std::fs;
