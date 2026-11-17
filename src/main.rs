@@ -2563,8 +2563,12 @@ fn print_records(socket: &Path, kind: &str) -> io::Result<()> {
 }
 
 fn print_line(value: &impl serde::Serialize) -> io::Result<()> {
-    let mut out = io::stdout().lock();
-    serde_json::to_writer(&mut out, value).map_err(io::Error::other)?;
+    write_line(&mut io::stdout().lock(), value)
+}
+
+/// Writes `value` to `out` as a JSON line.
+fn write_line(out: &mut impl Write, value: &impl serde::Serialize) -> io::Result<()> {
+    serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
     writeln!(out)
 }
 
@@ -2599,7 +2603,30 @@ mod tests {
 
     use super::{
         Action, Command, HELP_WIDTH, SwarmAsked, Tree, in_place, reader_left, swarm_asked, tree,
+        write_line,
     };
+
+    /// A reader that has gone, as `| head` is once it has read enough.
+    struct Gone;
+
+    impl io::Write for Gone {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_line_its_reader_left_says_the_pipe_broke_so_the_answer_ends_quietly() {
+        let wrote = write_line(&mut Gone, &serde_json::json!({ "sessions": [1, 2, 3] }));
+        assert_eq!(
+            wrote.map_err(|error| error.kind()),
+            Err(io::ErrorKind::BrokenPipe),
+            "a broken pipe, not an error of its own, or `| head` reads as a failure"
+        );
+    }
 
     #[test]
     fn a_reader_that_left_ends_the_answer_quietly_and_only_it() {
