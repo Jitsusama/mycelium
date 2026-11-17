@@ -13,7 +13,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::placement::{Need, Work};
-use crate::wire::Start;
+use crate::wire::{Sprout, Start};
 
 /// What a sprout is given: a link, which the session seeds its quest
 /// from, or words, which name the work themselves.
@@ -107,7 +107,7 @@ impl Disk for ThisDisk {
 }
 
 /// `path` with its `.` and `..` worked out from its words alone.
-fn lexical(path: &Path) -> PathBuf {
+pub(crate) fn lexical(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {
@@ -312,6 +312,59 @@ pub fn command(first_words: &str) -> Vec<String> {
         format!("QUEST_WORKFLOW_FIRST_TEXT={first_words}"),
         "pi".to_owned(),
     ]
+}
+
+/// What the sprout `asked` starts, asked from `cwd` by someone whose home
+/// is `home`, its folders found on `disk`: on the machine it names, or
+/// `here`, in the folder found, as `disk` resolves it where it's this
+/// machine's, so what starts is what was judged rather than what its
+/// words would point at by then, and named within home, where only the
+/// machine it starts on knows where home is.
+///
+/// # Errors
+///
+/// When it says no work, names a cell that isn't one, or finds no folder
+/// a sprout may begin in ([`folder`]).
+pub fn starting(
+    asked: &Sprout,
+    cwd: &Path,
+    home: &Path,
+    here: &str,
+    disk: &impl Disk,
+) -> Result<Start, String> {
+    let seed = Seed::of(&asked.words);
+    if seed.is_empty() {
+        return Err("say what the work is: a link or words".to_owned());
+    }
+    let from = asked.from.as_deref().map(origin_cell).transpose()?;
+    let on_here = asked.on.is_none();
+    let found = folder(
+        Asked {
+            folder: asked.folder.as_deref(),
+            cwd,
+            home,
+            here: on_here,
+        },
+        &seed,
+        disk,
+    )?;
+    let found = if on_here {
+        disk.resolved(&found)
+    } else {
+        found
+    };
+    let machine = asked.on.as_deref().unwrap_or(here);
+    Ok(start(machine, Some(within_home(found, home)), &seed, from))
+}
+
+/// `folder` as a path within `home` where it's there, so the machine it
+/// starts on finds it in its own home, and as it is where it isn't.
+#[must_use]
+pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
+    match folder.strip_prefix(home) {
+        Ok(within) => within.to_owned(),
+        Err(_) => folder,
+    }
 }
 
 /// What a sprout asks the node to start: its session on `machine` and
@@ -650,6 +703,67 @@ mod tests {
         let ran = guarded(&work, home.path());
         assert!(ran.status.success());
         assert_eq!(String::from_utf8_lossy(&ran.stdout), "ran\n");
+    }
+
+    fn sprouting(words: &str, folder: Option<&str>, on: Option<&str>) -> Sprout {
+        Sprout {
+            words: words.split_whitespace().map(str::to_owned).collect(),
+            folder: folder.map(PathBuf::from),
+            from: None,
+            on: on.map(str::to_owned),
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn a_sprout_here_begins_in_its_folder_as_the_disk_resolves_it_within_home() {
+        let disk = Held::of(&["/home/kestrel/src/rows"], &[])
+            .linking("/home/kestrel/src/rows", "/home/kestrel/work/rows");
+        let start = starting(
+            &sprouting("tidy the rows", Some("src/rows"), None),
+            Path::new("/home/kestrel"),
+            Path::new("/home/kestrel"),
+            "osprey",
+            &disk,
+        )
+        .expect("it starts");
+        assert_eq!(start.folder, Some(PathBuf::from("work/rows")));
+        assert_eq!(start.work.needs, [Need::Machine("osprey".to_owned())]);
+        assert!(!start.may_cost);
+    }
+
+    #[test]
+    fn a_sprout_on_another_machine_leaves_its_folder_to_that_machine() {
+        let start = starting(
+            &sprouting("tidy the rows", Some("src/rows"), Some("tern")),
+            Path::new("/home/kestrel"),
+            Path::new("/home/kestrel"),
+            "osprey",
+            &Held::of(&[], &[]),
+        )
+        .expect("it starts");
+        assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
+        assert_eq!(start.work.needs, [Need::Machine("tern".to_owned())]);
+    }
+
+    #[test]
+    fn a_sprout_with_no_words_or_a_folder_not_here_is_refused() {
+        let home = Path::new("/home/kestrel");
+        let nothing = Held::of(&[], &[]);
+        assert_eq!(
+            starting(&sprouting("", None, None), home, home, "osprey", &nothing),
+            Err("say what the work is: a link or words".to_owned())
+        );
+        assert_eq!(
+            starting(
+                &sprouting("x", Some("src/gone"), None),
+                home,
+                home,
+                "osprey",
+                &nothing
+            ),
+            Err("/home/kestrel/src/gone isn't a folder here".to_owned())
+        );
     }
 
     #[test]

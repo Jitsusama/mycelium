@@ -47,11 +47,12 @@ use crate::room;
 use crate::run;
 use crate::served::{self, Served};
 use crate::share::exchange::Places;
+use crate::sprout;
 use crate::state::State;
 use crate::steer::{self, Steer};
 use crate::store::{self, Change, Store};
 use crate::wire::{
-    Answer, By, Draft, Event, Offers, Ran, Reply, Request, Response, Run, Start, Started,
+    Answer, By, Draft, Event, Offers, Ran, Reply, Request, Response, Run, Sprout, Start, Started,
 };
 use crate::within;
 use crate::{unanswered, words};
@@ -60,6 +61,8 @@ use turns::{Asked, Turns};
 mod asker;
 pub use asker::Processes;
 mod cell;
+#[cfg(target_os = "linux")]
+mod viewed;
 pub use cell::records as cell_records;
 mod crossing;
 mod ended;
@@ -276,6 +279,45 @@ const ENDS_SETTLE: i64 = 0;
 fn shown_since() -> jiff::Timestamp {
     let now = jiff::Timestamp::now();
     now.checked_sub(kept::SHOWN_FOR).unwrap_or(now)
+}
+
+/// The start a sprout asked `by` someone makes on `here`, judged on the
+/// disk as the asker sees it where `processes` shows it: the asker's
+/// process and its start ticks as it connected. Where that can't be
+/// read, the person's ask is judged on this disk from where it says it
+/// is, and an agent's is refused, since its view is the bound.
+fn sprouted(
+    asked: &Sprout,
+    by: By,
+    connected: Option<(i32, u64)>,
+    processes: &Processes,
+    home: &Path,
+    here: &str,
+) -> Result<Start, String> {
+    #[cfg(target_os = "linux")]
+    let unseen = match (connected, processes) {
+        (Some((pid, ticks)), Processes::Folder(procs)) => {
+            match viewed::Viewed::of(procs, pid, ticks) {
+                Ok(view) => return sprout::starting(asked, view.cwd(), home, here, &view),
+                Err(why) => why,
+            }
+        }
+        _ => "the asker's folders can't be read here".to_owned(),
+    };
+    #[cfg(not(target_os = "linux"))]
+    let unseen = {
+        let _ = (connected, processes);
+        "the asker's folders can't be read here".to_owned()
+    };
+    match by {
+        By::Person => {
+            let cwd = asked.cwd.as_deref().unwrap_or(home);
+            sprout::starting(asked, cwd, home, here, &sprout::ThisDisk)
+        }
+        By::Agent(_) => Err(format!(
+            "an agent's sprout is judged on the disk as it sees it, and {unseen}"
+        )),
+    }
 }
 
 /// The groups the mesh put each session on `machine` in, running or
@@ -1044,6 +1086,10 @@ struct Shared<S> {
     /// The process at the other end of the connection served, as the
     /// kernel says, or none for the node's own loop and one it won't name.
     client: Option<i32>,
+    /// When that process started, in clock ticks since boot, read as it
+    /// connected, so a later read of it can tell its id wasn't taken
+    /// again; none where it can't be read, as on a Mac.
+    client_started: Option<u64>,
     /// Where it keeps each carry an orchestrator ordered.
     carries: PathBuf,
     /// What lets go of the trees a carry ordered from here left, once it
@@ -1235,6 +1281,7 @@ impl<S: Clone> Clone for Shared<S> {
             steers: self.steers.clone(),
             processes: self.processes.clone(),
             client: self.client,
+            client_started: self.client_started,
             carries: self.carries.clone(),
             settles: self.settles.clone(),
             scratch: self.scratch.clone(),
@@ -1842,6 +1889,7 @@ impl<S: Store> Shared<S> {
             shares: sharing.clone().map(Arc::new),
             claiming: Arc::default(),
             client: None,
+            client_started: None,
             served: Arc::new(Served::start(serves)),
             builders: Arc::new(Builders::start(builders)),
             murmurs: Arc::new(Murmurs::start(scratch, hello.machine.clone())),
@@ -2881,6 +2929,7 @@ impl<S: Store> Shared<S> {
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
             Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
+            Request::Sprout(_) => Err("a sprout is answered by `sprout`".to_owned()),
             Request::Run(_) => Err("a run is answered by `run`".to_owned()),
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
             Request::Steer { .. } => Err("a steer is answered by `steer`".to_owned()),
@@ -3848,6 +3897,30 @@ impl<S: Store> Shared<S> {
         self.store.ended(pid);
     }
 
+    /// Starts a session of new work held in no window, as `mycelium
+    /// sprout` asks, in the folder its asker would find: judged on the
+    /// disk as the asker sees it, so an agent never has a session begun
+    /// where it couldn't reach itself. Where the asker's view can't be
+    /// read, the person's ask is judged on the node's disk and an agent's
+    /// is refused. It starts as a [`Start`] does, under the same limits.
+    async fn sprout(&self, mut asked: Sprout) -> Reply {
+        let (by, _) = self.judged().await?;
+        let home = std::env::home_dir().ok_or("the node has no home folder")?;
+        // Naming this machine is asking here, so its folder is judged.
+        if asked.on.as_deref() == Some(self.machine.as_str()) {
+            asked.on = None;
+        }
+        let here = self.machine.clone();
+        let (client, started, processes) =
+            (self.client, self.client_started, self.processes.clone());
+        let start = tokio::task::spawn_blocking(move || {
+            sprouted(&asked, by, client.zip(started), &processes, &home, &here)
+        })
+        .await
+        .map_err(|error| format!("the sprout couldn't be judged: {error}"))??;
+        self.start(start).await
+    }
+
     /// Starts a program held on the machine placement chooses, answering
     /// where and how to join it, or why it didn't start. Where none of the
     /// realm's machines takes it, on a machine made for it: one that costs
@@ -4357,6 +4430,10 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
     // say it is present for another, nor an agent's steer as the person.
     let process = stream.peer_cred().ok().and_then(|cred| cred.pid());
     shared.client = process;
+    shared.client_started = match (process, shared.processes.as_ref()) {
+        (Some(pid), Processes::Folder(procs)) => asker::started(procs, pid),
+        _ => None,
+    };
     let (reading, mut writing) = stream.into_split();
     let mut lines = BufReader::new(reading).lines();
     while let Ok(Some(line)) = lines.next_line().await {
@@ -4420,6 +4497,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
         }
         let reply: Answer = match request {
             Ok(Request::Start(asked)) => shared.start(asked).await.into(),
+            Ok(Request::Sprout(asked)) => shared.sprout(asked).await.into(),
             Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
             Ok(Request::End { held }) => shared.end(&held).await.into(),
             Ok(Request::Orchestrates { heads, quests }) => {
@@ -11987,5 +12065,56 @@ esac
             "another program of the same file name isn't it"
         );
         assert_eq!(still_asked(&providers, "/opt/bin/rent"), None);
+    }
+
+    fn sprout_here(cwd: Option<&Path>) -> Sprout {
+        Sprout {
+            words: vec!["tidy".to_owned(), "the".to_owned(), "rows".to_owned()],
+            folder: None,
+            from: None,
+            on: None,
+            cwd: cwd.map(Path::to_owned),
+        }
+    }
+
+    #[test]
+    fn an_agents_sprout_whose_view_cant_be_read_is_refused_whatever_it_says() {
+        let place = tempfile::tempdir().expect("a place");
+        let rows = place.path().join("src/rows");
+        fs::create_dir_all(rows.join(".git")).expect("a checkout");
+
+        let refused = sprouted(
+            &sprout_here(Some(&rows)),
+            By::Agent(crate::declared::Kind::Fence),
+            None,
+            &Processes::Listed,
+            place.path(),
+            "osprey",
+        );
+
+        assert_eq!(
+            refused,
+            Err("an agent's sprout is judged on the disk as it sees it, and the asker's folders can't be read here".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_persons_sprout_whose_view_cant_be_read_begins_where_it_says_it_is() {
+        let place = tempfile::tempdir().expect("a place");
+        let home = place.path().canonicalize().expect("real");
+        let rows = home.join("src/rows");
+        fs::create_dir_all(rows.join(".git")).expect("a checkout");
+
+        let start = sprouted(
+            &sprout_here(Some(&rows)),
+            By::Person,
+            None,
+            &Processes::Listed,
+            &home,
+            "osprey",
+        )
+        .expect("it starts");
+
+        assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
     }
 }
