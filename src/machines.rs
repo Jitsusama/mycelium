@@ -24,6 +24,12 @@ const GIB: u64 = 1 << 30;
 /// Tenths at and past which an amount is said whole.
 const WHOLE_FROM: u64 = 100;
 
+/// The endings of an update that ask nothing of a person.
+const SETTLED: [&str; 2] = ["done", "unchanged"];
+
+/// The words of a machine's own health that ask for a person's look.
+const AILING: [&str; 2] = ["watch", "bad"];
+
 /// What each machine's row says, column by column.
 const MACHINE_COLUMNS: [&str; 7] = [
     "machine",
@@ -102,10 +108,17 @@ pub fn one(machine: &Machine, look: &Look) -> String {
         ("memory", memory(machine)),
         ("disk", disk(machine)),
         ("power", power(machine)),
+        ("health", health(machine)),
         ("reaches", reaches.join(", ")),
         ("updated", updated(machine, look)),
+        (
+            "measured",
+            look.when(&machine.measured_at).unwrap_or_default(),
+        ),
     ];
-    let mut out = format!("{}  {}\n", machine.name, state(machine.state));
+    let heading = format!("{}  {}", machine.name, state(machine.state));
+    let mut out = fit(&heading, look.width);
+    out.push('\n');
     out.push_str(&labelled(&lines, look));
     for line in worth_a_look(machine, look) {
         out.push_str(&wrapped(&line, HANGING, "    ", look.width));
@@ -122,7 +135,8 @@ pub fn one_builder(builder: &Builder, look: &Look) -> String {
         ("supports", builder.supported.join(", ")),
         ("says", builder.said.clone().unwrap_or_default()),
     ];
-    let mut out = format!("{}  {}\n", builder.name, builder.state);
+    let mut out = fit(&format!("{}  {}", builder.name, builder.state), look.width);
+    out.push('\n');
     out.push_str(&labelled(&lines, look));
     out
 }
@@ -205,11 +219,13 @@ fn builder_row(builder: &Builder) -> Vec<String> {
 }
 
 /// What about `machine` is worth a person's look, a line each: an update
-/// that failed, a disk filling, or the queue's limits it is at.
+/// that ended unsettled, its own health ailing, a disk filling, or the
+/// queue's limits it is at.
 fn worth_a_look(machine: &Machine, look: &Look) -> Vec<String> {
     let mut worth = Vec::new();
     let update = machine.updated.as_ref();
-    if update.and_then(|update| update["step"].as_str()) == Some("failed") {
+    let step = update.and_then(|update| update["step"].as_str());
+    if let Some(step) = step.filter(|step| !SETTLED.contains(step)) {
         let why = update
             .and_then(|update| update["why"].as_str())
             .unwrap_or("it said no more");
@@ -218,7 +234,11 @@ fn worth_a_look(machine: &Machine, look: &Look) -> Vec<String> {
             .and_then(|at| look.when(at))
             .map(|when| format!(" at {when}"))
             .unwrap_or_default();
-        worth.push(format!("{}'s update failed{when}: {why}", machine.name));
+        worth.push(format!("{}'s update {step}{when}: {why}", machine.name));
+    }
+    let word = machine.health.as_ref().map(|health| health.health.as_str());
+    if word.is_some_and(|word| AILING.contains(&word)) {
+        worth.push(format!("{}'s health is {}", machine.name, health(machine)));
     }
     match machine.disk_band {
         Some(Band::NearlyFull) => worth.push(format!("{}'s disk is nearly full", machine.name)),
@@ -316,6 +336,25 @@ fn updated(machine: &Machine, look: &Look) -> String {
     match update["at"].as_str().and_then(|at| look.when(at)) {
         Some(when) => format!("{step} {when}"),
         None => step.to_owned(),
+    }
+}
+
+/// How `machine` stands as its own health daemon says, with each part
+/// that isn't good, or nothing where none says.
+fn health(machine: &Machine) -> String {
+    let Some(health) = machine.health.as_ref() else {
+        return String::new();
+    };
+    let ailing: Vec<String> = health
+        .parts
+        .iter()
+        .filter(|(_, word)| *word != "good")
+        .map(|(part, word)| format!("{part} {word}"))
+        .collect();
+    if ailing.is_empty() {
+        health.health.clone()
+    } else {
+        format!("{} ({})", health.health, ailing.join(", "))
     }
 }
 
@@ -462,8 +501,65 @@ mod tests {
              \x20 power     mains 76%\n\
              \x20 reaches   home\n\
              \x20 updated   done 16:29\n\
+             \x20 measured  16:59\n\
              \x20 kestrel is at its queue's memory limit, so it starts no more heavy work\n"
         );
+    }
+
+    #[test]
+    fn an_amount_is_said_in_tenths_below_ten_and_whole_from_ten() {
+        assert_eq!(amount(1_540_000_000, GB), "1.5");
+        assert_eq!(amount(1_550_000_000, GB), "1.6");
+        assert_eq!(amount(0, GB), "0.0");
+        assert_eq!(amount(9_949_999_999, GB), "9.9");
+        assert_eq!(amount(9_950_000_000, GB), "10");
+        assert_eq!(amount(10_500_000_000, GB), "11");
+        assert_eq!(amount(3 * GIB + GIB / 4, GIB), "3.3");
+        assert_eq!(amount(u64::MAX, GB), "18446744074");
+    }
+
+    #[test]
+    fn a_name_wider_than_the_terminal_is_cut_to_it() {
+        let mut wide = kestrel();
+        wide.name = "a-machine-named-past-any-narrow-terminal".to_owned();
+        let drawn = [
+            table(&[wide.clone()], &[], &look(20)),
+            one(&wide, &look(20)),
+        ]
+        .concat();
+        let long: Vec<&str> = drawn
+            .lines()
+            .filter(|line| line.chars().count() > 20)
+            .collect();
+        assert!(long.is_empty(), "lines past 20 columns: {long:?}");
+        assert!(
+            drawn.starts_with("machine\na-machine-named-pas…\n"),
+            "{drawn}"
+        );
+    }
+
+    #[test]
+    fn an_ailing_health_and_an_unsettled_update_are_worth_a_look() {
+        let mut ailing = kestrel();
+        ailing.room = None;
+        ailing.health = serde_json::from_value(
+            json!({"health": "bad", "parts": {"disk": "bad", "memory": "good"}}),
+        )
+        .expect("a health");
+        ailing.updated = Some(json!({"step": "refused", "at": "2026-11-12T16:29:02Z",
+            "why": "the tree is dirty"}));
+        let drawn = one(&ailing, &look(100));
+        assert!(drawn.contains("  health    bad (disk bad)\n"), "{drawn}");
+        assert!(
+            drawn.ends_with(
+                "  kestrel's update refused at 16:29: the tree is dirty\n\
+                 \x20 kestrel's health is bad (disk bad)\n"
+            ),
+            "{drawn}"
+        );
+        ailing.health = serde_json::from_value(json!({"health": "good"})).expect("a health");
+        ailing.updated = Some(json!({"step": "unchanged"}));
+        assert_eq!(worth_a_look(&ailing, &look(100)), Vec::<String>::new());
     }
 
     #[test]

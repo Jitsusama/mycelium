@@ -778,7 +778,7 @@ fn tree(action: &Action) -> Option<Result<Tree, String>> {
             name: Some(name),
             format,
         } => Tree::Machine(name.clone(), *format),
-        Action::Machine { name: Some(name) } => Tree::Machine(name.clone(), None),
+        Action::Machine { name: Some(name) } => Tree::Machine(name.clone(), Some(Format::Json)),
         Action::Holds(holds) => return Some(holds_asked(holds)),
         Action::Held => Tree::Holds,
         Action::Attach(Attaching {
@@ -2872,11 +2872,6 @@ mod tests {
         Command::command().debug_assert();
         let pi = || vec!["pi".to_owned()];
         for (old, new, both) in [
-            (
-                "machine tern",
-                "machines tern",
-                Tree::Machine("tern".to_owned(), None),
-            ),
             ("held", "holds", Tree::Holds),
             (
                 "attach h0",
@@ -2923,6 +2918,20 @@ mod tests {
             asked("machine"),
             Ok(Tree::ThisMachine),
             "the old singular, bare, this one"
+        );
+        assert_eq!(
+            asked("machine tern"),
+            Ok(Tree::Machine("tern".to_owned(), Some(super::Format::Json))),
+            "the old singular, named, as the JSON it always printed"
+        );
+        assert_eq!(
+            asked("machines tern"),
+            Ok(Tree::Machine("tern".to_owned(), None)),
+            "one machine, drawn on a terminal"
+        );
+        assert!(
+            super::drawn(Some(super::Format::Text)) && !super::drawn(Some(super::Format::Json)),
+            "an output asked for is printed wherever it goes"
         );
         assert_eq!(
             asked("holds h0"),

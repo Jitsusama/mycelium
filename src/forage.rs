@@ -636,7 +636,12 @@ pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
                 let _ = writeln!(block, "{}", fit(&row, width));
             }
             if documents.is_empty() {
-                block.push_str("  No research, plans or reports yet.\n");
+                block.push_str(&wrapped(
+                    "No research, plans or reports yet.",
+                    "  ",
+                    "  ",
+                    width,
+                ));
             }
             block
         })
