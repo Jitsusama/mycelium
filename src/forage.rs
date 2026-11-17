@@ -93,7 +93,8 @@ pub struct Quest {
 /// the quest's waiting file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Wait {
-    /// Its id, which the launcher clears it by.
+    /// Its id, which the launcher clears it by, or its title when it has
+    /// none, as the launcher then knows it.
     pub id: String,
     /// What the person is asked to do, in a line.
     pub title: String,
@@ -110,9 +111,9 @@ pub struct Wait {
 }
 
 impl Wait {
-    /// The wait `item` says, or none without an id and a title. Any other
-    /// field missing, null or written wrong says nothing, so the wait
-    /// still shows.
+    /// The wait `item` says, or none without a title. Any other field
+    /// missing, null or written wrong says nothing, so the wait still
+    /// shows, known by its title when it has no id.
     fn of(item: &Value) -> Option<Self> {
         let said = |field: &str| {
             item[field]
@@ -120,9 +121,10 @@ impl Wait {
                 .filter(|text| !text.is_empty())
                 .map(str::to_owned)
         };
+        let title = said("title")?;
         Some(Self {
-            id: said("id")?,
-            title: said("title")?,
+            id: said("id").unwrap_or_else(|| title.clone()),
+            title,
             why: said("why").unwrap_or_default(),
             minutes: item["minutes"]
                 .as_u64()
@@ -704,7 +706,9 @@ impl WaitingFolder {
     /// Reads a folder no watch hears again on the next turn. The turn
     /// also looks whether the folder came or went, as a watch can miss
     /// either, as a Mac's was seen to; a watch on a missing folder's
-    /// parent is left as it is.
+    /// parent is left as it is. Turns come only while there is a
+    /// watcher; with none at all, only the five-minute round looks for
+    /// a folder made late.
     fn hark(&mut self) {
         self.again = self.again || self.deaf;
     }
@@ -1260,6 +1264,7 @@ mod tests {
              "raisedAt": "2026-11-16T18:00:00Z", "steps": ["look"]},
             {"id": "no-title"},
             {"id": "land", "title": "Pick a field"},
+            {"title": "Pick a hedge", "why": "It perches."},
             {"id": "odd", "title": "Odd fields", "why": null, "ready": null,
              "minutes": 2.5, "when": "", "raisedAt": 7},
         ]);
@@ -1292,6 +1297,15 @@ mod tests {
                     raised: None,
                 },
                 Wait {
+                    id: "Pick a hedge".to_owned(),
+                    title: "Pick a hedge".to_owned(),
+                    why: "It perches.".to_owned(),
+                    minutes: None,
+                    when: None,
+                    ready: false,
+                    raised: None,
+                },
+                Wait {
                     id: "odd".to_owned(),
                     title: "Odd fields".to_owned(),
                     why: String::new(),
@@ -1301,8 +1315,8 @@ mod tests {
                     raised: None,
                 },
             ],
-            "a wait with no title is left out, one with odd fields kept, and the \
-             cleared ones aren't read"
+            "a wait with no title is left out, one with no id known by its title, \
+             one with odd fields kept, and the cleared ones aren't read"
         );
         let (records, _) = records(&mut shelf, &[cell("QEST-20261116-KESTRL")], "kestrel");
         let forage = &records["forage:KESTRL"];
