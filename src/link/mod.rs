@@ -526,9 +526,9 @@ async fn measured_by(node: &std::path::Path) -> Option<Machine> {
 
 /// Where an end of a link reads what its machine declares.
 enum Declaring {
-    /// From this file, with the realm's kit in this folder, if the node
-    /// was given one.
-    File(PathBuf, Option<PathBuf>),
+    /// From this file, with the realm's kit as the node was given it, if
+    /// it was given one.
+    File(PathBuf, Option<hold::start::Kit>),
     /// From the node on this socket, asked for what it measures this
     /// machine to be, as a link another machine dialled does, since it
     /// runs apart from the node and is started by whatever SSH runs.
@@ -1507,7 +1507,7 @@ impl<S: Store> End<S> {
         };
         let machine = tokio::task::spawn_blocking(move || {
             let mut machine = facts::measure_in(&here, &realm, &sources);
-            machine.kit = kit.as_deref().and_then(facts::kit);
+            machine.kit = kit.as_ref().and_then(hold::start::Kit::said);
             machine
         })
         .await
@@ -2311,7 +2311,7 @@ mod tests {
             steers: dir.path().join("steer"),
             health: None,
             declared: Some(dir.path().join("declared.json")),
-            kit: Some(kit),
+            kit: Some(hold::start::Kit::Carried(kit)),
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();

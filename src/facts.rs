@@ -112,8 +112,14 @@ pub struct Kit {
     /// version: two machines with the same path have the same tools.
     pub path: String,
     /// The name of each tool in its `bin`, in order as this node lists
-    /// them, though a record read from another may not be.
+    /// them, though a record read from another may not be. None where it
+    /// is refused.
     pub tools: Vec<String>,
+    /// Why its node leaves it off every path, where it does: its path is
+    /// then the folder as given, and it names no tools, so a node too old
+    /// to read why still finds none in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
 }
 
 impl Kit {
@@ -143,6 +149,7 @@ pub fn kit(folder: &Path) -> Option<Kit> {
     Some(Kit {
         path: path.display().to_string(),
         tools,
+        refused: None,
     })
 }
 
@@ -875,6 +882,7 @@ mod tests {
             Kit {
                 path: resolved.display().to_string(),
                 tools: ["gh", "git", "websocat"].map(str::to_owned).to_vec(),
+                refused: None,
             },
             "its tools, sorted, and no start-up file among them"
         );
@@ -916,6 +924,7 @@ mod tests {
         machine.kit = Some(Kit {
             path: "/nix/store/kit".to_owned(),
             tools: vec!["gh".to_owned()],
+            refused: None,
         });
         let said = serde_json::to_value(&machine).expect("it says itself");
         assert_eq!(
@@ -924,6 +933,24 @@ mod tests {
             "a kit is said as PROTOCOL.md says it"
         );
         let heard: Machine = serde_json::from_value(said).expect("a record with a kit is heard");
+        assert_eq!(heard.kit, machine.kit, "and heard as it was said");
+
+        machine.kit = Some(Kit {
+            path: "/home/kit".to_owned(),
+            tools: Vec::new(),
+            refused: Some("its bin may be written by others".to_owned()),
+        });
+        let said = serde_json::to_value(&machine).expect("it says itself");
+        assert_eq!(
+            said["kit"],
+            serde_json::json!({
+                "path": "/home/kit",
+                "tools": [],
+                "refused": "its bin may be written by others"
+            }),
+            "a refused kit is said with why, and no tools"
+        );
+        let heard: Machine = serde_json::from_value(said).expect("a refused kit is heard");
         assert_eq!(heard.kit, machine.kit, "and heard as it was said");
     }
 

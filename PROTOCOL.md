@@ -1010,22 +1010,27 @@ run the node starts finds first on its path. It carries `path`, where
 the folder is with any link to it resolved, which names its version
 where it is in the Nix store, and `tools`, the name of each entry in
 its `bin`, leaving out any beginning with a dot, in an order nothing
-should lean on. It is absent where the node is given no kit, its `bin`
-can't be listed, or the node is too old to say, and absent reads as
+should lean on. Where the node refuses the kit it carries `refused`,
+why, with `path` the folder as it was given and `tools` empty, so a
+node too old to read why still finds no tool there. It is absent where
+the node is given no kit or is too old to say, and absent reads as
 unknown. Both the node a machine dialled and the links it keeps say it.
 
 A kit is a whole path holding no colon, which the node refuses
 otherwise. Its tools come first for every session and run, an agent's
 fenced ones too, so it belongs where no agent can write, such as the
-Nix store or a link only root can repoint; the node says at its start
-what the kit holds, and where an account but root could change its
-`bin` or any tool in it, or where a tool leads. It says so rather than
-refusing the kit, since the configuration that names the kit also writes
-the node's own unit, and refusing would take the tools from every
-session. A
-session held while the kit changes keeps the folder it was given, so a
-link the configuration moves to each new kit reaches it when it wakes,
-where a store path pins the old one until it is collected.
+Nix store. The node checks it once, as it starts: where an account but
+root could change its `bin` or any tool in it, or where a tool leads, or
+where its `bin` can't be listed, the node refuses it, still starting
+but leaving the kit off every path, and says why at its start and in
+its machine's `kit`. A tool an agent could replace would otherwise run
+as every session and run that asks for it, other machines' among them.
+A kit it carries goes on each path as the folder it resolved to when
+checked, so a link repointed since changes nothing, and a session held
+while the kit changes keeps the folder it was given, which a store path
+pins until it is collected. A session held by an older node keeps the
+words it was started with, so a node taking up a kit changes none
+already held.
 
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,

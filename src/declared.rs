@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::hold::start::Kit;
+
 /// What a machine's configuration says of it. Tests alone have a
 /// default, declaring nothing at all: no reach, no taints, no fence,
 /// which as a real machine's word would read as looser ground.
@@ -315,49 +317,70 @@ pub fn said_at_start(file: &Path, declarers: &[u32]) -> String {
     )
 }
 
-/// What a node says as it starts of the realm's kit it was given in
-/// `kit`: what it holds, which every session and run it starts finds first
-/// on its path, and whether an account but `declarers` could change that,
-/// since an agent among them could put its own program in a tool's place.
-/// The verdict comes before the tools, and each is said escaped, so a
-/// tool's name can't pass for the verdict.
+/// The realm's kit given in `kit`, as a node may carry it: carried, at the
+/// folder it resolves to now, only where no account but `declarers` can
+/// change its `bin` or any tool in it, and refused otherwise, or where its
+/// tools can't be listed. A kit goes first on the path of every session and
+/// fenced run the node starts, other machines' asks among them, so a tool
+/// an agent could replace would run as everything that asks for it;
+/// refusing leaves each the path its login profile gives. The folder
+/// carried is the one checked, so a link repointed since changes nothing.
 #[must_use]
-pub fn kit_said_at_start(kit: &Path, declarers: &[u32]) -> String {
-    let Some(listed) = crate::facts::kit(kit) else {
+pub fn kit_checked(kit: &Path, declarers: &[u32]) -> Kit {
+    let refused = |why: String| Kit::Refused {
+        given: kit.to_owned(),
+        why,
+    };
+    let listed = fs::canonicalize(kit)
+        .ok()
+        .and_then(|folder| crate::facts::kit(&folder).map(|listed| (folder, listed)));
+    let Some((folder, listed)) = listed else {
         let why = fs::read_dir(kit.join("bin"))
             .err()
             .map_or_else(|| "it moved as it was read".to_owned(), |e| e.to_string());
-        return format!(
-            "puts the realm's kit at {} first on each path, but can't list its bin ({why}), so \
-             names no kit",
-            kit.display()
-        );
+        return refused(format!("its bin can't be listed ({why})"));
     };
     // Each tool as well as the folder holding it, since a tool that is a
     // link is only as sealed as where it leads.
-    let bin = kit.join("bin");
-    let verdict = sealed(&bin, declarers)
-        .and_then(|()| {
-            listed
-                .tools
+    let bin = folder.join("bin");
+    match sealed(&bin, declarers).and_then(|()| {
+        listed
+            .tools
+            .iter()
+            .try_for_each(|tool| sealed(&bin.join(tool), declarers))
+    }) {
+        Ok(()) => Kit::Carried(folder),
+        Err(why) => refused(format!("an agent could change what its tools are: {why}")),
+    }
+}
+
+/// What a node says as it starts of the realm's `kit`: what it holds,
+/// which every session and run it starts finds first on its path, or that
+/// it is left off every path, and why. Each tool is said escaped, so a
+/// tool's name can't pass for the verdict.
+#[must_use]
+pub fn kit_said_at_start(kit: &Kit) -> String {
+    match kit {
+        Kit::Refused { given, why } => format!(
+            "leaves the realm's kit at {} off every path, since {why}",
+            given.display().to_string().escape_debug()
+        ),
+        Kit::Carried(folder) => {
+            let tools: Vec<String> = crate::facts::kit(folder)
+                .map(|listed| listed.tools)
+                .unwrap_or_default()
                 .iter()
-                .try_for_each(|tool| sealed(&bin.join(tool), declarers))
-        })
-        .map_or_else(
-            |why| format!("an agent could change what its tools are: {why}"),
-            |()| "only its declarers can change its tools".to_owned(),
-        );
-    let tools: Vec<String> = listed
-        .tools
-        .iter()
-        .map(|tool| tool.escape_debug().to_string())
-        .collect();
-    format!(
-        "puts the realm's kit at {} first on each path; {verdict}; {} tools: {}",
-        listed.path.escape_debug(),
-        tools.len(),
-        tools.join(" ")
-    )
+                .map(|tool| tool.escape_debug().to_string())
+                .collect();
+            format!(
+                "puts the realm's kit at {} first on each path, only its declarers able to \
+                 change its tools; {} tools: {}",
+                folder.display().to_string().escape_debug(),
+                tools.len(),
+                tools.join(" ")
+            )
+        }
+    }
 }
 
 /// How many links a path may pass through before it is taken as a loop,
@@ -603,13 +626,23 @@ mod tests {
     }
 
     #[test]
-    fn a_node_says_what_its_kit_holds_and_whether_an_agent_could_change_it() {
+    fn a_node_carries_a_kit_only_its_declarers_can_change_and_says_so() {
         let folder = tempfile::tempdir().expect("a temporary folder");
         let kit = folder.path().join("kit");
-        let unlisted = kit_said_at_start(&kit, &declarers());
+        let unlisted = kit_checked(&kit, &declarers());
         assert!(
-            unlisted.ends_with("), so names no kit") && unlisted.contains("can't list its bin ("),
-            "a kit with no bin to list is said to name none, and why: {unlisted}"
+            matches!(&unlisted, Kit::Refused { given, why }
+                if *given == kit && why.starts_with("its bin can't be listed (")),
+            "a kit with no bin to list is refused, and why: {unlisted:?}"
+        );
+        assert_eq!(
+            kit_said_at_start(&unlisted),
+            format!(
+                "leaves the realm's kit at {} off every path, since its bin can't be listed ({})",
+                kit.display(),
+                fs::read_dir(kit.join("bin")).expect_err("no bin")
+            ),
+            "and says so as it starts"
         );
         let bin = kit.join("bin");
         fs::create_dir_all(&bin).expect("its bin");
@@ -619,28 +652,54 @@ mod tests {
                 .expect("a tool only its owner writes");
         }
         let resolved = fs::canonicalize(&kit).expect("the kit resolves");
-        let tools = "3 tools: gcloud gh say\\nit";
+        // Given through a link, as a profile is, and repointed once checked.
+        let profile = folder.path().join("profile");
+        std::os::unix::fs::symlink(&kit, &profile).expect("a link to the kit");
+        let carried = kit_checked(&profile, &declarers());
         assert_eq!(
-            kit_said_at_start(&kit, &declarers()),
+            carried,
+            Kit::Carried(resolved.clone()),
+            "a kit only its declarers write is carried at the folder it was checked as"
+        );
+        fs::remove_file(&profile).expect("the link is taken away");
+        std::os::unix::fs::symlink(folder.path(), &profile).expect("and repointed");
+        assert_eq!(
+            carried.carried(),
+            Some(resolved.as_path()),
+            "so a link repointed since changes nothing"
+        );
+        assert_eq!(
+            kit_said_at_start(&carried),
             format!(
-                "puts the realm's kit at {} first on each path; only its declarers can change \
-                 its tools; {tools}",
+                "puts the realm's kit at {} first on each path, only its declarers able to \
+                 change its tools; 3 tools: gcloud gh say\\nit",
                 resolved.display()
             ),
-            "a kit only its declarers write is said as it is, a tool's odd name escaped"
+            "it is said as it is, a tool's odd name escaped"
         );
         fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o666))
             .expect("a tool anyone writes");
+        let why = format!(
+            "an agent could change what its tools are: {} may be written by others than its \
+             owner",
+            // Named as the walk reaches it, from the folder it resolves to.
+            resolved.join("bin").join("gh").display()
+        );
         assert_eq!(
-            kit_said_at_start(&kit, &declarers()),
+            kit_checked(&kit, &declarers()),
+            Kit::Refused {
+                given: kit.clone(),
+                why: why.clone(),
+            },
+            "a tool anyone writes, in a bin only its declarers write, refuses the kit"
+        );
+        assert_eq!(
+            kit_said_at_start(&kit_checked(&kit, &declarers())),
             format!(
-                "puts the realm's kit at {} first on each path; an agent could change what its \
-                 tools are: {} may be written by others than its owner; {tools}",
-                resolved.display(),
-                // Named as the walk reaches it, through any link above.
-                resolved.join("bin").join("gh").display()
+                "leaves the realm's kit at {} off every path, since {why}",
+                kit.display()
             ),
-            "a tool anyone writes in a bin only its declarers write is said to be changeable"
+            "and the node says why as it starts"
         );
     }
 
