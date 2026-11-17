@@ -114,19 +114,64 @@ fn read_lines(path: &std::path::Path) -> io::Result<String> {
     fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Whether a line of `settles.jsonl` has faded at `now`: one kept more
-/// than `FADES_AFTER` ago, since its carry was ordered before then and
-/// is no longer looked at, and one torn by a write cut short, which is
-/// read as nothing already. One whose time can't be read stays.
-fn faded(line: &str, now: jiff::Timestamp) -> bool {
+/// What becomes of a line of `settles.jsonl` as another is kept.
+#[derive(Debug, PartialEq, Eq)]
+enum Fading {
+    /// Kept more than `FADES_AFTER` ago, since its carry was ordered
+    /// before then and is no longer looked at, or torn by a write cut
+    /// short, which is read as nothing already: it goes.
+    Faded,
+    /// Kept within `FADES_AFTER`: it stays, and fades in its time.
+    Stays,
+    /// Its time can't be read, or lies more than `FADES_AFTER` ahead, so
+    /// it won't fade by itself: it stays, and is named.
+    Stuck,
+}
+
+/// What becomes of `line` at `now`.
+fn fading(line: &str, now: jiff::Timestamp) -> Fading {
     let Ok(line) = serde_json::from_str::<Value>(line) else {
-        return true;
+        return Fading::Faded;
     };
-    line["at"]
+    let Some(at) = line["at"]
         .as_str()
         .and_then(|at| at.parse::<jiff::Timestamp>().ok())
-        .and_then(|at| at.checked_add(FADES_AFTER).ok())
-        .is_some_and(|fades| fades < now)
+    else {
+        return Fading::Stuck;
+    };
+    let (Ok(fades), Ok(ahead)) = (at.checked_add(FADES_AFTER), now.checked_add(FADES_AFTER)) else {
+        return Fading::Stuck;
+    };
+    if fades < now {
+        Fading::Faded
+    } else if at > ahead {
+        Fading::Stuck
+    } else {
+        Fading::Stays
+    }
+}
+
+/// The lines of `before` that stay at `now`, each ending its line, and
+/// the names of those stuck (`Fading::Stuck`): each one's carry, quoted
+/// and escaped, or its line's number where it names no carry.
+fn fade(before: &str, now: jiff::Timestamp) -> (String, Vec<String>) {
+    let mut kept = String::new();
+    let mut stuck = Vec::new();
+    for (number, line) in (1..).zip(before.lines()) {
+        match fading(line, now) {
+            Fading::Faded => continue,
+            Fading::Stays => {}
+            Fading::Stuck => stuck.push(
+                serde_json::from_str::<Value>(line)
+                    .ok()
+                    .and_then(|line| line["carry"].as_str().map(|carry| format!("{carry:?}")))
+                    .unwrap_or_else(|| format!("line {number}")),
+            ),
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    (kept, stuck)
 }
 
 /// Whether `carry`, standing as `state`, is settled now on machine
@@ -517,11 +562,7 @@ impl Settler {
             Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
             Err(error) => return Err(error),
         };
-        let mut lines = String::new();
-        for kept in before.lines().filter(|kept| !faded(kept, now)) {
-            lines.push_str(kept);
-            lines.push('\n');
-        }
+        let (mut lines, stuck) = fade(&before, now);
         lines.push_str(&line.to_string());
         lines.push('\n');
         // Written aside and moved into place, so a reader or a node
@@ -541,6 +582,18 @@ impl Settler {
             // the rename to the system's own time.
             let _ = File::open(folder).and_then(|folder| folder.sync_all());
         }
+        drop(keeping);
+        if !stuck.is_empty() {
+            // Said once the line is kept, and never at its cost.
+            let _ = writeln!(
+                io::stderr(),
+                "{} keeps {} line(s) whose time can't be read or lies more than a fortnight \
+                 ahead, so they don't fade; removing them by hand clears this: {}",
+                self.settles.kept.display(),
+                stuck.len(),
+                stuck.join(", ")
+            );
+        }
         Ok(())
     }
 }
@@ -556,8 +609,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        ANSWERS_WITHIN, FADES_AFTER, LOOKED_FOR, Outcome, Settler, Settles, due, judged,
-        newest_each, stands_at, to_look_at,
+        ANSWERS_WITHIN, FADES_AFTER, Fading, LOOKED_FOR, Outcome, Settler, Settles, due, fade,
+        fading, judged, newest_each, stands_at, to_look_at,
     };
     use crate::carry::kept::{Kept, State};
 
@@ -712,6 +765,60 @@ mod tests {
         assert!(
             !dir.path().join("settles.jsonl.new").exists(),
             "nothing is left aside"
+        );
+    }
+
+    #[test]
+    fn a_line_fades_stays_or_is_stuck_by_its_time() {
+        let now = jiff::Timestamp::now();
+        let hours = |hours: i64| jiff::SignedDuration::from_hours(hours);
+        let at = |at: String| json!({"carry": "s-harbour:1", "at": at}).to_string();
+        let fortnight = FADES_AFTER.as_hours();
+        for (line, becomes) in [
+            ("{\"carry\":\"s-torn:1\",\"at\"".to_owned(), Fading::Faded),
+            (at((now - hours(fortnight + 1)).to_string()), Fading::Faded),
+            (at((now - hours(1)).to_string()), Fading::Stays),
+            (at((now + hours(1)).to_string()), Fading::Stays),
+            (at((now + hours(fortnight + 1)).to_string()), Fading::Stuck),
+            (at(jiff::Timestamp::MAX.to_string()), Fading::Stuck),
+            (at("soon".to_owned()), Fading::Stuck),
+            (json!({"carry": "s-untold:1"}).to_string(), Fading::Stuck),
+            (json!({"at": 7}).to_string(), Fading::Stuck),
+        ] {
+            assert_eq!(
+                fading(&line, now),
+                becomes,
+                "a torn or old line fades, one kept lately stays, and one whose time can't be \
+                 read, or lies past a fortnight ahead, is stuck: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_lines_that_stay_are_kept_and_the_stuck_named() {
+        let now = jiff::Timestamp::now();
+        let old = (now - jiff::SignedDuration::from_hours(FADES_AFTER.as_hours() + 1)).to_string();
+        let lately = json!({"carry": "s-lately:1", "at": now.to_string()}).to_string();
+        let marked = json!({"carry": "s-\u{1b}[31m:1", "at": "soon"}).to_string();
+        let unnamed = json!({"at": "soon"}).to_string();
+        let before = [
+            json!({"carry": "s-old:1", "at": old}).to_string(),
+            lately.clone(),
+            marked.clone(),
+            unnamed.clone(),
+        ]
+        .join("\n");
+
+        let (kept, stuck) = fade(&before, now);
+        assert_eq!(
+            kept,
+            [lately, marked, unnamed].map(|line| line + "\n").concat(),
+            "every line but the faded stays, each ending its line"
+        );
+        assert_eq!(
+            stuck,
+            ["\"s-\\u{1b}[31m:1\"", "line 4"],
+            "a stuck line is named by its carry, escaped, or by its line where it names none"
         );
     }
 
