@@ -747,18 +747,20 @@ steer reaches a session here, and only where the asker was the
 person's own, as this node judged it or, for a carry a link brought,
 as the linked node said it checked: `by` is `person`, as the node
 judged it, since a steer giving `by` is refused. It holds no `why`,
-`asker` or `chain`, since the person gives no reason and is ordered
-by nobody. A session
-of no quest is carried with no line, since nothing settles a carry
-without its quest. One that can't be kept isn't carried. It is then
-served, told to linked machines and settled as an ordered one is. A
-one-act carry asked of a node its quest doesn't run on is kept where
-it runs: that node takes the asker as the person's on the word of the
-node that asked it over the link, as it takes any steer a link
-carries, then steers its own sessions through its own socket, where
-it is the person's own login. A steer a link
-carries to an inbox keeps no line, since that end knows no sessions
-or quests.
+`asker`, `chain` or `source`, since the person gives no reason and is
+asked by nobody. Its quest is the one whose record the node serves
+holds the session running here, never the quest its presence claims.
+A carry naming no machine but this one, or of a session no quest's
+record holds running here, is carried with no line, since nothing
+settles a carry without its quest, and the node's log says why. One
+that can't be kept isn't carried. It is then served, told to linked
+machines and settled as one an orchestrator asked is. A one-act carry
+asked of a node its quest doesn't run on is kept where it runs: that
+node takes the asker as the person's on the word of the node that
+asked it over the link, as it takes any steer a link carries, then
+steers its own sessions through its own socket, where it is the
+person's own login. A steer a link carries to an inbox keeps no line,
+since that end knows no sessions or quests.
 
 ### A Machine Easing Itself
 

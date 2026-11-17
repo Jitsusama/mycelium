@@ -2836,14 +2836,28 @@ impl<S: Store> Shared<S> {
     /// this node saw who asked, never as the asker says, and with no why.
     /// Its quest is the one the quests' record the node serves holds its
     /// session in, as an ordered carry's is, never the quest its presence
-    /// claims. A session no one quest's record holds is carried with
-    /// nothing kept, since nothing settles a carry without its quest.
+    /// claims. A carry to no other machine, or of a session no quest's
+    /// record holds running here, is carried with nothing kept, since
+    /// nothing settles a carry without its quest, and the log says why.
     fn keep_persons_carry(&self, steer: &Steer, sessions: &[Session]) -> Result<(), String> {
         let carries = steer.body.get("act").and_then(serde_json::Value::as_str) == Some("carry");
         if !carries || !steer.checked {
             return Ok(());
         }
+        let unkept = |why: &str| {
+            eprintln!(
+                "the person's carry of {} keeps no line, so nothing lets go of the trees it \
+                 leaves here: {why}",
+                steer.address
+            );
+            Ok(())
+        };
         let to = steer.body.get("to").and_then(serde_json::Value::as_str);
+        // A carry here is no carry, and settling it would let go of the
+        // trees the session still works in.
+        let Some(to) = to.filter(|to| *to != self.machine) else {
+            return unkept("it names no other machine to go to");
+        };
         let quests: Vec<serde_json::Value> = self
             .served
             .records("quest")
@@ -2863,9 +2877,8 @@ impl<S: Store> Shared<S> {
                 };
                 Some((known, ordered::quest_of(known, &quests).ok()?))
             })
-            .filter(|_| to.is_some_and(|to| to != self.machine))
         else {
-            return Ok(());
+            return unkept("no quest's record holds a session of it running here");
         };
         let kept = serde_json::json!({
             "at": jiff::Timestamp::now().to_string(),
@@ -4298,6 +4311,7 @@ mod tests {
         let settles = Some(Settles {
             kept: socket.with_file_name("settles.jsonl"),
             program: socket.with_file_name("pi-carry"),
+            realm: "work".to_owned(),
             answers_within: PATIENCE,
         });
         let node = tokio::spawn(async move {
@@ -7027,7 +7041,7 @@ esac
     }
 
     #[tokio::test]
-    async fn a_persons_carry_is_kept_by_the_quest_the_record_holds_its_session_in() {
+    async fn a_persons_carry_keeps_nothing_where_no_quests_record_holds_its_session() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let mut quests = orchestrations();
@@ -7077,6 +7091,22 @@ esac
         assert!(!kept.exists(), "so nothing is kept as the person's carry");
 
         asks_as_the_person(&socket);
+        assert!(
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: "harbor".to_owned(),
+                    steer: json!({"act": "carry", "to": "skiff", "from": "person"}),
+                },
+            )
+            .await
+            .is_ok(),
+            "the person asks it to go where it is"
+        );
+        assert!(
+            !kept.exists(),
+            "which keeps nothing, since settling would let go of trees it still works in"
+        );
         assert_eq!(
             carry().await,
             Ok(Response::Steered {
