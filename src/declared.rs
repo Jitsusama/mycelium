@@ -237,8 +237,8 @@ const SHARED_TREE: &str = "--shared-tree";
 /// program in the store too, so no agent can put another in its place.
 /// They end with `--`, so nothing an ask says after them is read as the
 /// launcher's own options, so long as the launcher reads `--` so. They
-/// never say `--shared-tree`, nor any shortening of it, as a word of its
-/// own, which would spare every run a work tree pi-fence otherwise
+/// never say `--shared-tree`, nor a shortening of it longer than `--s`,
+/// as a word of its own, which would spare every run a work tree pi-fence otherwise
 /// refuses: this node doesn't yet say which trees are shared to whom, so
 /// it never asks that. A word is all it sees: a wrapper or a script word
 /// saying it out of sight is the sealed declaration's to keep out.

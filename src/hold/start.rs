@@ -450,6 +450,11 @@ mod tests {
             .env("PATH", "")
             .output()
             .expect("the stand-in shell runs");
+        assert!(
+            said.status.success(),
+            "the run started through the kit's shell: {}",
+            String::from_utf8_lossy(&said.stderr)
+        );
         assert_eq!(
             String::from_utf8_lossy(&said.stdout),
             bin.display().to_string(),
