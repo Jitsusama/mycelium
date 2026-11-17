@@ -240,10 +240,17 @@ impl Files {
             chosen: next(dir, id),
             steering: steers(dir, id),
         };
-        for left in [&files.waking, &files.naming, &files.chosen, &files.steering] {
+        files.take_away();
+        files
+    }
+
+    /// Takes every file away, as each says nothing once the program is
+    /// over: a wake, a command named or steers left after it would be
+    /// found by whoever looks, as though something still held it.
+    fn take_away(&self) {
+        for left in [&self.waking, &self.naming, &self.chosen, &self.steering] {
             let _ = fs::remove_file(left);
         }
-        files
     }
 }
 
@@ -430,6 +437,7 @@ pub async fn hold(
     // ends as it did, then whoever is joined is let go.
     drop(end);
     drop(socket);
+    files.take_away();
     record.end();
     if tokio::time::timeout(LAST_WORDS, &mut reader).await.is_err() {
         reader.abort();
