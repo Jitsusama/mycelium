@@ -64,6 +64,11 @@ pub struct Starting {
     /// this machine's facts beside what it declares; read only with
     /// `declared`, since a dialled link asks the node for both.
     pub kit: Option<Kit>,
+    /// The node's judgement of whether this machine's processors are
+    /// saturated, which the link says in this machine's room as the node
+    /// does, so every machine hears the one verdict; read only with
+    /// `declared`, since a dialled link asks the node for its room.
+    pub saturation: Option<Arc<crate::placement::Saturation>>,
 }
 
 /// How a link carries what this machine's node asks of the other machine.

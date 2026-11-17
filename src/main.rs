@@ -1788,6 +1788,8 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         health: None,
         declared: None,
         kit: None,
+        // A dialled link asks the node for its room, verdict and all.
+        saturation: None,
     };
     match far {
         Some(far) => {

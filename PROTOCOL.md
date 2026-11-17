@@ -1115,13 +1115,17 @@ empty when the machine is past none, so `takes` of none with nothing
 queue too old to say. Its `saturated` is whether its own node judges
 its processors saturated: from processor pressure 85 or more until it
 falls under 75, a band about the line of 80, so a machine whose
-pressure swings about the line doesn't flip with each reading. A node
-with no room to read forgets its verdict, and one restarted starts with
-none held. It is left out of a room a node too old to judge says, and
-placement then judges the pressure by the line of 80 alone. The room
-is `null` where no harness keeps a queue, or where the queue's record
-is of another shape or unwritten for two minutes. A machine keeps no
-reserve of mycelium's: its own slices keep its person's share.
+pressure swings about the line doesn't flip with each reading. A link
+the node keeps says the node's one verdict, and one another machine
+dialled says it as the node answers; a dialled link whose node doesn't
+answer within five seconds measures for itself and says none, so it is
+judged by the line. A node with no room to read, or told its host's
+verdict, forgets its own, and one restarted starts with none held. It
+is left out of a room a node too old to judge says, and placement then
+judges the pressure by the line of 80 alone. The room is `null` where
+no harness keeps a queue, or where the queue's record is of another
+shape or unwritten for two minutes. A machine keeps no reserve of
+mycelium's: its own slices keep its person's share.
 
 Its `declared` is what its configuration says of it, which can't be
 measured: `reach`, the networks work there always reaches, such as
