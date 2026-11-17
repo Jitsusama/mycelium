@@ -1274,17 +1274,15 @@ A share it never said counts as none, and `cores` is its declared
 there, since an idle one's memory is already gone from
 `memory_available`, and its `starts` those this node placed there by
 `"Start"`, or by a `"PlaceToStart"` answered with this machine, that its
-room doesn't yet show: each counts until the machine says its
-room thirty seconds or more after it, since a room said sooner can't
-yet show a session begun, or for five minutes at most, kept in memory
-only, so a
-burst of starts spreads across machines alike rather than piling on
-whichever led. A `prefer_not` taint such as `disk-pressure` is only a
-weight, so a machine idle beside one busy may take work despite it;
+room doesn't yet show: each counts until the machine says its room
+thirty seconds or more after it, since a room said sooner can't yet
+show a session begun, or for five minutes at most, kept in memory only,
+so a burst of starts spreads across machines alike rather than piling
+on whichever led. A `prefer_not` taint such as `disk-pressure` is only
+a weight, so a machine idle beside one busy may take work despite it;
 a disk `filling` costs a quarter of one `nearly-full` or
 `critically-full`, its guard clearing what has waited a while. The
-answer is
-`{"placed": {"machine", "passed"}}`, `{"pending": {"misses"}}` when
+answer is `{"placed": {"machine", "passed"}}`, `{"pending": {"misses"}}` when
 only a machine out of reach would do and the work may wait, or
 `{"refused": {"misses"}}`; each miss names a `machine` and `because`:
 `{"lacks": need}`, `{"unknown": need}`, `{"refuses": taint}`,
