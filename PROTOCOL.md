@@ -226,12 +226,13 @@ same code, each line a JSON value:
     it refuses, saying why. No time limits the answer, since a carry
     waits minutes for its sessions to end.
 17. `{"Carries": {"carries": [carry]}}`: the carries the sending end's
-    node ordered within the last day, newest first, after its Machine
-    and again whenever they change, so the person sees each from every
-    machine (see A Carry an Orchestrator Orders). Each holds `at`, `by`,
-    `session`, `address`, `quest`, `from`, `to` and `why` as kept,
-    `left` saying whether its session's done file was written here
-    since, and `refused` saying why once it wrote a refusal since. At
+    node ordered or settled within the last day, newest first, after
+    its Machine and again whenever they change, so the person sees each
+    from every machine (see A Carry an Orchestrator Orders). Each holds
+    `at`, `by`, `session`, `address`, `quest`, `from`, `to` and `why` as
+    kept, `settle` once it settled, `left` saying whether its session's
+    done file was written here since, and `refused` saying why once it
+    wrote a refusal since. At
     most 200 cross at once, coming to at most 256 KiB as JSON; a sender
     with more sends its newest that fit, and an end told more refuses
     them and keeps what it held. They cross only where both hellos say
@@ -638,13 +639,13 @@ command line or the session's done file, so it arrives saying who
 carried it and why, never as the person.
 
 The node that kept a carry serves it in the daemon interface as a
-`carry` record for a day after it was ordered, its id the machine whose
-node kept it, the carried session's and `at`, as
+`carry` record for a day after it was ordered, or after it settled, its
+id the machine whose node kept it, the carried session's and `at`, as
 `kestrel:s-harbour:2026-11-16T08:00:00Z`, holding `machine`, and `at`,
-`by`, `session`, `address`, `quest`, `from`, `to` and `why` as kept, and
-`state`, judged from what the node sees itself, never from what a
-session or its orchestrator says:
-`refused`, with `refused` saying why, once the session wrote a refusal
+`by`, `session`, `address`, `quest`, `from`, `to` and `why` as kept,
+`settle` once it settled, and `state`, judged from what the node sees
+itself, never from what a session or its orchestrator says: `refused`,
+with `refused` saying why, once the session wrote a refusal
 since; `arrived` once it runs on `to`; `back` once it runs here again
 after its done file was written since; `carrying` once it is gone from
 here, by its presence ending or running somewhere else; and `ordered`
@@ -656,6 +657,42 @@ and `left` are as that node told them, since only its machine's
 handover shows them, and where the session runs is as this node sees
 it, so an arrival shows at once and a refusal within a minute. Once no
 link has carried a machine for a day, what it told is let go.
+
+A carried session leaves its worktrees on the machine it left, so that
+machine's node lets them go once the carry is done with them: once a
+carry it ordered from here stands `arrived` and was ordered more than
+a day ago, it runs `pi-carry settle <quest> --session <session>` once,
+off its loop and in its own environment, saying in its log when that
+takes over a minute and waiting on it, never ending one part way
+itself. A service manager stopping the node ends it too, as it ends
+what the node started; a node stopped alone leaves it running. A
+carry whose session this node saw arrive stands `arrived` for
+settling while its session runs nowhere, as when it ended there or
+is on its way somewhere else, until it is seen back here; a node
+started afresh has seen none arrive. It looks as presences
+change and each minute, at the newest carry of each session ordered
+within the week; never at one standing `refused`, `ordered`,
+`carrying` or `back`. Settling lets go of each tree holding
+nothing the carry didn't take, and otherwise keeps every one, saying
+why. What it came to is kept as a line of `settles.jsonl` beside
+`carries.jsonl`: `carry`, the carry's id without its machine, `at`,
+and `did`, which is `settled` with `let`, how many trees it let go, or
+`kept` with `why`. That is the `failed` line's why, or that its quest
+or session begins with `-` and would be read as a flag, or that it
+names none, so `pi-carry` isn't asked. A carry with a line there is
+never settled again, even by a node started afresh, so the trees of
+one kept stay until the line is taken out of the file. What asked
+nothing keeps no line: a `pi-carry` that didn't run, or one that
+can't settle (its exit 2, as one from before settling gives). That,
+and an answer lost, as when a signal ends the settling or its line
+can't be kept, is asked again only once the node starts afresh,
+which settling allows. Where the file can't be read, nothing is settled.
+The carry's record then holds `settle`, `{"did", "let" or "why",
+"at"}`, and is shown for a day after it settled as well as a day
+after it was
+ordered, on every machine its `Carries` reach. A carry the person made
+with `mycelium carry` keeps no line in `carries.jsonl`, so the trees it
+leaves stay where they are.
 
 ### A Machine Easing Itself
 
