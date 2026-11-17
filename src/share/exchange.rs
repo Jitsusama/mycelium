@@ -997,11 +997,18 @@ impl Exchange {
                 self.keep_back(quest, files);
                 Ok(Vec::new())
             }
-            Say::Want { quest, .. } | Say::Piece { quest, .. } | Say::File { quest, .. }
-                if self.withholds_quest(&quest)? =>
-            {
+            // A file this end asked for before the hold came down is kept
+            // as the other end holding it, so it is asked again as it lifts.
+            Say::Piece {
+                quest, file, state, ..
+            }
+            | Say::File {
+                quest, file, state, ..
+            } if self.withholds_quest(&quest)? => {
+                self.keep_back(quest, BTreeMap::from([(file, state)]));
                 Ok(Vec::new())
             }
+            Say::Want { quest, .. } if self.withholds_quest(&quest)? => Ok(Vec::new()),
             Say::Holds { quest, files } => {
                 // What this says joins what was kept back of it first, so
                 // whatever fails below, no replay hears the older over it.
@@ -1107,8 +1114,9 @@ impl Exchange {
     /// each quest it shares, then what it held of each it still names,
     /// returning what this end asks for. Each is heard once, as it would
     /// have been with no hold: what fails is logged and let go, as a
-    /// failure heard live is, so one that fails each time can't keep the
-    /// replay going, and what the rest asked for still goes.
+    /// failure heard live is, so a kept Holds that fails each time can't
+    /// keep the replay going, and what the rest asked for still goes. A
+    /// look that fails replays it all again at the next.
     fn take_up_held_back(&mut self) -> Vec<Say> {
         if let Err(error) = self.take_up_theirs() {
             eprintln!("what {} shares isn't all taken up: {error}", self.other);
@@ -2157,15 +2165,6 @@ mod tests {
         let top = "QEST-20261007-WCJQSG";
         let mut near = kestrel.exchange(&skiff);
         near.withhold_above(true);
-        let holds = |key: &str| Say::Holds {
-            quest: top.to_owned(),
-            files: BTreeMap::from([(key.to_owned(), State::default())]),
-        };
-        near.hear(holds("record/README.md")).expect("kestrel hears");
-        assert!(
-            near.held_back.is_empty(),
-            "what skiff holds of a quest its Shares never named isn't kept"
-        );
         near.hear(Say::Shares {
             quests: vec![top.to_owned()],
             scratch: BTreeMap::new(),
@@ -2198,8 +2197,10 @@ mod tests {
         let ledger = || kestrel.places.ledgers().hold(top).expect("held").ledger;
         let readme = "record/README.md";
         let mut near = kestrel.exchange(&skiff);
-        near.withhold_above(true);
+        // Looked at before the hold, since a look withholding the parent
+        // passes it over unread.
         near.look().expect("kestrel looks");
+        near.withhold_above(true);
         let ours = ledger()
             .files
             .get(readme)
@@ -2240,13 +2241,69 @@ mod tests {
     }
 
     #[test]
+    fn a_file_asked_for_before_the_hold_came_down_is_asked_again_as_it_lifts() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
+        under_top(&kestrel, top, child);
+        let readme = "record/README.md";
+        let mut near = kestrel.exchange(&skiff);
+        near.look().expect("kestrel looks");
+        let ours = kestrel
+            .places
+            .ledgers()
+            .hold(top)
+            .expect("held")
+            .ledger
+            .files
+            .get(readme)
+            .map(Entry::state)
+            .expect("kestrel holds the parent's README");
+        near.hear(Say::Shares {
+            quests: vec![top.to_owned()],
+            scratch: BTreeMap::new(),
+            clones: BTreeMap::new(),
+            ended: BTreeSet::new(),
+            above: BTreeSet::from([top.to_owned()]),
+        })
+        .expect("kestrel hears");
+        let changed = State {
+            hash: Some("changed there".to_owned()),
+            version: ours.version.changed_on("skiff"),
+        };
+
+        // Asked for while carried, the README arrives once the link
+        // withholds the parent, as a pause in skiff's declaration does.
+        near.withhold_above(true);
+        near.hear(Say::File {
+            quest: top.to_owned(),
+            file: readme.to_owned(),
+            state: changed,
+            body: Some("# Changed there\n".to_owned()),
+            mode: None,
+        })
+        .expect("kestrel hears");
+        near.withhold_above(false);
+        let said = near.look().expect("kestrel looks");
+        assert!(
+            said.iter().any(|say| matches!(
+                say,
+                Say::Want { quest, file, .. } if quest == top && file == readme
+            )),
+            "the README dropped while withheld is asked for again: {said:?}"
+        );
+    }
+
+    #[test]
     fn a_parent_shared_here_too_is_kept_back_while_withheld_but_never_for_a_worker() {
         let kestrel = Machine::new("kestrel");
         let skiff = Machine::new("skiff");
         let top = "QEST-20261007-WCJQSG";
-        let mut held = kestrel.places.ledgers().hold(top).expect("held");
-        held.ledger.above = true;
-        held.keep().expect("shared");
+        {
+            let mut held = kestrel.places.ledgers().hold(top).expect("held");
+            held.ledger.above = true;
+            held.keep().expect("shared");
+        }
         kestrel.places.give("skiff", top).expect("given");
         let shares = || Say::Shares {
             quests: vec![top.to_owned()],
@@ -2262,6 +2319,11 @@ mod tests {
 
         let mut near = kestrel.exchange(&skiff);
         near.withhold_above(true);
+        near.hear(holds()).expect("kestrel hears");
+        assert!(
+            near.held_back.is_empty(),
+            "what skiff holds of a quest its Shares never named isn't kept"
+        );
         near.hear(shares()).expect("kestrel hears");
         near.hear(holds()).expect("kestrel hears");
         assert!(
