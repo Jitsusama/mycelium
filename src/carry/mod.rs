@@ -20,8 +20,10 @@
 //! Who may order one session's carry other than the person, its
 //! orchestrator by the quests' record, is [`ordered`]'s to say. Which of
 //! a machine's sessions it carries away to ease itself, while it is over
-//! and another has room, is [`ease`]'s to choose.
+//! and another has room, is [`ease`]'s to choose. What a carried
+//! session's cell brings, its ties, is [`cell`]'s to say.
 
+pub mod cell;
 pub mod chain;
 pub mod ease;
 pub mod easing;
@@ -188,6 +190,30 @@ pub trait Hands {
     ///
     /// When the mark can't be made.
     fn started(&mut self, one: &Done) -> Result<(), String>;
+    /// Every tie the node holds, each record whole as the tie kind
+    /// lists it.
+    ///
+    /// # Errors
+    ///
+    /// When the node can't say.
+    fn ties(&mut self) -> Result<Vec<Value>, String>;
+    /// Puts what a carried session's cell brings beside its done file,
+    /// whole, for the node it arrives on to keep.
+    ///
+    /// # Errors
+    ///
+    /// When it can't be put there.
+    fn bring(&mut self, brought: &cell::Brought) -> Result<(), String>;
+
+    /// Takes away each cell in the handover but those of `keeping`, by
+    /// session id, whose done file is gone or started: an earlier
+    /// carry's. One beside a done file not yet started, as a failed carry
+    /// leaves it, stays. Answers the sessions whose cells went.
+    ///
+    /// # Errors
+    ///
+    /// When the handover can't be read, or a cell can't be taken away.
+    fn forget(&mut self, keeping: &BTreeSet<String>) -> Result<Vec<String>, String>;
     /// Carries what no session carried, with `pi-carry`.
     ///
     /// # Errors
@@ -252,6 +278,7 @@ pub fn carry(
         Stood::Doing,
         "carrying each session's work".to_owned(),
     );
+    said.or_failed(Step::Push, bring_cells(hands, &sessions))?;
     let (done, ordered) = said.or_failed(Step::Push, push(hands, quest, to, why, &sessions))?;
     let count = plural(done.len(), "session");
     said.line(
@@ -471,10 +498,19 @@ fn push(
             Some((session, refusal))
         });
         if let Some((session, refusal)) = refusal {
-            return Err(format!(
-                "{} refused its carry: {}",
-                session.address, refusal.why
-            ));
+            let failed = format!("{} refused its carry: {}", session.address, refusal.why);
+            // Only the refusers' cells go: another told may still be
+            // carrying, its done file not written yet.
+            let keeping: BTreeSet<String> = sessions
+                .iter()
+                .filter_map(session_id)
+                .filter(|id| !refused.iter().any(|one| one.session == *id))
+                .map(str::to_owned)
+                .collect();
+            return Err(match hands.forget(&keeping) {
+                Ok(_) => failed,
+                Err(why) => format!("{failed}; a refuser's cell wasn't taken away: {why}"),
+            });
         }
         let done = hands.done()?;
         let carried: BTreeSet<&str> = done.iter().map(|one| one.session.as_str()).collect();
@@ -502,6 +538,41 @@ fn push(
         ));
     }
     Ok((done, ordered))
+}
+
+/// Puts in the handover what each session to be carried brings of its
+/// cell, where its done file will be, before any session is told to
+/// carry, having taken away every cell an earlier carry left beside a
+/// done file gone or started: so a cell beside a done file not started is
+/// the newest carry's for that session, and what fails here stops the carry while every
+/// session still runs here. A carry taken again brings them afresh.
+/// Answers the ids of the sessions whose cells it brought.
+fn bring_cells(hands: &mut impl Hands, sessions: &[Session]) -> Result<BTreeSet<String>, String> {
+    let carried: Vec<(&str, &Session)> = sessions
+        .iter()
+        .filter_map(|session| Some((session_id(session)?, session)))
+        .collect();
+    let keeping: BTreeSet<String> = carried.iter().map(|(id, _)| (*id).to_owned()).collect();
+    hands
+        .forget(&keeping)
+        .map_err(|why| format!("an earlier carry's cells weren't taken away: {why}"))?;
+    if carried.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let ties = hands
+        .ties()
+        .map_err(|why| format!("the node didn't say its ties: {why}"))?;
+    for (id, session) in &carried {
+        hands
+            .bring(&cell::brought(id, &session.address, &ties))
+            .map_err(|why| {
+                format!(
+                    "{}'s ties weren't put beside its work: {why}",
+                    session.address
+                )
+            })?;
+    }
+    Ok(keeping)
 }
 
 /// Waits until none of `sessions` runs on `here` any more.
@@ -677,6 +748,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
+    use super::cell::Brought;
     use super::{Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, carry, runs_on};
     use crate::placement::Need;
     use crate::record::{Session, State};
@@ -714,6 +786,24 @@ mod tests {
         refused: Vec<Refused>,
         shared: Vec<String>,
         started: Vec<Start>,
+        /// Every tie the node holds.
+        ties: Vec<Value>,
+        /// Why the node can't say its ties, where it can't.
+        unsaid_ties: Option<String>,
+        /// How many times the ties were asked for.
+        ties_asked: usize,
+        /// Why what a cell brings can't be put beside its work, where not.
+        unbrought: Option<String>,
+        /// What each cell brought, with how many sessions were told
+        /// before.
+        brought: Vec<(Brought, usize)>,
+        /// The sessions, by id, with a cell in the handover.
+        cells: BTreeSet<String>,
+        /// Why an earlier carry's cells can't be taken away, where not.
+        unforgotten: Option<String>,
+        /// The sessions whose old cells were taken away, with how many
+        /// sessions were told before.
+        forgotten: Vec<(String, usize)>,
     }
 
     impl Realm {
@@ -781,6 +871,42 @@ mod tests {
             there
                 .map(|there| there.1 = true)
                 .ok_or_else(|| format!("{} has no done file to mark", one.session))
+        }
+        fn ties(&mut self) -> Result<Vec<Value>, String> {
+            self.ties_asked += 1;
+            self.unsaid_ties
+                .clone()
+                .map_or_else(|| Ok(self.ties.clone()), Err)
+        }
+        fn bring(&mut self, brought: &Brought) -> Result<(), String> {
+            if let Some(why) = &self.unbrought {
+                return Err(why.clone());
+            }
+            self.brought.push((brought.clone(), self.steered.len()));
+            self.cells.insert(brought.session.clone());
+            Ok(())
+        }
+        fn forget(&mut self, keeping: &BTreeSet<String>) -> Result<Vec<String>, String> {
+            if let Some(why) = &self.unforgotten {
+                return Err(why.clone());
+            }
+            let unstarted: BTreeSet<&str> = self
+                .handover
+                .iter()
+                .filter(|(_, started)| !started)
+                .map(|(one, _)| one.session.as_str())
+                .collect();
+            let stale: Vec<String> = self
+                .cells
+                .iter()
+                .filter(|one| !keeping.contains(*one) && !unstarted.contains(one.as_str()))
+                .cloned()
+                .collect();
+            for one in &stale {
+                self.cells.remove(one);
+                self.forgotten.push((one.clone(), self.steered.len()));
+            }
+            Ok(stale)
         }
         fn carry_rest(&mut self, quest: &str, to: &str) -> Result<(), String> {
             // What no session held goes the first time; nothing is left
@@ -938,6 +1064,121 @@ mod tests {
             )),
             "a quest split across machines isn't guessed at"
         );
+    }
+
+    #[test]
+    fn each_carried_sessions_cell_brings_its_ties_before_any_is_told() {
+        let mut realm = realm();
+        realm.ties = vec![
+            json!({"key": "tie:BUSY01~KESTRL", "kind": "tie", "strength": 2.5}),
+            json!({"key": "tie:AAAAAA~NAPS02", "kind": "tie", "strength": 1.0}),
+            json!({"key": "tie:BUSY01", "kind": "tie", "ties": 1}),
+            json!({"key": "tie:OTHER4~ZZZZZZ", "kind": "tie"}),
+        ];
+        let (done, lines) = carried(&mut realm, "tern");
+        assert!(done.is_ok(), "carried: {}", last_said(&lines));
+        let cell = |session: &str, cell: &str, ties: &[usize], talk: Option<usize>| Brought {
+            session: session.to_owned(),
+            cell: cell.to_owned(),
+            ties: ties.iter().map(|at| realm.ties[*at].clone()).collect(),
+            talk: talk.map(|at| realm.ties[at].clone()),
+        };
+        assert_eq!(
+            realm.brought,
+            [
+                (cell("s-busy01", "BUSY01", &[0], Some(2)), 0),
+                (cell("s-naps02", "NAPS02", &[1], None), 0),
+            ],
+            "each session to be carried brings its own ties before any session is told"
+        );
+        assert_eq!(realm.ties_asked, 1, "the ties are asked for once");
+    }
+
+    #[test]
+    fn an_earlier_carrys_cells_go_before_any_session_is_told_and_a_failed_ones_stay() {
+        let done = |session: &str| Done {
+            session: session.to_owned(),
+        };
+        let mut realm = realm();
+        // An earlier carry's, which finished; one whose session refused
+        // it; and a failed attempt's, beside its done file not started.
+        realm.cells = ["s-gone", "s-refuse", "s-tried"].map(str::to_owned).into();
+        realm.handover = vec![(done("s-gone"), true), (done("s-tried"), false)];
+        let (outcome, lines) = carried(&mut realm, "tern");
+        assert!(outcome.is_ok(), "carried: {}", last_said(&lines));
+        assert_eq!(
+            realm.forgotten,
+            [("s-gone".to_owned(), 0), ("s-refuse".to_owned(), 0)],
+            "an earlier carry's cells go before any session is told, though pi-carry \
+             writes s-gone's done file afresh"
+        );
+        assert_eq!(
+            realm.cells,
+            ["s-busy01", "s-naps02", "s-tried"]
+                .map(str::to_owned)
+                .into(),
+            "a failed attempt's cell stays beside its work, with this carry's own"
+        );
+    }
+
+    #[test]
+    fn ties_are_asked_for_only_when_a_session_is_carried() {
+        let mut realm = realm();
+        assert_eq!(super::bring_cells(&mut realm, &[]), Ok(BTreeSet::new()));
+        assert_eq!(
+            (realm.ties_asked, realm.brought.len()),
+            (0, 0),
+            "a quest with no session here asks nothing and brings nothing"
+        );
+        let mut unnamed = session("BUSY01", "skiff", QUEST, "busy", &json!({}));
+        if let Some(presence) = std::sync::Arc::make_mut(&mut unnamed.presence).as_object_mut() {
+            presence.remove("session");
+        }
+        assert_eq!(
+            super::bring_cells(&mut realm, &[unnamed]),
+            Ok(BTreeSet::new())
+        );
+        assert_eq!(
+            (realm.ties_asked, realm.brought.len()),
+            (0, 0),
+            "nor one whose presence names no session to carry"
+        );
+    }
+
+    #[test]
+    fn ties_not_said_or_not_put_stop_the_carry_before_any_session_is_told() {
+        for (realm, why) in [
+            (
+                Realm {
+                    unsaid_ties: Some("no answer".to_owned()),
+                    ..realm()
+                },
+                "the node didn't say its ties: no answer",
+            ),
+            (
+                Realm {
+                    unbrought: Some("the disk is full".to_owned()),
+                    ..realm()
+                },
+                "BUSY01's ties weren't put beside its work: the disk is full",
+            ),
+            (
+                Realm {
+                    unforgotten: Some("the disk is gone".to_owned()),
+                    ..realm()
+                },
+                "an earlier carry's cells weren't taken away: the disk is gone",
+            ),
+        ] {
+            let mut realm = realm;
+            let (done, lines) = carried(&mut realm, "tern");
+            assert_eq!(done, Err(Failed { step: Step::Push }), "{why}");
+            assert!(last_said(&lines).contains(why), "{}", last_said(&lines));
+            assert!(
+                realm.steered.is_empty() && realm.shared.is_empty() && realm.started.is_empty(),
+                "no session told, and nothing shared or started: {why}"
+            );
+        }
     }
 
     #[test]
@@ -1229,6 +1470,11 @@ mod tests {
             realm.shared.is_empty() && realm.started.is_empty(),
             "nothing shared or started"
         );
+        assert!(
+            realm.cells.contains("s-naps02"),
+            "and the slow one keeps its cell, since it may still be carrying: {:?}",
+            realm.cells
+        );
     }
 
     #[test]
@@ -1393,7 +1639,8 @@ mod tests {
     fn a_carry_a_session_refuses_stops_at_once_with_its_reason() {
         let mut realm = Realm {
             by: Some("WCJQSG".to_owned()),
-            carries: ["s-busy01"].map(str::to_owned).into(),
+            // BUSY01 is told and still carrying, with no done file yet.
+            carries: BTreeSet::new(),
             refusing: vec![Refused {
                 session: "s-naps02".to_owned(),
                 why: "it holds a lease on src/node".to_owned(),
@@ -1415,6 +1662,37 @@ mod tests {
         assert!(
             realm.rest.is_none() && realm.shared.is_empty() && realm.started.is_empty(),
             "and nothing else is carried, shared or started"
+        );
+        assert!(
+            !realm.cells.contains("s-naps02"),
+            "the refusing session's cell is taken away: {:?}",
+            realm.cells
+        );
+        assert!(
+            realm.cells.contains("s-busy01"),
+            "while the cell of one told and still carrying stays: {:?}",
+            realm.cells
+        );
+    }
+
+    #[test]
+    fn every_session_that_refused_loses_its_cell_not_only_the_one_named() {
+        let refusing = |session: &str| Refused {
+            session: session.to_owned(),
+            why: "it holds a lease".to_owned(),
+        };
+        let mut realm = Realm {
+            by: Some("WCJQSG".to_owned()),
+            carries: BTreeSet::new(),
+            refusing: vec![refusing("s-busy01"), refusing("s-naps02")],
+            ..realm()
+        };
+        let (done, _) = ordered(&mut realm);
+        assert_eq!(done, Err(Failed { step: Step::Push }));
+        assert!(
+            realm.cells.is_empty(),
+            "both refusers' cells are taken away: {:?}",
+            realm.cells
         );
     }
 

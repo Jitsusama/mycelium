@@ -460,14 +460,51 @@ in order and says each step:
 1. `find`: the quest's sessions on this machine that can carry their own
    work, those running and those parked this boot. A machine not in reach,
    or this one, is refused.
-2. `push`: each is steered `{"act": "carry", "to": <machine>}`; the
-   harness puts every tree it holds and the session's file into the
-   quest's scratch, under `handover/<this machine's short hostname>/`
-   (up to its first dot), writes
-   `<session>.done.json` there saying what it put (at least `session`;
-   the harness adds its folder and trees, within its home), and ends.
+2. `push`: before any is told, the node takes away each
+   `<session>.cell.json` in the quest's scratch, under
+   `handover/<this machine's short hostname>/` (up to its first dot),
+   of a session it won't carry whose `<session>.done.json` is gone or
+   started: an earlier carry's, refused or finished. One beside a done
+   file not yet started, as a failed carry leaves it, stays, so a carry
+   taken again keeps it; a cell beside such a done file is the newest
+   carry's to write one for that session, though not always the one
+   that wrote the done file. Anything there under a cell's name that
+   is a folder is passed over, though one at the name of a session it
+   will carry stops the carry, saying so. Then it writes `<session>.cell.json`
+   there for each it will carry, replacing whole any an earlier carry
+   put there: `{"session", "cell", "ties", "talk"}`, where `cell` is
+   the session's address, uppercase; `ties` every `tie` record it
+   holds with the cell at an end, whole and unfaded; and `talk` its
+   `tie:<cell>` record, or null. Nothing else of the cell travels, and
+   an address holding `~` brings no ties. The ties are as they stood
+   before any session was told, so talk in a session's last turn
+   stays behind. Where a cell can't be taken away, or the ties can't
+   be said or written, nothing is carried. A session that refuses
+   writes no done file, and the node takes its cell away then, unless
+   an earlier attempt's done file not yet started waits beside it; the
+   others' cells stay, since they may still be carrying. One that
+   doesn't carry in time, or refuses after the node stopped looking,
+   keeps its cell until the next carry from here. A session refusing
+   an earlier carry's steer still waiting for it is taken as refusing
+   this one, and may yet carry without its cell. A handover shared
+   already may take such a cell across first, so the reading node
+   reads a cell only beside its done file. A cell goes only where its
+   done file goes, in the same handover. The handover is the sessions'
+   to write too, so a cell is the node's word only as far as the node
+   reading it checks its `cell` against the arriving session's
+   address as its own records say it, keeps only ties with that cell
+   at an end and a `talk` keyed `tie:<cell>`, and takes their counts
+   as the sessions' word. Then each is steered
+   `{"act": "carry", "to": <machine>}`; the harness puts every tree it
+   holds and the session's file into the quest's scratch, in that
+   handover, writes `<session>.done.json` there saying what it put (at
+   least `session`; the harness adds its folder and trees, within its
+   home), and ends.
    Once each has, `pi-carry QEST-... --to <machine>` carries what no
-   session held.
+   session held. A cell is read only with the done file it sits beside,
+   as that session starts there. A carry taken again here takes away
+   the cells of sessions an earlier attempt started, so the node there
+   should read a cell as soon as it has the done file beside it.
 3. `share`: the quest is shared with `handover`, as `mycelium share
    --scratch handover` does.
 4. `start`: each carried session starts again on the machine, held, as
