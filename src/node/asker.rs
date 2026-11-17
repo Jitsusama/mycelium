@@ -571,22 +571,7 @@ pub fn session_of(
     processes: &Processes,
     owners: &[(String, i32)],
 ) -> Result<String, String> {
-    let Some(pid) = asker else {
-        return Err(
-            "nothing names the process that asks, so no session can be told to ask".to_owned(),
-        );
-    };
-    let owning = processes.lineage(pid).into_iter().find_map(|process| {
-        let sessions: Vec<&str> = owners
-            .iter()
-            .filter(|(_, owner)| *owner == process)
-            .map(|(session, _)| session.as_str())
-            .collect();
-        (!sessions.is_empty()).then_some(sessions)
-    });
-    let Some(sessions) = owning else {
-        return Err("this asks from no session this node knows".to_owned());
-    };
+    let (pid, sessions) = owning(asker, processes, owners)?;
     if let [one] = sessions.as_slice() {
         return Ok((*one).to_owned());
     }
@@ -597,6 +582,128 @@ pub fn session_of(
             sessions.len()
         )),
     }
+}
+
+/// The session whose work trees a run `asker` asks for may stand in, as
+/// [`session_of`] tells who asks, but only where the process proved to
+/// own it owns no other: a pi host's sessions share one process, and
+/// which of them a command runs for is only what its environment says,
+/// which any command there may set. So a host's session is never told
+/// to a fence as the one a run stands for, whatever its command names.
+///
+/// Alone is counted over every claim here, proved or not, since a
+/// session whose claim doesn't prove yet still shares its host's process:
+/// the nearest of the asker and its forebears that any claim or owner
+/// names must be named by exactly one, the claims naming the same host
+/// and the sessions its host's own record lists counted with it, and
+/// that one must be proved.
+///
+/// # Errors
+///
+/// When nothing names the asker, no session here claims it or its
+/// forebears, the nearest claimed is claimed by more than one, or its
+/// claim doesn't prove.
+pub fn session_alone(
+    asker: Option<i32>,
+    processes: &Processes,
+    owners: &[(String, i32)],
+    claims: &[Claim],
+    hosts: &Path,
+) -> Result<String, String> {
+    let Some(pid) = asker else {
+        return Err(
+            "nothing names the process that asks, so no session can be told to ask".to_owned(),
+        );
+    };
+    let Some(process) = processes.lineage(pid).into_iter().find(|process| {
+        claims.iter().any(|claim| claim.pid == Some(*process))
+            || owners.iter().any(|(_, owner)| owner == process)
+    }) else {
+        return Err("this asks from no session this node knows".to_owned());
+    };
+    let keys: std::collections::BTreeSet<&str> = claims
+        .iter()
+        .filter(|claim| claim.pid == Some(process))
+        .filter_map(|claim| claim.host.as_deref())
+        .collect();
+    let claimed = claims
+        .iter()
+        .filter(|claim| {
+            claim.pid == Some(process)
+                || claim
+                    .host
+                    .as_deref()
+                    .is_some_and(|host| keys.contains(host))
+        })
+        .count();
+    let sharing = claimed.max(hosted(hosts, process));
+    let proved: Vec<&str> = owners
+        .iter()
+        .filter(|(_, owner)| *owner == process)
+        .map(|(session, _)| session.as_str())
+        .collect();
+    match proved.as_slice() {
+        [one] if sharing <= 1 => Ok((*one).to_owned()),
+        [] => Err(format!(
+            "this asks below process {process}, whose session none proves"
+        )),
+        _ => Err(format!(
+            "this asks from a process {} sessions share, so none is proved alone",
+            sharing.max(proved.len())
+        )),
+    }
+}
+
+/// The most sessions any pi host's record in `hosts` lists for process
+/// `pid`, whenever it started, so a session its host holds counts toward
+/// those sharing it before its own presence is written. A record of an
+/// earlier process given the same id counts too, which only ever refuses.
+fn hosted(hosts: &Path, pid: i32) -> usize {
+    let prefix = format!("{pid}-");
+    fs::read_dir(hosts)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .filter_map(|text| serde_json::from_str::<Value>(&text).ok())
+        .filter_map(|record| record.get("sessions")?.as_array().map(Vec::len))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The asker's process and the sessions of `owners` owned by the nearest
+/// of it and its forebears to own any.
+fn owning<'a>(
+    asker: Option<i32>,
+    processes: &Processes,
+    owners: &'a [(String, i32)],
+) -> Result<(i32, Vec<&'a str>), String> {
+    let Some(pid) = asker else {
+        return Err(
+            "nothing names the process that asks, so no session can be told to ask".to_owned(),
+        );
+    };
+    processes
+        .lineage(pid)
+        .into_iter()
+        .find_map(|process| {
+            let sessions: Vec<&str> = owners
+                .iter()
+                .filter(|(_, owner)| *owner == process)
+                .map(|(session, _)| session.as_str())
+                .collect();
+            (!sessions.is_empty()).then_some((pid, sessions))
+        })
+        .ok_or_else(|| "this asks from no session this node knows".to_owned())
 }
 
 /// What `process`, a lookup of a process's name and parent, tells of `pid`
@@ -980,6 +1087,92 @@ mod tests {
         assert!(
             told().is_err(),
             "never a session of another process, whatever it names"
+        );
+    }
+
+    #[test]
+    fn no_session_of_a_hosts_is_proved_alone_whatever_its_command_names() {
+        let procs = procs(&[
+            (80, "mycelium", 79, "jobs.slice/jobs.service"),
+            (79, "bash", 78, "jobs.slice/jobs.service"),
+            (
+                78,
+                "node",
+                1,
+                "agents.slice/pi-host-work-background.service",
+            ),
+            (70, "mycelium", 69, "agents.slice/pi-a.scope"),
+            (69, "pi", 1, "agents.slice/pi-a.scope"),
+            (60, "mycelium", 59, "agents.slice/pi-a.scope"),
+            (59, "pi", 69, "agents.slice/pi-a.scope"),
+        ]);
+        fs::write(
+            procs.path().join("80").join("environ"),
+            "PI_SESSION_ID=s-two\0",
+        )
+        .expect("its environment is written");
+        let mut claims = vec![
+            claim("s-one", 78, Some(1), Some("work")),
+            claim("s-two", 78, Some(1), Some("work")),
+            claim("s-alone", 69, Some(1), None),
+        ];
+        let mut owners = vec![
+            ("s-one".to_owned(), 78),
+            ("s-two".to_owned(), 78),
+            ("s-alone".to_owned(), 69),
+        ];
+        let processes = folder(procs.path());
+        let hosts = tempfile::tempdir().expect("a folder for hosts' records");
+        let alone = |asker, claims: &[Claim], owners: &[(String, i32)]| {
+            session_alone(asker, &processes, owners, claims, hosts.path())
+        };
+        assert!(
+            alone(Some(80), &claims, &owners).is_err_and(|why| why.contains("2 sessions share")),
+            "a host's command may name any session of its host, so none is proved"
+        );
+        owners.retain(|(session, _)| session != "s-two");
+        assert!(
+            alone(Some(80), &claims, &owners).is_err_and(|why| why.contains("2 sessions share")),
+            "nor where only one of its sessions proves, since the others still share it"
+        );
+        claims[1].pid = Some(77);
+        assert!(
+            alone(Some(80), &claims, &owners).is_err_and(|why| why.contains("2 sessions share")),
+            "nor where another session says the same host holds it by another process"
+        );
+        assert_eq!(
+            alone(Some(70), &claims, &owners),
+            Ok("s-alone".to_owned()),
+            "a session its process owns alone is proved by the process"
+        );
+        let (one, one_owner) = (
+            [claim("s-one", 78, Some(1), Some("work"))],
+            [("s-one".to_owned(), 78)],
+        );
+        assert_eq!(
+            alone(Some(80), &one, &one_owner),
+            Ok("s-one".to_owned()),
+            "a host holding one session alone is proved to ask for it"
+        );
+        fs::write(
+            hosts.path().join("78-1.json"),
+            json!({"key": "work", "sessions": [{"id": "s-one"}, {"id": "s-three"}],
+                   "owner": {"pid": 78, "startTicks": 1}})
+            .to_string(),
+        )
+        .expect("the host's record is written");
+        assert!(
+            alone(Some(80), &one, &one_owner).is_err_and(|why| why.contains("2 sessions share")),
+            "nor where its own record lists a session no presence claims yet"
+        );
+        claims.push(claim("s-nested", 59, Some(1), None));
+        assert!(
+            alone(Some(60), &claims, &owners).is_err_and(|why| why.contains("none proves")),
+            "nor through a nearer pi that claims a session it can't prove"
+        );
+        assert!(
+            alone(None, &claims, &owners).is_err(),
+            "nor where nothing names the asker"
         );
     }
 
