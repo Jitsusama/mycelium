@@ -2346,38 +2346,83 @@ mod tests {
     }
 
     #[test]
-    fn a_piece_gone_astray_once_the_hold_lifts_leaves_what_was_kept() {
+    fn a_piece_once_the_hold_lifts_leaves_what_was_kept_until_the_file_is_whole() {
+        let top = "QEST-20261007-WCJQSG";
+        // A later piece of a crossing kestrel holds none of, as skiff's
+        // answer to a Want made before the hold, goes astray; a first
+        // piece is staged, and the file isn't whole yet either way.
+        for at in [PIECE, 0] {
+            let kestrel = Machine::new("kestrel");
+            let skiff = Machine::new("skiff");
+            let (mut near, readme, changed, body) = told_of_a_changed_parent(&kestrel, &skiff, top);
+            near.withhold_above(true);
+            near.hear(Say::Holds {
+                quest: top.to_owned(),
+                files: BTreeMap::from([(readme.to_owned(), changed.clone())]),
+            })
+            .expect("kestrel hears");
+
+            near.withhold_above(false);
+            near.hear(Say::Piece {
+                quest: top.to_owned(),
+                file: readme.to_owned(),
+                state: changed,
+                at,
+                len: 2 * PIECE,
+                body: STANDARD.encode(body),
+                mode: None,
+            })
+            .expect("kestrel hears");
+            let said = near.look().expect("kestrel looks");
+            assert!(
+                said.iter().any(|say| matches!(
+                    say,
+                    Say::Want { quest, file, at: Some(0) } if quest == top && file == readme
+                )),
+                "what was kept of the README is still asked for, the piece at {at}: {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_crossing_finished_once_the_hold_lifts_is_not_undone_by_what_was_kept() {
         let top = "QEST-20261007-WCJQSG";
         let kestrel = Machine::new("kestrel");
         let skiff = Machine::new("skiff");
-        let (mut near, readme, changed, body) = told_of_a_changed_parent(&kestrel, &skiff, top);
+        let (mut near, readme, changed, _) = told_of_a_changed_parent(&kestrel, &skiff, top);
+        let piece = usize::try_from(PIECE).expect("a size");
+        let body = "# Changed there\n".repeat(piece / 8);
+        let whole = State {
+            hash: Some(content(body.as_bytes()).hash),
+            version: changed.version.changed_on("skiff"),
+        };
         near.withhold_above(true);
         near.hear(Say::Holds {
             quest: top.to_owned(),
-            files: BTreeMap::from([(readme.to_owned(), changed.clone())]),
+            files: BTreeMap::from([(readme.to_owned(), changed)]),
         })
         .expect("kestrel hears");
 
-        // A later piece of a crossing kestrel holds none of, as skiff's
-        // answer to a Want made before the hold, goes astray.
+        // The README crosses in two pieces once the hold lifts, before
+        // the look that replays what was kept.
         near.withhold_above(false);
-        near.hear(Say::Piece {
-            quest: top.to_owned(),
-            file: readme.to_owned(),
-            state: changed,
-            at: PIECE,
-            len: 2 * PIECE,
-            body: STANDARD.encode(body),
-            mode: None,
-        })
-        .expect("kestrel hears");
-        let said = near.look().expect("kestrel looks");
-        assert!(
-            said.iter().any(|say| matches!(
-                say,
-                Say::Want { quest, file, at: Some(0) } if quest == top && file == readme
-            )),
-            "what was kept of the README is still asked for: {said:?}"
+        for (at, part) in [(0, &body[..piece]), (PIECE, &body[piece..])] {
+            near.hear(Say::Piece {
+                quest: top.to_owned(),
+                file: readme.to_owned(),
+                state: whole.clone(),
+                at,
+                len: u64::try_from(body.len()).expect("a size"),
+                body: STANDARD.encode(part),
+                mode: None,
+            })
+            .expect("kestrel hears");
+        }
+        near.look().expect("kestrel looks");
+        let ledger = kestrel.places.ledgers().hold(top).expect("held").ledger;
+        assert_eq!(
+            ledger.theirs["skiff"][readme].hash, whole.hash,
+            "the README that crossed once the hold lifted stands, not what was kept"
         );
     }
 

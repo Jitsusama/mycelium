@@ -264,7 +264,8 @@ pub enum Ending {
 /// Any other end may be a worker too until it says what its machine is,
 /// which it does first of all when both ends take facts, so nothing above
 /// the quests shared crosses before then. An end that takes none can
-/// declare nothing, so it is never sent a quest above.
+/// declare nothing, so it is never sent a quest above, and says so unless
+/// it is a worker, which is never sent one whatever its node.
 fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> Exchange {
     let exchange = Exchange::new(places, here.machine.clone(), there.machine.clone());
     let mut exchange = if worker {
@@ -273,10 +274,10 @@ fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> E
         exchange
     };
     exchange.withhold_above(true);
-    if !there.facts {
+    if !there.facts && !worker {
         eprintln!(
-            "{} takes no facts, so it is sent none of the quests above those shared \
-             until it declares itself no worker",
+            "{} takes no facts, so it is sent none of the quests above those shared; \
+             update its node to carry them",
             there.machine
         );
     }
