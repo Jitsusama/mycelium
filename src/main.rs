@@ -361,7 +361,7 @@ enum Action {
     /// its id and the words that attach to it.
     #[command(after_help = "Example:\n  mycelium start --need system=linux -- pi")]
     Start(Starting),
-    /// Starts a pi session of its own on a piece of work, a link or words.
+    /// Starts a pi session on a piece of work: a link or words.
     ///
     /// It begins in the work's repository: the folder named, else the
     /// link's repository checked out under ~/src, else this folder where
@@ -369,9 +369,9 @@ enum Action {
     /// work a quest at the top of the tree and to own all of it. It runs
     /// held, in no window, and this says how to join it; with --join this
     /// terminal becomes its window, and closing that leaves it running.
-    #[command(
-        after_help = "Examples:\n  mycelium sprout https://github.com/owner/repo/issues/7\n  mycelium sprout --in ~/src/repo make the launcher faster\n  mycelium sprout --join -- -1 is a bad default"
-    )]
+    /// A link alone is its seed, and words after -- may start with a
+    /// dash.
+    #[command(after_help = "Example:\n  mycelium sprout --in ~/src/repo make the launcher faster")]
     Sprout(Sprouting),
     /// Runs a command on the machine that suits it, and waits on it.
     ///
