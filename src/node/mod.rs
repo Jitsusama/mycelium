@@ -528,8 +528,7 @@ where
                 links.spawn(keep_linked(dial, store.clone(), membership.clone(), carries));
             }
             Some((made, unwanted)) = made.recv() => {
-                // Booked before it is dialled, so before it links: no start
-                // finds it among the realm's machines unbooked.
+                // Booked before it's dialled, so no start finds it unbooked.
                 shared.book_for(&made);
                 let dial = Arc::new(Program {
                     program: made.provider.clone(),

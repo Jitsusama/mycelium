@@ -1338,9 +1338,13 @@ proves no session. The node's journal, and a refused make's error, say
 why for each `unknown`. A provider serving only some refuses the rest
 by failing its `make`, and nothing is made; it should refuse a `make`
 where the variable is missing too, as it is from a node older than it,
-though `offers`, `link` and `release` never carry it. Its refusal
-gates only the make: once a made machine links, starts are placed on
-it as on any machine of the realm. Like the judging of a run, this
+though `offers`, `link` and `release` never carry it. A machine made
+is booked, before it is dialled, for the asker its make was told: once
+it links, a start or run is placed there only when that asker, or the
+person, asks, so another agent's work goes elsewhere or waits, and a
+machine whose book line names no asker takes only the person's. A
+start pinned to the machine made for it, and a placement only
+previewed, are not held to the booking. Like the judging of a run, this
 fences habit, not an agent set on passing as another, which runs as
 the same account; an agent's process left with no agent above it is
 judged the person's. A start relayed from another machine's node makes
