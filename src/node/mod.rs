@@ -1331,7 +1331,9 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             murmur::KIND => Some(self.murmur_records()),
             tie::KIND => return Some(self.tie_records()),
             ended::KIND => Some(self.ended_records()),
-            _ => self.served.records(kind),
+            // Shown but any whose act is done; the node's own judgements
+            // read every record.
+            _ => self.served.shown(kind),
         }?;
         // Each held as its bytes as soon as it is made, so the kind is never
         // held whole twice.

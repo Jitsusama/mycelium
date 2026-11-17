@@ -1868,6 +1868,37 @@ still served. A kind the node holds itself, `session`, `machine`,
 `event`, `receptor`, `builder`, `carry`, `forage` or `murmur`, can't
 be served.
 
+A served record that waits on an act says which in `doneWhen`, an
+object naming its `probe`, and the node judges it each time the
+record is shown. A probe read from this machine or the record itself
+is judged then; one that asks a program is asked off the reader's
+way, at most every 30 seconds, four at a time, each answer held to
+five seconds, its last answer standing meanwhile, so a new record it
+asks of is shown until its first answer comes. Once the act is done,
+the record is shown no more, and its kind's watchers hear it `gone`,
+so nobody is asked for what they already did. A probe that says not
+done, can't tell, or isn't known keeps it. While any act shown may
+yet change, the kind's watchers are told again every 30 seconds, so
+one done since is seen gone with no change to its file. The node's
+own judgements, such as who orchestrates a quest, read every record.
+A program that can't run is said in the node's log once, and every
+wait on it stays. The probes:
+
+- `rebooted`, with the `boot_id` of the boot it waits past, its 32
+  hex digits in any case, with or without dashes: done once this
+  machine's boot is another. A Mac names no boot, so it can't tell.
+- `switch-done`, with the system it `wanted`, a store path: done once
+  `/run/current-system` is that path.
+- `pr-merged`, with its `repo`, as `owner/name`, and `number`: done
+  once `gh pr view` says it merged. Only `host` `github`, the default,
+  is asked. Each ask is one of the person's GitHub requests.
+- `signed-in`, with its `tool`, `gh` or `gcloud`: done once the tool
+  says the person is signed in, and asked again while done, as a
+  sign-in lapses. What the tool writes is never read.
+- `message-posted`, whose `verdict`, `{"done", "at"}`, the program
+  that can read the channel writes on the record, as the node holds no
+  token for it: believed for fifteen minutes after its `at`.
+
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and
 nothing else, serves each `<ADDRESS>/replies/<id>.jsonl` as one record,
