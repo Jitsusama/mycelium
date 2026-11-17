@@ -4827,15 +4827,25 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let told = dir.path().join("told");
-        // It claims the pi the asker runs below, but holds no log of it,
-        // so nothing proves the pi is its own.
+        // It claims the strictly fenced pi the asker runs below, as the
+        // steward's presence claims its own, but holds no log of it, so
+        // nothing proves the pi is its own.
         let forged = json!({
-            "session": "s-forged", "addresses": ["P9R1KI"], "busy": false,
+            "session": "s-forged", "addresses": ["P9R1KI"],
+            "groups": ["#orchestration/wcjqsg"], "busy": false,
             "state": "listening", "at": jiff::Timestamp::now().to_string(),
+            "quest": "QEST-20261007-WCJQSG", "orchestratedBy": "WCJQSG",
+            "fence": "strict",
             "owner": {"pid": 7009, "startTicks": started_at(7009)},
         });
-        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[forged]).await;
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        // Filed under its own name, since a claim filed under another
+        // names no owner at all.
+        store.start_here("s-forged", forged, true);
         provider_telling(&socket, &told);
+        pi_runs(&socket, 7009, STRICT);
         asks_below(&socket, 7009);
         assert_eq!(
             told_asker(&socket, &told).await,
