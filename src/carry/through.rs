@@ -130,6 +130,11 @@ impl Hands for Through {
             .map_err(|error| error.to_string())
     }
 
+    fn formed(&mut self) -> Result<Vec<Value>, String> {
+        crate::swarm::records(&self.socket, crate::networks::FORMED, TIES_WITHIN)
+            .map_err(|error| error.to_string())
+    }
+
     fn bring(&mut self, brought: &Brought) -> Result<(), String> {
         put_brought(&self.handover, brought)
     }
@@ -580,6 +585,7 @@ mod tests {
             cell: "BUSY01".to_owned(),
             ties: vec![json!({"key": "tie:BUSY01~KESTRL", "kind": "tie", "strength": strength})],
             talk: None,
+            formed: Vec::new(),
         }
     }
 
@@ -601,8 +607,9 @@ mod tests {
                 "cell": "BUSY01",
                 "ties": [{"key": "tie:BUSY01~KESTRL", "kind": "tie", "strength": 2.5}],
                 "talk": null,
+                "formed": [],
             }),
-            "beside its done file, saying its four fields"
+            "beside its done file, saying its five fields"
         );
         put_brought(handover, &brought("s-busy01", 3.0)).expect("put again");
         assert_eq!(
