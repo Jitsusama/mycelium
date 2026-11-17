@@ -3113,7 +3113,7 @@ impl<S: Store> Shared<S> {
         );
         tokio::task::spawn_blocking(move || {
             let owners = asker::proved(&claims, &processes, &hosts, &logs)?;
-            asker::session_alone(client, &processes, &owners)
+            asker::session_alone(client, &processes, &owners, &claims)
         })
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))?
@@ -10019,7 +10019,7 @@ esac
             String::from_utf8_lossy(&unproved.out),
             "the fence runs for none\nit says s-other\n",
             "where no log proves who asks, the fence is told no session, \
-             whatever the node was started in or the ask's words say"
+             whatever the ask's words say"
         );
         holds_log(&socket, 7001, "s-asker");
         let proved = run_through(socket.clone(), run_of("skiff", NAMES_ANOTHER))
@@ -10050,6 +10050,75 @@ esac
         assert_eq!(
             person.out, b"none\n",
             "the person's run, through no fence, names no session either"
+        );
+        let (stop, node) = running;
+        drop(stop);
+        node.await
+            .expect("the node runs to its end")
+            .expect("it stops cleanly");
+    }
+
+    #[tokio::test]
+    async fn a_hosts_run_is_fenced_for_none_of_its_sessions_whichever_its_command_names() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        for session in ["s-one", "s-two"] {
+            store.start_here(
+                session,
+                json!({"session": session, "addresses": [], "groups": [],
+                       "busy": false, "state": "listening", "fence": "strict",
+                       "at": jiff::Timestamp::now().to_string(),
+                       "owner": {"pid": 7101, "startTicks": started_at(7101),
+                                 "host": "work"}}),
+                true,
+            );
+        }
+        let running = alone(&store, "skiff", &socket);
+        declares_launcher(&socket, Some(SAYS_WHOSE));
+        asks_below(&socket, 7101);
+        holds_log(&socket, 7101, "s-one");
+        let hosts = socket.with_file_name("hosts");
+        fs::create_dir_all(&hosts).expect("its folder is made");
+        let record = hosts.join(format!("7101-{}.json", started_at(7101)));
+        let hosting = |sessions: &[&str]| {
+            let sessions: Vec<Value> = sessions.iter().map(|id| json!({"id": id})).collect();
+            fs::write(
+                &record,
+                json!({"key": "work", "sessions": sessions,
+                       "owner": {"pid": 7101, "startTicks": started_at(7101)}})
+                .to_string(),
+            )
+            .expect("the host's record is written");
+        };
+        fs::write(
+            procs_of(&socket)
+                .join(std::process::id().to_string())
+                .join("environ"),
+            "PI_SESSION_ID=s-one\0",
+        )
+        .expect("its command names s-one");
+        hosting(&["s-one"]);
+        let unproved = run_through(socket.clone(), run_of("skiff", "true"))
+            .await
+            .expect("a hosted agent's runs here");
+        assert_eq!(
+            String::from_utf8_lossy(&unproved.out),
+            "the fence runs for none\n",
+            "a host's command is told none of its sessions, though only the one \
+             it names proves, since its other still shares the host"
+        );
+        let fds = procs_of(&socket).join("7101").join("fd");
+        fs::rename(fds.join("3"), fds.join("4")).expect("s-one's log is held as 4");
+        holds_log(&socket, 7101, "s-two");
+        hosting(&["s-one", "s-two"]);
+        let proved = run_through(socket.clone(), run_of("skiff", "true"))
+            .await
+            .expect("a hosted agent's runs here");
+        assert_eq!(
+            String::from_utf8_lossy(&proved.out),
+            "the fence runs for none\n",
+            "nor once both prove, whichever its command names"
         );
         let (stop, node) = running;
         drop(stop);
