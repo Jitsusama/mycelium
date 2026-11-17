@@ -711,15 +711,17 @@ link has carried a machine for a day, what it told is let go.
 A carried session leaves its worktrees on the machine it left, so that
 machine's node lets them go once the carry is done with them: once a
 carry it kept from here stands `arrived` and was kept more than a
-day ago, it runs `pi-carry settle <quest> --session <session>` once,
+day ago, it runs `pi-carry settle <quest> --session <session>`,
 off its loop and in its own environment, saying in its log when that
 takes over a minute and waiting on it, never ending one part way
 itself. A service manager stopping the node ends it too, as it ends
 what the node started; a node stopped alone leaves it running. A
 carry whose session this node saw arrive stands `arrived` for
 settling while its session runs nowhere, as when it ended there or
-is on its way somewhere else, until it is seen back here; a node
-started afresh has seen none arrive. It looks as presences
+is on its way somewhere else, until it is seen back here. A node
+started afresh has seen none arrive, but takes one with a line in
+`settles.jsonl` as arrived until it sees its session back here, since
+it stood `arrived` when asked. It looks as presences
 change and each minute, at the newest carry of each session kept
 within the week; never at one standing `refused`, `ordered`,
 `carrying` or `back`. Settling lets go of each tree holding
@@ -727,19 +729,31 @@ nothing the carry didn't take, and otherwise keeps every one, saying
 why. What it came to is kept as a line of `settles.jsonl` beside
 `carries.jsonl`: `carry`, the carry's id without its machine, `at`,
 and `did`, which is `settled` with `let`, how many trees it let go, or
-`kept` with `why`. That is the `failed` line's why, or that its quest
-or session begins with `-` and would be read as a flag, or that it
-names none, so `pi-carry` isn't asked. A carry with a line there is
-never settled again, even by a node started afresh, so the trees of
-one kept stay until the line is taken out of the file. What asked
-nothing keeps no line: a `pi-carry` that didn't run, or one that
-can't settle (its exit 2, as one from before settling gives). That,
-and an answer lost, as when a signal ends the settling or its line
-can't be kept, is asked again only once the node starts afresh,
-which settling allows. Where the file can't be read, nothing is settled.
-The carry's record then holds `settle`, `{"did", "let" or "why",
-"at"}`, and is shown for a day after it settled as well as a day
-after it was kept, on every machine its `Carries` reach.
+`kept` with `why`. Where `pi-carry` answered and settled nothing, by
+its `failed` line, an end saying nothing it settled, or any other
+exit, `why` says which, with `again`, `true`. Where its quest or
+session begins with `-` and would be read as a flag, or it names
+none, `pi-carry` isn't asked and the line has no `again`. Each carry's
+newest line stands, even for a node started afresh: one without
+`again` for good, so its trees stay until the line is taken out of
+the file, and one with `again` for a day, when `pi-carry` is asked
+again while the carry is within the week, since a shell or an editor
+standing in a tree may have left it since; past the week nobody asks,
+though the line still says `again`. One with `again` whose session
+this node sees back here gets a line without it, `why` saying so, at
+each look until that is kept, as does an answer kept once it was seen
+back, since only a node that saw it come back knows; a session back
+and ended again while the node was stopped isn't seen. Trees let go don't come
+back if the node or `pi-carry` is rolled back, though each one's
+branch still names its commits. What asked nothing keeps no line: a
+`pi-carry` that didn't run, or one that can't settle (its exit 2, as
+one from before settling gives). That, and an answer lost, as when a
+signal ends the settling or its line can't be kept, is asked again
+only once the node starts afresh, which settling allows. Where the
+file can't be read, nothing is settled. The carry's record then holds
+`settle`, `{"did", "let" or "why", "again", "at"}`, its newest line,
+and is shown for a day after it settled as well as a day after it was
+kept, on every machine its `Carries` reach.
 
 A carry the person's own login asks, with `mycelium carry` or the
 one-act `carry` ask, is kept in `carries.jsonl` too, as each `carry`
@@ -752,9 +766,14 @@ asked by nobody. Its quest is the one whose record the node serves
 holds the session running here, never the quest its presence claims.
 A carry naming no machine but this one, or of a session no quest's
 record holds running here, is carried with no line, since nothing
-settles a carry without its quest, and the node's log says why. One
-that can't be kept isn't carried. It is then served, told to linked
-machines and settled as one an orchestrator asked is. A one-act carry
+settles a carry without its quest, and the node's log says why, as
+it does for a carry whose asker's process it can't tell as the
+person's own login. One that can't be kept isn't carried, so its line
+is kept before the steer is delivered: one delivered with no line
+would leave its trees to nobody. A steer that then fails leaves its
+line, which stands `ordered` while its session runs here, so isn't
+settled. A kept one is served, told to linked machines and settled as
+one an orchestrator asked is. A one-act carry
 asked of a node its quest doesn't run on is kept where it runs: that
 node takes the asker as the person's on the word of the node that
 asked it over the link, as it takes any steer a link carries, then

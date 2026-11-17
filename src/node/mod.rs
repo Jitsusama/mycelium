@@ -1907,7 +1907,10 @@ impl<S: Store> Shared<S> {
 
     /// Settles each carry ordered from here that is due (`settle::due`),
     /// off the node's loop, and only one whose settling came to nothing
-    /// kept yet, each session's newest carry alone (`settle::newest_each`).
+    /// that stands yet (`settle::stands_at`), each session's newest carry
+    /// alone (`settle::newest_each`). One asked of before is taken as
+    /// arrived, even by a node started afresh, until its session is seen
+    /// back here.
     /// Where what settling came to can't be read, none is, since it can't
     /// be told which were. It watches where the sessions of the rest run,
     /// for `settle_moved`.
@@ -1921,17 +1924,17 @@ impl<S: Store> Shared<S> {
         let now = jiff::Timestamp::now();
         let runs_on = self.runs_on();
         let mut places = HashMap::new();
-        for carry in settle::to_look_at(
-            self.carries_looked_at(),
-            |id| settled.contains_key(id),
-            &self.machine,
-        ) {
+        for carry in settle::to_look_at(self.carries_looked_at(), &settled, &self.machine) {
             let session = carry.said("session");
             let mut seen = self.handed(&carry);
             seen.runs_on = runs_on.get(session).cloned();
             places.insert(session.to_owned(), seen.runs_on.clone());
-            let state = settler.stands(&carry, kept::judged(&carry, &seen));
-            if settle::due(&carry, &state, &self.machine, now) {
+            let said = settled.get(&carry.id);
+            let state = settler.stands(&carry, kept::judged(&carry, &seen), said);
+            // A line that stands is never asked again, so settle() needn't
+            // read the file to say so.
+            let stands = said.is_some_and(|said| settle::stands_at(said, now));
+            if !stands && settle::due(&carry, &state, &self.machine, now) {
                 let said = Arc::clone(&self.said);
                 settler.settle(&carry, move || said.sessions_moved());
             }
@@ -3017,17 +3020,24 @@ impl<S: Store> Shared<S> {
     /// nothing settles a carry without its quest, and the log says why.
     fn keep_persons_carry(&self, steer: &Steer, sessions: &[Session]) -> Result<(), String> {
         let carries = steer.body.get("act").and_then(serde_json::Value::as_str) == Some("carry");
-        if !carries || !steer.checked {
+        if !carries {
             return Ok(());
         }
         let unkept = |why: &str| {
             eprintln!(
-                "the person's carry of {} keeps no line, so nothing lets go of the trees it \
-                 leaves here: {why}",
+                "a carry of {} asked as the person keeps no line, so nothing lets go of the \
+                 trees it leaves here: {why}",
                 steer.address
             );
             Ok(())
         };
+        if !steer.checked {
+            let said = serde_json::Value::Object(steer.body.clone());
+            if !steer::claims_the_person(&said) {
+                return Ok(());
+            }
+            return unkept("the process asking couldn't be told as the person's own login");
+        }
         let to = steer.body.get("to").and_then(serde_json::Value::as_str);
         // A carry here is no carry, and settling it would let go of the
         // trees the session still works in.
@@ -7067,6 +7077,112 @@ esac
             fs::read_to_string(&given).expect("it ran"),
             "settle QEST-20261115-HARBOR --session s-harbour\n",
             "asked once, and never for a carry kestrel ordered"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_carry_pi_carry_kept_its_trees_for_is_asked_again_a_day_on() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let given = stand_in_settling(&socket);
+        let ago =
+            |hours| (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(hours)).to_string();
+        let at = ago(48);
+        let carried = |session: &str, address: &str| {
+            json!({"at": at, "by": "WCJQSG", "session": session, "address": address,
+                   "quest": format!("QEST-20261115-{address}"), "from": "skiff", "to": "tern",
+                   "why": "it needs the camera"})
+        };
+        fs::write(
+            socket.with_file_name("carries.jsonl"),
+            format!(
+                "{}\n{}\n",
+                carried("s-harbour", "HARBOR"),
+                carried("s-loomer", "LOOMER")
+            ),
+        )
+        .expect("the carries are kept");
+        // pi-carry kept HARBOR's trees a day and an hour ago, while it
+        // still had work here, and the node has since started afresh, so
+        // only that line says it arrived: it has ended at tern since.
+        // LOOMER was never asked of.
+        fs::write(
+            socket.with_file_name("settles.jsonl"),
+            format!(
+                "{}\n",
+                json!({"carry": format!("s-harbour:{at}"), "did": "kept",
+                       "why": "a tree holds work the carry lacks", "again": true,
+                       "at": ago(25)})
+            ),
+        )
+        .expect("the held line is kept");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        store
+            .put_machine(&fenced("tern", &["remote"]))
+            .expect("what it said is kept");
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "carry"}))
+            .await;
+        let first = client.next().await;
+        // LOOMER seen where it went is a reason to look again at both.
+        store
+            .put_presence(
+                "s-loomer",
+                "tern",
+                &json!({"session": "s-loomer", "addresses": ["LOOMER"], "groups": [],
+                        "busy": true, "state": "listening",
+                        "at": jiff::Timestamp::now().to_string(),
+                        "quest": "QEST-20261115-LOOMER"}),
+            )
+            .expect("the presence is kept");
+        // HARBOR may be settled as the node starts, so shown among the
+        // watch's first records.
+        let mut settled = BTreeMap::new();
+        let mut said = first;
+        tokio::time::timeout(PATIENCE, async {
+            loop {
+                let records = said["records"].as_array().into_iter().flatten();
+                for record in records.chain(said["changed"].as_array().into_iter().flatten()) {
+                    if record["settle"]["did"] == json!("settled") {
+                        settled.insert(
+                            record["session"].as_str().unwrap_or_default().to_owned(),
+                            record["settle"]["let"].clone(),
+                        );
+                    }
+                }
+                if settled.len() == 2 {
+                    return;
+                }
+                said = client.next().await;
+            }
+        })
+        .await
+        .expect("both are settled in time");
+        assert_eq!(
+            settled,
+            BTreeMap::from([
+                ("s-harbour".to_owned(), json!(2)),
+                ("s-loomer".to_owned(), json!(2))
+            ]),
+            "HARBOR's trees here were let go a day on, though it runs nowhere"
+        );
+        let mut asked: Vec<String> = fs::read_to_string(&given)
+            .expect("it ran")
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        asked.sort();
+        assert_eq!(
+            asked,
+            [
+                "settle QEST-20261115-HARBOR --session s-harbour",
+                "settle QEST-20261115-LOOMER --session s-loomer"
+            ],
+            "each asked once"
         );
     }
 
