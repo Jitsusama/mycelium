@@ -6,9 +6,8 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use super::{Shared, millis_at};
+use super::{Shared, millis_at, peer};
 use crate::flow::{self, Code, Crossing, Kept, Refusal};
-use crate::group::Group;
 use crate::mesh;
 use crate::record::{Intent, Message, State as SessionState};
 use crate::store::{self, Store};
@@ -238,7 +237,7 @@ impl<S: Store> Shared<S> {
 
     /// Tells the sender of `message` it didn't cross into `realm`, and why.
     fn tell_refused(&self, message: &Message, realm: &str, why: &str) {
-        let Ok(sender) = Group::new(format!("peer.{}", message.from.to_lowercase())) else {
+        let Ok(sender) = peer(&message.from) else {
             eprintln!(
                 "{} didn't cross into the {realm} realm ({why}), and its sender can't be told",
                 message.id
@@ -246,7 +245,7 @@ impl<S: Store> Shared<S> {
             return;
         };
         let draft = Draft {
-            from: format!("mycelium@{}", self.machine.replace('-', "_")),
+            from: self.speaker(),
             groups: vec![sender],
             intent: Some(Intent::Finding),
             text: format!(
