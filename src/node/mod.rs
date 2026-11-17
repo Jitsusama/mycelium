@@ -2100,40 +2100,54 @@ impl<S: Store> Shared<S> {
             .into_values()
             .collect();
         // Where the park markers can't be read, which park its holder
-        // wakes can't be told, so none is.
-        if fs::read_dir(&self.parked).is_err_and(|error| error.kind() != io::ErrorKind::NotFound) {
+        // wakes can't be told, so none is, and that is said once.
+        if let Err(error) = fs::read_dir(&self.parked)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            let why = format!(
+                "no end is told, as the park markers in {} can't be read: {error}",
+                self.parked.display()
+            );
+            if self.unreadable.first(&why) {
+                eprintln!("{why}");
+            }
             return BTreeMap::new();
         }
         let parked = standing::parked(&self.parked);
-        // A session carried from here in the last half hour ended for the
-        // carry, unless it refused it or is back; one carried longer ago
-        // that runs nowhere stopped. Where the carries can't be read,
-        // which ended for one can't be told, so none is.
-        let now = jiff::Timestamp::now().as_millisecond();
-        let Ok(carries) = kept::read(&self.carries, shown_since()) else {
-            return BTreeMap::new();
+        // Where the carries can't be read, which ended for one can't be
+        // told, so none is.
+        let carries = match kept::read(&self.carries, shown_since()) {
+            Ok(carries) => carries,
+            Err(error) => {
+                let why = format!(
+                    "no end is told, as the carries in {} can't be read: {error}",
+                    self.carries.display()
+                );
+                if self.unreadable.first(&why) {
+                    eprintln!("{why}");
+                }
+                return BTreeMap::new();
+            }
         };
+        let now = jiff::Timestamp::now().as_millisecond();
         let runs_on = self.runs_on();
-        let mut coming_back: HashSet<String> = carries
-            .iter()
-            .filter(|carry| now - carry.at.as_millisecond() <= ended::CARRIED_WITHIN)
-            .filter(|carry| {
-                let mut seen = self.handed(carry);
-                seen.runs_on = runs_on.get(carry.said("session")).cloned();
-                !matches!(
-                    kept::judged(carry, &seen),
-                    kept::State::Refused(_) | kept::State::Back
-                )
-            })
-            .map(|carry| carry.said("session").to_owned())
-            .collect();
+        let judge = |carry: &kept::Kept| {
+            let mut seen = self.handed(carry);
+            seen.runs_on = runs_on.get(carry.said("session")).cloned();
+            kept::judged(carry, &seen)
+        };
+        // Judged before the node's state is locked, as judging reads the
+        // carries' handovers; the turns waiting are read with the
+        // sessions, under one lock, so a session that asks a turn is never
+        // told as ended for being read a moment apart.
+        let away = ended::carried(&carries, judge, now);
         let standing = |session: &Session| {
             let here = session.machine == self.machine;
             standing::standing(session, here, &parked, &self.boot)
         };
         let mut inner = self.lock();
         let sessions = inner.state.sessions();
-        coming_back.extend(inner.turns.waiting().map(str::to_owned));
+        let coming_back = ended::coming_back(away, inner.turns.waiting());
         let judged = ended::Judged {
             machine: &self.machine,
             standing: &standing,
