@@ -43,6 +43,10 @@ pub enum Request {
     PlaceToStart(Work),
     /// Start a program held where placement chooses.
     Start(Start),
+    /// Start a session of new work, held in no window, as `mycelium
+    /// sprout` says: the node finds its folder as the asker would see it,
+    /// and starts it there as a [`Start`] would.
+    Sprout(Sprout),
     /// Run a command where placement chooses, as the node's own: answered
     /// with [`Response::Running`], then a [`Ran`] a line for as long as it
     /// runs, ending with its exit or why it couldn't run. A client that
@@ -165,6 +169,31 @@ pub struct Start {
     /// may cost money, where no machine of the realm takes it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub may_cost: bool,
+}
+
+/// New work to start a session on: the session's first words come from
+/// `words`, a link or what the work is, and its folder is the one named,
+/// the checkout a link's repository has under home, or where the asker
+/// is, judged as the asker could reach it and never home itself. It
+/// starts on `on`, or this machine, and never on one that costs money.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sprout {
+    /// The work: a link alone, or words.
+    pub words: Vec<String>,
+    /// The repository's folder it works in, as the asker names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
+    /// The cell it comes from, by address, which its quest is tied to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// The machine it starts on, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
+    /// Where the asker says it is, which counts only for the person and
+    /// only where the node can't see where the asker is itself, as on a
+    /// Mac.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
 }
 
 /// A command to run, and where. It never makes a machine, since a run

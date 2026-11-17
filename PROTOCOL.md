@@ -906,6 +906,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"`, counted here as a start |
 | `{"Start": {"work", "folder", "command", "may_cost"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
+| `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
@@ -1436,6 +1437,44 @@ books as let go each whose `until` passed while it was down. A line
 naming no realm, kept before lines named one, is never linked again.
 A start whose providers make nothing says why: each machine's and each
 offer's reasons, and each program that couldn't say what it offers.
+
+`"Sprout"` starts a session of new work, as `mycelium sprout` asks, held
+in no window: the node makes the `"Start"` and starts it as above, under
+the same limits. `words` is the work, a link alone or words, which
+become the session's first words; `from` the address of the cell it
+comes from; `on` the machine, this one when it's none or names this
+one; and all but `words` may be left out. Its folder is
+`folder`, the checkout a link's repository has under home, or where the
+asker is when that's inside a repository, never home itself, and the
+session begins in it as the node names it, within home. Starting here,
+the folder is judged on the disk as the asker sees it, never as the
+node does, so an agent fenced from the person's folders can't have one
+begun in them: each path is resolved inside the asker's root
+(`/proc/<pid>/root`, its links kept inside it) and counts only where the
+node's own path is the same file, and where the asker is comes from
+`/proc/<pid>/cwd`. The asker is the process the kernel says is at the
+socket's other end, trusted only while its start time is the one read
+as it connected, so an id taken again is refused. Where that can't be
+read, as on a Mac, once the asker has gone, or where the kernel can't
+keep a path inside a root, the person's sprout is judged on the node's
+disk from `cwd`, where the asker says it is, and an agent's is refused.
+Refusals are errors saying why: `say what
+the work is: a link or words`, `<folder> isn't a folder here`, a home
+folder's, a folder with no repository's, or `an agent's sprout is judged
+on the disk as it sees it, and <why it can't be read>; the person can
+start it`. `mycelium sprout` judges the sprout on its own disk first, so
+it refuses what the node would without asking it. A node from before
+`"Sprout"` answers `not a request: unknown variant` naming it, and
+`mycelium sprout` then asks for the `"Start"` it judged.
+
+Where the judgement stops. It reads the asker's mount view only, so a
+fence made of Landlock or file permissions is judged as though the
+folder were reachable. The folder is judged by its path and begun in by
+that path a moment later, so a folder the asker can write could be
+swapped for a link in between. On another machine, the folder is that
+machine's, and its node starts it as a `"Start"`, which judges no
+folder; nor does a `"Start"` asked for directly. A `"Sprout"` is the
+bound only for an asker that says one.
 
 `"Steer"` puts `steer`, in the harness's own shape (`text`, an `act` of
 `pause`, `resume`, `fill`, `stop`, `close`, `carry`, `ordered-carry`,
