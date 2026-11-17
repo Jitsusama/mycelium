@@ -726,10 +726,19 @@ change and each minute, at the newest carry of each session kept
 within the week; never at one standing `refused`, `ordered`,
 `carrying` or `back`. Settling lets go of each tree holding
 nothing the carry didn't take, and otherwise keeps every one, saying
-why. What it came to is kept as a line of `settles.jsonl` beside
-`carries.jsonl`: `carry`, the carry's id without its machine, `at`,
-and `did`, which is `settled` with `let`, how many trees it let go, or
-`kept` with `why`. Where `pi-carry` answered and settled nothing, by
+why. `pi-carry` itself settles nothing of a session its own session
+record says runs here again, and keeps each tree the work broker's
+record says a live session holds or a running process works in. It
+reads each of those once, before letting any tree go, taking a record
+or a process it can't read as nothing there. So a tree entered or
+edited between those reads and the letting go is let go all the same,
+its edits with it, whether the carried session came back or anything
+else did. The node can't stop a settling it sees the session back
+during, and keeps `settled` where `pi-carry` answered so. What it
+came to is kept as a line of `settles.jsonl` beside `carries.jsonl`:
+`carry`, the carry's id without its machine, `at`, and `did`, which
+is `settled` with `let`, how many trees it let go, or `kept` with
+`why`. Where `pi-carry` answered and settled nothing, by
 its `failed` line, an end saying nothing it settled, or any other
 exit, `why` says which, with `again`, `true`. Where its quest or
 session begins with `-` and would be read as a flag, or it names
