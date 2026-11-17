@@ -528,6 +528,9 @@ where
                 links.spawn(keep_linked(dial, store.clone(), membership.clone(), carries));
             }
             Some((made, unwanted)) = made.recv() => {
+                // Booked before it is dialled, so before it links: no start
+                // finds it among the realm's machines unbooked.
+                shared.book_for(&made);
                 let dial = Arc::new(Program {
                     program: made.provider.clone(),
                     place: made.place.clone(),
@@ -1497,6 +1500,33 @@ struct Inner {
     /// The starts placed lately, each load on its machine until its room
     /// shows it, kept only while the node runs.
     starts: placement::Starts,
+    /// Each machine made from an offer, by name, with who its make was
+    /// told asked, or none where its book line didn't say: only that
+    /// asker's starts and runs, and the person's, are placed there.
+    booked: HashMap<String, Option<String>>,
+}
+
+/// Which of the machines booked for one asker ([`Inner::booked`]) a
+/// placement may choose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Admits {
+    /// Every machine: a preview, or a start already pinned to its machine.
+    All,
+    /// Those booked for this asker, as a make would tell it; every one for
+    /// [`made::PERSON`], and none for [`made::UNKNOWN`].
+    Asker(String),
+}
+
+impl Admits {
+    /// Whether a machine booked for `booked` is one this placement may
+    /// choose.
+    fn takes(&self, booked: Option<&str>) -> bool {
+        match self {
+            Self::All => true,
+            Self::Asker(told) if told == made::PERSON => true,
+            Self::Asker(told) => told != made::UNKNOWN && booked == Some(told.as_str()),
+        }
+    }
 }
 
 /// Watches a folder of records, of what is held or what is parked, or,
@@ -2635,9 +2665,32 @@ impl<S: Store> Shared<S> {
     /// every machine whose ground is looser than here, so nothing is carried
     /// to a machine that would refuse to run it once it got there. Those
     /// machines still count for what the realm reaches, and the record
-    /// keeps why each was refused, so a replay refuses them too.
-    fn place(&self, work: &Work, start: bool, fence: Option<crate::declared::Kind>) -> Placement {
-        let machines = self.machines();
+    /// keeps why each was refused, so a replay refuses them too. A machine
+    /// booked for one asker ([`Inner::booked`]) is weighed only where
+    /// `admits` takes it.
+    fn place(
+        &self,
+        work: &Work,
+        start: bool,
+        fence: Option<crate::declared::Kind>,
+        admits: &Admits,
+    ) -> Placement {
+        let machines: Vec<facts::Machine> = {
+            let inner = self.lock();
+            // This machine, first, is never booked for anyone.
+            self.machines()
+                .into_iter()
+                .enumerate()
+                .filter(|(at, one)| {
+                    *at == 0
+                        || inner
+                            .booked
+                            .get(&one.name)
+                            .is_none_or(|booked| admits.takes(booked.as_deref()))
+                })
+                .map(|(_, one)| one)
+                .collect()
+        };
         let refused = fence
             .map(|kind| {
                 let here = crate::declared::read(&self.declared);
@@ -3660,7 +3713,8 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let (misses, nowhere) = match self.place(&asked.work, true, None) {
+        let admits = self.admits().await;
+        let (misses, nowhere) = match self.place(&asked.work, true, None, &admits) {
             Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
             Placement::Pending { misses } => {
                 let nowhere = format!(
@@ -3789,7 +3843,8 @@ impl<S: Store> Shared<S> {
             })?;
         let mut there = asked.work.clone();
         there.needs.push(Need::Machine(made.machine.clone()));
-        match self.place(&there, true, None) {
+        // Pinned to the machine made for it, which is booked for its asker.
+        match self.place(&there, true, None, &Admits::All) {
             Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 let its: Vec<Miss> = misses
@@ -3863,7 +3918,8 @@ impl<S: Store> Shared<S> {
         // start the machine's room has yet to show. An agent's is placed
         // only on ground as firm as here, where it stands in the fence its
         // launcher sets.
-        let machine = match self.place(&asked.work, false, fence) {
+        let admits = self.admits().await;
+        let machine = match self.place(&asked.work, false, fence, &admits) {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } => {
                 return Err(format!(
@@ -3933,6 +3989,25 @@ impl<S: Store> Shared<S> {
         Ok((machine, run::journaled(self.runs.journal.clone(), id, said)))
     }
 
+    /// Books `made` for whoever its make was told asked, so only that
+    /// asker's starts and runs, and the person's, are placed there.
+    fn book_for(&self, made: &Made) {
+        self.lock()
+            .booked
+            .insert(made.machine.clone(), made.asker.clone());
+    }
+
+    /// Which booked machines a start or run asked now may be placed on:
+    /// every one where none is booked, so who asks is read only once a
+    /// machine is booked; else those booked for its asker, as a make
+    /// would tell it ([`Self::asker_of_a_make`]).
+    async fn admits(&self) -> Admits {
+        if self.lock().booked.is_empty() {
+            return Admits::All;
+        }
+        Admits::Asker(self.asker_of_a_make().await.told)
+    }
+
     /// Who asks for a machine to be made, as its provider is told it
     /// ([`made::ASKER`]): the address of the session the kernel and pi's
     /// records prove asks ([`Self::asking_session`]), else `person` where
@@ -3986,7 +4061,13 @@ impl<S: Store> Shared<S> {
             By::Agent(kind) => Some(kind.max(crate::declared::Kind::Fence)),
             By::Person => None,
         };
-        Ok(Response::Placement(self.place(work, false, fence)))
+        // A preview chooses no machine, so none booked is kept from it.
+        Ok(Response::Placement(self.place(
+            work,
+            false,
+            fence,
+            &Admits::All,
+        )))
     }
 
     /// Who asks a run, as [`asker::judge`] tells it, and the sessions
@@ -11062,6 +11143,90 @@ esac
         assert_eq!(shared.known_machines()[0].health, Some(health));
     }
 
+    #[test]
+    fn a_machine_booked_for_one_asker_takes_only_its_and_the_persons_starts() {
+        let asker = |told: &str| Admits::Asker(told.to_owned());
+        assert!(
+            asker(made::PERSON).takes(Some("P9R1KI")),
+            "the person's starts go anywhere"
+        );
+        assert!(
+            asker("P9R1KI").takes(Some("P9R1KI")),
+            "its own asker's starts go there"
+        );
+        assert!(
+            !asker("QK4T7Z").takes(Some("P9R1KI")),
+            "another agent's starts go elsewhere"
+        );
+        assert!(
+            !asker(made::UNKNOWN).takes(Some(made::UNKNOWN)),
+            "a start from no one known takes no booked machine"
+        );
+        assert!(
+            asker(made::PERSON).takes(None) && !asker("P9R1KI").takes(None),
+            "a machine whose make told no asker takes only the person's starts"
+        );
+        assert!(
+            Admits::All.takes(Some("P9R1KI")),
+            "a pinned start goes there"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_agents_start_is_never_placed_on_a_machine_made_for_one_asker() {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            bare("/nowhere/steer".into(), None),
+            to_dial,
+        );
+        shared
+            .store
+            .put_machine(&placement::tests::machine(
+                "osprey",
+                "linux",
+                32,
+                &["basin"],
+            ))
+            .expect("the made machine is kept");
+        let mut made = made_by("/usr/bin/lend", "osprey", jiff::Timestamp::now());
+        made.asker = Some("P9R1KI".to_owned());
+        shared.book_for(&made);
+        let basin = work(vec![Need::Reach("basin".to_owned())]);
+        let placed =
+            |told: &str| match shared.place(&basin, true, None, &Admits::Asker(told.to_owned())) {
+                Placement::Placed { machine, .. } => Some(machine),
+                _ => None,
+            };
+        assert_eq!(
+            placed("QK4T7Z"),
+            None,
+            "another agent's start isn't placed there"
+        );
+        assert_eq!(
+            placed("P9R1KI").as_deref(),
+            Some("osprey"),
+            "its asker's start is"
+        );
+        assert_eq!(
+            placed(made::PERSON).as_deref(),
+            Some("osprey"),
+            "and the person's"
+        );
+        made.asker = None;
+        shared.book_for(&made);
+        assert_eq!(
+            placed("P9R1KI"),
+            None,
+            "a machine whose make told no asker takes only the person's starts"
+        );
+    }
+
     fn made_by(provider: &str, machine: &str, until: jiff::Timestamp) -> Made {
         Made {
             provider: provider.to_owned(),
@@ -11073,6 +11238,7 @@ esac
                 hourly: "0.12".to_owned(),
                 currency: "USD".to_owned(),
             },
+            asker: None,
         }
     }
 

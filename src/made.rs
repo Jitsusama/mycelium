@@ -54,6 +54,11 @@ pub struct Made {
     pub until: jiff::Timestamp,
     /// What it costs while it lives, as offered.
     pub costs: Costs,
+    /// Who its make was told asked ([`ASKER`]), for whom alone, and the
+    /// person, it is booked. A machine kept before makes said so has none,
+    /// and is booked for nobody but the person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asker: Option<String>,
 }
 
 /// What a program says it made.
@@ -118,6 +123,7 @@ pub async fn make(offer: &Offer, lasting: Duration, asker: &str) -> Result<Made,
         machine: said.machine,
         until: said.until,
         costs: offer.costs.clone(),
+        asker: Some(asker.to_owned()),
     })
 }
 
@@ -330,8 +336,9 @@ mod tests {
                 machine: "lent-1".to_owned(),
                 until: "2026-10-31T20:00:00Z".parse().expect("a time"),
                 costs: offer_of(String::new()).costs,
+                asker: Some("person".to_owned()),
             },
-            "what was made, where, until when and at what rate"
+            "what was made, where, until when, at what rate and for whom"
         );
 
         let book = Book::at(dir.path().join("state").join("made.jsonl"));
@@ -364,6 +371,7 @@ mod tests {
             machine: "lent".to_owned(),
             until: jiff::Timestamp::UNIX_EPOCH,
             costs: offer_of(String::new()).costs,
+            asker: None,
         };
         std::thread::scope(|scope| {
             for _ in 0..8 {
@@ -390,6 +398,7 @@ mod tests {
             machine: machine.to_owned(),
             until,
             costs: offer_of(String::new()).costs,
+            asker: None,
         }
     }
 
