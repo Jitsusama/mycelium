@@ -56,8 +56,15 @@ impl Viewed {
         let cwd = fs::read_link(process.join("cwd"))
             .map_err(|_| "the asker has gone, so its folders can't be told".to_owned())?;
         // Read after opening, so what was opened was the asker's own.
-        if asker::started(procs, pid) != Some(ticks) {
-            return Err("the asker has gone, so its folders can't be told".to_owned());
+        match asker::started(procs, pid) {
+            Some(started) if started == ticks => {}
+            Some(_) => {
+                return Err(
+                    "the asker's id is another process's now, so its folders can't be told"
+                        .to_owned(),
+                );
+            }
+            None => return Err("the asker has gone, so its folders can't be told".to_owned()),
         }
         let there = rustix::fs::fstat(&cwd_opened)
             .map_err(|_| "where the asker is can't be told".to_owned())?;
@@ -208,7 +215,7 @@ mod tests {
 
         assert_eq!(
             refused.as_deref(),
-            Some("the asker has gone, so its folders can't be told")
+            Some("the asker's id is another process's now, so its folders can't be told")
         );
     }
 
@@ -298,6 +305,89 @@ mod tests {
         .expect("it starts");
 
         assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
+    }
+
+    /// A process kept in a mount view of its own by bubblewrap, ended when
+    /// the test is done with it.
+    struct Fenced(std::process::Child);
+
+    impl Drop for Fenced {
+        fn drop(&mut self) {
+            // One that ended already has nothing to kill or wait on.
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// A process standing in `cwd` whose view of the disk is the node's
+    /// with an empty folder laid over `hidden`, as a fence hides the
+    /// person's own; none where bubblewrap can't make one, as in a build's
+    /// sandbox. It says its id and waits on its input.
+    fn fenced(hidden: &Path, cwd: &Path) -> Option<(Fenced, i32)> {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("bwrap")
+            .args(["--dev-bind", "/", "/", "--tmpfs"])
+            .arg(hidden)
+            .arg("--chdir")
+            .arg(cwd)
+            .args(["sh", "-c", "echo $$; exec cat"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let out = child.stdout.take()?;
+        let child = Fenced(child);
+        let mut line = String::new();
+        BufReader::new(out).read_line(&mut line).ok()?;
+        let pid = line.trim().parse().ok()?;
+        Some((child, pid))
+    }
+
+    /// The one thing the made-up /proc above can't show: that a path
+    /// opened from a real process's /proc root walks that process's own
+    /// mount namespace. Where bubblewrap can't run it says so and proves
+    /// nothing.
+    #[test]
+    fn an_agent_in_a_real_mount_view_is_refused_what_it_hides_and_started_where_it_sees() {
+        let place = tempfile::tempdir().expect("a place");
+        let home = place.path().canonicalize().expect("real").join("home");
+        let seen = home.join("src/rows");
+        let hidden = home.join("src/secret");
+        checkout(&seen);
+        checkout(&hidden);
+        let Some((_fenced, pid)) = fenced(&hidden, &seen) else {
+            eprintln!("bubblewrap can't make a mount view here, so nothing is proved");
+            return;
+        };
+        let procs = PathBuf::from("/proc");
+        let ticks = asker::started(&procs, pid).expect("the fenced process has started");
+        let viewed = Viewed::of(&procs, pid, ticks).expect("the fenced process is seen");
+        assert!(viewed.is_checkout(&seen));
+        assert!(!viewed.is_checkout(&hidden));
+        assert!(!viewed.is_folder(&hidden));
+        assert_eq!(viewed.cwd(), seen);
+        let processes = Processes::Folder(procs);
+        let sprout = |folder: &Path| {
+            super::super::sprouted(
+                &sprout_in(folder),
+                By::Agent(Kind::Fence),
+                Some((pid, ticks)),
+                &processes,
+                &home,
+                "osprey",
+            )
+        };
+
+        let refused = sprout(&hidden);
+        let started = sprout(&seen).expect("it starts where it sees");
+
+        assert_eq!(
+            refused,
+            Err(format!("{} isn't a folder here", hidden.display()))
+        );
+        assert_eq!(started.folder, Some(PathBuf::from("src/rows")));
     }
 
     #[test]

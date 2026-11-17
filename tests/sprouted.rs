@@ -64,6 +64,31 @@ fn a_home_folder_named_is_refused_however_it_is_spelled() {
     }
 }
 
+/// A sprout `--on` another machine is that machine's node's to judge, so
+/// this machine's name, which only a sprout here needs, can't stop it:
+/// its node's record of the name unreadable, it goes on to ask the node.
+#[test]
+fn a_sprout_on_another_machine_needs_no_name_for_this_one() {
+    let home = home_in_git();
+    let rows = home.path().join("src/rows");
+    std::fs::create_dir_all(rows.join(".git")).expect("a checkout");
+    let record = home.path().join("s/mycelium/machine");
+    std::fs::create_dir_all(&record).expect("a record that can't be read");
+    let folder = rows.to_str().expect("a folder said in words");
+
+    let (ran, said) = sprout(
+        home.path(),
+        &rows,
+        &["--on", "tern", "--in", folder, "make", "tea"],
+    );
+
+    assert!(!ran, "no node listens: {said}");
+    assert!(
+        !said.contains("Is a directory"),
+        "it asked the node rather than reading this machine's name: {said}"
+    );
+}
+
 #[test]
 fn a_cell_it_came_from_that_isnt_one_is_refused() {
     let home = home_in_git();

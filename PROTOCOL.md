@@ -1482,7 +1482,10 @@ that path a moment later, so a folder the asker can write could be
 swapped for a link in between. On another machine, the folder is that
 machine's, and its node starts it as a `"Start"`, which judges no
 folder; nor does a `"Start"` asked for directly. A `"Sprout"` is the
-bound only for an asker that says one.
+bound only for an asker that says one. The asker's start ticks are read
+when the node begins serving its connection, not at the accept itself,
+so an id taken again in that moment would pass; that is out of reach in
+practice.
 
 `"Steer"` puts `steer`, in the harness's own shape (`text`, an `act` of
 `pause`, `resume`, `fill`, `stop`, `close`, `carry`, `ordered-carry`,

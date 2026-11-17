@@ -2428,7 +2428,14 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
     // once, with no node needed; the node judges it again for itself.
     let cwd = std::env::current_dir()?;
     let home = std::env::home_dir().ok_or_else(|| io::Error::other("no home folder"))?;
-    let here = place::machine(None, &place::state())?;
+    // This machine's name is needed only where no machine is named; one
+    // named that can't be told from this one is judged as elsewhere, by
+    // its own node, so a node state that can't be read stops no sprout
+    // `--on` another machine.
+    let here = match sprouting.on {
+        None => place::machine(None, &place::state())?,
+        Some(_) => place::machine(None, &place::state()).unwrap_or_default(),
+    };
     let start = sprout::starting(&sprouting, &cwd, &home, &here, &sprout::ThisDisk)
         .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
     let mut reply = Client::connect(socket)?.ask(&Request::Sprout(sprouting))?;
