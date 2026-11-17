@@ -2083,8 +2083,9 @@ said are `done`, and `verdicts.json` the `items` the to do daemon
 found `done` or `ready`, each by `<quest>:<id>`. A wait done either
 way is left out, as the launcher leaves it out, and one found ready is
 ready; one put off stays. Both are read again once changed, when the
-folder is next looked at, or in the five-minute reading, and one that
-won't read, or says it another way, settles nothing. The mesh's own
+folder is next looked at, and every quest held is read again with
+them, since reading one reads them for all. One that is a link, longer
+than 8 MB, not JSON, or saying it another way settles nothing. The mesh's own
 waits, the questions and holds still unanswered, are
 `mycelium unanswered`'s.
 

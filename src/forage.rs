@@ -50,6 +50,11 @@ const SETTLED_AFTER: Duration = Duration::from_millis(250);
 /// file grown or written wrong.
 const LONGEST_WAITING: u64 = 256 * 1024;
 
+/// The longest file of what's become of the waits read, in bytes. Its
+/// person's word on every wait is kept for good, some 2 KB a day, so it
+/// holds years of them, though never a file written wrong.
+const LONGEST_SETTLED: u64 = 8 * 1024 * 1024;
+
 /// How often every quest held is looked at again, for a change a watch
 /// missed, and the quests no cell works on any more let go.
 const ROUND: Duration = Duration::from_secs(300);
@@ -160,6 +165,8 @@ struct Settled {
     done: BTreeSet<String>,
     /// The waits a verdict found ready.
     ready: BTreeSet<String>,
+    /// The quests judged since the files were last read, by id.
+    judged: BTreeSet<String>,
 }
 
 /// How a file stands: its length, when it last changed and which it is,
@@ -167,11 +174,13 @@ struct Settled {
 type Seen = (u64, Option<SystemTime>, u64);
 
 impl Settled {
-    /// What's kept beside the waiting folder `waiting`.
+    /// What's kept beside the waiting folder `waiting`; nothing for a
+    /// folder named with no parent, rather than the working folder.
     fn beside(waiting: &Path) -> Self {
         Self {
             files: waiting
                 .parent()
+                .filter(|mission| !mission.as_os_str().is_empty())
                 .map(|mission| [mission.join("settled.json"), mission.join("verdicts.json")]),
             ..Self::default()
         }
@@ -193,8 +202,9 @@ impl Settled {
         self.files.is_some() && self.now() != self.seen
     }
 
-    /// Reads the files again if either changed. One that can't be read,
-    /// or says what it says in any other shape, settles nothing.
+    /// Reads the files again if either changed, so every quest is to be
+    /// judged again. One that can't be read, or says what it says in any
+    /// other shape, settles nothing.
     fn refresh(&mut self) {
         let now = self.now();
         let Some([settled, verdicts]) = &self.files else {
@@ -204,7 +214,7 @@ impl Settled {
             return;
         }
         let read = |file: &Path| {
-            read_at_most(file, LONGEST_WAITING)
+            read_at_most(file, LONGEST_SETTLED)
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                 .unwrap_or_default()
         };
@@ -230,11 +240,13 @@ impl Settled {
         self.done = done;
         self.ready = found("ready");
         self.seen = now;
+        self.judged.clear();
     }
 
     /// The waits of quest `id` but those done, each ready that a verdict
     /// found so, as the launcher shows them.
-    fn judge(&self, id: &str, waits: Vec<Wait>) -> Vec<Wait> {
+    fn judge(&mut self, id: &str, waits: Vec<Wait>) -> Vec<Wait> {
+        self.judged.insert(id.to_owned());
         waits
             .into_iter()
             .filter_map(|mut wait| {
@@ -362,14 +374,20 @@ impl Shelf {
         self.settled = read.settled;
     }
 
-    /// The quests held, once what's become of their waits changed since
-    /// it was last read; none while it's as read.
+    /// The quests held whose waits weren't judged by what's become of
+    /// them as it stands: every one once it changed since it was last
+    /// read, else those read before it was, as reading one quest reads it
+    /// for all.
     fn settled_moved(&self) -> Vec<String> {
-        if self.settled.moved() {
-            self.quests.keys().cloned().collect()
-        } else {
-            Vec::new()
+        if self.settled.files.is_none() {
+            return Vec::new();
         }
+        let moved = self.settled.moved();
+        self.quests
+            .keys()
+            .filter(|id| moved || !self.settled.judged.contains(*id))
+            .cloned()
+            .collect()
     }
 
     /// Whether `id` has been read.
@@ -1515,15 +1533,44 @@ mod tests {
             "one its person said is done, or a verdict found done, is gone, by id or by title; \
              one put off, or another quest's done, stays; one a verdict found ready is ready"
         );
+        store.write("QEST-20261116-OSPREY/README.md", README);
+        shelf.read(&store.0, "QEST-20261116-OSPREY");
+        assert!(shelf.settled_moved().is_empty(), "both read as it stands");
         store.write("settled.json", &json!({"done": {}}).to_string());
         assert_eq!(
             shelf.settled_moved(),
-            vec!["QEST-20261116-KESTRL".to_owned()],
+            ["QEST-20261116-KESTRL", "QEST-20261116-OSPREY"].map(str::to_owned),
             "a change to what was settled is to every quest held"
         );
+        shelf.read(&store.0, "QEST-20261116-OSPREY");
+        assert_eq!(
+            shelf.settled_moved(),
+            ["QEST-20261116-KESTRL".to_owned()],
+            "reading one quest reads it for all, so the others are still due"
+        );
         shelf.read(&store.0, "QEST-20261116-KESTRL");
-        assert_eq!(said(&mut shelf).len(), 4, "one no longer settled is back");
+        assert!(
+            said(&mut shelf).contains(&("fly".to_owned(), false)),
+            "one no longer settled is back"
+        );
         assert!(shelf.settled_moved().is_empty(), "once read, nothing moved");
+        store.write("verdicts.json", &json!({"items": {}}).to_string());
+        assert_eq!(
+            shelf.settled_moved().len(),
+            2,
+            "a change to the verdicts alone is heard"
+        );
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        assert!(
+            said(&mut shelf).contains(&("Pick a hedge".to_owned(), false)),
+            "one no longer found done is back"
+        );
+        store.write(
+            "settled.json",
+            &json!({"done": {"QEST-20261116-KESTRL:fly": 1}}).to_string(),
+        );
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        assert_eq!(said(&mut shelf).len(), 4, "settled again");
         for unread in [
             "not json",
             "[1, 2]",
