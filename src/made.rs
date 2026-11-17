@@ -144,8 +144,9 @@ pub struct Standing {
     pub made: Vec<Made>,
     /// The lines passed over, each cut short by a crash among them.
     pub unread: usize,
-    /// The makes that name no realm, kept before makes named one.
-    pub unnamed: usize,
+    /// The makes that name no realm, kept before makes named one, and not
+    /// released by a line naming none either, oldest first.
+    pub unnamed: Vec<Made>,
 }
 
 impl Book {
@@ -213,16 +214,17 @@ impl Book {
             let Some(kept) = kept else {
                 continue;
             };
-            if kept.realm.is_none() && kept.made.is_some() {
-                standing.unnamed += 1;
-            }
-            if kept.realm.is_none() || kept.realm != self.realm {
+            let kept_by = if kept.realm.is_none() {
+                &mut standing.unnamed
+            } else if kept.realm == self.realm {
+                &mut standing.made
+            } else {
                 continue;
-            }
+            };
             if let Some(made) = kept.made {
-                standing.made.push(made);
+                kept_by.push(made);
             } else if let Some(released) = kept.released {
-                standing.made.retain(|made| {
+                kept_by.retain(|made| {
                     made.machine != released.machine || made.place != released.place
                 });
             }
@@ -473,12 +475,12 @@ mod tests {
             Standing {
                 made: vec![kept, its_place, its_name, ended, again],
                 unread: 2,
-                unnamed: 1,
+                unnamed: vec![older],
             },
             "each machine made and not released, oldest first, ended or not, \
              a release taking only the machine of its name at its place, \
-             another realm's makes and releases left to it, none that names \
-             no realm but counted, and the line cut short counted"
+             another realm's makes and releases left to it, those that name \
+             no realm kept apart, and the line cut short counted"
         );
     }
 

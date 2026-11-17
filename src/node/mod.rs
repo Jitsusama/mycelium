@@ -712,10 +712,10 @@ fn redial_standing(
             standing.unread
         );
     }
-    if standing.unnamed > 0 {
+    if !standing.unnamed.is_empty() {
         eprintln!(
             "{} machines were kept in the book before makes named their realm, so none is linked again; each ends at its time",
-            standing.unnamed
+            standing.unnamed.len()
         );
     }
     let now = jiff::Timestamp::now();
@@ -815,6 +815,17 @@ async fn keep_made(
             made.machine
         );
     }
+}
+
+/// How long past its time a machine made is given to be let go by what
+/// keeps it, before [`let_go_ended`] lets it go instead.
+const ENDED_LET_GO_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins(10);
+
+/// Lets go of each machine `book` says was made and stands, though its
+/// time was up [`ENDED_LET_GO_AFTER`] before `now`, where no link reaches
+/// it.
+fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) {
+    let _ = (book, store, now);
 }
 
 /// Who a provider is told asks for a machine ([`made::ASKER`]), and why
@@ -11356,6 +11367,87 @@ esac
             book.standing().expect("the book reads").made,
             vec![asked, moved, dropped],
             "the one whose time was up is booked as let go, the others left standing"
+        );
+    }
+
+    #[test]
+    fn a_machine_made_whose_time_is_up_leaves_once_no_link_reaches_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let now = jiff::Timestamp::now();
+        let (long_ago, lately, later) = (
+            now - jiff::SignedDuration::from_hours(1),
+            now - jiff::SignedDuration::from_mins(5),
+            now + jiff::SignedDuration::from_hours(1),
+        );
+        let gone = made_by("/usr/bin/lend", "kestrel", long_ago);
+        let linked = made_by("/usr/bin/lend", "tern", long_ago);
+        let ending = made_by("/usr/bin/lend", "osprey", lately);
+        let living = made_by("/usr/bin/lend", "skiff", later);
+        let unlisted = made_by("/usr/bin/lend", "wren", long_ago);
+        for made in [&gone, &linked, &ending, &living, &unlisted] {
+            book.made(made).expect("the make is kept");
+        }
+        let older = made_by("/usr/bin/lend", "harbour", long_ago);
+        Book::at(path)
+            .made(&older)
+            .expect("a make naming no realm is kept");
+        let store = Memory::default();
+        for (name, state) in [
+            ("kestrel", Readiness::Unreachable),
+            ("tern", Readiness::Ready),
+            ("osprey", Readiness::Unreachable),
+            ("skiff", Readiness::Unreachable),
+            ("harbour", Readiness::Unreachable),
+        ] {
+            store
+                .put_machine(&facts::Machine {
+                    state,
+                    declared: Some(crate::declared::Declared {
+                        costs_money: true,
+                        ..crate::declared::Declared::default()
+                    }),
+                    ..facts::measure(name, &facts::Sources::nowhere())
+                })
+                .expect("what it said is kept");
+        }
+
+        let_go_ended(&book, &store, now);
+
+        let left: BTreeMap<String, bool> = store
+            .machines()
+            .into_iter()
+            .map(|machine| {
+                let left = machine
+                    .declared
+                    .is_some_and(|declared| declared.has_left(now));
+                (machine.name, left)
+            })
+            .collect();
+        assert_eq!(
+            left,
+            BTreeMap::from([
+                ("harbour".to_owned(), true),
+                ("kestrel".to_owned(), true),
+                ("osprey".to_owned(), false),
+                ("skiff".to_owned(), false),
+                ("tern".to_owned(), false),
+            ]),
+            "what no link reaches leaves once its time is well up, a make naming \
+             no realm too; one still linked, one whose keeper has a while yet \
+             and one whose time isn't up stay"
+        );
+        let standing = book.standing().expect("the book reads");
+        assert_eq!(
+            standing.made,
+            vec![linked, ending, living],
+            "each let go is booked so, one the realm no longer lists too"
+        );
+        assert_eq!(
+            standing.unnamed,
+            vec![older],
+            "a make naming no realm is no realm's to book"
         );
     }
 
