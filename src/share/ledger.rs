@@ -368,6 +368,25 @@ impl Ledgers {
         Ok(quests)
     }
 
+    /// What this machine knows of `quest` as last kept, read without
+    /// holding it, since [`Held::keep`] writes it whole by rename.
+    ///
+    /// # Errors
+    ///
+    /// When `quest` isn't a quest's id, or its ledger isn't there or
+    /// can't be read.
+    pub fn read(&self, quest: &str) -> io::Result<Ledger> {
+        if !is_quest(quest) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{quest:?} is not a quest's id"),
+            ));
+        }
+        let text = fs::read(self.folder.join(format!("{quest}.json")))?;
+        serde_json::from_slice(&text)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
     /// Whether this machine shares `quest`.
     #[must_use]
     pub fn shares(&self, quest: &str) -> bool {

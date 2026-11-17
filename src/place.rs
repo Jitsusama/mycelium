@@ -157,6 +157,19 @@ pub fn waiting() -> PathBuf {
     state_home().join("mission").join("waiting")
 }
 
+/// Where the harness's work broker on this machine cuts its work trees,
+/// a folder a tree, and records the sessions holding each.
+pub fn trees() -> crate::node::Trees {
+    let work = state_home()
+        .join("pi")
+        .join("agentic-harness.pi")
+        .join("work");
+    crate::node::Trees {
+        root: work.join("trees"),
+        records: work.join("cut"),
+    }
+}
+
 /// Where pi's hosts on this machine each keep their record of the
 /// sessions they hold, a file named by the host's process and its start.
 pub fn hosts() -> PathBuf {

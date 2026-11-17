@@ -1716,7 +1716,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         held,
         processes: node::Processes::here(),
         carries: state.join("carries.jsonl"),
-        runs: mycelium::run::Given::at(&state),
+        runs: mycelium::run::Given::at(&state).knowing(place::trees()),
         hosts: place::hosts(),
         orchestrations: state.join("orchestrations.json"),
         logs: place::logs(),

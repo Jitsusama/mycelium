@@ -241,9 +241,10 @@ const SHARED_TREE: &str = "--shared-tree";
 /// launcher's own options, so long as the launcher reads `--` so. They
 /// never say `--shared-tree`, nor a shortening of it longer than `--s`,
 /// as a word of its own, which would spare every run a work tree pi-fence otherwise
-/// refuses: this node doesn't yet say which trees are shared to whom, so
-/// it never asks that. A word is all it sees: a wrapper or a script word
-/// saying it out of sight is the sealed declaration's to keep out.
+/// refuses: the node asks that only of a run it found in a tree shared
+/// with its asker ([`sparing`]). A word is all it sees: a wrapper or a
+/// script word saying it out of sight is the sealed declaration's to
+/// keep out.
 ///
 /// # Errors
 ///
@@ -299,6 +300,17 @@ pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String
 fn spares_a_tree(word: &str) -> bool {
     let name = word.split('=').next().unwrap_or(word);
     word.starts_with(SHARED_TREE) || (name.len() > "--s".len() && SHARED_TREE.starts_with(name))
+}
+
+/// `launcher`, words [`launcher`] gave, asking the fence to spare the work
+/// tree its run stands in: `--shared-tree` before the `--` that ends them.
+/// The node asks it only of a run it found, itself, in a tree of a quest
+/// shared with the machine that asks.
+#[must_use]
+pub fn sparing(mut launcher: Vec<String>) -> Vec<String> {
+    let end = launcher.len().saturating_sub(1);
+    launcher.insert(end, SHARED_TREE.to_owned());
+    launcher
 }
 
 /// What a node says as it starts: the file it reads this machine's

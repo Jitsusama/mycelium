@@ -41,16 +41,30 @@ pub struct Given {
     /// The accounts trusted to declare a fence's launcher: root alone, as
     /// the node's command sets it, so nothing an agent can write does.
     pub declarers: Vec<u32>,
+    /// Where the work broker cuts its trees and records who holds each,
+    /// which says which tree a run from another machine stands in.
+    pub trees: crate::node::Trees,
 }
 
 impl Given {
-    /// What a node keeping its state in `state` is given.
+    /// What a node keeping its state in `state` is given, knowing no work
+    /// trees.
     #[must_use]
     pub fn at(state: &Path) -> Self {
         Self {
             journal: state.join("runs.jsonl"),
             declarers: vec![0],
+            trees: crate::node::Trees {
+                root: PathBuf::from("/nowhere/trees"),
+                records: PathBuf::from("/nowhere/cut"),
+            },
         }
+    }
+
+    /// What it is given, knowing the work broker's `trees`.
+    #[must_use]
+    pub fn knowing(self, trees: crate::node::Trees) -> Self {
+        Self { trees, ..self }
     }
 }
 
