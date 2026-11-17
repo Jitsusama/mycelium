@@ -138,8 +138,9 @@ fn changed(session: &Session) -> Option<i64> {
 /// was parked this boot. A park lasts only while its holder does, and no
 /// holder outlives the boot it began in, so one parked before has nothing
 /// left to wake it, whatever its marker says. A presence naming no boot,
-/// or a machine that names none of its own, takes the park as this boot's,
-/// as a process's owner is judged.
+/// or a machine that names none of its own, as a Mac names none to this
+/// crate, takes the park as this boot's, as a steer's wake and a carry
+/// judge it, so a Mac's parked sessions show rather than vanish.
 fn parks(presence: &Value, parked: &HashSet<String>, boot: &Boot) -> bool {
     presence.get("state").and_then(Value::as_str) == Some("parked")
         && presence

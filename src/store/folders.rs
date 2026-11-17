@@ -825,33 +825,20 @@ fn is_record(path: &Path) -> bool {
             .is_some_and(|extension| extension == "json")
 }
 
-/// This boot's id, where the system has one (Linux and macOS): read once, since it
+/// This boot's id, where the system has one (Linux): read once, since it
 /// can't change under a process, and each pass over the sessions asks it.
 #[must_use]
 pub fn boot_id() -> Option<String> {
     static BOOT: OnceLock<Option<String>> = OnceLock::new();
-    BOOT.get_or_init(read_boot_id).clone()
-}
-
-/// Linux's name for this boot, fresh each boot.
-#[cfg(not(target_os = "macos"))]
-fn read_boot_id() -> Option<String> {
-    let id = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
-    Some(id.trim().to_owned()).filter(|id| !id.is_empty())
-}
-
-/// A Mac's name for this boot, its boot session's id, as the harness
-/// reads it for the presences it writes, so a park or an owner written
-/// this boot is known as this boot's.
-#[cfg(target_os = "macos")]
-fn read_boot_id() -> Option<String> {
-    let said = std::process::Command::new("/usr/sbin/sysctl")
-        .args(["-n", "kern.bootsessionuuid"])
-        .output()
-        .ok()
-        .filter(|said| said.status.success())?;
-    let id = String::from_utf8_lossy(&said.stdout).trim().to_owned();
-    Some(id).filter(|id| !id.is_empty())
+    BOOT.get_or_init(|| {
+        Some(
+            fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .ok()?
+                .trim()
+                .to_owned(),
+        )
+    })
+    .clone()
 }
 
 /// What the system says of a process (Linux).
