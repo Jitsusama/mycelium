@@ -1207,7 +1207,9 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(error) if reader_left(&error, io::stdout()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("mycelium: {error}");
+            // Said where nobody reads any more, as a caller's `2>&1 | head`
+            // leaves it, the failure still ends as one rather than a panic.
+            let _ = writeln!(io::stderr().lock(), "mycelium: {error}");
             ExitCode::FAILURE
         }
     }
@@ -2123,8 +2125,7 @@ fn share(sharing: Sharing, realm: String, socket: &Path) -> io::Result<()> {
     let (quest, scratch) = (quest.as_str(), scratch.as_slice());
     let (_, membership, shares) = open(here, realm)?;
     let Some(to) = to.as_deref() else {
-        println!("{}", shares.offer(quest, scratch)?);
-        return Ok(());
+        return writeln!(io::stdout().lock(), "{}", shares.offer(quest, scratch)?);
     };
     let machine = membership.machine;
     let reached = if to == machine {
@@ -2277,8 +2278,7 @@ fn hold(
     };
     let id = starter.start(realm, &folder, command, false)?;
     if detached {
-        println!("{id}");
-        Ok(())
+        writeln!(io::stdout().lock(), "{id}")
     } else {
         attach(&place::held(realm), &id)
     }
@@ -2566,9 +2566,10 @@ fn print_line(value: &impl serde::Serialize) -> io::Result<()> {
     write_line(&mut io::stdout().lock(), value)
 }
 
-/// Writes `value` to `out` as a JSON line.
+/// Writes `value` to `out` as a JSON line. A failed write keeps its own
+/// kind, so a reader that left reads as a broken pipe.
 fn write_line(out: &mut impl Write, value: &impl serde::Serialize) -> io::Result<()> {
-    serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
+    serde_json::to_writer(&mut *out, value).map_err(io::Error::from)?;
     writeln!(out)
 }
 
