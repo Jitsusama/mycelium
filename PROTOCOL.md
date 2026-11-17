@@ -2095,7 +2095,15 @@ without an `id`, or with an empty one, is known by its title, as the
 launcher knows it, so two such items with one title share an id and
 count as one wait, as the launcher counts them; and any other field
 null or written wrong says nothing. Cleared waits aren't read, and a
-forage whose quest waits on nothing has no `waits`. The mesh's own
+forage whose quest waits on nothing has no `waits`. Beside the folder,
+as the launcher keeps them, `settled.json` holds the waits its person
+said are `done`, and `verdicts.json` the `items` the to do daemon
+found `done` or `ready`, each by `<quest>:<id>`. A wait done either
+way is left out, as the launcher leaves it out, and one found ready is
+ready; one put off stays. Both are read again once changed, when the
+folder is next looked at, and every quest held is read again with
+them, since reading one reads them for all. One that is a link, longer
+than 8 MB, not JSON, or saying it another way settles nothing. The mesh's own
 waits, the questions and holds still unanswered, are
 `mycelium unanswered`'s.
 

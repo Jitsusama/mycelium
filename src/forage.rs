@@ -13,7 +13,8 @@
 //! words is its purpose, and its documents under `plans/`, `research/`,
 //! `briefs/` and `reports/`, each with front matter saying its id, kind
 //! and stage. What it waits on its person for is kept apart, in a file of
-//! its own in the waiting folder, named by the last part of its id. A
+//! its own in the waiting folder, named by the last part of its id, less
+//! those the launcher keeps beside it as done. A
 //! plan can grow past 400 KB, so a document is read only when its length
 //! or time changed since it was last read, and a quest only when a watch
 //! on its folders hears a change, or on the slow round that catches what
@@ -48,6 +49,11 @@ const SETTLED_AFTER: Duration = Duration::from_millis(250);
 /// The longest waiting file read, in bytes: a quest's few waits, never a
 /// file grown or written wrong.
 const LONGEST_WAITING: u64 = 256 * 1024;
+
+/// The longest file of what's become of the waits read, in bytes. Its
+/// person's word on every wait is kept for good, some 2 KB a day, so it
+/// holds years of them, though never a file written wrong.
+const LONGEST_SETTLED: u64 = 8 * 1024 * 1024;
 
 /// How often every quest held is looked at again, for a change a watch
 /// missed, and the quests no cell works on any more let go.
@@ -145,6 +151,116 @@ struct Waiting {
     items: Vec<Value>,
 }
 
+/// What the launcher keeps beside the waiting folder of what's become of
+/// each wait, by its identity, `<quest>:<id>`: what its person said is
+/// done (`settled.json`) and what the to do daemon found done or ready
+/// (`verdicts.json`). Each is read again only once its file changed.
+#[derive(Debug, Clone, Default)]
+struct Settled {
+    /// `settled.json` and `verdicts.json`, if it reads them.
+    files: Option<[PathBuf; 2]>,
+    /// How each file stood when last read.
+    seen: [Option<Seen>; 2],
+    /// The waits done.
+    done: BTreeSet<String>,
+    /// The waits a verdict found ready.
+    ready: BTreeSet<String>,
+    /// The quests judged since the files were last read, by id.
+    judged: BTreeSet<String>,
+}
+
+/// How a file stands: its length, when it last changed and which it is,
+/// so one written anew in its place is read anew.
+type Seen = (u64, Option<SystemTime>, u64);
+
+impl Settled {
+    /// What's kept beside the waiting folder `waiting`; nothing for a
+    /// folder named with no parent, rather than the working folder.
+    fn beside(waiting: &Path) -> Self {
+        Self {
+            files: waiting
+                .parent()
+                .filter(|mission| !mission.as_os_str().is_empty())
+                .map(|mission| [mission.join("settled.json"), mission.join("verdicts.json")]),
+            ..Self::default()
+        }
+    }
+
+    /// How its files stand now.
+    fn now(&self) -> [Option<Seen>; 2] {
+        self.files.as_ref().map_or([None, None], |files| {
+            files.clone().map(|file| {
+                fs::symlink_metadata(file)
+                    .ok()
+                    .map(|meta| (meta.len(), meta.modified().ok(), meta.ino()))
+            })
+        })
+    }
+
+    /// Whether a file changed since it was last read.
+    fn moved(&self) -> bool {
+        self.files.is_some() && self.now() != self.seen
+    }
+
+    /// Reads the files again if either changed, so every quest is to be
+    /// judged again. One that can't be read, or says what it says in any
+    /// other shape, settles nothing.
+    fn refresh(&mut self) {
+        let now = self.now();
+        let Some([settled, verdicts]) = &self.files else {
+            return;
+        };
+        if now == self.seen {
+            return;
+        }
+        let read = |file: &Path| {
+            read_at_most(file, LONGEST_SETTLED)
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .unwrap_or_default()
+        };
+        let settled = read(settled);
+        let verdicts = read(verdicts);
+        let found = |state: &str| {
+            verdicts["items"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(_, verdict)| verdict["state"] == state)
+                .map(|(identity, _)| identity.clone())
+                .collect::<BTreeSet<String>>()
+        };
+        let mut done = found("done");
+        done.extend(
+            settled["done"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(identity, _)| identity.clone()),
+        );
+        self.done = done;
+        self.ready = found("ready");
+        self.seen = now;
+        self.judged.clear();
+    }
+
+    /// The waits of quest `id` but those done, each ready that a verdict
+    /// found so, as the launcher shows them.
+    fn judge(&mut self, id: &str, waits: Vec<Wait>) -> Vec<Wait> {
+        self.judged.insert(id.to_owned());
+        waits
+            .into_iter()
+            .filter_map(|mut wait| {
+                let identity = format!("{id}:{}", wait.id);
+                if self.done.contains(&identity) {
+                    return None;
+                }
+                wait.ready = wait.ready || self.ready.contains(&identity);
+                Some(wait)
+            })
+            .collect()
+    }
+}
+
 /// A cell of this machine and the quest it works on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cell {
@@ -166,6 +282,8 @@ type Stamp = (u64, Option<SystemTime>);
 pub struct Shelf {
     /// The folder of the quests' waiting files, if it reads them.
     waiting: Option<PathBuf>,
+    /// What's become of the waits, kept beside their folder.
+    settled: Settled,
     /// Each quest a cell works on, as last read.
     quests: BTreeMap<String, Quest>,
     /// Each document file as last read, so an unchanged one isn't read
@@ -176,10 +294,12 @@ pub struct Shelf {
 }
 
 impl Shelf {
-    /// A shelf that reads each quest's waits from its file in `waiting`.
+    /// A shelf that reads each quest's waits from its file in `waiting`,
+    /// but those the launcher keeps beside it as done.
     #[must_use]
     pub fn with_waits(waiting: PathBuf) -> Self {
         Self {
+            settled: Settled::beside(&waiting),
             waiting: Some(waiting),
             ..Self::default()
         }
@@ -196,7 +316,8 @@ impl Shelf {
     pub fn read(&mut self, store: &Path, id: &str) -> bool {
         let mut quest = read_quest(store, id, &mut self.files);
         if let Some(waiting) = &self.waiting {
-            quest.waits = read_waits(waiting, id);
+            self.settled.refresh();
+            quest.waits = self.settled.judge(id, read_waits(waiting, id));
         }
         let same = self.quests.get(id) == Some(&quest);
         self.quests.insert(id.to_owned(), quest);
@@ -225,6 +346,7 @@ impl Shelf {
         let folders: Vec<PathBuf> = due.iter().map(|id| store.join(id)).collect();
         Self {
             waiting: self.waiting.clone(),
+            settled: self.settled.clone(),
             quests: due
                 .iter()
                 .filter_map(|id| Some((id.clone(), self.quests.get(id)?.clone())))
@@ -249,6 +371,23 @@ impl Shelf {
             .retain(|path, _| !folders.iter().any(|folder| path.starts_with(folder)));
         self.files.extend(read.files);
         self.quests.extend(read.quests);
+        self.settled = read.settled;
+    }
+
+    /// The quests held whose waits weren't judged by what's become of
+    /// them as it stands: every one once it changed since it was last
+    /// read, else those read before it was, as reading one quest reads it
+    /// for all.
+    fn settled_moved(&self) -> Vec<String> {
+        if self.settled.files.is_none() {
+            return Vec::new();
+        }
+        let moved = self.settled.moved();
+        self.quests
+            .keys()
+            .filter(|id| moved || !self.settled.judged.contains(*id))
+            .cloned()
+            .collect()
     }
 
     /// Whether `id` has been read.
@@ -891,8 +1030,10 @@ pub async fn keep(
             _ = harks.tick(), if waiting.folder.is_some() && watcher.is_some() => {
                 // The next turn looks whether the folder came or went, and
                 // reads one no watch hears again, as on a machine past its
-                // watches.
+                // watches; and every quest's waits are read again once
+                // what's become of them, kept beside the folder, changed.
                 waiting.hark();
+                due.extend(held.lock().unwrap_or_else(PoisonError::into_inner).settled_moved());
             }
             _ = rounds.tick() => {
                 waiting.round();
@@ -1340,6 +1481,109 @@ mod tests {
             bare["forage:KESTRL"].get("waits").is_none(),
             "a forage waiting on nothing leaves `waits` out"
         );
+    }
+
+    #[test]
+    fn a_wait_its_person_or_a_verdict_said_is_done_is_gone() {
+        let store = Store::new("settled");
+        store.write("QEST-20261116-KESTRL/README.md", README);
+        let items = json!([
+            {"id": "fly", "title": "Say whether it hovers"},
+            {"id": "land", "title": "Pick a field"},
+            {"title": "Pick a hedge"},
+            {"id": "post", "title": "Pick a post"},
+            {"id": "nest", "title": "Choose a ledge"},
+        ]);
+        store.write(
+            "waiting/KESTRL.json",
+            &waiting("QEST-20261116-KESTRL", &items),
+        );
+        store.write(
+            "settled.json",
+            &json!({
+                "done": {"QEST-20261116-KESTRL:fly": 1, "QEST-20261116-OSPREY:land": 2},
+                "notNow": {"QEST-20261116-KESTRL:land": {"said": "x", "when": 3}},
+            })
+            .to_string(),
+        );
+        store.write(
+            "verdicts.json",
+            &json!({"v": 1, "items": {
+                "QEST-20261116-KESTRL:Pick a hedge": {"state": "done", "at": 4},
+                "QEST-20261116-KESTRL:post": {"state": "ready", "at": 5},
+                "QEST-20261116-KESTRL:nest": {"state": "waiting", "at": 6},
+            }})
+            .to_string(),
+        );
+        let mut shelf = Shelf::with_waits(store.0.join("waiting"));
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        let said = |shelf: &mut Shelf| -> Vec<(String, bool)> {
+            shelf
+                .quest("QEST-20261116-KESTRL")
+                .expect("read")
+                .waits
+                .iter()
+                .map(|wait| (wait.id.clone(), wait.ready))
+                .collect()
+        };
+        assert_eq!(
+            said(&mut shelf),
+            [("land", false), ("post", true), ("nest", false)]
+                .map(|(id, ready)| (id.to_owned(), ready)),
+            "one its person said is done, or a verdict found done, is gone, by id or by title; \
+             one put off, or another quest's done, stays; one a verdict found ready is ready"
+        );
+        store.write("QEST-20261116-OSPREY/README.md", README);
+        shelf.read(&store.0, "QEST-20261116-OSPREY");
+        assert!(shelf.settled_moved().is_empty(), "both read as it stands");
+        store.write("settled.json", &json!({"done": {}}).to_string());
+        assert_eq!(
+            shelf.settled_moved(),
+            ["QEST-20261116-KESTRL", "QEST-20261116-OSPREY"].map(str::to_owned),
+            "a change to what was settled is to every quest held"
+        );
+        shelf.read(&store.0, "QEST-20261116-OSPREY");
+        assert_eq!(
+            shelf.settled_moved(),
+            ["QEST-20261116-KESTRL".to_owned()],
+            "reading one quest reads it for all, so the others are still due"
+        );
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        assert!(
+            said(&mut shelf).contains(&("fly".to_owned(), false)),
+            "one no longer settled is back"
+        );
+        assert!(shelf.settled_moved().is_empty(), "once read, nothing moved");
+        store.write("verdicts.json", &json!({"items": {}}).to_string());
+        assert_eq!(
+            shelf.settled_moved().len(),
+            2,
+            "a change to the verdicts alone is heard"
+        );
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        assert!(
+            said(&mut shelf).contains(&("Pick a hedge".to_owned(), false)),
+            "one no longer found done is back"
+        );
+        store.write(
+            "settled.json",
+            &json!({"done": {"QEST-20261116-KESTRL:fly": 1}}).to_string(),
+        );
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        assert_eq!(said(&mut shelf).len(), 4, "settled again");
+        for unread in [
+            "not json",
+            "[1, 2]",
+            r#"{"done": ["QEST-20261116-KESTRL:land"]}"#,
+        ] {
+            store.write("settled.json", unread);
+            store.write(
+                "verdicts.json",
+                r#"{"items": {"QEST-20261116-KESTRL:land": "done"}}"#,
+            );
+            shelf.read(&store.0, "QEST-20261116-KESTRL");
+            assert_eq!(said(&mut shelf).len(), 5, "{unread} settles nothing");
+        }
     }
 
     #[test]
@@ -1985,6 +2229,48 @@ mod tests {
             &waiting("QEST-20261116-KESTRL", &four),
         );
         until(&mut told, &["Watch the river"]).await;
+    }
+
+    #[tokio::test]
+    async fn a_wait_said_done_is_gone_within_moments() {
+        let store = Store::new("settled-kept");
+        store.write("QEST-20261116-KESTRL/README.md", README);
+        let mission = Store::new("settled-kept-mission");
+        let two = json!([
+            {"id": "fly", "title": "Say whether it hovers"},
+            {"id": "land", "title": "Pick a field"},
+        ]);
+        mission.write(
+            "waiting/KESTRL.json",
+            &waiting("QEST-20261116-KESTRL", &two),
+        );
+        let held: Held = Arc::new(Mutex::new(Shelf::with_waits(mission.0.join("waiting"))));
+        let (_want, _sessions, mut told) = keeping_kestrel(&store, &held);
+        let count = |held: &Held| {
+            held.lock()
+                .expect("held")
+                .quest("QEST-20261116-KESTRL")
+                .map_or(0, |quest| quest.waits.len())
+        };
+        let by = tokio::time::Instant::now() + Duration::from_secs(30);
+        while count(&held) != 2 {
+            tokio::time::timeout_at(by, told.changed())
+                .await
+                .expect("read in time")
+                .expect("told");
+        }
+        mission.write(
+            "settled.json",
+            &json!({"done": {"QEST-20261116-KESTRL:fly": 1}}).to_string(),
+        );
+        // Within two harks, though no watch hears the file.
+        let by = tokio::time::Instant::now() + HARK * 2 + Duration::from_secs(5);
+        while count(&held) != 1 {
+            tokio::time::timeout_at(by, told.changed())
+                .await
+                .expect("settled in time")
+                .expect("told");
+        }
     }
 
     /// A watcher that hears nothing, as one past the system's limit.
