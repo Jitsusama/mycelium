@@ -2782,6 +2782,28 @@ mod tests {
             kit("/nix/store/a:b").is_err_and(|why| why.contains("colon")),
             "a colon would split it in two on the path"
         );
+        let node = |kit: &str| Command::try_parse_from(["mycelium", "node", "--kit", kit]);
+        let holder = |kit: &str| {
+            Command::try_parse_from([
+                "mycelium", "holder", "--id", "f00d", "--folder", "/", "--login", "--kit", kit,
+                "--", "pi",
+            ])
+        };
+        for (said, given) in [("node", node("kit")), ("holder", holder("kit"))] {
+            assert_eq!(
+                given.err().map(|error| error.kind()),
+                Some(clap::error::ErrorKind::ValueValidation),
+                "the {said}'s --kit is read as a whole path"
+            );
+        }
+        assert!(
+            node("/nix/store/kit").is_ok(),
+            "the node takes a whole path"
+        );
+        assert!(
+            holder("/nix/store/kit").is_ok(),
+            "the holder takes a whole path"
+        );
     }
 
     #[test]

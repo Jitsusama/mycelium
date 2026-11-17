@@ -427,6 +427,22 @@ mod tests {
     }
 
     #[test]
+    fn a_run_keeps_a_realm_and_a_kit_that_read_as_a_macs_yielding_words() {
+        let words = login_run("utility", Some(Path::new("/usr/sbin/taskpolicy")));
+        assert_eq!(
+            words[1..],
+            [
+                "-lc",
+                IN_ITS_REALM,
+                "mycelium",
+                "utility",
+                "/usr/sbin/taskpolicy"
+            ],
+            "only the words a held session yields with are left out of a run"
+        );
+    }
+
+    #[test]
     fn a_program_given_no_kit_keeps_the_path_the_profile_set() {
         let profile = [("PATH", "/usr/bin:/bin")];
         for words in [login_shell("harbour", None), login_run("harbour", None)] {

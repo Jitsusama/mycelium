@@ -932,7 +932,11 @@ A kit is a whole path holding no colon, which the node refuses
 otherwise. Its tools come first for every session and run, an agent's
 fenced ones too, so it belongs where no agent can write, such as the
 Nix store or a link only root can repoint; the node says at its start
-what the kit holds, and where an account but root could change it. A
+what the kit holds, and where an account but root could change its
+`bin` or any tool in it, or where a tool leads. It says so rather than
+refusing the kit, since the configuration that names the kit also writes
+the node's own unit, and refusing would take the tools from every
+session. A
 session held while the kit changes keeps the folder it was given, so a
 link the configuration moves to each new kit reaches it when it wakes,
 where a store path pins the old one until it is collected.

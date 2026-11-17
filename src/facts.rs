@@ -129,7 +129,10 @@ impl Kit {
 /// one, so it is none rather than one with no tools.
 #[must_use]
 pub fn kit(folder: &Path) -> Option<Kit> {
-    let mut tools: Vec<String> = std::fs::read_dir(folder.join("bin"))
+    // Resolved before it is listed, so a profile switched between the two
+    // can't pair one generation's path with another's tools.
+    let path = std::fs::canonicalize(folder).ok()?;
+    let mut tools: Vec<String> = std::fs::read_dir(path.join("bin"))
         .ok()?
         .filter_map(Result::ok)
         .filter_map(|tool| tool.file_name().into_string().ok())
@@ -137,8 +140,6 @@ pub fn kit(folder: &Path) -> Option<Kit> {
         .filter(|tool| !tool.starts_with('.'))
         .collect();
     tools.sort_unstable();
-    // The tools were listed through the link, so it resolves.
-    let path = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_owned());
     Some(Kit {
         path: path.display().to_string(),
         tools,

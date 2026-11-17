@@ -3394,9 +3394,8 @@ impl<S: Store> Shared<S> {
 
     /// Starts `asked` on `machine`: this one by its own starter, another
     /// through the link reaching it.
-    async fn start_on(&self, machine: String, mut asked: Start) -> Reply {
+    async fn start_on(&self, machine: String, asked: Start) -> Reply {
         if machine != self.machine {
-            asked.work = asked.work.asked_there();
             return self.asks.ask(&machine, asked).await;
         }
         let Some(starter) = self.starter.clone() else {
@@ -3504,7 +3503,6 @@ impl<S: Store> Shared<S> {
             tokio::spawn(run::here(words, folder, ran));
             said
         } else {
-            asked.work = asked.work.asked_there();
             self.asks.run(&machine, asked).await?
         };
         run::journal(&self.runs.journal, &started);

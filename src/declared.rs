@@ -282,25 +282,45 @@ pub fn said_at_start(file: &Path, declarers: &[u32]) -> String {
 /// `kit`: what it holds, which every session and run it starts finds first
 /// on its path, and whether an account but `declarers` could change that,
 /// since an agent among them could put its own program in a tool's place.
+/// The verdict comes before the tools, and each is said escaped, so a
+/// tool's name can't pass for the verdict.
 #[must_use]
 pub fn kit_said_at_start(kit: &Path, declarers: &[u32]) -> String {
     let Some(listed) = crate::facts::kit(kit) else {
+        let why = fs::read_dir(kit.join("bin"))
+            .err()
+            .map_or_else(|| "it moved as it was read".to_owned(), |e| e.to_string());
         return format!(
-            "puts the realm's kit at {} first on each path, but can't list its bin, so names no \
-             kit",
+            "puts the realm's kit at {} first on each path, but can't list its bin ({why}), so \
+             names no kit",
             kit.display()
         );
     };
-    let held = format!(
-        "puts the realm's kit at {} first on each path: {} tools ({})",
-        listed.path,
-        listed.tools.len(),
-        listed.tools.join(" ")
-    );
-    match sealed(&kit.join("bin"), declarers) {
-        Ok(()) => held,
-        Err(why) => format!("{held}; an agent could change what they are: {why}"),
-    }
+    // Each tool as well as the folder holding it, since a tool that is a
+    // link is only as sealed as where it leads.
+    let bin = kit.join("bin");
+    let verdict = sealed(&bin, declarers)
+        .and_then(|()| {
+            listed
+                .tools
+                .iter()
+                .try_for_each(|tool| sealed(&bin.join(tool), declarers))
+        })
+        .map_or_else(
+            |why| format!("an agent could change what its tools are: {why}"),
+            |()| "only its declarers can change its tools".to_owned(),
+        );
+    let tools: Vec<String> = listed
+        .tools
+        .iter()
+        .map(|tool| tool.escape_debug().to_string())
+        .collect();
+    format!(
+        "puts the realm's kit at {} first on each path; {verdict}; {} tools: {}",
+        listed.path.escape_debug(),
+        tools.len(),
+        tools.join(" ")
+    )
 }
 
 /// How many links a path may pass through before it is taken as a loop,
@@ -549,30 +569,41 @@ mod tests {
     fn a_node_says_what_its_kit_holds_and_whether_an_agent_could_change_it() {
         let folder = tempfile::tempdir().expect("a temporary folder");
         let kit = folder.path().join("kit");
+        let unlisted = kit_said_at_start(&kit, &declarers());
         assert!(
-            kit_said_at_start(&kit, &declarers()).ends_with("can't list its bin, so names no kit"),
-            "a kit with no bin to list is said to name none"
+            unlisted.ends_with("), so names no kit") && unlisted.contains("can't list its bin ("),
+            "a kit with no bin to list is said to name none, and why: {unlisted}"
         );
-        fs::create_dir_all(kit.join("bin")).expect("its bin");
-        for tool in ["gh", "gcloud"] {
-            fs::write(kit.join("bin").join(tool), "").expect("a tool");
+        let bin = kit.join("bin");
+        fs::create_dir_all(&bin).expect("its bin");
+        for tool in ["gh", "gcloud", "say\nit"] {
+            fs::write(bin.join(tool), "").expect("a tool");
+            fs::set_permissions(bin.join(tool), fs::Permissions::from_mode(0o755))
+                .expect("a tool only its owner writes");
         }
         let resolved = fs::canonicalize(&kit).expect("the kit resolves");
-        let held = format!(
-            "puts the realm's kit at {} first on each path: 2 tools (gcloud gh)",
-            resolved.display()
-        );
-        let mine = rustix::process::getuid().as_raw();
+        let tools = "3 tools: gcloud gh say\\nit";
         assert_eq!(
-            kit_said_at_start(&kit, &[0, mine]),
-            held,
-            "a kit only its declarers write is said as it is"
+            kit_said_at_start(&kit, &declarers()),
+            format!(
+                "puts the realm's kit at {} first on each path; only its declarers can change \
+                 its tools; {tools}",
+                resolved.display()
+            ),
+            "a kit only its declarers write is said as it is, a tool's odd name escaped"
         );
-        let anyone = mine.wrapping_add(1);
-        assert!(
-            kit_said_at_start(&kit, &[0, anyone])
-                .starts_with(&format!("{held}; an agent could change what they are: ")),
-            "a kit another account writes is said to be changeable"
+        fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o666))
+            .expect("a tool anyone writes");
+        assert_eq!(
+            kit_said_at_start(&kit, &declarers()),
+            format!(
+                "puts the realm's kit at {} first on each path; an agent could change what its \
+                 tools are: {} may be written by others than its owner; {tools}",
+                resolved.display(),
+                // Named as the walk reaches it, through any link above.
+                resolved.join("bin").join("gh").display()
+            ),
+            "a tool anyone writes in a bin only its declarers write is said to be changeable"
         );
     }
 
