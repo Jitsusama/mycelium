@@ -467,3 +467,56 @@ fn each_record_is_keyed_by_its_session_in_the_daemon_interface() {
         "heard when the node first saw it end"
     );
 }
+
+/// A carry of `session` ordered `ago` milliseconds before now.
+fn carried(session: &str, ago: i64) -> Kept {
+    Kept {
+        id: format!("{session}-carry"),
+        at: jiff::Timestamp::from_millisecond(NOW - ago).expect("the tests stand in this age"),
+        line: json!({"session": session}),
+    }
+}
+
+#[test]
+fn a_carry_under_way_or_a_turn_waited_is_coming_back_and_nothing_else() {
+    let carries = [
+        carried("going1", 0),
+        carried("under1", CARRIED_WITHIN),
+        carried("slow01", 45 * 60 * 1000),
+        carried("stale1", CARRIED_WITHIN + 1),
+        carried("refus1", 0),
+        carried("back01", 0),
+    ];
+    let judge = |carry: &Kept| match carry.said("session") {
+        "going1" => CarryState::Ordered,
+        "refus1" => CarryState::Refused("it couldn't".to_owned()),
+        "back01" => CarryState::Back,
+        _ => CarryState::Carrying,
+    };
+    let mut back: Vec<String> = coming_back(&carries, judge, ["turn01"], NOW)
+        .into_iter()
+        .collect();
+    back.sort();
+    assert_eq!(
+        back,
+        ["going1", "slow01", "turn01", "under1"],
+        "ordered or under way within the hour, a slow one too, or waiting a turn; never refused, back, \
+         or carried over an hour ago and running nowhere"
+    );
+}
+
+#[test]
+fn only_a_carry_within_the_hour_is_judged() {
+    let carries = [carried("stale1", CARRIED_WITHIN + 1)];
+    let judged = std::cell::Cell::new(0);
+    let judge = |_: &Kept| {
+        judged.set(judged.get() + 1);
+        CarryState::Carrying
+    };
+    coming_back(&carries, judge, [], NOW);
+    assert_eq!(
+        judged.get(),
+        0,
+        "judging reads its handover, so an old one isn't"
+    );
+}

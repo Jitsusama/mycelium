@@ -32,6 +32,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::{Value, json};
 
+use crate::carry::kept::{Kept, State as CarryState};
 use crate::record::{Session, State};
 
 /// The kind of an ended session's records.
@@ -46,8 +47,10 @@ pub const LIVE: [&str; 0] = [];
 pub const KEPT_FOR: i64 = 24 * 60 * 60 * 1000;
 
 /// How long a carry ordered from here stands for its session's end, in
-/// milliseconds: half an hour, past which a carry that runs nowhere, or
-/// a session back from it that ended since, is work stopped.
+/// milliseconds: an hour, past which a carry that runs nowhere, or a
+/// session back from it that ended since, is work stopped. A session has
+/// a quarter of an hour to leave for its carry, and its trees and quest
+/// cross after, so half an hour told slow carries as ends.
 pub const CARRIED_WITHIN: i64 = 30 * 60 * 1000;
 
 /// How long this node sees a session ended before it is told, in
@@ -211,6 +214,26 @@ fn address_told(said: &str) -> Option<String> {
             .bytes()
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit());
     reads.then_some(address)
+}
+
+/// The sessions whose end here is a carry or a turn rather than their
+/// work stopping: each of `carries` ordered within [`CARRIED_WITHIN`] of
+/// `now` that `judge` says neither refused nor came back, and each of
+/// `waiting`. Only those carries are judged, as judging reads their
+/// handovers.
+pub fn coming_back<'a>(
+    carries: &[Kept],
+    judge: impl Fn(&Kept) -> CarryState,
+    waiting: impl IntoIterator<Item = &'a str>,
+    now: i64,
+) -> HashSet<String> {
+    carries
+        .iter()
+        .filter(|carry| now - carry.at.as_millisecond() <= CARRIED_WITHIN)
+        .filter(|carry| !matches!(judge(carry), CarryState::Refused(_) | CarryState::Back))
+        .map(|carry| carry.said("session").to_owned())
+        .chain(waiting.into_iter().map(str::to_owned))
+        .collect()
 }
 
 /// The records `ended` makes, by key.
