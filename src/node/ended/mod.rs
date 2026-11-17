@@ -50,8 +50,8 @@ pub const KEPT_FOR: i64 = 24 * 60 * 60 * 1000;
 /// milliseconds: an hour, past which a carry that runs nowhere, or a
 /// session back from it that ended since, is work stopped. A session has
 /// a quarter of an hour to leave for its carry, and its trees and quest
-/// cross after, so half an hour told slow carries as ends.
-pub const CARRIED_WITHIN: i64 = 30 * 60 * 1000;
+/// cross after, so half an hour would tell a slow carry as an end.
+pub const CARRIED_WITHIN: i64 = 60 * 60 * 1000;
 
 /// How long this node sees a session ended before it is told, in
 /// milliseconds: ten minutes, past a park's marker following its presence
