@@ -2032,6 +2032,35 @@ mod tests {
         assert_eq!(ended, Some(3), "the named command ran");
     }
 
+    // A pi killed as it parked left its next command and its steers behind
+    // (2026-11-17, Y2YBTS's 01a1db14), and a wake written after landed
+    // where no holder would ever read it.
+    #[tokio::test]
+    async fn a_program_killed_as_it_parks_leaves_no_file_of_its_own() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window
+            .types(concat!(
+                r#"printf '%s' '["sh"]' > "$MYCELIUM_AGAIN"; "#,
+                r#"printf '%s' '["merged"]' > "$MYCELIUM_STEERS"; "#,
+                r#"printf '%s' '["sh"]' > "${MYCELIUM_AGAIN%.again}.next"; "#,
+                "kill -TERM $$\r",
+            ))
+            .await;
+        assert_eq!(exited(holder).await, None, "a killed program gives no code");
+        let left: Vec<String> = fs::read_dir(&dir)
+            .expect("the folder reads")
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| name.starts_with(held.id.as_str()))
+            .collect();
+        assert_eq!(
+            left,
+            Vec::<String>::new(),
+            "an ended holder leaves nothing of its id for a wake to find"
+        );
+    }
+
     // A pi on an old conversation, woken in its window, named itself as it
     // parked over the newer conversation named for it while it ran, and
     // each wake after started the old one again (2026-11-13).
