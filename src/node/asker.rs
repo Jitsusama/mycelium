@@ -664,13 +664,16 @@ fn hosted(hosts: &Path, pid: i32) -> usize {
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".json"))
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
         })
-        .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+        .filter_map(|path| fs::read_to_string(path).ok())
         .filter_map(|text| serde_json::from_str::<Value>(&text).ok())
         .filter_map(|record| record.get("sessions")?.as_array().map(Vec::len))
         .max()
