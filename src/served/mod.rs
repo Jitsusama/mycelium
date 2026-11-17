@@ -30,6 +30,8 @@ use tokio::sync::{mpsc, watch};
 
 use crate::daemon;
 
+mod done;
+
 /// How long a source whose folder can't be watched waits before trying
 /// again, as a folder its program hasn't made yet.
 const AGAIN_AFTER: Duration = Duration::from_secs(60);
@@ -922,6 +924,44 @@ mod tests {
             "the file that won't read is named: {:?}",
             held.refused
         );
+    }
+
+    #[tokio::test]
+    async fn a_record_whose_act_is_done_is_shown_no_more() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let waiting = Source {
+            file: None,
+            folder: Some(dir.path().to_owned()),
+            talks: None,
+            records: Some("items".to_owned()),
+            whole: None,
+            key: Some("id".to_owned()),
+            by: Some("quest".to_owned()),
+        };
+        let now = jiff::Timestamp::now().to_string();
+        let posted =
+            |done: bool| json!({"probe": "message-posted", "verdict": {"done": done, "at": now}});
+        write(
+            &dir.path().join("A.json"),
+            &json!({"quest": "QEST-A", "items": [
+                {"id": "post", "doneWhen": posted(true)},
+                {"id": "later", "doneWhen": posted(false)},
+                {"id": "login"},
+            ]}),
+        );
+        let served = Served::start(BTreeMap::from([("waiting".to_owned(), waiting)]));
+        let mut told = served.told("waiting").expect("waiting is served");
+        until(
+            &served,
+            &mut told,
+            "waiting",
+            |records| {
+                records.keys().collect::<Vec<_>>()
+                    == ["waiting:QEST-A:later", "waiting:QEST-A:login"]
+            },
+            "the ask whose post is done goes, and those not done or naming no act stay",
+        )
+        .await;
     }
 
     /// The talks of the steer inboxes in `inboxes`.
