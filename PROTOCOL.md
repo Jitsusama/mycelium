@@ -1366,14 +1366,20 @@ proves no session. The node's journal, and a refused make's error, say
 why for each `unknown`. A provider serving only some refuses the rest
 by failing its `make`, and nothing is made; it should refuse a `make`
 where the variable is missing too, as it is from a node older than it,
-though `offers`, `link` and `release` never carry it. Its refusal
-gates only the make: once a made machine links, starts are placed on
-it as on any machine of the realm. Like the judging of a run, this
-fences habit, not an agent set on passing as another, which runs as
-the same account; an agent's process left with no agent above it is
-judged the person's. A start relayed from another machine's node makes
-nothing, since it is pinned to this machine by name, which no offer
-meets. The program writes one JSON line,
+though `offers`, `link` and `release` never carry it. A machine made
+is booked, before it is dialled, for the asker its make was told: once
+it links, a start or run is placed there only when that asker, or the
+person, asks, so another agent's work goes elsewhere or waits, and a
+machine whose book line names no asker takes only the person's. A
+preview is held to it as its run would be, and an ordered carry there
+of another's session is refused; only a start pinned to the machine
+made for it is not held to it. The booking is the making node's, kept
+while it runs and made again as it redials its book. Like the judging
+of a run, this fences habit, not an agent set on passing as another,
+which runs as the same account; an agent's process left with no agent
+above it is judged the person's. A start relayed from another machine's
+node makes nothing, since it is pinned to this machine by name, which no
+offer meets. The program writes one JSON line,
 `{"place", "machine", "until"}`:
 where it is, as `--via` names it, the name its node will say for
 itself, and when its provider ends it whatever else happens. The node

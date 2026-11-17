@@ -54,6 +54,11 @@ pub struct Made {
     pub until: jiff::Timestamp,
     /// What it costs while it lives, as offered.
     pub costs: Costs,
+    /// Who its make was told asked ([`ASKER`]), for whom alone, and the
+    /// person, it is booked. A machine kept before makes said so has none,
+    /// and is booked for nobody but the person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asker: Option<String>,
 }
 
 /// What a program says it made.
@@ -118,6 +123,7 @@ pub async fn make(offer: &Offer, lasting: Duration, asker: &str) -> Result<Made,
         machine: said.machine,
         until: said.until,
         costs: offer.costs.clone(),
+        asker: Some(asker.to_owned()),
     })
 }
 
@@ -330,8 +336,9 @@ mod tests {
                 machine: "lent-1".to_owned(),
                 until: "2026-10-31T20:00:00Z".parse().expect("a time"),
                 costs: offer_of(String::new()).costs,
+                asker: Some("person".to_owned()),
             },
-            "what was made, where, until when and at what rate"
+            "what was made, where, until when, at what rate and for whom"
         );
 
         let book = Book::at(dir.path().join("state").join("made.jsonl"));
@@ -364,6 +371,7 @@ mod tests {
             machine: "lent".to_owned(),
             until: jiff::Timestamp::UNIX_EPOCH,
             costs: offer_of(String::new()).costs,
+            asker: None,
         };
         std::thread::scope(|scope| {
             for _ in 0..8 {
@@ -390,7 +398,30 @@ mod tests {
             machine: machine.to_owned(),
             until,
             costs: offer_of(String::new()).costs,
+            asker: None,
         }
+    }
+
+    #[test]
+    fn the_book_keeps_who_a_machine_was_made_for_through_a_restart() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let mut made = made_at("osprey", "p1", later);
+        made.asker = Some("P9R1KI".to_owned());
+        Book::at(path.clone())
+            .of_realm("work")
+            .made(&made)
+            .expect("a make is kept");
+        assert_eq!(
+            Book::at(path)
+                .of_realm("work")
+                .standing()
+                .expect("the book reads")
+                .made,
+            vec![made],
+            "a node reading its book again books the machine for the same asker"
+        );
     }
 
     #[test]
