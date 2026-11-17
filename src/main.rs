@@ -1445,7 +1445,11 @@ fn machines_drawn(socket: &Path, name: Option<&str>) -> io::Result<()> {
                 .iter()
                 .map(|builder| mycelium::machines::one_builder(builder, &look))
                 .collect(),
-            Ok(_) => unreachable!("one machine is a machine or a builder"),
+            Ok(_) => {
+                return Err(io::Error::other(
+                    "the node answered one machine with something else",
+                ));
+            }
             Err(why) => return Err(io::Error::other(why)),
         },
     };
