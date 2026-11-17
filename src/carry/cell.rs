@@ -1,10 +1,10 @@
 //! What a carried session's cell brings with it: its name, the ties
-//! this node holds of it, and when each tree network its trees make
-//! formed here. The ties were made from messages this node held, so
-//! they go beside the session's done file for the node it arrives on to
-//! keep, as names and counts only, never what was said. A tree network
-//! goes so the node it arrives on keeps the time it first formed, rather
-//! than forming it afresh.
+//! this node holds of it, and when each network its trees and shared
+//! folders make formed here. The ties were made from messages this node
+//! held, so they go beside the session's done file for the node it
+//! arrives on to keep, as names and counts only, never what was said. A
+//! formed network goes so the node it arrives on keeps the time it
+//! first formed, rather than forming it afresh.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -32,19 +32,19 @@ pub struct Brought {
     /// The cell's own record of its talk, `tie:<cell>`, or none where it
     /// has none.
     pub talk: Option<Value>,
-    /// The `formed:<network>` records this node holds of tree networks
-    /// the session's trees make, whole as the formed kind sends them:
-    /// at most [`FORMED_MOST`], earliest formed first.
+    /// The `formed:<network>` records this node holds of the networks
+    /// the session's trees and shared folders make, whole as the formed
+    /// kind sends them: at most [`FORMED_MOST`], earliest formed first.
     pub formed: Vec<Value>,
 }
 
 /// Each of `formed`, every formed network the node holds, that is a
-/// tree network the trees `presence` holds make: earliest formed first,
+/// network the trees or shares `presence` holds make: earliest formed first,
 /// those at one time by key, one saying no time last, and at most
 /// [`FORMED_MOST`].
 #[must_use]
 pub fn formed_of(presence: &Value, formed: &[Value]) -> Vec<Value> {
-    let networks = crate::networks::tree_networks(presence);
+    let networks = crate::networks::formed_networks(presence);
     let mut kept: Vec<Value> = formed
         .iter()
         .filter(|one| {
@@ -144,6 +144,31 @@ mod tests {
         assert!(
             formed_of(&json!({"trees": "oars"}), &formed).is_empty(),
             "nor one whose trees aren't a list"
+        );
+    }
+
+    #[test]
+    fn a_cell_brings_the_formed_networks_of_the_folders_it_shares_too() {
+        let presence = json!({
+            "trees": [{"key": "oars-tides", "repo": "github:harbour/oars",
+                        "branch": "jsama/tides"}],
+            "shares": [
+                {"key": "quest:QEST-20261112-HARBOR", "for": "Harbour", "folder": "/h"},
+                {"key": "quest:a.b", "for": "Dotted", "folder": "/d"},
+            ],
+        });
+        let record = |key: &str, at: i64| json!({"key": key, "kind": "formed", "at": at});
+        let formed = [
+            record("formed:files.quest:qest-20261112-harbor", 2),
+            record(TIDES, 1),
+            record("formed:files.quest:a.b", 3),
+            record("formed:files.quest:qest-20261112-kelped", 4),
+        ];
+        assert_eq!(
+            formed_of(&presence, &formed),
+            [formed[1].clone(), formed[0].clone()],
+            "its trees' and its shared folders' networks, earliest first; none of a share \
+             past its bounds, nor of a folder it doesn't share"
         );
     }
 

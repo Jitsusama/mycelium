@@ -13,7 +13,8 @@ use serde_json::{Value, json};
 use serde::Deserialize as _;
 
 use super::{
-    Builds, Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Tree, Usage, kept,
+    Builds, Cell, EventLine, Is, MACHINES, Mycelium, Network, Places, Shape, Share, Tree, Usage,
+    kept,
 };
 use crate::receptor::{self, Counts, Source};
 use crate::swarm::{self, Standing};
@@ -35,8 +36,9 @@ impl Mycelium {
     /// made its cell as it comes and let go, so thousands are never all
     /// held at once. This is how `mycelium networks` makes what it draws
     /// and how the node makes its `network` and `cell` records, so the two
-    /// never differ. A tree network named in `formed`, the node's `formed`
-    /// records, stays while one cell holds its tree.
+    /// never differ. A tree or files network named in `formed`, the
+    /// node's `formed` records, stays while one cell holds its tree or
+    /// shares its folder.
     #[must_use]
     pub fn of_records(
         realm: &str,
@@ -145,8 +147,12 @@ impl Mycelium {
         let leads = led(teams);
         for cell in &mut sessions {
             cell.networks.retain(|name| names.contains(name.as_str()));
-            for tree in &cell.trees {
-                let Some(name) = tree.network() else { continue };
+            let formed = cell
+                .trees
+                .iter()
+                .filter_map(Tree::network)
+                .chain(cell.shares.iter().map(Share::network));
+            for name in formed {
                 if names.contains(name.as_str()) && !cell.networks.contains(&name) {
                     cell.networks.push(name);
                 }
@@ -236,6 +242,7 @@ fn bare(name: String, is: Is) -> Cell {
         counts: None,
         builds: None,
         trees: Vec::new(),
+        shares: Vec::new(),
         networks: Vec::new(),
     }
 }
@@ -378,7 +385,7 @@ struct Sessions {
     quests: BTreeMap<String, String>,
     renamed: BTreeMap<String, String>,
     events: Vec<EventLine>,
-    /// The tree networks two cells formed, which one keeps.
+    /// The tree and files networks two cells formed, which one keeps.
     formed: BTreeSet<String>,
 }
 
@@ -452,9 +459,15 @@ fn session_cell(session: &Value) -> Option<Cell> {
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        // A tree's network is made only of the trees its cells hold, so a
-        // group named as one is passed over.
-        .filter(|group| Shape::of_group(group).is_some_and(|shape| shape != Shape::Tree))
+        // A tree's network is made only of the trees its cells hold, and a
+        // folder's of the folders they share, so a group named as either
+        // is passed over: a tree's by its shape, and a folder's as one
+        // holding a colon, which a folder's key does and no mesh group
+        // can (`group::check`).
+        .filter(|group| {
+            !group.contains(':')
+                && Shape::of_group(group).is_some_and(|shape| !matches!(shape, Shape::Tree))
+        })
         .map(str::to_owned)
         .collect();
     let title = swarm::title(session).to_owned();
@@ -485,6 +498,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         counts: None,
         builds: None,
         trees,
+        shares: super::shares_of(&session["presence"]),
         networks,
     })
 }
@@ -597,7 +611,58 @@ fn joined(
     titled_by_quests(&mut networks, quests);
     titled_by_repos(&mut networks, sessions);
     networks.extend(shared_trees(sessions, formed));
+    networks.extend(shared_files(sessions, formed));
     networks
+}
+
+/// The networks of the folders two cells or more of `sessions` share,
+/// each known by its key, as each machine keeps its own copy, and titled
+/// by what most of its cells say it is for, or untitled where no one
+/// thing is said most, so no one cell names a folder the rest call
+/// otherwise, by its order or anything else it says. One of
+/// `formed`, which two cells shared before, stays a network while one
+/// cell shares it.
+fn shared_files(sessions: &[Cell], formed: &BTreeSet<String>) -> Vec<Network> {
+    let mut sharing: BTreeMap<&str, Vec<(&Cell, &Share)>> = BTreeMap::new();
+    for cell in sessions {
+        for share in &cell.shares {
+            sharing.entry(&share.key).or_default().push((cell, share));
+        }
+    }
+    sharing
+        .into_values()
+        .filter_map(|shared| {
+            let (_, first) = shared.first()?;
+            let name = first.network();
+            let cells: Vec<&Cell> = shared.iter().map(|(cell, _)| *cell).collect();
+            (cells.len() > 1 || formed.contains(&name)).then(|| Network {
+                // A cell saying nothing it is for has no say in its title.
+                title: most_said(
+                    shared
+                        .iter()
+                        .map(|(_, share)| share.about.as_str())
+                        .filter(|about| !about.is_empty()),
+                ),
+                ..network_of(&name, Shape::Files, &cells)
+            })
+        })
+        .collect()
+}
+
+/// What more of `said` says than says anything else, or none where two
+/// things are said as often.
+fn most_said<'a>(said: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut counted: BTreeMap<&str, usize> = BTreeMap::new();
+    for each in said {
+        *counted.entry(each).or_default() += 1;
+    }
+    let mut most: Vec<(&str, usize)> = counted.into_iter().collect();
+    most.sort_unstable_by_key(|(_, times)| std::cmp::Reverse(*times));
+    match most.as_slice() {
+        [(each, _)] => Some((*each).to_owned()),
+        [(each, times), (_, next), ..] if times > next => Some((*each).to_owned()),
+        _ => None,
+    }
 }
 
 /// The networks of the trees two cells or more of `sessions` hold, each

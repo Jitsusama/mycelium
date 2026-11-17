@@ -198,8 +198,8 @@ pub trait Hands {
     ///
     /// When the node can't say.
     fn ties(&mut self) -> Result<Vec<Value>, String>;
-    /// Every `formed` record the node holds: each tree network formed
-    /// here, with when it formed.
+    /// Every `formed` record the node holds: each tree and files network
+    /// formed here, with when it formed.
     ///
     /// # Errors
     ///
@@ -572,11 +572,11 @@ fn bring_cells(hands: &mut impl Hands, sessions: &[Session]) -> Result<BTreeSet<
         .map_err(|why| format!("the node didn't say its ties: {why}"))?;
     let in_a_network = carried
         .iter()
-        .any(|(_, session)| !crate::networks::tree_networks(&session.presence).is_empty());
+        .any(|(_, session)| !crate::networks::formed_networks(&session.presence).is_empty());
     let formed = if in_a_network {
         hands
             .formed()
-            .map_err(|why| format!("the node didn't say which tree networks formed: {why}"))?
+            .map_err(|why| format!("the node didn't say which networks formed: {why}"))?
     } else {
         Vec::new()
     };
@@ -1216,7 +1216,14 @@ mod tests {
                     unsaid_formed: Some("no answer".to_owned()),
                     ..realm_in_a_tree()
                 },
-                "the node didn't say which tree networks formed: no answer",
+                "the node didn't say which networks formed: no answer",
+            ),
+            (
+                Realm {
+                    unsaid_formed: Some("no answer".to_owned()),
+                    ..realm_sharing_a_folder()
+                },
+                "the node didn't say which networks formed: no answer",
             ),
             (
                 Realm {
@@ -1253,6 +1260,17 @@ mod tests {
             {"key": "oars-tides", "repo": "github:harbour/oars", "branch": "jsama/tides"},
         ]});
         realm.sessions[0] = session("BUSY01", "skiff", QUEST, "busy", &tides);
+        realm
+    }
+
+    /// The realm, its first session sharing a folder and holding no
+    /// tree, so only its share makes a network.
+    fn realm_sharing_a_folder() -> Realm {
+        let mut realm = realm();
+        let harbour = json!({"shares": [
+            {"key": "quest:QEST-20261112-HARBOR", "for": "Harbour", "folder": "/h"},
+        ]});
+        realm.sessions[0] = session("BUSY01", "skiff", QUEST, "busy", &harbour);
         realm
     }
 

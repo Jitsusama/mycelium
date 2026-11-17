@@ -35,18 +35,70 @@ pub use shown::{cell, cells, network, overview};
 /// The machines' own network's name.
 pub const MACHINES: &str = "machines";
 
-/// The name of each tree network the trees `presence` holds would make,
-/// such as `tree.github:harbour/oars:jsama/tides`. A tree saying no
-/// repository, or neither branch nor commit, names none.
+/// How many of a cell's shares are read, so a session writing its
+/// presence can't make the node read thousands.
+pub const SHARES_MOST: usize = 16;
+
+/// How long a share's key may be, in bytes.
+pub const SHARE_KEY_MOST: usize = 96;
+
+/// How much of what a share is for is read, in characters: a title's
+/// length, as an event's title is cut to.
+pub const SHARE_FOR_MOST: usize = 120;
+
+/// How long a share's folder may be, in bytes.
+pub const SHARE_FOLDER_MOST: usize = 1024;
+
+/// The name of each network that forms where two cells meet, which the
+/// trees and shares `presence` holds would make: a tree's, such as
+/// `tree.github:harbour/oars:jsama/tides`, and a shared folder's, such
+/// as `files.quest:QEST-20261112-HARBOR`. A tree saying no repository,
+/// or neither branch nor commit, names none, nor does a share past its
+/// bounds.
 #[must_use]
-pub fn tree_networks(presence: &Value) -> BTreeSet<String> {
-    presence["trees"]
+pub fn formed_networks(presence: &Value) -> BTreeSet<String> {
+    let trees = presence["trees"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|tree| Tree::deserialize(tree).ok())
-        .filter_map(|tree| tree.network())
-        .collect()
+        .filter_map(|tree| tree.network());
+    let shares = shares_of(presence).into_iter().map(|share| share.network());
+    trees.chain(shares).collect()
+}
+
+/// The folders `presence` says it shares: of its first [`SHARES_MOST`],
+/// each within its bounds, the first saying each key. A key is read in
+/// lower case, as a network is picked by name whatever its case, so two
+/// keys differing only in case are one folder; and what a share is for
+/// is cut to [`SHARE_FOR_MOST`] characters, as a long title still names
+/// a folder.
+fn shares_of(presence: &Value) -> Vec<Share> {
+    let mut shares: Vec<Share> = Vec::new();
+    let said = presence["shares"].as_array().into_iter().flatten();
+    for share in said.take(SHARES_MOST) {
+        let Ok(mut share) = Share::deserialize(share) else {
+            continue;
+        };
+        share.key.make_ascii_lowercase();
+        // Cleaned whole before the cut, so what a terminal would act on is
+        // gone wherever it was said, and the cut counts what is drawn.
+        share.about = drawable(&share.about);
+        share.folder = drawable(&share.folder);
+        if let Some((cut, _)) = share.about.char_indices().nth(SHARE_FOR_MOST) {
+            share.about.truncate(cut);
+            // Trimmed again, so a cut falling after a space ends in none.
+            share.about.truncate(share.about.trim_end().len());
+        }
+        // Cleaning and a cut keep what was read, so a long `for` held in
+        // every cell would still cost its whole length without this.
+        share.about.shrink_to_fit();
+        if share.fits() && shares.iter().all(|each| each.key != share.key) {
+            shares.push(share);
+        }
+    }
+    shares.shrink_to_fit();
+    shares
 }
 
 /// The mycelium of one realm, as its node holds it now.
@@ -123,6 +175,9 @@ pub enum Shape {
     Repository,
     /// A work tree two cells or more held at once, while one still does.
     Tree,
+    /// A folder two cells or more shared at once, each in its own copy,
+    /// while one still does.
+    Files,
     /// A group its cells named and joined.
     Group,
     /// The realm's machines.
@@ -133,11 +188,12 @@ pub enum Shape {
 
 impl Shape {
     /// Each, in the order the tree draws them.
-    pub const EACH: [Self; 7] = [
+    pub const EACH: [Self; 8] = [
         Self::Orchestration,
         Self::Project,
         Self::Repository,
         Self::Tree,
+        Self::Files,
         Self::Group,
         Self::Machines,
         Self::Outside,
@@ -152,6 +208,8 @@ impl Shape {
             "quest" => Some(Self::Project),
             "repo" => Some(Self::Repository),
             "tree" => Some(Self::Tree),
+            // A folder's name holds its key's colon, which no group's can,
+            // so a group called `files` or `files.sync` is a group.
             _ => Some(Self::Group),
         }
     }
@@ -329,6 +387,10 @@ pub struct Cell {
     /// The work trees a session holds now, as its presence says.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trees: Vec<Tree>,
+    /// The folders a session shares with others now, as its presence
+    /// says.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shares: Vec<Share>,
     /// The networks it joined, by name.
     pub networks: Vec<String>,
 }
@@ -392,6 +454,127 @@ impl Tree {
         };
         Some([self.repo_name(), owned, &self.repo].map(|repo| format!("{repo}@{at}")))
     }
+}
+
+/// A folder a session works in with others, as its presence says: each
+/// machine keeps its own copy, so the folder is known by its `key`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Share {
+    /// What it is known by on every machine, such as
+    /// `quest:QEST-20261112-HARBOR`.
+    pub key: String,
+    /// What it is for, which titles its network; empty where it says
+    /// nothing, or anything but text, so its network is untitled, and
+    /// then left out of its cell's record.
+    #[serde(
+        rename = "for",
+        default,
+        deserialize_with = "said_or_none",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub about: String,
+    /// Where this session's copy is.
+    pub folder: String,
+}
+
+/// What a share says it is for, or empty where it says null or anything
+/// but text, as it says nothing, so no folder is refused for its title.
+/// Anything else is passed over unbuilt, so a large one costs no copy.
+fn said_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<String, D::Error> {
+    use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
+
+    struct Said;
+    impl<'de> Visitor<'de> for Said {
+        type Value = String;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("what a share is for")
+        }
+        fn visit_str<E>(self, said: &str) -> Result<String, E> {
+            Ok(said.to_owned())
+        }
+        fn visit_string<E>(self, said: String) -> Result<String, E> {
+            Ok(said)
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_unit<E>(self) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_none<E>(self) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<String, A::Error> {
+            while seq.next_element::<IgnoredAny>()?.is_some() {}
+            Ok(String::new())
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<String, A::Error> {
+            while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            Ok(String::new())
+        }
+    }
+    said.deserialize_any(Said)
+}
+
+impl Share {
+    /// Whether it is within its bounds: a key of letters, digits, colons,
+    /// dashes and underscores, beginning with a letter or digit, so its
+    /// network's name can't be cut anywhere but its first dot, and saying
+    /// its kind, a colon and what it is of, as `quest:<id>`, so its short
+    /// name is never another shape's, as no mesh group holds a colon;
+    /// and its folder said. What it is for, and its folder, are made
+    /// [`drawable`] and the first cut to its bound before, in
+    /// [`shares_of`].
+    fn fits(&self) -> bool {
+        let keyed = |byte: u8| byte.is_ascii_alphanumeric() || b":-_".contains(&byte);
+        let key = self.key.as_bytes();
+        key.first().is_some_and(u8::is_ascii_alphanumeric)
+            && key.len() <= SHARE_KEY_MOST
+            && key.iter().all(|byte| keyed(*byte))
+            && self
+                .key
+                .split_once(':')
+                .is_some_and(|(_, of)| !of.is_empty())
+            && !self.folder.is_empty()
+            && self.folder.len() <= SHARE_FOLDER_MOST
+    }
+
+    /// The network it is once two cells or more share it, and while one
+    /// still does, on whichever machines: `files.<key>`.
+    fn network(&self) -> String {
+        format!("files.{}", self.key)
+    }
+}
+
+/// `said` as a terminal can draw it on one line, as a forage's lines
+/// are: each control character and line or paragraph separator a space,
+/// and each mark turning text's direction gone, so nothing it says acts
+/// on the terminal or turns the text after it. Every other character
+/// stays, the joiners an emoji or a script spells with among them: a
+/// folder is never refused for its title, which was the quest's.
+fn drawable(said: &str) -> String {
+    said.chars()
+        .filter(|each| !crate::forage::turns_direction(*each))
+        .map(|each| {
+            if each.is_control() || matches!(each, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                each
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }
 
 /// One thing a session drawn says it did, as a line of its own.

@@ -19,7 +19,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use super::{Cell, Is, MACHINES, Mycelium, Network, Shape};
+use super::{Cell, Is, MACHINES, Mycelium, Network, Shape, Share};
 use crate::swarm::{
     BOLD, FAINT, GAP, Label, Look, NARROWEST, Standing, fit, header, padded, row, says_again,
 };
@@ -32,6 +32,9 @@ impl Shape {
             Self::Project => "projects",
             Self::Repository => "repositories",
             Self::Tree => "trees",
+            // Folders, not shared files: a session says it works in one,
+            // and nothing here asks whether the share keeps it in step.
+            Self::Files => "folders",
             Self::Group => "groups",
             Self::Machines => "machines",
             Self::Outside => "outside",
@@ -45,6 +48,7 @@ impl Shape {
             Self::Project => "project",
             Self::Repository => "repository",
             Self::Tree => "tree",
+            Self::Files => "folder",
             Self::Group => "group",
             Self::Machines => "the machines' network",
             Self::Outside => "outside source",
@@ -519,10 +523,10 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
     ];
     for shape in Shape::EACH {
         // A realm whose machines sense nothing outside says nothing of it,
-        // and a tree is a network only while two cells hold it, so neither
-        // heading is drawn while no such network is.
+        // and a tree or a folder is a network only while two cells share
+        // it, so none of their headings is drawn while no such network is.
         let any = mycelium.networks.iter().any(|each| each.shape == shape);
-        if matches!(shape, Shape::Outside | Shape::Tree) && !any {
+        if matches!(shape, Shape::Outside | Shape::Tree | Shape::Files) && !any {
             continue;
         }
         lines.push(look.paint(BOLD, shape.heading()));
@@ -917,6 +921,36 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
     if !own.is_empty() {
         lines.extend([String::new(), look.paint(BOLD, "its own trees")]);
         lines.extend(own.iter().map(|short| format!("  {short}")));
+    }
+    // Likewise a folder it shares with no other cell, so one it says that
+    // forms no network can still be seen to be said.
+    let alone: Vec<&Share> = cell
+        .shares
+        .iter()
+        .filter(|share| mycelium.network(&share.network()).is_none())
+        .collect();
+    if !alone.is_empty() {
+        lines.extend([String::new(), look.paint(BOLD, "its own folders")]);
+        let width = alone
+            .iter()
+            .map(|share| share.key.chars().count())
+            .max()
+            .unwrap_or_default();
+        for share in alone {
+            // An untitled folder's line ends at its key, with no gap
+            // left after it for a title.
+            if share.about.is_empty() {
+                lines.push(format!("  {}", share.key));
+                continue;
+            }
+            let line = format!("  {}{GAP}", padded(&share.key, width));
+            let room = look
+                .width
+                .saturating_sub(line.chars().count())
+                .max(NARROWEST);
+            let about = look.paint(FAINT, &fit(&share.about, room));
+            lines.push(format!("{line}{about}"));
+        }
     }
     lines.join("\n")
 }
