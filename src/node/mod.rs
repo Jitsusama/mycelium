@@ -252,6 +252,17 @@ fn parked_presence(session: &Session) -> bool {
 }
 
 /// Since when a carry is shown: a day ago.
+/// Waits until `told` says its records changed, or forever where there is
+/// none or it can say no more, so a loop selecting on it never spins.
+async fn changed(told: &mut Option<watch::Receiver<u64>>) {
+    if let Some(told) = told
+        && told.changed().await.is_ok()
+    {
+        return;
+    }
+    std::future::pending::<()>().await;
+}
+
 fn shown_since() -> jiff::Timestamp {
     let now = jiff::Timestamp::now();
     now.checked_sub(kept::SHOWN_FOR).unwrap_or(now)
@@ -474,6 +485,8 @@ where
     } = kept;
     let (_watching_held, mut held) = watch(&shared.held, "what is held");
     let (_watching_parks, mut parks) = watch(&shared.parked, "what is parked");
+    // The quests' record says whose sessions' ends are told, and to whom.
+    let mut quests_told = shared.served.told("quest");
     shared.read_store();
     let mut links = JoinSet::new();
     let mut found = discovery.found();
@@ -529,6 +542,7 @@ where
             // A holder that ended without letting its session go says
             // nothing, so what is held is looked at each minute too.
             _ = leaving.tick() => power = shared.each_minute(&mut awake),
+            () = changed(&mut quests_told) => shared.said.ended_moved(),
             change = changes.changes.recv() => match change {
                 Some(Change::Message(id)) => shared.read_message(&id),
                 Some(Change::Presence) => {
@@ -1031,6 +1045,9 @@ struct Said {
     /// Told as the messages are, whose ties they make, and each minute,
     /// as a message leaves a tie's hour or its day.
     ties: watch::Sender<u64>,
+    /// Told as the sessions or the quests are, whose ends it tells, and
+    /// each minute, as an end settles or leaves its day.
+    ended: watch::Sender<u64>,
 }
 
 impl Default for Said {
@@ -1043,6 +1060,7 @@ impl Default for Said {
             forages: watch::Sender::new(0),
             cells: watch::Sender::new(0),
             ties: watch::Sender::new(0),
+            ended: watch::Sender::new(0),
         }
     }
 }
@@ -1053,6 +1071,13 @@ impl Said {
     fn sessions_moved(&self) {
         self.sessions.send_modify(|said| *said += 1);
         self.cells.send_modify(|said| *said += 1);
+        self.ended_moved();
+    }
+
+    /// Tells the watches of the ended sessions that what they are made of
+    /// may have changed.
+    fn ended_moved(&self) {
+        self.ended.send_modify(|said| *said += 1);
     }
 
     /// Tells the watches of the machines, and of the cells, that the
@@ -1073,6 +1098,7 @@ impl Said {
     /// message may have left a tie's hour or its day.
     fn minute_passed(&self) {
         self.ties.send_modify(|said| *said += 1);
+        self.ended_moved();
     }
 
     /// Tells the watches of the receptors, and of the cells, that the
@@ -1325,10 +1351,11 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // a word kept tells its watchers too. A carry stands as its
             // session is seen, so it changes as sessions do, and a carry
             // kept tells its watchers too. A refusal comes as its session
-            // ends the turn that wrote it, which its presence says. A
-            // session ends as its presence says, or its process is seen
-            // gone; a quest concluded shows with the next session's change.
-            words::KIND | kept::KIND | ended::KIND => Some(self.said.sessions.subscribe()),
+            // ends the turn that wrote it, which its presence says.
+            words::KIND | kept::KIND => Some(self.said.sessions.subscribe()),
+            // An end is told as the sessions or the quests change, and as
+            // a minute settles it or its day ends.
+            ended::KIND => Some(self.said.ended.subscribe()),
             receptor::KIND => Some(self.said.receptors.subscribe()),
             BUILDER => Some(self.builders.told()),
             forage::KIND => Some(self.said.forages.subscribe()),
@@ -1446,6 +1473,9 @@ struct Inner {
     /// The held sessions waiting to come back, and those on their first
     /// turn, kept only while the node runs (see [`turns`]).
     turns: Turns,
+    /// What the node has seen of sessions ending here, kept only while it
+    /// runs (see [`ended`]).
+    ended: ended::Seen,
     /// The starts placed lately, each load on its machine until its room
     /// shows it, kept only while the node runs.
     starts: placement::Starts,
@@ -2054,18 +2084,31 @@ impl<S: Store> Shared<S> {
             .into_values()
             .collect();
         let parked = standing::parked(&self.parked);
-        let sessions = self.lock().state.sessions();
+        // A session carried from here ended for the carry.
+        let mut coming_back: HashSet<String> = self
+            .carries_here(shown_since())
+            .iter()
+            .map(|carry| carry.said("session").to_owned())
+            .collect();
         let standing = |session: &Session| {
             let here = session.machine == self.machine;
             standing::standing(session, here, &parked, &self.boot)
         };
         let now = jiff::Timestamp::now().as_millisecond();
+        let mut inner = self.lock();
+        let sessions = inner.state.sessions();
+        coming_back.extend(inner.turns.waiting().map(str::to_owned));
+        let judged = ended::Judged {
+            machine: &self.machine,
+            standing: &standing,
+            coming_back: &coming_back,
+        };
         ended::records(ended::ended(
             &sessions,
-            &self.machine,
-            &standing,
+            &judged,
             &quests,
-            (now, &millis_at),
+            now,
+            &mut inner.ended,
         ))
     }
 
@@ -8308,7 +8351,7 @@ esac
         client.next().await;
         let quests = json!({"quests": [{
             "id": "QEST-20261116-HARBOR", "address": "HARBOR", "status": "active",
-            "orchestrator": "oars", "sessions": ["napper", "runner"],
+            "orchestrator": "oars", "sessions": ["napper", "sleeper", "runner"],
         }]});
         let beside = socket.with_file_name(".quests.json.new");
         fs::write(&beside, quests.to_string()).expect("the quests are written");
@@ -8316,6 +8359,9 @@ esac
         client.next().await;
         // Parked, its process ended, and not marked: nothing can wake it.
         store.start_here("napper", presence("napper", "parked"), false);
+        // Parked and marked this boot: its holder wakes it.
+        fs::write(parks_of(&socket).join("sleeper.json"), "{}").expect("a marker");
+        store.start_here("sleeper", presence("sleeper", "parked"), false);
 
         client
             .ask(json!({"id": 2, "ask": "watch", "kind": "ended"}))
@@ -8335,7 +8381,17 @@ esac
                 .find(|record| record["key"] == "ended:napper")
                 .cloned()
         };
+        // Seen ended, it is told once it settles, at the next change.
+        store.start_here("passer", presence("passer", "listening"), true);
         let told = loop {
+            assert!(
+                ["records", "changed"]
+                    .iter()
+                    .filter_map(|field| said[*field].as_array())
+                    .flatten()
+                    .all(|record| record["key"] != "ended:sleeper"),
+                "a park its holder can wake is never told: {said}"
+            );
             if let Some(told) = napper(&said) {
                 break told;
             }

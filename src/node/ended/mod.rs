@@ -4,18 +4,30 @@
 //! Seven sessions ended with their quests active on 16 Nov, one when pi
 //! quit itself, and nothing told anyone: their orchestrator kept writing
 //! to them, and the map drew them parked for hours. Only this node can
-//! tell one has ended for good, since only it reads the park markers and
-//! the boot beside its own sessions, so it says so here, and the
-//! harness's mesh side, which watches this kind, tells the orchestrator.
-//! A record names who orchestrates the quest by the quests' record alone:
-//! it grants nothing, so a session's own word about its orchestrator is
-//! never asked.
+//! tell one has ended for good, since only it reads the park markers, the
+//! boot, the carries it ordered and the turns of sessions coming back,
+//! beside its own sessions, so it says so here, and the harness's mesh
+//! side, which watches this kind, tells the orchestrator.
 //!
-//! A session counts while it ended in the last day, ended unparked or
-//! parked with nothing left to wake it, and no session of the realm runs
-//! on its quest, which would have taken the work up again.
+//! A session counts once this node has seen it ended, unparked or parked
+//! with nothing left to wake it, for [`SETTLED_AFTER`], so a park's marker
+//! written a moment after its presence, or a holder back after a restart
+//! and waiting its turn, is never told as an end. One carried from here
+//! ended for the carry, and one waiting its turn is coming back, so
+//! neither counts at all. It counts only while its quest, as the quests'
+//! record attaches it, is active, names an orchestrator and has no session
+//! running on it; once one is seen running there, the work was taken up,
+//! and that end is never told again while the node runs. It is kept a day
+//! from when the node first saw it ended, as a presence's own time is only
+//! its last write.
+//!
+//! The quests' record is a file any process of the person's account can
+//! write, and a session's presence is its own word, so the record grants
+//! nothing: it is a notice to an address, never an order, and its quest
+//! and orchestrator come from the quests' record alone, the orchestrator
+//! told only where it reads as a mesh address.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::{Value, json};
 
@@ -25,76 +37,134 @@ use crate::record::{Session, State};
 pub const KIND: &str = "ended";
 
 /// The fields of an ended session's record that change while it lives:
-/// none, since another end makes another record.
+/// none. Its quest and orchestrator move only as the quests' record does.
 pub const LIVE: [&str; 0] = [];
 
 /// How long a session that ended stays told, in milliseconds: a day, so a
 /// session ended before a night's sleep is still told in the morning.
 pub const KEPT_FOR: i64 = 24 * 60 * 60 * 1000;
 
+/// How long this node sees a session ended before it is told, in
+/// milliseconds: ten minutes, past a park's marker following its presence
+/// by moments and a machine's holders starting again after a reboot.
+#[cfg(not(test))]
+pub const SETTLED_AFTER: i64 = 10 * 60 * 1000;
+
+/// A millisecond in tests, so a node's tests see an end settle by the
+/// next change rather than ten minutes on; its own tests count from it.
+#[cfg(test)]
+pub const SETTLED_AFTER: i64 = 1;
+
+/// The longest an orchestrator's address is told as, which a quest's six
+/// letters fit.
+const ADDRESS_MOST: usize = 16;
+
 /// Why a session counts as ended: its process ended unparked, or it
 /// parked with nothing left to wake it.
 const ENDED: &str = "ended";
 const PARKED_UNWAKEABLE: &str = "parked-unwakeable";
 
-/// Each session of `sessions` on `machine` that ended within
-/// [`KEPT_FOR`] of `now`, as `standing` judges it, while its quest is
-/// active by `quests` and has an orchestrator, and no session runs on it:
-/// its id, when it ended, and its fields. `at` reads a session's last
-/// change in milliseconds since the epoch.
-pub fn ended(
-    sessions: &[Session],
-    machine: &str,
-    standing: &dyn Fn(&Session) -> Option<&'static str>,
-    quests: &[Value],
-    (now, at): (i64, &dyn Fn(&str) -> i64),
-) -> Vec<(String, i64, Value)> {
-    let worked: HashSet<&str> = sessions
-        .iter()
-        .filter(|session| !matches!(session.state, State::Ended))
-        .filter_map(|session| quest_of(session, quests))
-        .collect();
-    sessions
-        .iter()
-        .filter(|session| session.machine == machine && session.state == State::Ended)
-        .filter(|session| standing(session) != Some("parked"))
-        .filter_map(|session| {
-            let ended = at(&session.at);
-            if now - ended > KEPT_FOR {
-                return None;
-            }
-            let quest = quest_of(session, quests)?;
-            if worked.contains(quest) {
-                return None;
-            }
-            let record = quests.iter().find(|each| id(each) == Some(quest))?;
-            if record.get("status").and_then(Value::as_str) != Some("active") {
-                return None;
-            }
-            let orchestrator = record.get("orchestrator").and_then(Value::as_str)?;
-            let parked = session.presence.get("state").and_then(Value::as_str) == Some("parked");
-            let fields = json!({
-                "session": session.id,
-                "address": session.address,
-                "quest": quest,
-                "orchestrator": orchestrator.to_ascii_uppercase(),
-                "at": session.at,
-                "why": if parked { PARKED_UNWAKEABLE } else { ENDED },
-            });
-            Some((session.id.clone(), ended, fields))
-        })
-        .collect()
+/// What this node has seen of sessions ending, kept while it runs: when
+/// it first saw each ended, and those whose work was taken up since.
+#[derive(Debug, Default)]
+pub struct Seen {
+    since: HashMap<String, i64>,
+    taken_up: HashSet<String>,
 }
 
-/// The quest `session` works on: the one its record says, or else the one
-/// whose record among `quests` attaches it.
-fn quest_of<'a>(session: &'a Session, quests: &'a [Value]) -> Option<&'a str> {
-    session.quest.as_deref().or_else(|| {
-        quests
-            .iter()
-            .find(|quest| attaches(quest, &session.id))
-            .and_then(id)
-    })
+/// How the node judges the sessions here: how each stands, and which are
+/// coming back, carried from here or waiting a turn to resume.
+pub struct Judged<'a> {
+    /// The machine the node runs on.
+    pub machine: &'a str,
+    /// How a session stands, as [`super::standing::standing`] says.
+    pub standing: &'a dyn Fn(&Session) -> Option<&'static str>,
+    /// Sessions whose end here isn't their work stopping.
+    pub coming_back: &'a HashSet<String>,
+}
+
+/// Each session of `sessions` here that `seen` has held ended for
+/// [`SETTLED_AFTER`] and not past [`KEPT_FOR`] at `now`, as `judged`
+/// says, while its quest by `quests` is active, has an orchestrator and
+/// nobody running on it: its id, when the node first saw it ended, and
+/// its fields.
+pub fn ended(
+    sessions: &[Session],
+    judged: &Judged,
+    quests: &[Value],
+    now: i64,
+    seen: &mut Seen,
+) -> Vec<(String, i64, Value)> {
+    let running = |session: &Session| {
+        matches!(session.state, State::Busy | State::Idle)
+            && (judged.standing)(session) == Some("running")
+    };
+    let worked: HashSet<&str> = sessions
+        .iter()
+        .filter(|session| running(session))
+        .filter_map(|session| quest_of(&session.id, quests))
+        .collect();
+    let ending: Vec<&Session> = sessions
+        .iter()
+        .filter(|session| session.machine == judged.machine && session.state == State::Ended)
+        .filter(|session| (judged.standing)(session) != Some("parked"))
+        .filter(|session| !judged.coming_back.contains(&session.id))
+        .collect();
+    // A session seen again, or gone from the record, ends afresh next time.
+    let still: HashSet<&str> = ending.iter().map(|session| session.id.as_str()).collect();
+    seen.since.retain(|id, _| still.contains(id.as_str()));
+    let known: HashSet<&str> = sessions.iter().map(|session| session.id.as_str()).collect();
+    seen.taken_up.retain(|id| known.contains(id.as_str()));
+    let mut told = Vec::new();
+    for session in ending {
+        if seen.taken_up.contains(&session.id) {
+            continue;
+        }
+        let Some(quest) = quest_of(&session.id, quests) else {
+            continue;
+        };
+        if worked.contains(quest) {
+            seen.since.remove(&session.id);
+            seen.taken_up.insert(session.id.clone());
+            continue;
+        }
+        let since = *seen.since.entry(session.id.clone()).or_insert(now);
+        if now - since < SETTLED_AFTER || now - since > KEPT_FOR {
+            continue;
+        }
+        let Some(record) = quests.iter().find(|each| id(each) == Some(quest)) else {
+            continue;
+        };
+        if record.get("status").and_then(Value::as_str) != Some("active") {
+            continue;
+        }
+        let Some(orchestrator) = record
+            .get("orchestrator")
+            .and_then(Value::as_str)
+            .and_then(address_told)
+        else {
+            continue;
+        };
+        let parked = session.presence.get("state").and_then(Value::as_str) == Some("parked");
+        let fields = json!({
+            "session": session.id,
+            "address": session.address,
+            "quest": quest,
+            "orchestrator": orchestrator,
+            "at": session.at,
+            "why": if parked { PARKED_UNWAKEABLE } else { ENDED },
+        });
+        told.push((session.id.clone(), since, fields));
+    }
+    told
+}
+
+/// The quest whose record among `quests` attaches the session `id`.
+fn quest_of<'a>(session: &str, quests: &'a [Value]) -> Option<&'a str> {
+    quests
+        .iter()
+        .find(|quest| attaches(quest, session))
+        .and_then(id)
 }
 
 /// Whether `quest`'s record attaches the session `id`.
@@ -108,6 +178,18 @@ fn attaches(quest: &Value, id: &str) -> bool {
 /// A quest record's id.
 fn id(quest: &Value) -> Option<&str> {
     quest.get("id").and_then(Value::as_str)
+}
+
+/// `said` as a mesh address, in capitals as the node reads addresses:
+/// letters and digits, at most [`ADDRESS_MOST`]; else nothing.
+fn address_told(said: &str) -> Option<String> {
+    let address = said.to_ascii_uppercase();
+    let reads = !address.is_empty()
+        && address.len() <= ADDRESS_MOST
+        && address
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit());
+    reads.then_some(address)
 }
 
 /// The records `ended` makes, by key.

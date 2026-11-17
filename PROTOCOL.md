@@ -1593,22 +1593,24 @@ held as the bytes it is sent as, in time that grows with them. The
 node folds the messages it holds once it lets them go, so a watch
 holds it only to take them.
 
-The `ended` kind holds each session of this machine's that ended in
-the last day while its quest goes on, keyed `ended:<session>`, so
-whoever orchestrates the quest can be told its work stopped. A session
-counts once its process has ended, unparked or parked with nothing
-left to wake it (its node doesn't say it stands `parked`), its quest,
-the one it names or the one whose record attaches it, is `active` in
-the quests this node serves and names an `orchestrator`, and no
-session of the realm still running is on that quest. A record says
-the `session`, its `address`, the `quest`, the quest's
-`orchestrator`, uppercase, as the quests' record alone says it, never
-the session, `at`, when the session last changed, at which it is
-heard, and `why`: `ended`, or `parked-unwakeable`. It grants nothing;
-no field of it changes, and it is gone once a running session takes
-the quest up, the quest is no longer active, or a day has passed. A
-node serving no quests holds none. It is told as sessions change, and
-a quest that changes shows with the next.
+The `ended` kind holds each session of this machine's whose work
+stopped while its quest goes on, keyed `ended:<session>`, so whoever
+orchestrates the quest can be told. A session counts once this node
+has seen its process ended for ten minutes, unparked or parked with
+nothing left to wake it (its node doesn't say it stands `parked`),
+and not carried from here nor waiting its turn to resume, while its
+quest, the one whose record attaches it in the quests this node
+serves, is `active`, names an `orchestrator` that reads as an address,
+and has no session of the realm running on it. A record says the
+`session`, its `address`, the `quest`, the quest's `orchestrator`,
+uppercase, `at`, when the session last changed, and `why`: `ended`, or
+`parked-unwakeable`; it is heard when the node first saw the end. It
+grants nothing, a notice to an address and never an order. It is gone
+once a session runs on the quest, after which that end is never told
+again while the node runs, once the quest is no longer active, or a
+day after the node first saw it. Its quest and orchestrator change
+only as the quests' record does. A node serving no quests holds none.
+It is told as the sessions or the quests change, and each minute.
 
 The `unanswered` kind holds what waits on the mesh, keyed by the
 message's id, as `mesh_read unanswered` and the hold leases judge it:
