@@ -108,8 +108,9 @@ pub const PIECE: usize = 64 * 1024;
 pub const BACKLOG: usize = 4;
 
 /// The words that run `command` here in `realm`: through `launcher`, a
-/// fence's words or none for a person, then the person's login shell,
-/// then the command. What an ask says comes only after both, and a
+/// fence's words or none for a person, then the person's login shell
+/// with the realm's `kit` first on its path where there is one, then
+/// the command. What an ask says comes only after both, and a
 /// launcher ends its options with `--` ([`crate::declared::launcher`]
 /// takes no other), so none of it is read as the launcher's: no ask
 /// spares itself a shared tree.
@@ -293,7 +294,7 @@ mod tests {
         ]
         .map(str::to_owned)
         .to_vec();
-        let words = words(launcher.clone(), "work", asked.clone());
+        let words = words(launcher.clone(), "work", None, asked.clone());
         let options = words
             .iter()
             .position(|word| word == "--")
