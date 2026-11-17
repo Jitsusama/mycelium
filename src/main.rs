@@ -1429,9 +1429,9 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
 
 /// Sends `draft` through the node at `socket`, saying what `text`, or
 /// standard input where it is `-`, says (`said_text`).
-fn send(socket: &Path, mut draft: Draft, text: String) -> io::Result<ExitCode> {
+fn send(socket: &Path, mut draft: Draft, text: String) -> io::Result<()> {
     draft.text = said_text(text, io::stdin().lock())?;
-    print_answer(socket, &Request::Send(draft)).map(|()| ExitCode::SUCCESS)
+    print_answer(socket, &Request::Send(draft))
 }
 
 /// The most a message read from standard input may hold, its last line's
