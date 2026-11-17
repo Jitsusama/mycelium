@@ -232,14 +232,17 @@ const SHARED_TREE: &str = "--shared-tree";
 /// Nix store, or one that only `declarers` own, with nothing on its way
 /// down from the root another may write. The first word must be a
 /// program in the store too, so no agent can put another in its place.
-/// They never say `--shared-tree`, which would spare every run a work
-/// tree pi-fence otherwise refuses: this node doesn't yet say which trees
-/// are shared to whom, so it never asks that.
+/// They end with `--`, so nothing an ask says after them is read as the
+/// launcher's own options, whatever the launcher. They never say
+/// `--shared-tree`, nor any shortening of it, which would spare every run
+/// a work tree pi-fence otherwise refuses: this node doesn't yet say which
+/// trees are shared to whom, so it never asks that.
 ///
 /// # Errors
 ///
 /// When the file isn't sealed so, declares no words for `kind`, names a
-/// program outside the store, or says `--shared-tree`.
+/// program outside the store, doesn't end with `--`, or says
+/// `--shared-tree`.
 pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String>, String> {
     sealed(file, declarers).map_err(|why| {
         format!(
@@ -257,12 +260,6 @@ pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String
             "this machine declares no way to run a command as its {kind} sessions run"
         ));
     };
-    if let Some(spare) = runs.iter().find(|word| word.starts_with(SHARED_TREE)) {
-        return Err(format!(
-            "its {kind} sessions' launcher says {spare}, which spares a tree shared to the \
-             asker; this node can't yet say which trees are shared, so it never asks that"
-        ));
-    }
     let found = fs::canonicalize(program)
         .map_err(|error| format!("its {kind} sessions' launcher {program} isn't there: {error}"))?;
     if !found.starts_with(STORE) {
@@ -271,7 +268,30 @@ pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String
              trusted to fence"
         ));
     }
+    if let Some(spare) = runs.iter().find(|word| spares_a_tree(word)) {
+        return Err(format!(
+            "its {kind} sessions' launcher in {} says {spare}, which spares a tree shared \
+             to the asker; this node can't yet say which trees are shared, so it never asks \
+             that: take it out of the declaration",
+            file.display()
+        ));
+    }
+    if runs.last().map(String::as_str) != Some("--") {
+        return Err(format!(
+            "its {kind} sessions' launcher in {} doesn't end with --, so what an ask says \
+             after it could be read as the launcher's own options",
+            file.display()
+        ));
+    }
     Ok(runs)
+}
+
+/// Whether `word` asks a launcher to spare a shared tree: `--shared-tree`,
+/// with a value or without, or a shortening of it past `--s` that a
+/// parser taking unique prefixes would read as it.
+fn spares_a_tree(word: &str) -> bool {
+    let name = word.split('=').next().unwrap_or(word);
+    word.starts_with(SHARED_TREE) || (name.len() > "--s".len() && SHARED_TREE.starts_with(name))
 }
 
 /// What a node says as it starts: the file it reads this machine's
@@ -458,13 +478,13 @@ mod tests {
         let file = folder.path().join("declared.json");
         let env = stored("env");
         let env = env.to_str().expect("a path in words");
-        runs_through(&file, &[env, "FENCED=1"]);
+        runs_through(&file, &[env, "FENCED=1", "--"]);
         assert_eq!(
             said_at_start(&file, &declarers()),
             format!(
                 "reads what this machine declares from {}; fenced agents run nothing: this \
                  machine declares no way to run a command as its fenced sessions run; \
-                 strictly fenced agents run through {env} FENCED=1",
+                 strictly fenced agents run through {env} FENCED=1 --",
                 file.display()
             )
         );
@@ -488,10 +508,10 @@ mod tests {
         let file = folder.path().join("declared.json");
         let env = stored("env");
         let env = env.to_str().expect("a path in words");
-        runs_through(&file, &[env, "FENCED=1"]);
+        runs_through(&file, &[env, "FENCED=1", "--"]);
         assert_eq!(
             launcher(&file, Kind::Strict, &declarers()),
-            Ok(vec![env.to_owned(), "FENCED=1".to_owned()]),
+            Ok(vec![env.to_owned(), "FENCED=1".to_owned(), "--".to_owned()]),
             "a file only trusted accounts write says it"
         );
         assert_eq!(
@@ -625,16 +645,44 @@ mod tests {
         let file = folder.path().join("declared.json");
         let env = stored("env");
         let env = env.to_str().expect("a path in words");
-        for spare in ["--shared-tree", "--shared-tree=yes"] {
+        for spare in ["--shared-tree", "--shared-tree=yes", "--shared", "--share"] {
             runs_through(&file, &[env, spare, "--"]);
             assert_eq!(
                 launcher(&file, Kind::Strict, &declarers()),
                 Err(format!(
-                    "its strictly fenced sessions' launcher says {spare}, which spares a \
-                     tree shared to the asker; this node can't yet say which trees are \
-                     shared, so it never asks that"
+                    "its strictly fenced sessions' launcher in {} says {spare}, which spares \
+                     a tree shared to the asker; this node can't yet say which trees are \
+                     shared, so it never asks that: take it out of the declaration",
+                    file.display()
                 )),
                 "{spare} is refused"
+            );
+        }
+        for kept in ["--kind", "--folder", "--s"] {
+            runs_through(&file, &[env, kept, "--"]);
+            assert!(
+                launcher(&file, Kind::Strict, &declarers()).is_ok(),
+                "{kept} spares nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fence_ends_its_options_before_an_ask_begins() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        let env = stored("env");
+        let env = env.to_str().expect("a path in words");
+        for runs in [&[env, "FENCED=1"][..], &[env, "--", "FENCED=1"]] {
+            runs_through(&file, runs);
+            assert_eq!(
+                launcher(&file, Kind::Strict, &declarers()),
+                Err(format!(
+                    "its strictly fenced sessions' launcher in {} doesn't end with --, so \
+                     what an ask says after it could be read as the launcher's own options",
+                    file.display()
+                )),
+                "{runs:?} is refused"
             );
         }
     }

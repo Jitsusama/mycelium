@@ -8584,7 +8584,8 @@ mod tests {
     /// Declares, beside `socket`, that its machine runs its sessions
     /// strictly fenced, building only remotely, and starts a strictly
     /// fenced command through `runs`. The test's stand-in for a fence's
-    /// launcher is `env`, which says `FENCED=strict` to what it starts.
+    /// launcher is `sh`, which ends its options at `--`, as a launcher
+    /// must, and says `FENCED=strict` to what it starts.
     fn declares_runs(socket: &Path, runs: bool) {
         let folder = socket.parent().expect("its folder");
         fs::DirBuilder::new()
@@ -8594,11 +8595,19 @@ mod tests {
             .expect("its folder is made");
         let mut said = fenced("skiff", &["remote"]).declared.expect("it declares");
         let launcher = if runs {
-            let env = std::env::split_paths(&std::env::var_os("PATH").expect("a PATH"))
-                .map(|folder| folder.join("env"))
-                .find(|env| env.is_file())
-                .expect("env is on the PATH");
-            vec![env.display().to_string(), "FENCED=strict".to_owned()]
+            let sh = std::env::split_paths(&std::env::var_os("PATH").expect("a PATH"))
+                .map(|folder| folder.join("sh"))
+                .find(|sh| sh.is_file())
+                .expect("sh is on the PATH");
+            [
+                &sh.display().to_string(),
+                "-c",
+                "shift; FENCED=strict exec \"$@\"",
+                "fence",
+                "--",
+            ]
+            .map(ToOwned::to_owned)
+            .to_vec()
         } else {
             Vec::new()
         };

@@ -109,10 +109,10 @@ pub const BACKLOG: usize = 4;
 
 /// The words that run `command` here in `realm`: through `launcher`, a
 /// fence's words or none for a person, then the person's login shell,
-/// then the command. What an ask says comes only after both, so none of
-/// it is read as the launcher's: a launcher that ends its options at
-/// `--`, as pi-fence does, ends them before the ask begins, and one that
-/// doesn't meets the shell first. So no ask spares itself a shared tree.
+/// then the command. What an ask says comes only after both, and a
+/// launcher ends its options with `--` ([`crate::declared::launcher`]
+/// takes no other), so none of it is read as the launcher's: no ask
+/// spares itself a shared tree.
 #[must_use]
 pub fn words(
     launcher: Vec<String>,
