@@ -73,6 +73,8 @@ mod glyph;
 mod network;
 pub use network::{Holding, Standing, records as network_records};
 mod signals;
+mod spares;
+pub use spares::Trees;
 mod standing;
 mod team;
 mod tie;
@@ -4232,6 +4234,79 @@ impl<S: Store> Shared<S> {
         }))
     }
 
+    /// Where a run `by` asks, from machine `far` where another asked it,
+    /// starts in `folder`, and where it was judged to stand, if it was. A
+    /// run an agent asked from another machine stands in a work tree here
+    /// only where that tree's quests are shared with it, as this node finds
+    /// the folder, never as the ask says, and it enters the very folder
+    /// found.
+    async fn ground(
+        &self,
+        folder: PathBuf,
+        by: By,
+        far: Option<&str>,
+    ) -> Result<(run::Folder, Option<spares::Ground>), String> {
+        let (By::Agent(_), Some(far)) = (by, far) else {
+            return Ok((run::Folder::At(folder), None));
+        };
+        let (trees, shares, asker) = (self.runs.trees.clone(), self.shares.clone(), far.to_owned());
+        let footing = tokio::task::spawn_blocking(move || {
+            spares::ground(&folder, &asker, &trees, shares.as_deref())
+        })
+        .await
+        .map_err(|error| format!("its folder wasn't judged: {error}"))?
+        // Refused here as well as there, so this machine keeps a trace.
+        .inspect_err(|why| refused(why))?;
+        let (folder, ground) = footing.entered();
+        Ok((folder, Some(ground)))
+    }
+
+    /// The launcher a run `by` asks goes through here, standing on
+    /// `ground` where it was judged, from machine `from`; it keeps in
+    /// `started` the folder a judged run entered and what it was spared.
+    fn launcher(
+        &self,
+        by: By,
+        ground: Option<&spares::Ground>,
+        from: &str,
+        started: &mut serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        let launcher = match by {
+            By::Person => Vec::new(),
+            By::Agent(kind) => {
+                crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
+                    .map_err(|why| {
+                        format!("this asks as {by}, so it runs here only in that fence: {why}")
+                    })
+                    .inspect_err(|why| {
+                        if ground.is_some() {
+                            refused(why);
+                        }
+                    })?
+            }
+        };
+        // A run judged is kept with the folder it entered, which a link
+        // swapped since the ask no longer names.
+        Ok(match ground {
+            Some(spares::Ground::Plain(entered)) => {
+                started["entered"] = serde_json::json!(entered);
+                launcher
+            }
+            Some(spares::Ground::Shared { folder, quests }) => {
+                started["entered"] = serde_json::json!(folder);
+                started["spared"] = serde_json::json!(quests);
+                eprintln!(
+                    "{} runs in {}, a work tree of {}, shared with it",
+                    from.escape_debug(),
+                    folder.display().to_string().escape_debug(),
+                    quests.join(", ")
+                );
+                crate::declared::sparing(launcher)
+            }
+            None => launcher,
+        })
+    }
+
     /// Runs `asked` on the machine placement chooses, answering where, and
     /// what it says as it goes, or why it doesn't run: this machine runs
     /// it as its own, another through the link reaching it. An agent
@@ -4244,6 +4319,17 @@ impl<S: Store> Shared<S> {
             return Err("nothing to run: name a command".to_owned());
         }
         let (judged, sessions) = self.judged().await?;
+        // Only this node's link to another machine says a run came from
+        // there, and it asks as no agent, so an agent here saying so is refused:
+        // a run from elsewhere may stand in a tree shared with that machine.
+        if asked.from.is_some() && matches!(judged, By::Agent(_)) {
+            let why = format!(
+                "this asks as {judged}, as this node tells who asks, and only a link to another \
+                 machine says a run was asked from there, so it runs nothing"
+            );
+            refused(&why);
+            return Err(why);
+        }
         // What it says of who asks only ever makes it stricter, and an
         // agent runs fenced at least.
         let by = match judged.max(asked.by.unwrap_or(By::Person)) {
@@ -4283,7 +4369,7 @@ impl<S: Store> Shared<S> {
             self.machine,
             jiff::Timestamp::now().as_nanosecond()
         );
-        let started = serde_json::json!({
+        let mut started = serde_json::json!({
             "run": id,
             "at": jiff::Timestamp::now().to_string(),
             "by": by,
@@ -4297,16 +4383,8 @@ impl<S: Store> Shared<S> {
             let home =
                 std::env::home_dir().ok_or_else(|| format!("{machine} has no home to run in"))?;
             let folder = start::begins_in(asked.folder.as_deref(), &home);
-            let launcher = match by {
-                By::Person => Vec::new(),
-                By::Agent(kind) => {
-                    crate::declared::launcher(&self.declared, kind, &self.runs.declarers).map_err(
-                        |why| {
-                            format!("this asks as {by}, so it runs here only in that fence: {why}")
-                        },
-                    )?
-                }
-            };
+            let (folder, ground) = self.ground(folder, by, asked.from.as_deref()).await?;
+            let launcher = self.launcher(by, ground.as_ref(), &from, &mut started)?;
             let words = run::words(launcher, &self.realm, self.kit(), asked.command);
             // An agent's fence grants the work trees its session holds, so
             // the run is told the session the kernel and pi's records prove
@@ -4663,6 +4741,12 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             return;
         }
     }
+}
+
+/// Keeps `why` a run was refused in the node's log, as one line, since
+/// it names a folder the asker chose.
+fn refused(why: &str) {
+    eprintln!("a run is refused: {}", why.escape_debug());
 }
 
 /// Why the machine `work` names refused it for its looser ground, where
@@ -5246,6 +5330,11 @@ mod tests {
         run::Given {
             journal: socket.with_file_name("runs.jsonl"),
             declarers: vec![0, 65534, rustix::process::getuid().as_raw()],
+            trees: Trees {
+                root: socket.with_file_name("trees"),
+                records: socket.with_file_name("cut"),
+                sessions: socket.with_file_name("sessions"),
+            },
         }
     }
 
@@ -10874,6 +10963,258 @@ esac
     /// fence.
     const NAMES_ANOTHER: &str = "PI_SESSION_ID=s-other; echo \"it says $PI_SESSION_ID\"";
 
+    /// A launcher's stand-in saying whether it was asked to spare the work
+    /// tree its run stands in, as pi-fence reads `--shared-tree`, before
+    /// it starts what was asked.
+    const SAYS_SPARED: &str = "if [ \"$1\" = --shared-tree ]; then echo spared; shift; \
+                               else echo held; fi; shift; exec \"$@\"";
+
+    /// Cuts work tree `name` for a node on `socket`, held by `session`,
+    /// as the work broker records it, and answers where it is.
+    fn cuts_tree(socket: &Path, name: &str, session: &str) -> PathBuf {
+        let tree = socket.with_file_name("trees").join(name);
+        fs::create_dir_all(&tree).expect("made");
+        let records = socket.with_file_name("cut");
+        fs::create_dir_all(&records).expect("made");
+        fs::write(
+            records.join(format!("{name}.json")),
+            json!({"path": tree, "owners": [], "sessions": [session]}).to_string(),
+        )
+        .expect("written");
+        tree
+    }
+
+    /// Tells the stand-in for /proc beside `socket` that the client, this
+    /// process, is the link another machine dialled: `mycelium ssh`, under
+    /// the ssh daemon's session for the account, in its login session.
+    fn asks_as_link(socket: &Path) {
+        let procs = procs_of(socket);
+        let client = procs.join(std::process::id().to_string());
+        let sshd = procs.join("7100");
+        for (folder, status) in [
+            (&client, "Name:\tmycelium\nPPid:\t7100\n"),
+            (&sshd, "Name:\tsshd-session\nPPid:\t1\n"),
+        ] {
+            fs::create_dir_all(folder).expect("its folder is made");
+            fs::write(folder.join("status"), status).expect("its status is written");
+            fs::write(
+                folder.join("cgroup"),
+                "0::/user.slice/user-1000.slice/session-12.scope\n",
+            )
+            .expect("its group is written");
+        }
+    }
+
+    /// Records that `session` works `quest`, as pi's own record of it
+    /// beside `socket` says, once the node has made the socket's folder.
+    fn works(socket: &Path, session: &str, quest: &str) {
+        let sessions = socket.with_file_name("sessions");
+        fs::create_dir_all(&sessions).expect("made");
+        fs::write(
+            sessions.join(format!("{session}.json")),
+            json!({"sessionId": session, "quest": quest}).to_string(),
+        )
+        .expect("written");
+    }
+
+    /// Keeps `quest` in `places`, shared with `machines`, as its ledger
+    /// says once they have said they share it.
+    fn shares_quest(places: &Places, quest: &str, machines: &[&str]) {
+        let theirs: serde_json::Map<_, _> = machines
+            .iter()
+            .map(|machine| ((*machine).to_owned(), json!({})))
+            .collect();
+        let ledgers = places.state.join("shared");
+        fs::create_dir_all(&ledgers).expect("made");
+        fs::write(
+            ledgers.join(format!("{quest}.json")),
+            json!({"files": {}, "theirs": theirs}).to_string(),
+        )
+        .expect("written");
+    }
+
+    /// A strictly fenced agent's run on skiff, asked from machine `from`,
+    /// in `folder`, saying where it ran.
+    fn far(from: &str, folder: &Path) -> Run {
+        let mut run = run_of("skiff", "echo ran; pwd -P");
+        run.folder = Some(folder.to_owned());
+        run.by = Some(By::Agent(crate::declared::Kind::Strict));
+        run.from = Some(from.to_owned());
+        run
+    }
+
+    /// The places under `places` of a machine sharing quest HARBOR with
+    /// tern and OTHERS with no one, whose README tern wrote naming s-near
+    /// and s-else.
+    fn sharing_harbor(places: &Path) -> Places {
+        let sharing = Places {
+            quests: places.join("quests"),
+            scratch: places.join("scratch"),
+            home: places.join("home"),
+            state: places.join("state"),
+        };
+        shares_quest(&sharing, "QEST-20261117-HARBOR", &["tern"]);
+        shares_quest(&sharing, "QEST-20261117-OTHERS", &[]);
+        // tern writes the shared quest's README, and says there that
+        // s-else works it too, which binds no tree of s-else's to it.
+        let readme = sharing.quests.join("QEST-20261117-HARBOR");
+        fs::create_dir_all(&readme).expect("made");
+        fs::write(
+            readme.join("README.md"),
+            "---\nid: QEST-20261117-HARBOR\nsessions:\n  - id: s-near\n  - id: s-else\n---\n",
+        )
+        .expect("written");
+        sharing
+    }
+
+    #[tokio::test]
+    async fn a_far_agents_run_is_spared_only_a_tree_of_a_quest_shared_with_its_machine() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let sharing = sharing_harbor(&dir.path().join("places"));
+        let store = Memory::default();
+        let (stop, node) = node_sharing(
+            &store,
+            "skiff",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+            Some(sharing),
+        );
+        declares_launcher(&socket, Some(SAYS_SPARED));
+        works(&socket, "s-near", "QEST-20261117-HARBOR");
+        works(&socket, "s-else", "QEST-20261117-OTHERS");
+        // A link another machine dialled runs as no agent here.
+        asks_as_link(&socket);
+        let harbor = cuts_tree(&socket, "harbor", "s-near");
+        let others = cuts_tree(&socket, "others", "s-else");
+        let shared = run_through(socket.clone(), far("tern", &harbor))
+            .await
+            .expect("tern's run in the quest's tree runs");
+        let harbor = harbor.canonicalize().expect("it resolves");
+        assert_eq!(
+            String::from_utf8_lossy(&shared.out),
+            format!("spared\nran\n{}\n", harbor.display()),
+            "the fence is told to spare a tree of the quest shared with tern"
+        );
+        let unshared = run_through(socket.clone(), far("osprey", &harbor))
+            .await
+            .expect_err("osprey shares no quest here");
+        assert!(
+            unshared.contains("none of which is shared with osprey"),
+            "{unshared}"
+        );
+        let another = run_through(socket.clone(), far("tern", &others))
+            .await
+            .expect_err("tern isn't shared the quest whose tree that is");
+        assert!(
+            another.contains("QEST-20261117-OTHERS, none of which is shared with tern"),
+            "its README naming s-else binds nothing: {another}"
+        );
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).expect("made");
+        let link = dir.path().join("into-outside");
+        std::os::unix::fs::symlink(&outside, &link).expect("linked");
+        let plain = run_through(socket.clone(), far("tern", &link))
+            .await
+            .expect("tern's run outside every tree runs");
+        assert_eq!(
+            String::from_utf8_lossy(&plain.out),
+            format!(
+                "held\nran\n{}\n",
+                outside.canonicalize().expect("it resolves").display()
+            ),
+            "a far run in no tree is spared nothing, and starts where its folder resolves"
+        );
+        // A peer is trusted as the person, so a run it says the person
+        // asked goes in no fence, and no tree is judged for it.
+        let mut person = run_of("skiff", "echo ran; pwd -P");
+        person.folder = Some(others.clone());
+        person.from = Some("tern".to_owned());
+        let unjudged = run_through(socket.clone(), person)
+            .await
+            .expect("the person's run from tern runs");
+        let others = others.canonicalize().expect("it resolves");
+        assert_eq!(
+            String::from_utf8_lossy(&unjudged.out),
+            format!("ran\n{}\n", others.display()),
+            "the person's run goes through no launcher, wherever it stands"
+        );
+        asks_below(&socket, 7001);
+        let mut here = run_of("skiff", "echo ran");
+        here.folder = Some(harbor.clone());
+        let held = run_through(socket.clone(), here)
+            .await
+            .expect("an agent's run here runs");
+        assert_eq!(
+            String::from_utf8_lossy(&held.out),
+            "held\nran\n",
+            "a run asked here is spared nothing: its fence grants what its \
+             session holds"
+        );
+        // Each run that ran is kept as it started, and only the one in the
+        // shared tree says what it was spared; a refused run is kept by none.
+        // An agent's run from another machine keeps the folder it entered.
+        let outside = outside.canonicalize().expect("it resolves");
+        assert_eq!(
+            kept(&socket),
+            [
+                (Some(vec!["QEST-20261117-HARBOR".to_owned()]), Some(harbor)),
+                (None, Some(outside)),
+                (None, None),
+                (None, None)
+            ],
+            "the shared tree's run keeps its quests as spared"
+        );
+        drop(stop);
+        node.await
+            .expect("the node runs to its end")
+            .expect("it stops cleanly");
+    }
+
+    /// What each run the node at `socket` kept as it started says it was
+    /// spared and the folder it entered, in order.
+    fn kept(socket: &Path) -> Vec<(Option<Vec<String>>, Option<PathBuf>)> {
+        fs::read_to_string(socket.with_file_name("runs.jsonl"))
+            .expect("the runs are kept")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("a line is JSON"))
+            .filter(|line| line.get("command").is_some())
+            .map(|line| {
+                (
+                    line.get("spared")
+                        .map(|spared| serde_json::from_value(spared.clone()).expect("its quests")),
+                    line.get("entered").map(|entered| {
+                        serde_json::from_value(entered.clone()).expect("its folder")
+                    }),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_client_here_saying_another_machine_asks_runs_nothing() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (stop, node) = alone(&store, "skiff", &socket);
+        declares_launcher(&socket, Some(SAYS_SPARED));
+        asks_below(&socket, 7001);
+        let mut said = run_of("skiff", "echo ran");
+        said.from = Some("tern".to_owned());
+        let refused = run_through(socket.clone(), said)
+            .await
+            .expect_err("an agent here says no run came from elsewhere");
+        assert!(
+            refused.contains("only a link to another machine says a run was asked from there"),
+            "{refused}"
+        );
+        drop(stop);
+        node.await
+            .expect("the node runs to its end")
+            .expect("it stops cleanly");
+    }
+
     #[tokio::test]
     async fn an_agents_run_here_is_fenced_for_the_session_proved_to_ask_and_no_other() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -10910,16 +11251,47 @@ esac
              reach only what runs inside it"
         );
         assert_eq!(proved.ended, Some(Ran::Exited(0)));
+        // A link another machine dialled runs as no agent here, and hands
+        // its runs on as a strictly fenced agent's where they say no one.
+        asks_as_person(&socket);
         let mut far = run_of("skiff", NAMES_ANOTHER);
         far.from = Some("tern".to_owned());
+        far.by = Some(By::Agent(crate::declared::Kind::Strict));
         let relayed = run_through(socket.clone(), far)
             .await
             .expect("a run relayed from another machine runs here");
         assert_eq!(
             String::from_utf8_lossy(&relayed.out),
             "the fence runs for none\nit says s-other\n",
-            "a run asked of another machine is told no session here, \
-             since this machine proved no one asked it"
+            "a run another machine asked, handed on by a link judged as the \
+             person, is told no session here"
+        );
+        // A link running below the process owning a session, even one not
+        // named pi, in the login session, asks as that session's agent, so
+        // what it says another machine asked runs nothing, and is told no
+        // session.
+        let procs = procs_of(&socket);
+        for (pid, status) in [
+            (std::process::id(), "Name:\tmycelium\nPPid:\t7001\n"),
+            (7001, "Name:\tnode\nPPid:\t1\n"),
+        ] {
+            let folder = procs.join(pid.to_string());
+            fs::write(folder.join("status"), status).expect("its status is written");
+            fs::write(
+                folder.join("cgroup"),
+                "0::/user.slice/user-1000.slice/session-12.scope\n",
+            )
+            .expect("its group is written");
+        }
+        let mut far = run_of("skiff", NAMES_ANOTHER);
+        far.from = Some("tern".to_owned());
+        far.by = Some(By::Agent(crate::declared::Kind::Strict));
+        let below = run_through(socket.clone(), far)
+            .await
+            .expect_err("a link below a session asks as its agent");
+        assert!(
+            below.contains("only a link to another machine says a run was asked from there"),
+            "{below}"
         );
         asks_as_person(&socket);
         let person = run_through(socket, run_of("skiff", "echo ${PI_SESSION_ID-none}"))

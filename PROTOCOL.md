@@ -1595,10 +1595,31 @@ There it runs as its
 fence's declared `runs`, then the login shell, then `command`; a
 machine declaring no `runs` for it refuses it, as does one whose
 `runs` doesn't end with `--`, so nothing `command` says is read as
-`runs`' own options. The node doesn't yet say which work trees are
-shared to whom, so `runs` saying `--shared-tree`, or a shortening of
-it, as a word of its own refuses every run. So pi-fence refuses a run
-started in a work tree its asker doesn't hold. A run is told no
+`runs`' own options. `runs` saying `--shared-tree`, or a shortening
+of it, as a word of its own refuses every run, so pi-fence refuses a
+run started in a work tree its asker doesn't hold. Only the node says
+it, before the `--`, and only for an agent's run another machine
+asked, whose folder, opened and named as the kernel names the open
+folder, lies in a work tree the work broker records sessions as
+holding, wherever the broker cut it, where pi's own record of every
+one of them here says it works a quest whose ledger names the asking
+machine. A ledger names a machine once it has said what it holds of
+the quest, and goes on naming it until this machine stops sharing
+the quest. A worker is heard only of the quests it was given or
+began, so it names itself in no other ledger, while any other
+machine's word is taken as the person's. Nothing a share carries
+in, a README's sessions or trees among it, binds a tree to a quest,
+and a quest shared only as one above another spares none. The run
+starts in the folder opened, not by its path again, so a link
+swapped since leads it nowhere else, and the record of runs keeps
+that folder as `entered` and the quests as a list, `spared`. Any
+other agent's run from another machine starting in a work tree, or
+in a folder the node can't open, is refused, saying why there and in
+the node's log, and runs nothing. A run another machine says the
+person asked goes as the person, in no fence, so no tree is judged
+for it. A run a client here says another machine asked is refused,
+and logged, where the client is an agent's, as for `by`, since only
+the node's link to that machine says so. A run is told no
 `PI_SESSION_ID` but the session that asks it, where its process owns
 that session alone, as the kernel and pi's records prove it, since
 pi-fence grants the work trees that session holds. Alone counts
@@ -1620,7 +1641,8 @@ up stops it: its process group is sent the terminate signal, then the
 kill signal if any of it still runs 10 seconds on. Each machine a run
 crosses keeps it in `runs.jsonl` in mycelium's folder, and logs each
 line: `{"run", "at", "by", "sessions", "from", "on", "folder",
-"command"}` as it starts, then `{"run", "at", "ended"}`, the last `Ran`
+"command", "spared"}` as it starts, `"spared"` only where the node
+spared it a shared quest's tree, then `{"run", "at", "ended"}`, the last `Ran`
 or `{"Stopped": why}` where its asker let go.
 `mycelium run` prints what it writes as it comes and exits with its
 code, or 255 when it couldn't run.
