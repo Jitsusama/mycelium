@@ -2176,6 +2176,11 @@ impl<S: Store> Shared<S> {
         };
         let mut here = facts::measure_in(&self.machine, &self.realm, &sources);
         here.health.clone_from(&self.health.borrow());
+        here.kit = self
+            .starter
+            .as_ref()
+            .and_then(|starter| starter.kit.as_deref())
+            .and_then(facts::kit);
         here
     }
 
@@ -3488,7 +3493,11 @@ impl<S: Store> Shared<S> {
                     )?
                 }
             };
-            words.extend(start::login_run(&self.realm));
+            let kit = self
+                .starter
+                .as_ref()
+                .and_then(|starter| starter.kit.as_deref());
+            words.extend(start::login_run(&self.realm, kit));
             words.extend(asked.command);
             let (ran, said) = mpsc::channel(run::BACKLOG);
             tokio::spawn(run::here(words, folder, ran));
@@ -7562,6 +7571,7 @@ mod tests {
         let holds = Starter {
             program: holder,
             scope: start::Scope::None,
+            kit: None,
         };
         let nobody = Vec::<Piped>::new();
         let far = node(&far_store, "kestrel", nobody, Some(holds), &far_socket);
@@ -7781,6 +7791,7 @@ mod tests {
         let holds = Starter {
             program: holder,
             scope: start::Scope::None,
+            kit: None,
         };
         let dial = Piped {
             store: far_store.clone(),
@@ -9283,6 +9294,7 @@ mod tests {
             let starter = Starter {
                 program: holder,
                 scope: start::Scope::None,
+                kit: Some(PathBuf::from("/nix/store/kit")),
             };
             let given = bare(steers, Some(starter));
             let stopped = async {
@@ -9348,8 +9360,15 @@ mod tests {
         // them, is start's own test; here, only that the node asks for them.
         assert_eq!(
             given[7..],
-            ["--login", "--", "pi", "--continue"],
-            "each start of the program runs through the login shell"
+            [
+                "--login",
+                "--kit",
+                "/nix/store/kit",
+                "--",
+                "pi",
+                "--continue"
+            ],
+            "each start of the program runs through the login shell, with the realm's kit"
         );
 
         drop(stop);

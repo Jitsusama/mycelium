@@ -78,6 +78,9 @@ pub enum Need {
     Reach(String),
     /// A kind of accelerator it has.
     Accelerator(AcceleratorKind),
+    /// A tool its realm's kit holds, by name, such as `gcloud`: a machine
+    /// whose node names no kit hasn't said, as with any unsaid fact.
+    Tool(String),
 }
 
 /// Where work goes.
@@ -145,6 +148,7 @@ impl fmt::Display for Need {
             Need::Reach(network) => write!(f, "reach {network}"),
             Need::Accelerator(AcceleratorKind::Gpu) => write!(f, "a gpu"),
             Need::Accelerator(AcceleratorKind::Npu) => write!(f, "an npu"),
+            Need::Tool(tool) => write!(f, "tool {tool}"),
         }
     }
 }
@@ -729,7 +733,8 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
         Need::System(system) => shape.system.as_ref().map(|its| its == system),
         Need::Arch(arch) => shape.arch.as_ref().map(|its| its == arch),
         Need::Reach(network) => reaches(shape.declared.as_ref(), &BTreeMap::new(), network),
-        Need::Accelerator(_) => None,
+        // What a machine not yet made would carry isn't offered yet.
+        Need::Accelerator(_) | Need::Tool(_) => None,
     };
     for need in &work.needs {
         match promised(need) {
@@ -965,6 +970,7 @@ fn is(machine: &Machine, need: &Need) -> Option<bool> {
             .accelerators
             .as_ref()
             .map(|all| all.iter().any(|one| one.kind == *kind)),
+        Need::Tool(tool) => machine.kit.as_ref().map(|kit| kit.holds(tool)),
     }
 }
 
@@ -2061,6 +2067,50 @@ pub(crate) mod tests {
             )),
             Some("skiff"),
             "an accelerator it lists meets the need"
+        );
+    }
+
+    #[test]
+    fn a_tool_is_met_only_where_the_realms_kit_holds_it() {
+        let kit = |tools: &[&str]| facts::Kit {
+            path: "/nix/store/kit".to_owned(),
+            tools: tools.iter().map(|&tool| tool.to_owned()).collect(),
+        };
+        let mut carrying = machine("kestrel", "linux", 8, &[]);
+        carrying.kit = Some(kit(&["gcloud", "gh", "git"]));
+        let mut lacking = machine("osprey", "linux", 32, &[]);
+        lacking.kit = Some(kit(&["gh", "git"]));
+        let unsaid = machine("tern", "linux", 32, &[]);
+        let gcloud = || needing(vec![Need::Tool("gcloud".to_owned())]);
+        let Placement::Placed { machine, passed } =
+            place(&gcloud(), &[lacking.clone(), unsaid.clone(), carrying])
+        else {
+            panic!("the machine whose kit holds it takes it")
+        };
+        assert_eq!(machine, "kestrel", "for all it has less room");
+        assert_eq!(
+            passed,
+            [
+                Miss {
+                    machine: "osprey".to_owned(),
+                    because: vec![Because::Lacks(Need::Tool("gcloud".to_owned()))],
+                },
+                Miss {
+                    machine: "tern".to_owned(),
+                    because: vec![Because::Unknown(Need::Tool("gcloud".to_owned()))],
+                },
+            ],
+            "a kit without it lacks it, and no kit hasn't said"
+        );
+        assert_eq!(
+            Because::Lacks(Need::Tool("gcloud".to_owned())).to_string(),
+            "lacks tool gcloud",
+            "a miss says it in words"
+        );
+        assert_eq!(
+            serde_json::to_value(Need::Tool("gcloud".to_owned())).expect("a need says itself"),
+            serde_json::json!({"tool": "gcloud"}),
+            "as PROTOCOL.md says it"
         );
     }
 

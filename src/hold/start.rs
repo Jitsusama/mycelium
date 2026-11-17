@@ -18,6 +18,11 @@ pub struct Starter {
     /// Where each holder starts: in a user scope of its own, or beside
     /// whatever started it.
     pub scope: Scope,
+    /// The realm's kit, the folder whose `bin` holds the tools every
+    /// machine in it has, put first on the path of each program started
+    /// through the person's login shell ([`login_shell`]), or none where
+    /// the machine is given none.
+    pub kit: Option<PathBuf>,
 }
 
 /// Where a holder starts. A scope of its own is what a stop reaches: when
@@ -101,12 +106,7 @@ impl Starter {
     ) -> io::Result<String> {
         let id = super::new_id();
         let mut holder = self.scope.command(&self.program, &id);
-        holder
-            .args(["--realm", realm, "holder", "--id", &id, "--folder"])
-            .arg(folder);
-        if login {
-            holder.arg("--login");
-        }
+        self.name(&mut holder, realm, &id, folder, login);
         let mut holder = holder
             .arg("--")
             .args(command)
@@ -151,6 +151,22 @@ impl Starter {
             )),
         }
     }
+
+    /// Gives `holder` the words that make it the holder `id` of a program
+    /// in `folder` for `realm`, through the login shell with `login`, up
+    /// to the program's own.
+    fn name(&self, holder: &mut Command, realm: &str, id: &str, folder: &Path, login: bool) {
+        holder
+            .args(["--realm", realm, "holder", "--id", id, "--folder"])
+            .arg(folder);
+        if login {
+            holder.arg("--login");
+            // A terminal's hold has the person's own path already.
+            if let Some(kit) = &self.kit {
+                holder.arg("--kit").arg(kit);
+            }
+        }
+    }
 }
 
 /// The folder a start asking for `folder` begins in on a machine whose
@@ -175,16 +191,20 @@ const YIELDING_ON_A_MAC: [&str; 3] = ["/usr/sbin/taskpolicy", "-c", "utility"];
 /// What the login shell runs once the person's profile has: it says the
 /// realm the program is held in, after it, since a profile says the
 /// machine's own realm and would put a session started in another into
-/// the wrong one, then runs the program.
-const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; shift; exec "$@""#;
+/// the wrong one; puts the kit's tools, if it is given one, first on the
+/// path, after it too, since a profile (or a Mac's `path_helper`) sets
+/// the path afresh and a non-interactive one may never read the file that
+/// adds the person's own; then runs the program.
+const IN_ITS_REALM: &str = r#"export MYCELIUM_REALM="$1"; if [ -n "$2" ]; then PATH="$2/bin:$PATH"; export PATH; fi; shift 2; exec "$@""#;
 
 /// The words that run a program held in `realm` through the person's
 /// login shell, as a terminal would run it, so it has their environment
 /// rather than a service's: a pi started without it has no model token
-/// and ends at once, and a bare `pi` isn't found on a service's path. On
-/// a Mac it runs yielding to the person's own programs.
+/// and ends at once, and a bare `pi` isn't found on a service's path.
+/// With a `kit`, the kit's tools come first on its path. On a Mac it runs
+/// yielding to the person's own programs.
 #[must_use]
-pub fn login_shell(realm: &str) -> Vec<String> {
+pub fn login_shell(realm: &str, kit: Option<&Path>) -> Vec<String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| {
         if cfg!(target_os = "macos") {
             "/bin/zsh".to_owned()
@@ -203,6 +223,9 @@ pub fn login_shell(realm: &str) -> Vec<String> {
         IN_ITS_REALM.to_owned(),
         "mycelium".to_owned(),
         realm.to_owned(),
+        // Always a word, empty for none, so the program's own start where
+        // the script shifts to.
+        kit.map(|kit| kit.display().to_string()).unwrap_or_default(),
     ]);
     through
 }
@@ -213,8 +236,8 @@ pub fn login_shell(realm: &str) -> Vec<String> {
 /// would complain of having none. Someone waits on its output, so on a
 /// Mac it doesn't yield as a held session does.
 #[must_use]
-pub fn login_run(realm: &str) -> Vec<String> {
-    let mut words = login_shell(realm);
+pub fn login_run(realm: &str, kit: Option<&Path>) -> Vec<String> {
+    let mut words = login_shell(realm, kit);
     words.retain(|word| !YIELDING_ON_A_MAC.contains(&word.as_str()));
     if let Some(flags) = words.iter_mut().find(|word| *word == "-lic") {
         "-lc".clone_into(flags);
@@ -326,7 +349,7 @@ mod tests {
 
     #[test]
     fn a_program_runs_through_the_login_shell_with_its_words_kept_apart() {
-        let mut words = login_shell("harbour");
+        let mut words = login_shell("harbour", None);
         words.extend(["pi".to_owned(), "say \"hi\" $HOME".to_owned()]);
         let yielding = if cfg!(target_os = "macos") {
             YIELDING_ON_A_MAC.len()
@@ -345,6 +368,7 @@ mod tests {
                 IN_ITS_REALM,
                 "mycelium",
                 "harbour",
+                "",
                 "pi",
                 "say \"hi\" $HOME"
             ],
@@ -352,26 +376,90 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_program_is_in_the_realm_it_is_held_in_whatever_the_profile_says() {
-        let words = login_shell("harbour");
+    /// What `program`, given to `sh -c`, prints when run through `words`
+    /// by `sh` standing for the person's shell, with `profile`'s
+    /// variables standing for what a profile sets before the script runs.
+    fn run_through(words: &[String], program: &str, profile: &[(&str, &str)]) -> String {
         let script = words
             .iter()
-            .position(|word| word == "-lic")
+            .position(|word| word == "-lic" || word == "-lc")
             .expect("the words run a login shell");
-        // `sh` stands for the person's shell, and the realm it is given
-        // for the profile's, which a profile says before the script runs.
         let said = Command::new("sh")
             .arg("-c")
             .args(&words[script + 1..])
-            .args(["sh", "-c", r#"printf %s "$MYCELIUM_REALM""#])
-            .env("MYCELIUM_REALM", "lighthouse")
+            .args(["sh", "-c", program])
+            .envs(profile.iter().copied())
             .output()
             .expect("the stand-in shell runs");
-        assert_eq!(
-            String::from_utf8_lossy(&said.stdout),
-            "harbour",
-            "the program is in the realm it is held in"
+        String::from_utf8_lossy(&said.stdout).into_owned()
+    }
+
+    #[test]
+    fn a_program_is_in_the_realm_it_is_held_in_whatever_the_profile_says() {
+        let said = run_through(
+            &login_shell("harbour", None),
+            r#"printf %s "$MYCELIUM_REALM""#,
+            &[("MYCELIUM_REALM", "lighthouse")],
+        );
+        assert_eq!(said, "harbour", "the program is in the realm it is held in");
+    }
+
+    #[test]
+    fn a_program_finds_the_kits_tools_first_whatever_the_profile_says() {
+        let kit = tempfile::tempdir().expect("a temporary kit");
+        let bin = kit.path().join("bin");
+        fs::create_dir(&bin).expect("the kit's bin");
+        let profile = [("PATH", "/usr/bin:/bin")];
+        for words in [
+            login_shell("harbour", Some(kit.path())),
+            login_run("harbour", Some(kit.path())),
+        ] {
+            assert_eq!(
+                run_through(&words, r#"printf %s "$PATH""#, &profile),
+                format!("{}:/usr/bin:/bin", bin.display()),
+                "the kit's tools come before the profile's, which set the path afresh"
+            );
+        }
+    }
+
+    #[test]
+    fn a_program_given_no_kit_keeps_the_path_the_profile_set() {
+        let profile = [("PATH", "/usr/bin:/bin")];
+        for words in [login_shell("harbour", None), login_run("harbour", None)] {
+            assert_eq!(
+                run_through(&words, r#"printf %s "$PATH""#, &profile),
+                "/usr/bin:/bin",
+                "a machine with no kit runs as it did"
+            );
+        }
+    }
+
+    #[test]
+    fn a_node_hold_names_its_kit_to_the_holder_and_a_terminals_does_not() {
+        let starter = Starter {
+            program: PathBuf::from("/bin/mycelium"),
+            scope: Scope::None,
+            kit: Some(PathBuf::from("/nix/store/kit")),
+        };
+        // The words the holder is started with, as `start` gives them.
+        let words = |login: bool| {
+            let mut holder = starter.scope.command(&starter.program, "f00d");
+            starter.name(&mut holder, "harbour", "f00d", Path::new("/home"), login);
+            holder
+                .get_args()
+                .map(|word| word.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let kit = ["--kit".to_owned(), "/nix/store/kit".to_owned()];
+        assert!(
+            words(true).windows(2).any(|pair| pair == kit),
+            "a node's hold runs through the login shell, with its kit: {:?}",
+            words(true)
+        );
+        assert!(
+            !words(false).contains(&kit[0]),
+            "a terminal's has the person's own path already: {:?}",
+            words(false)
         );
     }
 
