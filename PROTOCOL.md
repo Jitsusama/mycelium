@@ -1994,15 +1994,16 @@ the state home unless the node's `--waiting` names another: a file a
 quest, named by the last part of its id, such as `KESTRL.json`,
 holding `quest` and its `items`. The node reads it with the quest,
 and again whenever a watch on the folder hears it change, or hears
-the folder made anew. It also looks at the folder every five seconds,
-since a watch can miss it made or removed, as a Mac's was seen to,
-and reads it again then while no watch takes it, and every five
-minutes in any case. A quest whose file is gone since the folder was
+the folder made anew. While it can watch at all, it also looks at the
+folder every five seconds, since a watch can miss it made or removed,
+as a Mac's was seen to, and reads it again then while no watch takes
+it; every five minutes it reads each quest's waits again in any case. A quest whose file is gone since the folder was
 last read, alone or with the folder, reads its waits again. A file
 that is a link, longer than 256 KB, not JSON, or naming no `quest` or
-another gives no waits. An item without an `id` and `title` is left
-out, keeping the rest, and any other field null or written wrong says
-nothing. Cleared waits aren't read, and a forage whose quest waits on
+another gives no waits. An item without a `title` is left out,
+keeping the rest; one without an `id`, or with an empty one, is known
+by its title, as the launcher knows it; and any other field null or
+written wrong says nothing. Cleared waits aren't read, and a forage whose quest waits on
 nothing has no `waits`. The mesh's own waits, the questions and holds
 still unanswered, are `mycelium unanswered`'s.
 

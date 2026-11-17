@@ -706,9 +706,9 @@ impl WaitingFolder {
     /// Reads a folder no watch hears again on the next turn. The turn
     /// also looks whether the folder came or went, as a watch can miss
     /// either, as a Mac's was seen to; a watch on a missing folder's
-    /// parent is left as it is. Turns come only while there is a
-    /// watcher; with none at all, only the five-minute round looks for
-    /// a folder made late.
+    /// parent is left as it is. Harks come only while there is a
+    /// watcher; with none at all, only the five-minute round reads the
+    /// quests' waits again, a folder made late among them.
     fn hark(&mut self) {
         self.again = self.again || self.deaf;
     }
@@ -1265,6 +1265,7 @@ mod tests {
             {"id": "no-title"},
             {"id": "land", "title": "Pick a field"},
             {"title": "Pick a hedge", "why": "It perches."},
+            {"id": "", "title": "Pick a post"},
             {"id": "odd", "title": "Odd fields", "why": null, "ready": null,
              "minutes": 2.5, "when": "", "raisedAt": 7},
         ]);
@@ -1306,6 +1307,15 @@ mod tests {
                     raised: None,
                 },
                 Wait {
+                    id: "Pick a post".to_owned(),
+                    title: "Pick a post".to_owned(),
+                    why: String::new(),
+                    minutes: None,
+                    when: None,
+                    ready: false,
+                    raised: None,
+                },
+                Wait {
                     id: "odd".to_owned(),
                     title: "Odd fields".to_owned(),
                     why: String::new(),
@@ -1315,7 +1325,7 @@ mod tests {
                     raised: None,
                 },
             ],
-            "a wait with no title is left out, one with no id known by its title, \
+            "a wait with no title is left out, one with no id or an empty one known by its title, \
              one with odd fields kept, and the cleared ones aren't read"
         );
         let (records, _) = records(&mut shelf, &[cell("QEST-20261116-KESTRL")], "kestrel");
