@@ -2,9 +2,9 @@
 //! it may cost money and that no machine of the realm takes, asking the
 //! provider's program `PROGRAM make SHAPE --lasting SECONDS`. The program
 //! is told who asked for it in [`ASKER`], and refuses whoever it doesn't
-//! serve by failing. It makes it, writes one JSON line saying where it is (`place`, as
-//! `--via PROGRAM:PLACE` names it), the name its node will say for itself
-//! (`machine`) and when it ends (`until`), and exits.
+//! serve by failing. It makes it, writes one JSON line saying where it is
+//! (`place`, as `--via PROGRAM:PLACE` names it), the name its node will
+//! say for itself (`machine`) and when it ends (`until`), and exits.
 //!
 //! Every machine made has an end: the provider ends it by `until` whatever
 //! else happens, and the node releases it sooner once its work is done.
@@ -28,10 +28,16 @@ use crate::offer::{Costs, Offer};
 const MADE_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The variable a provider's program reads who asked for the machine in:
-/// `person` for the person's own login, a session's address for an agent
-/// whose session the node proved, and `unknown` for anything else, which
-/// a provider serving only some should refuse.
+/// the address of a session the node proved asks, [`PERSON`] for the
+/// person's own login, and [`UNKNOWN`] for anything else, which a
+/// provider serving only some should refuse.
 pub const ASKER: &str = "MYCELIUM_ASKER";
+
+/// What [`ASKER`] says for the person's own login.
+pub const PERSON: &str = "person";
+
+/// What [`ASKER`] says where who asked can't be told.
+pub const UNKNOWN: &str = "unknown";
 
 /// A machine a provider made.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

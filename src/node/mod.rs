@@ -3502,21 +3502,38 @@ impl<S: Store> Shared<S> {
     }
 
     /// Who asks for a machine to be made, as its provider is told it
-    /// ([`made::ASKER`]): `person` for the person's own login, the
-    /// address of the nearest session claiming an agent that asks, and
-    /// `unknown` where neither can be told, so a provider serving only
-    /// some refuses it.
+    /// ([`made::ASKER`]): the address of the session the kernel and pi's
+    /// records prove asks ([`Self::asking_session`]), else `person` where
+    /// [`asker::judge`] tells the person's own login, else `unknown`, so a
+    /// provider serving only some refuses it. A proved session this node
+    /// lists no address for, or whose address reads as one of those two
+    /// words, is `unknown` too. Like the judging of a run, this fences
+    /// habit, not an agent set on passing as another. A start relayed by
+    /// another machine's node never makes one, since the link pins it to
+    /// this machine by name, which no offer meets.
     async fn asker_of_a_make(&self) -> String {
-        match self.judged().await {
-            Ok((By::Person, _)) => "person".to_owned(),
-            Ok((By::Agent(_), above)) => above.first().map_or_else(
-                || "unknown".to_owned(),
-                |session| {
-                    let sessions = self.lock().state.sessions();
-                    self.address_of(&sessions, session).to_owned()
-                },
-            ),
-            Err(_) => "unknown".to_owned(),
+        let unknown = || made::UNKNOWN.to_owned();
+        match self.asking_session().await {
+            Ok(session) => {
+                let sessions = self.lock().state.sessions();
+                let address = self.address_of(&sessions, &session);
+                if address == session || address == made::PERSON || address == made::UNKNOWN {
+                    unknown()
+                } else {
+                    address.to_owned()
+                }
+            }
+            Err(why) => match self.judged().await {
+                Ok((By::Person, _)) => made::PERSON.to_owned(),
+                Ok((By::Agent(_), _)) => {
+                    eprintln!("a make is said to be asked by no one known: {why}");
+                    unknown()
+                }
+                Err(judging) => {
+                    eprintln!("a make is said to be asked by no one known: {why}; {judging}");
+                    unknown()
+                }
+            },
         }
     }
 
@@ -4667,6 +4684,100 @@ mod tests {
                 .is_some_and(|why| why.contains("couldn't run")),
             "a program that couldn't say is named with why, not taken as offering nothing: {:?}",
             offers.unanswered
+        );
+    }
+
+    /// Puts a provider beside `socket` offering a free machine reaching
+    /// `basin`, whose make writes who it is told asks to `told` and fails,
+    /// so nothing is left to link.
+    fn provider_telling(socket: &Path, told: &Path) {
+        crate::stand_in::program(
+            &socket.with_file_name("provider"),
+            &r#"#!/bin/sh
+case "$1" in
+offers) echo '{"shape": "cell", "costs": {"hourly": "0", "currency": "USD"}, "lasts": 600, "facts": {"declared": {"reach": ["basin"], "outlives": [], "costs_money": false, "taints": []}}}' ;;
+make) printf '%s\n' "$ASKER" > TOLD; exit 1 ;;
+esac
+"#
+                .replace("ASKER", made::ASKER)
+                .replace("TOLD", &told.display().to_string()),
+        );
+    }
+
+    /// Asks the node on `socket` to start work only a made machine
+    /// reaching `basin` would take, answering who its provider was told
+    /// asks, as written to `told`.
+    async fn told_asker(socket: &Path, told: &Path) -> String {
+        let asked = Request::Start(Start {
+            work: work(vec![Need::Reach("basin".to_owned())]),
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+        });
+        let started = ask(socket.to_owned(), asked).await;
+        assert!(
+            started
+                .as_ref()
+                .is_err_and(|why| why.contains("make cell ended")),
+            "the stand-in makes nothing: {started:?}"
+        );
+        fs::read_to_string(told).expect("the provider was asked to make one")
+    }
+
+    #[tokio::test]
+    async fn a_provider_is_told_the_person_asked_from_their_own_login() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let told = dir.path().join("told");
+        let (_stop, _node) = node(
+            &Memory::default(),
+            "skiff",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+        );
+        provider_telling(&socket, &told);
+        asks_as_person(&socket);
+        assert_eq!(
+            told_asker(&socket, &told).await,
+            "person\n",
+            "a start from the person's terminal is the person's"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_is_told_an_agent_no_session_is_proved_for_is_unknown() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let told = dir.path().join("told");
+        let (_stop, _node) = node(
+            &Memory::default(),
+            "skiff",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+        );
+        provider_telling(&socket, &told);
+        asks_below(&socket, 7009);
+        assert_eq!(
+            told_asker(&socket, &told).await,
+            "unknown\n",
+            "an agent no presence proves is neither the person nor a session"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_is_told_the_address_of_the_session_proved_to_ask() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let told = dir.path().join("told");
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        provider_telling(&socket, &told);
+        asks_below(&socket, 7001);
+        assert_eq!(
+            told_asker(&socket, &told).await,
+            "WCJQSG\n",
+            "the session whose pi the asker runs below, by its address, not one it claims"
         );
     }
 

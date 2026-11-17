@@ -1170,11 +1170,17 @@ one of the cheapest an hour, after taints and preferences, as
 `lasts` and ten minutes to hand over, though no longer than the offer
 lives, or as long as the offer lives where the work doesn't say. It
 makes none where neither says, since no machine is made without an
-end. The program is told who asked in `MYCELIUM_ASKER`: `person` for
-the person's own login, the address of the nearest session claiming an
-agent that asks, as the node proves it for a run, or `unknown` where
-neither can be told; a provider serving only some refuses the rest by
-failing, and nothing is made. The program writes one JSON line,
+end. The program is told who asked in `MYCELIUM_ASKER`: the address
+of the session the kernel and pi's records prove asks, as a steer's
+orchestrator is proved; else `person` for the person's own login; else
+`unknown`, as for an agent no session is proved for, or a session this
+node lists no address for. A provider serving only some refuses the
+rest by failing, and nothing is made. Like the judging of a run, this
+fences habit, not an agent set on passing as another, which runs as
+the same account; an agent's process left with no agent above it is
+judged the person's. A start relayed from another machine's node makes
+nothing, since it is pinned to this machine by name, which no offer
+meets. The program writes one JSON line,
 `{"place", "machine", "until"}`:
 where it is, as `--via` names it, the name its node will say for
 itself, and when its provider ends it whatever else happens. The node
