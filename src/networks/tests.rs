@@ -626,7 +626,7 @@ fn a_tree_two_cells_hold_is_a_network_and_one_cells_own_is_on_the_cell() {
 }
 
 #[test]
-fn a_session_here_is_dormant_only_while_its_node_says_it_can_wake() {
+fn a_session_here_whose_process_ended_is_dormant_only_on_its_nodes_word() {
     // Seven sessions here ended with their quests active and nothing to wake
     // them, yet the map drew each dormant for hours, since their presences
     // still said parked (16 Nov). Here, only the node's own standing counts;
@@ -668,7 +668,8 @@ fn a_session_here_is_dormant_only_while_its_node_says_it_can_wake() {
             ("OLDER1", Some("dormant")),
             ("LIVES1", Some("dormant")),
         ],
-        "one here that nothing can wake has ended, and is no cell"
+        "one here ended with nothing to wake it is no cell; one here still running, one \
+         elsewhere and one from a node that says no here are dormant as their presences say"
     );
 }
 

@@ -152,8 +152,7 @@ impl Realm {
     /// What the node holds of it.
     fn holding(&self) -> Holding<'_> {
         Holding {
-            // One of its own machines, so its sessions there are judged here.
-            machine: "machine-0000",
+            machine: "",
             teams: &self.teams,
             sessions: &self.sessions,
             machines: &self.machines,

@@ -7571,6 +7571,10 @@ mod tests {
             .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
             .await;
         let records = client.next().await;
+        assert!(
+            records["records"].is_array(),
+            "the cells come whole first: {records}"
+        );
         let napper = |records: &Value, field: &str| -> Option<Value> {
             records[field]
                 .as_array()?
@@ -7585,7 +7589,11 @@ mod tests {
         );
 
         fs::write(parks_of(&socket).join("napper.json"), "{}").expect("a marker");
-        let marked = client.next().await;
+        // The machine's own cell may change first, as it's measured again.
+        let mut marked = client.next().await;
+        while napper(&marked, "changed").is_none() {
+            marked = client.next().await;
+        }
         assert_eq!(
             napper(&marked, "changed"),
             Some(json!("dormant")),
