@@ -223,17 +223,23 @@ pub fn read(file: &Path) -> Option<Declared> {
 /// Where Nix keeps what it builds, which only Nix writes.
 const STORE: &str = "/nix/store";
 
+/// pi-fence's word for a run in a work tree shared to its asker.
+const SHARED_TREE: &str = "--shared-tree";
+
 /// The words that run a command in this machine's fence `kind`, as the
 /// configuration at `file` declares them. They are taken only from a file
 /// the agents can't write, since they say what the fence is: one in the
 /// Nix store, or one that only `declarers` own, with nothing on its way
 /// down from the root another may write. The first word must be a
 /// program in the store too, so no agent can put another in its place.
+/// They never say `--shared-tree`, which would spare every run a work
+/// tree pi-fence otherwise refuses: this node doesn't yet say which trees
+/// are shared to whom, so it never asks that.
 ///
 /// # Errors
 ///
-/// When the file isn't sealed so, declares no words for `kind`, or names
-/// a program outside the store.
+/// When the file isn't sealed so, declares no words for `kind`, names a
+/// program outside the store, or says `--shared-tree`.
 pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String>, String> {
     sealed(file, declarers).map_err(|why| {
         format!(
@@ -251,6 +257,12 @@ pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String
             "this machine declares no way to run a command as its {kind} sessions run"
         ));
     };
+    if let Some(spare) = runs.iter().find(|word| word.starts_with(SHARED_TREE)) {
+        return Err(format!(
+            "its {kind} sessions' launcher says {spare}, which spares a tree shared to the \
+             asker; this node can't yet say which trees are shared, so it never asks that"
+        ));
+    }
     let found = fs::canonicalize(program)
         .map_err(|error| format!("its {kind} sessions' launcher {program} isn't there: {error}"))?;
     if !found.starts_with(STORE) {
@@ -605,6 +617,26 @@ mod tests {
             ),
             "a tool anyone writes in a bin only its declarers write is said to be changeable"
         );
+    }
+
+    #[test]
+    fn a_fence_never_spares_a_shared_tree_on_its_declarations_word() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        let env = stored("env");
+        let env = env.to_str().expect("a path in words");
+        for spare in ["--shared-tree", "--shared-tree=yes"] {
+            runs_through(&file, &[env, spare, "--"]);
+            assert_eq!(
+                launcher(&file, Kind::Strict, &declarers()),
+                Err(format!(
+                    "its strictly fenced sessions' launcher says {spare}, which spares a \
+                     tree shared to the asker; this node can't yet say which trees are \
+                     shared, so it never asks that"
+                )),
+                "{spare} is refused"
+            );
+        }
     }
 
     #[test]

@@ -107,6 +107,25 @@ pub const PIECE: usize = 64 * 1024;
 /// step from the command to whoever asked for it.
 pub const BACKLOG: usize = 4;
 
+/// The words that run `command` here in `realm`: through `launcher`, a
+/// fence's words or none for a person, then the person's login shell,
+/// then the command. What an ask says comes only after both, so none of
+/// it is read as the launcher's: a launcher that ends its options at
+/// `--`, as pi-fence does, ends them before the ask begins, and one that
+/// doesn't meets the shell first. So no ask spares itself a shared tree.
+#[must_use]
+pub fn words(
+    launcher: Vec<String>,
+    realm: &str,
+    kit: Option<&Path>,
+    command: Vec<String>,
+) -> Vec<String> {
+    let mut words = launcher;
+    words.extend(crate::hold::start::login_run(realm, kit));
+    words.extend(command);
+    words
+}
+
 /// Runs `words`, the first the program, in `folder`, handing what it says
 /// to `ran` as it says it and then how it ended; stops it once `ran`'s
 /// reader lets go.
@@ -257,6 +276,43 @@ mod tests {
 
     /// How long a test waits on a run before failing.
     const PATIENCE: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn an_ask_never_says_the_fences_words() {
+        let launcher: Vec<String> = ["/nix/store/pi-fence/bin/pi-fence", "--kind", "strict", "--"]
+            .map(str::to_owned)
+            .to_vec();
+        let asked: Vec<String> = [
+            "--shared-tree",
+            "--folder",
+            "/home/kestrel/trees/another-quests",
+            "--",
+            "sh",
+            "-c",
+            "true",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let words = words(launcher.clone(), "work", asked.clone());
+        let options = words
+            .iter()
+            .position(|word| word == "--")
+            .map(|at| &words[..=at]);
+        assert_eq!(
+            options,
+            Some(&launcher[..]),
+            "the fence's options are its own: {words:?}"
+        );
+        assert!(
+            words.ends_with(&asked),
+            "the ask runs as it was said, after the fence and the shell: {words:?}"
+        );
+        assert_eq!(
+            words[launcher.len()..words.len() - asked.len()],
+            crate::hold::start::login_run("work", None),
+            "the login shell stands between them"
+        );
+    }
 
     fn sh(script: &str) -> Vec<String> {
         vec!["/bin/sh".to_owned(), "-c".to_owned(), script.to_owned()]

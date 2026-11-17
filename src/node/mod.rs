@@ -3487,7 +3487,7 @@ impl<S: Store> Shared<S> {
             let home =
                 std::env::home_dir().ok_or_else(|| format!("{machine} has no home to run in"))?;
             let folder = start::begins_in(asked.folder.as_deref(), &home);
-            let mut words = match by {
+            let launcher = match by {
                 By::Person => Vec::new(),
                 By::Agent(kind) => {
                     crate::declared::launcher(&self.declared, kind, &self.runs.declarers).map_err(
@@ -3497,8 +3497,7 @@ impl<S: Store> Shared<S> {
                     )?
                 }
             };
-            words.extend(start::login_run(&self.realm, self.kit()));
-            words.extend(asked.command);
+            let words = run::words(launcher, &self.realm, self.kit(), asked.command);
             let (ran, said) = mpsc::channel(run::BACKLOG);
             tokio::spawn(run::here(words, folder, ran));
             said
