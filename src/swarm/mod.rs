@@ -115,10 +115,14 @@ impl Standing {
 
     /// How a session record stands as a cell: dormant where it parked,
     /// whether its process has ended yet or not, else as a team counts it,
-    /// and none for one that has ended otherwise.
+    /// and none for one that has ended otherwise. Here, it's parked only
+    /// as the node judges it, something being left to wake it; a presence
+    /// still saying parked once nothing is ended. Elsewhere its presence's
+    /// word is all this node has.
     pub(crate) fn of_cell(session: &Value) -> Option<Self> {
         let parked = json!("parked");
-        if session["standing"] == parked || session["presence"]["state"] == parked {
+        let elsewhere = session["here"] == json!(false);
+        if session["standing"] == parked || elsewhere && session["presence"]["state"] == parked {
             return Some(Self::Dormant);
         }
         Self::of(session)
