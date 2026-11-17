@@ -2117,9 +2117,12 @@ found `done` or `ready`, each by `<quest>:<id>`. A wait done either
 way is left out, as the launcher leaves it out, and one found ready is
 ready; one put off stays. Both are read again once changed, when the
 folder is next looked at, and every quest held is read again with
-them, since reading one reads them for all. One that is a link, longer
-than 8 MB, not JSON, or saying it another way settles nothing. The mesh's own
-waits, the questions and holds still unanswered, are
+them, since reading one reads them for all. One gone, a link, longer
+than 8 MB, one that won't open, or saying it another way settles
+nothing. One read whole but not JSON, as one caught halfway through
+being written is, keeps what it last said whole until it changes
+again, and on the node's first look has nothing to keep. The mesh's
+own waits, the questions and holds still unanswered, are
 `mycelium unanswered`'s.
 
 A plan grows past 400 KB, so the node reads a quest off its runtime,
