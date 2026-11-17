@@ -1346,8 +1346,8 @@ machine whose book line names no asker takes only the person's. A
 preview is held to it as its run would be, and an ordered carry there
 of another's session is refused; only a start pinned to the machine
 made for it is not held to it. The booking is the making node's, kept
-while it runs and made again as it redials its book. Like the judging of a run, this
-fences habit, not an agent set on passing as another, which runs as
+while it runs and made again as it redials its book. Like the judging
+of a run, this fences habit, not an agent set on passing as another, which runs as
 the same account; an agent's process left with no agent above it is
 judged the person's. A start relayed from another machine's node makes
 nothing, since it is pinned to this machine by name, which no offer
