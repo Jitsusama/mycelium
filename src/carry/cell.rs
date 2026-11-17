@@ -13,6 +13,11 @@ use serde_json::Value;
 /// its session's id.
 pub const FILE: &str = ".cell.json";
 
+/// The most formed networks a cell brings, those that formed earliest,
+/// so its file stays small however many trees its session holds: one
+/// left out forms afresh where the session arrives.
+pub const FORMED_MOST: usize = 64;
+
 /// A carried session's cell, as the file beside its done file says it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Brought {
@@ -27,17 +32,20 @@ pub struct Brought {
     /// The cell's own record of its talk, `tie:<cell>`, or none where it
     /// has none.
     pub talk: Option<Value>,
-    /// Each `formed:<network>` record this node holds of a tree network
-    /// the session's trees make, whole as the formed kind sends it.
+    /// The `formed:<network>` records this node holds of tree networks
+    /// the session's trees make, whole as the formed kind sends them:
+    /// at most [`FORMED_MOST`], earliest formed first.
     pub formed: Vec<Value>,
 }
 
 /// Each of `formed`, every formed network the node holds, that is a
-/// tree network the trees `presence` holds make.
+/// tree network the trees `presence` holds make: earliest formed first,
+/// those at one time by key, one saying no time last, and at most
+/// [`FORMED_MOST`].
 #[must_use]
 pub fn formed_of(presence: &Value, formed: &[Value]) -> Vec<Value> {
     let networks = crate::networks::tree_networks(presence);
-    formed
+    let mut kept: Vec<Value> = formed
         .iter()
         .filter(|one| {
             one["key"]
@@ -46,7 +54,18 @@ pub fn formed_of(presence: &Value, formed: &[Value]) -> Vec<Value> {
                 .is_some_and(|name| networks.contains(name))
         })
         .cloned()
-        .collect()
+        .collect();
+    kept.sort_by(|one, other| {
+        let order = |record: &Value| {
+            (
+                record["at"].as_i64().unwrap_or(i64::MAX),
+                record["key"].as_str().unwrap_or_default().to_owned(),
+            )
+        };
+        order(one).cmp(&order(other))
+    });
+    kept.truncate(FORMED_MOST);
+    kept
 }
 
 /// What the cell of the session `session`, going by `address`, brings
@@ -85,7 +104,7 @@ pub fn brought(session: &str, address: &str, ties: &[Value]) -> Brought {
 mod tests {
     use serde_json::json;
 
-    use super::{brought, formed_of};
+    use super::{FORMED_MOST, brought, formed_of};
 
     const TIDES: &str = "formed:tree.github:harbour/oars:jsama/tides";
 
@@ -113,9 +132,10 @@ mod tests {
         ];
         assert_eq!(
             formed_of(&presence, &formed),
-            [formed[0].clone(), formed[1].clone()],
-            "a worktree's and a snapshot's networks, whole; none of another tree, nor one \
-             whose name only begins alike, nor of a tree saying neither branch nor commit"
+            [formed[1].clone(), formed[0].clone()],
+            "a worktree's and a snapshot's networks, whole and earliest first; none of \
+             another tree, nor one whose name only begins alike, nor of a tree saying \
+             neither branch nor commit"
         );
         assert!(
             formed_of(&json!({}), &formed).is_empty(),
@@ -124,6 +144,63 @@ mod tests {
         assert!(
             formed_of(&json!({"trees": "oars"}), &formed).is_empty(),
             "nor one whose trees aren't a list"
+        );
+    }
+
+    #[test]
+    fn a_cell_brings_at_most_its_earliest_formed_networks() {
+        let branches: Vec<String> = (0..FORMED_MOST + 6).map(|n| format!("b{n}")).collect();
+        let trees: Vec<_> = branches
+            .iter()
+            .map(|branch| json!({"key": branch, "repo": "github:harbour/oars", "branch": branch}))
+            .collect();
+        let presence = json!({"trees": trees});
+        // The first formed latest, so order kept as given would keep
+        // the wrong ones.
+        let formed: Vec<_> = branches
+            .iter()
+            .zip((0_i64..).map(|n| 1_000 - n))
+            .map(|(branch, at)| {
+                let name = format!("tree.github:harbour/oars:{branch}");
+                json!({"key": format!("formed:{name}"), "kind": "formed",
+                       "name": name, "at": at, "left": null})
+            })
+            .collect();
+        let kept = formed_of(&presence, &formed);
+        assert_eq!(kept.len(), FORMED_MOST, "at most {FORMED_MOST}");
+        assert!(
+            formed[..6].iter().all(|latest| !kept.contains(latest)),
+            "the six that formed latest are left out"
+        );
+        let mut ats: Vec<i64> = kept.iter().filter_map(|one| one["at"].as_i64()).collect();
+        let unsorted = ats.clone();
+        ats.sort_unstable();
+        assert_eq!(unsorted, ats, "earliest first");
+    }
+
+    #[test]
+    fn formed_networks_at_one_time_go_by_name_and_one_saying_no_time_goes_last() {
+        let trees: Vec<_> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|branch| json!({"key": branch, "repo": "github:harbour/oars", "branch": branch}))
+            .collect();
+        let presence = json!({"trees": trees});
+        let key = |branch: &str| format!("formed:tree.github:harbour/oars:{branch}");
+        let formed = [
+            json!({"key": key("d"), "kind": "formed", "at": "soon"}),
+            json!({"key": key("c"), "kind": "formed", "at": 5}),
+            json!({"key": key("a"), "kind": "formed", "at": 5}),
+            json!({"key": key("b"), "kind": "formed", "at": 9}),
+        ];
+        let kept: Vec<_> = formed_of(&presence, &formed)
+            .iter()
+            .filter_map(|one| one["key"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(
+            kept,
+            [key("a"), key("c"), key("b"), key("d")],
+            "two at one time by name, whatever order the node gave them; one whose time \
+             isn't a whole number last"
         );
     }
 
