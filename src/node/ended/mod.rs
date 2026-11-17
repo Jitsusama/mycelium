@@ -216,24 +216,27 @@ fn address_told(said: &str) -> Option<String> {
     reads.then_some(address)
 }
 
-/// The sessions whose end here is a carry or a turn rather than their
-/// work stopping: each of `carries` ordered within [`CARRIED_WITHIN`] of
-/// `now` that `judge` says neither refused nor came back, and each of
-/// `waiting`. Only those carries are judged, as judging reads their
-/// handovers.
-pub fn coming_back<'a>(
-    carries: &[Kept],
-    judge: impl Fn(&Kept) -> CarryState,
-    waiting: impl IntoIterator<Item = &'a str>,
-    now: i64,
-) -> HashSet<String> {
+/// The sessions whose end here is a carry rather than their work
+/// stopping: each of `carries` ordered within [`CARRIED_WITHIN`] of `now`
+/// that `judge` says neither refused nor came back. Only those carries
+/// are judged, as judging reads their handovers.
+pub fn carried(carries: &[Kept], judge: impl Fn(&Kept) -> CarryState, now: i64) -> HashSet<String> {
     carries
         .iter()
         .filter(|carry| now - carry.at.as_millisecond() <= CARRIED_WITHIN)
         .filter(|carry| !matches!(judge(carry), CarryState::Refused(_) | CarryState::Back))
         .map(|carry| carry.said("session").to_owned())
-        .chain(waiting.into_iter().map(str::to_owned))
         .collect()
+}
+
+/// The sessions whose end here is a carry or a turn rather than their
+/// work stopping: those `carried`, and each of `waiting`.
+pub fn coming_back<'a>(
+    mut carried: HashSet<String>,
+    waiting: impl IntoIterator<Item = &'a str>,
+) -> HashSet<String> {
+    carried.extend(waiting.into_iter().map(str::to_owned));
+    carried
 }
 
 /// The records `ended` makes, by key.

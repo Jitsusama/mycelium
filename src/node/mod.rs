@@ -2104,7 +2104,10 @@ impl<S: Store> Shared<S> {
         if let Err(error) = fs::read_dir(&self.parked)
             && error.kind() != io::ErrorKind::NotFound
         {
-            let why = format!("no end is told, as the park markers can't be read: {error}");
+            let why = format!(
+                "no end is told, as the park markers in {} can't be read: {error}",
+                self.parked.display()
+            );
             if self.unreadable.first(&why) {
                 eprintln!("{why}");
             }
@@ -2116,7 +2119,10 @@ impl<S: Store> Shared<S> {
         let carries = match kept::read(&self.carries, shown_since()) {
             Ok(carries) => carries,
             Err(error) => {
-                let why = format!("no end is told, as the carries can't be read: {error}");
+                let why = format!(
+                    "no end is told, as the carries in {} can't be read: {error}",
+                    self.carries.display()
+                );
                 if self.unreadable.first(&why) {
                     eprintln!("{why}");
                 }
@@ -2131,16 +2137,17 @@ impl<S: Store> Shared<S> {
             kept::judged(carry, &seen)
         };
         // Judged before the node's state is locked, as judging reads the
-        // carries' handovers.
-        let waiting: Vec<String> = self.lock().turns.waiting().map(str::to_owned).collect();
-        let coming_back =
-            ended::coming_back(&carries, judge, waiting.iter().map(String::as_str), now);
+        // carries' handovers; the turns waiting are read with the
+        // sessions, under one lock, so a session that asks a turn is never
+        // told as ended for being read a moment apart.
+        let carried = ended::carried(&carries, judge, now);
         let standing = |session: &Session| {
             let here = session.machine == self.machine;
             standing::standing(session, here, &parked, &self.boot)
         };
         let mut inner = self.lock();
         let sessions = inner.state.sessions();
+        let coming_back = ended::coming_back(carried, inner.turns.waiting());
         let judged = ended::Judged {
             machine: &self.machine,
             standing: &standing,

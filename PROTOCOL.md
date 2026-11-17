@@ -1623,7 +1623,8 @@ quest whose record attaches it in the quests this node serves, is
 no session of the realm running on it, though other quests attach
 that one too. A session running there restarts the ten minutes.
 Where the carries or the park markers can't be read, none is told,
-and the node's log says so once. A record says the
+and the node's log says so, naming the file, once while it runs. A
+record says the
 `session`, its `address`, the `quest`, the quest's `orchestrator`,
 uppercase, `at`, when the session last changed, and `why`: `ended`, or
 `parked-unwakeable`; it is heard when the node first saw the end. It
