@@ -8892,8 +8892,9 @@ esac
     /// Declares, beside `socket`, that its machine runs its sessions
     /// strictly fenced, building only remotely, and starts a strictly
     /// fenced command through `runs`. The test's stand-in for a fence's
-    /// launcher is `sh`, which ends its options at `--`, as a launcher
-    /// must, and says `FENCED=strict` to what it starts.
+    /// launcher is `sh`, whose words end with `--`, as a declared
+    /// launcher's must; its script drops that `--` and says
+    /// `FENCED=strict` to what it starts.
     fn declares_runs(socket: &Path, runs: bool) {
         let folder = socket.parent().expect("its folder");
         fs::DirBuilder::new()
