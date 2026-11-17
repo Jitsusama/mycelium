@@ -329,9 +329,8 @@ enum Action {
     ///
     /// It goes to every group named, from who `--from` says.
     #[command(
-        override_usage = "mycelium send [OPTIONS] --from <FROM> [--text <TEXT>]\n       <GROUPS>...",
-        after_help = "Examples:\n  mycelium send --from HARBOR --text merged peer.kelp01\n  \
-                      echo merged | mycelium send --from HARBOR peer.kelp01"
+        override_usage = "mycelium send [OPTIONS] --from <FROM> --text <TEXT>\n       <GROUPS>...",
+        after_help = "Example:\n  echo merged | mycelium send --from HARBOR --text - peer.kelp01"
     )]
     Send {
         /// Who sends it.
@@ -344,11 +343,10 @@ enum Action {
         /// The groups it goes to, such as `peer.4uhc5q`.
         #[arg(required = true)]
         groups: Vec<Group>,
-        /// What is said. Given as `-`, or left out while standard input
-        /// isn't a terminal, it is read from standard input, so it never
-        /// sits in a command line every process here can read.
+        /// What is said, or `-` to read it from standard input, so it
+        /// never sits in a command line every process here can read.
         #[arg(long)]
-        text: Option<String>,
+        text: String,
         /// The realm it is for, by a flow, if not this one.
         #[arg(long = "to-realm")]
         to_realm: Option<String>,
@@ -1395,22 +1393,18 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             groups,
             text,
             to_realm,
-        } => {
-            use std::io::IsTerminal as _;
-            let input = io::stdin();
-            let terminal = input.is_terminal();
-            print_answer(
-                &socket,
-                &Request::Send(Draft {
-                    from,
-                    groups,
-                    intent,
-                    text: said_text(text, input.lock(), terminal)?,
-                    re: None,
-                    realm: to_realm,
-                }),
-            )
-        }
+        } => send(
+            &socket,
+            Draft {
+                from,
+                groups,
+                intent,
+                text: String::new(),
+                re: None,
+                realm: to_realm,
+            },
+            text,
+        ),
         Action::Flows => print_reply(&socket, &Request::Flows),
         Action::Attach(asked) => return attach_asked(&realm, &socket, asked),
         Action::Holder {
@@ -1433,48 +1427,60 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
     ran.map(|()| ExitCode::SUCCESS)
 }
 
-/// Steers the session going by `address` with what standard input says.
-/// The most a message read from standard input may hold.
-const SAID_MOST: u64 = 256 * 1024;
+/// Sends `draft` through the node at `socket`, saying what `text`, or
+/// standard input where it is `-`, says (`said_text`).
+fn send(socket: &Path, mut draft: Draft, text: String) -> io::Result<ExitCode> {
+    draft.text = said_text(text, io::stdin().lock())?;
+    print_answer(socket, &Request::Send(draft)).map(|()| ExitCode::SUCCESS)
+}
+
+/// The most a message read from standard input may hold, its last line's
+/// end aside.
+const SAID_MOST: usize = 256 * 1024;
 
 /// What a message says: `text` as given, or what `input` holds where
-/// `text` is `-`, or left out while `input` isn't a `terminal`, its last
-/// line's end left off. Words read so never sit in a command line, which
-/// every process on the machine can read.
+/// `text` is `-`, its last line's end left off. Words read so never sit in
+/// a command line, which every process on the machine can read. Input is
+/// read only where asked, so a send whose input stays open is never left
+/// waiting on it unasked.
 ///
 /// # Errors
 ///
-/// When `text` is left out at a terminal, input can't be read, isn't
-/// UTF-8, holds nothing, or holds more than [`SAID_MOST`].
-fn said_text(text: Option<String>, input: impl io::Read, terminal: bool) -> io::Result<String> {
+/// When what is said is empty, or input can't be read, holds more than
+/// [`SAID_MOST`] or isn't UTF-8.
+fn said_text(text: String, input: impl io::Read) -> io::Result<String> {
     use std::io::Read as _;
-    let refused = |why: &str| io::Error::new(io::ErrorKind::InvalidInput, why.to_owned());
-    match text {
-        Some(text) if text != "-" => return Ok(text),
-        None if terminal => {
-            return Err(refused(
-                "say what is said with --text, or on standard input",
-            ));
-        }
-        _ => {}
+    let refused = |why: String| io::Error::new(io::ErrorKind::InvalidInput, why);
+    if text != "-" {
+        return if text.is_empty() {
+            Err(refused("nothing is said".to_owned()))
+        } else {
+            Ok(text)
+        };
     }
-    let mut read = String::new();
-    input.take(SAID_MOST + 1).read_to_string(&mut read)?;
-    if u64::try_from(read.len()).unwrap_or(u64::MAX) > SAID_MOST {
-        return Err(refused(&format!(
+    // Room for a line's end past the most, and a byte more to tell it's
+    // over, all held as bytes, so text cut there is said to be too long
+    // rather than not UTF-8.
+    let mut read = Vec::new();
+    let room = u64::try_from(SAID_MOST + 3).unwrap_or(u64::MAX);
+    input.take(room).read_to_end(&mut read)?;
+    let said = read.strip_suffix(b"\n").map_or(read.as_slice(), |line| {
+        line.strip_suffix(b"\r").unwrap_or(line)
+    });
+    if said.len() > SAID_MOST {
+        return Err(refused(format!(
             "what is said on standard input is over {} KB",
             SAID_MOST / 1024
         )));
     }
-    let said = read.strip_suffix('\n').map_or(read.as_str(), |line| {
-        line.strip_suffix('\r').unwrap_or(line)
-    });
     if said.is_empty() {
-        return Err(refused("nothing is said on standard input"));
+        return Err(refused("nothing is said on standard input".to_owned()));
     }
-    Ok(said.to_owned())
+    String::from_utf8(said.to_vec())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
+/// Steers the session going by `address` with what standard input says.
 fn steer(socket: &Path, address: String) -> io::Result<()> {
     let steer = serde_json::from_reader(io::stdin().lock())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -2920,62 +2926,65 @@ mod tests {
 
     #[test]
     fn a_message_is_read_from_input_so_its_words_sit_in_no_command_line() {
-        let said = |text: Option<&str>, input: &[u8], terminal: bool| {
-            said_text(text.map(str::to_owned), input, terminal).map_err(|error| error.kind())
+        let said = |text: &str, input: &[u8]| {
+            said_text(text.to_owned(), input).map_err(|error| error.kind())
         };
         assert_eq!(
-            said(Some("merged"), b"", true),
+            said("merged", b"never read"),
             Ok("merged".to_owned()),
-            "words given are said as they are"
+            "words given are said as they are, and input isn't read"
         );
         assert_eq!(
-            said(Some("-"), b"merged, at last\n", true),
+            said("-", b"merged, at last\n"),
             Ok("merged, at last".to_owned()),
             "`-` reads them from input, its last line's end left off"
         );
         assert_eq!(
-            said(None, b"two\nlines\r\n", false),
+            said("-", b"two\nlines\r\n"),
             Ok("two\nlines".to_owned()),
-            "as does leaving them out with input piped"
+            "a line's end of either kind"
         );
         assert_eq!(
-            said(None, b"", true),
-            Err(io::ErrorKind::InvalidInput),
-            "left out at a terminal, nothing waits on typing"
+            said("-", b"merged \n\n"),
+            Ok("merged \n".to_owned()),
+            "and only its last, so a blank line or a space meant stays"
+        );
+        for (text, input, why) in [
+            ("-", &b"\n"[..], "nothing read is nothing said"),
+            ("", &b""[..], "nor are words given empty"),
+        ] {
+            assert_eq!(said(text, input), Err(io::ErrorKind::InvalidInput), "{why}");
+        }
+        let most = "a".repeat(SAID_MOST);
+        assert_eq!(
+            said("-", format!("{most}\r\n").as_bytes()).map(|text| text.len()),
+            Ok(SAID_MOST),
+            "as much as a message may hold is said, its line's end aside"
         );
         assert_eq!(
-            said(Some("-"), b"\n", false),
-            Err(io::ErrorKind::InvalidInput),
-            "nothing read is nothing said"
-        );
-        let most = usize::try_from(SAID_MOST).expect("it fits");
-        assert_eq!(
-            said(Some("-"), "a".repeat(most).as_bytes(), false).map(|text| text.len()),
-            Ok(most),
-            "as much as a message may hold is said"
-        );
-        assert_eq!(
-            said(Some("-"), "a".repeat(most + 1).as_bytes(), false),
+            said("-", format!("{most}a").as_bytes()),
             Err(io::ErrorKind::InvalidInput),
             "and no more"
         );
         assert_eq!(
-            said(Some("-"), b"\xff\xfe", false),
+            said("-", "é".repeat(SAID_MOST).as_bytes()),
+            Err(io::ErrorKind::InvalidInput),
+            "too much is too much, though cut within a letter"
+        );
+        assert_eq!(
+            said("-", b"\xff\xfe"),
             Err(io::ErrorKind::InvalidData),
             "words that aren't UTF-8 aren't said"
         );
     }
 
     #[test]
-    fn a_send_parses_with_its_words_left_out() {
+    fn a_send_naming_no_words_reads_no_input_unasked() {
         let parsed =
             Command::try_parse_from(["mycelium", "send", "--from", "HARBOR", "peer.kelp01"]);
         assert!(
-            matches!(
-                parsed.map(|command| command.action),
-                Ok(Some(Action::Send { text: None, .. }))
-            ),
-            "its words come from input"
+            parsed.is_err(),
+            "its words are named, or `-` asks for input, so an open input never holds it"
         );
     }
 
