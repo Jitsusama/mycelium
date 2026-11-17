@@ -260,19 +260,63 @@ fn source_of(kind: &str, said: Said, held: &[&str], here: &Here) -> Result<Sourc
 struct Read {
     records: BTreeMap<String, Value>,
     refused: Option<String>,
+    /// Why its source wasn't there as it was read, as [`absent`] says.
+    absent: Option<String>,
 }
 
-/// Reads `kind`'s records from `source` now.
+/// Why `source`'s file or folder isn't there, where it isn't: read, it
+/// holds nothing, which is no trouble to show, but it may be misnamed or
+/// on a mount not made, so it is no record read whole.
+fn absent(source: &Source) -> Option<String> {
+    let path = source.file.as_ref().or(source.folder.as_ref())?;
+    match path.try_exists() {
+        Ok(true) => None,
+        Ok(false) => Some(format!("{} isn't there", path.display())),
+        Err(error) => Some(format!("{} can't be looked at ({error})", path.display())),
+    }
+}
+
+/// `read`'s records, where they were read whole: why not, where any of
+/// them was refused or its source wasn't there as they were read, though
+/// it be there since.
+fn whole(read: &Read) -> Result<BTreeMap<String, Value>, String> {
+    match (&read.refused, &read.absent) {
+        (Some(why), _) | (None, Some(why)) => Err(why.clone()),
+        (None, None) => Ok(read.records.clone()),
+    }
+}
+
+/// Reads `kind`'s records from `source` now, looking whether it is there
+/// before the read and again after it, so one gone at either look, or
+/// between them, is never read whole as holding nothing. One made after
+/// the first look is read whole the next read, as made it changes.
 fn read(kind: &str, source: &Source) -> Read {
+    let before = absent(source);
+    let read = read_there(kind, source);
+    Read {
+        absent: before
+            .or_else(|| read.absent.clone())
+            .or_else(|| absent(source)),
+        ..read
+    }
+}
+
+/// Reads `kind`'s records from `source` now, as it stands.
+fn read_there(kind: &str, source: &Source) -> Read {
     match (&source.file, &source.folder) {
         (Some(file), _) => match read_file(kind, source, file) {
-            Ok(records) => Read {
+            // Gone as it is read, though both looks see it there.
+            Ok(None) => Read {
+                absent: Some(format!("{} isn't there", file.display())),
+                ..Read::default()
+            },
+            Ok(Some(records)) => Read {
                 records,
-                refused: None,
+                ..Read::default()
             },
             Err(why) => Read {
-                records: BTreeMap::new(),
                 refused: Some(why),
+                ..Read::default()
             },
         },
         (None, Some(folder)) => read_folder(kind, source, folder),
@@ -293,8 +337,8 @@ fn read_talks(kind: &str, inboxes: &Path) -> Read {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Read::default(),
         Err(error) => {
             return Read {
-                records: BTreeMap::new(),
                 refused: Some(format!("{}: {error}", inboxes.display())),
+                ..Read::default()
             };
         }
     };
@@ -368,30 +412,47 @@ fn written(path: &Path) -> i64 {
 fn read_folder(kind: &str, source: &Source, folder: &Path) -> Read {
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Read::default(),
+        // Gone as it is read, though both looks see it there.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Read {
+                absent: Some(format!("{} isn't there", folder.display())),
+                ..Read::default()
+            };
+        }
         Err(error) => {
             return Read {
-                records: BTreeMap::new(),
                 refused: Some(format!("{}: {error}", folder.display())),
+                ..Read::default()
             };
         }
     };
     let mut read = Read::default();
     let mut refused = Vec::new();
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| is_record_file(path))
-        .collect();
+    let mut gone = Vec::new();
+    let mut files = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) if is_record_file(&entry.path()) => files.push(entry.path()),
+            Ok(_) => {}
+            // An entry that can't be listed may be a record's file.
+            Err(error) => refused.push(format!("{}: {error}", folder.display())),
+        }
+    }
     files.sort();
     for file in files {
         match read_file(kind, source, &file) {
-            Ok(records) => read.records.extend(records),
+            Ok(Some(records)) => read.records.extend(records),
+            // Listed, then gone by its read: the rest are shown, but what
+            // it held can't be told, so the folder isn't read whole.
+            Ok(None) => gone.push(format!("{} isn't there", file.display())),
             Err(why) => refused.push(why),
         }
     }
     if !refused.is_empty() {
         read.refused = Some(refused.join("; "));
+    }
+    if !gone.is_empty() {
+        read.absent = Some(gone.join("; "));
     }
     read
 }
@@ -407,20 +468,35 @@ fn is_record_file(path: &Path) -> bool {
 }
 
 /// Reads `file`'s records as `kind`'s, each keyed as `source` says, heard
-/// when the file was last written.
-fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String, Value>, String> {
+/// when the file was last written; none where it isn't there.
+fn read_file(
+    kind: &str,
+    source: &Source,
+    file: &Path,
+) -> Result<Option<BTreeMap<String, Value>>, String> {
     let named = |why: String| format!("{}: {why}", file.display());
-    let bytes = match fs::read(file) {
-        Ok(bytes) => bytes,
-        // Not written yet, or removed: it holds nothing, which is no trouble.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(error) => return Err(named(error.to_string())),
-    };
+    match fs::read(file) {
+        Ok(bytes) => held(kind, source, file, &bytes).map(Some),
+        // Not written yet, or removed: no trouble, but no record read.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(named(error.to_string())),
+    }
+}
+
+/// `bytes`, read from `file`, as `kind`'s records, each keyed as `source`
+/// says, heard when the file was last written.
+fn held(
+    kind: &str,
+    source: &Source,
+    file: &Path,
+    bytes: &[u8],
+) -> Result<BTreeMap<String, Value>, String> {
+    let named = |why: String| format!("{}: {why}", file.display());
     let heard = written(file);
     // A file of JSON lines, as a program appending what happens keeps
     // one, is held whole as one record of its lines, as a talk is.
     if source.whole.is_some() && is_lines_file(file) {
-        let text = String::from_utf8_lossy(&bytes);
+        let text = String::from_utf8_lossy(bytes);
         let records = source
             .whole
             .iter()
@@ -428,7 +504,7 @@ fn read_file(kind: &str, source: &Source, file: &Path) -> Result<BTreeMap<String
         return Ok(serve(kind, heard, records));
     }
     let kept: Value =
-        serde_json::from_slice(&bytes).map_err(|error| named(format!("not JSON: {error}")))?;
+        serde_json::from_slice(bytes).map_err(|error| named(format!("not JSON: {error}")))?;
     let front = match &source.by {
         Some(by) => Some(
             kept.get(by)
@@ -606,6 +682,28 @@ impl Served {
                 .map(|read| read.records.clone())
                 .unwrap_or_default(),
         )
+    }
+
+    /// Every record of `kind` it holds now, by key, as [`records`] gives
+    /// them, but only once its source was read whole: why not, while it
+    /// hasn't been read yet, any of it was refused or its source wasn't
+    /// there as it was read, and none for a kind it doesn't serve. A
+    /// judgement that fails closed reads this. Talks are never read whole:
+    /// an inbox that can't be read is passed over, and inboxes come and go
+    /// with their sessions.
+    ///
+    /// [`records`]: Self::records
+    #[must_use]
+    pub fn records_whole(&self, kind: &str) -> Option<Result<BTreeMap<String, Value>, String>> {
+        if self.sources.get(kind)?.talks.is_some() {
+            return Some(Err(format!(
+                "the {kind} records are talks, never read whole"
+            )));
+        }
+        Some(match self.lock().get(kind) {
+            None => Err(format!("the {kind} records have not been read yet")),
+            Some(read) => whole(read),
+        })
     }
 
     /// The records of `kind` to show, as the interface serves them: those
@@ -817,8 +915,9 @@ async fn keep(
                     .exists()
                     .then(|| format!("{} can't be watched: {error}", source.watched().display()));
                 keep(Read {
-                    records: BTreeMap::new(),
                     refused,
+                    absent: absent(&source),
+                    ..Read::default()
                 });
                 made_or_after(source.watched(), AGAIN_AFTER).await;
                 continue;
@@ -1641,6 +1740,171 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn records_read_whole_are_told_apart_from_none_read_and_a_file_refused() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let file = dir.path().join("quests.json");
+        fs::write(&file, "not json").expect("written");
+        let served = Served::start(BTreeMap::from([("quest".to_owned(), quests(&file))]));
+        let mut told = served.told("quest").expect("quest is served");
+        tokio::time::timeout(PATIENCE, async {
+            while served.lock().get("quest").is_none() {
+                told.changed().await.expect("still served");
+            }
+        })
+        .await
+        .expect("it is read");
+        assert!(
+            matches!(served.records_whole("quest"), Some(Err(why)) if why.contains("quests.json")),
+            "a file refused is no record read whole: {:?}",
+            served.records_whole("quest")
+        );
+
+        write(&file, &json!({"quests": [{"id": "A", "title": "one"}]}));
+        until(
+            &served,
+            &mut told,
+            "quest",
+            |r| r.contains_key("quest:A"),
+            "read again",
+        )
+        .await;
+        assert_eq!(
+            served
+                .records_whole("quest")
+                .and_then(Result::ok)
+                .map(|records| records.into_keys().collect::<Vec<_>>()),
+            Some(vec!["quest:A".to_owned()]),
+            "a file read is its records"
+        );
+        assert_eq!(served.records_whole("machine"), None, "a kind not served");
+
+        served.lock().remove("quest");
+        assert!(
+            matches!(served.records_whole("quest"), Some(Err(why)) if why.contains("not been read")),
+            "a kind served but not read yet is none read whole: {:?}",
+            served.records_whole("quest")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_served_file_that_isnt_there_is_no_record_read_whole() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let file = dir.path().join("nowhere.json");
+        let served = Served::start(BTreeMap::from([("quest".to_owned(), quests(&file))]));
+        let mut told = served.told("quest").expect("quest is served");
+        tokio::time::timeout(PATIENCE, async {
+            while served.lock().get("quest").is_none() {
+                told.changed().await.expect("still served");
+            }
+        })
+        .await
+        .expect("it is read");
+        assert_eq!(
+            served.shown("quest"),
+            Some(BTreeMap::new()),
+            "shown as none"
+        );
+        assert!(
+            matches!(served.records_whole("quest"), Some(Err(why))
+                if why.contains("nowhere.json") && why.contains("isn't there")),
+            "but a file that isn't there may be one misnamed: {:?}",
+            served.records_whole("quest")
+        );
+    }
+
+    #[tokio::test]
+    async fn talks_are_never_vouched_for_as_read_whole() {
+        // Their inboxes come and go with their sessions, and one that
+        // can't be read is passed over, so none can say it read them all.
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        talk(dir.path(), "5HJZ8Z", "t1", "{}\n");
+        let served = Served::start(BTreeMap::from([("talk".to_owned(), talks(dir.path()))]));
+        let mut told = served.told("talk").expect("talk is served");
+        tokio::time::timeout(PATIENCE, async {
+            while served.lock().get("talk").is_none() {
+                told.changed().await.expect("still served");
+            }
+        })
+        .await
+        .expect("it is read");
+        assert!(
+            matches!(served.records_whole("talk"), Some(Err(why)) if why.contains("talks")),
+            "{:?}",
+            served.records_whole("talk")
+        );
+    }
+
+    #[test]
+    fn a_file_gone_as_it_is_read_is_no_record_read_whole() {
+        // Both looks may see it there while the read finds it gone, as a
+        // writer that removes and rewrites it leaves it: the read itself
+        // says so.
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let file = dir.path().join("gone.json");
+        let held = read_there("quest", &quests(&file));
+        assert!(
+            matches!(whole(&held), Err(why) if why.contains("gone.json")),
+            "{held:?}"
+        );
+    }
+
+    #[test]
+    fn a_folder_gone_or_a_file_of_it_gone_as_it_is_read_is_no_record_read_whole() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let waiting = |folder: PathBuf| Source {
+            file: None,
+            folder: Some(folder),
+            talks: None,
+            records: Some("items".to_owned()),
+            whole: None,
+            key: Some("id".to_owned()),
+            or: None,
+            by: Some("quest".to_owned()),
+        };
+        let gone = dir.path().join("gone");
+        assert!(
+            matches!(whole(&read_there("waiting", &waiting(gone.clone()))),
+                Err(why) if why.contains("gone")),
+            "a folder gone as it is read"
+        );
+
+        // A file listed but gone by its read, as a link to nothing stands.
+        let there = dir.path().join("there");
+        fs::create_dir(&there).expect("made");
+        write(
+            &there.join("A.json"),
+            &json!({"quest": "QEST-A", "items": [{"id": "login"}]}),
+        );
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), there.join("B.json"))
+            .expect("linked");
+        let held = read("waiting", &waiting(there));
+        assert!(
+            matches!(whole(&held), Err(why) if why.contains("B.json")),
+            "{held:?}"
+        );
+        assert_eq!(held.records.len(), 1, "what was there is still shown");
+    }
+
+    #[test]
+    fn a_file_made_after_it_was_read_leaves_that_read_no_record_read_whole() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let file = dir.path().join("late.json");
+        let source = quests(&file);
+        let held = read("quest", &source);
+        write(&file, &json!({"quests": [{"id": "A", "title": "one"}]}));
+        assert!(
+            matches!(whole(&held), Err(why) if why.contains("isn't there")),
+            "what was read while it wasn't there is none of it, though it is there now: {:?}",
+            whole(&held)
+        );
+        assert_eq!(
+            whole(&read("quest", &source)).map(|records| records.len()),
+            Ok(1),
+            "read again once there, it is read whole"
+        );
+    }
+
+    #[tokio::test]
     async fn a_served_file_is_read_again_as_it_changes_and_its_records_go_with_it() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let file = dir.path().join("quests.json");
@@ -1736,7 +2000,7 @@ mod tests {
         write_at(&file, &titled("two"), then + Duration::from_secs(60));
         let held = Read {
             records: after.clone(),
-            refused: None,
+            ..Read::default()
         };
         let again = read("quest", &quests(&file));
         assert_ne!(again, held, "read alone, each record is heard anew");
@@ -1751,11 +2015,13 @@ mod tests {
     async fn a_source_not_made_yet_holds_nothing_and_is_no_trouble() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let file = dir.path().join("quests.json");
+        let unwritten = read("quest", &quests(&file));
         assert_eq!(
-            read("quest", &quests(&file)),
-            Read::default(),
+            (unwritten.records.len(), unwritten.refused),
+            (0, None),
             "a file not written yet"
         );
+        assert!(unwritten.absent.is_some(), "and says it isn't there");
         let waiting = Source {
             file: None,
             folder: Some(dir.path().join("mission/waiting")),
@@ -1766,11 +2032,13 @@ mod tests {
             or: None,
             by: Some("quest".to_owned()),
         };
+        let unmade = read("waiting", &waiting);
         assert_eq!(
-            read("waiting", &waiting),
-            Read::default(),
+            (unmade.records.len(), unmade.refused),
+            (0, None),
             "a folder not made yet"
         );
+        assert!(unmade.absent.is_some(), "and says it isn't there");
 
         let served = Served::start(BTreeMap::from([("waiting".to_owned(), waiting)]));
         let mut told = served.told("waiting").expect("waiting is served");

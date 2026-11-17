@@ -3550,7 +3550,8 @@ impl<S: Store> Shared<S> {
     /// Looks each `eases.every` at what this machine would do to ease
     /// itself (`carry::easing`), keeping each choice in `eases.folder`,
     /// and does none of it. It begins once the carries kept here, which
-    /// say what moved lately, can be read, saying why while they can't.
+    /// say what moved lately, and its own lines of the last two days can
+    /// be read, saying why while they can't.
     async fn ease(self, eases: Eases) {
         let mut easing = None;
         let mut sampler = easing::Sampler::default();
@@ -3561,8 +3562,18 @@ impl<S: Store> Shared<S> {
             every.tick().await;
             let now = jiff::Timestamp::now();
             if easing.is_none() {
-                match self.carried_lately(now).await {
-                    Ok(kept) => easing = Some(Easing::after(&kept)),
+                let (folder, machine) = (eases.folder.clone(), self.machine.clone());
+                let own_lines = tokio::task::spawn_blocking(move || {
+                    easing::eased_lately(&folder, &machine, now)
+                })
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()));
+                match self
+                    .carried_lately(now)
+                    .await
+                    .and_then(|kept| Ok((kept, own_lines?)))
+                {
+                    Ok((kept, own_lines)) => easing = Some(Easing::after(&kept, own_lines)),
                     Err(why) if unread.as_ref() == Some(&why) => continue,
                     Err(why) => {
                         let line = serde_json::json!({
@@ -3652,7 +3663,26 @@ impl<S: Store> Shared<S> {
             Processes::Listed | Processes::Unattended(_) => None,
         };
         let (store, logs) = (self.store.clone(), self.logs.clone());
+        let (orchestrations, carries) = (self.orchestrations.clone(), self.carries.clone());
+        // A node serving no quests' record, or one it hasn't read whole,
+        // can't tell who orchestrates.
+        let quests: Result<Vec<serde_json::Value>, String> = self
+            .served
+            .records_whole("quest")
+            .unwrap_or_else(|| Err("this node serves no quests' record".to_owned()))
+            .map(|quests| quests.into_values().collect());
+        let machine = self.machine.clone();
         let read = tokio::task::spawn_blocking(move || {
+            let easing::Records {
+                orchestrators,
+                kept_eases,
+            } = easing::records(
+                &orchestrations,
+                quests.as_deref().map_err(Clone::clone),
+                &carries,
+                &machine,
+                now,
+            );
             let holdings = store.holdings();
             let queued = place::queue()
                 .map(|queue| room::queued_by(&queue, now.as_second()))
@@ -3661,10 +3691,12 @@ impl<S: Store> Shared<S> {
             let holds = procs
                 .map(|procs| sampler.take(&procs, &pids, now))
                 .unwrap_or_default();
-            (holdings, queued, sizes, holds, sampler)
+            let looked = (holdings, queued, sizes, orchestrators);
+            (looked, holds, kept_eases, sampler)
         })
         .await;
-        let Ok((holdings, queued, sizes, holds, sampler)) = read else {
+        let Ok(((holdings, queued, sizes, orchestrators), holds, kept_eases, sampler)) = read
+        else {
             return (None, easing::Sampler::default());
         };
         let boot = store::folders::boot_id();
@@ -3674,13 +3706,16 @@ impl<S: Store> Shared<S> {
             holdings: &holdings,
             queued: &queued,
             sizes: &sizes,
+            orchestrators: orchestrators.as_ref().ok(),
             boot: boot.as_deref(),
             now,
         };
         let cells = easing::cells(&self.machine, &looked);
         let here = ease::Here::of(&self.machine, &machines, &loads);
         let reading = crate::balance::read(&machines, &sessions, now);
-        (easing.look(&here, reading, cells, &holds, now), sampler)
+        easing.doubt(orchestrators.err());
+        let line = easing.look(&here, reading, cells, &holds, kept_eases, now);
+        (line, sampler)
     }
 
     /// Keeps `line`, said `now`, in `folder`, saying so where it can't.
@@ -12948,6 +12983,10 @@ esac
             "a lone machine has nowhere to ease to: {line}"
         );
         assert!(line["reading"]["held"].is_array(), "{line}");
+        assert_eq!(
+            line["orchestrators_unknown"], "this node serves no quests' record",
+            "a node serving no quests' record can't tell who orchestrates: {line}"
+        );
         stop.send(()).expect("the node still runs");
         node.await.expect("the node ends").expect("the node ran");
         assert!(

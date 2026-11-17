@@ -7,10 +7,13 @@
 //! where they are, counting them, and carries one only once the readings
 //! [`SETTLE`] after still say it is over. Then it carries one session at a
 //! time to a peer with room, placed as any work is, onto ground as firm as
-//! here's, never one in a turn, on the person's screen, part way through
-//! something a carry would break, or whose quest runs elsewhere too; what
-//! can't be told of a session keeps it here. After a carry it waits
-//! [`COOLDOWN`]; a session moved by anyone stays put for [`PIN`]; and
+//! here's, never one in a turn, on the person's screen, orchestrating
+//! other sessions, part way through something a carry would break, or
+//! whose quest runs elsewhere too; what can't be told of a session keeps
+//! it here. After a carry it waits [`COOLDOWN`], and it carries at most
+//! [`DAILY`] within a [`DAY`], counted as the larger of what its node
+//! remembers and what the record of carries holds; a session moved by
+//! anyone stays put for [`PIN`]; and
 //! nothing goes to a machine a session came here from within
 //! [`NO_RETURN`]. This module only chooses; the node acts on its choice.
 
@@ -41,6 +44,20 @@ pub const NO_RETURN: SignedDuration = SignedDuration::from_hours(1);
 
 /// How long a session moved, by anyone, is never eased away.
 pub const PIN: SignedDuration = SignedDuration::from_hours(24);
+
+/// How many sessions a machine carries away to ease itself within a
+/// [`DAY`], at most, beside [`COOLDOWN`].
+pub const DAILY: usize = 6;
+
+/// The span [`DAILY`] counts over.
+pub const DAY: SignedDuration = SignedDuration::from_hours(24);
+
+/// Who a carry made to ease `machine` is recorded as by: its node, never
+/// the person or an orchestrator.
+#[must_use]
+pub fn by(machine: &str) -> String {
+    format!("node@{machine}")
+}
 
 /// What a session is part way through that a carry would break.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +101,8 @@ pub struct Cell {
     /// Whether it sleeps already: parked, its process ended until it is
     /// started again.
     pub asleep: bool,
+    /// Whether it orchestrates other sessions.
+    pub orchestrates: Option<bool>,
     /// What it is part way through.
     pub busy: Option<Vec<Busy>>,
     /// How much of it a carry takes, in bytes: its log's size.
@@ -114,6 +133,15 @@ impl Cell {
                 ));
             }
         }
+        match self.orchestrates {
+            Some(false) => {}
+            Some(true) => return Some(format!("{who} orchestrates other sessions")),
+            None => {
+                return Some(format!(
+                    "whether {who} orchestrates other sessions can't be told"
+                ));
+            }
+        }
         match self.busy.as_deref() {
             Some([]) => None,
             Some([first, ..]) => Some(format!("{who} {}", first.said())),
@@ -138,13 +166,31 @@ pub struct Moved {
 }
 
 /// What a machine's node remembers for easing it: since when it has been
-/// over, its sleeps, and the sessions moved from and to it.
-#[derive(Debug, Default)]
+/// over, its sleeps, the sessions moved from and to it, and how many
+/// carries of its own the record of carries last held.
+#[derive(Debug)]
 pub struct History {
     hot_since: Option<Timestamp>,
     slept_at: Option<Timestamp>,
     sleeps: usize,
     moved: Vec<Moved>,
+    kept_eases: Result<usize, String>,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            hot_since: None,
+            slept_at: None,
+            sleeps: 0,
+            moved: Vec::new(),
+            kept_eases: Err(
+                "the carries kept here haven't been read, so how many this machine \
+                             carried within the day can't be told"
+                    .to_owned(),
+            ),
+        }
+    }
 }
 
 impl History {
@@ -177,6 +223,26 @@ impl History {
     /// Notes a session moved from or to this machine, by anyone.
     pub fn moved(&mut self, moved: Moved) {
         self.moved.push(moved);
+    }
+
+    /// Notes how many carries the record of carries says this machine's
+    /// node made to ease it within the day, or why that can't be told.
+    pub fn kept_eases(&mut self, count: Result<usize, String>) {
+        self.kept_eases = count;
+    }
+
+    /// How many sessions `here` carried away to ease itself within the
+    /// day before `now`.
+    /// The larger of the carries this node remembers and those the record
+    /// of carries holds, so a record cut short lifts nothing.
+    fn eased_today(&self, here: &str, now: Timestamp) -> Result<usize, String> {
+        let kept = self.kept_eases.clone()?;
+        let remembered = self
+            .moved
+            .iter()
+            .filter(|moved| moved.eases && moved.from == here && now.duration_since(moved.at) < DAY)
+            .count();
+        Ok(kept.max(remembered))
     }
 
     fn pinned(&self, session: &str, now: Timestamp) -> bool {
@@ -302,6 +368,15 @@ pub fn choose(
             last.at,
             COOLDOWN.as_mins()
         ));
+    }
+    match history.eased_today(here.name, now) {
+        Ok(count) if count >= DAILY => {
+            return nothing(format!(
+                "it carried {count} sessions within the day, and carries at most {DAILY} a day"
+            ));
+        }
+        Ok(_) => {}
+        Err(why) => return nothing(why),
     }
     let peers = peers(here, reading, history, now);
     if peers.is_empty() {
@@ -547,6 +622,7 @@ pub(super) mod tests {
         let mut history = History::default();
         history.read("skiff", &reading(machines, ago(mins)));
         history.read("skiff", &reading(machines, now()));
+        history.kept_eases(Ok(0));
         history
     }
 
@@ -563,6 +639,7 @@ pub(super) mod tests {
             alone: Some(true),
             on_screen: Some(false),
             asleep: true,
+            orchestrates: Some(false),
             busy: Some(Vec::new()),
             size: None,
         }
@@ -754,6 +831,24 @@ pub(super) mod tests {
             "what S1 is part way through can't be told"
         );
         assert_eq!(
+            with(&|one| one.orchestrates = Some(true)),
+            "S1 orchestrates other sessions"
+        );
+        assert_eq!(
+            with(&|one| one.orchestrates = None),
+            "whether S1 orchestrates other sessions can't be told"
+        );
+        let awake_orchestrator = Cell {
+            asleep: false,
+            orchestrates: Some(true),
+            ..cell("s1")
+        };
+        assert_eq!(
+            why_not(&chose(&realm, &[awake_orchestrator], &history)),
+            "S1 orchestrates other sessions",
+            "nor is an orchestrator put to sleep, since asleep it steers nothing"
+        );
+        assert_eq!(
             with(&|one| one.alone = Some(false)),
             "S1's quest runs on other machines too"
         );
@@ -869,6 +964,98 @@ pub(super) mod tests {
             "29 minutes after the last"
         );
         assert!(carries(&eased(30)).is_some(), "30 minutes after the last");
+    }
+
+    #[test]
+    fn a_machine_carries_at_most_six_sessions_a_day() {
+        let realm = realm();
+        // `remembered` carries the node made, the last two hours ago, and
+        // `kept` the record of carries says it made.
+        let eased = |remembered: i64, kept: Result<usize, String>| {
+            let mut history = hot_for(&realm, 11);
+            for hour in 0..remembered {
+                history.moved(Moved {
+                    session: format!("s-{hour}"),
+                    from: "skiff".to_owned(),
+                    to: "tern".to_owned(),
+                    at: ago((hour + 2) * 60),
+                    eases: true,
+                });
+            }
+            history.kept_eases(kept);
+            chose(&realm, &[cell("s1")], &history)
+        };
+        assert!(carries(&eased(5, Ok(5))).is_some(), "five, so a sixth");
+        assert_eq!(
+            why_not(&eased(6, Ok(6))),
+            "it carried 6 sessions within the day, and carries at most 6 a day"
+        );
+        assert_eq!(
+            why_not(&eased(6, Ok(0))),
+            "it carried 6 sessions within the day, and carries at most 6 a day",
+            "a record of carries cut short still stops the seventh"
+        );
+        assert_eq!(
+            why_not(&eased(0, Ok(6))),
+            "it carried 6 sessions within the day, and carries at most 6 a day",
+            "carries the record holds count though the node forgot them"
+        );
+        assert_eq!(
+            why_not(&eased(0, Err("the record is unreadable".to_owned()))),
+            "the record is unreadable"
+        );
+        let mut unread = History::default();
+        unread.read("skiff", &reading(&realm, ago(11)));
+        unread.read("skiff", &reading(&realm, now()));
+        assert!(
+            why_not(&chose(&realm, &[cell("s1")], &unread))
+                .starts_with("the carries kept here haven't been read"),
+            "a node that hasn't read the record carries nothing"
+        );
+        // Five within the day, and a sixth `at` ago from `from`.
+        let with_sixth = |at: Timestamp, from: &str| {
+            let mut history = hot_for(&realm, 11);
+            for (hour, from) in (0..5).map(|hour| (hour, "skiff")).chain([(5, from)]) {
+                history.moved(Moved {
+                    session: format!("s-{hour}"),
+                    from: from.to_owned(),
+                    to: "osprey".to_owned(),
+                    at: if hour == 5 { at } else { ago((hour + 2) * 60) },
+                    eases: true,
+                });
+            }
+            chose(&realm, &[cell("s1")], &history)
+        };
+        assert!(
+            carries(&with_sixth(now() - DAY, "skiff")).is_some(),
+            "a carry a day old counts no longer"
+        );
+        assert_eq!(
+            why_not(&with_sixth(
+                now() - DAY + SignedDuration::from_secs(1),
+                "skiff"
+            )),
+            "it carried 6 sessions within the day, and carries at most 6 a day",
+            "a second short of a day it still counts"
+        );
+        assert!(
+            carries(&with_sixth(ago(60), "tern")).is_some(),
+            "another machine's easing counts for none of skiff's"
+        );
+        let mut others = hot_for(&realm, 11);
+        for hour in 0..6 {
+            others.moved(Moved {
+                session: format!("s-{hour}"),
+                from: "skiff".to_owned(),
+                to: "osprey".to_owned(),
+                at: ago((hour + 2) * 60),
+                eases: false,
+            });
+        }
+        assert!(
+            carries(&chose(&realm, &[cell("s1")], &others)).is_some(),
+            "six carried off skiff by others count for none of its node's six"
+        );
     }
 
     #[test]

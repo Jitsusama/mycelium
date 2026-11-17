@@ -291,6 +291,31 @@ fn holding<'a>(session: Known, quests: &'a [Value]) -> Result<&'a Value, String>
     }
 }
 
+/// The sessions, by id, of every quest that `quests`, the quests'
+/// records, name as another's orchestrator.
+#[must_use]
+pub fn orchestrating(quests: &[Value]) -> BTreeSet<String> {
+    let named: Vec<&str> = quests
+        .iter()
+        .filter_map(|quest| {
+            let above = quest.get("orchestrator").and_then(Value::as_str)?;
+            // A quest naming itself orchestrates no other.
+            (!address_of(quest).is_some_and(|it| it.eq_ignore_ascii_case(above))).then_some(above)
+        })
+        .collect();
+    quests
+        .iter()
+        .filter(|quest| {
+            address_of(quest)
+                .is_some_and(|it| named.iter().any(|above| above.eq_ignore_ascii_case(it)))
+        })
+        .filter_map(|quest| quest.get("sessions").and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Whether `quest`'s record attaches the session `session`.
 fn attaches(quest: &Value, session: &str) -> bool {
     quest
@@ -313,7 +338,8 @@ fn address_of(quest: &Value) -> Option<&str> {
 }
 
 /// Keeps `line`, one carry ordered, as a line of its own in `file`,
-/// making its folder where it isn't yet.
+/// making its folder where it isn't yet; after a line a write cut short,
+/// it starts a line of its own, so it is never lost with that one.
 ///
 /// # Errors
 ///
@@ -322,9 +348,18 @@ pub fn keep(file: &Path, line: &Value) -> io::Result<()> {
     if let Some(folder) = file.parent() {
         fs::create_dir_all(folder)?;
     }
-    let mut kept = OpenOptions::new().create(true).append(true).open(file)?;
+    let mut kept = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(file)?;
+    let after = if super::kept::cut_short(&mut kept)? {
+        "\n"
+    } else {
+        ""
+    };
     // One write a line, so two carries kept at once never interleave.
-    kept.write_all(format!("{line}\n").as_bytes())
+    kept.write_all(format!("{after}{line}\n").as_bytes())
 }
 
 #[cfg(test)]
@@ -333,7 +368,9 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{Known, Link, Order, agreed, ended_holding, going_by, keep, ordered_by};
+    use super::{
+        Known, Link, Order, agreed, ended_holding, going_by, keep, orchestrating, ordered_by,
+    };
 
     fn link(quest: &str, orchestrator: &str) -> Link {
         Link {
@@ -486,6 +523,27 @@ mod tests {
             json!({"id": "QEST-20261109-THREAD", "address": "THREAD", "orchestrator": "WM4KSZ",
                    "parent": "QEST-20261109-WM4KSZ", "sessions": ["s-threads"]}),
         ]
+    }
+
+    #[test]
+    fn the_sessions_of_a_quest_named_over_another_orchestrate() {
+        assert_eq!(
+            orchestrating(&quests()),
+            ["s-aquifer", "s-steward"].map(str::to_owned).into(),
+            "WCJQSG's and WM4KSZ's sessions, whom other quests name"
+        );
+        let mut quests = quests();
+        quests[1]["orchestrator"] = json!(null);
+        quests[2]["orchestrator"] = json!(null);
+        quests[3]["orchestrator"] = json!("wcjqsg");
+        quests[4]["orchestrator"] = json!("wm4ksz");
+        quests[5]["orchestrator"] = json!(null);
+        quests[0]["sessions"] = json!(["s-steward", 7]);
+        assert_eq!(
+            orchestrating(&quests),
+            ["s-steward"].map(str::to_owned).into(),
+            "named in any case, and never by itself alone"
+        );
     }
 
     fn known<'a>(session: &'a str, address: &'a str) -> Known<'a> {
@@ -747,5 +805,24 @@ mod tests {
             .map(|line| serde_json::from_str(line).expect("JSON"))
             .collect();
         assert_eq!(lines, [first, second], "each whole, in order");
+    }
+
+    #[test]
+    fn a_carry_kept_after_a_torn_line_starts_a_line_of_its_own() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let file = dir.path().join("carries.jsonl");
+        std::fs::write(&file, b"{\"session\": \"s-\xc3").expect("torn");
+        let line = json!({"by": "WCJQSG", "address": "HARBOR", "why": "its camera"});
+        keep(&file, &line).expect("kept");
+        let bytes = std::fs::read(&file).expect("read");
+        let last = bytes
+            .split(|byte| *byte == b'\n')
+            .rfind(|one| !one.is_empty())
+            .expect("a line");
+        assert_eq!(
+            serde_json::from_slice::<Value>(last).ok(),
+            Some(line),
+            "the torn line is left as it was, and the carry is whole after it"
+        );
     }
 }
