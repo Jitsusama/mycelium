@@ -3015,6 +3015,111 @@ mod tests {
         skiff_end.abort();
     }
 
+    /// A node on `socket` that passes each request it is asked on to what
+    /// it returns, and answers each that it starts nothing.
+    fn keeping_node(
+        socket: &std::path::Path,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        mpsc::UnboundedReceiver<crate::wire::Request>,
+    ) {
+        let listener = tokio::net::UnixListener::bind(socket).expect("the node listens");
+        let (asked, heard) = mpsc::unbounded_channel();
+        let node = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (reading, mut writing) = stream.into_split();
+                let Ok(Some(line)) = BufReader::new(reading).lines().next_line().await else {
+                    continue;
+                };
+                if let Ok(request) = serde_json::from_str(&line) {
+                    let _ = asked.send(request);
+                }
+                let reply: Reply = Err("it starts nothing".to_owned());
+                let mut said = serde_json::to_vec(&reply).expect("a reply");
+                said.push(b'\n');
+                writing.write_all(&said).await.expect("the node answers");
+            }
+        });
+        (node, heard)
+    }
+
+    /// The start kestrel asks skiff's end of a link, marked as the
+    /// person's carry, as skiff's node is handed it, the end judging
+    /// kestrel by `membership`.
+    async fn a_carry_as_handed_on(membership: impl Membership + 'static) -> Start {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("node.sock");
+        let (_node, mut heard) = keeping_node(&socket);
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (reading, writing) = tokio::io::split(near);
+        let starting = Starting {
+            node: socket,
+            held: dir.path().join("held"),
+            asking: None,
+            steers: dir.path().join("steer"),
+            health: None,
+            declared: None,
+            kit: None,
+            saturation: None,
+        };
+        let skiff_end = tokio::spawn(async move {
+            run(
+                Memory::default(),
+                &membership,
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+            .map(|_| ())
+        });
+        let (_far_reading, mut far_writing) = tokio::io::split(far);
+        let start: Start =
+            serde_json::from_value(json!({"work": {}, "command": ["pi"], "carries": true}))
+                .expect("a start");
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("kestrel").hello()),
+                Frame::Start { ask: 1, start },
+            ],
+        )
+        .await;
+        // The end asks its node what this machine is too, which isn't
+        // what this is about.
+        let relayed = async {
+            loop {
+                match heard.recv().await {
+                    Some(crate::wire::Request::Relayed { from, start }) => break (from, start),
+                    Some(_) => {}
+                    None => panic!("its node is asked to start it"),
+                }
+            }
+        };
+        let (from, start) = tokio::time::timeout(PATIENCE, relayed)
+            .await
+            .expect("its node is asked in time");
+        skiff_end.abort();
+        assert_eq!(from, "kestrel", "from the machine that asked");
+        start
+    }
+
+    #[tokio::test]
+    async fn a_carrys_mark_passes_only_over_a_link_proven_to_be_its_machine() {
+        let proven = Proven {
+            by: realm("skiff"),
+            far: "kestrel".to_owned(),
+        };
+        assert!(
+            a_carry_as_handed_on(proven).await.carries,
+            "a proven end passes the mark on"
+        );
+        assert!(
+            !a_carry_as_handed_on(realm("skiff")).await.carries,
+            "one whose other end is unproven clears it"
+        );
+    }
+
     #[tokio::test]
     async fn a_machine_refused_for_its_version_is_kept_as_why_until_it_links() {
         let skiff = Memory::default();

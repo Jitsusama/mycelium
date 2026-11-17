@@ -14,12 +14,18 @@
 # make lays each head, in the order named, onto main as GitHub's merge
 # button would: a merge commit, with main, then each rider before it, as
 # its first parent. A head main or the train already holds, or one that
-# doesn't merge cleanly onto those before it, is left off, saying why. Its
-# commits are dated as main's tip is, so making the same train again on
-# the same main gives the same tip, and the checks already built there
-# still count. The tip is pushed as train/<its first twelve>, so a builder
-# can fetch it, and said on the last line. Build every check the gate asks
-# for there:
+# doesn't merge cleanly onto those before it, is left off, saying why.
+# Each merge is dated when the train is made, never before main's tip,
+# so main's date moves on with each train past every landing before it,
+# for whatever tells a landing by it, as core's agents daemon does; a
+# rider's own date, which its author sets, plays no part. Making the same
+# train again on the same main, in the same checkout, gives the tip
+# already pushed for it, so the checks built there still count; the
+# checkout keeps each tip it pushed in merge-trains in its git folder,
+# and takes no other, since anyone who can push a branch could push a
+# train dated as no landing allows, or under another's name. The tip is pushed as train/<its
+# first twelve>, so a builder can fetch it, and said on the last line.
+# Build every check the gate asks for there:
 #
 #   nix-offload there github:Jitsusama/mycelium/TIP checks.x86_64-linux.mycelium ...
 #
@@ -76,12 +82,15 @@ make_train() {
   }
   git fetch -q origin main
   local main tip head sha tree onto
-  local -a riding=() off=()
+  local -a riding=() made=() off=()
   main=$(git rev-parse origin/main)
   tip=${main}
-  # Dated as main is, so the same train made again is the same commits.
-  GIT_AUTHOR_DATE=$(git log -1 --format=%cI "${main}")
-  export GIT_AUTHOR_DATE GIT_COMMITTER_DATE=${GIT_AUTHOR_DATE}
+  # Dated now, or as main's tip where its clock is ahead, so main's date
+  # never steps back.
+  local stamp main_date
+  stamp=$(date +%s)
+  main_date=$(git log -1 --format=%ct "${main}")
+  ((stamp >= main_date)) || stamp=${main_date}
   for head in "$@"; do
     sha=$(known "${head}")
     if git merge-base --is-ancestor "${sha}" "${tip}"; then
@@ -99,9 +108,11 @@ make_train() {
       continue
     fi
     tip=$(git log -1 --format=%s "${sha}" |
-      git commit-tree "${tree}" -p "${tip}" -p "${sha}" \
+      GIT_AUTHOR_DATE="${stamp} +0000" GIT_COMMITTER_DATE="${stamp} +0000" \
+        git commit-tree "${tree}" -p "${tip}" -p "${sha}" \
         -m "Merge ${sha:0:12} on the merge train" -F -)
     riding+=("${sha:0:12}")
+    made+=("${tip}")
   done
   local each
   for each in "${off[@]}"; do
@@ -112,7 +123,16 @@ make_train() {
     exit 1
   fi
   sweep "${main}"
-  git push -q origin "${tip}:refs/heads/train/${tip:0:12}"
+  local made_before
+  made_before=$(pushed "${main}" "${main_date}" "${made[@]}")
+  if [[ -n ${made_before} ]]; then
+    tip=${made_before}
+    echo "merge-train: this train was already made as train/${tip:0:12}, so" \
+      "the checks built there count." >&2
+  else
+    git push -q origin "${tip}:refs/heads/train/${tip:0:12}"
+    echo "${tip}" >> "${trains_made}"
+  fi
   echo "merge-train: the train is ${tip:0:12} on main ${main:0:12}, riding" \
     "${riding[*]}; ${#off[@]} left off. It's pushed as train/${tip:0:12}:" \
     "build the checks there, then land it."
@@ -133,6 +153,68 @@ sweep() {
         echo "merge-train: couldn't delete the spent ${ref#refs/heads/}." >&2
     fi
   done <<< "${trains}"
+}
+
+# Each train's tip this checkout pushed, one a line, shared by its trees.
+trains_made="$(git rev-parse --path-format=absolute --git-common-dir)/merge-trains"
+
+# The tip of a train this checkout pushed on `main`, dated `main_date` or
+# later, that is the train `made` but for its date, or nothing. Only one
+# it pushed itself is taken, and only where every merge is the one just
+# made, so what rides, every tree main's history gains, who made it and
+# when are still what this checkout said.
+pushed() {
+  local main=$1 main_date=$2 sha ref trains verdict
+  shift 2
+  [[ -f ${trains_made} ]] || return 0
+  trains=$(git ls-remote origin 'refs/heads/train/*')
+  while read -r sha ref; do
+    [[ -n ${sha} ]] || continue
+    grep -qxF "${sha}" "${trains_made}" || continue
+    verdict=$(same_train "${sha}" "${main}" "${main_date}" "$@")
+    if [[ ${verdict} == same ]]; then
+      echo "${sha}"
+      return
+    fi
+  done <<< "${trains}"
+}
+
+# Whether the train whose tip is `at` is, merge by merge from its tip
+# back to `main`, each of `made`: two parents, the same rider, tree and
+# words, and all authored and committed at the tip's one time, from
+# `main_date` to now, so it neither carries what wasn't merged nor steps
+# main's date back or past now. It says `same` where it is, and nothing
+# where it isn't, so it is read rather than run as a condition, which
+# would turn `set -e` off within it.
+same_train() {
+  local at=$1 main=$2 main_date=$3 i ours authored committed now dated
+  local listed rider theirs_tree our_tree theirs_words our_words stamps
+  shift 3
+  local -a made=("$@") parents
+  now=$(date +%s)
+  dated=$(git log -1 --format=%ct "${at}" 2> /dev/null) || return 0
+  for ((i = ${#made[@]} - 1; i >= 0; i--)); do
+    ours=${made[i]}
+    listed=$(git rev-list --parents -n 1 "${at}" 2> /dev/null) || return 0
+    read -ra parents <<< "${listed}"
+    ((${#parents[@]} == 3)) || return 0
+    rider=$(git rev-parse "${ours}^2")
+    theirs_tree=$(git rev-parse "${at}^{tree}")
+    our_tree=$(git rev-parse "${ours}^{tree}")
+    theirs_words=$(git log -1 --format=%B "${at}")
+    our_words=$(git log -1 --format=%B "${ours}")
+    stamps=$(git log -1 --format='%at %ct' "${at}")
+    # Quoted, so a rider's subject is matched as it is, never as a glob.
+    [[ ${parents[2]} == "${rider}" ]] || return 0
+    [[ ${theirs_tree} == "${our_tree}" ]] || return 0
+    [[ ${theirs_words} == "${our_words}" ]] || return 0
+    read -r authored committed <<< "${stamps}"
+    ((authored == dated && committed == dated)) || return 0
+    ((dated >= main_date && dated <= now)) || return 0
+    at=${parents[1]}
+  done
+  [[ ${at} == "${main}" ]] || return 0
+  echo same
 }
 
 land_train() {

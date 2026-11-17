@@ -559,12 +559,51 @@ in order and says each step:
    only where the person asked a carry's command, whatever the asker
    said of it, so no agent's start is read for a carry. It reads the
    cell each minute while the session runs there until it stands, and
-   keeps it while it runs, its file gone or not. The session stands
-   as that cell, its address an alias of it, unless another live
-   session goes by the name, as any address, in any case, or two say
-   it. A tie it brought said heard after it arrived counts as heard
-   then, and stands for a day from when it was heard. Carried on
-   again, it brings that cell.
+   keeps it, its file gone or not, for a day after the session last ran
+   there, so one resumed within the day stands as it again; a new carry
+   of the session reads its cell afresh. It keeps them in memory
+   alone, so a restart forgets them, and keeps at most 256, letting go
+   the one whose session ran longest ago past that, but never one whose
+   session runs. The session stands as that
+   cell, its address an alias of it, unless another live session goes
+   by the name, as any address, in any case, or two running there say
+   it. Each field a tie brings is kept only as the tie kind writes it
+   for the record it is, a pair's or a cell's talk: a pair's strength,
+   never below none, its hour and today as two counts that fit 32
+   bits, intents the mesh has and groups' names, each once, at most 64
+   groups; a talk's hour, today and ties as counts. The
+   folder a cell is read in is the short name of the machine the carry
+   came from as its link names it, and the leaving machine writes the
+   folder by its hostname, so a cell arrives only where the two agree;
+   the node logs each carry it lets go whose session ran there with no
+   cell standing, naming the folder it read. On a
+   machine nobody works at, every link's end is judged an agent's, so a
+   person's carry there is started as an agent's start: counted among
+   the 8 an hour and 32 its asker and the node may start, arriving as
+   a new cell, and refused, where the limits or the person's stop
+   refuse it, with no word of an orchestrator: it tells the person to
+   carry to a machine a person works at, or, stopped, to resume starts
+   there. Where a person works, a carry relayed by a link end
+   judged an agent's is refused, saying the session whose claim made
+   it one where one did, and otherwise what of its process did: no
+   process the kernel names, an agent's unit or pi above it, none that
+   can be read, a bar on gaining privileges or mounts of its own; and
+   it is logged there too. A tie it brought said heard after its
+   carry started or it arrived, whichever was earlier, counts as
+   heard then, and stands for a day from when it was heard. A cell
+   brings at most its 128 strongest ties, and no more than the most
+   ties any one cell has at the arriving node, or one where it holds
+   none. Each past the middle tie between two cells the node holds,
+   or a message's where it holds none, is made as strong as it, so a
+   forged file can't put its cell first among the ties of every cell
+   it names. Each strength is weighed as it stands now, faded by the
+   two hours' half-life from when it was heard, so an old strong tie
+   counts for what it is now, and is weighed once, the first time the
+   node weighs it: from then on it fades as a tie held there does.
+   The file is the session's to write, so these bound a forged cell
+   rather than prove it: the leaving node's own ties would. It is
+   weighed as a hub by its cell's talk. Carried on again, it brings
+   that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share
    --scratch handover` does.
 4. `start`: each carried session starts again on the machine, held, as
@@ -1781,7 +1820,9 @@ when the process asking runs as one of the machine's agents: on Linux,
 in a unit of the person's service manager whose name begins
 `agents.slice/pi-host-` or `agents.slice/mycelium-pi-`, or in one under
 `jobs.slice/` or `offload.slice/`; on Linux or a Mac, below a process
-named `pi`, as `/proc` or `ps` tells it. It is refused too when the
+named `pi`, or below a Mac's pi host, the `node` its runtime keeps in a
+folder named `pi-host`, as `/proc` or `ps` tells it. It is refused too
+when the
 kernel names no process at the client's end. Where the process can be
 told and is the person's, the node says so to a link carrying the steer
 to another machine; where it can't be read, the steer goes here but
@@ -2576,7 +2617,22 @@ cells', and a reader gathers them as `mycelium forage` does.
 | `status` | the quest's status, such as `active` |
 | `documents` | each of its documents: `id`, `kind`, `title`, `stage`, and how many steps are `ticked` and `open` |
 | `waits` | only when there are any, what the quest waits on its person for: `id`, `title`, `why`, `minutes`, `when`, whether it's `ready`, and when it was `raised` |
-| `lineage` | `started_by`, the cell that asked this node to start it, else the orchestrator its presence names; `split_from`, the cell its presence says it split from, kept only as an address; and `parent`, the quest its own sits under |
+| `lineage` | `started_by`, the cell that asked this node to start it, else the orchestrator its presence names; beside one, `started_by_from`, `book` when this node's book of starts holds that start, else `presence`; `split_from`, the cell its presence says it split from, kept only as an address; only when there are any, `split_into`, the cells its presence says it split into; and `parent`, the quest its own sits under |
+| `serves`, `relies` | only when there are any, the needs its presence says it took from other cells, and handed them: each `cell`, by address, `need`, what it was about, at most 280 characters, and `since`, an ISO time |
+
+The node works out `started_by` and `started_by_from` itself and never
+takes either from a presence's `lineage`. It finds a session's start in
+its book by the holder the session is held by, which it matches by the
+pid or wake file the session's own presence names, or, for a hosted
+session, by a holder whose command names its session or conversation
+after `--session`, so `book` says the node started a session holding
+that holder, not that the session is the one it started. `book` is
+only the book of the node serving the forage: a start relayed from
+another machine is kept in the asking node's book alone, so here it
+reads `presence` or has no starter. Of `split_into`, `serves` and
+`relies`, an entry that names no cell by address, says no need or
+dates it at no ISO time is passed over alone, and at most 64 of each
+are kept.
 
 A quest's id names a folder in the store, so one that isn't a plain
 name of letters, digits, `-` and `_` is read as nothing, and a file is

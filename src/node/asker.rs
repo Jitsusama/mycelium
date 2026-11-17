@@ -47,6 +47,13 @@ const AGENTS_UNITS: [&str; 4] = [
 /// The name pi's own process goes by.
 const PI: &str = "pi";
 
+/// The name a pi host's process goes by where no agent's unit tells it,
+/// as on a Mac, whose host launchd runs as the person's account, so its
+/// conversations' commands are told by it as an agent's. Its runtime runs
+/// it on a node of its own, kept in a folder of this name, so `ps` lists
+/// it as that folder's `node` ([`listing`]).
+const PI_HOST: &str = "pi-host";
+
 /// How many forebears are looked through at most, so a chain the kernel
 /// tells wrong can't hold a steer up for long.
 const FOREBEARS: usize = 64;
@@ -769,6 +776,9 @@ fn forebears(pid: i32, process: impl Fn(i32) -> Option<(String, i32)>) -> Told {
         if name == PI {
             return Told::Agent(format!("pi's process {at}"));
         }
+        if name == PI_HOST {
+            return Told::Agent(format!("pi's host {at}"));
+        }
         if parent <= 1 {
             return Told::Person;
         }
@@ -810,7 +820,9 @@ fn named(status: &str) -> Option<(&str, i32)> {
 
 /// Each process's name and parent, by its id, as `ps -axo
 /// pid=,ppid=,comm=` lists them: a Mac's `comm` is the program's whole
-/// path, spaces and all, so its name is what follows the last slash.
+/// path, spaces and all, so its name is what follows the last slash. A
+/// `node` in a folder named [`PI_HOST`] is the pi host's own, and goes by
+/// that name, so it is told from every other node program.
 fn listing(listed: &str) -> HashMap<i32, (String, i32)> {
     listed
         .lines()
@@ -818,7 +830,13 @@ fn listing(listed: &str) -> HashMap<i32, (String, i32)> {
             let (pid, rest) = line.trim_start().split_once(char::is_whitespace)?;
             let (parent, command) = rest.trim_start().split_once(char::is_whitespace)?;
             let command = command.trim();
-            let name = command.rsplit('/').next().unwrap_or(command);
+            let mut path = command.rsplit('/');
+            let name = path.next().unwrap_or(command);
+            let name = if name == "node" && path.next() == Some(PI_HOST) {
+                PI_HOST
+            } else {
+                name
+            };
             Some((pid.parse().ok()?, (name.to_owned(), parent.parse().ok()?)))
         })
         .collect()
@@ -880,6 +898,38 @@ pub fn judge(asker: Option<i32>, processes: &Processes, above: &[Option<Kind>]) 
         return By::Agent(fence);
     }
     By::Person
+}
+
+/// Why [`unclaimed_because`] says an asker is an agent's where the
+/// kernel names no process at it.
+pub const UNNAMED: &str = "the kernel names no process at it";
+
+/// Why [`unclaimed_because`] says an asker is an agent's where nothing
+/// of its process can be read.
+pub const UNTOLD: &str = "nothing can be read of it or a forebear, so it can't be told";
+
+/// Why [`judge`] tells process `asker` an agent's where no session
+/// claims it, as `processes` tell it, in words a refusal can say: the
+/// step of the judgement that made it one.
+#[must_use]
+pub fn unclaimed_because(asker: Option<i32>, processes: &Processes) -> &'static str {
+    let Some(pid) = asker else {
+        return UNNAMED;
+    };
+    match processes.tell(pid) {
+        Told::Agent(_) => return "an agent's unit, or pi or a pi host above it, runs it",
+        Told::Untold => return UNTOLD,
+        Told::Person => {}
+    }
+    if let Processes::Folder(procs) = processes.kernel() {
+        if gains_less(procs, pid) {
+            return "it is barred from gaining privileges, as a fence bars it";
+        }
+        if mounts_otherwise(procs, pid) {
+            return "it sees mounts of its own, as a fence's process does";
+        }
+    }
+    "nothing marks it an agent's"
 }
 
 /// Whether process `pid` may gain no privileges, as a fence sets, while
@@ -1054,7 +1104,12 @@ mod tests {
              \x20 703   702 /bin/bash\n\
              \x20 704   703 /Users/joel/.nix-profile/bin/mycelium\n\
              \x20 705   701 /Users/joel/.nix-profile/bin/mycelium\n\
-             \x20 706     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n",
+             \x20 706     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n\
+             \x20 710     1 /nix/store/abc-pi-host-runtime-1.5.0/libexec/pi-host/node\n\
+             \x20 711   710 /bin/zsh\n\
+             \x20 712   711 /Users/joel/.nix-profile/bin/mycelium\n\
+             \x20 713     1 /nix/store/abc-node/bin/node\n\
+             \x20 714   713 /Users/joel/.nix-profile/bin/mycelium\n",
         );
         let process = |pid: i32| listed.get(&pid).cloned();
         assert_eq!(
@@ -1066,6 +1121,16 @@ mod tests {
             forebears(705, process),
             Told::Person,
             "the person's own command in that terminal is theirs"
+        );
+        assert_eq!(
+            forebears(712, process),
+            Told::Agent("pi's host 710".to_owned()),
+            "a command a pi host's conversation ran is an agent's"
+        );
+        assert_eq!(
+            forebears(714, process),
+            Told::Person,
+            "a host is known only by its own node, never as any node program"
         );
         assert_eq!(
             listed.get(&706).map(|(name, _)| name.as_str()),
@@ -1710,6 +1775,10 @@ mod tests {
             By::Agent(Kind::Strict),
             "one an agent's unit holds, below no session, runs strictly fenced"
         );
+        assert_eq!(
+            unclaimed_because(Some(40), &processes),
+            "an agent's unit, or pi or a pi host above it, runs it"
+        );
         let status = procs.path().join("41").join("status");
         let said = fs::read_to_string(&status).expect("its status");
         fs::write(&status, format!("{said}NoNewPrivs:\t1\n")).expect("it is barred");
@@ -1717,6 +1786,10 @@ mod tests {
             judge(Some(41), &processes, &[]),
             By::Agent(Kind::Strict),
             "one barred from gaining privileges, as a fence bars it, runs strictly fenced"
+        );
+        assert_eq!(
+            unclaimed_because(Some(41), &processes),
+            "it is barred from gaining privileges, as a fence bars it"
         );
         assert_eq!(
             judge(Some(42), &processes, &[Some(Kind::None), Some(Kind::Fence)]),
@@ -1735,9 +1808,17 @@ mod tests {
             "one the kernel doesn't name"
         );
         assert_eq!(
+            unclaimed_because(None, &processes),
+            "the kernel names no process at it"
+        );
+        assert_eq!(
             judge(Some(44), &processes, &[]),
             By::Agent(Kind::Strict),
             "one nothing can be read of"
+        );
+        assert_eq!(
+            unclaimed_because(Some(44), &processes),
+            "nothing can be read of it or a forebear, so it can't be told"
         );
     }
 

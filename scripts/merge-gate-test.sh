@@ -169,10 +169,13 @@ git clone -q "${work}/origin.git" "${work}/peer" 2> /dev/null
 git -C "${work}/peer" checkout -q -b peer origin/main
 echo peer > "${work}/peer/peer"
 git -C "${work}/peer" add peer
-git -C "${work}/peer" commit -q -m peer
+# Dated far ahead, as an author's clock may be, which the train mustn't
+# take for its own, and with a subject a glob would read otherwise.
+GIT_COMMITTER_DATE="2524608000 +0000" git -C "${work}/peer" commit -q -m 'peer [x] \*'
 peer=$(git -C "${work}/peer" rev-parse HEAD)
 git -C "${work}/peer" push -q origin HEAD:peer
 
+before=$(date +%s)
 rode goes "${clash:0:12}, which clashes with a rider before it" \
   "a head that clashes with one before it is left off, saying so" \
   make "${north}" "${clash}" "${stale}" "${south}" "${north}" "${peer}"
@@ -191,6 +194,18 @@ if [[ ${parents} != "${base}"$'\n'"${north}"$'\n'"${south}"$'\n'"${peer}" ]]; th
     "${parents}" >&2
   failed=1
 fi
+dated=$(git log -1 --format=%ct "${tip}")
+after=$(date +%s)
+if ((dated < before || dated > after)); then
+  echo "FAIL the train is dated when it's made, ${before} to ${after}, not as" \
+    "a rider says: ${dated}" >&2
+  failed=1
+fi
+earliest=$(git log -1 --format=%ct "${tip}^1^1")
+if ((earliest != dated)); then
+  echo "FAIL each of the train's merges is dated alike: ${earliest} and ${dated}" >&2
+  failed=1
+fi
 held=$(git show "${tip}:north" "${tip}:south" "${tip}:peer")
 if [[ ${held} != north$'\n'south$'\n'peer ]]; then
   echo "FAIL the train's tip holds every rider's change: ${held}" >&2
@@ -198,13 +213,93 @@ if [[ ${held} != north$'\n'south$'\n'peer ]]; then
 fi
 points "refs/heads/train/${tip:0:12}" "${tip}" \
   "the train's tip is pushed for a builder to fetch"
-rode goes "" "the same train made again" make "${north}" "${south}" "${peer}"
+rode goes "already made as train/${tip:0:12}" "the same train made again" \
+  make "${north}" "${south}" "${peer}"
 again=$(made)
 if [[ ${again} != "${tip}" ]]; then
   echo "FAIL the same train made again on the same main is the same tip," \
     "so its checks still count: ${again} against ${tip}" >&2
   failed=1
 fi
+# Pushed by anyone, with the train's parents but another tree, and named
+# to be found before it: it is never taken for the train.
+forged=$(git commit-tree "${base}^{tree}" -p "${tip}^1" -p "${peer}" -m forged)
+git push -q origin "${forged}:refs/heads/train/000000000000"
+rode goes "already made as train/${tip:0:12}" \
+  "a train is made again as the one holding its tree" \
+  make "${north}" "${south}" "${peer}"
+again=$(made)
+if [[ ${again} != "${tip}" ]]; then
+  echo "FAIL a pushed train whose tree differs is never the train made:" \
+    "${again} against ${tip}" >&2
+  failed=1
+fi
+git push -q origin --delete train/000000000000
+# Pushed with the train's riders, words and tip's tree, its first two
+# merges dated `$1` and its tip `$3`, or `$1` too, and holding the tree
+# `$2` halfway.
+forge() {
+  local first second
+  first=$(git log -1 --format=%B "${tip}^1^1" |
+    GIT_AUTHOR_DATE="$1 +0000" GIT_COMMITTER_DATE="$1 +0000" \
+      git commit-tree "${tip}^1^1^{tree}" -p "${base}" -p "${north}" -F -)
+  second=$(git log -1 --format=%B "${tip}^1" |
+    GIT_AUTHOR_DATE="$1 +0000" GIT_COMMITTER_DATE="$1 +0000" \
+      git commit-tree "$2" -p "${first}" -p "${south}" -F -)
+  git log -1 --format=%B "${tip}" |
+    GIT_AUTHOR_DATE="${3:-$1} +0000" GIT_COMMITTER_DATE="${3:-$1} +0000" \
+      git commit-tree "${tip}^{tree}" -p "${second}" -p "${peer}" -F -
+}
+# A tip on the train's own two merges, dated as it is, with `$@` for
+# parents after them and words of its own where `words` says.
+retip() {
+  local words=${words:-$(git log -1 --format=%B "${tip}")}
+  GIT_AUTHOR_DATE="${stamp} +0000" GIT_COMMITTER_DATE="${stamp} +0000" \
+    git commit-tree "${tip}^{tree}" -p "${tip}^1" "$@" -m "${words}"
+}
+# Whether making the train again takes `forged`, pushed as `why` says,
+# for the train made.
+refused() {
+  local forged=$1 why=$2
+  git push -q origin "${forged}:refs/heads/train/000000000000"
+  rode goes "already made as train/${tip:0:12}" "${why}" \
+    make "${north}" "${south}" "${peer}"
+  again=$(made)
+  if [[ ${again} != "${tip}" ]]; then
+    echo "FAIL ${why}, is never the train made: ${again} against ${tip}" >&2
+    failed=1
+  fi
+  git push -q origin --delete train/000000000000
+}
+stamp=$(git log -1 --format=%ct "${tip}")
+main_date=$(git log -1 --format=%ct "${base}")
+record="$(git rev-parse --path-format=absolute --git-common-dir)/merge-trains"
+# Merged as the train was and dated as main is, which only a forger can
+# make before the last train lands: this checkout never pushed it.
+forged=$(forge "${main_date}" "${tip}^1^{tree}")
+refused "${forged}" "a train pushed by another, merged as this one was"
+# Each of these is taken for one this checkout pushed, so what is
+# checked of every merge is what refuses it.
+for case in \
+  "another tree halfway:$(forge "${stamp}" "${base}^{tree}")" \
+  "dated before main:$(forge $((main_date - 1)) "${tip}^1^{tree}")" \
+  "dated past now:$(forge 2524608000 "${tip}^1^{tree}")" \
+  "its merges dated apart:$(forge $((stamp - 1)) "${tip}^1^{tree}" "${stamp}")" \
+  "another rider:$(retip -p "${south}")" \
+  "one parent:$(retip)" \
+  "other words:$(words=other retip -p "${peer}")"; do
+  echo "${case##*:}" >> "${record}"
+  refused "${case##*:}" "a train this checkout pushed with ${case%%:*}"
+done
+# Other riders on the same main make another train.
+rode goes "riding ${north:0:12} ${south:0:12};" "a train of other riders" \
+  make "${north}" "${south}"
+other=$(made)
+if [[ ${other} == "${tip}" || ${said} == *"already made"* ]]; then
+  echo "FAIL a train of other riders is made anew, not taken: ${said}" >&2
+  failed=1
+fi
+git push -q origin --delete "train/${other:0:12}"
 
 rode refuses "nothing kept says" "a train nothing passed at doesn't land" land "${tip}"
 points refs/heads/main "${base}" "a train refused leaves main where it was"

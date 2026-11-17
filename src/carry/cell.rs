@@ -20,6 +20,12 @@ pub const FILE: &str = ".cell.json";
 /// left out forms afresh where the session arrives.
 pub const FORMED_MOST: usize = 64;
 
+/// The most ties a cell brings, its strongest, as the node it leaves
+/// writes them and the node it arrives on reads them: so a file its
+/// session wrote can't fill the node it arrives on with ties, and a tie
+/// left out forms afresh as the cell talks there.
+pub const TIES_MOST: usize = 128;
+
 /// The most a cell's file read where its session arrives may hold, in
 /// bytes: far past what a cell brings, so only a file grown by
 /// something else is passed over.
@@ -79,13 +85,14 @@ pub fn arrived(path: &Path, session: &str) -> Option<Brought> {
                 })
             })
         })
-        .map(tie_fields)
+        .map(|tie| tie_fields(Shape::Pair, tie))
         .collect();
+    let ties = strongest(ties);
     let talk = said
         .talk
         .as_ref()
         .filter(|talk| tie_keyed(talk).is_some_and(|key| key == cell))
-        .map(tie_fields);
+        .map(|talk| tie_fields(Shape::Talk, talk));
     let mut formed: Vec<Value> = said
         .formed
         .into_iter()
@@ -112,11 +119,112 @@ fn named(cell: &str) -> bool {
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || b"-_".contains(&byte))
 }
 
-/// The fields a tie kind's record says, a tie's or a cell's talk: so a
-/// cell brings nothing else under the tie kind's name.
-const TIE_FIELDS: [&str; 9] = [
-    "key", "kind", "heard", "hour", "today", "intents", "groups", "strength", "ties",
-];
+/// The most groups a brought tie may say its messages went to, far past
+/// what a day's talk between two cells reaches, so no file fills a tie
+/// with names.
+const GROUPS_MOST: usize = 64;
+
+/// The most intents a brought tie may say, one for each the mesh has.
+const INTENTS_MOST: usize = 5;
+
+/// The strength `tie` says it was heard at, where it says one a tie
+/// could have: a number, never below none.
+#[must_use]
+pub fn strength(tie: &Value) -> Option<f64> {
+    a_strength(tie.get("strength")?)
+}
+
+/// `value` as a strength a tie could have: a number, never below none.
+fn a_strength(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .filter(|strength| strength.is_finite() && *strength >= 0.0)
+}
+
+/// Which of the tie kind's two records a brought one is: a tie between
+/// two cells, or a cell's own talk.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// A tie between two cells: each end's counts in a pair, its intents,
+    /// its groups and its strength.
+    Pair,
+    /// A cell's own talk: its counts, and how many ties it has.
+    Talk,
+}
+
+/// `value` as the tie kind writes its field `field` in a record of
+/// `shape`, or none where it reads as nothing the tie kind writes
+/// there: so a cell's file brings no other field under the tie kind's
+/// name, nor a field of the other record's, nor one holding what no tie
+/// could, and a list keeps only the entries that read, each once, at
+/// most as many as a tie could say.
+fn typed(shape: Shape, field: &str, value: &Value) -> Option<Value> {
+    let count = |value: &Value| {
+        value
+            .as_u64()
+            .filter(|count| u32::try_from(*count).is_ok())
+            .map(Value::from)
+    };
+    match (shape, field) {
+        (_, "key" | "kind") => value.is_string().then(|| value.clone()),
+        (_, "heard") => value.as_i64().map(Value::from),
+        (Shape::Pair, "strength") => a_strength(value).map(Value::from),
+        (Shape::Pair, "hour" | "today") => match value.as_array()?.as_slice() {
+            [one, other] => Some(Value::from(vec![count(one)?, count(other)?])),
+            _ => None,
+        },
+        (Shape::Pair, "intents") => Some(listed(value, INTENTS_MOST, |one| {
+            serde_json::from_value::<crate::record::Intent>(one.clone()).is_ok()
+        })),
+        (Shape::Pair, "groups") => Some(listed(value, GROUPS_MOST, |one| {
+            one.as_str()
+                .is_some_and(|name| crate::group::Group::new(name).is_ok())
+        })),
+        (Shape::Talk, "hour" | "today" | "ties") => count(value),
+        _ => None,
+    }
+}
+
+/// The entries of `value`, a list, that `reads` takes, each once, at
+/// most `most`: none where it is no list.
+fn listed(value: &Value, most: usize, reads: impl Fn(&Value) -> bool) -> Value {
+    let mut kept: Vec<Value> = Vec::new();
+    for one in value.as_array().into_iter().flatten() {
+        if kept.len() < most && reads(one) && !kept.contains(one) {
+            kept.push(one.clone());
+        }
+    }
+    Value::from(kept)
+}
+
+/// `ties`, strongest first as every reader fades them from when each
+/// was heard, those as strong by key, one saying no strength a tie
+/// could have as none, and at most [`TIES_MOST`]. Two ties fade alike,
+/// so which is stronger is the same at any time: the base-two log of a
+/// strength, with the half-lives since the epoch it was heard after,
+/// orders them as their strengths now do.
+fn strongest(mut ties: Vec<Value>) -> Vec<Value> {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a time in milliseconds is well within what an f64 holds to the half-life"
+    )]
+    let order = |tie: &Value| {
+        let heard = tie["heard"].as_i64().unwrap_or_default() as f64;
+        let lives = heard / crate::node::TIE_HALF_LIFE as f64;
+        (
+            strength(tie).unwrap_or_default().log2() + lives,
+            tie["key"].as_str().map(str::to_owned),
+        )
+    };
+    ties.sort_by(|one, other| {
+        let ((one_strength, one_key), (other_strength, other_key)) = (order(one), order(other));
+        other_strength
+            .total_cmp(&one_strength)
+            .then_with(|| one_key.cmp(&other_key))
+    });
+    ties.truncate(TIES_MOST);
+    ties
+}
 
 /// What follows `tie:` in the key of `record`, where it is of the tie
 /// kind, or none.
@@ -125,13 +233,13 @@ fn tie_keyed(record: &Value) -> Option<String> {
     keyed(record, "tie:")
 }
 
-/// `record` with only the fields of [`TIE_FIELDS`].
-fn tie_fields(record: &Value) -> Value {
+/// `record`, of `shape`, with only the fields the tie kind writes
+/// there, each as it writes it, as [`typed`] reads them.
+fn tie_fields(shape: Shape, record: &Value) -> Value {
     let fields = record.as_object().into_iter().flatten();
     Value::Object(
         fields
-            .filter(|(field, _)| TIE_FIELDS.contains(&field.as_str()))
-            .map(|(field, value)| (field.clone(), value.clone()))
+            .filter_map(|(field, value)| Some((field.clone(), typed(shape, field, value)?)))
             .collect(),
     )
 }
@@ -198,7 +306,7 @@ pub fn brought(session: &str, address: &str, ties: &[Value]) -> Brought {
     };
     Brought {
         session: session.to_owned(),
-        ties: ties.iter().filter(at_an_end).cloned().collect(),
+        ties: strongest(ties.iter().filter(at_an_end).cloned().collect()),
         talk: ties
             .iter()
             .find(|tie| key(tie).is_some_and(|key| key == cell))
@@ -215,7 +323,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::{FILE_MOST, FORMED_MOST, arrived, brought, formed_of};
+    use super::{FILE_MOST, FORMED_MOST, TIES_MOST, arrived, brought, formed_of};
 
     /// `said`, written whole at `name` in `folder`.
     fn file(folder: &Path, name: &str, said: &serde_json::Value) -> std::path::PathBuf {
@@ -293,6 +401,69 @@ mod tests {
             (cell.ties.len(), cell.talk, cell.formed.len()),
             (0, None, 0),
             "no ties or formed networks said is none; another's talk isn't its own"
+        );
+    }
+
+    #[test]
+    fn a_cell_brings_each_field_only_as_the_tie_kind_writes_it() {
+        let folder = tempfile::tempdir().expect("a handover");
+        let groups: Vec<String> = (0..70).map(|one| format!("crew.{one}")).collect();
+        let path = file(
+            folder.path(),
+            "s-harbour.cell.json",
+            &json!({
+                "session": "s-harbour",
+                "cell": "HARBOR",
+                "ties": [
+                    {"key": "tie:HARBOR~KELP01", "kind": "tie", "heard": 5,
+                     "hour": [1, 2], "today": [3, 4], "strength": 1.5,
+                     "intents": ["fyi", "question", "fyi", "shout", 7],
+                     "groups": ["crew", "Crew", "a..b", "crew"]},
+                    {"key": "tie:HARBOR~REEF01", "kind": "tie", "heard": "soon",
+                     "hour": [1, 2, 3], "today": [-1, 4], "strength": -2.0,
+                     "intents": "fyi", "groups": groups},
+                    {"key": "tie:HARBOR~TIDE01", "kind": "tie", "heard": 5,
+                     "hour": 2, "today": [3], "ties": 3, "strength": 0.0},
+                ],
+                "talk": {"key": "tie:HARBOR", "kind": "tie", "hour": 2,
+                         "today": 4_294_967_296_u64, "ties": [2], "strength": 9.0,
+                         "intents": ["fyi"], "groups": ["crew"]},
+            }),
+        );
+        let cell = arrived(&path, "s-harbour").expect("its cell");
+        assert_eq!(
+            cell.ties[0],
+            json!({"key": "tie:HARBOR~KELP01", "kind": "tie", "heard": 5,
+                   "hour": [1, 2], "today": [3, 4], "strength": 1.5,
+                   "intents": ["fyi", "question"], "groups": ["crew"]}),
+            "each intent and group a tie could say, once"
+        );
+        assert_eq!(
+            cell.ties[1]["groups"].as_array().map(Vec::len),
+            Some(super::GROUPS_MOST),
+            "at most as many groups as a tie could say"
+        );
+        assert_eq!(
+            (
+                cell.ties[1].get("heard"),
+                cell.ties[1].get("hour"),
+                cell.ties[1].get("today"),
+                cell.ties[1].get("strength"),
+                &cell.ties[1]["intents"],
+            ),
+            (None, None, None, None, &json!([])),
+            "a field holding what no tie could is passed over alone"
+        );
+        assert_eq!(
+            cell.ties[2],
+            json!({"key": "tie:HARBOR~TIDE01", "kind": "tie", "heard": 5,
+                   "strength": 0.0}),
+            "a tie brings no field only a cell's talk has, nor one count for a pair"
+        );
+        assert_eq!(
+            cell.talk,
+            Some(json!({"key": "tie:HARBOR", "kind": "tie", "hour": 2})),
+            "a talk's counts only as counts a cell could have, and none of a tie's fields"
         );
     }
 
@@ -437,6 +608,78 @@ mod tests {
         let unsorted = ats.clone();
         ats.sort_unstable();
         assert_eq!(unsorted, ats, "earliest first");
+    }
+
+    #[test]
+    fn a_cell_brings_and_arrives_with_at_most_its_strongest_ties() {
+        let ties: Vec<serde_json::Value> = (0..500)
+            .map(|n| {
+                // The strongest past the first 128 written, so cutting
+                // before choosing loses it.
+                let strength = if n == 407 { 2e9 } else { 1e9 };
+                json!({"key": format!("tie:C{n:05}~HARBOR"), "kind": "tie",
+                       "strength": strength})
+            })
+            .collect();
+        let leaving = brought("s-harbour", "harbor", &ties);
+        assert_eq!(
+            leaving.ties.len(),
+            TIES_MOST,
+            "it brings at most {TIES_MOST}"
+        );
+        assert_eq!(
+            leaving.ties[0]["key"], "tie:C00407~HARBOR",
+            "strongest first"
+        );
+
+        let folder = tempfile::tempdir().expect("a handover");
+        let path = file(
+            folder.path(),
+            "s-harbour.cell.json",
+            &json!({"session": "s-harbour", "cell": "HARBOR", "ties": ties}),
+        );
+        let arriving = arrived(&path, "s-harbour").expect("its cell reads");
+        assert_eq!(
+            arriving.ties.len(),
+            TIES_MOST,
+            "and a file saying more arrives with at most {TIES_MOST}"
+        );
+        assert_eq!(
+            arriving.ties[0]["key"], "tie:C00407~HARBOR",
+            "its strongest"
+        );
+    }
+
+    #[test]
+    fn the_strongest_ties_a_cell_brings_are_the_strongest_now() {
+        let now: i64 = 1_763_400_000_000;
+        let hour = 3_600_000;
+        let ties: Vec<serde_json::Value> = (0..=TIES_MOST)
+            .map(|n| {
+                // Strongest as heard, but heard twenty hours ago, ten
+                // half-lives, so a thousandth as strong now as then.
+                let (strength, heard) = if n == 0 {
+                    (10.0, now - 20 * hour)
+                } else {
+                    (3.0, now - 60_000)
+                };
+                json!({"key": format!("tie:C{n:05}~HARBOR"), "kind": "tie",
+                       "strength": strength, "heard": heard})
+            })
+            .collect();
+        let leaving = brought("s-harbour", "harbor", &ties);
+        assert_eq!(
+            leaving.ties.len(),
+            TIES_MOST,
+            "it brings at most {TIES_MOST}"
+        );
+        assert!(
+            leaving
+                .ties
+                .iter()
+                .all(|tie| tie["key"] != "tie:C00000~HARBOR"),
+            "the one weakest now is left out, however strong it was heard"
+        );
     }
 
     #[test]
