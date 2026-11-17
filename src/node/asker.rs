@@ -1030,8 +1030,9 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn an_owner_counts_only_where_it_holds_its_sessions_log_open() {
+    /// Three pis, 58, 62 and 63, each in a scope of its own, started at
+    /// 500, 900 and 950 ticks.
+    fn three_pis() -> tempfile::TempDir {
         let procs = procs(&[
             (58, "pi", 1, "agents.slice/mycelium-pi-f3d9.scope"),
             (62, "pi", 1, "agents.slice/mycelium-pi-a1b2.scope"),
@@ -1040,6 +1041,12 @@ mod tests {
         started(procs.path(), 58, "pi", 500);
         started(procs.path(), 62, "pi", 900);
         started(procs.path(), 63, "pi", 950);
+        procs
+    }
+
+    #[test]
+    fn an_owner_counts_only_where_it_holds_its_sessions_log_open() {
+        let procs = three_pis();
         let logs = tempfile::tempdir().expect("pi's logs");
         let elsewhere = tempfile::tempdir().expect("somewhere else");
         holds_log(procs.path(), 58, logs.path(), "s-own");
@@ -1064,14 +1071,7 @@ mod tests {
 
     #[test]
     fn an_owner_counts_only_where_its_process_started_when_it_says() {
-        let procs = procs(&[
-            (58, "pi", 1, "agents.slice/mycelium-pi-f3d9.scope"),
-            (62, "pi", 1, "agents.slice/mycelium-pi-a1b2.scope"),
-            (63, "pi", 1, "agents.slice/mycelium-pi-c3d4.scope"),
-        ]);
-        started(procs.path(), 58, "pi", 500);
-        started(procs.path(), 62, "pi", 900);
-        started(procs.path(), 63, "pi", 950);
+        let procs = three_pis();
         let logs = tempfile::tempdir().expect("pi's logs");
         holds_log(procs.path(), 58, logs.path(), "s-own");
         holds_log(procs.path(), 62, logs.path(), "s-stale");

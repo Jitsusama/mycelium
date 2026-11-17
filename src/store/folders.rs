@@ -1001,22 +1001,49 @@ mod tests {
         assert!(!lives, "a pid reused by a later process has ended");
     }
 
+    /// A child that sleeps until it is killed, present in `store` as
+    /// `session`.
     #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn a_session_ending_is_told_the_moment_its_process_exits() {
-        let (_dir, store) = store();
-        let mut child = std::process::Command::new("sleep")
+    fn present_sleeping(store: &Folders, session: &str) -> std::process::Child {
+        let child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .expect("a child starts");
         let pid = child.id().cast_signed();
-        // Written before the changes are asked for, so the folder tells
-        // nothing of it: only the process's end can.
         let presence = json!({
-            "session": "ending",
+            "session": session,
             "owner": {"pid": pid, "bootId": boot_id(), "startTicks": start_ticks(pid)},
         });
-        write_whole(&store.presence(), "ending.json", &presence).expect("its presence written");
+        write_whole(&store.presence(), &format!("{session}.json"), &presence)
+            .expect("its presence written");
+        child
+    }
+
+    /// Whether `changes` tells a presence once none in `store` lives,
+    /// within `PATIENCE`.
+    #[cfg(target_os = "linux")]
+    async fn ended(
+        changes: &mut Changes,
+        store: &Folders,
+    ) -> Result<bool, tokio::time::error::Elapsed> {
+        tokio::time::timeout(PATIENCE, async {
+            while let Some(change) = changes.changes.recv().await {
+                if change == Change::Presence && !store.presences().iter().any(|one| one.lives) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_session_ending_is_told_the_moment_its_process_exits() {
+        let (_dir, store) = store();
+        // Present before the changes are asked for, so the folder tells
+        // nothing of it: only the process's end can.
+        let mut child = present_sleeping(&store, "ending");
         let mut changes = store.changes().expect("the store tells its changes");
         let lives = |store: &Folders| store.presences().iter().any(|one| one.lives);
         assert!(lives(&store), "the session lives while its process runs");
@@ -1024,15 +1051,7 @@ mod tests {
         // Killed and left unreaped, as a zombie, which a signal still
         // reaches, until the test is done with it.
         child.kill().expect("the child is killed");
-        let told = tokio::time::timeout(PATIENCE, async {
-            while let Some(change) = changes.changes.recv().await {
-                if change == Change::Presence && !lives(&store) {
-                    return true;
-                }
-            }
-            false
-        })
-        .await;
+        let told = ended(&mut changes, &store).await;
         let _ = child.wait();
         assert_eq!(
             told,
@@ -1046,31 +1065,14 @@ mod tests {
     async fn a_session_present_once_changes_are_told_is_told_when_its_process_exits() {
         let (_dir, store) = store();
         let mut changes = store.changes().expect("the store tells its changes");
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("a child starts");
-        let pid = child.id().cast_signed();
-        let presence = json!({
-            "session": "later",
-            "owner": {"pid": pid, "bootId": boot_id(), "startTicks": start_ticks(pid)},
-        });
-        write_whole(&store.presence(), "later.json", &presence).expect("its presence written");
+        let mut child = present_sleeping(&store, "later");
         let lives = |store: &Folders| store.presences().iter().any(|one| one.lives);
         let heard = tokio::time::timeout(PATIENCE, changes.changes.recv()).await;
         assert_eq!(heard, Ok(Some(Change::Presence)), "its presence is told");
         assert!(lives(&store), "the session lives while its process runs");
 
         child.kill().expect("the child is killed");
-        let told = tokio::time::timeout(PATIENCE, async {
-            while let Some(change) = changes.changes.recv().await {
-                if change == Change::Presence && !lives(&store) {
-                    return true;
-                }
-            }
-            false
-        })
-        .await;
+        let told = ended(&mut changes, &store).await;
         let _ = child.wait();
         assert_eq!(
             told,
