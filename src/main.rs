@@ -2800,7 +2800,8 @@ fn attach(dir: &Path, id: &str) -> io::Result<()> {
 /// Joins `session` through the pi host `host` of `realm` on this machine
 /// until the host lets it go, exiting [`hold::holder::RELEASED`] when it
 /// lets the conversation go back to plain pi, and [`hold::holder::GONE`]
-/// when it stayed gone past its patience for a restart.
+/// when it stayed gone past its patience for a restart or never answered
+/// the first join.
 fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode> {
     let runtime_dir = place::login_runtime().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "this login has no runtime folder")
@@ -2825,6 +2826,9 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
             tell!("mycelium: the pi host {host} let the conversation go back to plain pi");
         }
         hosted_attach::Left::Gone => tell!("mycelium: the pi host {host} has gone"),
+        hosted_attach::Left::Unanswered(within) => {
+            tell!("mycelium: the pi host {host} didn't answer the join in {within:?}");
+        }
         // Joining here comes back from a suspend or a restart by itself.
         hosted_attach::Left::Suspended | hosted_attach::Left::Restarting => {}
     }

@@ -71,6 +71,12 @@ pub const RESTART_PATIENCE: Patience = Patience {
     hold: Duration::from_secs(30),
 };
 
+/// How long a terminal's first join waits for the host to answer it before
+/// leaving unanswered, which exits as a gone host does, so whatever started
+/// it looks again. A host that takes the connection and never answers would
+/// otherwise hold the window blank for good, as six were for over two hours.
+pub const ANSWER_PATIENCE: Duration = Duration::from_secs(20);
+
 /// What the host says as it lets a viewer go because the conversation went
 /// back to plain pi, as a release sends it: its words exactly, as the
 /// harness's viewer terminal says them, since nothing else marks a release.
@@ -87,6 +93,9 @@ pub enum Left {
     Released,
     /// The host's end of the connection closed without saying.
     Gone,
+    /// The host took a first join's connection but didn't answer it within
+    /// this long, so the join let it go.
+    Unanswered(Duration),
     /// The host let it go to suspend, as pi's Ctrl+Z asks, to join again
     /// once continued.
     Suspended,
@@ -99,13 +108,14 @@ impl Left {
     /// The code `mycelium attach --host` exits with, having left so:
     /// [`RELEASED`](crate::hold::holder::RELEASED) for a release, so the
     /// window carries on as plain pi, [`GONE`](crate::hold::holder::GONE)
-    /// for a host gone past its patience, so the window waits for it as
-    /// for a refused attach, and 0 for any other leaving, which closes it.
+    /// for a host gone past its patience or one that never answered, so the
+    /// window waits for it as for a refused attach, and 0 for any other
+    /// leaving, which closes it.
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::Released => crate::hold::holder::RELEASED,
-            Self::Gone => crate::hold::holder::GONE,
+            Self::Gone | Self::Unanswered(_) => crate::hold::holder::GONE,
             Self::Detached(_) | Self::Suspended | Self::Restarting => 0,
         }
     }
@@ -154,7 +164,8 @@ pub fn attach_here(realm: &str, host: &str, session: &str) -> Vec<String> {
 /// host restarts, it keeps the screen, says so on its last row, and joins
 /// again once the host is back. So it never answers [`Left::Suspended`]
 /// or [`Left::Restarting`]; a host that isn't back within
-/// [`RESTART_PATIENCE`] has gone.
+/// [`RESTART_PATIENCE`] has gone, and one that never answers a first join
+/// within [`ANSWER_PATIENCE`] leaves it [`Left::Unanswered`].
 ///
 /// # Errors
 ///
@@ -177,8 +188,9 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
     let mut output = tokio::io::stdout();
     // Joining after a restart waits for a host that may be starting, with
     // its last row saying so. Any other join, the first or one after a
-    // suspend, with the shell's screen showing, finds the host running or
-    // says at once it has gone.
+    // suspend, with the shell's screen showing, finds the host running,
+    // says at once it has gone, or leaves once it has waited
+    // ANSWER_PATIENCE for an answer.
     let mut restarted = false;
     loop {
         // A size from before a suspend is older than the one joined at.
@@ -275,8 +287,9 @@ fn starting(error: &io::Error) -> bool {
 /// terminal's new one, and the screen's output goes to `output`. An edit
 /// the host asks for is made in `here`'s editor, and its answer sent back.
 /// It answers once the host lets it go, suspends it, or its connection
-/// ends. Once `here` has no more keys, nothing more is typed, but the
-/// screen's output still comes.
+/// ends, or [`Left::Unanswered`] when the host hasn't answered the join
+/// within [`ANSWER_PATIENCE`]. Once `here` has no more keys, nothing more
+/// is typed, but the screen's output still comes.
 ///
 /// # Errors
 ///
@@ -290,7 +303,27 @@ pub async fn join(
     output: impl AsyncWrite + Unpin,
     sizes: &mut mpsc::UnboundedReceiver<Size>,
 ) -> io::Result<Left> {
-    let Some(joined) = connect(socket, session, size, &*here).await? else {
+    join_within(socket, session, size, here, output, sizes, ANSWER_PATIENCE).await
+}
+
+/// Joins `session` as [`join`] does, letting the connection go and
+/// answering [`Left::Unanswered`] when the host hasn't answered within
+/// `within`. Only the answer is bounded: once joined, the screen is
+/// shown for as long as the host keeps it.
+async fn join_within(
+    socket: &Path,
+    session: &str,
+    size: Size,
+    here: &mut impl Here,
+    output: impl AsyncWrite + Unpin,
+    sizes: &mut mpsc::UnboundedReceiver<Size>,
+    within: Duration,
+) -> io::Result<Left> {
+    let Ok(answered) = tokio::time::timeout(within, connect(socket, session, size, &*here)).await
+    else {
+        return Ok(Left::Unanswered(within));
+    };
+    let Some(joined) = answered? else {
         return Ok(Left::Gone);
     };
     show(joined, here, output, sizes, RESTART_PATIENCE.hold).await
@@ -563,6 +596,11 @@ mod tests {
             Left::Gone.exit_code(),
             GONE,
             "a host gone past its patience, so the window waits for it"
+        );
+        assert_eq!(
+            Left::Unanswered(ANSWER_PATIENCE).exit_code(),
+            GONE,
+            "a host that never answered, so the window looks again as for one gone"
         );
         for left in [
             Left::Detached("Conversation closed".to_owned()),
@@ -1125,6 +1163,59 @@ mod tests {
             .expect("waited");
             assert_eq!(left, Left::Gone, "an unanswered try ends with its patience");
             holding.abort();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_first_join_the_host_never_answers_leaves_unanswered_and_lets_it_go() {
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            // A host that takes the connection, hears the attach and never
+            // answers it, as one left a window's attach unanswered for over
+            // two hours; it keeps what it heard until the join lets it go.
+            let listener = UnixListener::bind(&path).expect("a socket");
+            let holding = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.expect("a connection");
+                let (from, _to) = stream.into_split();
+                let mut from = Frames::new(BufReader::new(from));
+                let heard = from.next().await.expect("a frame").expect("an attach");
+                let after = from.next().await;
+                (heard, matches!(after, Ok(None)))
+            });
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"");
+            let mut shown = Vec::new();
+            // The patience covers connecting and sending too, so it is long
+            // enough that a loaded machine still sends the attach inside it.
+            let patience = Duration::from_millis(500);
+            // Bounded far past its patience, so a join that waits for ever
+            // fails here rather than holding up the whole run.
+            let left = tokio::time::timeout(
+                Duration::from_secs(10),
+                join_within(
+                    &path, "s-1", SIZE, &mut here, &mut shown, &mut sizes, patience,
+                ),
+            )
+            .await
+            .expect("ended with its patience, not waiting for ever on the answer")
+            .expect("waited");
+            assert_eq!(
+                left,
+                Left::Unanswered(patience),
+                "an unanswered join leaves with its patience"
+            );
+            assert!(
+                shown.is_empty(),
+                "the terminal is left as it was: {shown:?}"
+            );
+            let (heard, closed) = holding.await.expect("the host ran");
+            assert_eq!(
+                heard["op"], "attach",
+                "the host heard the attach it never answered"
+            );
+            assert!(closed, "and the join let its connection go");
         })
         .await;
     }
