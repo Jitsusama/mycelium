@@ -51,6 +51,10 @@ const PI: &str = "pi";
 /// tells wrong can't hold a steer up for long.
 const FOREBEARS: usize = 64;
 
+/// What an unattended machine tells of whoever asks: an agent, since no
+/// person works there.
+const UNATTENDED: &str = "a process on a machine no person works on";
+
 /// Where a machine tells who runs each of its processes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Processes {
@@ -60,6 +64,13 @@ pub enum Processes {
     /// What `ps` lists, as on a Mac, which has no `/proc`: each process's
     /// name and parent.
     Listed,
+    /// Those of a machine no person works on, as in a cell lent from a
+    /// basin, which tells every process that asks as an agent's: the node
+    /// there runs as fenced as the agents beside it, below no agent's
+    /// unit, so nothing else would tell them from the person, who reaches
+    /// it only over a link. What the kernel tells beyond who asks, such as
+    /// when a process started, is read from those it holds.
+    Unattended(Box<Processes>),
 }
 
 impl Processes {
@@ -70,6 +81,30 @@ impl Processes {
             Self::Folder("/proc".into())
         } else {
             Self::Listed
+        }
+    }
+
+    /// These, on a machine no person works on.
+    #[must_use]
+    pub fn unattended(self) -> Self {
+        match self {
+            Self::Unattended(_) => self,
+            kernel => Self::Unattended(Box::new(kernel)),
+        }
+    }
+
+    /// Whether no person works on this machine.
+    #[must_use]
+    pub const fn is_unattended(&self) -> bool {
+        matches!(self, Self::Unattended(_))
+    }
+
+    /// Where the kernel tells of these processes, whoever works here.
+    #[must_use]
+    pub fn kernel(&self) -> &Self {
+        match self {
+            Self::Unattended(kernel) => kernel.kernel(),
+            kernel => kernel,
         }
     }
 
@@ -90,7 +125,7 @@ impl Processes {
             }
             lineage
         };
-        match self {
+        match self.kernel() {
             Self::Folder(procs) => walk(&|process| {
                 let status =
                     fs::read_to_string(procs.join(process.to_string()).join("status")).ok()?;
@@ -106,13 +141,14 @@ impl Processes {
                     .unwrap_or_default();
                 walk(&|process| listed.get(&process).map(|(_, parent)| *parent))
             }
+            Self::Unattended(_) => vec![pid],
         }
     }
 
     /// The session process `pid` says it runs for, as the harness tells
     /// each command it runs in its environment; a Mac's `ps` won't say.
     fn named_session(&self, pid: i32) -> Option<String> {
-        let Self::Folder(procs) = self else {
+        let Self::Folder(procs) = self.kernel() else {
             return None;
         };
         let environ = fs::read(procs.join(pid.to_string()).join("environ")).ok()?;
@@ -148,6 +184,7 @@ impl Processes {
                 let listed = listing(&String::from_utf8_lossy(&listed.stdout));
                 forebears(pid, |process| listed.get(&process).cloned())
             }
+            Self::Unattended(_) => Told::Agent(UNATTENDED.to_owned()),
         }
     }
 }
@@ -214,7 +251,7 @@ pub fn proved(
     hosts: &Path,
     logs: &Path,
 ) -> Result<Vec<(String, i32)>, String> {
-    let Processes::Folder(procs) = processes else {
+    let Processes::Folder(procs) = processes.kernel() else {
         return Err(
             "this machine can't say when a process started, so who owns a session can't be \
              proved and no carry is ordered"
@@ -292,7 +329,7 @@ pub fn shown_fence(
     let unproved = || {
         format!("who owns {session} can't be proved here, so the fence it runs in can't be told")
     };
-    let Processes::Folder(procs) = processes else {
+    let Processes::Folder(procs) = processes.kernel() else {
         return Err(unproved());
     };
     let owners = proved(claims, processes, hosts, logs)?;
@@ -325,7 +362,7 @@ pub fn shown_fences(
     hosts: &Path,
     logs: &Path,
 ) -> std::collections::BTreeMap<String, Kind> {
-    let Processes::Folder(procs) = processes else {
+    let Processes::Folder(procs) = processes.kernel() else {
         return std::collections::BTreeMap::new();
     };
     let Ok(owners) = proved(claims, processes, hosts, logs) else {
@@ -823,7 +860,7 @@ pub fn judge(asker: Option<i32>, processes: &Processes, above: &[Option<Kind>]) 
         Told::Agent(_) => return By::Agent(fence),
         Told::Untold => return By::Agent(Kind::Strict),
     }
-    if let Processes::Folder(procs) = processes
+    if let Processes::Folder(procs) = processes.kernel()
         && (gains_less(procs, pid) || mounts_otherwise(procs, pid))
     {
         return By::Agent(fence);
@@ -1707,5 +1744,59 @@ mod tests {
         let processes = folder(procs.path());
         assert_eq!(judge(Some(41), &processes, &[]), By::Agent(Kind::Strict));
         assert_eq!(judge(Some(42), &processes, &[]), By::Person);
+    }
+
+    #[test]
+    fn where_no_person_works_the_one_taken_for_the_person_is_an_agent() {
+        // The node itself runs barred from gaining privileges, as a
+        // basin's exec runs it, so the asker barred too gains no less.
+        let procs = procs(&[(41, "sh", 1, "session.slice/quickshell.service")]);
+        fs::create_dir(procs.path().join("self")).expect("the node's folder is made");
+        for process in ["41", "self"] {
+            let status = procs.path().join(process).join("status");
+            let said = fs::read_to_string(&status).unwrap_or_default();
+            fs::write(&status, format!("{said}NoNewPrivs:\t1\n")).expect("it is barred");
+        }
+        let kernel = folder(procs.path());
+        assert_eq!(
+            judge(Some(41), &kernel, &[]),
+            By::Person,
+            "the kernel alone can't tell it from the person"
+        );
+        let unattended = kernel.clone().unattended();
+        assert_eq!(
+            judge(Some(41), &unattended, &[]),
+            By::Agent(Kind::Strict),
+            "where no person works, it runs strictly fenced"
+        );
+        assert_eq!(
+            judge(Some(41), &unattended, &[Some(Kind::Fence)]),
+            By::Agent(Kind::Fence),
+            "a session claimed above it keeps its fence, as it would where a person works"
+        );
+        assert!(
+            may_say(
+                Some(41),
+                &unattended,
+                &json!({"act": "pause", "from": "person"})
+            )
+            .is_err_and(|why| why.contains(UNATTENDED)),
+            "it can't speak as the person"
+        );
+        assert!(
+            persons_own(Some(41), &unattended, "free a quest")
+                .is_err_and(|why| why.contains(UNATTENDED)),
+            "nor do what only the person's own login does"
+        );
+        assert_eq!(
+            unattended.kernel(),
+            &kernel,
+            "what else the kernel tells is read as before"
+        );
+        assert_eq!(
+            unattended.clone().unattended(),
+            unattended,
+            "said twice, it is said once"
+        );
     }
 }

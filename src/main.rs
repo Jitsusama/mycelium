@@ -537,6 +537,14 @@ struct Node {
     /// reads and how its agents run, so the journal shows it too.
     #[arg(long)]
     declared: Option<PathBuf>,
+    /// No person works on this machine, as in a cell lent from a basin,
+    /// where the person reaches it only over a link: the node takes
+    /// whoever asks it for an agent, a link's end too, since there it
+    /// runs as fenced as the agents beside it and nothing else would tell
+    /// them from the person. Given on the node's own command line, as a
+    /// file could be rewritten or fail to be read.
+    #[arg(long)]
+    unattended: bool,
     /// The person's table of which receptors' climbs the node says on
     /// their networks, as a file only root or the Nix store holds; one
     /// any other account could write is refused. Unnamed, or refused,
@@ -1652,6 +1660,17 @@ fn checked(realms: Vec<String>) -> io::Result<BTreeSet<String>> {
     realms.into_iter().map(realm_named).collect()
 }
 
+/// What the node reads of this machine's processes to tell who asks it:
+/// where `unattended` says no person works here, none is the person.
+fn processes_here(unattended: bool) -> node::Processes {
+    if unattended {
+        tell!("mycelium: no person works on this machine, so whoever asks is an agent");
+        node::Processes::here().unattended()
+    } else {
+        node::Processes::here()
+    }
+}
+
 /// Runs this machine's node on `socket`, as `node` says, until it is asked
 /// to stop.
 fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
@@ -1661,6 +1680,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let (dials, serves) = (node.dials(), node.serves(&machine)?);
     let providers = node.providers;
     let declared = node.declared.unwrap_or_else(place::declared);
+    let processes = processes_here(node.unattended);
     let kit = node.kit;
     let builders = builders::Given {
         files: node
@@ -1714,7 +1734,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         flows,
         parked: place::parked(),
         held,
-        processes: node::Processes::here(),
+        processes,
         carries: state.join("carries.jsonl"),
         runs: mycelium::run::Given::at(&state).knowing(place::trees()),
         hosts: place::hosts(),
@@ -2922,8 +2942,8 @@ mod tests {
     use std::io;
 
     use super::{
-        Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, in_place, kit, reader_left,
-        said_text, swarm_asked, tree, write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, in_place, kit, processes_here,
+        reader_left, said_text, swarm_asked, tree, write_line,
     };
 
     #[test]
@@ -3055,6 +3075,33 @@ mod tests {
         assert!(
             holder("/nix/store/kit").is_ok(),
             "the holder takes a whole path"
+        );
+    }
+
+    #[test]
+    fn a_node_told_no_person_works_here_takes_every_asker_for_an_agent() {
+        let unattended =
+            |words: &[&str]| match Command::try_parse_from(words).map(|asked| asked.action) {
+                Ok(Some(Action::Node(node))) => Some(node.unattended),
+                _ => None,
+            };
+        assert_eq!(
+            unattended(&["mycelium", "node", "--unattended"]),
+            Some(true),
+            "--unattended is read on the node's command line"
+        );
+        assert_eq!(
+            unattended(&["mycelium", "node"]),
+            Some(false),
+            "a node not told so takes a person to work on its machine"
+        );
+        assert!(
+            processes_here(true).is_unattended(),
+            "the flag reaches what the node reads of who asks"
+        );
+        assert!(
+            !processes_here(false).is_unattended(),
+            "without it the machine's processes are read as they are"
         );
     }
 

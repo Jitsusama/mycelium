@@ -297,7 +297,7 @@ fn sprouted(
     here: &str,
 ) -> Result<Start, String> {
     #[cfg(target_os = "linux")]
-    let unseen = match (connected, processes) {
+    let unseen = match (connected, processes.kernel()) {
         (Some((pid, ticks)), Processes::Folder(procs)) => {
             match viewed::Viewed::of(procs, pid, ticks) {
                 Ok(view) => return sprout::starting(asked, view.cwd(), home, here, &view),
@@ -326,7 +326,7 @@ fn sprouted(
 /// When the process `pid` started, in clock ticks since boot, where the
 /// machine's processes can be read; none otherwise, as on a Mac.
 fn started_at(pid: Option<i32>, processes: &Processes) -> Option<u64> {
-    match (pid, processes) {
+    match (pid, processes.kernel()) {
         (Some(pid), Processes::Folder(procs)) => asker::started(procs, pid),
         _ => None,
     }
@@ -3550,9 +3550,9 @@ impl<S: Store> Shared<S> {
     ) -> (Option<serde_json::Value>, easing::Sampler) {
         // Whether this machine is over is judged only from what its kernel
         // says, never from a record a session can write.
-        let felt = match &*self.processes {
+        let felt = match self.processes.kernel() {
             Processes::Folder(procs) => room::felt(procs, &now.to_string()),
-            Processes::Listed => None,
+            Processes::Listed | Processes::Unattended(_) => None,
         };
         let machines = easing::felt_here(self.machines(), &self.machine, felt);
         let (sessions, loads) = {
@@ -3587,9 +3587,9 @@ impl<S: Store> Shared<S> {
                 Some((session.id.clone(), i32::try_from(pid).ok()?))
             })
             .collect();
-        let procs = match &*self.processes {
+        let procs = match self.processes.kernel() {
             Processes::Folder(procs) => Some(procs.clone()),
-            Processes::Listed => None,
+            Processes::Listed | Processes::Unattended(_) => None,
         };
         let (store, logs) = (self.store.clone(), self.logs.clone());
         let read = tokio::task::spawn_blocking(move || {
@@ -4429,10 +4429,18 @@ impl<S: Store> Shared<S> {
         // there, and it asks as no agent, so an agent here saying so is refused:
         // a run from elsewhere may stand in a tree shared with that machine.
         if asked.from.is_some() && matches!(judged, By::Agent(_)) {
-            let why = format!(
-                "this asks as {judged}, as this node tells who asks, and only a link to another \
-                 machine says a run was asked from there, so it runs nothing"
-            );
+            let why = if self.processes.is_unattended() {
+                // A link's end runs here as any process does, so it is
+                // told as an agent too: nothing here is the person's.
+                "no person works on this machine, so its node takes whoever asks it, a link's \
+                 end too, for an agent, and runs nothing asked from another machine"
+                    .to_owned()
+            } else {
+                format!(
+                    "this asks as {judged}, as this node tells who asks, and only a link to \
+                     another machine says a run was asked from there, so it runs nothing"
+                )
+            };
             refused(&why);
             return Err(why);
         }
@@ -5196,7 +5204,14 @@ mod tests {
         let book = Book::at(socket.with_file_name("made.jsonl"));
         let parked = parks_of(socket);
         let held = held_of(socket);
-        let processes = Processes::Folder(procs_of(socket));
+        let kernel = Processes::Folder(procs_of(socket));
+        // A test of a machine no person works on leaves this beside the
+        // socket before its node starts.
+        let processes = if socket.with_file_name("unattended").exists() {
+            kernel.unattended()
+        } else {
+            kernel
+        };
         let carries = socket.with_file_name("carries.jsonl");
         let runs = runs_of(socket);
         let hosts = socket.with_file_name("hosts");
@@ -11722,6 +11737,68 @@ esac
                     .to_owned()
             ),
             "with no launcher declared, an agent runs nothing"
+        );
+        let (stop, node) = running;
+        drop(stop);
+        node.await
+            .expect("the node runs to its end")
+            .expect("it stops cleanly");
+    }
+
+    #[tokio::test]
+    async fn where_no_person_works_whoever_asks_a_run_runs_as_an_agent() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let attended = dir.path().join("laptop").join("work.sock");
+        let running = alone(&Memory::default(), "skiff", &attended);
+        // Told as the person would be, as a cell's every process is.
+        asks_as_person(&attended);
+        declares_runs(&attended, false);
+        let person = run_through(attended.clone(), run_of("skiff", SAYS_ITS_FENCE))
+            .await
+            .expect("the person's runs here");
+        assert_eq!(
+            person.out, b"unfenced\n",
+            "where the person works, it is theirs"
+        );
+        let (stop, node) = running;
+        drop(stop);
+        node.await
+            .expect("the node runs to its end")
+            .expect("it stops cleanly");
+
+        let socket = dir.path().join("cell").join("work.sock");
+        declares_runs(&socket, false);
+        fs::write(socket.with_file_name("unattended"), "").expect("no person works here");
+        let running = alone(&Memory::default(), "skiff", &socket);
+        asks_as_person(&socket);
+        assert_eq!(
+            run_through(socket.clone(), run_of("skiff", SAYS_ITS_FENCE))
+                .await
+                .err(),
+            Some(
+                "this asks as a strictly fenced agent, so it runs here only in that fence: \
+                 this machine declares no way to run a command as its strictly fenced \
+                 sessions run"
+                    .to_owned()
+            ),
+            "nobody here is the person, and with no launcher an agent runs nothing"
+        );
+        declares_runs(&socket, true);
+        let agent = run_through(socket.clone(), run_of("skiff", SAYS_ITS_FENCE))
+            .await
+            .expect("an agent's runs here");
+        assert_eq!(agent.out, b"strict\n", "through its fence's launcher");
+        let mut far = run_of("skiff", SAYS_ITS_FENCE);
+        far.from = Some("tern".to_owned());
+        far.by = Some(By::Person);
+        assert_eq!(
+            run_through(socket.clone(), far).await.err(),
+            Some(
+                "no person works on this machine, so its node takes whoever asks it, a \
+                 link's end too, for an agent, and runs nothing asked from another machine"
+                    .to_owned()
+            ),
+            "a run handed on from another machine is refused, saying why"
         );
         let (stop, node) = running;
         drop(stop);

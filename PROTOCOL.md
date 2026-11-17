@@ -1599,7 +1599,18 @@ reaching it, as A Link says. The node judges who asks, as `by`,
 presences of its process and its forebears say, and in a strict one
 where it can't tell; an agent too where its process runs as one of
 the machine's agents, may gain no privileges the node may, or sees
-other mounts; else the person. A
+other mounts; else the person. A node started with `--unattended`, as
+one in a cell lent from a basin is, where the person reaches it only
+over a link, takes no asker for the person: one it would tell as the
+person is a strictly fenced agent there, since its node runs as fenced
+as the agents beside it and nothing else would tell them apart. That
+holds for every word the node takes only from the person, a steer
+claiming the person and their own login's acts too, and for a link's
+end run there, so a run another machine asked is refused, saying so,
+and so is a carry the person asks of it from another machine, since
+the link's end claims the person on their behalf.
+It is a flag on the node's command line rather than a word declared,
+since a file can fail to be read. A
 `by` the request says only makes it stricter, and an agent runs
 fenced at least. An agent's run goes only where an ordered carry could
 land it (A Carry an Orchestrator Orders): placement is offered only
