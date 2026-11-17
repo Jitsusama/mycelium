@@ -275,8 +275,8 @@ fn exchange_with(places: Places, here: &Hello, there: &Hello, worker: bool) -> E
     exchange.withhold_above(true);
     if !there.facts {
         eprintln!(
-            "{} takes no facts, so it can't declare itself no worker and is sent none \
-             of the quests above those shared",
+            "{} takes no facts, so it is sent none of the quests above those shared \
+             until it declares itself no worker",
             there.machine
         );
     }

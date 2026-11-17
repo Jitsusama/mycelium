@@ -1038,14 +1038,32 @@ impl Exchange {
                 len,
                 body,
                 mode,
-            } => self.piece(&quest, &file, &state, (at, len), &body, mode),
+            } => {
+                self.unkeep(&quest, &file);
+                self.piece(&quest, &file, &state, (at, len), &body, mode)
+            }
             Say::File {
                 quest,
                 file,
                 state,
                 body,
                 mode,
-            } => self.file(&quest, &file, &state, body.as_deref(), mode),
+            } => {
+                self.unkeep(&quest, &file);
+                self.file(&quest, &file, &state, body.as_deref(), mode)
+            }
+        }
+    }
+
+    /// Lets go what was kept back of file `key` of quest `id`, as it comes
+    /// live: frames cross in order, so it is newer than anything kept, and
+    /// no replay may hear the older over it.
+    fn unkeep(&mut self, id: &str, key: &str) {
+        if let Some(kept) = self.held_back.get_mut(id) {
+            kept.remove(key);
+            if kept.is_empty() {
+                self.held_back.remove(id);
+            }
         }
     }
 
@@ -1096,9 +1114,10 @@ impl Exchange {
 
     /// Keeps what the other end said it holds of quest `id` while the
     /// quests above are withheld, gathering each change it says, since a
-    /// Holds after the first says only what changed. A worker's is let be,
-    /// its hold never lifting, as is one of a quest the other end's last
-    /// Shares didn't name, so what is kept stays within what it shares.
+    /// Holds after the first says only what changed. What a link set up
+    /// for a worker hears is let be, its hold never lifting, as is what
+    /// it hears of a quest the other end's last Shares didn't name, so what
+    /// is kept stays within what it shares.
     fn keep_back(&mut self, id: String, files: BTreeMap<String, State>) {
         let named = self
             .theirs
@@ -2240,14 +2259,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_file_asked_for_before_the_hold_came_down_is_asked_again_as_it_lifts() {
-        let kestrel = Machine::new("kestrel");
-        let skiff = Machine::new("skiff");
-        let (top, child) = ("QEST-20261007-WCJQSG", "QEST-20261115-5XF89V");
-        under_top(&kestrel, top, child);
-        let readme = "record/README.md";
-        let mut near = kestrel.exchange(&skiff);
+    /// A link carrying `top`, the parent of a quest kestrel shares, to
+    /// skiff, which has said it shares `top` too and holds `top`'s README
+    /// changed there, as that README's key, its new state and its body.
+    fn told_of_a_changed_parent(
+        kestrel: &Machine,
+        skiff: &Machine,
+        top: &str,
+    ) -> (Exchange, &'static str, State, &'static [u8]) {
+        under_top(kestrel, top, "QEST-20261115-5XF89V");
+        let (readme, body) = ("record/README.md", b"# Changed there\n".as_slice());
+        let mut near = kestrel.exchange(skiff);
         near.look().expect("kestrel looks");
         let ours = kestrel
             .places
@@ -2268,29 +2290,100 @@ mod tests {
         })
         .expect("kestrel hears");
         let changed = State {
-            hash: Some("changed there".to_owned()),
+            hash: Some(content(body).hash),
             version: ours.version.changed_on("skiff"),
         };
+        (near, readme, changed, body)
+    }
 
-        // Asked for while carried, the README arrives once the link
-        // withholds the parent, as a pause in skiff's declaration does.
+    #[test]
+    fn a_file_asked_for_before_the_hold_came_down_is_asked_again_as_it_lifts() {
+        let top = "QEST-20261007-WCJQSG";
+        let wants_readme = |said: &[Say], readme: &str| {
+            said.iter().any(|say| {
+                matches!(say, Say::Want { quest, file, .. } if quest == top && file == readme)
+            })
+        };
+        for whole in [true, false] {
+            let kestrel = Machine::new("kestrel");
+            let skiff = Machine::new("skiff");
+            let (mut near, readme, changed, body) = told_of_a_changed_parent(&kestrel, &skiff, top);
+            let said = near
+                .hear(Say::Holds {
+                    quest: top.to_owned(),
+                    files: BTreeMap::from([(readme.to_owned(), changed.clone())]),
+                })
+                .expect("kestrel hears");
+            assert!(wants_readme(&said, readme), "kestrel asks for the README");
+
+            // The answer arrives once the link withholds the parent, as a
+            // pause in skiff's declaration does, whole or as a first piece.
+            near.withhold_above(true);
+            let answer = if whole {
+                Say::File {
+                    quest: top.to_owned(),
+                    file: readme.to_owned(),
+                    state: changed,
+                    body: Some(STANDARD.encode(body)),
+                    mode: None,
+                }
+            } else {
+                Say::Piece {
+                    quest: top.to_owned(),
+                    file: readme.to_owned(),
+                    state: changed,
+                    at: 0,
+                    len: 2 * PIECE,
+                    body: STANDARD.encode(body),
+                    mode: None,
+                }
+            };
+            let said = near.hear(answer).expect("kestrel hears");
+            assert!(said.is_empty(), "nothing is asked while withheld: {said:?}");
+            near.withhold_above(false);
+            let said = near.look().expect("kestrel looks");
+            assert!(
+                wants_readme(&said, readme),
+                "the README dropped while withheld is asked for again, whole: {whole}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_heard_once_the_hold_lifts_is_not_undone_by_what_was_kept() {
+        let top = "QEST-20261007-WCJQSG";
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (mut near, readme, changed, body) = told_of_a_changed_parent(&kestrel, &skiff, top);
         near.withhold_above(true);
+        near.hear(Say::Holds {
+            quest: top.to_owned(),
+            files: BTreeMap::from([(
+                readme.to_owned(),
+                State {
+                    hash: Some("older".to_owned()),
+                    version: changed.version.clone(),
+                },
+            )]),
+        })
+        .expect("kestrel hears");
+
+        // The README comes live between the lift and the look that
+        // replays what was kept.
+        near.withhold_above(false);
         near.hear(Say::File {
             quest: top.to_owned(),
             file: readme.to_owned(),
-            state: changed,
-            body: Some("# Changed there\n".to_owned()),
+            state: changed.clone(),
+            body: Some(STANDARD.encode(body)),
             mode: None,
         })
         .expect("kestrel hears");
-        near.withhold_above(false);
-        let said = near.look().expect("kestrel looks");
-        assert!(
-            said.iter().any(|say| matches!(
-                say,
-                Say::Want { quest, file, .. } if quest == top && file == readme
-            )),
-            "the README dropped while withheld is asked for again: {said:?}"
+        near.look().expect("kestrel looks");
+        let ledger = kestrel.places.ledgers().hold(top).expect("held").ledger;
+        assert_eq!(
+            ledger.theirs["skiff"][readme].hash, changed.hash,
+            "what skiff sent once the hold lifted stands, not what was kept from before"
         );
     }
 
@@ -2333,6 +2426,15 @@ mod tests {
         let mut worker = kestrel.exchange(&skiff).for_worker();
         worker.hear(shares()).expect("kestrel hears");
         worker.hear(holds()).expect("kestrel hears");
+        worker
+            .hear(Say::File {
+                quest: top.to_owned(),
+                file: "record/README.md".to_owned(),
+                state: State::default(),
+                body: None,
+                mode: None,
+            })
+            .expect("kestrel hears");
         assert!(
             worker.held_back.is_empty(),
             "but a worker's is let be, its hold never lifting"
