@@ -1408,7 +1408,11 @@ the machine's agents, may gain no privileges the node may, or sees
 other mounts; else the person. A
 `by` the request says only makes it stricter, and an agent runs
 fenced at least. An agent's run goes only where an ordered carry could
-land it (A Carry an Orchestrator Orders), and there runs as its
+land it (A Carry an Orchestrator Orders): placement is offered only
+this machine and those, each other one missed as `looser-ground`,
+`never`, saying why, and a `"Place"` an agent asks is judged the same
+way, so where it is told the work would go is where the work may run.
+There it runs as its
 fence's declared `runs`, then the login shell, then `command`; a
 machine declaring no `runs` for it refuses it, as does one whose
 `runs` doesn't end with `--`, so nothing `command` says is read as

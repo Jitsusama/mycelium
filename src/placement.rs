@@ -122,6 +122,20 @@ pub enum Placement {
     },
 }
 
+impl Placement {
+    /// The same placement, with each of `more` among the machines passed
+    /// over or missed, as machines left out before placing are.
+    #[must_use]
+    pub fn also(mut self, more: Vec<Miss>) -> Self {
+        match &mut self {
+            Placement::Placed { passed: misses, .. }
+            | Placement::Pending { misses }
+            | Placement::Refused { misses } => misses.extend(more),
+        }
+        self
+    }
+}
+
 /// Why work didn't go to a machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Miss {
@@ -235,6 +249,10 @@ pub const SATURATED_PRESSURE: f64 = 80.0;
 /// The key of the taint a machine whose home's disk is critically full
 /// carries, which takes no work: what it starts would fail to write.
 pub const DISK_FULL: &str = "disk-full";
+
+/// The key of the refusal an agent's work meets on a machine whose ground
+/// is looser than where it asks, which would refuse to run it there.
+pub const LOOSER_GROUND: &str = "looser-ground";
 
 /// The key of the taint a machine past its queue's processor limit carries.
 pub const CPU_PRESSURE: &str = "cpu-pressure";
