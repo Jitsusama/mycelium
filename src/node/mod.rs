@@ -9118,7 +9118,7 @@ esac
         let resolved = fs::canonicalize(&kit).expect("the kit resolves");
         let declarers = [0, 65534, rustix::process::getuid().as_raw()];
         // The PATH a person's run and an agent's fenced run each find, with
-        // the kit as the node checked it.
+        // the kit as the node checked it, each after the fence it ran in.
         let paths = |checked: start::Kit| {
             let socket = dir.path().join("skiff").join("work.sock");
             async move {
@@ -9131,7 +9131,7 @@ esac
                 let running = node(&store, "skiff", Vec::<Piped>::new(), Some(starter), &socket);
                 asks_as_person(&socket);
                 declares_runs(&socket, true);
-                let says_its_path = "printf %s \"$PATH\"";
+                let says_its_path = "printf %s \"${FENCED:-unfenced}=$PATH\"";
                 let person = run_through(socket.clone(), run_of("skiff", says_its_path))
                     .await
                     .expect("the person's runs here");
@@ -9158,19 +9158,38 @@ esac
         };
         let first = format!("{}/bin:", resolved.display());
 
-        let (person, agent, said) = paths(crate::declared::kit_checked(&kit, &declarers)).await;
+        // Given through a link, as a profile is, which is repointed once the
+        // node has checked it.
+        let profile = dir.path().join("profile");
+        std::os::unix::fs::symlink(&kit, &profile).expect("a link to the kit");
+        let checked = crate::declared::kit_checked(&profile, &declarers);
+        let other = dir.path().join("other");
+        fs::create_dir_all(other.join("bin")).expect("another kit");
+        fs::remove_file(&profile).expect("the link is taken away");
+        std::os::unix::fs::symlink(&other, &profile).expect("and repointed");
+        let (person, agent, said) = paths(checked).await;
         assert!(
-            person.starts_with(&first) && agent.starts_with(&first),
-            "a kit only its declarers can change comes first for both: {person} / {agent}"
+            person.starts_with(&format!("unfenced={first}"))
+                && agent.starts_with(&format!("strict={first}")),
+            "a kit only its declarers can change comes first for both, as it was checked: \
+             {person} / {agent}"
         );
         assert_eq!(said.map(|kit| kit.tools), Some(vec!["gcloud".to_owned()]));
 
         fs::set_permissions(kit.join("bin/gcloud"), fs::Permissions::from_mode(0o666))
             .expect("a tool anyone writes");
         let (person, agent, said) = paths(crate::declared::kit_checked(&kit, &declarers)).await;
+        let given = format!("{}/bin", kit.display());
         assert!(
-            !person.contains(&first) && !agent.contains(&first),
-            "a kit an agent could change is on neither path: {person} / {agent}"
+            person.starts_with("unfenced=") && agent.starts_with("strict="),
+            "one ran as the person, the other in its fence: {person} / {agent}"
+        );
+        assert!(
+            [&first, &given]
+                .iter()
+                .all(|kit| !person.contains(kit.as_str()) && !agent.contains(kit.as_str())),
+            "a kit an agent could change is on neither path, as given or resolved: \
+             {person} / {agent}"
         );
         assert_eq!(
             said,

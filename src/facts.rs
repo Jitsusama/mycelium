@@ -95,10 +95,11 @@ pub struct Machine {
     )]
     pub health: Option<Health>,
     /// The realm's kit as its node was given it: the tools each session
-    /// and run it starts finds first on its path. Unknown where its node
-    /// was given none, its kit's tools can't be listed, or the node is
+    /// and run it starts finds first on its path, or, where the node
+    /// refused it, why, with no tools. Unknown where its node was given
+    /// none, the folder it carries can no longer be listed, or the node is
     /// too old to say. Measuring leaves it unknown; the node sets it from
-    /// the kit it was given ([`kit`]).
+    /// the kit as it checked it at its start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kit: Option<Kit>,
 }
@@ -107,15 +108,16 @@ pub struct Machine {
 /// every machine in the realm is to have.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Kit {
-    /// Where it is, with any link it was given through resolved, so a
-    /// Nix profile's link names the store path it is now, which names its
-    /// version: two machines with the same path have the same tools.
+    /// Where it is, with any link it was given through resolved as its node
+    /// checked it, so a Nix profile's link names the store path it was then,
+    /// which names its version: two machines with the same path have the
+    /// same tools. Where it is refused, the folder as it was given.
     pub path: String,
     /// The name of each tool in its `bin`, in order as this node lists
     /// them, though a record read from another may not be. None where it
     /// is refused.
     pub tools: Vec<String>,
-    /// Why its node leaves it off every path, where it does: its path is
+    /// Why its node leaves it off the path of all it starts, where it does: its path is
     /// then the folder as given, and it names no tools, so a node too old
     /// to read why still finds none in it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

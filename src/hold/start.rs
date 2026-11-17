@@ -32,9 +32,9 @@ pub enum Kit {
     /// Carried: its folder, resolved as it was checked, goes first on
     /// each path, so a link repointed since changes nothing.
     Carried(PathBuf),
-    /// Left off every path, since an account but its declarers could
-    /// change what its tools are, or its tools couldn't be listed: what it
-    /// was given as, and why.
+    /// On the path of nothing the node starts, since an account but its
+    /// declarers could change which kit it is or what its tools are, or it
+    /// couldn't be read: what it was given as, and why.
     Refused {
         /// The folder as it was given.
         given: PathBuf,

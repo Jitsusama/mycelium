@@ -70,7 +70,8 @@ The harness mesh's messages and presence, carried between machines:
   needing one (`--need tool=gcloud`) goes only where the kit holds it.
   Its tools come first for agents too, so the kit belongs where none
   can write, such as the Nix store; one an account but root could
-  change is left off every path, and the node says why. A client that opens
+  change is put on the path of nothing it starts, and the node says
+  why. A client that opens
   with `hello` is answered in the daemon interface every daemon on the machine
   speaks, and watches the realm's sessions, machines, messages, teams
   and networks change, each network made as `mycelium networks` makes

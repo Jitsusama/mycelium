@@ -319,35 +319,47 @@ pub fn said_at_start(file: &Path, declarers: &[u32]) -> String {
 
 /// The realm's kit given in `kit`, as a node may carry it: carried, at the
 /// folder it resolves to now, only where no account but `declarers` can
-/// change its `bin` or any tool in it, and refused otherwise, or where its
-/// tools can't be listed. A kit goes first on the path of every session and
-/// fenced run the node starts, other machines' asks among them, so a tool
-/// an agent could replace would run as everything that asks for it;
-/// refusing leaves each the path its login profile gives. The folder
-/// carried is the one checked, so a link repointed since changes nothing.
+/// change the way to it, its `bin` or anything in that, and refused
+/// otherwise, or where its `bin` can't be read. A kit goes first on the
+/// path of every session and fenced run the node starts, other machines'
+/// asks among them, so a tool an agent could replace would run as
+/// everything that asks for it; refusing leaves each the path its login
+/// profile gives. The folder carried is the one checked, so a link
+/// repointed since changes nothing until the node starts again.
 #[must_use]
 pub fn kit_checked(kit: &Path, declarers: &[u32]) -> Kit {
     let refused = |why: String| Kit::Refused {
         given: kit.to_owned(),
         why,
     };
-    let listed = fs::canonicalize(kit)
-        .ok()
-        .and_then(|folder| crate::facts::kit(&folder).map(|listed| (folder, listed)));
-    let Some((folder, listed)) = listed else {
-        let why = fs::read_dir(kit.join("bin"))
-            .err()
-            .map_or_else(|| "it moved as it was read".to_owned(), |e| e.to_string());
-        return refused(format!("its bin can't be listed ({why})"));
+    let folder = match fs::canonicalize(kit) {
+        Ok(folder) => folder,
+        Err(error) => return refused(format!("it can't be resolved ({error})")),
     };
-    // Each tool as well as the folder holding it, since a tool that is a
-    // link is only as sealed as where it leads.
+    // The way as given, link by link, since a link an agent may repoint
+    // chooses the kit, even where it leads into the store.
+    if let Err(why) = sealed(kit, declarers) {
+        return refused(format!("an agent could change which kit it is: {why}"));
+    }
+    // A path splits at a colon, into folders nothing here checked.
+    if folder.as_os_str().as_encoded_bytes().contains(&b':') {
+        return refused(format!(
+            "it resolves to {}, which holds a colon",
+            folder.display()
+        ));
+    }
     let bin = folder.join("bin");
+    let entries = match fs::read_dir(&bin).and_then(Iterator::collect::<io::Result<Vec<_>>>) {
+        Ok(entries) => entries,
+        Err(error) => return refused(format!("its bin can't be listed ({error})")),
+    };
+    // The folder and every entry in it, those the record leaves out among
+    // them, since a listed tool may run a hidden one beside it, and a tool
+    // that is a link is only as sealed as where it leads.
     match sealed(&bin, declarers).and_then(|()| {
-        listed
-            .tools
+        entries
             .iter()
-            .try_for_each(|tool| sealed(&bin.join(tool), declarers))
+            .try_for_each(|entry| sealed(&entry.path(), declarers))
     }) {
         Ok(()) => Kit::Carried(folder),
         Err(why) => refused(format!("an agent could change what its tools are: {why}")),
@@ -356,14 +368,16 @@ pub fn kit_checked(kit: &Path, declarers: &[u32]) -> Kit {
 
 /// What a node says as it starts of the realm's `kit`: what it holds,
 /// which every session and run it starts finds first on its path, or that
-/// it is left off every path, and why. Each tool is said escaped, so a
-/// tool's name can't pass for the verdict.
+/// it is left off the path of all it starts, why, and how it mends. Each
+/// tool and why are said escaped, so no name can pass for the verdict.
 #[must_use]
 pub fn kit_said_at_start(kit: &Kit) -> String {
     match kit {
         Kit::Refused { given, why } => format!(
-            "leaves the realm's kit at {} off every path, since {why}",
-            given.display().to_string().escape_debug()
+            "leaves the realm's kit at {} off the path of everything it starts, since {}; \
+             it is checked as the node starts, so start it again once that is mended",
+            given.display().to_string().escape_debug(),
+            controls_escaped(why)
         ),
         Kit::Carried(folder) => {
             let tools: Vec<String> = crate::facts::kit(folder)
@@ -381,6 +395,20 @@ pub fn kit_said_at_start(kit: &Kit) -> String {
             )
         }
     }
+}
+
+/// `text` with each control character escaped, so a name within it can't
+/// start a line of its own, and the rest, such as its apostrophes, as is.
+fn controls_escaped(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_debug().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 /// How many links a path may pass through before it is taken as a loop,
@@ -629,6 +657,13 @@ mod tests {
     fn a_node_carries_a_kit_only_its_declarers_can_change_and_says_so() {
         let folder = tempfile::tempdir().expect("a temporary folder");
         let kit = folder.path().join("kit");
+        let missing = kit_checked(&kit, &declarers());
+        assert!(
+            matches!(&missing, Kit::Refused { given, why }
+                if *given == kit && why.starts_with("it can't be resolved (")),
+            "a kit that isn't there is refused, and why: {missing:?}"
+        );
+        fs::create_dir(&kit).expect("a kit with no bin");
         let unlisted = kit_checked(&kit, &declarers());
         assert!(
             matches!(&unlisted, Kit::Refused { given, why }
@@ -638,11 +673,13 @@ mod tests {
         assert_eq!(
             kit_said_at_start(&unlisted),
             format!(
-                "leaves the realm's kit at {} off every path, since its bin can't be listed ({})",
+                "leaves the realm's kit at {} off the path of everything it starts, since its \
+                 bin can't be listed ({}); it is checked as the node starts, so start it again \
+                 once that is mended",
                 kit.display(),
                 fs::read_dir(kit.join("bin")).expect_err("no bin")
             ),
-            "and says so as it starts"
+            "and says so as it starts, and how it mends"
         );
         let bin = kit.join("bin");
         fs::create_dir_all(&bin).expect("its bin");
@@ -652,7 +689,7 @@ mod tests {
                 .expect("a tool only its owner writes");
         }
         let resolved = fs::canonicalize(&kit).expect("the kit resolves");
-        // Given through a link, as a profile is, and repointed once checked.
+        // Given through a link, as a profile is.
         let profile = folder.path().join("profile");
         std::os::unix::fs::symlink(&kit, &profile).expect("a link to the kit");
         let carried = kit_checked(&profile, &declarers());
@@ -661,12 +698,35 @@ mod tests {
             Kit::Carried(resolved.clone()),
             "a kit only its declarers write is carried at the folder it was checked as"
         );
-        fs::remove_file(&profile).expect("the link is taken away");
-        std::os::unix::fs::symlink(folder.path(), &profile).expect("and repointed");
+        // A link in a folder anyone writes may be repointed by an agent, at
+        // a kit of its own choosing.
+        let open = folder.path().join("open");
+        fs::create_dir(&open).expect("a folder anyone writes");
+        fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).expect("open to all");
+        let repointable = open.join("profile");
+        std::os::unix::fs::symlink(&kit, &repointable).expect("a link there to the kit");
         assert_eq!(
-            carried.carried(),
-            Some(resolved.as_path()),
-            "so a link repointed since changes nothing"
+            kit_checked(&repointable, &declarers()),
+            Kit::Refused {
+                given: repointable.clone(),
+                why: format!(
+                    "an agent could change which kit it is: {} may be written by others than \
+                     its owner",
+                    open.display()
+                ),
+            },
+            "a kit reached through a link an agent could repoint is refused"
+        );
+        // A colon where the kit resolves would split the path into folders
+        // nothing checked.
+        let coloned = folder.path().join("a:b");
+        fs::create_dir_all(coloned.join("bin")).expect("a kit whose folder holds a colon");
+        let linked = folder.path().join("coloned");
+        std::os::unix::fs::symlink(&coloned, &linked).expect("a link to it");
+        assert!(
+            matches!(kit_checked(&linked, &declarers()), Kit::Refused { why, .. }
+                if why.ends_with("which holds a colon")),
+            "a kit resolving to a folder with a colon is refused"
         );
         assert_eq!(
             kit_said_at_start(&carried),
@@ -677,6 +737,17 @@ mod tests {
             ),
             "it is said as it is, a tool's odd name escaped"
         );
+        // A hidden entry, which the record leaves out, still sits on the
+        // path, and a listed tool may run it.
+        fs::write(bin.join(".gh-wrapped"), "").expect("a hidden tool");
+        fs::set_permissions(bin.join(".gh-wrapped"), fs::Permissions::from_mode(0o666))
+            .expect("one anyone writes");
+        assert!(
+            matches!(kit_checked(&kit, &declarers()), Kit::Refused { why, .. }
+                if why.contains(".gh-wrapped may be written by others")),
+            "a hidden tool anyone writes refuses the kit too"
+        );
+        fs::remove_file(bin.join(".gh-wrapped")).expect("it is taken away");
         fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o666))
             .expect("a tool anyone writes");
         let why = format!(
@@ -696,10 +767,21 @@ mod tests {
         assert_eq!(
             kit_said_at_start(&kit_checked(&kit, &declarers())),
             format!(
-                "leaves the realm's kit at {} off every path, since {why}",
+                "leaves the realm's kit at {} off the path of everything it starts, since \
+                 {why}; it is checked as the node starts, so start it again once that is \
+                 mended",
                 kit.display()
             ),
             "and the node says why as it starts"
+        );
+        // Why names what it found, so an odd name in it is escaped too.
+        fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o755)).expect("gh mended");
+        fs::set_permissions(bin.join("say\nit"), fs::Permissions::from_mode(0o666))
+            .expect("an oddly named tool anyone writes");
+        let said = kit_said_at_start(&kit_checked(&kit, &declarers()));
+        assert!(
+            !said.contains('\n') && said.contains("say\\nit may be written"),
+            "no name in why can start a line of its own: {said}"
         );
     }
 

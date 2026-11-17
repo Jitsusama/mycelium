@@ -550,7 +550,8 @@ struct Node {
     /// first and the record says no kit. It goes first for agents too,
     /// so it belongs where none can write, such as the Nix store: one an
     /// account but root could change, or whose tools can't be listed, is
-    /// left off every path, and the node and its record say why.
+    /// checked as the node starts and put on the path of nothing it
+    /// starts, and the node and its record say why.
     #[arg(long, value_parser = kit)]
     kit: Option<PathBuf>,
     /// A realm this realm's text may cross into, one way, where a session

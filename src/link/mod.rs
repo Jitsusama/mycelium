@@ -2300,18 +2300,47 @@ mod tests {
         let kit = dir.path().join("kit");
         std::fs::create_dir_all(kit.join("bin")).expect("the kit's bin is made");
         std::fs::write(kit.join("bin/gcloud"), "").expect("the kit holds gcloud");
+        let carried = kit_heard(dir.path(), hold::start::Kit::Carried(kit.clone())).await;
+        assert_eq!(
+            carried.tools,
+            ["gcloud"],
+            "its tools, where its node carries it"
+        );
+        let why = "its bin may be written by others".to_owned();
+        let refused = kit_heard(
+            dir.path(),
+            hold::start::Kit::Refused {
+                given: kit.clone(),
+                why: why.clone(),
+            },
+        )
+        .await;
+        assert_eq!(
+            refused,
+            facts::Kit {
+                path: kit.display().to_string(),
+                tools: Vec::new(),
+                refused: Some(why),
+            },
+            "and none, with why, where its node refused it"
+        );
+    }
+
+    /// The kit skiff hears of kestrel over a link kestrel keeps, its node
+    /// having taken `kit` as it did.
+    async fn kit_heard(dir: &std::path::Path, kit: hold::start::Kit) -> facts::Kit {
         let skiff = Memory::default();
         let kestrel = Memory::default();
         let (near, far) = tokio::io::duplex(1 << 16);
         let _near = end(&skiff, "skiff", near);
         let starting = Starting {
-            node: dir.path().join("node.sock"),
-            held: dir.path().join("held"),
+            node: dir.join("node.sock"),
+            held: dir.join("held"),
             asking: None,
-            steers: dir.path().join("steer"),
+            steers: dir.join("steer"),
             health: None,
-            declared: Some(dir.path().join("declared.json")),
-            kit: Some(hold::start::Kit::Carried(kit)),
+            declared: Some(dir.join("declared.json")),
+            kit: Some(kit),
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2328,14 +2357,13 @@ mod tests {
         });
 
         until(&skiff, |store| {
-            store.machines().first().is_some_and(|kestrel| {
-                kestrel
-                    .kit
-                    .as_ref()
-                    .is_some_and(|kit| kit.tools == ["gcloud"])
-            })
+            store
+                .machines()
+                .first()
+                .is_some_and(|kestrel| kestrel.kit.is_some())
         })
         .await;
+        skiff.machines()[0].kit.clone().expect("a kit is heard")
     }
 
     #[tokio::test]
