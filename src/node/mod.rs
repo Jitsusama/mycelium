@@ -3665,12 +3665,14 @@ impl<S: Store> Shared<S> {
     /// where and how to join it, or why it didn't start. Where none of the
     /// realm's machines takes it, on a machine made for it: one that costs
     /// nothing for any start, and one that costs only for a start that
-    /// says it may.
+    /// says it may. An agent's is held to its own ground, as a run of its
+    /// is, so a session it starts never lands looser than the one asking.
     async fn start(&self, asked: Start) -> Reply {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let (misses, nowhere) = match self.place(&asked.work, true, None) {
+        let fence = self.fence_asked().await?;
+        let (misses, nowhere) = match self.place(&asked.work, true, fence) {
             Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
             Placement::Pending { misses } => {
                 let nowhere = format!(
@@ -3680,33 +3682,49 @@ impl<S: Store> Shared<S> {
                 (misses, nowhere)
             }
             Placement::Refused { misses } => {
+                if let (Some(kind), Some(why)) = (fence, looser_named(&asked.work, &misses)) {
+                    return Err(format!(
+                        "this asks as {}, so it starts nothing on looser ground: {why}",
+                        By::Agent(kind)
+                    ));
+                }
                 let nowhere = format!("nowhere: {}", placement::said(&misses));
                 (misses, nowhere)
             }
         };
         if asked.may_cost {
-            return self.start_on_made(asked, &misses).await;
+            return self.start_on_made(asked, &misses, fence).await;
         }
-        self.start_on_free(asked, nowhere).await
+        self.start_on_free(asked, nowhere, fence).await
     }
 
     /// Makes a machine for `asked`, which `misses` say no machine of the
     /// realm takes, from the cheapest offer that would, and starts it there
     /// once it links.
-    async fn start_on_made(&self, asked: Start, misses: &[Miss]) -> Reply {
+    async fn start_on_made(
+        &self,
+        asked: Start,
+        misses: &[Miss],
+        fence: Option<crate::declared::Kind>,
+    ) -> Reply {
         let who = self.asker_of_a_make().await;
         let offers = self.offers().await;
         let offer = placement::to_make(&asked.work, &offers.offers, &self.machines())
             .map_err(|offered| nothing_offered(misses, &offered, &offers.unanswered))?
             .clone();
-        self.start_made_of(asked, &offer, &who).await
+        self.start_made_of(asked, &offer, &who, fence).await
     }
 
     /// Makes a machine for `asked`, which never said it may cost, from an
     /// offer that costs nothing, as any machine of the realm would take it.
     /// Where none would, answers `nowhere`, saying so where one that costs
     /// would have done, so the asker knows to say it may cost.
-    async fn start_on_free(&self, asked: Start, nowhere: String) -> Reply {
+    async fn start_on_free(
+        &self,
+        asked: Start,
+        nowhere: String,
+        fence: Option<crate::declared::Kind>,
+    ) -> Reply {
         let who = self.asker_of_a_make().await;
         let offers = self.offers().await.offers;
         let free: Vec<Offer> = offers
@@ -3717,7 +3735,7 @@ impl<S: Store> Shared<S> {
         let machines = self.machines();
         if let Ok(offer) = placement::to_make(&asked.work, &free, &machines) {
             let offer = offer.clone();
-            return self.start_made_of(asked, &offer, &who).await;
+            return self.start_made_of(asked, &offer, &who, fence).await;
         }
         match placement::to_make(&asked.work, &offers, &machines) {
             Ok(costs) => Err(format!(
@@ -3729,9 +3747,15 @@ impl<S: Store> Shared<S> {
     }
 
     /// Makes a machine of `offer` for `asked`, telling its provider `who`
-    /// asks, and starts it there once it links. A machine made that
-    /// nothing starts on is let go.
-    async fn start_made_of(&self, asked: Start, offer: &Offer, who: &Asker) -> Reply {
+    /// asks, and starts it there once it links, held to the fence `fence`
+    /// as any machine is. A machine made that nothing starts on is let go.
+    async fn start_made_of(
+        &self,
+        asked: Start,
+        offer: &Offer,
+        who: &Asker,
+        fence: Option<crate::declared::Kind>,
+    ) -> Reply {
         let lasting = lasting(&asked.work, offer)?;
         if let Some(why) = &who.unknown_because {
             eprintln!(
@@ -3759,7 +3783,7 @@ impl<S: Store> Shared<S> {
         let unwanted = Arc::new(Notify::new());
         // The loop runs for as long as the node answers anything.
         let _ = self.to_dial.send((made.clone(), unwanted.clone()));
-        let started = self.start_once_linked(asked, &made).await;
+        let started = self.start_once_linked(asked, &made, fence).await;
         let used = || {
             let inner = self.lock();
             inner
@@ -3775,8 +3799,14 @@ impl<S: Store> Shared<S> {
     }
 
     /// Starts `asked` on `made` once it has linked and its own facts, not
-    /// the offer's, say it takes the work.
-    async fn start_once_linked(&self, asked: Start, made: &Made) -> Reply {
+    /// the offer's, say it takes the work, on ground as firm as here where
+    /// an agent in the fence `fence` asks.
+    async fn start_once_linked(
+        &self,
+        asked: Start,
+        made: &Made,
+        fence: Option<crate::declared::Kind>,
+    ) -> Reply {
         let mut changed = self.said.machines.subscribe();
         let ready = |all: &[facts::Machine]| {
             all.iter()
@@ -3799,7 +3829,7 @@ impl<S: Store> Shared<S> {
             })?;
         let mut there = asked.work.clone();
         there.needs.push(Need::Machine(made.machine.clone()));
-        match self.place(&there, true, None) {
+        match self.place(&there, true, fence) {
             Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 let its: Vec<Miss> = misses
@@ -3991,12 +4021,19 @@ impl<S: Store> Shared<S> {
     /// agent's ground where an agent asks, as a run of its would be, so
     /// what it is told would take the work is where the work can run.
     async fn place_asked(&self, work: &Work) -> Reply {
+        let fence = self.fence_asked().await?;
+        Ok(Response::Placement(self.place(work, false, fence)))
+    }
+
+    /// The fence whoever asks runs in, as [`Self::judged`] tells it: an
+    /// agent's at least the agent fence, as its runs are, and none for
+    /// the person, whose work goes wherever placement says.
+    async fn fence_asked(&self) -> Result<Option<crate::declared::Kind>, String> {
         let (judged, _) = self.judged().await?;
-        let fence = match judged {
+        Ok(match judged {
             By::Agent(kind) => Some(kind.max(crate::declared::Kind::Fence)),
             By::Person => None,
-        };
-        Ok(Response::Placement(self.place(work, false, fence)))
+        })
     }
 
     /// Who asks a run, as [`asker::judge`] tells it, and the sessions
@@ -9073,7 +9110,13 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
         });
+        // The person starts it, since kestrel declares no fence, so an
+        // agent's start would be refused its looser ground.
+        asks_as_person(&near_socket);
         let started = ask(near_socket.clone(), asked).await;
+        // Told of nobody again, as the steers below begin.
+        fs::remove_dir_all(procs_of(&near_socket).join(std::process::id().to_string()))
+            .expect("the person's stand-in is gone");
         let Ok(Response::Started(started)) = started else {
             panic!("kestrel's node starts it: {started:?}");
         };
@@ -9097,6 +9140,79 @@ esac
         );
 
         steers_the_session_on_kestrel(&near_socket, &near_steers, &far_steers).await;
+
+        for (stop, node) in [near, far] {
+            drop(stop);
+            let stopped = node.await.expect("the node runs to its end");
+            assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_agents_start_goes_to_another_machine_on_ground_as_firm() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (holder, given) = stand_in_holder(dir.path());
+        let far_socket = dir.path().join("kestrel").join("work.sock");
+        let near_socket = dir.path().join("skiff").join("work.sock");
+        // Both declare the same strict fence, so kestrel's ground is as
+        // firm as skiff's.
+        for (socket, name) in [(&far_socket, "kestrel"), (&near_socket, "skiff")] {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(socket.parent().expect("its folder"))
+                .expect("its folder is made");
+            let said = fenced(name, &["remote"]).declared;
+            fs::write(
+                socket.with_file_name("declared.json"),
+                serde_json::to_vec(&said).expect("it is JSON"),
+            )
+            .expect("its declaration is written");
+        }
+        let far_store = Memory::default();
+        let holds = Starter {
+            program: holder,
+            scope: start::Scope::None,
+            kit: None,
+        };
+        let far = node(
+            &far_store,
+            "kestrel",
+            Vec::<Piped>::new(),
+            Some(holds),
+            &far_socket,
+        );
+        let near_store = Memory::default();
+        let dial = Piped {
+            store: far_store,
+            socket: far_socket,
+            held: dir.path().join("nothing.held"),
+            proven: false,
+            asks_back: false,
+            shares: None,
+        };
+        let near = node(&near_store, "skiff", vec![dial], None, &near_socket);
+        known_to(&near_store, "kestrel").await;
+        asks_below(&near_socket, 7001);
+        let asked = Request::Start(Start {
+            work: work(vec![Need::Machine("kestrel".to_owned())]),
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+        });
+        let started = ask(near_socket.clone(), asked).await;
+        let Ok(Response::Started(started)) = started else {
+            panic!("an agent's start goes to firm ground elsewhere: {started:?}");
+        };
+        assert_eq!(started.machine, "kestrel");
+        // Kestrel's node is asked over the link, pinned to itself, by a
+        // process it can tell nothing of, so it judges a strictly fenced
+        // agent; its own machine is never looser than itself.
+        let given = fs::read_to_string(&given).expect("kestrel's holder was started");
+        assert!(
+            given.lines().any(|word| word == started.held),
+            "under the id its node answered: {given}"
+        );
 
         for (stop, node) in [near, far] {
             drop(stop);
@@ -9246,6 +9362,9 @@ esac
         };
         let near_store = Memory::default();
         let near = node(&near_store, "skiff", vec![dial], Some(holds), &near_socket);
+        // The person asks it, since neither machine declares a fence, so an
+        // agent's start would be refused skiff's looser ground.
+        asks_as_person(&far_socket);
         // Nothing tells the test when kestrel's node has heard of
         // skiff, or when its link has taken up what the node asks of it,
         // so it asks again every few milliseconds until a start goes
@@ -10057,6 +10176,50 @@ esac
             !placement::said(&passed).contains("looser"),
             "the person's work isn't held to an agent's ground: {}",
             placement::said(&passed)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agents_start_is_never_placed_on_looser_ground() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        let start = |needs: Vec<Need>, prefers: Vec<Need>| Start {
+            work: Work {
+                prefers,
+                ..work(needs)
+            },
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+        };
+        let tern = || vec![Need::Machine("tern".to_owned())];
+        asks_below(&socket, 7001);
+        assert_eq!(
+            ask(socket.clone(), Request::Start(start(tern(), Vec::new()))).await,
+            Err(
+                "this asks as a strictly fenced agent, so it starts nothing on looser ground: \
+                 tern's strictly fenced session opens builders cloud, which here's doesn't, \
+                 so the session would land looser there"
+                    .to_owned()
+            ),
+            "an agent naming a looser machine is told that alone, as spawn quotes it"
+        );
+        assert_eq!(
+            ask(socket.clone(), Request::Start(start(Vec::new(), tern()))).await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "an agent's start that would rather go there is placed here, on its own ground"
+        );
+        asks_as_person(&socket);
+        assert_eq!(
+            ask(socket, Request::Start(start(tern(), Vec::new()))).await,
+            Err("no link reaches tern now".to_owned()),
+            "the person's start isn't held to an agent's ground"
         );
     }
 
