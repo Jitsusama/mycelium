@@ -16,12 +16,12 @@
 //! program keeping it writes it whole and renames it into place, and its
 //! records change on the wire only by what differs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use notify::Watcher;
 use serde::Deserialize;
@@ -491,6 +491,20 @@ pub struct Served {
     held: Arc<Mutex<BTreeMap<String, Read>>>,
     told: BTreeMap<String, watch::Sender<u64>>,
     keeping: Vec<tokio::task::JoinHandle<()>>,
+    /// What each record shown that says its act was last asked, by key.
+    checks: Arc<Mutex<HashMap<String, Check>>>,
+}
+
+/// How often the act a shown record waits on is asked again.
+const ASK_AGAIN: Duration = Duration::from_secs(30);
+
+/// The act a record waits on, as last asked: when, and whether its probe
+/// said it is done.
+#[derive(Debug)]
+struct Check {
+    act: Value,
+    asked: Instant,
+    done: bool,
 }
 
 impl Served {
@@ -516,6 +530,7 @@ impl Served {
             held,
             told,
             keeping,
+            checks: Arc::default(),
         }
     }
 
@@ -525,16 +540,88 @@ impl Served {
     }
 
     /// Every record of `kind` it holds now, by key, or none for a kind it
-    /// doesn't serve.
+    /// doesn't serve. A record whose act its probe said is done is left
+    /// out, as nobody need be asked for it (`done`).
     #[must_use]
     pub fn records(&self, kind: &str) -> Option<BTreeMap<String, Value>> {
         self.sources.get(kind)?;
-        Some(
-            self.lock()
-                .get(kind)
-                .map(|read| read.records.clone())
-                .unwrap_or_default(),
-        )
+        let records = self
+            .lock()
+            .get(kind)
+            .map(|read| read.records.clone())
+            .unwrap_or_default();
+        Some(self.unless_done(kind, records))
+    }
+
+    /// `kind`'s `records` but those whose act is done, asking again the
+    /// act of each shown that names one, at most each [`ASK_AGAIN`], so
+    /// one done since is gone once it is shown next. The checks of
+    /// records gone with their files are let go.
+    fn unless_done(
+        &self,
+        kind: &str,
+        mut records: BTreeMap<String, Value>,
+    ) -> BTreeMap<String, Value> {
+        let mut checks = self.checks.lock().unwrap_or_else(PoisonError::into_inner);
+        let ours = format!("{kind}:");
+        checks.retain(|key, _| !key.starts_with(&ours) || records.contains_key(key));
+        let now = Instant::now();
+        records.retain(|key, record| {
+            let Some(act) = done::act(record) else {
+                return true;
+            };
+            let (finished, due) = match checks.get(key).filter(|check| check.act == *act) {
+                Some(check) => (check.done, now.duration_since(check.asked) >= ASK_AGAIN),
+                None => (false, true),
+            };
+            if finished {
+                return false;
+            }
+            if due {
+                let check = Check {
+                    act: act.clone(),
+                    asked: now,
+                    done: false,
+                };
+                checks.insert(key.clone(), check);
+                self.ask(kind, key, act.clone());
+            }
+            true
+        });
+        records
+    }
+
+    /// Asks the probe of `act`, which the record `key` of `kind` waits on,
+    /// off the caller's way, as a probe may take [`done::PROBE_WITHIN`];
+    /// once it says done while the record still waits on that act, the
+    /// kind's watchers are told, so the record is seen gone. Nothing is
+    /// asked off a runtime.
+    fn ask(&self, kind: &str, key: &str, act: Value) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let checks = Arc::clone(&self.checks);
+        let tell = self.told.get(kind).cloned();
+        let key = key.to_owned();
+        runtime.spawn(async move {
+            if done::probe(&act).await != done::Verdict::Done {
+                return;
+            }
+            let marked = match checks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get_mut(&key)
+            {
+                Some(check) if check.act == act => {
+                    check.done = true;
+                    true
+                }
+                _ => false,
+            };
+            if marked && let Some(tell) = tell {
+                tell.send_modify(|told| *told += 1);
+            }
+        });
     }
 
     /// What changes each time `kind`'s records may have, or none for a

@@ -1856,6 +1856,27 @@ still served. A kind the node holds itself, `session`, `machine`,
 `event`, `receptor`, `builder`, `carry`, `forage` or `murmur`, can't
 be served.
 
+A served record that waits on an act says which in `doneWhen`, an
+object naming its `probe`, and the node asks that probe again each
+time the record is shown, at most every 30 seconds, each answer held
+to five seconds and asked off the reader's way. Once one says the act
+is done, the record is shown no more, and its kind's watchers hear it
+`gone`, so nobody is asked for what they already did. A probe that
+says not done, can't tell, or isn't known keeps it. The probes:
+
+- `rebooted`, with the `boot_id` of the boot it waits past: done once
+  this machine's boot is another.
+- `switch-done`, with the system it `wanted`, a store path: done once
+  `/run/current-system` is that path.
+- `pr-merged`, with its `repo`, as `owner/name`, and `number`: done
+  once `gh pr view` says it merged. Only `host` `github`, the default,
+  is asked.
+- `signed-in`, with its `tool`, `gh` or `gcloud`: done once the tool
+  says the person is signed in.
+- `message-posted`, whose `verdict`, `{"done", "at"}`, the program
+  that can read the channel writes on the record, as the node holds no
+  token for it: believed for fifteen minutes after its `at`.
+
 The talks of the steer inboxes are the one shape the node knows, as it
 carries them itself. A source naming `talks`, the inboxes' folder and
 nothing else, serves each `<ADDRESS>/replies/<id>.jsonl` as one record,
