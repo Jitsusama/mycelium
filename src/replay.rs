@@ -236,7 +236,7 @@ mod tests {
     }
 
     /// Kestrel's processor is 0.6 free and it carries nothing; skiff's is
-    /// all free and it carries four sessions on its eight cores, so the
+    /// all free and it carries four starts on its eight cores, so the
     /// starting weights choose skiff and doubled session weight kestrel.
     fn crowded_skiff() -> (Vec<crate::facts::Machine>, Loads) {
         let machines = vec![
@@ -246,11 +246,64 @@ mod tests {
         let loads = Loads::from([(
             "skiff".to_owned(),
             Load {
-                sessions: 4,
-                placed: 0,
+                sessions: 0,
+                placed: 4,
             },
         )]);
         (machines, loads)
+    }
+
+    #[test]
+    fn a_record_kept_before_running_was_said_replays_as_it_was_weighed() {
+        // A cool machine with many sessions in a turn, against a pressed
+        // one with few: weighed as starts, they sent the ask to osprey.
+        let mut cool = pressed(machine("kestrel", "linux", 32, &[]), 10.0);
+        cool.cpu.cores = Some(16);
+        let machines = vec![cool, pressed(machine("osprey", "linux", 32, &[]), 70.0)];
+        let load = |sessions| Load {
+            sessions,
+            placed: 0,
+        };
+        let loads = Loads::from([
+            ("kestrel".to_owned(), load(48)),
+            ("osprey".to_owned(), load(10)),
+        ]);
+        let work = needing(Vec::new());
+        let then = Weights {
+            running: None,
+            ..Weights::STARTING
+        };
+        let decision = decide_as(
+            &work,
+            &machines,
+            &loads,
+            &[],
+            AT.parse().expect("a time"),
+            &then,
+        );
+        let record = Record {
+            at: AT.to_owned(),
+            start: false,
+            work,
+            machines,
+            loads,
+            refused: Vec::new(),
+            decision,
+        };
+        let said = serde_json::to_value(&record).expect("a record");
+        assert_eq!(said["decision"]["weights"].get("running"), None, "{said}");
+        let kept: Record = serde_json::from_value(said).expect("a record");
+        let replay = replay(&[kept], &[], &Weights::STARTING);
+        assert_eq!(replay.stale, 0, "its own weights still draw what it kept");
+        assert_eq!(
+            replay.answered,
+            vec![Change {
+                at: AT.to_owned(),
+                kept: "osprey".to_owned(),
+                replayed: Some("kestrel".to_owned()),
+            }],
+            "and the running weight answers it with the cool machine"
+        );
     }
 
     #[test]

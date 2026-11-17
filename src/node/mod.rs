@@ -5301,7 +5301,9 @@ mod tests {
             }),
             ..kestrel_at("2026-10-29T06:00:00Z")
         };
-        let machines = [heard("kestrel", 0.0, 48), heard("skiff", 30.0, 40)];
+        // Skiff only a little pressed, so forty busy decide it by more than
+        // the band near the best, at any running weight much above 0.05.
+        let machines = [heard("kestrel", 0.0, 48), heard("skiff", 10.0, 40)];
         let many = |state: &str| -> Vec<Session> {
             (0..40)
                 .map(|one| {

@@ -329,8 +329,17 @@ pub const MEMORY_WEIGHT: f64 = 1.0;
 /// What a machine's whole disk free is worth.
 pub const DISK_WEIGHT: f64 = 0.5;
 
-/// What each session or start a core carries costs.
+/// What each start a core carries costs, while its machine's room doesn't
+/// show it yet.
 pub const SESSION_WEIGHT: f64 = 0.5;
+
+/// What each session running a turn costs a core it runs on. What it
+/// uses already shows in its machine's room, as processor and memory
+/// taken, so this weighs only the burst it may make before the next
+/// reading: at the start weight, 40 sessions mostly waiting on a model
+/// cost a 16-core machine more than its whole processor headroom, and
+/// sent work to a machine whose processors were busier.
+pub const RUNNING_WEIGHT: f64 = 0.1;
 
 /// What each taint that would rather not costs, beside those that say a
 /// machine is over, which rank it after every machine that isn't.
@@ -343,9 +352,11 @@ pub const FILLING_WEIGHT: f64 = 0.25;
 
 /// What each part of a machine's room is worth to placing, and how near
 /// the best a machine may be and still be drawn: the one set of knobs a
-/// replay of kept placements varies to tune placing. A set read from JSON
-/// takes the starting weight for each it leaves out, so a candidate names
-/// only the knob it turns.
+/// replay of kept placements varies to tune placing. A set read with
+/// [`Weights::read`] takes the starting weight for each it leaves out, so a
+/// candidate names only the knob it turns; one deserialized as a record's
+/// does too, but for `running`, which it leaves none, as a record kept
+/// before it was said was weighed.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Weights {
@@ -355,8 +366,14 @@ pub struct Weights {
     pub memory: f64,
     /// What a machine's whole disk free is worth.
     pub disk: f64,
-    /// What each session or start a core carries costs.
+    /// What each start a core carries costs, and each session running
+    /// where `running` says none.
     pub session: f64,
+    /// What each session running a turn costs a core; none in weights
+    /// kept before it was said, which weighed a session running as a
+    /// start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running: Option<f64>,
     /// What each taint that would rather not costs.
     pub rather_not: f64,
     /// What a disk filling costs.
@@ -373,6 +390,7 @@ impl Weights {
         memory: MEMORY_WEIGHT,
         disk: DISK_WEIGHT,
         session: SESSION_WEIGHT,
+        running: Some(RUNNING_WEIGHT),
         rather_not: RATHER_NOT_WEIGHT,
         filling: FILLING_WEIGHT,
         near_best: NEAR_BEST,
@@ -417,7 +435,22 @@ impl Weights {
         }
         // Read again from the text, which, unlike the object, still holds a
         // weight said twice for serde to refuse by name.
-        serde_json::from_str(said).map_err(|error| error.to_string())
+        let mut read: Self = serde_json::from_str(said).map_err(|error| error.to_string())?;
+        // A record's weights without `running` were weighed before it was
+        // said, but a candidate's leave it to the starting one.
+        if !fields.contains_key("running") {
+            read.running = Self::STARTING.running;
+        }
+        Ok(read)
+    }
+
+    /// What weighed a decision kept before it said its weights: the
+    /// starting ones of then, which weighed a session running as a start.
+    fn before_said() -> Self {
+        Self {
+            running: None,
+            ..Self::STARTING
+        }
     }
 }
 
@@ -486,10 +519,10 @@ pub fn headroom(
         .or(machine.cpu.cores)
         .unwrap_or(1)
         .max(1);
-    let carried = f64::from(load.sessions.saturating_add(load.placed)) / f64::from(cores);
-    weights.cpu * cpu + weights.memory * memory + weights.disk * disk
-        - weights.session * carried
-        - rather_not
+    let running = weights.running.unwrap_or(weights.session);
+    let carried = (running * f64::from(load.sessions) + weights.session * f64::from(load.placed))
+        / f64::from(cores);
+    weights.cpu * cpu + weights.memory * memory + weights.disk * disk - carried - rather_not
 }
 
 /// Whether `machine`'s room was said within [`ROOM_HEARD_WITHIN`] of `now`,
@@ -576,9 +609,9 @@ pub struct Decision {
     pub placement: Placement,
     /// Each machine, in the order given.
     pub judged: Vec<Judgement>,
-    /// What weighed them; the starting weights where a kept decision
-    /// predates saying so.
-    #[serde(default)]
+    /// What weighed them; the starting weights of then where a kept
+    /// decision predates saying so.
+    #[serde(default = "Weights::before_said")]
     pub weights: Weights,
 }
 
@@ -1273,7 +1306,7 @@ pub(crate) mod tests {
     #[test]
     fn a_set_of_weights_decides_as_its_weights_say() {
         // Kestrel's processor is 0.6 free and it carries nothing; skiff's is
-        // all free and it carries four sessions on its eight cores.
+        // all free and it carries four starts on its eight cores.
         let realm = [
             pressed(machine("kestrel", "linux", 32, &[]), 40.0),
             machine("skiff", "linux", 32, &[]),
@@ -1281,8 +1314,8 @@ pub(crate) mod tests {
         let loads = Loads::from([(
             "skiff".to_owned(),
             Load {
-                sessions: 4,
-                placed: 0,
+                sessions: 0,
+                placed: 4,
             },
         )]);
         let work = needing(Vec::new());
@@ -1297,9 +1330,121 @@ pub(crate) mod tests {
         assert_eq!(
             placed(&decided.placement),
             Some("kestrel"),
-            "sessions costing twice as much outweigh the busier processor"
+            "starts costing twice as much outweigh the busier processor"
         );
         assert_eq!(decided.weights, heavier, "a decision says what weighed it");
+    }
+
+    #[test]
+    fn a_running_session_weighs_less_than_a_start_its_room_doesnt_show() {
+        let kestrel = machine("kestrel", "linux", 32, &[]);
+        let weighed = |load| headroom(&kestrel, load, 0.0, true, &Weights::STARTING);
+        let costs = |load| weighed(Load::default()) - weighed(load);
+        let running = costs(Load {
+            sessions: 8,
+            placed: 0,
+        });
+        assert!(
+            (running - RUNNING_WEIGHT).abs() < 1e-9,
+            "a session running on each of its eight cores costs the running weight: {running}"
+        );
+        let started = costs(Load {
+            sessions: 0,
+            placed: 8,
+        });
+        assert!(
+            (started - SESSION_WEIGHT).abs() < 1e-9,
+            "a start on each costs the session weight, as its room shows none of it: {started}"
+        );
+        assert!(
+            running < started,
+            "a running session costs less than a start: {running} against {started}"
+        );
+    }
+
+    #[test]
+    fn a_cool_machine_running_many_sessions_is_chosen_over_a_pressed_one() {
+        // Many sessions in a turn, mostly waiting on a model, on a machine
+        // whose processors are cool, against few on one that is pressed.
+        let mut cool = pressed(machine("kestrel", "linux", 32, &[]), 10.0);
+        cool.cpu.cores = Some(16);
+        let hot = pressed(machine("osprey", "linux", 32, &[]), 70.0);
+        let loads = Loads::from([
+            (
+                "kestrel".to_owned(),
+                Load {
+                    sessions: 48,
+                    placed: 0,
+                },
+            ),
+            (
+                "osprey".to_owned(),
+                Load {
+                    sessions: 10,
+                    placed: 0,
+                },
+            ),
+        ]);
+        let decide = |weights: &Weights| {
+            let decided = decide_at(
+                &needing(Vec::new()),
+                &[cool.clone(), hot.clone()],
+                &loads,
+                &[],
+                now(),
+                &mut first,
+                weights,
+            );
+            placed(&decided.placement).map(str::to_owned)
+        };
+        assert_eq!(
+            decide(&Weights::STARTING).as_deref(),
+            Some("kestrel"),
+            "what the sessions use already shows in its room"
+        );
+        assert_eq!(
+            decide(&Weights::before_said()).as_deref(),
+            Some("osprey"),
+            "weighed as starts, they counted twice and sent the work to the pressed one"
+        );
+    }
+
+    #[test]
+    fn weights_kept_before_running_was_said_weigh_a_running_session_as_a_start() {
+        let kept: Weights = serde_json::from_str(r#"{"session": 0.5}"#).expect("weights");
+        assert_eq!(kept.running, None, "a record's weights without it say none");
+        let kestrel = machine("kestrel", "linux", 32, &[]);
+        let weighed = |load| headroom(&kestrel, load, 0.0, true, &kept);
+        let running = weighed(Load::default())
+            - weighed(Load {
+                sessions: 8,
+                placed: 0,
+            });
+        assert!(
+            (running - SESSION_WEIGHT).abs() < 1e-9,
+            "and weigh each session running as a start, as placing did then: {running}"
+        );
+        let unsaid = serde_json::json!({"placement": {"refused": {"misses": []}}, "judged": []});
+        let decision: Decision = serde_json::from_value(unsaid).expect("a decision");
+        assert_eq!(
+            decision.weights.running, None,
+            "as does a decision kept before any weights were said"
+        );
+        assert_eq!(
+            Weights::read(r#"{"session": 1.0}"#).map(|read| read.running),
+            Ok(Some(RUNNING_WEIGHT)),
+            "weights a replay reads take the starting one for it where left out"
+        );
+        assert_eq!(
+            Weights::read(r#"{"running": 0.3}"#).map(|read| read.running),
+            Ok(Some(0.3)),
+            "and keep the one they name"
+        );
+        assert_eq!(
+            Weights::read(r#"{"running": null}"#),
+            Err("running is null, not a number".to_owned()),
+            "a replay can't ask for the weighing of before by saying none"
+        );
     }
 
     #[test]
@@ -1309,14 +1454,19 @@ pub(crate) mod tests {
             read,
             Weights {
                 session: 1.0,
+                running: None,
                 ..Weights::STARTING
             }
         );
         let kept = serde_json::json!({"placement": {"refused": {"misses": []}}, "judged": []});
         let decision: Result<Decision, _> = serde_json::from_value(kept);
         assert!(
-            decision.is_ok_and(|decision| decision.weights == Weights::STARTING),
-            "a decision kept before weights were said was weighed by the starting ones"
+            decision.is_ok_and(|decision| decision.weights
+                == Weights {
+                    running: None,
+                    ..Weights::STARTING
+                }),
+            "a decision kept before weights were said was weighed by the starting ones of then"
         );
     }
 
@@ -1987,11 +2137,12 @@ pub(crate) mod tests {
             Some("skiff"),
             "the disk more free"
         );
+        // Crowding kestrel, so the tie its name settles can't pass for it.
         let crowded = machine("kestrel", "linux", 32, &[]);
         let loads = Loads::from([(
-            "skiff".to_owned(),
+            "kestrel".to_owned(),
             Load {
-                sessions: 6,
+                sessions: 8,
                 placed: 0,
             },
         )]);
@@ -2003,7 +2154,7 @@ pub(crate) mod tests {
                 now(),
                 &mut first
             )),
-            Some("kestrel"),
+            Some("skiff"),
             "the fewer sessions"
         );
 
