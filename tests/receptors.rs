@@ -267,6 +267,11 @@ fn a_change_that_isnt_an_owned_one_by_number_is_refused_and_nothing_written() {
         ],
     );
     assert!(!said.status.success(), "only GitHub's receptor keeps items");
+    let refusal = String::from_utf8_lossy(&said.stderr);
+    assert!(
+        refusal.contains("the slack receptor keeps no changes"),
+        "{refusal}"
+    );
 }
 
 /// Calls' receptor saying it reads, with `more` after its standing words.

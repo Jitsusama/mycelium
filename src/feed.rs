@@ -449,7 +449,7 @@ pub fn write(
         .find(|(named, reason)| !may_name(source, named, *reason))
     {
         return Err(refused(format!(
-            "{}'s receptor may not name {:?}",
+            "the {} receptor may not name {:?}",
             source.name(),
             named.claim()
         )));
@@ -486,7 +486,8 @@ pub fn write(
     // it stood, so it's refused here, and the one before it stands.
     if !u64::try_from(body.len()).is_ok_and(|len| len <= LARGEST_FILE) {
         return Err(refused(format!(
-            "{}'s {count} items come to {} bytes, more than the {LARGEST_FILE} a node reads",
+            "the {} receptor's {count} items come to {} bytes, more than the {LARGEST_FILE} a \
+             node reads",
             source.name(),
             body.len()
         )));
@@ -1301,10 +1302,19 @@ mod tests {
         .expect_err("refused")
         .to_string();
         assert!(
-            refused.starts_with(&format!("calls's {} items come to ", taken + 1))
-                && refused.ends_with(&format!("bytes, more than the {LARGEST_FILE} a node reads")),
+            refused.starts_with(&format!(
+                "the calls receptor's {} items come to ",
+                taken + 1
+            )) && refused.ends_with(&format!("bytes, more than the {LARGEST_FILE} a node reads")),
             "{refused}"
         );
+        let bytes: u64 = refused
+            .split(" items come to ")
+            .nth(1)
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|count| count.parse().ok())
+            .expect("the refusal says how many bytes");
+        assert!(bytes > LARGEST_FILE, "{refused}");
         let file = state.path().join(format!("calls{ITEMS}"));
         let size = fs::metadata(&file).expect("written").len();
         assert!(
@@ -1389,17 +1399,18 @@ mod tests {
             (Source::Calendar, summed(EVENT)),
         ] {
             let state = tempfile::tempdir().expect("a folder");
+            let refused = write(
+                state.path(),
+                source,
+                "work",
+                std::slice::from_ref(&named),
+                now,
+            )
+            .expect_err("refused")
+            .to_string();
             assert!(
-                write(
-                    state.path(),
-                    source,
-                    "work",
-                    std::slice::from_ref(&named),
-                    now
-                )
-                .is_err(),
-                "{} wrote {named:?}",
-                source.name()
+                refused.starts_with(&format!("the {} receptor may not name ", source.name())),
+                "{refused}"
             );
             assert!(
                 !file(state.path(), source).exists(),
