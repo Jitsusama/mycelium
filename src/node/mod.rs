@@ -1647,12 +1647,16 @@ enum Counts {
 }
 
 impl Counts {
-    /// Whether work placed on `machine`, by the node of `here`, counts.
-    fn starts(self, machine: &str, here: &str) -> bool {
+    /// The machine `placement`, made by the node of `here`, counts a
+    /// start on, if it counts one: work placed nowhere counts nowhere.
+    fn counted<'a>(self, placement: &'a Placement, here: &str) -> Option<&'a str> {
+        let Placement::Placed { machine, .. } = placement else {
+            return None;
+        };
         match self {
-            Self::Never => false,
-            Self::Always => true,
-            Self::Here => machine == here,
+            Self::Never => None,
+            Self::Always => Some(machine),
+            Self::Here => (machine == here).then_some(machine.as_str()),
         }
     }
 }
@@ -2677,11 +2681,10 @@ impl<S: Store> Shared<S> {
 
     /// Places `work` among the realm's machines, each weighed with the
     /// sessions on it and the starts placed there that its room doesn't
-    /// yet show. A placement `counts` as a start is kept as one, under the
-    /// same lock, so a burst of asks spreads rather than piling on
-    /// whichever led. Each
-    /// placement is kept in its log, where it keeps one, once the lock is
-    /// let go. Work an agent asks, running in the fence `fence`, is refused
+    /// yet show. A placement that `counts` says is a start is kept as one,
+    /// under the same lock, so a burst of asks spreads rather than piling
+    /// on whichever led. Each placement is kept in its log, where it keeps
+    /// one, once the lock is let go. Work an agent asks, running in the fence `fence`, is refused
     /// every machine whose ground is looser than here, so nothing is carried
     /// to a machine that would refuse to run it once it got there. Those
     /// machines still count for what the realm reaches, and the record
@@ -2719,15 +2722,12 @@ impl<S: Store> Shared<S> {
             let sessions = inner.state.sessions();
             let loads = inner.starts.loads(&machines, running(&sessions), now);
             let decision = placement::decide_refusing(work, &machines, &loads, &refused);
-            let counted = match &decision.placement {
-                Placement::Placed { machine, .. } if counts.starts(machine, &self.machine) => {
-                    inner.starts.placed(machine, now);
-                    true
-                }
-                _ => false,
-            };
-            // A start refused is kept as a start all the same, so a replay
-            // asks it again as one.
+            let counted = counts
+                .counted(&decision.placement, &self.machine)
+                .inspect(|machine| inner.starts.placed(machine, now))
+                .is_some();
+            // A start refused is recorded as a start all the same, as it
+            // was asked one.
             (loads, decision, counted || counts == Counts::Always)
         };
         let Some(log) = &self.placements else {
@@ -11103,16 +11103,32 @@ esac
 
     #[test]
     fn an_ask_to_start_elsewhere_leaves_its_count_to_the_start_there() {
-        assert!(
-            Counts::Here.starts("skiff", "skiff"),
+        let on = |machine: &str| Placement::Placed {
+            machine: machine.to_owned(),
+            passed: Vec::new(),
+        };
+        assert_eq!(
+            Counts::Here.counted(&on("skiff"), "skiff"),
+            Some("skiff"),
             "its asker starts it here"
         );
-        assert!(
-            !Counts::Here.starts("kestrel", "skiff"),
+        assert_eq!(
+            Counts::Here.counted(&on("kestrel"), "skiff"),
+            None,
             "its asker starts it through `Start`, which counts it once"
         );
-        assert!(Counts::Always.starts("kestrel", "skiff"));
-        assert!(!Counts::Never.starts("skiff", "skiff"));
+        assert_eq!(
+            Counts::Always.counted(&on("kestrel"), "skiff"),
+            Some("kestrel"),
+            "a start this node makes counts wherever it goes"
+        );
+        assert_eq!(Counts::Never.counted(&on("skiff"), "skiff"), None);
+        let nowhere = Placement::Refused { misses: Vec::new() };
+        assert_eq!(
+            Counts::Always.counted(&nowhere, "skiff"),
+            None,
+            "work placed nowhere counts nowhere"
+        );
     }
 
     #[tokio::test]
@@ -11122,9 +11138,12 @@ esac
         let kept = dir.path().join("placements");
         let given = Given {
             placements: Some(placements::Log::at(kept.clone())),
+            processes: Processes::Folder(procs_of(&socket)),
             ..bare(dir.path().join("steer"), None)
         };
         let (stop, node) = alone_with(&Memory::default(), &socket, given);
+        // A person asking, so nothing is refused for its ground.
+        asks_as_person(&socket);
 
         let answers = tokio::task::spawn_blocking(move || {
             let mut client = Client::connect(&socket).expect("the client connects");
@@ -11155,7 +11174,7 @@ esac
             [skiff.clone(), skiff.clone(), None, skiff],
             "each ask is answered as a plain one would be: {answers:?}"
         );
-        let records: Vec<placements::Record> = fs::read_dir(&kept)
+        let mut records: Vec<placements::Record> = fs::read_dir(&kept)
             .expect("the log's folder")
             .flat_map(|entry| {
                 let day = fs::read_to_string(entry.expect("an entry").path()).expect("a day");
@@ -11164,6 +11183,8 @@ esac
                     .collect::<Vec<_>>()
             })
             .collect();
+        // A day's file each, so asks crossing midnight are put back in order.
+        records.sort_by_key(|one| one.at.parse::<jiff::Timestamp>().expect("a time"));
         assert_eq!(
             records.iter().map(|one| one.start).collect::<Vec<_>>(),
             [false, true, false, false],

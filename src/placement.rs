@@ -247,6 +247,12 @@ pub const CPU_PRESSURE: &str = "cpu-pressure";
 /// room isn't said after it sooner.
 pub const STARTS_COUNT_FOR: jiff::SignedDuration = jiff::SignedDuration::from_mins(5);
 
+/// How long after a start its machine's room must be said to show it: a
+/// room is said every few seconds here, sooner than a session begun can
+/// register or load its machine, and a burst of spawns on 17 Nov showed
+/// its sessions within about sixteen seconds of being asked.
+pub const A_START_SHOWS_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_secs(30);
+
 /// How old a machine's room may be and still earn it headroom: three of
 /// the minutes a link carries another machine's facts in, so one gone
 /// quiet never wins on what it said long ago.
@@ -454,8 +460,9 @@ pub struct Load {
 pub type Loads = BTreeMap<String, Load>;
 
 /// The starts a node placed lately, kept in memory only: each is load on
-/// its machine until that machine says its room after it, as its room then
-/// shows it, or for [`STARTS_COUNT_FOR`] at most, and is then forgotten.
+/// its machine until that machine says its room [`A_START_SHOWS_AFTER`]
+/// it or later, as its room then shows it, or for [`STARTS_COUNT_FOR`] at
+/// most, and is then forgotten.
 #[derive(Debug, Default)]
 pub struct Starts {
     placed: Vec<(String, jiff::Timestamp)>,
@@ -485,7 +492,7 @@ impl Starts {
                 .get(machine.as_str())
                 .copied()
                 .flatten()
-                .is_some_and(|said| said > *at);
+                .is_some_and(|said| said.duration_since(*at) >= A_START_SHOWS_AFTER);
             !shown && now.duration_since(*at) < STARTS_COUNT_FOR
         });
         let mut loads: Loads = machines
@@ -1986,11 +1993,17 @@ pub(crate) mod tests {
             },
             "a start its room doesn't yet show counts beside its sessions"
         );
-        kestrel.room.as_mut().expect("a room").said_at = "2026-10-29T06:00:06Z".to_owned();
+        kestrel.room.as_mut().expect("a room").said_at = "2026-10-29T06:00:09Z".to_owned();
+        assert_eq!(
+            starts.loads(std::slice::from_ref(&kestrel), sessions, later)["kestrel"].placed,
+            1,
+            "a room said seconds after it is too soon to show a session begun"
+        );
+        kestrel.room.as_mut().expect("a room").said_at = "2026-10-29T06:00:35Z".to_owned();
         assert_eq!(
             starts.loads(std::slice::from_ref(&kestrel), sessions, later)["kestrel"].placed,
             0,
-            "and no longer once its room is said after it"
+            "and no longer once its room is said long enough after it"
         );
         kestrel.room.as_mut().expect("a room").said_at = "2026-10-29T06:00:00Z".to_owned();
         assert_eq!(

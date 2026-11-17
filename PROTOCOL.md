@@ -1275,7 +1275,9 @@ there, since an idle one's memory is already gone from
 `memory_available`, and its `starts` those this node placed there by
 `"Start"`, or by a `"PlaceToStart"` answered with this machine, that its
 room doesn't yet show: each counts until the machine says its
-room after it, or for five minutes at most, kept in memory only, so a
+room thirty seconds or more after it, since a room said sooner can't
+yet show a session begun, or for five minutes at most, kept in memory
+only, so a
 burst of starts spreads across machines alike rather than piling on
 whichever led. A `prefer_not` taint such as `disk-pressure` is only a
 weight, so a machine idle beside one busy may take work despite it;
@@ -1303,12 +1305,12 @@ spawns spreads as a burst of starts does, rather than each being told
 the machine the last was. A node older than this answers it as a
 request it doesn't know, and an asker then asks `"Place"`.
 
-Each placement, by `"Place"`, `"PlaceToStart"` or `"Start"`, is kept as a JSON line in
-`placements/<date>.jsonl` in mycelium's folder, a file for each day of
+Each placement, by `"Place"`, `"PlaceToStart"` or `"Start"`, is kept
+as a JSON line in `placements/<date>.jsonl` in mycelium's folder, a file for each day of
 the machine's calendar, so a monitor can judge how well work was placed
 and a replay can place it again under other weights: `at`, `start`
-(whether it was a start, or an ask to start answered here), the `work`, every machine's facts as placing
-read them (`machines`), each machine's `loads` (`sessions` and `placed`
+(whether it was a start, or an ask to start answered here), the
+`work`, every machine's facts as placing read them (`machines`), each machine's `loads` (`sessions` and `placed`
 starts beyond what its room says), and the `decision`: the `placement`
 answered and, for each machine, how it was `judged` (`machine`,
 `qualifies`, `over`, `unheard`, how many preferences it met as
