@@ -69,7 +69,6 @@ fn script_words(script: &str) -> Vec<String> {
                 let held = word.get_or_insert_with(String::new);
                 held.extend(letters.next());
             }
-            (Some(_), _) => word.get_or_insert_with(String::new).push(letter),
             (None, '"' | '\'') => {
                 quote = Some(letter);
                 word.get_or_insert_with(String::new);
@@ -77,7 +76,8 @@ fn script_words(script: &str) -> Vec<String> {
             (None, _) if letter.is_whitespace() || ";&|".contains(letter) => {
                 words.extend(word.take());
             }
-            (None, _) => word.get_or_insert_with(String::new).push(letter),
+            // Within quotes, or outside them, any other letter is the word's.
+            _ => word.get_or_insert_with(String::new).push(letter),
         }
     }
     words.extend(word);
