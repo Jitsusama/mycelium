@@ -753,17 +753,25 @@ exit, `why` says which, with `again`, `true`. Where its quest or
 session begins with `-` and would be read as a flag, or it names
 none, `pi-carry` isn't asked and the line has no `again`. Each carry's
 newest line stands, even for a node started afresh: one without
-`again` for good, so its trees stay until the line is taken out of
-the file, and one with `again` for a day, when `pi-carry` is asked
-again while the carry is within the week, since a shell or an editor
-standing in a tree may have left it since; past the week nobody asks,
-though the line still says `again`. One with `again` whose session
-this node sees back here gets a line without it, `why` saying so, at
-each look until that is kept, as does an answer kept once it was seen
-back, since only a node that saw it come back knows; a session back
-and ended again while the node was stopped isn't seen. Trees let go don't come
-back if the node or `pi-carry` is rolled back, though each one's
-branch still names its commits. What asked nothing keeps no line: a
+`again` for good, so its trees stay, and one with `again` for a day,
+when `pi-carry` is asked again while the carry is within the week,
+since a shell or an editor standing in a tree may have left it since;
+past the week nobody asks. As the node keeps a line, it lets go of
+each kept more than a fortnight before, since its carry was ordered
+before then and is no longer looked at, and of any torn by a write cut
+short; one whose `at` can't be read stays. The fortnight is twice the
+week, so a clock stepped back by less than a week brings no carry back
+without its line. A node keeps one line at a time under a lock on
+`settles.jsonl.lock`, which holds too between two nodes given one
+state folder, writes the file aside and moves it into place: a reader
+sees the old lines or the new. One with
+`again` whose session this node sees back here gets a line without
+it, `why` saying so, at each look until that is kept, as does an
+answer kept once it was seen back, since only a node that saw it come
+back knows; a session back and ended again while the node was stopped
+isn't seen. Trees let go don't come back if the node or `pi-carry` is
+rolled back, though each one's branch still names its commits. What
+asked nothing keeps no line: a
 `pi-carry` that didn't run, or one that can't settle (its exit 2, as
 one from before settling gives). That, and an answer lost, as when a
 signal ends the settling or its line can't be kept, is asked again
