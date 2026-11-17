@@ -52,6 +52,9 @@ const LONGEST_WAITING: u64 = 256 * 1024;
 /// How often every quest held is looked at again, for a change a watch
 /// missed, and the quests no cell works on any more let go.
 const ROUND: Duration = Duration::from_secs(300);
+/// How often a waiting folder no watch hears is read again, so a wait
+/// reaches its person within moments even on a machine past its watches.
+const HARK: Duration = Duration::from_secs(5);
 
 /// One document of a quest, as its front matter and its checkboxes say.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -691,6 +694,12 @@ impl WaitingFolder {
         }
     }
 
+    /// Whether no watch hears the folder, nor its parent while it's
+    /// missing, so it is read again every hark rather than every round.
+    fn unheard(&self) -> bool {
+        self.folder.is_some() && (self.deaf || (self.heard.is_none() && !self.awaited))
+    }
+
     /// The quests `held` holds whose waiting file is among `touched`.
     fn changed(&self, held: &Held, touched: &[PathBuf]) -> Vec<String> {
         let Some(folder) = &self.folder else {
@@ -817,6 +826,8 @@ pub async fn keep(
     let mut waiting = WaitingFolder::of(&held);
     let mut rounds = tokio::time::interval(ROUND);
     rounds.tick().await;
+    let mut harks = tokio::time::interval(HARK);
+    harks.tick().await;
     loop {
         // Waiting files a watch may not have heard written are read at
         // once, as no change may come to wake the loop for them.
@@ -855,6 +866,11 @@ pub async fn keep(
                     tell.send_modify(|changes| *changes += 1);
                 }
                 continue;
+            }
+            _ = harks.tick(), if waiting.unheard() => {
+                // A folder no watch hears, as on a machine past its
+                // watches, is read again on the next turn.
+                waiting.round();
             }
             _ = rounds.tick() => {
                 waiting.round();
@@ -1718,17 +1734,14 @@ mod tests {
             "a control character read from a file is drawn as a space"
         );
         assert_eq!(
-            draw(&[waiting], None, 40)
-                .lines()
-                .filter(|line| line.contains("hovers"))
-                .collect::<Vec<_>>(),
-            [
-                "  Kestrel learns to hover over one",
-                "  Waits on you: Say whether it hovers",
-                "    (ready, today)",
-                "  Waits on you: Land it (after it",
-                "    hovers)",
-            ],
+            draw(&[waiting], None, 40),
+            "KESTRL  on kestrel  QEST-1\n  Kestrel learns to hover over one\n  field.\n  \
+             Waits on you: Say whether it hovers\n    (ready, today)\n  \
+             Waits on you: Pick a field (ready)\n  \
+             Waits on you: Land it (after it\n    hovers)\n  \
+             Waits on you: Name it\n  \
+             Waits on you: Fly now [2J (to day)\n  \
+             No research, plans or reports yet.\n",
             "a wait too long for the terminal wraps under its indent"
         );
     }
@@ -1955,6 +1968,17 @@ mod tests {
         );
         waiting.round();
         assert_eq!(waiting.listen(&mut Deaf), file, "read again each round");
+        assert!(waiting.unheard(), "a folder no watch hears is harked to");
+        fs::remove_dir_all(&folder).expect("removed");
+        waiting.listen(&mut Deaf);
+        assert!(
+            waiting.unheard(),
+            "a folder whose parent no watch hears too"
+        );
+        assert!(
+            !WaitingFolder::of(&Held::default()).unheard(),
+            "a node reading no waits harks to nothing"
+        );
     }
 
     #[test]
