@@ -358,6 +358,21 @@ mod tests {
     }
 
     #[test]
+    fn a_park_is_taken_as_this_boots_where_the_machine_names_no_boot() {
+        let marked = HashSet::from(["s-one".to_owned()]);
+        let nameless = Boot {
+            id: None,
+            ..boot()
+        };
+        let parked = session(State::Ended, BEFORE, napping("boot-now"));
+        assert_eq!(
+            standing(&parked, true, &marked, &nameless),
+            Some("parked"),
+            "a boot the machine can't name can't refuse the park's own"
+        );
+    }
+
+    #[test]
     fn the_digest_moves_only_with_what_a_shut_launcher_reads() {
         let fields = |state: &str, step: &str, busy: bool, wants: Value| {
             json!({
