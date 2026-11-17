@@ -9,9 +9,11 @@
 //! unit but what one cell's purpose is written in.
 //!
 //! A quest's record is a folder: its `README.md`, whose front matter says
-//! its parent and status and whose Summary's first sentence is its purpose,
-//! and its documents under `plans/`, `research/`, `briefs/` and
-//! `reports/`, each with front matter saying its id, kind and stage. A
+//! its parent and status and whose Summary's first sentence of its own
+//! words is its purpose, and its documents under `plans/`, `research/`,
+//! `briefs/` and `reports/`, each with front matter saying its id, kind
+//! and stage. What it waits on its person for is kept apart, in a file of
+//! its own in the waiting folder, named by the last part of its id. A
 //! plan can grow past 400 KB, so a document is read only when its length
 //! or time changed since it was last read, and a quest only when a watch
 //! on its folders hears a change, or on the slow round that catches what
@@ -20,13 +22,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{self, BufRead as _, BufReader};
+use std::io::{self, BufRead as _, BufReader, Read as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
-use notify::Watcher as _;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
 
@@ -42,6 +44,10 @@ const LONGEST_PURPOSE: usize = 280;
 /// How long after a change is heard the quest is read, so a document
 /// written in several steps is read once, whole.
 const SETTLED_AFTER: Duration = Duration::from_millis(250);
+
+/// The longest waiting file read, in bytes: a quest's few waits, never a
+/// file grown or written wrong.
+const LONGEST_WAITING: u64 = 256 * 1024;
 
 /// How often every quest held is looked at again, for a change a watch
 /// missed, and the quests no cell works on any more let go.
@@ -75,6 +81,62 @@ pub struct Quest {
     pub parent: Option<String>,
     /// Its documents, by id.
     pub documents: Vec<Document>,
+    /// What it waits on its person for, as its waiting file says.
+    pub waits: Vec<Wait>,
+}
+
+/// One thing a quest waits on its person for, as the launcher keeps it in
+/// the quest's waiting file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Wait {
+    /// Its id, which the launcher clears it by.
+    pub id: String,
+    /// What the person is asked to do, in a line.
+    pub title: String,
+    /// Why it waits on them.
+    pub why: String,
+    /// About how many whole minutes of theirs it takes.
+    pub minutes: Option<u32>,
+    /// When it is for, in words, such as `today`.
+    pub when: Option<String>,
+    /// Whether it can be done now, nothing else waited on first.
+    pub ready: bool,
+    /// When it was raised.
+    pub raised: Option<String>,
+}
+
+impl Wait {
+    /// The wait `item` says, or none without an id and a title. Any other
+    /// field missing, null or written wrong says nothing, so the wait
+    /// still shows.
+    fn of(item: &Value) -> Option<Self> {
+        let said = |field: &str| {
+            item[field]
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+        };
+        Some(Self {
+            id: said("id")?,
+            title: said("title")?,
+            why: said("why").unwrap_or_default(),
+            minutes: item["minutes"]
+                .as_u64()
+                .and_then(|minutes| u32::try_from(minutes).ok()),
+            when: said("when"),
+            ready: item["ready"].as_bool().unwrap_or(false),
+            raised: said("raisedAt"),
+        })
+    }
+}
+
+/// A waiting file as the launcher writes it: the quest it is for, and
+/// each wait, read one by one so one written wrong loses only itself.
+#[derive(Deserialize)]
+struct Waiting {
+    quest: Option<String>,
+    #[serde(default)]
+    items: Vec<Value>,
 }
 
 /// A cell of this machine and the quest it works on.
@@ -96,6 +158,8 @@ type Stamp = (u64, Option<SystemTime>);
 /// What has been read of the quest store.
 #[derive(Debug, Default)]
 pub struct Shelf {
+    /// The folder of the quests' waiting files, if it reads them.
+    waiting: Option<PathBuf>,
     /// Each quest a cell works on, as last read.
     quests: BTreeMap<String, Quest>,
     /// Each document file as last read, so an unchanged one isn't read
@@ -106,6 +170,15 @@ pub struct Shelf {
 }
 
 impl Shelf {
+    /// A shelf that reads each quest's waits from its file in `waiting`.
+    #[must_use]
+    pub fn with_waits(waiting: PathBuf) -> Self {
+        Self {
+            waiting: Some(waiting),
+            ..Self::default()
+        }
+    }
+
     /// The quest `id` as last read, marking it asked for.
     pub fn quest(&mut self, id: &str) -> Option<&Quest> {
         self.asked.insert(id.to_owned());
@@ -115,18 +188,24 @@ impl Shelf {
     /// Reads the quest `id` from `store` again, reading only the
     /// documents that changed. Whether what it holds changed.
     pub fn read(&mut self, store: &Path, id: &str) -> bool {
-        let quest = read_quest(store, id, &mut self.files);
+        let mut quest = read_quest(store, id, &mut self.files);
+        if let Some(waiting) = &self.waiting {
+            quest.waits = read_waits(waiting, id);
+        }
         let same = self.quests.get(id) == Some(&quest);
         self.quests.insert(id.to_owned(), quest);
         !same
     }
 
     /// Lets go of the quests no cell asked for since the last round, and
-    /// their documents; the ones it keeps.
-    pub fn round(&mut self, store: &Path) -> BTreeSet<String> {
-        let asked = std::mem::take(&mut self.asked);
+    /// their documents, but those a cell in `living` works on, so the
+    /// first forage asked for after a quiet spell isn't empty; the ones
+    /// it keeps.
+    pub fn round(&mut self, store: &Path, living: &BTreeSet<String>) -> BTreeSet<String> {
+        let mut asked = std::mem::take(&mut self.asked);
+        asked.extend(living.iter().cloned());
         self.quests.retain(|id, _| asked.contains(id));
-        let kept: Vec<PathBuf> = asked.iter().map(|id| store.join(id)).collect();
+        let kept: Vec<PathBuf> = self.quests.keys().map(|id| store.join(id)).collect();
         self.files
             .retain(|path, _| kept.iter().any(|folder| path.starts_with(folder)));
         self.quests.keys().cloned().collect()
@@ -139,6 +218,7 @@ impl Shelf {
     pub fn lend(&self, store: &Path, due: &BTreeSet<String>, stale: &[PathBuf]) -> Self {
         let folders: Vec<PathBuf> = due.iter().map(|id| store.join(id)).collect();
         Self {
+            waiting: self.waiting.clone(),
             quests: due
                 .iter()
                 .filter_map(|id| Some((id.clone(), self.quests.get(id)?.clone())))
@@ -170,6 +250,18 @@ impl Shelf {
     pub fn holds(&self, id: &str) -> bool {
         self.quests.contains_key(id)
     }
+
+    /// The quests held whose waiting file is the one named `file`.
+    fn waiting_on(&self, file: &Path) -> Vec<String> {
+        let Some(name) = file.file_name().and_then(|name| name.to_str()) else {
+            return Vec::new();
+        };
+        self.quests
+            .keys()
+            .filter(|id| waiting_file(id) == name)
+            .cloned()
+            .collect()
+    }
 }
 
 /// What the node holds of its cells' forages.
@@ -186,8 +278,9 @@ fn is_quest_id(id: &str) -> bool {
 
 /// The front matter of `lines`, as key and value, up to its closing
 /// `---`; none when it opens without one. A key whose value is YAML's
-/// null, a bare `null` or `~`, says nothing, as one left empty does; a
-/// quoted `"null"` is the word.
+/// null, a bare `null`, `Null`, `NULL` or `~`, says nothing, as one left empty does; a
+/// quoted `"null"` is the word. A ` #` after an unquoted value starts a
+/// comment, which is no part of it.
 fn front_matter(lines: &mut impl Iterator<Item = String>) -> HashMap<String, String> {
     let mut said = HashMap::new();
     if lines.next().as_deref().map(str::trim_end) != Some("---") {
@@ -203,10 +296,25 @@ fn front_matter(lines: &mut impl Iterator<Item = String>) -> HashMap<String, Str
         }
         if let Some((key, value)) = line.split_once(':') {
             let raw = value.trim();
-            if raw == "null" || raw == "~" {
-                continue;
-            }
-            let value = raw.trim_matches(['"', '\'']);
+            // A quoted value is what its quotes hold, a comment after them
+            // or not.
+            let value = if let Some(mark @ ('"' | '\'')) = raw.chars().next() {
+                raw[1..]
+                    .split_once(mark)
+                    .map_or_else(|| raw.trim_matches(['"', '\'']), |(inner, _)| inner)
+            } else {
+                let said = raw
+                    .char_indices()
+                    .find(|&(at, each)| {
+                        each == '#' && (at == 0 || raw[..at].ends_with([' ', '\t']))
+                    })
+                    .map_or(raw, |(at, _)| &raw[..at])
+                    .trim_end();
+                if matches!(said, "null" | "Null" | "NULL" | "~") {
+                    continue;
+                }
+                said
+            };
             if !value.is_empty() {
                 said.insert(key.trim().to_owned(), value.to_owned());
             }
@@ -225,19 +333,66 @@ fn lines_of(path: &Path) -> Option<impl Iterator<Item = String>> {
     Some(BufReader::new(file).lines().map_while(io::Result::ok))
 }
 
-/// The first sentence of `paragraph`, at most [`LONGEST_PURPOSE`] characters.
+/// The sentences of `paragraph`, each ending at a `.`, `!` or `?` before
+/// a space or the end. One inside a quote doesn't end its sentence, which
+/// ends at the quote's close instead, as `start building." This` does,
+/// where anything but a lower-case letter follows; when the quotes don't
+/// pair, they're read as any other mark.
+fn sentences(paragraph: &str) -> Vec<&str> {
+    let straight = paragraph.matches('"').count();
+    let paired = straight.is_multiple_of(2)
+        && paragraph.matches('\u{201c}').count() == paragraph.matches('\u{201d}').count();
+    let mut sentences = Vec::new();
+    let (mut from, mut quoted, mut stopped) = (0, false, false);
+    for (at, each) in paragraph.char_indices() {
+        let after = at + each.len_utf8();
+        let closes = match each {
+            '"' if paired => {
+                quoted = !quoted;
+                !quoted
+            }
+            '\u{201c}' if paired => {
+                quoted = true;
+                false
+            }
+            '\u{201d}' if paired => {
+                quoted = false;
+                true
+            }
+            _ => false,
+        };
+        let stops = matches!(each, '.' | '!' | '?');
+        let at_end = paragraph[after..]
+            .chars()
+            .next()
+            .is_none_or(char::is_whitespace);
+        // Asked only at a quote closing on a stop, so a long run of spaces
+        // is walked once.
+        let anew = || {
+            paragraph[after..]
+                .trim_start()
+                .chars()
+                .next()
+                .is_none_or(|next| !next.is_lowercase())
+        };
+        if at_end && ((stops && !quoted) || (closes && stopped && anew())) {
+            sentences.push(paragraph[from..after].trim());
+            from = after;
+        }
+        stopped = stops;
+    }
+    let rest = paragraph[from..].trim();
+    if !rest.is_empty() {
+        sentences.push(rest);
+    }
+    sentences
+}
+
+/// The first sentence of `paragraph`, a quote in it kept whole, at most
+/// [`LONGEST_PURPOSE`] characters. A quest often opens by quoting its
+/// person, and their words are usually the clearest purpose it has.
 fn first_sentence(paragraph: &str) -> String {
-    let ends = paragraph
-        .char_indices()
-        .find(|&(at, each)| {
-            matches!(each, '.' | '!' | '?')
-                && paragraph[at + each.len_utf8()..]
-                    .chars()
-                    .next()
-                    .is_none_or(char::is_whitespace)
-        })
-        .map_or(paragraph.len(), |(at, each)| at + each.len_utf8());
-    let sentence = paragraph[..ends].trim();
+    let sentence = sentences(paragraph).first().copied().unwrap_or_default();
     if sentence.chars().count() <= LONGEST_PURPOSE {
         return sentence.to_owned();
     }
@@ -270,7 +425,9 @@ fn read_readme(path: &Path) -> (Option<String>, Option<String>, Option<String>) 
             in_summary = heading.contains("Summary");
             continue;
         }
-        if !in_summary || line.is_empty() {
+        // Guidance on a line of its own, right above the quest's words,
+        // isn't them either.
+        if !in_summary || line.is_empty() || (paragraph.is_empty() && is_guidance(line)) {
             continue;
         }
         // A quote of the person's words leads with who said it; the purpose
@@ -293,6 +450,57 @@ fn is_guidance(paragraph: &str) -> bool {
             .and_then(|rest| rest.strip_suffix(mark))
             .is_some_and(|inner| !inner.is_empty() && !inner.contains(mark))
     })
+}
+
+/// The name of the waiting file of quest `id`: the last part of its id,
+/// as the launcher names it, such as `KESTRL.json`.
+fn waiting_file(id: &str) -> String {
+    let short = id.rsplit_once('-').map_or(id, |(_, short)| short);
+    format!("{short}.json")
+}
+
+/// What quest `id` waits on its person for, as its file in `waiting`
+/// says: none when there's no file, it's a link, it's too long to be one,
+/// it doesn't parse or it doesn't name this quest as its own. A wait written wrong is left
+/// out, keeping the rest.
+fn read_waits(waiting: &Path, id: &str) -> Vec<Wait> {
+    if !is_quest_id(id) {
+        return Vec::new();
+    }
+    let Some(file) = read_at_most(&waiting.join(waiting_file(id)), LONGEST_WAITING)
+        .and_then(|bytes| serde_json::from_slice::<Waiting>(&bytes).ok())
+    else {
+        return Vec::new();
+    };
+    // Quests whose ids end alike share a file name, so only the quest the
+    // file names is believed.
+    if file.quest.as_deref() != Some(id) {
+        return Vec::new();
+    }
+    file.items.iter().filter_map(Wait::of).collect()
+}
+
+/// What the regular file at `path` holds, or none when it holds more than
+/// `most` bytes. It is opened never through a link and without waiting
+/// on a writer, and what was opened is what is judged, so a file swapped
+/// in meanwhile can neither hold nor flood its reader.
+fn read_at_most(path: &Path, most: u64) -> Option<Vec<u8>> {
+    let opened = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .ok()?;
+    let file = fs::File::from(opened);
+    if !file.metadata().ok()?.file_type().is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(most + 1).read_to_end(&mut bytes).ok()?;
+    (u64::try_from(bytes.len()).ok()? <= most).then_some(bytes)
 }
 
 /// What a document says of itself, or none when it isn't one.
@@ -377,6 +585,7 @@ fn read_quest(
         status,
         parent,
         documents,
+        waits: Vec::new(),
     }
 }
 
@@ -408,7 +617,7 @@ pub fn records(
             if *quest == Quest::default() {
                 return None;
             }
-            let fields = json!({
+            let mut fields = json!({
                 "cell": cell.address,
                 "session": cell.session,
                 "machine": machine,
@@ -421,6 +630,11 @@ pub fn records(
                     "parent": quest.parent,
                 },
             });
+            // Most quests wait on nobody, and ten thousand empty lists
+            // would weigh on the node for nothing.
+            if !quest.waits.is_empty() {
+                fields["waits"] = json!(quest.waits);
+            }
             let key = crate::daemon::key(KIND, &cell.address);
             Some((key, crate::daemon::record(KIND, &cell.address, 0, fields)))
         })
@@ -428,6 +642,140 @@ pub fn records(
     unread.sort();
     unread.dedup();
     (records, unread)
+}
+
+/// The folder of the quests' waiting files, heard apart from the quests'
+/// own folders and for as long as the node runs, since its files come and
+/// go as waits do.
+struct WaitingFolder {
+    /// The folder as the node names it; none when it reads no waits.
+    folder: Option<PathBuf>,
+    /// Once the folder is read, its real path, which a watch may say a
+    /// change at instead, and which folder it is, by device and inode, so
+    /// one removed and made anew is heard anew.
+    heard: Option<(PathBuf, (u64, u64))>,
+    /// Whether the folder was read with no watch hearing it, so is read
+    /// again each round rather than each turn, which would never wait.
+    deaf: bool,
+    /// Whether a watch hears the folder's parent, as it does while the
+    /// folder isn't there, to hear it made.
+    awaited: bool,
+}
+
+impl WaitingFolder {
+    /// The waiting folder `held` reads its waits from.
+    fn of(held: &Held) -> Self {
+        let folder = held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .waiting
+            .clone();
+        Self {
+            folder,
+            heard: None,
+            deaf: false,
+            awaited: false,
+        }
+    }
+
+    /// Listens afresh on the next turn wherever no watch may hear: a
+    /// folder read unheard is read again, and its parent heard again, as
+    /// a watch on it may have died with no word.
+    fn round(&mut self) {
+        if self.deaf {
+            self.heard = None;
+            self.deaf = false;
+        }
+        if self.heard.is_none() {
+            self.awaited = false;
+        }
+    }
+
+    /// The quests `held` holds whose waiting file is among `touched`.
+    fn changed(&self, held: &Held, touched: &[PathBuf]) -> Vec<String> {
+        let Some(folder) = &self.folder else {
+            return Vec::new();
+        };
+        let resolved = self.heard.as_ref().map(|(resolved, _)| resolved);
+        let holding = held.lock().unwrap_or_else(PoisonError::into_inner);
+        touched
+            .iter()
+            .filter(|path| {
+                path.starts_with(folder) || resolved.is_some_and(|real| path.starts_with(real))
+            })
+            .flat_map(|path| holding.waiting_on(path))
+            .collect()
+    }
+
+    /// Forgets the watch on the folder when `touched` holds the folder
+    /// itself, as when it is removed or made: a watch dies with its folder,
+    /// and one made anew may take the same inode, so only a change heard
+    /// says to listen afresh.
+    fn heard_of(&mut self, touched: &[PathBuf]) {
+        let Some(folder) = &self.folder else {
+            return;
+        };
+        let real = self.heard.as_ref().map(|(real, _)| real);
+        if touched
+            .iter()
+            .any(|path| path == folder || real.is_some_and(|real| path == real))
+        {
+            self.heard = None;
+        }
+    }
+
+    /// Has `watcher` hear the folder as it stands: the folder while it's
+    /// there, its parent while it isn't, and a folder made anew afresh.
+    /// Says the files in a folder heard anew, which may have been written
+    /// before any watch heard them.
+    fn listen(&mut self, watcher: &mut impl notify::Watcher) -> Vec<PathBuf> {
+        let Some(folder) = &self.folder else {
+            return Vec::new();
+        };
+        let now = fs::metadata(folder)
+            .ok()
+            .filter(fs::Metadata::is_dir)
+            .map(|meta| (meta.dev(), meta.ino()));
+        let parent = folder.parent().filter(|parent| parent.is_dir());
+        match (&self.heard, now) {
+            (Some((_, was)), Some(now)) if *was == now => Vec::new(),
+            (_, Some(now)) => {
+                // A watch on a folder since removed is gone or stale.
+                let _ = watcher.unwatch(folder);
+                self.deaf = watcher
+                    .watch(folder, notify::RecursiveMode::NonRecursive)
+                    .is_err();
+                let real = fs::canonicalize(folder).unwrap_or_else(|_| folder.clone());
+                self.heard = Some((real, now));
+                if self.awaited
+                    && let Some(parent) = parent
+                {
+                    let _ = watcher.unwatch(parent);
+                    self.awaited = false;
+                }
+                fs::read_dir(folder)
+                    .map(|entries| {
+                        entries
+                            .filter_map(Result::ok)
+                            .map(|entry| folder.join(entry.file_name()))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+            (_, None) => {
+                self.heard = None;
+                self.deaf = false;
+                if !self.awaited
+                    && let Some(parent) = parent
+                {
+                    self.awaited = watcher
+                        .watch(parent, notify::RecursiveMode::NonRecursive)
+                        .is_ok();
+                }
+                Vec::new()
+            }
+        }
+    }
 }
 
 /// Keeps `held` true to `store` for as long as the node runs: reads each
@@ -466,12 +814,19 @@ pub async fn keep(
         _ => path,
     };
     let mut listened_to: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut waiting = WaitingFolder::of(&held);
     let mut rounds = tokio::time::interval(ROUND);
     rounds.tick().await;
     loop {
-        let mut due: BTreeSet<String> = BTreeSet::new();
-        let mut touched: Vec<PathBuf> = Vec::new();
-        tokio::select! {
+        // Waiting files a watch may not have heard written are read at
+        // once, as no change may come to wake the loop for them.
+        let mut touched = watcher
+            .as_mut()
+            .map(|watcher| waiting.listen(watcher))
+            .unwrap_or_default();
+        let mut due: BTreeSet<String> = waiting.changed(&held, &touched).into_iter().collect();
+        if due.is_empty() {
+            tokio::select! {
             Some(id) = wanted.recv() => {
                 due.insert(id);
                 while let Ok(id) = wanted.try_recv() {
@@ -485,6 +840,8 @@ pub async fn keep(
                     touched.push(in_store(path));
                 }
                 due.extend(touched.iter().filter_map(|path| quest_of(&store, path)));
+                due.extend(waiting.changed(&held, &touched));
+                waiting.heard_of(&touched);
             }
             Ok(()) = sessions.changed() => {
                 // A presence beats every few seconds while its cells seldom
@@ -500,16 +857,10 @@ pub async fn keep(
                 continue;
             }
             _ = rounds.tick() => {
-                let kept = held.lock().unwrap_or_else(PoisonError::into_inner).round(&store);
-                let keeping: BTreeSet<PathBuf> = kept.iter().flat_map(|id| folders(&store, id)).collect();
-                if let Some(watcher) = watcher.as_mut() {
-                    for gone in listened_to.difference(&keeping) {
-                        // A folder already gone is no longer watched.
-                        let _ = watcher.unwatch(gone);
-                    }
-                }
-                listened_to.retain(|folder| keeping.contains(folder));
-                due.extend(kept);
+                waiting.round();
+                let living: BTreeSet<String> = cells().into_iter().map(|cell| cell.quest).collect();
+                due.extend(round(&held, &store, &living, watcher.as_mut(), &mut listened_to));
+            }
             }
         }
         due.retain(|id| is_quest_id(id));
@@ -539,16 +890,52 @@ pub async fn keep(
             tell.send_modify(|changes| *changes += 1);
         }
         if let Some(watcher) = watcher.as_mut() {
-            for folder in due.iter().flat_map(|id| folders(&store, id)) {
-                if !listened_to.contains(&folder)
-                    && folder.is_dir()
-                    && watcher
-                        .watch(&folder, notify::RecursiveMode::NonRecursive)
-                        .is_ok()
-                {
-                    listened_to.insert(folder);
-                }
-            }
+            listen_to(watcher, &store, &due, &mut listened_to);
+        }
+    }
+}
+
+/// Has `held` let go of the quests in `store` no cell asked for since
+/// the last round and none `living` works on, and `watcher` stop hearing
+/// their folders among `listened_to`; the quests it keeps.
+fn round(
+    held: &Held,
+    store: &Path,
+    living: &BTreeSet<String>,
+    watcher: Option<&mut impl notify::Watcher>,
+    listened_to: &mut BTreeSet<PathBuf>,
+) -> BTreeSet<String> {
+    let kept = held
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .round(store, living);
+    let keeping: BTreeSet<PathBuf> = kept.iter().flat_map(|id| folders(store, id)).collect();
+    if let Some(watcher) = watcher {
+        for gone in listened_to.difference(&keeping) {
+            // A folder already gone is no longer watched.
+            let _ = watcher.unwatch(gone);
+        }
+    }
+    listened_to.retain(|folder| keeping.contains(folder));
+    kept
+}
+
+/// Has `watcher` hear the folders of each quest `due` in `store` that
+/// are there and not yet among `listened_to`.
+fn listen_to(
+    watcher: &mut impl notify::Watcher,
+    store: &Path,
+    due: &BTreeSet<String>,
+    listened_to: &mut BTreeSet<PathBuf>,
+) {
+    for folder in due.iter().flat_map(|id| folders(store, id)) {
+        if !listened_to.contains(&folder)
+            && folder.is_dir()
+            && watcher
+                .watch(&folder, notify::RecursiveMode::NonRecursive)
+                .is_ok()
+        {
+            listened_to.insert(folder);
         }
     }
 }
@@ -573,10 +960,28 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
     chosen
 }
 
+/// `text` as one line for a terminal: each control character, a newline
+/// or an escape among them, as a space, and each mark that turns text's
+/// direction left out, so words read from a file can't draw lines of
+/// their own, steer the terminal, or read backwards past their own end.
+fn one_line(text: &str) -> String {
+    text.chars()
+        .filter(|each| !turns_direction(*each))
+        .map(|each| if each.is_control() { ' ' } else { each })
+        .collect()
+}
+
+/// Whether `each` is one of Unicode's marks that turn the direction text
+/// is drawn in, which a terminal may honour past the words they came in.
+const fn turns_direction(each: char) -> bool {
+    matches!(each, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 /// `forages` drawn for a person in `width` columns: a block each, its
-/// cell, machine and quest, its purpose wrapped under its indent, then a
-/// line for each document, its title cut where the row would pass
-/// `width`. Says so in words when there are none, or none `named` names.
+/// cell, machine and quest, its purpose wrapped under its indent, a line
+/// for each thing it waits on them for, then a line for each document,
+/// its title cut where the row would pass `width`. Says so in words when
+/// there are none, or none `named` names.
 #[must_use]
 pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
     use crate::swarm::{fit, wrapped};
@@ -587,7 +992,7 @@ pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
         };
         return wrapped(&said, "", "", width);
     }
-    let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+    let text = |value: &Value| one_line(value.as_str().unwrap_or_default());
     let blocks: Vec<String> = forages
         .iter()
         .map(|forage| {
@@ -599,10 +1004,26 @@ pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
             );
             let mut block = fit(&heading, width);
             block.push('\n');
-            let purpose = forage["purpose"]
-                .as_str()
-                .unwrap_or("Its quest says no purpose yet.");
-            block.push_str(&wrapped(purpose, "  ", "  ", width));
+            let purpose = one_line(
+                forage["purpose"]
+                    .as_str()
+                    .unwrap_or("Its quest says no purpose yet."),
+            );
+            block.push_str(&wrapped(&purpose, "  ", "  ", width));
+            for wait in forage["waits"].as_array().map_or(&[][..], Vec::as_slice) {
+                let when = wait["when"]
+                    .as_str()
+                    .filter(|when| !when.is_empty())
+                    .map(one_line);
+                let stands = match (wait["ready"].as_bool().unwrap_or(false), when) {
+                    (true, Some(when)) => format!(" (ready, {when})"),
+                    (true, None) => " (ready)".to_owned(),
+                    (false, Some(when)) => format!(" ({when})"),
+                    (false, None) => String::new(),
+                };
+                let said = format!("Waits on you: {}{stands}", text(&wait["title"]));
+                block.push_str(&wrapped(&said, "  ", "    ", width));
+            }
             let documents = forage["documents"]
                 .as_array()
                 .map_or(&[][..], Vec::as_slice);
@@ -737,6 +1158,216 @@ mod tests {
     }
 
     #[test]
+    fn every_key_left_as_yamls_null_says_nothing() {
+        let store = Store::new("null-status");
+        for (quest, null) in [
+            ("QEST-20261116-KESTRL", "null"),
+            ("QEST-20261116-SKIFFS", "Null"),
+            ("QEST-20261116-OSPREY", "NULL"),
+            ("QEST-20261117-TERNSS", "null # top level"),
+            ("QEST-20261117-SKIFFS", "# none"),
+        ] {
+            let readme = README
+                .replace("status: active", &format!("status: {null}"))
+                .replace("parent: QEST-20261101-OSPREY", &format!("parent: {null}"));
+            store.write(&format!("{quest}/README.md"), &readme);
+        }
+        let mut shelf = Shelf::default();
+        for quest in [
+            "QEST-20261116-KESTRL",
+            "QEST-20261116-SKIFFS",
+            "QEST-20261116-OSPREY",
+            "QEST-20261117-TERNSS",
+            "QEST-20261117-SKIFFS",
+        ] {
+            shelf.read(&store.0, quest);
+            let read = shelf.quest(quest).expect("read");
+            assert_eq!((&read.status, &read.parent), (&None, &None), "{quest}");
+        }
+        for (quest, said) in [
+            ("QEST-20261117-KESTRL", "QEST-20261101-OSPREY # split off"),
+            (
+                "QEST-20261117-OSPREY",
+                "\"QEST-20261101-OSPREY\" # split off",
+            ),
+            ("QEST-20261118-KESTRL", "QEST-20261101-OSPREY\t# split off"),
+            ("QEST-20261118-OSPREY", "'QEST-20261101-OSPREY'"),
+        ] {
+            let commented =
+                README.replace("parent: QEST-20261101-OSPREY", &format!("parent: {said}"));
+            store.write(&format!("{quest}/README.md"), &commented);
+            shelf.read(&store.0, quest);
+            assert_eq!(
+                shelf.quest(quest).expect("read").parent.as_deref(),
+                Some("QEST-20261101-OSPREY"),
+                "a comment is no part of {said}"
+            );
+        }
+    }
+
+    /// A waiting file for quest `id`, its waits as `items`.
+    fn waiting(id: &str, items: &Value) -> String {
+        json!({
+            "v": 2,
+            "quest": id,
+            "items": items,
+            "cleared": [{"id": "gone", "title": "Said already"}],
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_quest_says_what_it_waits_on_its_person_for() {
+        let store = Store::new("waits");
+        store.write("QEST-20261116-KESTRL/README.md", README);
+        let items = json!([
+            {"id": "fly", "title": "Say whether it hovers", "why": "It flies.",
+             "minutes": 5, "when": "today", "window": "Kestrel", "ready": true,
+             "raisedAt": "2026-11-16T18:00:00Z", "steps": ["look"]},
+            {"id": "no-title"},
+            {"id": "land", "title": "Pick a field"},
+            {"id": "odd", "title": "Odd fields", "why": null, "ready": null,
+             "minutes": 2.5, "when": "", "raisedAt": 7},
+        ]);
+        store.write(
+            "waiting/KESTRL.json",
+            &waiting("QEST-20261116-KESTRL", &items),
+        );
+        let mut shelf = Shelf::with_waits(store.0.join("waiting"));
+        assert!(shelf.read(&store.0, "QEST-20261116-KESTRL"));
+        let waits = &shelf.quest("QEST-20261116-KESTRL").expect("read").waits;
+        assert_eq!(
+            waits,
+            &vec![
+                Wait {
+                    id: "fly".to_owned(),
+                    title: "Say whether it hovers".to_owned(),
+                    why: "It flies.".to_owned(),
+                    minutes: Some(5),
+                    when: Some("today".to_owned()),
+                    ready: true,
+                    raised: Some("2026-11-16T18:00:00Z".to_owned()),
+                },
+                Wait {
+                    id: "land".to_owned(),
+                    title: "Pick a field".to_owned(),
+                    why: String::new(),
+                    minutes: None,
+                    when: None,
+                    ready: false,
+                    raised: None,
+                },
+                Wait {
+                    id: "odd".to_owned(),
+                    title: "Odd fields".to_owned(),
+                    why: String::new(),
+                    minutes: None,
+                    when: None,
+                    ready: false,
+                    raised: None,
+                },
+            ],
+            "a wait with no title is left out, one with odd fields kept, and the \
+             cleared ones aren't read"
+        );
+        let (records, _) = records(&mut shelf, &[cell("QEST-20261116-KESTRL")], "kestrel");
+        let forage = &records["forage:KESTRL"];
+        assert_eq!(forage["waits"][0]["title"], "Say whether it hovers");
+        assert_eq!(forage["waits"][0]["raised"], "2026-11-16T18:00:00Z");
+        assert_eq!(forage["waits"][1]["ready"], false);
+        let mut waitless = Shelf::with_waits(store.0.join("none-here"));
+        assert!(waitless.read(&store.0, "QEST-20261116-KESTRL"));
+        let (bare, _) = super::records(&mut waitless, &[cell("QEST-20261116-KESTRL")], "kestrel");
+        assert!(
+            bare["forage:KESTRL"].get("waits").is_none(),
+            "a forage waiting on nothing leaves `waits` out"
+        );
+    }
+
+    #[test]
+    fn no_waits_are_read_from_another_quests_file_a_link_or_none() {
+        let store = Store::new("no-waits");
+        store.write("QEST-20261116-KESTRL/README.md", README);
+        store.write("QEST-20261116-SKIFFS/README.md", README);
+        store.write("QEST-20261116-OSPREY/README.md", README);
+        let one = json!([{"id": "fly", "title": "Say whether it hovers"}]);
+        store.write(
+            "waiting/KESTRL.json",
+            &waiting("QEST-20261101-KESTRL", &one),
+        );
+        store.write("elsewhere.json", &waiting("QEST-20261116-SKIFFS", &one));
+        std::os::unix::fs::symlink(
+            store.0.join("elsewhere.json"),
+            store.0.join("waiting/SKIFFS.json"),
+        )
+        .expect("a link");
+        store.write("waiting/OSPREY.json", "not json");
+        store.write("waiting/TERNSS.json", &json!({"items": one}).to_string());
+        let long = json!({
+            "quest": "QEST-20261117-KESTRL",
+            "items": one,
+            "pad": "k".repeat(256 * 1024),
+        });
+        store.write("waiting/KESTRL.json.long", &long.to_string());
+        let mut shelf = Shelf::with_waits(store.0.join("waiting"));
+        for quest in [
+            "QEST-20261116-KESTRL",
+            "QEST-20261116-SKIFFS",
+            "QEST-20261116-OSPREY",
+            "QEST-20261116-TERNSS",
+        ] {
+            shelf.read(&store.0, quest);
+            assert_eq!(
+                shelf.quest(quest).expect("read").waits,
+                Vec::<Wait>::new(),
+                "{quest}"
+            );
+        }
+        let mut plain = Shelf::default();
+        store.write(
+            "waiting/KESTRL.json",
+            &waiting("QEST-20261116-KESTRL", &one),
+        );
+        plain.read(&store.0, "QEST-20261116-KESTRL");
+        assert_eq!(
+            plain.quest("QEST-20261116-KESTRL").expect("read").waits,
+            Vec::<Wait>::new(),
+            "a shelf told no waiting folder reads none"
+        );
+        fs::rename(
+            store.0.join("waiting/KESTRL.json.long"),
+            store.0.join("waiting/KESTRL.json"),
+        )
+        .expect("renamed");
+        shelf.read(&store.0, "QEST-20261117-KESTRL");
+        assert_eq!(
+            shelf.quest("QEST-20261117-KESTRL").expect("read").waits,
+            Vec::<Wait>::new(),
+            "a file past 256 KB gives none"
+        );
+    }
+
+    #[test]
+    fn a_change_to_a_waiting_file_is_to_the_quests_held_it_names() {
+        let store = Store::new("waiting-on");
+        store.write("QEST-20261116-KESTRL/README.md", README);
+        store.write("QEST-20261116-SKIFFS/README.md", README);
+        let mut shelf = Shelf::with_waits(store.0.join("waiting"));
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        shelf.read(&store.0, "QEST-20261116-SKIFFS");
+        assert_eq!(
+            shelf.waiting_on(&store.0.join("waiting/KESTRL.json")),
+            ["QEST-20261116-KESTRL"]
+        );
+        let none: Vec<String> = Vec::new();
+        assert_eq!(shelf.waiting_on(&store.0.join("waiting/OSPREY.json")), none);
+        assert_eq!(
+            shelf.waiting_on(&store.0.join("waiting/.KESTRL.json.tmp")),
+            none
+        );
+    }
+
+    #[test]
     fn a_quest_says_its_purpose_parent_status_and_documents() {
         let store = Store::new("reads");
         store.write("QEST-20261116-KESTRL/README.md", README);
@@ -820,9 +1451,35 @@ mod tests {
         shelf.read(&store.0, "QEST-20261116-KESTRL");
         shelf.read(&store.0, "QEST-20261116-SKIFFS");
         shelf.quest("QEST-20261116-KESTRL");
-        let kept = shelf.round(&store.0);
+        let kept = shelf.round(&store.0, &BTreeSet::new());
         assert_eq!(kept, BTreeSet::from(["QEST-20261116-KESTRL".to_owned()]));
         assert!(!shelf.holds("QEST-20261116-SKIFFS"));
+    }
+
+    #[test]
+    fn a_quest_a_living_cell_works_on_is_kept_unasked() {
+        let store = Store::new("round-living");
+        store.write("QEST-20261116-KESTRL/README.md", README);
+        store.write("QEST-20261116-SKIFFS/README.md", README);
+        let mut shelf = Shelf::default();
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        shelf.read(&store.0, "QEST-20261116-SKIFFS");
+        let living = BTreeSet::from([
+            "QEST-20261116-SKIFFS".to_owned(),
+            "QEST-20261116-OSPREY".to_owned(),
+        ]);
+        let kept = shelf.round(&store.0, &living);
+        assert_eq!(
+            kept,
+            BTreeSet::from(["QEST-20261116-SKIFFS".to_owned()]),
+            "a living cell's quest is kept, and one never read isn't made up"
+        );
+        assert!(!shelf.holds("QEST-20261116-KESTRL"));
+        shelf.round(&store.0, &living);
+        assert!(
+            shelf.holds("QEST-20261116-SKIFFS"),
+            "and kept round after round while its cell lives"
+        );
     }
 
     #[test]
@@ -916,6 +1573,68 @@ mod tests {
         assert!(purpose.ends_with("..."));
     }
 
+    #[test]
+    fn a_quote_in_a_purpose_is_kept_whole() {
+        assert_eq!(
+            first_sentence(
+                "Kestrel's person said at 09:15: \"i love this ... it hovers. start.\" \
+                 This quest teaches it to hover. Then to land."
+            ),
+            "Kestrel's person said at 09:15: \"i love this ... it hovers. start.\""
+        );
+        assert_eq!(
+            first_sentence("They said \u{201c}go. now.\u{201d} Kestrel goes."),
+            "They said \u{201c}go. now.\u{201d}"
+        );
+        assert_eq!(
+            first_sentence("Only \"quoted. words.\" here"),
+            "Only \"quoted. words.\" here",
+            "a quote that ends no sentence leaves it running on"
+        );
+        assert_eq!(
+            first_sentence("An unpaired \" mark. Kestrel hovers."),
+            "An unpaired \" mark.",
+            "a mark that pairs with none is no quote, so its sentence ends where it would"
+        );
+        assert_eq!(
+            sentences("It said \"go.\" Then it went."),
+            ["It said \"go.\"", "Then it went."]
+        );
+    }
+
+    #[test]
+    fn guidance_right_above_the_quests_words_is_not_them() {
+        let store = Store::new("guidance-above");
+        let guidance = README.replace(
+            "Kestrel learns",
+            "_One paragraph: what this quest is._\nKestrel learns",
+        );
+        store.write("QEST-20261116-KESTRL/README.md", &guidance);
+        let mut shelf = Shelf::default();
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        assert_eq!(
+            shelf
+                .quest("QEST-20261116-KESTRL")
+                .expect("read")
+                .purpose
+                .as_deref(),
+            Some("Kestrel learns to hover over one field.")
+        );
+    }
+
+    #[test]
+    fn guidance_over_lines_ending_the_readme_is_no_purpose() {
+        let store = Store::new("guidance-last");
+        let last = "---\nid: QEST-20261116-KESTRL\n---\n# Kestrel\n\n## \u{1f4dc} Summary\n\n_One paragraph: what\nthis quest is._\n";
+        store.write("QEST-20261116-KESTRL/README.md", last);
+        let mut shelf = Shelf::default();
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        assert_eq!(
+            shelf.quest("QEST-20261116-KESTRL").expect("read").purpose,
+            None
+        );
+    }
+
     fn forage(cell: &str, machine: &str, quest: &str) -> Value {
         json!({
             "cell": cell,
@@ -973,6 +1692,44 @@ mod tests {
         assert!(
             drawn.lines().all(|line| line.chars().count() <= 40),
             "no line passes the terminal's width"
+        );
+    }
+
+    #[test]
+    fn a_forage_is_drawn_with_what_it_waits_on_its_person_for() {
+        let mut waiting = forage("KESTRL", "kestrel", "QEST-1");
+        waiting["documents"] = json!([]);
+        waiting["waits"] = json!([
+            {"title": "Say whether it hovers", "ready": true, "when": "today"},
+            {"title": "Pick a field", "ready": true},
+            {"title": "Land it", "ready": false, "when": "after it hovers"},
+            {"title": "Name it", "ready": false},
+            {"title": "Fly\nnow\u{1b}[2J", "when": "to\rday"},
+        ]);
+        assert_eq!(
+            draw(&[waiting.clone()], None, 80),
+            "KESTRL  on kestrel  QEST-1\n  Kestrel learns to hover over one field.\n  \
+             Waits on you: Say whether it hovers (ready, today)\n  \
+             Waits on you: Pick a field (ready)\n  \
+             Waits on you: Land it (after it hovers)\n  \
+             Waits on you: Name it\n  \
+             Waits on you: Fly now [2J (to day)\n  \
+             No research, plans or reports yet.\n",
+            "a control character read from a file is drawn as a space"
+        );
+        assert_eq!(
+            draw(&[waiting], None, 40)
+                .lines()
+                .filter(|line| line.contains("hovers"))
+                .collect::<Vec<_>>(),
+            [
+                "  Kestrel learns to hover over one",
+                "  Waits on you: Say whether it hovers",
+                "    (ready, today)",
+                "  Waits on you: Land it (after it",
+                "    hovers)",
+            ],
+            "a wait too long for the terminal wraps under its indent"
         );
     }
 
@@ -1084,6 +1841,142 @@ mod tests {
             2,
             "told once for the first cells, once as one moved"
         );
+    }
+
+    #[tokio::test]
+    async fn a_waiting_folder_made_late_or_made_anew_is_heard() {
+        let store = Store::new("waits-kept");
+        store.write("QEST-20261116-KESTRL/README.md", README);
+        // Apart from the quests, as the node's own is, so only the
+        // folder's own watch can hear it.
+        let mission = Store::new("waits-kept-mission");
+        let folder = mission.0.join("waiting");
+        let held: Held = Arc::new(Mutex::new(Shelf::with_waits(folder.clone())));
+        let (want, wanted) = mpsc::unbounded_channel();
+        let (_sessions, sessions) = watch::channel(0);
+        let tell = watch::Sender::new(0);
+        let mut told = tell.subscribe();
+        tokio::spawn(keep(
+            store.0.clone(),
+            Arc::clone(&held),
+            wanted,
+            sessions,
+            Vec::new,
+            tell,
+        ));
+        want.send("QEST-20261116-KESTRL".to_owned()).expect("sent");
+        let titles = |held: &Held| -> Vec<String> {
+            held.lock()
+                .expect("held")
+                .quest("QEST-20261116-KESTRL")
+                .map(|quest| quest.waits.iter().map(|wait| wait.title.clone()).collect())
+                .unwrap_or_default()
+        };
+        let until = async |told: &mut watch::Receiver<u64>, want: &[&str]| {
+            let by = tokio::time::Instant::now() + Duration::from_secs(30);
+            while titles(&held) != want {
+                tokio::time::timeout_at(by, told.changed())
+                    .await
+                    .unwrap_or_else(|_| panic!("heard {want:?} in time"))
+                    .expect("told");
+            }
+        };
+        // The quest is read, with no folder yet, before the folder is made.
+        tokio::time::timeout(Duration::from_secs(30), told.changed())
+            .await
+            .expect("told in time")
+            .expect("told");
+        assert!(!folder.exists(), "the folder is made after keep reads");
+        let one = json!([{"id": "fly", "title": "Say whether it hovers"}]);
+        mission.write(
+            "waiting/KESTRL.json",
+            &waiting("QEST-20261116-KESTRL", &one),
+        );
+        until(&mut told, &["Say whether it hovers"]).await;
+        fs::remove_dir_all(&folder).expect("removed");
+        until(&mut told, &[]).await;
+        let two = json!([{"id": "land", "title": "Pick a field"}]);
+        mission.write(
+            "waiting/KESTRL.json",
+            &waiting("QEST-20261116-KESTRL", &two),
+        );
+        until(&mut told, &["Pick a field"]).await;
+        // Removed and made anew within one moment, perhaps on the same
+        // inode, so only the folder's own change says to listen afresh.
+        fs::remove_dir_all(&folder).expect("removed");
+        let three = json!([{"id": "nest", "title": "Choose a ledge"}]);
+        mission.write(
+            "waiting/KESTRL.json",
+            &waiting("QEST-20261116-KESTRL", &three),
+        );
+        until(&mut told, &["Choose a ledge"]).await;
+        let four = json!([{"id": "perch", "title": "Watch the river"}]);
+        mission.write(
+            "waiting/KESTRL.json",
+            &waiting("QEST-20261116-KESTRL", &four),
+        );
+        until(&mut told, &["Watch the river"]).await;
+    }
+
+    /// A watcher that hears nothing, as one past the system's limit.
+    struct Deaf;
+
+    impl notify::Watcher for Deaf {
+        fn new<F: notify::EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self)
+        }
+
+        fn watch(&mut self, _: &Path, _: notify::RecursiveMode) -> notify::Result<()> {
+            Err(notify::Error::generic("past the limit"))
+        }
+
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+            Ok(())
+        }
+
+        fn kind() -> notify::WatcherKind {
+            notify::WatcherKind::NullWatcher
+        }
+    }
+
+    #[test]
+    fn a_waiting_folder_no_watch_hears_is_read_once_a_round() {
+        let mission = Store::new("waits-deaf");
+        mission.write("waiting/KESTRL.json", "{}");
+        let folder = mission.0.join("waiting");
+        let held: Held = Arc::new(Mutex::new(Shelf::with_waits(folder.clone())));
+        let mut waiting = WaitingFolder::of(&held);
+        let file = vec![folder.join("KESTRL.json")];
+        assert_eq!(waiting.listen(&mut Deaf), file, "read when first found");
+        assert_eq!(
+            waiting.listen(&mut Deaf),
+            Vec::<PathBuf>::new(),
+            "not read again each turn, which would never wait"
+        );
+        waiting.round();
+        assert_eq!(waiting.listen(&mut Deaf), file, "read again each round");
+    }
+
+    #[test]
+    fn a_file_is_read_up_to_its_bound_and_a_pipe_never_waited_on() {
+        let mission = Store::new("bounded");
+        mission.write("eight", "12345678");
+        let eight = mission.0.join("eight");
+        assert_eq!(read_at_most(&eight, 8).as_deref(), Some(&b"12345678"[..]));
+        assert_eq!(read_at_most(&eight, 7), None, "one byte past the bound");
+        let pipe = mission.0.join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success(), "a pipe");
+        // With no writer, opening a pipe that waits would never return.
+        assert_eq!(read_at_most(&pipe, 8), None);
+    }
+
+    #[test]
+    fn a_mark_turning_text_backwards_is_left_out() {
+        assert_eq!(one_line("fly\u{202E}nwod\u{2069} now"), "flynwod now");
     }
 
     #[tokio::test]

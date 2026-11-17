@@ -340,6 +340,7 @@ mod tests {
             starter: None,
             refusals: Refusals::default(),
             steers: dir.join(realm).join("steer"),
+            waiting: "/nowhere/waiting".into(),
             awake: Awake::by(None),
             updater: "/nowhere".into(),
             serves: BTreeMap::new(),

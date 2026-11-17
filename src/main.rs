@@ -1207,6 +1207,9 @@ struct Here {
     /// The sessions' steer inboxes, if not where the harness keeps them.
     #[arg(long)]
     steer: Option<PathBuf>,
+    /// The quests' waiting files, if not where the launcher keeps them.
+    #[arg(long)]
+    waiting: Option<PathBuf>,
     /// This machine's name, if not the system's.
     #[arg(long)]
     machine: Option<String>,
@@ -1556,6 +1559,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     // Each realm's node on the machine keeps the one book, its makes named.
     let book = mycelium::made::Book::at(state.join("made.jsonl")).of_realm(&realm);
     let steers = here.steer.clone().unwrap_or_else(place::steer);
+    let waiting = here.waiting.clone().unwrap_or_else(place::waiting);
     let flows = Flows {
         to: checked(node.flows_to)?,
         from: checked(node.flows_from)?,
@@ -1570,6 +1574,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         sharing: Some(shares),
         refusals: Refusals::kept_in(refused),
         steers,
+        waiting,
         starter: Some(Starter {
             program: std::env::current_exe()?,
             // A node that is a systemd unit, as on Linux, would stop

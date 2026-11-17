@@ -170,6 +170,7 @@ fn run_node(store: Folders, socket: &Path) -> io::Result<Running> {
                 starter: None,
                 refusals: Refusals::default(),
                 steers,
+                waiting: "/nowhere/waiting".into(),
                 awake: Awake::by(None),
                 updater: "/nowhere".into(),
                 serves: std::collections::BTreeMap::new(),
