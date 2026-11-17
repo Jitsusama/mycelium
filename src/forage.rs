@@ -161,6 +161,8 @@ struct Settled {
     files: Option<[PathBuf; 2]>,
     /// How each file stood when last read.
     seen: [Option<Seen>; 2],
+    /// What each file last said whole, kept while one is written halfway.
+    said: [Value; 2],
     /// The waits done.
     done: BTreeSet<String>,
     /// The waits a verdict found ready.
@@ -203,23 +205,27 @@ impl Settled {
     }
 
     /// Reads the files again if either changed, so every quest is to be
-    /// judged again. One that can't be read, or says what it says in any
-    /// other shape, settles nothing.
+    /// judged again. One gone, or saying what it says in any other shape,
+    /// settles nothing; one that can't be read or isn't JSON, as one
+    /// caught being written is, keeps what it last said whole.
     fn refresh(&mut self) {
         let now = self.now();
-        let Some([settled, verdicts]) = &self.files else {
+        let Some(files) = &self.files else {
             return;
         };
         if now == self.seen {
             return;
         }
-        let read = |file: &Path| {
-            read_at_most(file, LONGEST_SETTLED)
+        for ((file, stands), said) in files.iter().zip(&now).zip(&mut self.said) {
+            if stands.is_none() {
+                *said = Value::Null;
+            } else if let Some(whole) = read_at_most(file, LONGEST_SETTLED)
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .unwrap_or_default()
-        };
-        let settled = read(settled);
-        let verdicts = read(verdicts);
+            {
+                *said = whole;
+            }
+        }
+        let [settled, verdicts] = &self.said;
         let found = |state: &str| {
             verdicts["items"]
                 .as_object()
@@ -1571,11 +1577,7 @@ mod tests {
         );
         shelf.read(&store.0, "QEST-20261116-KESTRL");
         assert_eq!(said(&mut shelf).len(), 4, "settled again");
-        for unread in [
-            "not json",
-            "[1, 2]",
-            r#"{"done": ["QEST-20261116-KESTRL:land"]}"#,
-        ] {
+        for unread in ["[1, 2]", r#"{"done": ["QEST-20261116-KESTRL:land"]}"#] {
             store.write("settled.json", unread);
             store.write(
                 "verdicts.json",
@@ -1584,6 +1586,65 @@ mod tests {
             shelf.read(&store.0, "QEST-20261116-KESTRL");
             assert_eq!(said(&mut shelf).len(), 5, "{unread} settles nothing");
         }
+    }
+
+    #[test]
+    fn a_settled_file_written_halfway_keeps_what_was_last_read() {
+        let store = Store::new("settled-halfway");
+        store.write("QEST-20261116-KESTRL/README.md", README);
+        let items = json!([
+            {"id": "fly", "title": "Say whether it hovers"},
+            {"id": "land", "title": "Pick a field"},
+            {"id": "post", "title": "Pick a post"},
+        ]);
+        store.write(
+            "waiting/KESTRL.json",
+            &waiting("QEST-20261116-KESTRL", &items),
+        );
+        store.write(
+            "settled.json",
+            &json!({"done": {"QEST-20261116-KESTRL:fly": 1}}).to_string(),
+        );
+        store.write(
+            "verdicts.json",
+            &json!({"items": {"QEST-20261116-KESTRL:land": {"state": "done"}}}).to_string(),
+        );
+        let mut shelf = Shelf::with_waits(store.0.join("waiting"));
+        let said = |shelf: &mut Shelf| -> Vec<String> {
+            shelf.read(&store.0, "QEST-20261116-KESTRL");
+            shelf
+                .quest("QEST-20261116-KESTRL")
+                .expect("read")
+                .waits
+                .iter()
+                .map(|wait| wait.id.clone())
+                .collect()
+        };
+        assert_eq!(said(&mut shelf), ["post"], "both read");
+        store.write("settled.json", r#"{"done": {"QEST-20261116-KESTRL:fl"#);
+        assert_eq!(
+            said(&mut shelf),
+            ["post"],
+            "a settled.json written halfway keeps what was last read"
+        );
+        store.write("verdicts.json", r#"{"items": {"#);
+        assert_eq!(
+            said(&mut shelf),
+            ["post"],
+            "and so does a verdicts.json written halfway"
+        );
+        store.write("settled.json", &json!({"done": {}}).to_string());
+        assert_eq!(
+            said(&mut shelf),
+            ["fly", "post"],
+            "the next whole one is read, the other's last read still kept"
+        );
+        fs::remove_file(store.0.join("verdicts.json")).expect("removed");
+        assert_eq!(
+            said(&mut shelf),
+            ["fly", "land", "post"],
+            "one gone settles nothing"
+        );
     }
 
     #[test]
