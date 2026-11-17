@@ -366,9 +366,11 @@ mod tests {
             "github2@kestrel",
             // A full-width @ is no @, but reads as one to whoever hears it.
             "github\u{ff20}kestrel",
-            // A look-alike past the @ reads as the cell's machine.
-            "github@k\u{0435}strel",
-            // So does one in a name that isn't a source's.
+            // A look-alike anywhere counts, even where what comes before
+            // the @ spells no source: past the @, in a name with no @ at
+            // all, and in the node's own name.
+            "jsama@k\u{0435}strel",
+            "j\u{0455}ama",
             "m\u{0443}celium@kestrel",
         ] {
             assert!(

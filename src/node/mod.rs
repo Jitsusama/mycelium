@@ -993,9 +993,11 @@ struct Shared<S> {
     /// The ids of messages from a receptor's name it didn't say, refused
     /// once and never opened again when the store is read whole. It is
     /// kept for the node's life and never trimmed: it grows by one id for
-    /// each such file the store has held this run, and only something
-    /// writing the account's own files can plant one, so it stays as
-    /// small as what was planted and empties when the node starts again.
+    /// each such file the store has held this run, which is this node's
+    /// own signals from earlier runs, still in the store until it lets
+    /// them go, and whatever something writing the account's own files
+    /// planted. Nothing else can add one, and it empties when the node
+    /// starts again.
     refused: Arc<Mutex<HashSet<String>>>,
     /// Its cells' forages, as last read from the quest store.
     forages: forage::Held,
