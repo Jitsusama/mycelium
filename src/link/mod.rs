@@ -3670,6 +3670,24 @@ mod tests {
             if quests.iter().any(|named| named == quest))
     }
 
+    /// Whether `frame` carries the parent or names it as shared.
+    fn of_the_parent(frame: &Frame) -> bool {
+        carries_of(frame, TOP) || names(frame, TOP)
+    }
+
+    /// What skiff sends over `lines`, up to the child's carries, once
+    /// the far end has said `opening` and asked for both READMEs.
+    async fn sent_once_both_asked(
+        lines: &mut tokio::io::Lines<BufReader<ReadHalf<DuplexStream>>>,
+        far_writing: &mut WriteHalf<DuplexStream>,
+        opening: Vec<Frame>,
+    ) -> Vec<Frame> {
+        let mut said = opening;
+        said.extend([want_readme(TOP), want_readme(CHILD)]);
+        says(far_writing, &said).await;
+        heard_until(lines, |frame| carries_of(frame, CHILD)).await
+    }
+
     #[tokio::test]
     async fn a_parent_reaches_the_other_end_only_once_its_machine_declares_no_worker() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -3701,9 +3719,7 @@ mod tests {
         says(&mut far_writing, &asks).await;
         let sent = heard_until(&mut lines, child_sent).await;
         assert!(
-            !sent
-                .iter()
-                .any(|frame| carries_of(frame, TOP) || names(frame, TOP)),
+            !sent.iter().any(of_the_parent),
             "tern declares nothing of itself, as a restarting node does, so it is sent \
              nothing of the parent: {sent:?}"
         );
@@ -3732,25 +3748,21 @@ mod tests {
         let (mut lines, mut far_writing) = skiff_sharing(home, true);
         let mut tern = tern_undeclared();
         tern.declared = Some(declares(false));
-        says(
+        let sent = sent_once_both_asked(
+            &mut lines,
             &mut far_writing,
-            &[
+            vec![
                 Frame::Hello(realm("tern").hello()),
                 Frame::Have {
                     messages: Vec::new(),
                     living: Some(Vec::new()),
                 },
                 Frame::Machine(Box::new(tern)),
-                want_readme(TOP),
-                want_readme(CHILD),
             ],
         )
         .await;
-        let sent = heard_until(&mut lines, |frame| carries_of(frame, CHILD)).await;
         assert!(
-            !sent
-                .iter()
-                .any(|frame| carries_of(frame, TOP) || names(frame, TOP)),
+            !sent.iter().any(of_the_parent),
             "tern, a worker, declares itself no worker, and still hears nothing of the \
              parent, though it was given it: {sent:?}"
         );
@@ -3760,9 +3772,10 @@ mod tests {
     async fn an_end_that_takes_no_facts_is_never_sent_a_parent() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (mut lines, mut far_writing) = skiff_sharing(top_and_child(dir.path(), None), false);
-        says(
+        let sent = sent_once_both_asked(
+            &mut lines,
             &mut far_writing,
-            &[
+            vec![
                 Frame::Hello(Hello {
                     facts: false,
                     ..realm("tern").hello()
@@ -3771,16 +3784,11 @@ mod tests {
                     messages: Vec::new(),
                     living: Some(Vec::new()),
                 },
-                want_readme(TOP),
-                want_readme(CHILD),
             ],
         )
         .await;
-        let sent = heard_until(&mut lines, |frame| carries_of(frame, CHILD)).await;
         assert!(
-            !sent
-                .iter()
-                .any(|frame| carries_of(frame, TOP) || names(frame, TOP)),
+            !sent.iter().any(of_the_parent),
             "tern takes no facts, so it can't say it is no worker, and hears nothing of \
              the parent: {sent:?}"
         );
