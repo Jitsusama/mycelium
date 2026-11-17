@@ -304,6 +304,17 @@ mod tests {
         let (holder, program) = (holder(), program("echo ready; sleep 1000 & wait"));
         drop(holds(dir.path(), "stale", holder, program));
         unanswered(&socket(dir.path(), "stale"));
+        // A holder killed outright leaves what its program said as it
+        // parked, and a wake written since.
+        let said = [
+            super::super::wake(dir.path(), "stale"),
+            super::super::again(dir.path(), "stale"),
+            super::super::next(dir.path(), "stale"),
+            super::super::steers(dir.path(), "stale"),
+        ];
+        for file in &said {
+            fs::write(file, b"[]").expect("it is written");
+        }
 
         let error = end(dir.path(), "stale", GRACE).expect_err("its holder doesn't answer");
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
@@ -314,6 +325,10 @@ mod tests {
         assert!(
             !dir.path().join("stale.json").exists(),
             "its stale record goes"
+        );
+        assert!(
+            said.iter().all(|file| !file.exists()),
+            "and every file it spoke through, so no wake is written where none reads it"
         );
         for pid in [holder, program] {
             let _ =
