@@ -851,6 +851,22 @@ alone, so a session it would have put to sleep counts as asleep, and
 one it would have carried as gone. Nothing reaches the record of
 carries.
 
+Whether its own machine is over it judges only from what the kernel
+says, read afresh each look and kept in memory: the `some` `avg10`
+processor, memory and I/O pressure in `/proc/pressure`, and the memory
+free in `/proc/meminfo`. Over is the queue's lines judged by the node:
+processor pressure of 70 or more, or memory pressure of 10 or more.
+The queue's record, the store's facts and every presence are files or
+words a session can write, so none of them moves that verdict. A
+machine whose kernel says none of this, as a Mac's, whose files can't
+be read, or which runs within another, whose kernel doesn't see its
+host's work, is never over: it never eases itself, and its line says
+its own pressure can't be felt. Every other machine's room, and so
+whether it has room to take a session, is as its own node said it over
+the link, from that machine's queue. The queue's record also still
+names the sessions holding a heavy run, which can only keep a session
+here.
+
 ## Realm Flows
 
 Realms are kept apart, but a machine's configuration may open a flow: a

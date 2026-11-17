@@ -3541,7 +3541,13 @@ impl<S: Store> Shared<S> {
         mut sampler: easing::Sampler,
         now: jiff::Timestamp,
     ) -> (Option<serde_json::Value>, easing::Sampler) {
-        let machines = self.machines();
+        // Whether this machine is over is judged only from what its kernel
+        // says, never from a record a session can write.
+        let felt = match &*self.processes {
+            Processes::Folder(procs) => room::felt(procs, &now.to_string()),
+            Processes::Listed => None,
+        };
+        let machines = easing::felt_here(self.machines(), &self.machine, felt);
         let (sessions, loads) = {
             let mut inner = self.lock();
             let inner = &mut *inner;
@@ -12052,6 +12058,95 @@ esac
             1,
             "nothing is said again for the same reason: {kept}"
         );
+    }
+
+    /// The first easing line a node on `socket` keeps in `folder` today.
+    async fn first_easing(folder: &Path) -> Value {
+        let day = folder.join(format!(
+            "{}.jsonl",
+            jiff::Timestamp::now().strftime("%Y-%m-%d")
+        ));
+        let said = tokio::time::timeout(PATIENCE, async {
+            // Nothing tells a test when a line is kept, so it looks again
+            // every few milliseconds until one is.
+            loop {
+                if let Some(line) = fs::read_to_string(&day)
+                    .ok()
+                    .and_then(|kept| kept.lines().next().map(str::to_owned))
+                {
+                    return line;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a line is kept in time");
+        serde_json::from_str(&said).expect("a line")
+    }
+
+    #[tokio::test]
+    async fn a_node_easing_judges_its_machine_by_what_its_kernel_says() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let procs = dir.path().join("proc");
+        let pressure = procs.join("pressure");
+        fs::create_dir_all(&pressure).expect("its pressure");
+        for (name, avg10) in [("cpu", "86.00"), ("memory", "0.00"), ("io", "1.00")] {
+            fs::write(
+                pressure.join(name),
+                format!("some avg10={avg10} avg60=0 avg300=0 total=0\n"),
+            )
+            .expect("written");
+        }
+        fs::write(
+            procs.join("meminfo"),
+            "MemTotal: 65536000 kB\nMemAvailable: 1000 kB\n",
+        )
+        .expect("written");
+        let folder = dir.path().join("eases");
+        let given = Given {
+            eases: Some(Eases {
+                folder: folder.clone(),
+                every: Duration::from_millis(10),
+            }),
+            carries: dir.path().join("carries.jsonl"),
+            processes: Processes::Folder(procs),
+            ..bare(dir.path().join("steer"), None)
+        };
+        let (stop, node) = alone_with(&Memory::default(), &socket, given);
+
+        let line = first_easing(&folder).await;
+        let here = &line["reading"]["machines"][0];
+        assert_eq!(here["over"], serde_json::json!(true), "{line}");
+        assert_eq!(here["stall"], serde_json::json!(0.86), "{line}");
+        stop.send(()).expect("the node still runs");
+        node.await.expect("the node ends").expect("the node ran");
+    }
+
+    #[tokio::test]
+    async fn a_node_that_cant_feel_its_machine_says_so() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let folder = dir.path().join("eases");
+        let given = Given {
+            eases: Some(Eases {
+                folder: folder.clone(),
+                every: Duration::from_millis(10),
+            }),
+            carries: dir.path().join("carries.jsonl"),
+            ..bare(dir.path().join("steer"), None)
+        };
+        let (stop, node) = alone_with(&Memory::default(), &socket, given);
+
+        let line = first_easing(&folder).await;
+        assert!(
+            line["why"].as_str().is_some_and(
+                |why| why.ends_with("own pressure can't be felt, so it never eases itself")
+            ),
+            "{line}"
+        );
+        stop.send(()).expect("the node still runs");
+        node.await.expect("the node ends").expect("the node ran");
     }
 
     #[tokio::test]
