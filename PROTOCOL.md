@@ -753,17 +753,25 @@ exit, `why` says which, with `again`, `true`. Where its quest or
 session begins with `-` and would be read as a flag, or it names
 none, `pi-carry` isn't asked and the line has no `again`. Each carry's
 newest line stands, even for a node started afresh: one without
-`again` for good, so its trees stay until the line is taken out of
-the file, and one with `again` for a day, when `pi-carry` is asked
-again while the carry is within the week, since a shell or an editor
-standing in a tree may have left it since; past the week nobody asks,
-though the line still says `again`. One with `again` whose session
-this node sees back here gets a line without it, `why` saying so, at
-each look until that is kept, as does an answer kept once it was seen
-back, since only a node that saw it come back knows; a session back
-and ended again while the node was stopped isn't seen. Trees let go don't come
-back if the node or `pi-carry` is rolled back, though each one's
-branch still names its commits. What asked nothing keeps no line: a
+`again` for good, so its trees stay, and one with `again` for a day,
+when `pi-carry` is asked again while the carry is within the week,
+since a shell or an editor standing in a tree may have left it since;
+past the week nobody asks. As the node keeps a line, it lets go of
+each kept more than a fortnight before, since its carry was ordered
+before then and is no longer looked at, and of any torn by a write cut
+short; one whose `at` can't be read stays. The fortnight is twice the
+week, so a clock stepped back by less than a week brings no carry back
+without its line. A node keeps one line at a time under a lock on
+`settles.jsonl.lock`, which holds too between two nodes given one
+state folder, writes the file aside and moves it into place: a reader
+sees the old lines or the new. One with
+`again` whose session this node sees back here gets a line without
+it, `why` saying so, at each look until that is kept, as does an
+answer kept once it was seen back, since only a node that saw it come
+back knows; a session back and ended again while the node was stopped
+isn't seen. Trees let go don't come back if the node or `pi-carry` is
+rolled back, though each one's branch still names its commits. What
+asked nothing keeps no line: a
 `pi-carry` that didn't run, or one that can't settle (its exit 2, as
 one from before settling gives). That, and an answer lost, as when a
 signal ends the settling or its line can't be kept, is asked again
@@ -898,6 +906,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"`, counted here as a start |
 | `{"Start": {"work", "folder", "command", "may_cost"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
+| `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
@@ -1103,10 +1112,16 @@ at or past now, as the queue judges them: `memory`, when it starts no
 work, and `cpu`, when it starts no build beside a VM test. `over` is
 empty when the machine is past none, so `takes` of none with nothing
 `over` means a full queue, not a pressed machine, and `null` from a
-queue too old to say. The room is `null` where no harness keeps a queue,
-or where the queue's record is of another shape or unwritten for two
-minutes. A machine keeps no reserve of mycelium's: its own slices keep
-its person's share.
+queue too old to say. Its `saturated` is whether its own node judges
+its processors saturated: from processor pressure 85 or more until it
+falls under 75, a band about the line of 80, so a machine whose
+pressure swings about the line doesn't flip with each reading. A node
+with no room to read forgets its verdict, and one restarted starts with
+none held. It is left out of a room a node too old to judge says, and
+placement then judges the pressure by the line of 80 alone. The room
+is `null` where no harness keeps a queue, or where the queue's record
+is of another shape or unwritten for two minutes. A machine keeps no
+reserve of mycelium's: its own slices keep its person's share.
 
 Its `declared` is what its configuration says of it, which can't be
 measured: `reach`, the networks work there always reaches, such as
@@ -1239,7 +1254,8 @@ out of reach; and how long it `lasts`, as an ISO 8601 duration such as
 `PT2H` (`2h` reads too). A machine carries the taints its configuration
 declares, and while they last, `on-battery`, `memory-pressure` (past
 its queue's memory limit), `cpu-pressure` (past its queue's processor
-limit), `cpu-saturated` (its `room` at processor pressure 80 or more)
+limit), `cpu-saturated` (its `room` `saturated`, or at processor
+pressure 80 or more where its room doesn't say)
 and `disk-pressure` (its `disk_band` past
 `healthy`), each `prefer_not`, and `low-battery` (on its battery below
 20%, when it is let sleep) and `disk-full` (its `disk_band`
@@ -1421,6 +1437,44 @@ books as let go each whose `until` passed while it was down. A line
 naming no realm, kept before lines named one, is never linked again.
 A start whose providers make nothing says why: each machine's and each
 offer's reasons, and each program that couldn't say what it offers.
+
+`"Sprout"` starts a session of new work, as `mycelium sprout` asks, held
+in no window: the node makes the `"Start"` and starts it as above, under
+the same limits. `words` is the work, a link alone or words, which
+become the session's first words; `from` the address of the cell it
+comes from; `on` the machine, this one when it's none or names this
+one; and all but `words` may be left out. Its folder is
+`folder`, the checkout a link's repository has under home, or where the
+asker is when that's inside a repository, never home itself, and the
+session begins in it as the node names it, within home. Starting here,
+the folder is judged on the disk as the asker sees it, never as the
+node does, so an agent fenced from the person's folders can't have one
+begun in them: each path is resolved inside the asker's root
+(`/proc/<pid>/root`, its links kept inside it) and counts only where the
+node's own path is the same file, and where the asker is comes from
+`/proc/<pid>/cwd`. The asker is the process the kernel says is at the
+socket's other end, trusted only while its start time is the one read
+as it connected, so an id taken again is refused. Where that can't be
+read, as on a Mac, once the asker has gone, or where the kernel can't
+keep a path inside a root, the person's sprout is judged on the node's
+disk from `cwd`, where the asker says it is, and an agent's is refused.
+Refusals are errors saying why: `say what
+the work is: a link or words`, `<folder> isn't a folder here`, a home
+folder's, a folder with no repository's, or `an agent's sprout is judged
+on the disk as it sees it, and <why it can't be read>; the person can
+start it`. `mycelium sprout` judges the sprout on its own disk first, so
+it refuses what the node would without asking it. A node from before
+`"Sprout"` answers `not a request: unknown variant` naming it, and
+`mycelium sprout` then asks for the `"Start"` it judged.
+
+Where the judgement stops. It reads the asker's mount view only, so a
+fence made of Landlock or file permissions is judged as though the
+folder were reachable. The folder is judged by its path and begun in by
+that path a moment later, so a folder the asker can write could be
+swapped for a link in between. On another machine, the folder is that
+machine's, and its node starts it as a `"Start"`, which judges no
+folder; nor does a `"Start"` asked for directly. A `"Sprout"` is the
+bound only for an asker that says one.
 
 `"Steer"` puts `steer`, in the harness's own shape (`text`, an `act` of
 `pause`, `resume`, `fill`, `stop`, `close`, `carry`, `ordered-carry`,

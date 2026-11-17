@@ -451,7 +451,7 @@ fn holds_log(procs: &Path, pid: i32, logs: &Path, session: &str) -> bool {
 /// When process `pid` started, in clock ticks since boot, as its `stat`
 /// in `procs` tells it: the twentieth field after its name, which is in
 /// brackets and may hold spaces or brackets itself.
-fn started(procs: &Path, pid: i32) -> Option<u64> {
+pub(super) fn started(procs: &Path, pid: i32) -> Option<u64> {
     let stat = fs::read_to_string(procs.join(pid.to_string()).join("stat")).ok()?;
     let (_, after) = stat.rsplit_once(')')?;
     after.split_whitespace().nth(19)?.parse().ok()

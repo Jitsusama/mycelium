@@ -30,6 +30,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::hash::{BuildHasher, RandomState};
+use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +40,7 @@ use crate::declared::{Effect, Taint};
 use crate::disk::Band;
 use crate::facts::{AcceleratorKind, Machine, Readiness};
 use crate::offer::Offer;
-use crate::room::Limit;
+use crate::room::{Limit, Room};
 
 /// The key a worker's refusal carries: a machine lent or paid for takes
 /// only work that names it.
@@ -219,7 +220,8 @@ pub const MEMORY_PRESSURE: &str = "memory-pressure";
 pub const DISK_PRESSURE: &str = "disk-pressure";
 
 /// The key of the taint a machine whose processors are saturated carries:
-/// at [`SATURATED_PRESSURE`] or more, as its room last said. It goes after
+/// as its room's own node judged them (a [`Saturation`]), or at
+/// [`SATURATED_PRESSURE`] or more where its room says no verdict. It goes after
 /// every machine that isn't, so work goes to one that can run it at once,
 /// and never refuses work, since every machine saturated still runs what
 /// it must somewhere. A machine declaring it for itself ranks saturated
@@ -228,9 +230,65 @@ pub const DISK_PRESSURE: &str = "disk-pressure";
 pub const CPU_SATURATED: &str = "cpu-saturated";
 
 /// The processor pressure, in percent of the last ten seconds, at which a
-/// machine's processors are saturated: so much waits on them that a
+/// machine's processors are saturated where its room says no verdict of
+/// its node's, as an older node's doesn't: so much waits on them that a
 /// session started there is slow for everyone on it.
 pub const SATURATED_PRESSURE: f64 = 80.0;
+
+/// The processor pressure at which a node judges its machine's processors
+/// saturated, for a [`Saturation`].
+pub const SATURATES_AT: f64 = 85.0;
+
+/// The processor pressure a machine its node judges saturated must fall
+/// under before it isn't. The band from here to [`SATURATES_AT`] sits
+/// about [`SATURATED_PRESSURE`], so a machine is held saturated about as
+/// often as the line alone holds it, while one whose ten-second reading
+/// swings about the line, as it does under bursty work, isn't judged
+/// saturated and then not with each reading, sending each ask elsewhere.
+pub const UNSATURATES_UNDER: f64 = 75.0;
+
+/// Whether a machine's processors are saturated, as its own node judges
+/// them across its measures: saturated from [`SATURATES_AT`] until under
+/// [`UNSATURATES_UNDER`], and between the two as it was last judged. Its
+/// node says the verdict in its room, so every node places by the same
+/// one and a replay reads what was decided.
+#[derive(Debug, Default)]
+pub struct Saturation(Mutex<bool>);
+
+impl Saturation {
+    /// Whether processors at `cpu` pressure are saturated, given what this
+    /// judged last. A pressure that is no number changes nothing.
+    pub fn judge(&self, cpu: f64) -> bool {
+        let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if cpu >= SATURATES_AT {
+            *held = true;
+        } else if cpu < UNSATURATES_UNDER {
+            *held = false;
+        }
+        *held
+    }
+
+    /// Says this machine's verdict in `room`, its room as just measured.
+    /// A host's room told to a machine within it keeps the host's verdict,
+    /// where the host said one. No room forgets the verdict, so a reading
+    /// after a silence is never judged by one from before it.
+    pub fn say(&self, room: Option<&mut Room>) {
+        match room {
+            Some(room) if room.saturated.is_none() => {
+                room.saturated = Some(self.judge(room.pressure.cpu));
+            }
+            Some(_) => {}
+            None => *self.0.lock().unwrap_or_else(PoisonError::into_inner) = false,
+        }
+    }
+}
+
+/// Whether `room` is saturated: as its node judged it, or by the line
+/// where a node too old to judge said none.
+fn saturated(room: &Room) -> bool {
+    room.saturated
+        .unwrap_or(room.pressure.cpu >= SATURATED_PRESSURE)
+}
 
 /// The key of the taint a machine whose home's disk is critically full
 /// carries, which takes no work: what it starts would fail to write.
@@ -919,15 +977,21 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
         ));
     }
     if let Some(room) = &machine.room
-        && room.pressure.cpu >= SATURATED_PRESSURE
+        && saturated(room)
     {
+        let cpu = room.pressure.cpu;
         taints.push(Taint {
             key: CPU_SATURATED.to_owned(),
             effect: Effect::PreferNot,
-            why: format!(
-                "its processors are saturated, at pressure {:.0}",
-                room.pressure.cpu
-            ),
+            why: if room.saturated == Some(true) && (UNSATURATES_UNDER..SATURATES_AT).contains(&cpu)
+            {
+                format!(
+                    "its processors are saturated still, at pressure {cpu:.0}, \
+                     until it falls under {UNSATURATES_UNDER:.0}"
+                )
+            } else {
+                format!("its processors are saturated, at pressure {cpu:.0}")
+            },
         });
     }
     if machine.disk_band.is_some_and(|band| band > Band::Healthy) {
@@ -1392,6 +1456,7 @@ pub(crate) mod tests {
                     vm_tests: 1,
                 },
                 over: Some(Vec::new()),
+                saturated: None,
             }),
             declared: Some(Declared {
                 reach: reach.iter().map(|&one| one.to_owned()).collect(),
@@ -1687,6 +1752,94 @@ pub(crate) mod tests {
             placed(&place(&tolerant, &[kestrel, osprey])),
             Some("kestrel"),
             "work that minds no saturation weighs it as any other room"
+        );
+    }
+
+    #[test]
+    fn saturation_holds_through_the_band_between_its_lines() {
+        let band = Saturation::default();
+        let judged: Vec<bool> = [84.0, 85.0, 80.0, 75.0, 74.0, 84.0, 85.0]
+            .into_iter()
+            .map(|cpu| band.judge(cpu))
+            .collect();
+        assert_eq!(
+            judged,
+            [false, true, true, true, false, false, true],
+            "saturated at 85 or more, and saturated still until under 75"
+        );
+        assert!(
+            band.judge(f64::NAN),
+            "a pressure that is no number changes nothing"
+        );
+    }
+
+    #[test]
+    fn a_node_says_its_verdict_in_its_room_unless_its_host_did() {
+        let room = |cpu: f64, saturated: Option<bool>| {
+            let mut machine = pressed(machine("kestrel", "macos", 60, &[]), cpu);
+            let mut room = machine.room.take().expect("a room");
+            room.saturated = saturated;
+            room
+        };
+        let band = Saturation::default();
+        let mut hot = room(90.0, None);
+        band.say(Some(&mut hot));
+        assert_eq!(hot.saturated, Some(true), "its own room says its verdict");
+        let mut eased = room(80.0, None);
+        band.say(Some(&mut eased));
+        assert_eq!(eased.saturated, Some(true), "and holds it through the band");
+        let mut hosts = room(80.0, Some(false));
+        band.say(Some(&mut hosts));
+        assert_eq!(
+            hosts.saturated,
+            Some(false),
+            "a host's verdict told to a machine within it stands"
+        );
+        band.say(None);
+        let mut after = room(80.0, None);
+        band.say(Some(&mut after));
+        assert_eq!(
+            after.saturated,
+            Some(false),
+            "a measure with no room forgets the verdict, so one after a \
+             silence isn't judged by one from before it"
+        );
+    }
+
+    #[test]
+    fn a_room_says_whether_it_is_saturated_over_its_pressure() {
+        let mut held = pressed(machine("kestrel", "macos", 60, &[]), 80.0);
+        held.room.as_mut().expect("a room").saturated = Some(true);
+        let osprey = pressed(machine("osprey", "linux", 8, &[]), 40.0);
+        let Placement::Placed {
+            machine: chosen,
+            passed,
+        } = place(&needing(Vec::new()), &[held.clone(), osprey.clone()])
+        else {
+            panic!("one takes it");
+        };
+        assert_eq!(
+            chosen, "osprey",
+            "a machine its node still judges saturated goes after, under where it saturates"
+        );
+        assert_eq!(
+            said(&passed),
+            "kestrel would rather not: its processors are saturated still, at pressure 80, \
+             until it falls under 75",
+            "and it says why"
+        );
+        let mut eased = pressed(machine("kestrel", "macos", 60, &[]), 85.0);
+        eased.room.as_mut().expect("a room").saturated = Some(false);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[eased, osprey.clone()])),
+            Some("kestrel"),
+            "a room its node says isn't saturated isn't, whatever its pressure"
+        );
+        let unsaid = pressed(machine("kestrel", "macos", 60, &[]), 82.0);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[unsaid, osprey])),
+            Some("osprey"),
+            "a room from a node too old to say is judged by the line"
         );
     }
 

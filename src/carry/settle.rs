@@ -11,14 +11,16 @@
 //! while the carry is within its week, since what held them, a shell or
 //! an editor standing in one, may have let them go; what the node kept
 //! without asking stays for good, as does one held whose session is seen
-//! back here. An answer lost, to a signal ending the settling or a line
-//! that can't be kept, is asked again only by a node started afresh,
-//! which settling allows. A carry whose session is seen back here isn't
-//! due, nor is any but each session's newest carry, so a session carried
-//! back and on again is settled by its later carry alone.
+//! back here. A line fades a fortnight after it was kept, twice the week
+//! a carry is looked at for, as another is kept. An answer lost, to a
+//! signal ending the settling or a line that can't be kept, is asked
+//! again only by a node started afresh, which settling allows. A carry
+//! whose session is seen back here isn't due, nor is any but each
+//! session's newest carry, so a session carried back and on again is
+//! settled by its later carry alone.
 
 use std::collections::{BTreeSet, HashMap};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -38,6 +40,11 @@ pub const ANSWERS_WITHIN: Duration = Duration::from_secs(60);
 /// How far back the carries ordered are looked at to settle: one not
 /// arrived within a week stays as it is.
 pub const LOOKED_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(7 * 24);
+
+/// How long after it was kept a line of `settles.jsonl` fades: twice the
+/// week settling looks back, so a clock stepped back by less than a week
+/// brings no carry back into the week without its line.
+pub const FADES_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_hours(14 * 24);
 
 /// How long after `pi-carry` kept a carry's trees they are asked for again.
 pub const ASKED_AGAIN_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
@@ -99,6 +106,27 @@ pub fn stands_at(said: &Value, now: jiff::Timestamp) -> bool {
         .and_then(|at| at.parse::<jiff::Timestamp>().ok())
         .and_then(|at| at.checked_add(ASKED_AGAIN_AFTER).ok())
         .is_none_or(|again| again > now)
+}
+
+/// The lines of `settles.jsonl` at `path`, a character a write cut short
+/// read as a stand-in, so a torn line can't make the rest unreadable.
+fn read_lines(path: &std::path::Path) -> io::Result<String> {
+    fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Whether a line of `settles.jsonl` has faded at `now`: one kept more
+/// than `FADES_AFTER` ago, since its carry was ordered before then and
+/// is no longer looked at, and one torn by a write cut short, which is
+/// read as nothing already. One whose time can't be read stays.
+fn faded(line: &str, now: jiff::Timestamp) -> bool {
+    let Ok(line) = serde_json::from_str::<Value>(line) else {
+        return true;
+    };
+    line["at"]
+        .as_str()
+        .and_then(|at| at.parse::<jiff::Timestamp>().ok())
+        .and_then(|at| at.checked_add(FADES_AFTER).ok())
+        .is_some_and(|fades| fades < now)
 }
 
 /// Whether `carry`, standing as `state`, is settled now on machine
@@ -276,7 +304,7 @@ impl Settler {
     ///
     /// When the file is there but can't be read.
     pub fn settled(&self) -> io::Result<HashMap<String, Value>> {
-        let lines = match fs::read_to_string(&self.settles.kept) {
+        let lines = match read_lines(&self.settles.kept) {
             Ok(lines) => lines,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
             Err(error) => return Err(error),
@@ -461,25 +489,59 @@ impl Settler {
         }
     }
 
-    /// Keeps what settling the carry `id` came to, as a line of its own.
+    /// Keeps what settling the carry `id` came to, as a line of its own,
+    /// and lets each line kept more than `FADES_AFTER` ago fade (`faded`),
+    /// so the file doesn't grow for good.
     fn keep(&self, id: &str, outcome: &Outcome) -> io::Result<()> {
+        let now = jiff::Timestamp::now();
         let mut line = outcome.said();
         if let Some(fields) = line.as_object_mut() {
             fields.insert("carry".to_owned(), Value::from(id));
-            fields.insert(
-                "at".to_owned(),
-                Value::from(jiff::Timestamp::now().to_string()),
-            );
+            fields.insert("at".to_owned(), Value::from(now.to_string()));
         }
         if let Some(folder) = self.settles.kept.parent() {
             fs::create_dir_all(folder)?;
         }
-        let mut file = OpenOptions::new()
+        // One keeping at a time, between this node's threads and any node
+        // given the same state folder, so a line kept beside a rewrite
+        // isn't lost. Each realm's node has a folder of its own. The lock
+        // is a file of its own, since the rename replaces the lines'.
+        let keeping = OpenOptions::new()
             .create(true)
-            .append(true)
-            .open(&self.settles.kept)?;
-        // One write a line, so two settlings kept at once never interleave.
-        file.write_all(format!("{line}\n").as_bytes())
+            .truncate(false)
+            .write(true)
+            .open(self.settles.kept.with_extension("jsonl.lock"))?;
+        keeping.lock()?;
+        let before = match read_lines(&self.settles.kept) {
+            Ok(lines) => lines,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error),
+        };
+        let mut lines = String::new();
+        for kept in before.lines().filter(|kept| !faded(kept, now)) {
+            lines.push_str(kept);
+            lines.push('\n');
+        }
+        lines.push_str(&line.to_string());
+        lines.push('\n');
+        // Written aside and moved into place, so a reader or a node
+        // stopped part way sees the old lines or the new, never half.
+        let aside = self.settles.kept.with_extension("jsonl.new");
+        let written = File::create(&aside).and_then(|mut file| {
+            file.write_all(lines.as_bytes())?;
+            file.sync_all()
+        });
+        if let Err(error) = written.and_then(|()| fs::rename(&aside, &self.settles.kept)) {
+            // What was set aside is half the lines at most; the old stand.
+            let _ = fs::remove_file(&aside);
+            return Err(error);
+        }
+        if let Some(folder) = self.settles.kept.parent() {
+            // The lines are in place; a folder that won't sync only leaves
+            // the rename to the system's own time.
+            let _ = File::open(folder).and_then(|folder| folder.sync_all());
+        }
+        Ok(())
     }
 }
 
@@ -494,7 +556,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        ANSWERS_WITHIN, Outcome, Settler, Settles, due, judged, newest_each, stands_at, to_look_at,
+        ANSWERS_WITHIN, FADES_AFTER, LOOKED_FOR, Outcome, Settler, Settles, due, judged,
+        newest_each, stands_at, to_look_at,
     };
     use crate::carry::kept::{Kept, State};
 
@@ -597,6 +660,89 @@ mod tests {
             "so no carry begins settling"
         );
         assert!(!given.exists(), "and pi-carry is never asked");
+    }
+
+    #[test]
+    fn a_line_kept_past_its_fading_fades_as_another_is_kept() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (program, _given) = stand_in(
+            dir.path(),
+            r#"echo '{"kind":"settled","session":"s-harbour","let":1}'"#,
+        );
+        let settler = settler(dir.path(), program, ANSWERS_WITHIN);
+        let now = jiff::Timestamp::now();
+        let ago = |hours: i64| (now - jiff::SignedDuration::from_hours(hours)).to_string();
+        let lines = [
+            json!({"carry": "s-old:1", "did": "kept", "why": "dirty",
+                   "at": ago(FADES_AFTER.as_hours() + 1)}),
+            json!({"carry": "s-past-the-week:1", "did": "settled", "let": 2,
+                   "at": ago(LOOKED_FOR.as_hours() + 1)}),
+            json!({"carry": "s-untimed:1", "did": "kept", "why": "dirty", "at": "soon"}),
+        ];
+        let mut text: Vec<u8> = lines
+            .iter()
+            .flat_map(|line| (line.to_string() + "\n").into_bytes())
+            .collect();
+        // A line torn part way through a character, as a write cut short
+        // leaves it.
+        text.extend_from_slice(b"{\"carry\":\"s-torn:1\",\"why\":\"caf\xC3");
+        fs::write(dir.path().join("settles.jsonl"), text).expect("lines kept before");
+
+        let carry = carried(30);
+        settled(&settler, &carry);
+        let mut kept: Vec<String> = settler.settled().expect("it reads").into_keys().collect();
+        kept.sort();
+        let mut expected = vec![
+            carry.id.clone(),
+            "s-past-the-week:1".to_owned(),
+            "s-untimed:1".to_owned(),
+        ];
+        expected.sort();
+        assert_eq!(
+            kept, expected,
+            "a line kept past its fading is gone; one past the week alone stays, so a clock \
+             stepped back under a week brings no carry back without its line, as does one \
+             whose time can't be read"
+        );
+        let on_disk = fs::read(dir.path().join("settles.jsonl")).expect("it is there");
+        assert!(
+            String::from_utf8(on_disk).is_ok_and(|text| !text.contains("s-torn")),
+            "the torn line is gone with what it broke"
+        );
+        assert!(
+            !dir.path().join("settles.jsonl.new").exists(),
+            "nothing is left aside"
+        );
+    }
+
+    #[test]
+    fn lines_two_nodes_keep_at_once_are_all_kept() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let program = dir.path().join("pi-carry");
+        // Two nodes given one state folder keep their lines in one file.
+        let nodes = [
+            settler(dir.path(), program.clone(), ANSWERS_WITHIN),
+            settler(dir.path(), program, ANSWERS_WITHIN),
+        ];
+        let keeping: Vec<_> = (0..8)
+            .map(|each| {
+                let node = Arc::clone(&nodes[each % 2]);
+                std::thread::spawn(move || {
+                    for one in 0..10 {
+                        node.keep(&format!("s-{each}:{one}"), &Outcome::Settled { let_go: 1 })
+                            .expect("it is kept");
+                    }
+                })
+            })
+            .collect();
+        for each in keeping {
+            each.join().expect("it keeps");
+        }
+        assert_eq!(
+            nodes[0].settled().expect("it reads").len(),
+            80,
+            "no line is lost to another kept beside it"
+        );
     }
 
     #[test]
