@@ -4068,6 +4068,19 @@ mod tests {
         node_sharing(store, machine, dials, starter, socket, None)
     }
 
+    /// Runs a node as [`node`] does, dialling nothing and starting
+    /// nothing.
+    fn alone(
+        store: &Memory,
+        machine: &str,
+        socket: &Path,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        node(store, machine, Vec::<Piped>::new(), None, socket)
+    }
+
     /// Runs a node as [`node`] does, sharing the quests of `sharing`.
     fn node_sharing<D: Dial + Clone>(
         store: &Memory,
@@ -4570,13 +4583,7 @@ mod tests {
     async fn a_node_serves_its_cells_murmurs_newest_first() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
-        let (_stop, _node) = node(
-            &Memory::default(),
-            "skiff",
-            Vec::<Piped>::new(),
-            None,
-            &socket,
-        );
+        let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 0, "ask": "hello"})).await;
         let hello = client.next().await;
@@ -4648,13 +4655,7 @@ mod tests {
     async fn a_node_says_its_builders_apart_from_its_machines() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
-        let (_stop, _node) = node(
-            &Memory::default(),
-            "skiff",
-            Vec::<Piped>::new(),
-            None,
-            &socket,
-        );
+        let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 0, "ask": "hello"})).await;
         let hello = client.next().await;
@@ -4728,13 +4729,7 @@ mod tests {
         let socket = dir.path().join("skiff").join("work.sock");
         // The node makes its socket's folder, open to no one else; its
         // providers are asked only when offers are.
-        let (_stop, _node) = node(
-            &Memory::default(),
-            "skiff",
-            Vec::<Piped>::new(),
-            None,
-            &socket,
-        );
+        let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
         crate::stand_in::program(
             &socket.with_file_name("provider"),
             "#!/bin/sh\necho '{\"shape\": \"scratch\", \"costs\": {\"hourly\": \"0.12\", \"currency\": \"USD\"}}'\n",
@@ -4980,7 +4975,7 @@ esac
         store
             .put_machine(&lent("staying", now + minute * 60))
             .expect("what it said is kept");
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         let names = tokio::task::spawn_blocking(move || {
             let mut client = Client::connect(&socket).expect("the client connects");
             let Ok(Ok(Response::Machines(all))) = client.ask(&Request::Machines) else {
@@ -5013,6 +5008,16 @@ esac
             Self { lines, writing }
         }
 
+        /// A client of the node at `socket` that has said hello and
+        /// heard its answer, so the node is up and the next answer is
+        /// to what the test asks.
+        async fn greeted(socket: &Path) -> Self {
+            let mut client = Self::to(socket).await;
+            client.ask(json!({"id": 1, "ask": "hello"})).await;
+            client.next().await;
+            client
+        }
+
         async fn ask(&mut self, ask: Value) {
             let mut line = ask.to_string();
             line.push('\n');
@@ -5032,6 +5037,19 @@ esac
         }
     }
 
+    /// Waits until `store` knows of the machine `name`. Nothing tells a
+    /// test when a link has said what a machine is, so it looks again
+    /// every few milliseconds until it has.
+    async fn known_to(store: &Memory, name: &str) {
+        tokio::time::timeout(PATIENCE, async {
+            while !store.machines().iter().any(|one| one.name == name) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the link says what {name} is"));
+    }
+
     /// What kestrel says of itself, as measured at `at`.
     fn kestrel_at(at: &str) -> facts::Machine {
         facts::Machine {
@@ -5048,10 +5066,8 @@ esac
         store
             .put_machine(&kestrel_at("2026-10-31T04:00:00Z"))
             .expect("what it said is kept");
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let (_stop, _node) = alone(&store, "skiff", &socket);
+        let mut client = Speaking::greeted(&socket).await;
 
         client
             .ask(json!({"id": 2, "ask": "list", "kind": "machine"}))
@@ -5099,7 +5115,7 @@ esac
         store
             .put_machine(&kestrel_at("2026-10-31T04:00:00Z"))
             .expect("what it said is kept");
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         let mut client = Speaking::to(&socket).await;
 
         client.ask(json!({"id": 1, "ask": "hello"})).await;
@@ -5192,13 +5208,7 @@ esac
     async fn a_file_the_node_serves_is_a_kind_its_clients_watch() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
-        let (_stop, _node) = node(
-            &Memory::default(),
-            "skiff",
-            Vec::<Piped>::new(),
-            None,
-            &socket,
-        );
+        let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
         let mut client = Speaking::to(&socket).await;
 
         client.ask(json!({"id": 1, "ask": "hello"})).await;
@@ -5246,7 +5256,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         let said = |text: &str| {
             let draft = Draft {
                 from: "joel".to_owned(),
@@ -5301,7 +5311,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         let said = |from: &str, to: &str| {
             let draft = Draft {
                 from: from.to_owned(),
@@ -5372,7 +5382,7 @@ esac
             "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
         });
         store.start_here("skiff", presence, true);
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         let now = jiff::Timestamp::now();
         let sent = |n: u32, from: &str, to: &str, intent: &str, more: Value| {
             let id = format!("{}-{from}-1-{n:08x}", now.as_millisecond());
@@ -5455,10 +5465,8 @@ esac
             "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
         });
         store.start_here("here", presence, true);
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let (_stop, _node) = alone(&store, "skiff", &socket);
+        let mut client = Speaking::greeted(&socket).await;
 
         let words = json!({"text": "ship it", "from": "joel"});
         client
@@ -5547,7 +5555,7 @@ esac
             "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
         });
         store.start_here("here", presence, true);
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         // The client runs in this process, which the stand-in for /proc
         // tells as running in one of pi's hosts.
         let asker = procs_of(&socket).join(std::process::id().to_string());
@@ -5576,9 +5584,7 @@ esac
             "an agent's pause as the person is refused, saying why"
         );
 
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let mut client = Speaking::greeted(&socket).await;
         let said = json!({"text": "stop there", "from": "joel"});
         client
             .ask(json!({"id": 2, "ask": "steer", "address": "HERE12", "steer": said}))
@@ -5779,10 +5785,8 @@ esac
         for (at, presence) in also.iter().enumerate() {
             store.start_here(&format!("also-{at}"), presence.clone(), true);
         }
-        let (stop, running) = node(store, "skiff", Vec::<Piped>::new(), None, socket);
-        let mut client = Speaking::to(socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let (stop, running) = alone(store, "skiff", socket);
+        let mut client = Speaking::greeted(socket).await;
         // Once the node has started, as a link carries it, since a machine
         // no link claims as the node starts is marked out of reach.
         store
@@ -6007,9 +6011,7 @@ esac
             &socket,
             Some(sharing),
         );
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let mut client = Speaking::greeted(&socket).await;
         // Once the node has started, as a link carries it, since a session
         // of a machine no link claims as the node starts is let go.
         store
@@ -6838,10 +6840,8 @@ esac
             "busy": false, "state": "parked", "at": jiff::Timestamp::now().to_string(),
         });
         store.start_here("napper", parked, false);
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let (_stop, _node) = alone(&store, "skiff", &socket);
+        let mut client = Speaking::greeted(&socket).await;
 
         let said = json!({"act": "pause", "from": "joel", "at": "2026-11-07T18:00:00Z"});
         client
@@ -6912,12 +6912,10 @@ esac
         let done = json!({"step": "done", "commit": "c0ffee", "applied": "now",
             "restart": null, "restarted": []});
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         // The node has made its folder by now, as only it may.
         stand_in_updater(&updater_of(&socket), done.clone());
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let mut client = Speaking::greeted(&socket).await;
 
         client
             .ask(json!({"id": 2, "ask": "update", "machine": "skiff"}))
@@ -6950,10 +6948,8 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let (_stop, _node) = alone(&store, "skiff", &socket);
+        let mut client = Speaking::greeted(&socket).await;
 
         client
             .ask(json!({"id": 4, "ask": "watch", "kind": "session"}))
@@ -6987,7 +6983,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         let hello = client.next().await;
@@ -7149,7 +7145,7 @@ esac
                 .put_presence(session, "kestrel", &presence)
                 .expect("the presence is kept");
         };
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         let hello = client.next().await;
@@ -7251,7 +7247,7 @@ esac
                 .put_presence(session, "kestrel", &planning(session, state, groups))
                 .expect("the presence is kept");
         };
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         let hello = client.next().await;
@@ -7418,10 +7414,8 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let (_stop, _node) = alone(&store, "skiff", &socket);
+        let mut client = Speaking::greeted(&socket).await;
         client
             .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
             .await;
@@ -7452,10 +7446,8 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let (_stop, _node) = alone(&store, "skiff", &socket);
+        let mut client = Speaking::greeted(&socket).await;
         client
             .ask(json!({"id": 2, "ask": "watch", "kind": "receptor"}))
             .await;
@@ -7504,17 +7496,13 @@ esac
         let (planted, body) =
             to_outside_slack("slack@skiff", "slack: 9 asked of you, up from 0; 9 today");
         store.send_here(&planted, body);
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
-        let mut receptors = Speaking::to(&socket).await;
-        receptors.ask(json!({"id": 1, "ask": "hello"})).await;
-        receptors.next().await;
+        let (_stop, _node) = alone(&store, "skiff", &socket);
+        let mut receptors = Speaking::greeted(&socket).await;
         receptors
             .ask(json!({"id": 2, "ask": "watch", "kind": "receptor"}))
             .await;
         receptors.next().await;
-        let mut messages = Speaking::to(&socket).await;
-        messages.ask(json!({"id": 1, "ask": "hello"})).await;
-        messages.next().await;
+        let mut messages = Speaking::greeted(&socket).await;
         messages
             .ask(json!({"id": 2, "ask": "watch", "kind": "message"}))
             .await;
@@ -7578,7 +7566,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         let answered = tokio::task::spawn_blocking(move || {
             let mut sender = Client::connect(&socket).expect("the sender connects");
             let forged = Draft {
@@ -7612,10 +7600,8 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let (_stop, _node) = alone(&store, "skiff", &socket);
+        let mut client = Speaking::greeted(&socket).await;
         let at = jiff::Timestamp::now().to_string();
         let presence = |session: &str, step: &str, title: &str| {
             json!({
@@ -7691,7 +7677,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (_stop, _node) = alone(&store, "skiff", &socket);
         let mut client = Speaking::to(&socket).await;
         client.ask(json!({"id": 1, "ask": "hello"})).await;
         let hello = client.next().await;
@@ -7774,10 +7760,8 @@ esac
         store.start_here("runner", presence("runner", "listening"), true);
         // Parked, its process ended, though the harness hasn't marked it.
         store.start_here("napper", presence("napper", "parked"), false);
-        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        client.next().await;
+        let (_stop, _node) = alone(&store, "skiff", &socket);
+        let mut client = Speaking::greeted(&socket).await;
 
         client
             .ask(json!({"id": 2, "ask": "watch", "kind": "session"}))
@@ -7894,19 +7878,7 @@ esac
             asks_back: false,
         };
         let near = node(&near_store, "skiff", vec![dial], None, &near_socket);
-        // Nothing tells the test when the link has said what kestrel
-        // is, so it looks again every few milliseconds until it has.
-        tokio::time::timeout(PATIENCE, async {
-            while !near_store
-                .machines()
-                .iter()
-                .any(|one| one.name == "kestrel")
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the link says what kestrel is");
+        known_to(&near_store, "kestrel").await;
         let carried = listed(near_socket.clone(), "0e50").await;
         assert_eq!(carried.held.as_deref(), Some("5e551011"));
         assert_eq!(
@@ -8033,7 +8005,7 @@ esac
             "hosted": {"host": "work-attended", "conversation": "c-01a1"},
         });
         store.start_here("01a1", presence, true);
-        let (stop, node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let (stop, node) = alone(&store, "skiff", &socket);
         let hosted = listed(socket.clone(), "01a1").await;
         assert_eq!(
             hosted.attach,
@@ -8090,13 +8062,7 @@ esac
         let far_socket = dir.path().join("kestrel").join("work.sock");
         let near_socket = dir.path().join("skiff").join("work.sock");
         let far_store = Memory::default();
-        let far = node(
-            &far_store,
-            "kestrel",
-            Vec::<Piped>::new(),
-            None,
-            &far_socket,
-        );
+        let far = alone(&far_store, "kestrel", &far_socket);
         let holds = Starter {
             program: holder,
             scope: start::Scope::None,
@@ -8208,13 +8174,7 @@ esac
         let far_socket = dir.join("kestrel").join("work.sock");
         let near_socket = dir.join("skiff").join("work.sock");
         let far_store = Memory::default();
-        let far = node(
-            &far_store,
-            "kestrel",
-            Vec::<Piped>::new(),
-            None,
-            &far_socket,
-        );
+        let far = alone(&far_store, "kestrel", &far_socket);
         let dial = Piped {
             store: far_store,
             socket: far_socket,
@@ -8223,19 +8183,7 @@ esac
             asks_back: false,
         };
         let near = node(near_store, "skiff", vec![dial], None, &near_socket);
-        // Nothing tells the test when the link has said what kestrel
-        // is, so it looks again every few milliseconds until it has.
-        tokio::time::timeout(PATIENCE, async {
-            while !near_store
-                .machines()
-                .iter()
-                .any(|one| one.name == "kestrel")
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the link says what kestrel is");
+        known_to(near_store, "kestrel").await;
         // The test asks both nodes, as the person would.
         asks_as_person(&near_socket);
         asks_as_person(&dir.join("kestrel").join("work.sock"));
@@ -8343,13 +8291,7 @@ esac
     async fn the_person_ends_a_session_held_here() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
-        let (_stop, _node) = node(
-            &Memory::default(),
-            "skiff",
-            Vec::<Piped>::new(),
-            None,
-            &socket,
-        );
+        let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
         let (holder, program) = holds_for_real(&held_of(&socket), "e0d1");
         asks_as_person(&socket);
 
@@ -8396,13 +8338,7 @@ esac
     async fn an_end_is_refused_to_a_stranger_saying_why() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
-        let (_stop, _node) = node(
-            &Memory::default(),
-            "skiff",
-            Vec::<Piped>::new(),
-            None,
-            &socket,
-        );
+        let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
         let (holder, program) = holds_for_real(&held_of(&socket), "e0d2");
         // The client runs in this process, which the stand-in for /proc
         // tells as an agent of no session this node knows.
@@ -8463,13 +8399,7 @@ esac
             "owner": {"pid": pids.1},
         });
         far_store.start_here("0e53", presence, true);
-        let far = node(
-            &far_store,
-            "kestrel",
-            Vec::<Piped>::new(),
-            None,
-            &far_socket,
-        );
+        let far = alone(&far_store, "kestrel", &far_socket);
         let dial = Piped {
             store: far_store,
             socket: far_socket,
@@ -8620,7 +8550,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let running = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let running = alone(&store, "skiff", &socket);
         asks_as_person(&socket);
         let came = run_through(
             socket.clone(),
@@ -8739,13 +8669,7 @@ esac
         let far_socket = dir.path().join("kestrel").join("work.sock");
         let near_socket = dir.path().join("skiff").join("work.sock");
         let far_store = Memory::default();
-        let far = node(
-            &far_store,
-            "kestrel",
-            Vec::<Piped>::new(),
-            None,
-            &far_socket,
-        );
+        let far = alone(&far_store, "kestrel", &far_socket);
         let dial = Piped {
             store: far_store.clone(),
             socket: far_socket.clone(),
@@ -8936,13 +8860,7 @@ esac
     async fn an_agents_run_here_runs_only_as_its_fence_says() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
-        let running = node(
-            &Memory::default(),
-            "skiff",
-            Vec::<Piped>::new(),
-            None,
-            &socket,
-        );
+        let running = alone(&Memory::default(), "skiff", &socket);
         asks_as_person(&socket);
         declares_runs(&socket, true);
         let person = run_through(socket.clone(), run_of("skiff", SAYS_ITS_FENCE))
@@ -9088,13 +9006,7 @@ esac
                        "quest": "QEST-20261115-FARAWY"}),
                 true,
             );
-            let far = node(
-                &far_store,
-                "kestrel",
-                Vec::<Piped>::new(),
-                None,
-                &far_socket,
-            );
+            let far = alone(&far_store, "kestrel", &far_socket);
             let dial = Piped {
                 store: far_store,
                 socket: far_socket,
@@ -9105,9 +9017,7 @@ esac
             let near = node(&Memory::default(), "skiff", vec![dial], None, &near_socket);
             listed(near_socket.clone(), "s-far").await;
             asks_as_the_person(&near_socket);
-            let mut client = Speaking::to(&near_socket).await;
-            client.ask(json!({"id": 1, "ask": "hello"})).await;
-            client.next().await;
+            let mut client = Speaking::greeted(&near_socket).await;
             assert_eq!(
                 carries(&mut client, 2, "QEST-20261115-FARAWY", "skiff").await["error"]["message"],
                 json!(why),
