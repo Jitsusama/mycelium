@@ -1174,7 +1174,8 @@ end. The program is told who asked in `MYCELIUM_ASKER`: `person` for
 the person's own login, the address of the nearest session claiming an
 agent that asks, as the node proves it for a run, or `unknown` where
 neither can be told; a provider serving only some refuses the rest by
-failing, and nothing is made. The program writes one JSON line, `{"place", "machine", "until"}`:
+failing, and nothing is made. The program writes one JSON line,
+`{"place", "machine", "until"}`:
 where it is, as `--via` names it, the name its node will say for
 itself, and when its provider ends it whatever else happens. The node
 dials it as it would `--via PROGRAM:PLACE`, waits up to five minutes
