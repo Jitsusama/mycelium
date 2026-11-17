@@ -1343,8 +1343,10 @@ is booked, before it is dialled, for the asker its make was told: once
 it links, a start or run is placed there only when that asker, or the
 person, asks, so another agent's work goes elsewhere or waits, and a
 machine whose book line names no asker takes only the person's. A
-start pinned to the machine made for it, and a placement only
-previewed, are not held to the booking. Like the judging of a run, this
+preview is held to it as its run would be, and an ordered carry there
+of another's session is refused; only a start pinned to the machine
+made for it is not held to it. The booking is the making node's, kept
+while it runs and made again as it redials its book. Like the judging of a run, this
 fences habit, not an agent set on passing as another, which runs as
 the same account; an agent's process left with no agent above it is
 judged the person's. A start relayed from another machine's node makes

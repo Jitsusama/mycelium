@@ -403,6 +403,28 @@ mod tests {
     }
 
     #[test]
+    fn the_book_keeps_who_a_machine_was_made_for_through_a_restart() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let mut made = made_at("osprey", "p1", later);
+        made.asker = Some("P9R1KI".to_owned());
+        Book::at(path.clone())
+            .of_realm("work")
+            .made(&made)
+            .expect("a make is kept");
+        assert_eq!(
+            Book::at(path)
+                .of_realm("work")
+                .standing()
+                .expect("the book reads")
+                .made,
+            vec![made],
+            "a node reading its book again books the machine for the same asker"
+        );
+    }
+
+    #[test]
     fn the_book_stands_by_each_machine_its_realm_made_and_has_not_released() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let path = dir.path().join("made.jsonl");

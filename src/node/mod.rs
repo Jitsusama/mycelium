@@ -2666,22 +2666,14 @@ impl<S: Store> Shared<S> {
         fence: Option<crate::declared::Kind>,
         admits: &Admits,
     ) -> Placement {
-        let machines: Vec<facts::Machine> = {
-            let inner = self.lock();
-            // This machine, first, is never booked for anyone.
-            self.machines()
-                .into_iter()
-                .enumerate()
-                .filter(|(at, one)| {
-                    *at == 0
-                        || inner
-                            .booked
-                            .get(&one.name)
-                            .is_none_or(|booked| admits.takes(booked.as_deref()))
-                })
-                .map(|(_, one)| one)
-                .collect()
-        };
+        // Measured before the lock is taken, since measuring reads this
+        // machine and the store. This machine, first, is never booked.
+        let mut machines = self.machines();
+        let mut at = 0;
+        machines.retain(|one| {
+            at += 1;
+            at == 1 || self.admitted_on(&one.name, admits)
+        });
         let refused = fence
             .map(|kind| {
                 let here = crate::declared::read(&self.declared);
@@ -3564,6 +3556,13 @@ impl<S: Store> Shared<S> {
         if to == self.machine {
             return Err(format!("{address} already runs on {to}"));
         }
+        // A machine made for one asker takes only its sessions and the
+        // person's, so another's is never carried there.
+        if !self.admitted_on(to, &Admits::Asker(address.clone())) {
+            return Err(format!(
+                "{to} was made for another asker, so {address} isn't carried there"
+            ));
+        }
         let claimed = target
             .presence
             .get("fence")
@@ -3997,6 +3996,15 @@ impl<S: Store> Shared<S> {
         })
     }
 
+    /// Whether `machine` takes work `admits` lets through: any machine not
+    /// booked, and a booked one only as [`Admits::takes`] says.
+    fn admitted_on(&self, machine: &str, admits: &Admits) -> bool {
+        self.lock()
+            .booked
+            .get(machine)
+            .is_none_or(|booked| admits.takes(booked.as_deref()))
+    }
+
     /// Which booked machines a start or run asked now may be placed on:
     /// every one where none is booked, so who asks is read only once a
     /// machine is booked; else those booked for its asker, as a make
@@ -4061,13 +4069,9 @@ impl<S: Store> Shared<S> {
             By::Agent(kind) => Some(kind.max(crate::declared::Kind::Fence)),
             By::Person => None,
         };
-        // A preview chooses no machine, so none booked is kept from it.
-        Ok(Response::Placement(self.place(
-            work,
-            false,
-            fence,
-            &Admits::All,
-        )))
+        // Held to the machines booked for whoever asks, as its run is.
+        let admits = self.admits().await;
+        Ok(Response::Placement(self.place(work, false, fence, &admits)))
     }
 
     /// Who asks a run, as [`asker::judge`] tells it, and the sessions
@@ -11224,6 +11228,49 @@ esac
             placed("P9R1KI"),
             None,
             "a machine whose make told no asker takes only the person's starts"
+        );
+        assert!(
+            !shared.admitted_on("osprey", &Admits::Asker("P9R1KI".to_owned()))
+                && shared.admitted_on("tern", &Admits::Asker("P9R1KI".to_owned())),
+            "a carry is refused a booked machine and let onto one not booked"
+        );
+        let mut here = made_by("/usr/bin/lend", "skiff", jiff::Timestamp::now());
+        here.asker = Some("QK4T7Z".to_owned());
+        shared.book_for(&here);
+        let anywhere = work(Vec::new());
+        assert_eq!(
+            match shared.place(&anywhere, true, None, &Admits::Asker("P9R1KI".to_owned())) {
+                Placement::Placed { machine, .. } => Some(machine),
+                _ => None,
+            }
+            .as_deref(),
+            Some("skiff"),
+            "this machine takes every asker's starts, whatever names it"
+        );
+        assert_ne!(
+            shared.admits().await,
+            Admits::All,
+            "once a machine is booked, a start is held to who asks"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_nothing_booked_a_start_is_held_to_no_asker() {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            bare("/nowhere/steer".into(), None),
+            to_dial,
+        );
+        assert_eq!(
+            shared.admits().await,
+            Admits::All,
+            "no asker is read while no machine is booked"
         );
     }
 
