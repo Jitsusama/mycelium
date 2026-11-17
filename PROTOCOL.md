@@ -887,6 +887,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Builders"` | `{"Builders": [builder]}`, the builders it sends Nix builds to |
 | `"Offers"` | `{"Offers": {"offers", "unanswered"}}`, asked of each provider now |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
+| `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"`, counted here as a start |
 | `{"Start": {"work", "folder", "command", "may_cost"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
@@ -1271,16 +1272,17 @@ where cores are shared out short. Over still reads from pressure alone.
 A share it never said counts as none, and `cores` is its declared
 `cores`, else its `cpu`'s, else one. Its `sessions` are those busy
 there, since an idle one's memory is already gone from
-`memory_available`, and its `starts` those this node placed there by `"Start"`
-that its room doesn't yet show: each counts until the machine says its
-room after it, or for five minutes at most, kept in memory only, so a
-burst of starts spreads across machines alike rather than piling on
-whichever led. A `prefer_not` taint such as `disk-pressure` is only a
-weight, so a machine idle beside one busy may take work despite it;
+`memory_available`, and its `starts` those this node placed there by
+`"Start"`, or by a `"PlaceToStart"` answered with this machine, that its
+room doesn't yet show: each counts until the machine says its room
+thirty seconds or more after it, since a room said sooner can't yet
+show a session begun, or for five minutes at most, kept in memory only,
+so a burst of starts spreads across machines alike rather than piling
+on whichever led. A `prefer_not` taint such as `disk-pressure` is only
+a weight, so a machine idle beside one busy may take work despite it;
 a disk `filling` costs a quarter of one `nearly-full` or
 `critically-full`, its guard clearing what has waited a while. The
-answer is
-`{"placed": {"machine", "passed"}}`, `{"pending": {"misses"}}` when
+answer is `{"placed": {"machine", "passed"}}`, `{"pending": {"misses"}}` when
 only a machine out of reach would do and the work may wait, or
 `{"refused": {"misses"}}`; each miss names a `machine` and `because`:
 `{"lacks": need}`, `{"unknown": need}`, `{"refuses": taint}`,
@@ -1292,13 +1294,23 @@ chooses: a machine says whether work starts there when asked, by its
 own queue and taints, so nothing fits work against its room, which only
 ranks it.
 
-Each placement, by `"Place"` or `"Start"`, is kept as a JSON line in
-`placements/<date>.jsonl` in mycelium's folder, a file for each day of
-the machine's calendar, so a monitor can judge how well work was placed
-and a replay can place it again under other weights: `at`, `start`
-(whether it was a start), the `work`, every machine's facts as placing
-read them (`machines`), each machine's `loads` (`sessions` and `placed`
-starts beyond what its room says), and the `decision`: the `placement`
+`"PlaceToStart"` asks as `"Place"` does, for an asker that starts the
+work itself when the answer is this machine, as a pi session's spawn
+does, and through `"Start"` when it is another. An answer naming this
+machine counts as a start placed here; one naming another counts
+nothing, since the `"Start"` that follows counts it there. So a burst of
+spawns spreads as a burst of starts does, rather than each being told
+the machine the last was. A node older than this answers it as a
+request it doesn't know, and an asker then asks `"Place"`.
+
+Each placement, by `"Place"`, `"PlaceToStart"` or `"Start"`, is kept
+as a JSON line in `placements/<date>.jsonl` in mycelium's folder, a file
+for each day of the machine's calendar, so a monitor can judge how well
+work was placed and a replay can place it again under other weights:
+`at`, `start` (whether it was a start, or an ask to start answered
+here), the `work`, every machine's facts as placing read them
+(`machines`), each machine's `loads` (`sessions` and `placed` starts
+beyond what its room says), and the `decision`: the `placement`
 answered and, for each machine, how it was `judged` (`machine`,
 `qualifies`, `over`, `unheard`, how many preferences it met as
 `preferred`, its `headroom`, and its `chance` of being the one chosen,

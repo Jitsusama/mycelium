@@ -1738,6 +1738,35 @@ fn keep_receptors(
     (held, keeping)
 }
 
+/// Which placements count as a start placed, so the next placement weighs
+/// it while its machine's room doesn't yet show it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Counts {
+    /// None: an ask of where, or a run, which ends when its asker stops.
+    Never,
+    /// Every one: a start this node makes.
+    Always,
+    /// Only one placed on this machine: an asker that starts the work
+    /// itself here, and through a start of this node anywhere else, which
+    /// is counted then.
+    Here,
+}
+
+impl Counts {
+    /// The machine `placement`, made by the node of `here`, counts a
+    /// start on, if it counts one: work placed nowhere counts nowhere.
+    fn counted<'a>(self, placement: &'a Placement, here: &str) -> Option<&'a str> {
+        let Placement::Placed { machine, .. } = placement else {
+            return None;
+        };
+        match self {
+            Self::Never => None,
+            Self::Always => Some(machine),
+            Self::Here => (machine == here).then_some(machine.as_str()),
+        }
+    }
+}
+
 impl<S: Store> Shared<S> {
     /// What a node of `hello`'s machine and realm shares, from what it was
     /// `given`, telling `to_dial` of each machine it makes, with what its
@@ -2762,10 +2791,10 @@ impl<S: Store> Shared<S> {
 
     /// Places `work` among the realm's machines, each weighed with the
     /// sessions on it and the starts placed there that its room doesn't
-    /// yet show. A `start` placed is kept as one, under the same lock, so
-    /// a burst of asks spreads rather than piling on whichever led. Each
-    /// placement is kept in its log, where it keeps one, once the lock is
-    /// let go. Work an agent asks, running in the fence `fence`, is refused
+    /// yet show. A placement that `counts` says is a start is kept as one,
+    /// under the same lock, so a burst of asks spreads rather than piling
+    /// on whichever led. Each placement is kept in its log, where it keeps
+    /// one, once the lock is let go. Work an agent asks, running in the fence `fence`, is refused
     /// every machine whose ground is looser than here, so nothing is carried
     /// to a machine that would refuse to run it once it got there. Those
     /// machines still count for what the realm reaches, and the record
@@ -2775,7 +2804,7 @@ impl<S: Store> Shared<S> {
     fn place(
         &self,
         work: &Work,
-        start: bool,
+        counts: Counts,
         fence: Option<crate::declared::Kind>,
         admits: &Admits,
     ) -> Placement {
@@ -2797,16 +2826,19 @@ impl<S: Store> Shared<S> {
         // there unless it names another.
         let work = &placement::asked_on(work, &machines[0], &machines);
         let now = jiff::Timestamp::now();
-        let (loads, decision) = {
+        let (loads, decision, start) = {
             let mut inner = self.lock();
             let inner = &mut *inner;
             let sessions = inner.state.sessions();
             let loads = inner.starts.loads(&machines, running(&sessions), now);
             let decision = placement::decide_refusing(work, &machines, &loads, &refused);
-            if start && let Placement::Placed { machine, .. } = &decision.placement {
-                inner.starts.placed(machine, now);
-            }
-            (loads, decision)
+            let counted = counts
+                .counted(&decision.placement, &self.machine)
+                .inspect(|machine| inner.starts.placed(machine, now))
+                .is_some();
+            // A start refused is recorded as a start all the same, as it
+            // was asked one.
+            (loads, decision, counted || counts == Counts::Always)
         };
         let Some(log) = &self.placements else {
             return decision.placement;
@@ -2835,7 +2867,9 @@ impl<S: Store> Shared<S> {
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
             Request::Machines => Ok(Response::Machines(self.machines())),
             Request::Builders => Ok(Response::Builders(self.builders.builders())),
-            Request::Place(_) => Err("a placement is answered by `place_asked`".to_owned()),
+            Request::Place(_) | Request::PlaceToStart(_) => {
+                Err("a placement is answered by `place_asked`".to_owned())
+            }
             Request::Messages { groups, limit } => {
                 Ok(Response::Messages(self.lock().state.recent(&groups, limit)))
             }
@@ -3824,7 +3858,7 @@ impl<S: Store> Shared<S> {
             return Err("nothing to start: name a program".to_owned());
         }
         let admits = self.admits().await;
-        let (misses, nowhere) = match self.place(&asked.work, true, None, &admits) {
+        let (misses, nowhere) = match self.place(&asked.work, Counts::Always, None, &admits) {
             Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
             Placement::Pending { misses } => {
                 let nowhere = format!(
@@ -3954,7 +3988,7 @@ impl<S: Store> Shared<S> {
         let mut there = asked.work.clone();
         there.needs.push(Need::Machine(made.machine.clone()));
         // Pinned to the machine made for it, which is booked for its asker.
-        match self.place(&there, true, None, &Admits::All) {
+        match self.place(&there, Counts::Always, None, &Admits::All) {
             Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 let its: Vec<Miss> = misses
@@ -4029,7 +4063,7 @@ impl<S: Store> Shared<S> {
         // only on ground as firm as here, where it stands in the fence its
         // launcher sets.
         let admits = self.admits().await;
-        let machine = match self.place(&asked.work, false, fence, &admits) {
+        let machine = match self.place(&asked.work, Counts::Never, fence, &admits) {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } => {
                 return Err(format!(
@@ -4208,7 +4242,7 @@ impl<S: Store> Shared<S> {
     /// Places `work` as [`Node::place`] does for whoever asks, held to an
     /// agent's ground where an agent asks, as a run of its would be, so
     /// what it is told would take the work is where the work can run.
-    async fn place_asked(&self, work: &Work) -> Reply {
+    async fn place_asked(&self, work: &Work, counts: Counts) -> Reply {
         let (judged, _) = self.judged().await?;
         let fence = match judged {
             By::Agent(kind) => Some(kind.max(crate::declared::Kind::Fence)),
@@ -4216,7 +4250,9 @@ impl<S: Store> Shared<S> {
         };
         // Held to the machines booked for whoever asks, as its run is.
         let admits = self.admits().await;
-        Ok(Response::Placement(self.place(work, false, fence, &admits)))
+        Ok(Response::Placement(
+            self.place(work, counts, fence, &admits),
+        ))
     }
 
     /// Who asks a run, as [`asker::judge`] tells it, and the sessions
@@ -4413,7 +4449,8 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
                 Answer::Err("a receptor's signal stays in its own realm".to_owned())
             }
             Ok(Request::Cross(crossing)) => shared.take(crossing),
-            Ok(Request::Place(work)) => shared.place_asked(&work).await.into(),
+            Ok(Request::Place(work)) => shared.place_asked(&work, Counts::Never).await.into(),
+            Ok(Request::PlaceToStart(work)) => shared.place_asked(&work, Counts::Here).await.into(),
             asked => asked.and_then(|request| shared.answer(request)).into(),
         };
         if write(&mut writing, &reply).await.is_err() {
@@ -11199,6 +11236,112 @@ esac
             .expect("the node stops cleanly");
     }
 
+    #[test]
+    fn an_ask_to_start_elsewhere_leaves_its_count_to_the_start_there() {
+        let on = |machine: &str| Placement::Placed {
+            machine: machine.to_owned(),
+            passed: Vec::new(),
+        };
+        assert_eq!(
+            Counts::Here.counted(&on("skiff"), "skiff"),
+            Some("skiff"),
+            "its asker starts it here"
+        );
+        assert_eq!(
+            Counts::Here.counted(&on("kestrel"), "skiff"),
+            None,
+            "its asker starts it through `Start`, which counts it once"
+        );
+        assert_eq!(
+            Counts::Always.counted(&on("kestrel"), "skiff"),
+            Some("kestrel"),
+            "a start this node makes counts wherever it goes"
+        );
+        assert_eq!(Counts::Never.counted(&on("skiff"), "skiff"), None);
+        let nowhere = Placement::Refused { misses: Vec::new() };
+        assert_eq!(
+            Counts::Always.counted(&nowhere, "skiff"),
+            None,
+            "work placed nowhere counts nowhere"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ask_to_start_counts_as_a_start_only_where_its_asker_starts_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("mycelium").join("work.sock");
+        let kept = dir.path().join("placements");
+        let given = Given {
+            placements: Some(placements::Log::at(kept.clone())),
+            processes: Processes::Folder(procs_of(&socket)),
+            ..bare(dir.path().join("steer"), None)
+        };
+        let (stop, node) = alone_with(&Memory::default(), &socket, given);
+        // A person asking, so nothing is refused for its ground.
+        asks_as_person(&socket);
+
+        let answers = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            let mut ask = |request: &Request| client.ask(request).expect("the node answers");
+            let nowhere = vec![Need::Machine("kestrel".to_owned())];
+            [
+                ask(&Request::Place(work(Vec::new()))),
+                ask(&Request::PlaceToStart(work(Vec::new()))),
+                // Work placed nowhere starts nowhere, so it counts nothing.
+                ask(&Request::PlaceToStart(work(nowhere))),
+                ask(&Request::Place(work(Vec::new()))),
+            ]
+        });
+        let answers = tokio::time::timeout(PATIENCE, answers)
+            .await
+            .expect("the node answers in time")
+            .expect("the client asks");
+        let placed: Vec<Option<String>> = answers
+            .iter()
+            .map(|answer| match answer {
+                Ok(Response::Placement(Placement::Placed { machine, .. })) => Some(machine.clone()),
+                _ => None,
+            })
+            .collect();
+        let skiff = Some("skiff".to_owned());
+        assert_eq!(
+            placed,
+            [skiff.clone(), skiff.clone(), None, skiff],
+            "each ask is answered as a plain one would be: {answers:?}"
+        );
+        let mut records: Vec<placements::Record> = fs::read_dir(&kept)
+            .expect("the log's folder")
+            .flat_map(|entry| {
+                let day = fs::read_to_string(entry.expect("an entry").path()).expect("a day");
+                day.lines()
+                    .map(|line| serde_json::from_str(line).expect("a record"))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        // A day's file each, so asks crossing midnight are put back in order.
+        records.sort_by_key(|one| one.at.parse::<jiff::Timestamp>().expect("a time"));
+        assert_eq!(
+            records.iter().map(|one| one.start).collect::<Vec<_>>(),
+            [false, true, false, false],
+            "only the ask its asker starts here is kept as a start"
+        );
+        let placed = |record: &placements::Record, machine: &str| {
+            record.loads.get(machine).map_or(0, |load| load.placed)
+        };
+        assert_eq!(
+            records
+                .iter()
+                .map(|one| placed(one, "skiff"))
+                .collect::<Vec<_>>(),
+            [0, 0, 1, 1],
+            "each placement after the start weighs it, and nothing else adds to it"
+        );
+        stop.send(()).expect("the node is still running");
+        node.await
+            .expect("the node runs to its end")
+            .expect("the node stops cleanly");
+    }
+
     #[tokio::test]
     async fn a_node_starts_what_it_is_asked_where_placement_says_or_says_why_not() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -11453,11 +11596,15 @@ esac
         made.asker = Some("P9R1KI".to_owned());
         shared.book_for(&made);
         let basin = work(vec![Need::Reach("basin".to_owned())]);
-        let placed =
-            |told: &str| match shared.place(&basin, true, None, &Admits::Asker(told.to_owned())) {
-                Placement::Placed { machine, .. } => Some(machine),
-                _ => None,
-            };
+        let placed = |told: &str| match shared.place(
+            &basin,
+            Counts::Always,
+            None,
+            &Admits::Asker(told.to_owned()),
+        ) {
+            Placement::Placed { machine, .. } => Some(machine),
+            _ => None,
+        };
         assert_eq!(
             placed("QK4T7Z"),
             None,
@@ -11490,7 +11637,12 @@ esac
         shared.book_for(&here);
         let anywhere = work(Vec::new());
         assert_eq!(
-            match shared.place(&anywhere, true, None, &Admits::Asker("P9R1KI".to_owned())) {
+            match shared.place(
+                &anywhere,
+                Counts::Always,
+                None,
+                &Admits::Asker("P9R1KI".to_owned()),
+            ) {
                 Placement::Placed { machine, .. } => Some(machine),
                 _ => None,
             }

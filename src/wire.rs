@@ -36,6 +36,11 @@ pub enum Request {
     Offers,
     /// Which machine of the realm `work` should go to.
     Place(Work),
+    /// Which machine of the realm `work` should go to, for an asker that
+    /// starts it itself where the answer is this machine, and otherwise
+    /// through [`Request::Start`]: an answer naming this machine counts
+    /// as a start placed here, so a burst of such asks spreads.
+    PlaceToStart(Work),
     /// Start a program held where placement chooses.
     Start(Start),
     /// Run a command where placement chooses, as the node's own: answered
