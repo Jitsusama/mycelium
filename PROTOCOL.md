@@ -2289,7 +2289,14 @@ link reaching that machine (`End` above), never by SSH. The person's
 own login ends any. A session ends one only on the machine where both
 run, once that node's record of orchestrations proves it orchestrates
 the held session's quest, as an ordered carry is proved; a presence
-naming its orchestrator proves nothing. Anyone else is refused, saying
+naming its orchestrator proves nothing. A session no open quest's
+record holds is judged by the record of quests that ended, served as
+`ended-quest` (`records` `quests`, `key` `id`), whose one quest
+holding it in `sessions` names its `orchestrator` by address: the asker
+must head that orchestrator's open quest by this node's record and by
+that quest's record, and the mesh must put the ended quest's sessions
+and the asker in that orchestrator's group. Only that orchestrator
+ends them so, never one above it. Anyone else is refused, saying
 why. An id held here is ended here; one held on more than one other
 machine is refused. A holder that no longer answers on its socket has
 its stale record taken away, and nothing it names is signalled. The

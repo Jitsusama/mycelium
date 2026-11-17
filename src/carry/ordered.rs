@@ -196,6 +196,78 @@ pub fn quest_of(session: Known, quests: &[Value]) -> Result<String, String> {
     holding(session, quests).map(|quest| id_of(quest).unwrap_or_default().to_owned())
 }
 
+/// Whether any quest's record among `quests` holds the session `session`.
+#[must_use]
+pub fn holds(session: &str, quests: &[Value]) -> bool {
+    quests.iter().any(|quest| attaches(quest, session))
+}
+
+/// The id of the one quest among `ended`, the quests that ended, whose
+/// record holds `session`, and the address of who orchestrated it, as
+/// the harness wrote it as the quest ended.
+///
+/// # Errors
+///
+/// When none holds it, more than one does, or it names no orchestrator.
+pub fn ended_holding(session: Known, ended: &[Value]) -> Result<(String, String), String> {
+    let quest = holding(session, ended)?;
+    let id = id_of(quest).unwrap_or_default().to_owned();
+    let orchestrator = quest
+        .get("orchestrator")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            format!("{id} ended naming no orchestrator, so only the person ends its sessions")
+        })?;
+    Ok((id, orchestrator.to_ascii_uppercase()))
+}
+
+/// Whether `quest`'s record says it is open: neither concluded nor
+/// retired, as an index of quests can list one that ended a while.
+#[must_use]
+pub fn open(quest: &Value) -> bool {
+    !matches!(
+        quest.get("status").and_then(Value::as_str),
+        Some("concluded" | "retired")
+    )
+}
+
+/// The record of the one quest among `quests` whose id ends in `address`.
+///
+/// # Errors
+///
+/// When none does, or more than one, since then which heads it can't be
+/// told.
+pub fn going_by<'a>(address: &str, quests: &'a [Value]) -> Result<&'a Value, String> {
+    // By its id's last part, never its `address` field, since a quest's id
+    // is what this node's record of orchestrations says a session heads,
+    // and the field is the quests' record's word alone.
+    let going: Vec<&Value> = quests
+        .iter()
+        .filter(|quest| {
+            id_of(quest)
+                .and_then(|id| id.rsplit('-').next())
+                .is_some_and(|last| last.eq_ignore_ascii_case(address))
+        })
+        .collect();
+    match going.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(format!("no open quest goes by {address}")),
+        _ => Err(format!("more than one open quest goes by {address}")),
+    }
+}
+
+/// The id of `quest`, as its record names it.
+#[must_use]
+pub fn id(quest: &Value) -> &str {
+    id_of(quest).unwrap_or_default()
+}
+
+/// Whether `quest`'s record attaches the session `session`.
+#[must_use]
+pub fn attached(quest: &Value, session: &str) -> bool {
+    attaches(quest, session)
+}
+
 /// The one quest's record among `quests` that holds `session`.
 fn holding<'a>(session: Known, quests: &'a [Value]) -> Result<&'a Value, String> {
     let holding: Vec<&Value> = quests
@@ -261,7 +333,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{Known, Link, Order, agreed, keep, ordered_by};
+    use super::{Known, Link, Order, agreed, ended_holding, going_by, keep, ordered_by};
 
     fn link(quest: &str, orchestrator: &str) -> Link {
         Link {
@@ -587,6 +659,78 @@ mod tests {
             .is_err_and(|why| why.contains("WM4KSZ has no quest's record")),
             "an orchestrator with no record of its own attaches nobody"
         );
+    }
+
+    #[test]
+    fn a_quest_that_ended_names_who_orchestrated_each_session_once() {
+        let ended = [
+            json!({"id": "QEST-1-HARBOR", "sessions": ["s-harbour"], "orchestrator": "wcjqsg"}),
+            json!({"id": "QEST-1-ALONE1", "sessions": ["s-alone"]}),
+            json!({"id": "QEST-1-TWICE1", "sessions": ["s-twice"], "orchestrator": "WCJQSG"}),
+            json!({"id": "QEST-1-TWICE2", "sessions": ["s-twice"], "orchestrator": "OSPHT4"}),
+        ];
+        assert_eq!(
+            ended_holding(known("s-harbour", "HARBOR"), &ended),
+            Ok(("QEST-1-HARBOR".to_owned(), "WCJQSG".to_owned())),
+            "its quest, and its orchestrator's address as the mesh writes it"
+        );
+        assert_eq!(
+            ended_holding(known("s-alone", "ALONE1"), &ended),
+            Err(
+                "QEST-1-ALONE1 ended naming no orchestrator, so only the person ends its sessions"
+                    .to_owned()
+            )
+        );
+        assert!(
+            ended_holding(known("s-twice", "TWICE1"), &ended)
+                .is_err_and(|why| why.contains("held by QEST-1-TWICE1 and QEST-1-TWICE2")),
+            "a session two ended quests hold has no one orchestrator"
+        );
+    }
+
+    #[test]
+    fn the_open_quest_going_by_an_address_is_one_or_none() {
+        let open = quests();
+        assert_eq!(
+            going_by("wcjqsg", &open).map(|quest| quest["id"].clone()),
+            Ok(json!("QEST-20261007-WCJQSG"))
+        );
+        assert_eq!(
+            going_by("NOBODY", &open),
+            Err("no open quest goes by NOBODY".to_owned())
+        );
+        let mut twice = quests();
+        twice.push(json!({"id": "QEST-20261118-WCJQSG", "sessions": []}));
+        assert_eq!(
+            going_by("WCJQSG", &twice),
+            Err("more than one open quest goes by WCJQSG".to_owned()),
+            "an address two open quests go by heads neither"
+        );
+        let mut renamed = quests();
+        renamed[0]["address"] = json!("OSPHT4");
+        renamed[2]["address"] = json!("WCJQSG");
+        assert_eq!(
+            going_by("WCJQSG", &renamed).map(|quest| quest["id"].clone()),
+            Ok(json!("QEST-20261007-WCJQSG")),
+            "a quest goes by its id, never an address field another quest's record could say"
+        );
+    }
+
+    #[test]
+    fn a_quest_an_index_lists_as_ended_is_not_open() {
+        for (status, is_open) in [
+            (json!("active"), true),
+            (json!("paused"), true),
+            (json!(null), true),
+            (json!("concluded"), false),
+            (json!("retired"), false),
+        ] {
+            assert_eq!(
+                super::open(&json!({"id": "QEST-1-HARBOR", "status": status})),
+                is_open,
+                "a quest whose status is {status}"
+            );
+        }
     }
 
     #[test]
