@@ -387,7 +387,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 16] = [
+pub const HOLDS: [&str; 17] = [
     "session",
     "machine",
     "message",
