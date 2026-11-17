@@ -2834,22 +2834,35 @@ impl<S: Store> Shared<S> {
     /// ordered one is kept, so the person sees it with the rest and the
     /// trees it leaves here are let go once it arrives: by the person, as
     /// this node saw who asked, never as the asker says, and with no why.
-    /// A session of no quest is carried with nothing kept, since nothing
-    /// settles a carry without its quest.
+    /// Its quest is the one the quests' record the node serves holds its
+    /// session in, as an ordered carry's is, never the quest its presence
+    /// claims. A session no one quest's record holds is carried with
+    /// nothing kept, since nothing settles a carry without its quest.
     fn keep_persons_carry(&self, steer: &Steer, sessions: &[Session]) -> Result<(), String> {
         let carries = steer.body.get("act").and_then(serde_json::Value::as_str) == Some("carry");
         if !carries || !steer.checked {
             return Ok(());
         }
         let to = steer.body.get("to").and_then(serde_json::Value::as_str);
-        let Some((session, quest)) = sessions
+        let quests: Vec<serde_json::Value> = self
+            .served
+            .records("quest")
+            .map(|records| records.into_values().collect())
+            .unwrap_or_default();
+        let Some((known, quest)) = sessions
             .iter()
             .filter(|session| {
                 session.machine == self.machine
                     && (matches!(session.state, SessionState::Busy | SessionState::Idle)
                         || parked_presence(session))
             })
-            .find_map(|session| Some((session, session.quest.as_deref()?)))
+            .find_map(|session| {
+                let known = ordered::Known {
+                    session: crate::carry::session_id(session)?,
+                    address: &session.address,
+                };
+                Some((known, ordered::quest_of(known, &quests).ok()?))
+            })
             .filter(|_| to.is_some_and(|to| to != self.machine))
         else {
             return Ok(());
@@ -2857,12 +2870,8 @@ impl<S: Store> Shared<S> {
         let kept = serde_json::json!({
             "at": jiff::Timestamp::now().to_string(),
             "by": "person",
-            "session": session
-                .presence
-                .get("session")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(&session.id),
-            "address": session.address,
+            "session": known.session,
+            "address": known.address,
             "quest": quest,
             "from": self.machine,
             "to": to,
@@ -7018,6 +7027,36 @@ esac
     }
 
     #[tokio::test]
+    async fn a_persons_carry_is_kept_by_the_quest_the_record_holds_its_session_in() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let mut quests = orchestrations();
+        quests["quests"][2]["sessions"] = json!([]);
+        let (_stop, _node, _client) = orchestrated(&socket, &quests, &[]).await;
+        asks_as_the_person(&socket);
+        assert_eq!(
+            ask(
+                socket.clone(),
+                Request::Steer {
+                    address: "harbor".to_owned(),
+                    steer: json!({"act": "carry", "to": "tern", "from": "person"}),
+                },
+            )
+            .await,
+            Ok(Response::Steered {
+                machine: "skiff".to_owned(),
+                by: None,
+            }),
+            "the person carries it"
+        );
+        assert!(
+            !socket.with_file_name("carries.jsonl").exists(),
+            "with nothing kept, since HARBOR's presence claims a quest whose record doesn't \
+             hold it, and a presence's word names no quest to settle"
+        );
+    }
+
+    #[tokio::test]
     async fn a_carry_the_persons_own_login_asks_is_kept_as_theirs() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
@@ -7196,6 +7235,17 @@ esac
         };
         let scratch = sharing.scratch.clone();
         let shares = sharing.clone();
+        // Kestrel's record of the quests, which holds HARBOR's session,
+        // as the node takes a carry's quest from it.
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(dir.join("kestrel"))
+            .expect("kestrel's folder, its owner's alone");
+        fs::write(
+            far_socket.with_file_name("quests.json"),
+            orchestrations().to_string(),
+        )
+        .expect("kestrel's quests written");
         let far = node_sharing(
             &far_store,
             "kestrel",
@@ -8870,6 +8920,7 @@ esac
             held: far_held.clone(),
             proven,
             asks_back: false,
+            shares: None,
         };
         let near = node(&Memory::default(), "skiff", vec![dial], None, &near_socket);
         let socket = near_socket.clone();
