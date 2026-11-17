@@ -240,10 +240,25 @@ impl Files {
             chosen: next(dir, id),
             steering: steers(dir, id),
         };
-        for left in [&files.waking, &files.naming, &files.chosen, &files.steering] {
+        files.take_away();
+        files
+    }
+
+    /// Takes every file away, as each says nothing once the program is
+    /// over: a wake, a command named or steers left after it would be
+    /// found by whoever looks, as though something still held it.
+    fn take_away(&self) {
+        for left in [&self.waking, &self.naming, &self.chosen, &self.steering] {
             let _ = fs::remove_file(left);
         }
-        files
+    }
+}
+
+/// The files go however the holder leaves, an error's early return
+/// included, as its record and socket do.
+impl Drop for Files {
+    fn drop(&mut self) {
+        self.take_away();
     }
 }
 
@@ -430,7 +445,10 @@ pub async fn hold(
     // ends as it did, then whoever is joined is let go.
     drop(end);
     drop(socket);
+    // The record goes first, so the node stops naming this hold before
+    // its files go and nothing aims a wake at it in between.
     record.end();
+    drop(files);
     if tokio::time::timeout(LAST_WORDS, &mut reader).await.is_err() {
         reader.abort();
     }
@@ -2030,6 +2048,40 @@ mod tests {
         window.types("\r").await;
         let ended = exited(holder).await;
         assert_eq!(ended, Some(3), "the named command ran");
+    }
+
+    /// The names of what is left in `dir` of the hold `id`.
+    fn left_of(dir: &Path, id: &str) -> Vec<String> {
+        fs::read_dir(dir)
+            .expect("the folder reads")
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| name.trim_start_matches('.').starts_with(id))
+            .collect()
+    }
+
+    // A pi killed as it parked left its next command and its steers behind
+    // (2026-11-17, Y2YBTS's 01a1db14), found later as though still held.
+    #[tokio::test]
+    async fn a_program_killed_as_it_parks_leaves_no_file_of_its_own() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window
+            .types(concat!(
+                r#"printf '%s' '["sh"]' > "$MYCELIUM_AGAIN"; "#,
+                r#"printf '%s' '{}' > "$MYCELIUM_WAKE"; "#,
+                r#"printf '%s' '["merged"]' > "$MYCELIUM_STEERS"; "#,
+                r#"printf '%s' '["sh"]' > "${MYCELIUM_AGAIN%.again}.next"; "#,
+                // An interactive shell lets a TERM pass, so it's killed.
+                "kill -9 $$\r",
+            ))
+            .await;
+        assert_eq!(exited(holder).await, None, "a killed program gives no code");
+        assert_eq!(
+            left_of(&dir, &held.id),
+            Vec::<String>::new(),
+            "an ended holder leaves nothing of its id"
+        );
     }
 
     // A pi on an old conversation, woken in its window, named itself as it

@@ -223,8 +223,9 @@ fn answers(body: &Map<String, Value>) -> Result<(), String> {
 /// `boot`: a steer left in a parked session's inbox is read only as it
 /// wakes, and nothing else may wake it soon. Its holder's own wake file
 /// where this node knows its holder in `held`, else the one its presence
-/// names, taken only as a holder's wake file beside `held`, since a
-/// presence's path is written into. A park of an earlier boot has no
+/// names, taken only as a holder's wake file beside `held` whose holder
+/// still runs, since a presence's path is written into and a wake no
+/// holder reads would be found long after. A park of an earlier boot has no
 /// holder left to wake it; where the machine names no boot, any park is
 /// taken as this one's.
 #[must_use]
@@ -248,7 +249,9 @@ pub fn wake_for(session: &Session, boot: Option<&str>, held: &Path) -> Option<Pa
     let a_holders = named.extension().is_some_and(|it| it == "wake")
         && folder.extension().is_some_and(|it| it == "held")
         && folder.parent() == held.parent();
-    a_holders.then_some(named)
+    let id = named.file_stem()?.to_str()?;
+    let served = || hold::held(folder).iter().any(|one| one.id == id);
+    (a_holders && served()).then_some(named)
 }
 
 /// Wakes the session whose wake file is `file`, for the steer left for
@@ -711,11 +714,33 @@ mod tests {
         session
     }
 
+    /// A folder of holds beside `personal.held`, holding `5e551011` with a
+    /// record naming this process as its holder and a socket answering.
+    fn a_live_hold() -> (tempfile::TempDir, std::os::unix::net::UnixListener) {
+        let dir = tempfile::tempdir().expect("a folder");
+        let work = dir.path().join("work.held");
+        fs::create_dir(&work).expect("made");
+        let record = json!({
+            "id": "5e551011", "command": ["pi"], "folder": "/",
+            "holder": std::process::id(), "pid": 0, "parked": true,
+            "since": "2026-11-17T18:00:00Z",
+        });
+        fs::write(work.join("5e551011.json"), record.to_string()).expect("written");
+        let answers = std::os::unix::net::UnixListener::bind(hold::socket(&work, "5e551011"))
+            .expect("its socket answers");
+        (dir, answers)
+    }
+
     #[test]
     fn a_session_parked_this_boot_is_woken_by_its_holders_file() {
-        let held = Path::new("/run/user/1000/mycelium/personal.held");
+        let (dir, answers) = a_live_hold();
+        let held = &dir.path().join("personal.held");
         let parked = |boot: &str, wake: &str| json!({"state": "parked", "owner": {"bootId": boot}, "wake": wake});
-        let beside = "/run/user/1000/mycelium/work.held/5e551011.wake";
+        let beside = &dir
+            .path()
+            .join("work.held/5e551011.wake")
+            .display()
+            .to_string();
         let woken = |one: &Session| wake_for(one, Some("this-boot"), held);
         assert_eq!(
             woken(&session(
@@ -729,18 +754,26 @@ mod tests {
         assert_eq!(
             woken(&session("ended", &parked("this-boot", beside), None)),
             Some(PathBuf::from(beside)),
-            "else by the file its presence names, a holder's beside this one's"
+            "else by the file its presence names, a running holder's beside this one's"
         );
+        let unheld = &dir
+            .path()
+            .join("work.held/0dd0beef.wake")
+            .display()
+            .to_string();
+        let record = &dir
+            .path()
+            .join("work.held/5e551011.json")
+            .display()
+            .to_string();
         for (elsewhere, what) in [
             ("/home/joel/.zshrc", "a file no holder reads"),
-            (
-                "/run/user/1000/mycelium/work.held/5e551011.json",
-                "a holder's record",
-            ),
+            (record.as_str(), "a holder's record"),
             (
                 "/tmp/work.held/5e551011.wake",
                 "a holder's name outside the realms' folder",
             ),
+            (unheld.as_str(), "a holder's name where no holder serves it"),
         ] {
             assert_eq!(
                 woken(&session("ended", &parked("this-boot", elsewhere), None)),
@@ -770,6 +803,13 @@ mod tests {
             ),
             Some(PathBuf::from(beside)),
             "where the machine names no boot, any park is this one's"
+        );
+        drop(answers);
+        fs::remove_file(hold::socket(&dir.path().join("work.held"), "5e551011")).expect("gone");
+        assert_eq!(
+            woken(&session("ended", &parked("this-boot", beside), None)),
+            None,
+            "nor once its holder has gone, so no wake is left where none reads it"
         );
     }
 
