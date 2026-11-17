@@ -103,6 +103,41 @@ mod tests {
                 ]),
                 Some("01a1-ij"),
             ),
+            (
+                words(&[
+                    "env",
+                    "QUEST_WORKFLOW_FIRST_TEXT=fix --session 01a1-no",
+                    "pi",
+                ]),
+                None,
+            ),
+            (
+                words(&[
+                    "env",
+                    "QUEST_WORKFLOW_FIRST_TEXT=fix --session 01a1-no",
+                    "pi",
+                    "--session",
+                    "01a1-kl",
+                ]),
+                Some("01a1-kl"),
+            ),
+            (
+                words(&[
+                    "sh",
+                    "-c",
+                    "QUEST_WORKFLOW_FIRST_TEXT='fix --session 01a1-no' exec pi",
+                ]),
+                None,
+            ),
+            (
+                words(&[
+                    "sh",
+                    "-c",
+                    "T=\"say \\\"--session 01a1-no\\\"\" exec pi --session '01a1-mn'",
+                ]),
+                Some("01a1-mn"),
+            ),
+            (words(&["pi", "fix --session 01a1-no"]), None),
             (words(&["pi"]), None),
             (words(&["pi", "--session"]), None),
             (words(&["pi", "--session", "--model"]), None),
