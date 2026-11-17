@@ -785,6 +785,33 @@ async fn keep_made(
     }
 }
 
+/// Who a provider is told asks for a machine ([`made::ASKER`]), and why
+/// it is told [`made::UNKNOWN`] where it is.
+struct Asker {
+    told: String,
+    unknown_because: Option<String>,
+}
+
+/// `said` as a provider is told a mesh address, in capitals as the node
+/// reads addresses: letters and digits, at most [`ADDRESS_MOST`], and
+/// never [`made::PERSON`] or [`made::UNKNOWN`] whatever its case; else
+/// nothing.
+fn address_told(said: &str) -> Option<String> {
+    let address = said.to_ascii_uppercase();
+    let reads = !address.is_empty()
+        && address.len() <= ADDRESS_MOST
+        && address
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+        && !address.eq_ignore_ascii_case(made::PERSON)
+        && !address.eq_ignore_ascii_case(made::UNKNOWN);
+    reads.then_some(address)
+}
+
+/// The longest a mesh address is read as, which a quest's six letters and
+/// a session's eight hex digits fit.
+const ADDRESS_MOST: usize = 16;
+
 /// How long a machine made of `offer` for `work` is to live: past the
 /// work's end by the time its sessions are given to hand over, though no
 /// longer than the offer lives; or as long as the offer lives, where the
@@ -793,28 +820,6 @@ async fn keep_made(
 /// # Errors
 ///
 /// When neither says, since no machine is made without an end.
-/// Who a provider is told asks for a machine ([`made::ASKER`]), and why
-/// it is told [`made::UNKNOWN`] where it is.
-struct Asker {
-    told: String,
-    unknown_because: Option<String>,
-}
-
-/// Whether `said` reads as a mesh address, as a provider is told who asks
-/// by one: capital letters and digits, at most [`ADDRESS_MOST`], so none
-/// reads as [`made::PERSON`] or [`made::UNKNOWN`] whatever its case.
-fn is_address(said: &str) -> bool {
-    !said.is_empty()
-        && said.len() <= ADDRESS_MOST
-        && said
-            .bytes()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
-}
-
-/// The longest a mesh address is read as, which a quest's six letters and
-/// a session's eight hex digits fit.
-const ADDRESS_MOST: usize = 16;
-
 fn lasting(work: &Work, offer: &Offer) -> Result<Duration, String> {
     let wanted = work
         .lasts
@@ -2722,8 +2727,14 @@ impl<S: Store> Shared<S> {
     /// the store, where each presence is its own, since the node's
     /// sessions keep one of any two that claim one id.
     async fn asking_session(&self) -> Result<String, String> {
-        let claims: Vec<asker::Claim> = self
-            .standing()
+        self.asking_session_among(&self.standing()).await
+    }
+
+    /// The session proved to ask, as [`Self::asking_session`] proves it,
+    /// from these presences, so whoever reads its presence afterwards
+    /// reads the one the proof ran over.
+    async fn asking_session_among(&self, standing: &[store::Presence]) -> Result<String, String> {
+        let claims: Vec<asker::Claim> = standing
             .iter()
             .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
             .collect();
@@ -3345,13 +3356,21 @@ impl<S: Store> Shared<S> {
         let lasting = lasting(&asked.work, offer)?;
         if let Some(why) = &who.unknown_because {
             eprintln!(
-                "{} from {} is asked for by no one known, so it is told {}: {why}",
+                "{} from {} is told its asker is {}: {why}",
                 offer.shape,
                 offer.provider,
                 made::UNKNOWN
             );
         }
-        let made = made::make(offer, lasting, &who.told).await?;
+        let made = made::make(offer, lasting, &who.told)
+            .await
+            .map_err(|refused| match &who.unknown_because {
+                Some(why) => format!(
+                    "{refused}; it was told its asker is {}: {why}",
+                    made::UNKNOWN
+                ),
+                None => refused,
+            })?;
         if let Err(error) = self.book.made(&made) {
             eprintln!(
                 "{} was made, but the book doesn't say so: {error}",
@@ -3540,7 +3559,7 @@ impl<S: Store> Shared<S> {
     /// [`asker::judge`] tells the person's own login, else `unknown`, so a
     /// provider serving only some refuses it. The address is the first
     /// the proved session's own presence says, and a proved session whose
-    /// presence says none that reads as an address ([`is_address`]) is
+    /// presence says none that reads as an address ([`address_told`]) is
     /// `unknown` too, so no presence is told as the person. Like the
     /// judging of a run, this fences habit, not an agent set on passing as
     /// another. A Mac proves no session, so every agent's make there is
@@ -3557,16 +3576,16 @@ impl<S: Store> Shared<S> {
             told: told.to_owned(),
             unknown_because: None,
         };
-        match self.asking_session().await {
+        let standing = self.standing();
+        match self.asking_session_among(&standing).await {
             Ok(session) => {
-                let standing = self.standing();
                 let address = standing
                     .iter()
                     .find(|presence| presence.session == session)
                     .and_then(|presence| presence.body.get("addresses")?.get(0)?.as_str())
-                    .filter(|address| is_address(address));
+                    .and_then(address_told);
                 match address {
-                    Some(address) => told(address),
+                    Some(address) => told(&address),
                     None => unknown(format!("{session} says no address")),
                 }
             }
@@ -4818,7 +4837,7 @@ esac
         assert_eq!(
             told_asker(&socket, &told).await,
             "WCJQSG\n",
-            "the session whose pi the asker runs below, by its address, not one it claims"
+            "the session whose pi the asker runs below, by its own presence's address"
         );
     }
 
@@ -4856,7 +4875,15 @@ esac
 
     #[tokio::test]
     async fn a_proved_session_whose_address_reads_as_a_word_is_unknown() {
-        for address in ["person", "Person", "", "unknown"] {
+        for address in [
+            "person",
+            "Person",
+            "PERSON",
+            "",
+            "UNKNOWN",
+            "WC-JQSG",
+            "WCJQSG0123456789A",
+        ] {
             let dir = tempfile::tempdir().expect("a temporary folder");
             let socket = dir.path().join("skiff").join("work.sock");
             let told = dir.path().join("told");
@@ -4878,6 +4905,37 @@ esac
                 told_asker(&socket, &told).await,
                 "unknown\n",
                 "a presence saying {address:?} as its address is told as no one"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_proved_session_whose_address_is_in_small_letters_is_told_it_in_capitals() {
+        for (address, told_as) in [
+            ("4c3144b7", "4C3144B7\n"),
+            ("WCJQSG012345678A", "WCJQSG012345678A\n"),
+        ] {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let socket = dir.path().join("skiff").join("work.sock");
+            let told = dir.path().join("told");
+            let store = Memory::default();
+            let (_stop, _node, _client) =
+                orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+            let mut presence = (*store
+                .presences()
+                .into_iter()
+                .find(|one| one.session == "s-steward")
+                .expect("the steward stands")
+                .body)
+                .clone();
+            presence["addresses"] = json!([address]);
+            store.start_here("s-steward", presence, true);
+            provider_telling(&socket, &told);
+            asks_below(&socket, 7001);
+            assert_eq!(
+                told_asker(&socket, &told).await,
+                told_as,
+                "a presence saying {address:?} is told by that address, in capitals"
             );
         }
     }
