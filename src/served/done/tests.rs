@@ -12,18 +12,40 @@ fn said_at(millis: i64) -> String {
         .to_string()
 }
 
+/// A boot, as `/proc` names it.
+const BOOT: &str = "3f2c1a6e-8b9d-4e7f-a1b2-c3d4e5f60718";
+
+/// Another boot.
+const OTHER_BOOT: &str = "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d";
+
 #[test]
 fn a_reboot_is_done_once_the_boot_differs() {
-    let when = json!({"probe": "rebooted", "boot_id": "then"});
-    assert_eq!(rebooted(&when, Some("now")), Verdict::Done);
-    assert_eq!(rebooted(&when, Some("then")), Verdict::NotDone);
+    let when = |boot: &str| json!({"probe": "rebooted", "boot_id": boot});
+    assert_eq!(rebooted(&when(OTHER_BOOT), Some(BOOT)), Verdict::Done);
+    assert_eq!(rebooted(&when(BOOT), Some(BOOT)), Verdict::NotDone);
+    for (how, written) in [
+        ("with its line's end", format!("{BOOT}\n")),
+        ("in capitals", BOOT.to_uppercase()),
+        ("without dashes", BOOT.replace('-', "")),
+    ] {
+        assert_eq!(
+            rebooted(&when(&written), Some(BOOT)),
+            Verdict::NotDone,
+            "this boot written {how} is this boot"
+        );
+    }
     assert_eq!(
-        rebooted(&when, None),
+        rebooted(&when("then"), Some(BOOT)),
         Verdict::Unknown,
-        "a machine naming no boot can't tell"
+        "what isn't a boot can't tell"
     );
     assert_eq!(
-        rebooted(&json!({"probe": "rebooted"}), Some("now")),
+        rebooted(&when(BOOT), None),
+        Verdict::Unknown,
+        "nor can a machine naming no boot"
+    );
+    assert_eq!(
+        rebooted(&json!({"probe": "rebooted"}), Some(BOOT)),
         Verdict::Unknown,
         "nor a wait naming none"
     );
@@ -32,17 +54,16 @@ fn a_reboot_is_done_once_the_boot_differs() {
 #[test]
 fn a_switch_is_done_once_the_machine_runs_the_system_wanted() {
     let when = json!({"probe": "switch-done", "wanted": "/nix/store/aaaa-system"});
-    let running = |path: &str| Some(PathBuf::from(path));
     assert_eq!(
-        switched(&when, &running("/nix/store/aaaa-system")),
+        switched(&when, Some(Path::new("/nix/store/aaaa-system"))),
         Verdict::Done
     );
     assert_eq!(
-        switched(&when, &running("/nix/store/bbbb-system")),
+        switched(&when, Some(Path::new("/nix/store/bbbb-system"))),
         Verdict::NotDone
     );
     assert_eq!(
-        switched(&when, &None),
+        switched(&when, None),
         Verdict::Unknown,
         "a machine with no current system can't tell"
     );
@@ -123,7 +144,16 @@ fn a_sign_in_is_asked_only_of_the_tools_this_node_knows() {
         signing_in(&json!({"tool": "gh"})),
         Some(("gh", vec!["auth".to_owned(), "status".to_owned()]))
     );
-    assert!(signing_in(&json!({"tool": "gcloud"})).is_some());
+    assert_eq!(
+        signing_in(&json!({"tool": "gcloud"})),
+        Some((
+            "gcloud",
+            ["auth", "print-access-token", "-q"]
+                .map(str::to_owned)
+                .to_vec()
+        )),
+        "asked quietly, so it never waits on the person"
+    );
     assert_eq!(signing_in(&json!({"tool": "rm"})), None);
     let said = |ok: bool| Said {
         ok,
@@ -134,12 +164,64 @@ fn a_sign_in_is_asked_only_of_the_tools_this_node_knows() {
     assert_eq!(signed_in(None), Verdict::Unknown);
 }
 
-#[tokio::test]
-async fn a_probe_this_node_doesnt_know_keeps_the_wait() {
+#[test]
+fn each_probe_is_told_at_once_or_asked_of_its_program_as_its_name_says() {
+    let system = Path::new("/nix/store/aaaa-system");
+    let machine = Machine {
+        boot: Some(BOOT),
+        system: Some(system),
+        now: NOW,
+    };
+    let told = |when: Value| match probe(&when, &machine) {
+        Probe::Told {
+            verdict,
+            may_change,
+        } => Some((verdict, may_change)),
+        Probe::Asked(_) => None,
+    };
+    let asked = |when: Value| match probe(&when, &machine) {
+        Probe::Asked(asking) => Some((
+            asking.program,
+            asking.words.first().cloned(),
+            asking.reads_output,
+            asking.lasting,
+        )),
+        Probe::Told { .. } => None,
+    };
     assert_eq!(
-        probe(&json!({"probe": "looked"})).await,
-        Verdict::Unknown,
-        "only done takes a wait away"
+        told(json!({"probe": "rebooted", "boot_id": OTHER_BOOT})),
+        Some((Verdict::Done, false)),
+        "a reboot is this boot's for as long as the node runs"
+    );
+    assert_eq!(
+        told(json!({"probe": "switch-done", "wanted": system})),
+        Some((Verdict::Done, true)),
+        "a switch may be made while the node runs"
+    );
+    assert_eq!(
+        told(json!({"probe": "message-posted", "verdict": {"done": true, "at": said_at(NOW)}})),
+        Some((Verdict::Done, true)),
+        "a verdict comes of age"
+    );
+    assert_eq!(
+        asked(json!({"probe": "pr-merged", "repo": "a/b", "number": 1})),
+        Some(("gh", Some("pr".to_owned()), true, true)),
+        "a merge is asked of GitHub, read, and stays done"
+    );
+    assert_eq!(
+        asked(json!({"probe": "signed-in", "tool": "gcloud"})),
+        Some(("gcloud", Some("auth".to_owned()), false, false)),
+        "a sign-in's output is never kept, and it may lapse"
+    );
+    assert_eq!(
+        told(json!({"probe": "pr-merged", "repo": "--x/y", "number": 1})),
+        Some((Verdict::Unknown, false)),
+        "one that would ask nothing can't tell"
+    );
+    assert_eq!(
+        told(json!({"probe": "looked"})),
+        Some((Verdict::Unknown, false)),
+        "a probe this node doesn't know keeps the wait, as only done takes it away"
     );
     assert_eq!(
         act(&json!({"doneWhen": "posted"})),

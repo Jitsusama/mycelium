@@ -12,8 +12,9 @@
 //! record's own words for nothing but which repository, which number or
 //! which tool, each checked before it reaches a program's arguments.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -39,48 +40,127 @@ pub enum Verdict {
     Unknown,
 }
 
+/// What this machine is now, as the probes told at once read it.
+#[derive(Debug, Clone, Copy)]
+pub struct Machine<'a> {
+    /// The boot it runs, as `/proc` names it, where it names one.
+    pub boot: Option<&'a str>,
+    /// The system it runs, its link followed, where it has one.
+    pub system: Option<&'a Path>,
+    /// Now, in milliseconds since the epoch.
+    pub now: i64,
+}
+
+/// How an act's probe answers: told at once from what this machine holds,
+/// or by asking a program, which takes time.
+#[derive(Debug)]
+pub enum Probe {
+    /// Told at once.
+    Told {
+        /// What it says.
+        verdict: Verdict,
+        /// Whether it may say otherwise later with the record unchanged.
+        may_change: bool,
+    },
+    /// Told by asking a program.
+    Asked(Asking),
+}
+
+/// A program to ask whether an act is done, and how to read what it says.
+#[derive(Debug)]
+pub struct Asking {
+    program: &'static str,
+    words: Vec<String>,
+    reads: fn(Option<&Said>) -> Verdict,
+    /// Whether what it writes is read, so output nothing reads, such as
+    /// a sign-in token, is never held.
+    reads_output: bool,
+    /// Whether a done it says stays done, so it need not be asked again.
+    pub lasting: bool,
+}
+
+impl Asking {
+    /// Asks it, held to [`PROBE_WITHIN`].
+    pub async fn answer(&self) -> Verdict {
+        (self.reads)(
+            run(self.program, &self.words, self.reads_output)
+                .await
+                .as_ref(),
+        )
+    }
+}
+
 /// What `record` says it waits on, where it says.
 #[must_use]
 pub fn act(record: &Value) -> Option<&Value> {
     record.get(FIELD).filter(|act| act.is_object())
 }
 
-/// Whether the act `when` says is done, as its probe answers on this
-/// machine now.
-pub async fn probe(when: &Value) -> Verdict {
+/// How the probe of the act `when` answers on `machine`.
+#[must_use]
+pub fn probe(when: &Value, machine: &Machine) -> Probe {
+    let told = |verdict, may_change| Probe::Told {
+        verdict,
+        may_change,
+    };
     match when.get("probe").and_then(Value::as_str) {
-        Some("rebooted") => rebooted(when, crate::store::folders::boot_id().as_deref()),
-        Some("switch-done") => switched(when, &current_system()),
-        Some("message-posted") => posted(when, jiff::Timestamp::now().as_millisecond()),
+        // A machine started again starts its node again, so the boot it
+        // reads never changes while it runs.
+        Some("rebooted") => told(rebooted(when, machine.boot), false),
+        Some("switch-done") => told(switched(when, machine.system), true),
+        // Its verdict comes of age and goes unknown, so it changes too.
+        Some("message-posted") => told(posted(when, machine.now), true),
         Some("pr-merged") => match pr_view(when) {
-            Some(asked) => merged(run("gh", &asked).await.as_ref()),
-            None => Verdict::Unknown,
+            Some(words) => Probe::Asked(Asking {
+                program: "gh",
+                words,
+                reads: merged,
+                reads_output: true,
+                lasting: true,
+            }),
+            None => told(Verdict::Unknown, false),
         },
+        // A sign-in can lapse, so a done one is asked again.
         Some("signed-in") => match signing_in(when) {
-            Some((program, asked)) => signed_in(run(program, &asked).await.as_ref()),
-            None => Verdict::Unknown,
+            Some((program, words)) => Probe::Asked(Asking {
+                program,
+                words,
+                reads: signed_in,
+                reads_output: false,
+                lasting: false,
+            }),
+            None => told(Verdict::Unknown, false),
         },
-        _ => Verdict::Unknown,
+        _ => told(Verdict::Unknown, false),
     }
 }
 
 /// Whether the machine started again since the boot `boot_id` names,
-/// as the boot `now` is.
+/// as the boot `now` is. Each is read as the 32 hex digits a boot is,
+/// whatever its case, dashes or spaces, so one written another way is
+/// never taken for another boot; one that isn't a boot can't tell.
 fn rebooted(when: &Value, now: Option<&str>) -> Verdict {
-    match (when.get("boot_id").and_then(Value::as_str), now) {
+    let then = when.get("boot_id").and_then(Value::as_str).and_then(boot);
+    match (then, now.and_then(boot)) {
         (Some(then), Some(now)) if then != now => Verdict::Done,
         (Some(_), Some(_)) => Verdict::NotDone,
         _ => Verdict::Unknown,
     }
 }
 
-/// The system this machine runs now, as its link says, where it has one.
-fn current_system() -> Option<PathBuf> {
-    std::fs::canonicalize("/run/current-system").ok()
+/// The boot `text` names, as its 32 hex digits in lower case.
+fn boot(text: &str) -> Option<String> {
+    let digits: String = text
+        .trim()
+        .chars()
+        .filter(|char| *char != '-')
+        .map(|char| char.to_ascii_lowercase())
+        .collect();
+    (digits.len() == 32 && digits.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(digits)
 }
 
 /// Whether the machine runs the system `wanted` names, as `current` is.
-fn switched(when: &Value, current: &Option<PathBuf>) -> Verdict {
+fn switched(when: &Value, current: Option<&Path>) -> Verdict {
     match (when.get("wanted").and_then(Value::as_str), current) {
         (Some(wanted), Some(current)) if Path::new(wanted) == current => Verdict::Done,
         (Some(_), Some(_)) => Verdict::NotDone,
@@ -181,20 +261,37 @@ struct Said {
     out: String,
 }
 
+/// The programs this node has said it can't run, each said once.
+static UNRUN: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
 /// Runs `program` with `words`, nothing on its input, held to
-/// [`PROBE_WITHIN`]; none where it can't run or doesn't end in time.
-async fn run(program: &str, words: &[String]) -> Option<Said> {
+/// [`PROBE_WITHIN`], keeping what it writes only where `reads_output`;
+/// none where it can't run or doesn't end in time. One that can't run is
+/// said in the node's log, once, as every wait on it stays.
+async fn run(program: &'static str, words: &[String], reads_output: bool) -> Option<Said> {
     let mut command = tokio::process::Command::new(program);
     command
         .args(words)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(if reads_output {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    let output = tokio::time::timeout(PROBE_WITHIN, command.output())
-        .await
-        .ok()?
-        .ok()?;
+    let output = match tokio::time::timeout(PROBE_WITHIN, command.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
+            let mut said = UNRUN.lock().unwrap_or_else(PoisonError::into_inner);
+            if !said.contains(&program) {
+                said.push(program);
+                eprintln!("{program} can't run, so waits that ask it stay: {error}");
+            }
+            return None;
+        }
+        Err(_) => return None,
+    };
     Some(Said {
         ok: output.status.success(),
         out: String::from_utf8_lossy(&output.stdout).into_owned(),

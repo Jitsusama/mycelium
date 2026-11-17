@@ -16,7 +16,7 @@
 //! program keeping it writes it whole and renames it into place, and its
 //! records change on the wire only by what differs.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -26,7 +26,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use notify::Watcher;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Semaphore, mpsc, watch};
 
 use crate::daemon;
 
@@ -485,18 +485,36 @@ fn id_of(value: &Value) -> Option<String> {
 
 /// The kinds the node serves from files, each kept read as its source
 /// changes, for as long as this is kept.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Served {
     sources: BTreeMap<String, Source>,
     held: Arc<Mutex<BTreeMap<String, Read>>>,
     told: BTreeMap<String, watch::Sender<u64>>,
     keeping: Vec<tokio::task::JoinHandle<()>>,
-    /// What each record shown that says its act was last asked, by key.
+    /// What each record shown whose act a program is asked of was last
+    /// told, by key.
     checks: Arc<Mutex<HashMap<String, Check>>>,
+    /// The kinds whose watchers are to be told again once
+    /// [`ASK_AGAIN`] passes, so what they are shown is judged again.
+    wakes: Arc<Mutex<HashSet<String>>>,
+    /// How many programs may be asked at once.
+    probes: Arc<Semaphore>,
+    /// How often the act a shown record waits on is asked again.
+    ask_again: Duration,
+    /// The link naming the system this machine runs.
+    system: PathBuf,
 }
 
 /// How often the act a shown record waits on is asked again.
 const ASK_AGAIN: Duration = Duration::from_secs(30);
+
+/// How many programs are asked whether an act is done at once, so a file
+/// of many waits asks no more of a program, or the person's account with
+/// it, than a few at a time.
+const PROBES_AT_ONCE: usize = 4;
+
+/// The link naming the system a machine runs.
+const CURRENT_SYSTEM: &str = "/run/current-system";
 
 /// The act a record waits on, as last asked: when, and whether its probe
 /// said it is done.
@@ -531,7 +549,25 @@ impl Served {
             told,
             keeping,
             checks: Arc::default(),
+            wakes: Arc::default(),
+            probes: Arc::new(Semaphore::new(PROBES_AT_ONCE)),
+            ask_again: ASK_AGAIN,
+            system: PathBuf::from(CURRENT_SYSTEM),
         }
+    }
+
+    /// Asks each act again every `ask_again` rather than [`ASK_AGAIN`].
+    #[cfg(test)]
+    fn asking_every(mut self, ask_again: Duration) -> Self {
+        self.ask_again = ask_again;
+        self
+    }
+
+    /// Reads the system this machine runs from the link `system`.
+    #[cfg(test)]
+    fn running(mut self, system: PathBuf) -> Self {
+        self.system = system;
+        self
     }
 
     /// The kinds it serves.
@@ -540,87 +576,153 @@ impl Served {
     }
 
     /// Every record of `kind` it holds now, by key, or none for a kind it
-    /// doesn't serve. A record whose act its probe said is done is left
-    /// out, as nobody need be asked for it (`done`).
+    /// doesn't serve: all of them, as the node's own judgements read them.
     #[must_use]
     pub fn records(&self, kind: &str) -> Option<BTreeMap<String, Value>> {
         self.sources.get(kind)?;
-        let records = self
-            .lock()
-            .get(kind)
-            .map(|read| read.records.clone())
-            .unwrap_or_default();
-        Some(self.unless_done(kind, records))
+        Some(
+            self.lock()
+                .get(kind)
+                .map(|read| read.records.clone())
+                .unwrap_or_default(),
+        )
     }
 
-    /// `kind`'s `records` but those whose act is done, asking again the
-    /// act of each shown that names one, at most each [`ASK_AGAIN`], so
-    /// one done since is gone once it is shown next. The checks of
-    /// records gone with their files are let go.
+    /// The records of `kind` to show, as the interface serves them: those
+    /// it holds but any whose act is done, as nobody need be asked for it
+    /// (`done`).
+    #[must_use]
+    pub fn shown(&self, kind: &str) -> Option<BTreeMap<String, Value>> {
+        Some(self.unless_done(kind, self.records(kind)?))
+    }
+
+    /// `kind`'s `records` but those whose act is done. A probe told at
+    /// once is judged now; one that asks a program is asked off the
+    /// caller's way, at most each [`ASK_AGAIN`], and its last word
+    /// stands meanwhile, so a record done since is gone once that word
+    /// comes. While any act may yet change, the kind's watchers are told
+    /// again once [`ASK_AGAIN`] passes, so what they are shown is judged
+    /// again with no change to its file. The checks of records gone with
+    /// their files are let go.
     fn unless_done(
         &self,
         kind: &str,
         mut records: BTreeMap<String, Value>,
     ) -> BTreeMap<String, Value> {
+        let boot = crate::store::folders::boot_id();
+        let system = fs::canonicalize(&self.system).ok();
+        let machine = done::Machine {
+            boot: boot.as_deref(),
+            system: system.as_deref(),
+            now: jiff::Timestamp::now().as_millisecond(),
+        };
         let mut checks = self.checks.lock().unwrap_or_else(PoisonError::into_inner);
         let ours = format!("{kind}:");
         checks.retain(|key, _| !key.starts_with(&ours) || records.contains_key(key));
         let now = Instant::now();
+        let mut again = false;
         records.retain(|key, record| {
             let Some(act) = done::act(record) else {
                 return true;
             };
-            let (finished, due) = match checks.get(key).filter(|check| check.act == *act) {
-                Some(check) => (check.done, now.duration_since(check.asked) >= ASK_AGAIN),
-                None => (false, true),
-            };
-            if finished {
-                return false;
+            match done::probe(act, &machine) {
+                done::Probe::Told {
+                    verdict,
+                    may_change,
+                } => {
+                    again |= may_change;
+                    verdict != done::Verdict::Done
+                }
+                done::Probe::Asked(asking) => {
+                    let held = checks.get(key).filter(|check| check.act == *act);
+                    let finished = held.is_some_and(|check| check.done);
+                    let settled = finished && asking.lasting;
+                    let due =
+                        held.is_none_or(|check| now.duration_since(check.asked) >= self.ask_again);
+                    if due && !settled {
+                        let check = Check {
+                            act: act.clone(),
+                            asked: now,
+                            done: finished,
+                        };
+                        checks.insert(key.clone(), check);
+                        self.ask(kind, key, act.clone(), asking);
+                    }
+                    again |= !settled;
+                    !finished
+                }
             }
-            if due {
-                let check = Check {
-                    act: act.clone(),
-                    asked: now,
-                    done: false,
-                };
-                checks.insert(key.clone(), check);
-                self.ask(kind, key, act.clone());
-            }
-            true
         });
+        drop(checks);
+        if again {
+            self.wake(kind);
+        }
         records
     }
 
-    /// Asks the probe of `act`, which the record `key` of `kind` waits on,
-    /// off the caller's way, as a probe may take [`done::PROBE_WITHIN`];
-    /// once it says done while the record still waits on that act, the
-    /// kind's watchers are told, so the record is seen gone. Nothing is
-    /// asked off a runtime.
-    fn ask(&self, kind: &str, key: &str, act: Value) {
+    /// Asks `asking` whether `act`, which the record `key` of `kind` waits
+    /// on, is done, off the caller's way and no more than
+    /// [`PROBES_AT_ONCE`] at a time, as a probe may take
+    /// [`done::PROBE_WITHIN`]. Once it says otherwise than it last did,
+    /// while the record still waits on that act, the kind's watchers are
+    /// told, so the record is seen gone or back. Nothing is asked off a
+    /// runtime.
+    fn ask(&self, kind: &str, key: &str, act: Value, asking: done::Asking) {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
         let checks = Arc::clone(&self.checks);
+        let probes = Arc::clone(&self.probes);
         let tell = self.told.get(kind).cloned();
         let key = key.to_owned();
         runtime.spawn(async move {
-            if done::probe(&act).await != done::Verdict::Done {
+            let Ok(_turn) = probes.acquire_owned().await else {
                 return;
-            }
-            let marked = match checks
+            };
+            let done = asking.answer().await == done::Verdict::Done;
+            let turned = match checks
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .get_mut(&key)
             {
-                Some(check) if check.act == act => {
-                    check.done = true;
+                Some(check) if check.act == act && check.done != done => {
+                    check.done = done;
                     true
                 }
                 _ => false,
             };
-            if marked && let Some(tell) = tell {
+            if turned && let Some(tell) = tell {
                 tell.send_modify(|told| *told += 1);
             }
+        });
+    }
+
+    /// Tells `kind`'s watchers again once [`ASK_AGAIN`] passes, unless
+    /// they are to be already, so the acts they are shown are judged
+    /// again. A watch whose records are the same sends nothing, and one
+    /// nobody holds asks nothing more, as only showing asks again.
+    fn wake(&self, kind: &str) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let Some(tell) = self.told.get(kind).cloned() else {
+            return;
+        };
+        let mut wakes = self.wakes.lock().unwrap_or_else(PoisonError::into_inner);
+        if !wakes.insert(kind.to_owned()) {
+            return;
+        }
+        drop(wakes);
+        let wakes = Arc::clone(&self.wakes);
+        let after = self.ask_again;
+        let kind = kind.to_owned();
+        runtime.spawn(async move {
+            tokio::time::sleep(after).await;
+            wakes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&kind);
+            tell.send_modify(|told| *told += 1);
         });
     }
 
@@ -1049,6 +1151,62 @@ mod tests {
             "the ask whose post is done goes, and those not done or naming no act stay",
         )
         .await;
+        assert_eq!(
+            served.records("waiting").map(|records| records.len()),
+            Some(3),
+            "the node's own judgements still read every record"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_act_done_since_it_was_shown_is_seen_gone_with_its_file_as_it_was() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let root = fs::canonicalize(dir.path()).expect("the folder is there");
+        let (wanted, before) = (root.join("wanted"), root.join("before"));
+        fs::create_dir(&wanted).expect("the system wanted");
+        fs::create_dir(&before).expect("the system before");
+        let system = root.join("current-system");
+        std::os::unix::fs::symlink(&before, &system).expect("the machine runs one");
+        let waits = root.join("waits");
+        fs::create_dir(&waits).expect("a folder of waits");
+        let waiting = Source {
+            file: None,
+            folder: Some(waits.clone()),
+            talks: None,
+            records: Some("items".to_owned()),
+            whole: None,
+            key: Some("id".to_owned()),
+            by: Some("quest".to_owned()),
+        };
+        write(
+            &waits.join("A.json"),
+            &json!({"quest": "QEST-A", "items": [
+                {"id": "switch", "doneWhen": {"probe": "switch-done", "wanted": wanted}},
+            ]}),
+        );
+        let served = Served::start(BTreeMap::from([("waiting".to_owned(), waiting)]))
+            .asking_every(Duration::from_millis(50))
+            .running(system.clone());
+        let mut told = served.told("waiting").expect("waiting is served");
+        until(
+            &served,
+            &mut told,
+            "waiting",
+            |records| records.contains_key("waiting:QEST-A:switch"),
+            "the switch not made yet is asked for",
+        )
+        .await;
+        let switched = root.join("switched");
+        std::os::unix::fs::symlink(&wanted, &switched).expect("the switch is made");
+        fs::rename(&switched, &system).expect("the machine runs what was wanted");
+        until(
+            &served,
+            &mut told,
+            "waiting",
+            BTreeMap::is_empty,
+            "its watchers are told again, and see the ask gone",
+        )
+        .await;
     }
 
     /// The talks of the steer inboxes in `inboxes`.
@@ -1334,12 +1492,12 @@ mod tests {
         what: &str,
     ) {
         tokio::time::timeout(PATIENCE, async {
-            while !wanted(&served.records(kind).unwrap_or_default()) {
+            while !wanted(&served.shown(kind).unwrap_or_default()) {
                 told.changed().await.expect("still served");
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("{what}: {:?}", served.records(kind)));
+        .unwrap_or_else(|_| panic!("{what}: {:?}", served.shown(kind)));
     }
 
     #[tokio::test]
