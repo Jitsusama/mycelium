@@ -4927,13 +4927,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let told = dir.path().join("told");
-        let (_stop, _node) = node(
-            &Memory::default(),
-            "skiff",
-            Vec::<Piped>::new(),
-            None,
-            &socket,
-        );
+        let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
         provider_telling(&socket, &told);
         asks_as_person(&socket);
         assert_eq!(
@@ -4948,13 +4942,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let told = dir.path().join("told");
-        let (_stop, _node) = node(
-            &Memory::default(),
-            "skiff",
-            Vec::<Piped>::new(),
-            None,
-            &socket,
-        );
+        let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
         provider_telling(&socket, &told);
         asks_below(&socket, 7009);
         assert_eq!(
@@ -5011,6 +4999,29 @@ esac
         );
     }
 
+    /// What a provider is told of who asks, when the steward asks for a
+    /// machine with its proved presence saying `address` as its address.
+    async fn told_of_the_steward_addressed(address: &str) -> String {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let told = dir.path().join("told");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let mut presence = (*store
+            .presences()
+            .into_iter()
+            .find(|one| one.session == "s-steward")
+            .expect("the steward stands")
+            .body)
+            .clone();
+        presence["addresses"] = json!([address]);
+        store.start_here("s-steward", presence, true);
+        provider_telling(&socket, &told);
+        asks_below(&socket, 7001);
+        told_asker(&socket, &told).await
+    }
+
     #[tokio::test]
     async fn a_proved_session_whose_address_reads_as_a_word_is_unknown() {
         for address in [
@@ -5022,25 +5033,8 @@ esac
             "WC-JQSG",
             "WCJQSG0123456789A",
         ] {
-            let dir = tempfile::tempdir().expect("a temporary folder");
-            let socket = dir.path().join("skiff").join("work.sock");
-            let told = dir.path().join("told");
-            let store = Memory::default();
-            let (_stop, _node, _client) =
-                orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
-            let mut presence = (*store
-                .presences()
-                .into_iter()
-                .find(|one| one.session == "s-steward")
-                .expect("the steward stands")
-                .body)
-                .clone();
-            presence["addresses"] = json!([address]);
-            store.start_here("s-steward", presence, true);
-            provider_telling(&socket, &told);
-            asks_below(&socket, 7001);
             assert_eq!(
-                told_asker(&socket, &told).await,
+                told_of_the_steward_addressed(address).await,
                 "unknown\n",
                 "a presence saying {address:?} as its address is told as no one"
             );
@@ -5053,25 +5047,8 @@ esac
             ("4c3144b7", "4C3144B7\n"),
             ("WCJQSG012345678A", "WCJQSG012345678A\n"),
         ] {
-            let dir = tempfile::tempdir().expect("a temporary folder");
-            let socket = dir.path().join("skiff").join("work.sock");
-            let told = dir.path().join("told");
-            let store = Memory::default();
-            let (_stop, _node, _client) =
-                orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
-            let mut presence = (*store
-                .presences()
-                .into_iter()
-                .find(|one| one.session == "s-steward")
-                .expect("the steward stands")
-                .body)
-                .clone();
-            presence["addresses"] = json!([address]);
-            store.start_here("s-steward", presence, true);
-            provider_telling(&socket, &told);
-            asks_below(&socket, 7001);
             assert_eq!(
-                told_asker(&socket, &told).await,
+                told_of_the_steward_addressed(address).await,
                 told_as,
                 "a presence saying {address:?} is told by that address, in capitals"
             );
