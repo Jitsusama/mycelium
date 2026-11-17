@@ -1196,17 +1196,19 @@ mod tests {
             "the switch not made yet is asked for",
         )
         .await;
+        told.borrow_and_update();
         let switched = root.join("switched");
         std::os::unix::fs::symlink(&wanted, &switched).expect("the switch is made");
         fs::rename(&switched, &system).expect("the machine runs what was wanted");
-        until(
-            &served,
-            &mut told,
-            "waiting",
-            BTreeMap::is_empty,
-            "its watchers are told again, and see the ask gone",
-        )
-        .await;
+        tokio::time::timeout(PATIENCE, told.changed())
+            .await
+            .expect("its watchers are told again with its file as it was")
+            .expect("still served");
+        assert_eq!(
+            served.shown("waiting"),
+            Some(BTreeMap::new()),
+            "and see the ask gone"
+        );
     }
 
     /// The talks of the steer inboxes in `inboxes`.
