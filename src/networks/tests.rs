@@ -951,6 +951,76 @@ fn an_orchestrator_renamed_draws_one_network_under_its_own_address() {
 }
 
 #[test]
+fn an_orchestration_no_team_leads_is_named_as_its_quest_and_holds_its_cells() {
+    // Two sessions of one quest hear its orchestration's group, while none
+    // answers to it, so the node says no team of it.
+    let sessions = [
+        on_quest(
+            session(
+                "OSPREY",
+                1,
+                "Ship the Dive From the Cache",
+                "busy",
+                &["orchestration.osprey", "quest.osprey"],
+            ),
+            "OSPREY",
+            "Ship the Dive From the Cache",
+        ),
+        on_quest(
+            session(
+                "TERN01",
+                2,
+                "Ship the Dive From the Cache",
+                "busy",
+                &["orchestration.osprey", "quest.osprey"],
+            ),
+            "OSPREY",
+            "Ship the Dive From the Cache",
+        ),
+    ];
+    let teams = [json!({"key": "team:KELP01", "title": "Kelp Beds"})];
+    let mycelium = Mycelium::of("work", &teams, &sessions, &[]);
+    let named: Vec<(&str, &str, Option<&str>, &[String])> = mycelium
+        .networks
+        .iter()
+        .filter(|each| matches!(each.shape, Shape::Orchestration | Shape::Project))
+        .map(|each| {
+            (
+                each.name.as_str(),
+                each.short.as_str(),
+                each.title.as_deref(),
+                each.cells.as_slice(),
+            )
+        })
+        .collect();
+    let both = ["OSPREY".to_owned(), "TERN01".to_owned()];
+    assert_eq!(
+        named,
+        [
+            (
+                "orchestration.osprey",
+                "ship",
+                Some("Ship the Dive From the Cache"),
+                both.as_slice()
+            ),
+            (
+                "orchestration.kelp01",
+                "kelp-beds",
+                Some("Kelp Beds"),
+                &[][..]
+            ),
+            (
+                "quest.osprey",
+                "osprey",
+                Some("Ship the Dive From the Cache"),
+                both.as_slice()
+            ),
+        ],
+        "the leaderless orchestration is still a network, named as its quest is"
+    );
+}
+
+#[test]
 fn a_name_matching_none_or_several_networks_is_said_plainly() {
     let mycelium = mycelium();
     assert_eq!(

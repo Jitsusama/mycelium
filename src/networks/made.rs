@@ -590,7 +590,7 @@ fn joined(teams: &[Value], sessions: &[Cell], quests: &BTreeMap<String, String>)
             shared.then(|| network_of(name, shape, cells))
         })
         .collect();
-    titled_by_teams(&mut networks, teams);
+    titled_by_teams(&mut networks, teams, quests);
     titled_by_quests(&mut networks, quests);
     titled_by_repos(&mut networks, sessions);
     networks.extend(shared_trees(sessions));
@@ -685,9 +685,29 @@ fn owned_network(name: &str, renamed: &BTreeMap<String, String>) -> Option<Strin
 }
 
 /// Each orchestration's network titled, short-named and nested as the
-/// swarm's team of its address is.
-fn titled_by_teams(networks: &mut [Network], teams: &[Value]) {
-    let shorts = swarm::short_names(teams);
+/// swarm's team of its address is. One no team leads, as when its cells
+/// hear its group while none answers to it, is still a network: titled
+/// as its quest is among `quests` and short-named as a team of that
+/// title would be, so none goes by its address alone.
+fn titled_by_teams(networks: &mut [Network], teams: &[Value], quests: &BTreeMap<String, String>) {
+    let leaderless: Vec<Value> = networks
+        .iter()
+        .filter(|each| each.shape == Shape::Orchestration)
+        .filter(|each| {
+            !teams
+                .iter()
+                .any(|team| swarm::address(team).eq_ignore_ascii_case(&each.short))
+        })
+        .filter_map(|each| {
+            let title = quests.get(&each.short)?;
+            Some(json!({
+                "key": format!("team:{}", each.short.to_uppercase()),
+                "title": title,
+            }))
+        })
+        .collect();
+    let teams: Vec<Value> = teams.iter().chain(&leaderless).cloned().collect();
+    let shorts = swarm::short_names(&teams);
     let by_name: BTreeMap<String, &Value> = teams
         .iter()
         .map(|team| (swarm::address(team).to_lowercase(), team))
