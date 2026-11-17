@@ -1458,7 +1458,8 @@ started in a work tree its asker doesn't hold. A run is told no
 `PI_SESSION_ID` but the session that asks it, where its process owns
 that session alone, as the kernel and pi's records prove it, since
 pi-fence grants the work trees that session holds. Alone counts
-every session claimed there, proved or not, so the sessions of a pi
+every session claimed there, proved or not, and every one its host's
+record lists, so the sessions of a pi
 host holding more than one, the person's, one on a Mac and one asked
 from another machine are told none. The node takes `runs`
 only from a declaration reached through folders and links root owns

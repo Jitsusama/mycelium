@@ -3113,7 +3113,7 @@ impl<S: Store> Shared<S> {
         );
         tokio::task::spawn_blocking(move || {
             let owners = asker::proved(&claims, &processes, &hosts, &logs)?;
-            asker::session_alone(client, &processes, &owners, &claims)
+            asker::session_alone(client, &processes, &owners, &claims, &hosts)
         })
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))?

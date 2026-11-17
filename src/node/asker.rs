@@ -595,7 +595,8 @@ pub fn session_of(
 /// session whose claim doesn't prove yet still shares its host's process:
 /// the nearest of the asker and its forebears that any claim or owner
 /// names must be named by exactly one, the claims naming the same host
-/// counted with it, and that one must be proved.
+/// and the sessions its host's own record lists counted with it, and
+/// that one must be proved.
 ///
 /// # Errors
 ///
@@ -607,6 +608,7 @@ pub fn session_alone(
     processes: &Processes,
     owners: &[(String, i32)],
     claims: &[Claim],
+    hosts: &Path,
 ) -> Result<String, String> {
     let Some(pid) = asker else {
         return Err(
@@ -619,21 +621,22 @@ pub fn session_alone(
     }) else {
         return Err("this asks from no session this node knows".to_owned());
     };
-    let hosts: std::collections::BTreeSet<&str> = claims
+    let keys: std::collections::BTreeSet<&str> = claims
         .iter()
         .filter(|claim| claim.pid == Some(process))
         .filter_map(|claim| claim.host.as_deref())
         .collect();
-    let sharing = claims
+    let claimed = claims
         .iter()
         .filter(|claim| {
             claim.pid == Some(process)
                 || claim
                     .host
                     .as_deref()
-                    .is_some_and(|host| hosts.contains(host))
+                    .is_some_and(|host| keys.contains(host))
         })
         .count();
+    let sharing = claimed.max(hosted(hosts, process));
     let proved: Vec<&str> = owners
         .iter()
         .filter(|(_, owner)| *owner == process)
@@ -649,6 +652,29 @@ pub fn session_alone(
             sharing.max(proved.len())
         )),
     }
+}
+
+/// The most sessions any pi host's record in `hosts` lists for process
+/// `pid`, whenever it started, so a session its host holds counts toward
+/// those sharing it before its own presence is written. A record of an
+/// earlier process given the same id counts too, which only ever refuses.
+fn hosted(hosts: &Path, pid: i32) -> usize {
+    let prefix = format!("{pid}-");
+    fs::read_dir(hosts)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".json"))
+        })
+        .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+        .filter_map(|text| serde_json::from_str::<Value>(&text).ok())
+        .filter_map(|record| record.get("sessions")?.as_array().map(Vec::len))
+        .max()
+        .unwrap_or(0)
 }
 
 /// The asker's process and the sessions of `owners` owned by the nearest
@@ -1093,8 +1119,9 @@ mod tests {
             ("s-alone".to_owned(), 69),
         ];
         let processes = folder(procs.path());
+        let hosts = tempfile::tempdir().expect("a folder for hosts' records");
         let alone = |asker, claims: &[Claim], owners: &[(String, i32)]| {
-            session_alone(asker, &processes, owners, claims)
+            session_alone(asker, &processes, owners, claims, hosts.path())
         };
         assert!(
             alone(Some(80), &claims, &owners).is_err_and(|why| why.contains("2 sessions share")),
@@ -1114,6 +1141,26 @@ mod tests {
             alone(Some(70), &claims, &owners),
             Ok("s-alone".to_owned()),
             "a session its process owns alone is proved by the process"
+        );
+        let (one, one_owner) = (
+            [claim("s-one", 78, Some(1), Some("work"))],
+            [("s-one".to_owned(), 78)],
+        );
+        assert_eq!(
+            alone(Some(80), &one, &one_owner),
+            Ok("s-one".to_owned()),
+            "a host holding one session alone is proved to ask for it"
+        );
+        fs::write(
+            hosts.path().join("78-1.json"),
+            json!({"key": "work", "sessions": [{"id": "s-one"}, {"id": "s-three"}],
+                   "owner": {"pid": 78, "startTicks": 1}})
+            .to_string(),
+        )
+        .expect("the host's record is written");
+        assert!(
+            alone(Some(80), &one, &one_owner).is_err_and(|why| why.contains("2 sessions share")),
+            "nor where its own record lists a session no presence claims yet"
         );
         claims.push(claim("s-nested", 59, Some(1), None));
         assert!(
