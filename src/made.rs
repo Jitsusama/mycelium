@@ -144,8 +144,9 @@ pub struct Standing {
     pub made: Vec<Made>,
     /// The lines passed over, each cut short by a crash among them.
     pub unread: usize,
-    /// The makes that name no realm, kept before makes named one.
-    pub unnamed: usize,
+    /// The makes that name no realm, kept before makes named one, and not
+    /// released by a line naming none either, oldest first.
+    pub unnamed: Vec<Made>,
 }
 
 impl Book {
@@ -213,16 +214,17 @@ impl Book {
             let Some(kept) = kept else {
                 continue;
             };
-            if kept.realm.is_none() && kept.made.is_some() {
-                standing.unnamed += 1;
-            }
-            if kept.realm.is_none() || kept.realm != self.realm {
+            let kept_by = if kept.realm.is_none() {
+                &mut standing.unnamed
+            } else if kept.realm == self.realm {
+                &mut standing.made
+            } else {
                 continue;
-            }
+            };
             if let Some(made) = kept.made {
-                standing.made.push(made);
+                kept_by.push(made);
             } else if let Some(released) = kept.released {
-                standing.made.retain(|made| {
+                kept_by.retain(|made| {
                     made.machine != released.machine || made.place != released.place
                 });
             }
@@ -425,6 +427,29 @@ mod tests {
     }
 
     #[test]
+    fn a_release_naming_no_realm_lets_go_a_make_naming_none() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let (gone, kept) = (made_at("skiff", "p0", later), made_at("tern", "p1", later));
+        let old = Book::at(path.clone());
+        for made in [&gone, &kept] {
+            old.made(made).expect("a make naming no realm is kept");
+        }
+        old.released(&gone, "its work handed over")
+            .expect("a release naming no realm is kept");
+        let work = Book::at(path).of_realm("work");
+        work.released(&kept, "its time was up")
+            .expect("a release is kept");
+        assert_eq!(
+            work.standing().expect("the book reads").unnamed,
+            vec![kept],
+            "a release naming no realm lets go the make naming none of its \
+             machine at its place, and a realm's release never does"
+        );
+    }
+
+    #[test]
     fn the_book_stands_by_each_machine_its_realm_made_and_has_not_released() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let path = dir.path().join("made.jsonl");
@@ -473,12 +498,12 @@ mod tests {
             Standing {
                 made: vec![kept, its_place, its_name, ended, again],
                 unread: 2,
-                unnamed: 1,
+                unnamed: vec![older],
             },
             "each machine made and not released, oldest first, ended or not, \
              a release taking only the machine of its name at its place, \
-             another realm's makes and releases left to it, none that names \
-             no realm but counted, and the line cut short counted"
+             another realm's makes and releases left to it, those that name \
+             no realm kept apart, and the line cut short counted"
         );
     }
 

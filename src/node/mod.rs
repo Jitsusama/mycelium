@@ -531,7 +531,7 @@ where
                 let dial = shared.book_for(&made);
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
                 let linked = keep_linked(dial.clone(), store.clone(), membership.clone(), carries);
-                let keeping = Keeping { book: shared.book.clone(), store: store.clone() };
+                let keeping = shared.keeping(&made);
                 links.spawn(keep_made(dial, made, keeping, unwanted, linked));
             }
             Some(()) = held.recv() => {
@@ -676,11 +676,13 @@ async fn keep_linked(
 }
 
 /// Where a machine made from an offer is kept: the book of what was made
-/// and let go, and the store of the realm's machines it leaves once let
-/// go.
+/// and let go, the store of the realm's machines it leaves once let go,
+/// and its booking, taken away then, so no start is held to a machine
+/// that is gone.
 struct Keeping<S> {
     book: Book,
     store: S,
+    unbook: Box<dyn FnOnce() + Send>,
 }
 
 /// Tells `to_dial` of each machine `book` says this node made before it
@@ -712,10 +714,10 @@ fn redial_standing(
             standing.unread
         );
     }
-    if standing.unnamed > 0 {
+    if !standing.unnamed.is_empty() {
         eprintln!(
             "{} machines were kept in the book before makes named their realm, so none is linked again; each ends at its time",
-            standing.unnamed
+            standing.unnamed.len()
         );
     }
     let now = jiff::Timestamp::now();
@@ -784,7 +786,11 @@ fn past_the_hash(path: &str) -> Option<&str> {
 async fn keep_made(
     dial: Arc<Program>,
     made: Made,
-    Keeping { book, store }: Keeping<impl Store>,
+    Keeping {
+        book,
+        store,
+        unbook,
+    }: Keeping<impl Store>,
     unwanted: Arc<Notify>,
     linked: impl Future<Output = ()>,
 ) {
@@ -809,12 +815,110 @@ async fn keep_made(
     };
     eprintln!("{} was let go: {why}", made.machine);
     store::left(&store, &made.machine, jiff::Timestamp::now());
+    unbook();
     if let Err(error) = book.released(&made, &why) {
         eprintln!(
             "{} was let go, but the book doesn't say so: {error}",
             made.machine
         );
     }
+}
+
+/// How long past its time a machine made is given to be let go by what
+/// keeps it, before [`let_go_ended`] lets it go instead.
+const ENDED_LET_GO_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins(10);
+
+/// How long past its time a make that names no realm is still looked
+/// for among the realm's machines: nothing books it let go, so past this
+/// its name is no longer taken for that machine's.
+const UNNAMED_LOOKED_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(7 * 24);
+
+/// Lets go of each machine `book` says was made and stands, though its
+/// time was up [`ENDED_LET_GO_AFTER`] before `now`, where no link reaches
+/// it. Its provider ended it at its time whatever else happened, so one
+/// deleted where this node never saw, made by a provider it no longer
+/// asks, or kept before makes named their realm, would otherwise stay
+/// among the realm's machines, out of reach, for good.
+///
+/// Only one the realm lists as out of reach, or doesn't list, is let go:
+/// one a link reaches is alive, and a state that comes later fails
+/// toward keeping it. A name a make not yet ended holds is that make's,
+/// so none ended under it leaves the realm's machines. One this realm's
+/// book names is booked as let go; one that names no realm is nobody's
+/// to book, so it only leaves this realm's machines, once, and only
+/// within [`UNNAMED_LOOKED_FOR`] of its time. Answers the makes booked as
+/// let go.
+fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) -> Vec<Made> {
+    let standing = match book.standing() {
+        Ok(standing) => standing,
+        Err(error) => {
+            eprintln!(
+                "the book of machines made can't be read, so none whose time is up is let go: {error}"
+            );
+            return Vec::new();
+        }
+    };
+    let machines = store.machines();
+    // A time past what a timestamp holds is never up.
+    let past = |made: &Made, by: jiff::SignedDuration| {
+        made.until.checked_add(by).is_ok_and(|at| at <= now)
+    };
+    let living: std::collections::BTreeSet<&str> = standing
+        .made
+        .iter()
+        .filter(|made| !past(made, ENDED_LET_GO_AFTER))
+        .map(|made| made.machine.as_str())
+        .collect();
+    let listed = |name: &str| machines.iter().find(|one| one.name == name);
+    let unreached = |name: &str| listed(name).is_none_or(|one| one.state == Readiness::Unreachable);
+    // One that declared nothing has no time to leave by, as
+    // [`store::left`] says, and one already left needn't be again, so
+    // neither is tried each minute.
+    let leaves = |name: &str| {
+        !living.contains(name)
+            && listed(name).is_some_and(|one| {
+                one.state == Readiness::Unreachable
+                    && one
+                        .declared
+                        .as_ref()
+                        .is_some_and(|said| !said.has_left(now))
+            })
+    };
+    let why = "its time was up and no link reached it";
+    let mut gone = Vec::new();
+    for made in standing
+        .made
+        .iter()
+        .filter(|made| past(made, ENDED_LET_GO_AFTER))
+    {
+        if !unreached(&made.machine) {
+            continue;
+        }
+        if leaves(&made.machine) {
+            eprintln!("{} was let go: {why}", made.machine);
+            store::left(store, &made.machine, now);
+        }
+        if let Err(error) = book.released(made, why) {
+            eprintln!(
+                "{} at {} was let go, but the book doesn't say so: {error}",
+                made.machine, made.place
+            );
+        }
+        gone.push(made.clone());
+    }
+    let named: std::collections::BTreeSet<&str> = standing
+        .made
+        .iter()
+        .map(|made| made.machine.as_str())
+        .collect();
+    for made in &standing.unnamed {
+        let lately = past(made, ENDED_LET_GO_AFTER) && !past(made, UNNAMED_LOOKED_FOR);
+        if lately && !named.contains(made.machine.as_str()) && leaves(&made.machine) {
+            eprintln!("{} was let go: {why}", made.machine);
+            store::left(store, &made.machine, now);
+        }
+    }
+    gone
 }
 
 /// Who a provider is told asks for a machine ([`made::ASKER`]), and why
@@ -1491,10 +1595,12 @@ struct Inner {
     /// The starts placed lately, each load on its machine until its room
     /// shows it, kept only while the node runs.
     starts: placement::Starts,
-    /// Each machine made from an offer, by name, with who its make was
-    /// told asked, or none where its book line didn't say: only that
-    /// asker's starts and runs, and the person's, are placed there.
-    booked: HashMap<String, Option<String>>,
+    /// Each machine made from an offer, by name, with its place and who
+    /// its make was told asked, or none where its book line didn't say:
+    /// only that asker's starts and runs, and the person's, are placed
+    /// there. The place tells two makes of one name apart, as the book
+    /// does, so letting one go never unbooks the other.
+    booked: HashMap<String, (String, Option<String>)>,
 }
 
 /// Which of the machines booked for one asker ([`Inner::booked`]) a
@@ -2529,8 +2635,9 @@ impl<S: Store> Shared<S> {
 
     /// What the node does each minute: it measures this machine, hands its
     /// sessions over once it leaves soon, keeps it awake while work wants
-    /// it, tells its links of its carries and judges which tree networks
-    /// stand, answering what it runs on.
+    /// it, tells its links of its carries, judges which tree networks
+    /// stand and lets go of machines made whose time is up and that no
+    /// link reaches, answering what it runs on.
     fn each_minute(&self, awake: &mut Awake) -> Option<facts::Power> {
         let here = self.measure();
         let power = self.keep_measured(&here);
@@ -2544,6 +2651,9 @@ impl<S: Store> Shared<S> {
         self.network_records();
         self.said.minute_passed();
         self.settle_carries();
+        for made in let_go_ended(&self.book, &self.store, jiff::Timestamp::now()) {
+            self.unbook(&made);
+        }
         power
     }
 
@@ -3989,14 +4099,39 @@ impl<S: Store> Shared<S> {
         Ok((machine, run::journaled(self.runs.journal.clone(), id, said)))
     }
 
+    /// Where a machine made is kept: this node's book and store, and its
+    /// booking, let go with it.
+    fn keeping(&self, made: &Made) -> Keeping<S> {
+        let (shared, made) = (self.clone(), made.clone());
+        Keeping {
+            book: self.book.clone(),
+            store: self.store.clone(),
+            unbook: Box::new(move || shared.unbook(&made)),
+        }
+    }
+
+    /// Takes away `made`'s booking, where the machine of its name is still
+    /// booked at its place rather than for a make of the same name since.
+    fn unbook(&self, made: &Made) {
+        let mut inner = self.lock();
+        if inner
+            .booked
+            .get(&made.machine)
+            .is_some_and(|(place, _)| *place == made.place)
+        {
+            inner.booked.remove(&made.machine);
+        }
+    }
+
     /// Books `made` for whoever its make was told asked, so only that
     /// asker's starts and runs, and the person's, are placed there, and
     /// gives the dial that links it. Booked before it is dialled, so no
     /// start finds it among the realm's machines unbooked.
     fn book_for(&self, made: &Made) -> Arc<Program> {
-        self.lock()
-            .booked
-            .insert(made.machine.clone(), made.asker.clone());
+        self.lock().booked.insert(
+            made.machine.clone(),
+            (made.place.clone(), made.asker.clone()),
+        );
         Arc::new(Program {
             program: made.provider.clone(),
             place: made.place.clone(),
@@ -4012,7 +4147,7 @@ impl<S: Store> Shared<S> {
         self.lock()
             .booked
             .get(machine)
-            .is_none_or(|booked| admits.takes(booked.as_deref()))
+            .is_none_or(|(_, booked)| admits.takes(booked.as_deref()))
     }
 
     /// Which booked machines a start or run asked now may be placed on:
@@ -11472,6 +11607,203 @@ esac
             book.standing().expect("the book reads").made,
             vec![asked, moved, dropped],
             "the one whose time was up is booked as let go, the others left standing"
+        );
+    }
+
+    /// The machines `store` lists that have left by `now`, by name in order.
+    fn leaving(store: &Memory, now: jiff::Timestamp) -> Vec<String> {
+        let mut names: Vec<String> = store
+            .machines()
+            .into_iter()
+            .filter(|machine| {
+                machine
+                    .declared
+                    .as_ref()
+                    .is_some_and(|declared| declared.has_left(now))
+            })
+            .map(|machine| machine.name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_machine_made_whose_time_is_up_leaves_once_no_link_reaches_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("made.jsonl");
+        let book = Book::at(path.clone()).of_realm("work");
+        let now = jiff::Timestamp::now();
+        let ago = |mins: i64| now - jiff::SignedDuration::from_mins(mins);
+        let lend = |machine: &str, until: jiff::Timestamp| made_by("/usr/bin/lend", machine, until);
+        let gone = lend("kestrel", ago(60));
+        let linked = lend("tern", ago(60));
+        let ending = lend("osprey", ago(9));
+        let just = lend("lent", ago(10));
+        let living = lend("skiff", ago(-60));
+        let unlisted = lend("wren", ago(60));
+        let endless = lend("sandbox", jiff::Timestamp::MAX);
+        let renamed = |mut made: Made, place: &str| {
+            place.clone_into(&mut made.place);
+            made
+        };
+        let before = renamed(lend("cloud", ago(60)), "cloud-1");
+        let since = renamed(lend("cloud", ago(-60)), "cloud-2");
+        let kept = [
+            &gone, &linked, &ending, &just, &living, &unlisted, &endless, &before, &since,
+        ];
+        for made in kept {
+            book.made(made).expect("the make is kept");
+        }
+        let older = lend("harbour", ago(60));
+        let unnamed = Book::at(path);
+        for made in [
+            &older,
+            &lend("oars", ago(60)),
+            &lend("lighthouse", ago(60)),
+            &lend("gull", ago(8 * 24 * 60)),
+            &lend("skiff", ago(60)),
+        ] {
+            unnamed.made(made).expect("a make naming no realm is kept");
+        }
+        let store = Memory::default();
+        for (name, state, declared) in [
+            ("kestrel", Readiness::Unreachable, true),
+            ("tern", Readiness::Ready, true),
+            ("osprey", Readiness::Unreachable, true),
+            ("lent", Readiness::Unreachable, true),
+            ("skiff", Readiness::Unreachable, true),
+            ("sandbox", Readiness::Unreachable, true),
+            ("cloud", Readiness::Unreachable, true),
+            ("harbour", Readiness::Unreachable, true),
+            ("oars", Readiness::Ready, true),
+            ("lighthouse", Readiness::Unreachable, false),
+            ("gull", Readiness::Unreachable, true),
+        ] {
+            store
+                .put_machine(&facts::Machine {
+                    state,
+                    declared: declared.then(|| crate::declared::Declared {
+                        costs_money: true,
+                        ..crate::declared::Declared::default()
+                    }),
+                    ..facts::measure(name, &facts::Sources::nowhere())
+                })
+                .expect("what it said is kept");
+        }
+
+        let let_go = let_go_ended(&book, &store, now);
+
+        assert_eq!(
+            let_go,
+            vec![gone, just, unlisted, before],
+            "the makes booked as let go, each at its place, and only those"
+        );
+        assert_eq!(
+            leaving(&store, now),
+            ["harbour", "kestrel", "lent"],
+            "what no link reaches leaves once its time is ten minutes up, a make \
+             naming no realm too; one linked, one whose keeper has a while yet, \
+             one whose time isn't up or never is, a name a later make holds, and \
+             a make naming no realm that is linked, declared nothing, ended over \
+             a week ago or shares a name this realm's book holds, all stay"
+        );
+        assert_eq!(store.machines().len(), 11, "every machine is still listed");
+        let standing = book.standing().expect("the book reads");
+        assert_eq!(
+            standing.made,
+            vec![linked, ending, living, endless, since],
+            "each let go is booked so, one the realm no longer lists too"
+        );
+        assert_eq!(
+            standing.unnamed.first(),
+            Some(&older),
+            "a make naming no realm is no realm's to book"
+        );
+    }
+
+    #[tokio::test]
+    async fn each_minute_lets_go_of_a_machine_made_whose_time_is_up() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let book = Book::at(dir.path().join("made.jsonl")).of_realm("work");
+        let long_ago = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1);
+        book.made(&made_by("/usr/bin/lend", "kestrel", long_ago))
+            .expect("the make is kept");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let given = Given {
+            book: book.clone(),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+
+        let mut made = made_by("/usr/bin/lend", "kestrel", long_ago);
+        made.asker = Some("P9R1KI".to_owned());
+        shared.book_for(&made);
+
+        shared.each_minute(&mut Awake::by(None));
+
+        assert_eq!(
+            book.standing().expect("the book reads").made,
+            Vec::new(),
+            "the minute's round lets it go"
+        );
+        assert_eq!(
+            shared.admits().await,
+            Admits::All,
+            "and it is booked for nobody, so starts no longer ask who asks"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_machine_kept_and_let_go_is_booked_for_nobody() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let given = Given {
+            book: Book::at(dir.path().join("made.jsonl")).of_realm("work"),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let mut made = made_by("/nowhere/lend", "kestrel", later);
+        made.asker = Some("P9R1KI".to_owned());
+        let dial = shared.book_for(&made);
+        let unwanted = Arc::new(Notify::new());
+        unwanted.notify_one();
+
+        let mut again = made.clone();
+        "kestrel-again".clone_into(&mut again.place);
+        let keeping = shared.keeping(&made);
+        shared.book_for(&again);
+        shared.unbook(&made);
+        assert!(
+            !shared.admitted_on("kestrel", &Admits::Asker("QK4T7Z".to_owned())),
+            "letting go a make unbooks no later make of its name at another place"
+        );
+        shared.book_for(&made);
+
+        keep_made(dial, made, keeping, unwanted, std::future::pending()).await;
+
+        assert_eq!(
+            shared.admits().await,
+            Admits::All,
+            "a machine let go takes nobody's starts, so none is held to it"
         );
     }
 
