@@ -1,7 +1,8 @@
 //! Machines made from offers. A node makes one only for a start that says
 //! it may cost money and that no machine of the realm takes, asking the
 //! provider's program `PROGRAM make SHAPE --lasting SECONDS`. The program
-//! makes it, writes one JSON line saying where it is (`place`, as
+//! is told who asked for it in [`ASKER`], and refuses whoever it doesn't
+//! serve by failing. It makes it, writes one JSON line saying where it is (`place`, as
 //! `--via PROGRAM:PLACE` names it), the name its node will say for itself
 //! (`machine`) and when it ends (`until`), and exits.
 //!
@@ -25,6 +26,12 @@ use crate::offer::{Costs, Offer};
 /// How long a program has to make a machine: a provider makes one in
 /// seconds, and a minute or two when it is busy.
 const MADE_WITHIN: Duration = Duration::from_secs(5 * 60);
+
+/// The variable a provider's program reads who asked for the machine in:
+/// `person` for the person's own login, a session's address for an agent
+/// whose session the node proved, and `unknown` for anything else, which
+/// a provider serving only some should refuse.
+pub const ASKER: &str = "MYCELIUM_ASKER";
 
 /// A machine a provider made.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,19 +60,20 @@ struct Said {
 }
 
 /// Asks `offer`'s program to make a machine of its shape, to live
-/// `lasting`.
+/// `lasting`, for `asker`, as [`ASKER`] says it.
 ///
 /// # Errors
 ///
 /// When it can't be run, ends with a failure or not within
 /// [`MADE_WITHIN`], or says something other than what it made, saying
 /// which.
-pub async fn make(offer: &Offer, lasting: Duration) -> Result<Made, String> {
+pub async fn make(offer: &Offer, lasting: Duration, asker: &str) -> Result<Made, String> {
     let program = &offer.provider;
     let mut command = tokio::process::Command::new(program);
     command
         .args(["make", &offer.shape, "--lasting"])
         .arg(lasting.as_secs().to_string())
+        .env(ASKER, asker)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -295,9 +303,13 @@ mod tests {
                 asked.display()
             ),
         );
-        let made = make(&offer_of(program.clone()), Duration::from_secs(3600))
-            .await
-            .expect("it is made");
+        let made = make(
+            &offer_of(program.clone()),
+            Duration::from_secs(3600),
+            "person",
+        )
+        .await
+        .expect("it is made");
         assert_eq!(
             fs::read_to_string(&asked).expect("it was asked"),
             "make scratch --lasting 3600\n",
@@ -437,7 +449,7 @@ mod tests {
     async fn a_program_that_makes_nothing_says_why() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let failing = provider(dir.path(), "echo 'quota exceeded' >&2\nexit 3");
-        let error = make(&offer_of(failing), Duration::from_secs(60))
+        let error = make(&offer_of(failing), Duration::from_secs(60), "person")
             .await
             .expect_err("nothing is made");
         assert!(
@@ -447,12 +459,35 @@ mod tests {
 
         let other = tempfile::tempdir().expect("a temporary folder");
         let vague = provider(other.path(), "echo '{\"place\": \"sbx-1\"}'");
-        let error = make(&offer_of(vague), Duration::from_secs(60))
+        let error = make(&offer_of(vague), Duration::from_secs(60), "person")
             .await
             .expect_err("nothing is taken as made");
         assert!(
             error.contains("isn't what it made"),
             "a machine with no name or end isn't taken as made: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_program_is_told_who_asked_for_the_machine() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let told = dir.path().join("told");
+        let program = provider(
+            dir.path(),
+            &format!(
+                "echo \"${ASKER}\" > {}\necho '{{\"place\": \"sbx-1\", \"machine\": \"lent-1\", \"until\": \"2026-10-31T20:00:00Z\"}}'",
+                told.display()
+            ),
+        );
+        for asker in ["person", "QK4T7Z"] {
+            make(&offer_of(program.clone()), Duration::from_secs(60), asker)
+                .await
+                .expect("it is made");
+            assert_eq!(
+                fs::read_to_string(&told).expect("it was told"),
+                format!("{asker}\n"),
+                "the program is told who asked, so it can refuse anyone it doesn't serve"
+            );
+        }
     }
 }

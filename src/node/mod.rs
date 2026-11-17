@@ -3317,7 +3317,8 @@ impl<S: Store> Shared<S> {
     /// Makes a machine of `offer` for `asked` and starts it there once it
     /// links. A machine made that nothing starts on is let go.
     async fn start_made_of(&self, asked: Start, offer: &Offer) -> Reply {
-        let made = made::make(offer, lasting(&asked.work, offer)?).await?;
+        let asker = self.asker_of_a_make().await;
+        let made = made::make(offer, lasting(&asked.work, offer)?, &asker).await?;
         if let Err(error) = self.book.made(&made) {
             eprintln!(
                 "{} was made, but the book doesn't say so: {error}",
@@ -3498,6 +3499,25 @@ impl<S: Store> Shared<S> {
         };
         run::journal(&self.runs.journal, &started);
         Ok((machine, run::journaled(self.runs.journal.clone(), id, said)))
+    }
+
+    /// Who asks for a machine to be made, as its provider is told it
+    /// ([`made::ASKER`]): `person` for the person's own login, the
+    /// address of the nearest session claiming an agent that asks, and
+    /// `unknown` where neither can be told, so a provider serving only
+    /// some refuses it.
+    async fn asker_of_a_make(&self) -> String {
+        match self.judged().await {
+            Ok((By::Person, _)) => "person".to_owned(),
+            Ok((By::Agent(_), above)) => above.first().map_or_else(
+                || "unknown".to_owned(),
+                |session| {
+                    let sessions = self.lock().state.sessions();
+                    self.address_of(&sessions, session).to_owned()
+                },
+            ),
+            Err(_) => "unknown".to_owned(),
+        }
     }
 
     /// Who asks a run, as [`asker::judge`] tells it, and the sessions
