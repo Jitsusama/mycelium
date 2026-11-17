@@ -2363,16 +2363,21 @@ mod tests {
             .expect("kestrel hears");
 
             near.withhold_above(false);
-            near.hear(Say::Piece {
-                quest: top.to_owned(),
-                file: readme.to_owned(),
-                state: changed,
-                at,
-                len: 2 * PIECE,
-                body: STANDARD.encode(body),
-                mode: None,
-            })
-            .expect("kestrel hears");
+            let said = near
+                .hear(Say::Piece {
+                    quest: top.to_owned(),
+                    file: readme.to_owned(),
+                    state: changed,
+                    at,
+                    len: 2 * PIECE,
+                    body: STANDARD.encode(body),
+                    mode: None,
+                })
+                .expect("kestrel hears");
+            let staged = said.iter().any(|say| {
+                matches!(say, Say::Want { file, at: Some(next), .. } if file == readme && *next > 0)
+            });
+            assert_eq!(staged, at == 0, "only a first piece is staged: {said:?}");
             let said = near.look().expect("kestrel looks");
             assert!(
                 said.iter().any(|say| matches!(

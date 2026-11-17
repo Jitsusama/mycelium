@@ -352,14 +352,14 @@ of its attachments, journey, other documents or scratch, and no
 either end shares it on its own. Nothing above is carried to a worker,
 and an end is taken for one until its `Machine` frame declares it is
 not, so an end that takes no facts, saying no `Machine` frame, is sent
-none, and its node logs so. A hold lifted takes up what the other end
-said of its scratch while withheld. One shared only
-so stops being shared, at both ends, once no quest
-either end shares names it above and the other end doesn't share it on
-its own; one shared on its own as well stays. Only a quest shared in
-its own right keeps a quest above it, so parents naming each other
-can't keep each other. A parent shared before ends said `above` carries
-no mark, so it never stops.
+none, and the node withholding logs so unless it links that end as a
+worker. A hold lifted takes up what the other end said of its scratch
+while withheld. One shared only so stops being shared, at both ends,
+once no quest either end shares names it above and the other end
+doesn't share it on its own; one shared on its own as well stays. Only
+a quest shared in its own right keeps a quest above it, so parents
+naming each other can't keep each other. A parent shared before ends
+said `above` carries no mark, so it never stops.
 
 A git clone, named or within a named folder, crosses as its `origin`
 and branch, never file by file, since two machines writing one `.git`
