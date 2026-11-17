@@ -516,15 +516,6 @@ enum Above {
     Lifted,
 }
 
-/// What a replay of what was kept back asked for, by
-/// [`Exchange::take_up_held_back`]: the Wants it made, the quests whose
-/// kept Holds it heard, and whether nothing in it failed.
-struct Replay {
-    wants: Vec<Say>,
-    heard: BTreeSet<String>,
-    done: bool,
-}
-
 /// The quests the other end said it shares.
 #[derive(Debug, Default)]
 struct Theirs {
@@ -827,7 +818,7 @@ impl Exchange {
     /// and what changed of the rest.
     pub fn look(&mut self) -> io::Result<Vec<Say>> {
         self.cloning.reap();
-        let mut replay = (self.above == Above::Lifted).then(|| self.take_up_held_back());
+        let replay = (self.above == Above::Lifted).then(|| self.take_up_held_back());
         let ledgers = self.places.ledgers();
         let mut shares = BTreeMap::new();
         let mut holds = Vec::new();
@@ -929,13 +920,10 @@ impl Exchange {
         self.passed_over = passed_over;
         // What was kept back is let go only once the look that heard it
         // stands, so a look that fails hears it all again at the next.
-        if let Some(replay) = replay.as_mut() {
-            says.append(&mut replay.wants);
-            self.held_back
-                .retain(|quest, _| !replay.heard.contains(quest));
-            if replay.done {
-                self.above = Above::Carried;
-            }
+        if let Some(wants) = replay {
+            says.extend(wants);
+            self.held_back.clear();
+            self.above = Above::Carried;
         }
         Ok(says)
     }
@@ -1015,24 +1003,22 @@ impl Exchange {
                 Ok(Vec::new())
             }
             Say::Holds { quest, files } => {
-                if !self.take_up(&quest)? {
+                // What this says joins what was kept back of it first, so
+                // whatever fails below, no replay hears the older over it.
+                let files = match self.held_back.get_mut(&quest) {
+                    Some(kept) => {
+                        kept.extend(files);
+                        kept.clone()
+                    }
+                    None => files,
+                };
+                let Some(wants) = self.take_holds(&quest, &files)? else {
                     // Only what the hold refused is heard again, as it lifts.
                     if self.above_withheld() {
                         self.keep_back(quest, files);
                     }
                     return Ok(Vec::new());
-                }
-                // What was kept back of it is heard with it and let go, so
-                // no replay hears the older over what this says.
-                let files = match self.held_back.get(&quest) {
-                    Some(kept) => kept.clone().into_iter().chain(files).collect(),
-                    None => files,
                 };
-                let wants = self.held(&quest, files.clone())?;
-                let mut held = self.places.ledgers().hold(&quest)?;
-                if held.ledger.heard(&self.other, files) {
-                    held.keep()?;
-                }
                 self.held_back.remove(&quest);
                 Ok(wants)
             }
@@ -1054,6 +1040,25 @@ impl Exchange {
                 mode,
             } => self.file(&quest, &file, &state, body.as_deref(), mode),
         }
+    }
+
+    /// Hears what the other end holds of quest `id`, taking the quest up
+    /// first, and returns what this end asks for of it, or `None` if it
+    /// isn't taken up.
+    fn take_holds(
+        &mut self,
+        id: &str,
+        files: &BTreeMap<String, State>,
+    ) -> io::Result<Option<Vec<Say>>> {
+        if !self.take_up(id)? {
+            return Ok(None);
+        }
+        let wants = self.held(id, files.clone())?;
+        let mut held = self.places.ledgers().hold(id)?;
+        if held.ledger.heard(&self.other, files.clone()) {
+            held.keep()?;
+        }
+        Ok(Some(wants))
     }
 
     /// Starts sharing `id` as the other end does, if this end doesn't yet,
@@ -1099,48 +1104,34 @@ impl Exchange {
 
     /// Takes up, once the quests above aren't withheld, what the other end
     /// said while they were, since it says it again only when it changes:
-    /// each quest it shares, then what it held of each it still names. What
-    /// fails is logged and tried again at the next look, losing nothing the
-    /// rest asked for; a Holds refused again, as a quest spent here is, is
-    /// heard and let go.
-    fn take_up_held_back(&mut self) -> Replay {
-        let mut failed = false;
+    /// each quest it shares, then what it held of each it still names,
+    /// returning what this end asks for. Each is heard once, as it would
+    /// have been with no hold: what fails is logged and let go, as a
+    /// failure heard live is, so one that fails each time can't keep the
+    /// replay going, and what the rest asked for still goes.
+    fn take_up_held_back(&mut self) -> Vec<Say> {
         if let Err(error) = self.take_up_theirs() {
-            eprintln!(
-                "what {} shares isn't taken up yet, so the next look tries again: {error}",
-                self.other
-            );
-            failed = true;
+            eprintln!("what {} shares isn't all taken up: {error}", self.other);
         }
         self.drop_unnamed();
         let mut wants = Vec::new();
-        let mut heard = BTreeSet::new();
-        let held_back: Vec<String> = self.held_back.keys().cloned().collect();
-        for quest in held_back {
-            let files = self.held_back.get(&quest).cloned().unwrap_or_default();
-            match self.hear(Say::Holds {
-                quest: quest.clone(),
-                files,
-            }) {
-                Ok(said) => {
-                    wants.extend(said);
-                    heard.insert(quest);
+        for (quest, files) in self.held_back.clone() {
+            let heard = self.takes(&quest).and_then(|takes| {
+                if takes {
+                    self.take_holds(&quest, &files)
+                } else {
+                    Ok(None)
                 }
-                Err(error) => {
-                    eprintln!(
-                        "what {} holds of {quest} isn't taken up yet, so the next look tries \
-                         again: {error}",
-                        self.other
-                    );
-                    failed = true;
-                }
+            });
+            match heard {
+                Ok(said) => wants.extend(said.unwrap_or_default()),
+                Err(error) => eprintln!(
+                    "what {} holds of {quest} isn't taken up: {error}",
+                    self.other
+                ),
             }
         }
-        Replay {
-            wants,
-            heard,
-            done: !failed,
-        }
+        wants
     }
 
     /// Forgets what the other end held of each quest it no longer names,
@@ -2166,6 +2157,15 @@ mod tests {
         let top = "QEST-20261007-WCJQSG";
         let mut near = kestrel.exchange(&skiff);
         near.withhold_above(true);
+        let holds = |key: &str| Say::Holds {
+            quest: top.to_owned(),
+            files: BTreeMap::from([(key.to_owned(), State::default())]),
+        };
+        near.hear(holds("record/README.md")).expect("kestrel hears");
+        assert!(
+            near.held_back.is_empty(),
+            "what skiff holds of a quest its Shares never named isn't kept"
+        );
         near.hear(Say::Shares {
             quests: vec![top.to_owned()],
             scratch: BTreeMap::new(),

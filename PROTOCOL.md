@@ -338,7 +338,9 @@ output. Within a named folder, hidden files, links, `target/` and
 `node_modules/` stay home, and below a quest's record or scratch folder
 the node follows no link it finds as it reads or writes a file, whether
 the file is one or a folder it is in: such a file reads as absent, and a
-write to one is refused. A folder once named stays shared. The
+write to one is refused. The node checks each path as it comes to it, so
+a link a process on this machine makes between that check and the read
+or write isn't caught. A folder once named stays shared. The
 scratch's `handover/` crosses whenever it is there as the quest is
 shared, named or not, under the same limits, since a carry or a spawn
 leaves there what the other machine needs to start. Sharing a quest
