@@ -1265,8 +1265,11 @@ and `disk-pressure` (its `disk_band` past
 20%, when it is let sleep) and `disk-full` (its `disk_band`
 `critically_full`, where what it starts would fail to write), each
 `never`. Work may tolerate `disk-full` by its key, as a cleanup run on
-a full machine would; tolerating `disk-pressure` doesn't lift it. A
-machine qualifies when
+a full machine would; tolerating `disk-pressure` doesn't lift it. The
+person's work is held to it as an agent's is, so where every machine's
+disk is critically full a start goes to a machine made for it, or is
+refused with each disk named, rather than starting where it couldn't
+write. A machine qualifies when
 it is in reach, leaves after the work ends (now, for work that doesn't
 say how long it lasts), is what each need asks (a fact it never said
 meets none), and carries no `never` taint the work doesn't tolerate.
@@ -1373,7 +1376,15 @@ none or names no folder there. The answer is the `machine`, the `held`
 id, the `folder` it began in, and `attach`, the words that join it from
 a terminal on the asking machine, to be run as given. A start that
 isn't placed, or doesn't start, is an error saying why, such as
-`nowhere: skiff isn't kestrel`. A node run as a systemd unit
+`nowhere: skiff isn't kestrel`. An agent's start is held to its own
+ground as its run is (`"Run"`): every machine looser than this one is
+missed as `looser-ground`, `never`, naming the machine and the fence
+it lacks, and a start naming one is told only that, as `this asks as a
+strictly fenced agent, so it starts nothing on looser ground: ...`. A
+machine made for it is held to the same once it links, and let go
+where it is looser. The person's starts aren't. A start relayed from
+another machine's node is pinned to this one, which is never looser
+than itself. A node run as a systemd unit
 starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in
 `app.slice`, so the session outlives the node. A start placed on
 another machine is asked of it through the link this node keeps to it,
