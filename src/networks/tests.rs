@@ -626,6 +626,35 @@ fn a_tree_two_cells_hold_is_a_network_and_one_cells_own_is_on_the_cell() {
 }
 
 #[test]
+fn a_session_here_is_dormant_only_while_its_node_says_it_can_wake() {
+    // Seven sessions here ended with their quests active and nothing to wake
+    // them, yet the map drew each dormant for hours, since their presences
+    // still said parked (16 Nov). Here, only the node's own standing counts;
+    // a session elsewhere has only its presence's word, which this node
+    // can't check.
+    let ended = |address: &str, n: u8, here: bool| {
+        let mut record = session(address, n, "Ended", "ended", &["repo.oars"]);
+        record["presence"] = json!({"state": "parked"});
+        record["here"] = json!(here);
+        record
+    };
+    let mut wakes = ended("WAKES1", 1, true);
+    wakes["standing"] = json!("parked");
+    let sessions = [wakes, ended("DEAD01", 2, true), ended("AWAY01", 3, false)];
+    let mycelium = Mycelium::of("home", &[], &sessions, &[]);
+    let cells: Vec<(&str, Option<&str>)> = mycelium
+        .cells
+        .iter()
+        .map(|cell| (cell.name.as_str(), cell.standing))
+        .collect();
+    assert_eq!(
+        cells,
+        [("WAKES1", Some("dormant")), ("AWAY01", Some("dormant"))],
+        "one here that nothing can wake has ended, and is no cell"
+    );
+}
+
+#[test]
 fn cells_are_the_living_and_dormant_sessions_then_the_machines() {
     let mycelium = mycelium();
     let cells: Vec<(&str, Is, Option<&str>)> = mycelium
