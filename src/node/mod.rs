@@ -2140,14 +2140,14 @@ impl<S: Store> Shared<S> {
         // carries' handovers; the turns waiting are read with the
         // sessions, under one lock, so a session that asks a turn is never
         // told as ended for being read a moment apart.
-        let carried = ended::carried(&carries, judge, now);
+        let away = ended::carried(&carries, judge, now);
         let standing = |session: &Session| {
             let here = session.machine == self.machine;
             standing::standing(session, here, &parked, &self.boot)
         };
         let mut inner = self.lock();
         let sessions = inner.state.sessions();
-        let coming_back = ended::coming_back(carried, inner.turns.waiting());
+        let coming_back = ended::coming_back(away, inner.turns.waiting());
         let judged = ended::Judged {
             machine: &self.machine,
             standing: &standing,
