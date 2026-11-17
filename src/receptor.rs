@@ -231,11 +231,41 @@ fn opened_folder(folder: &Path) -> io::Result<OwnedFd> {
 /// on it and on nothing a link points at. What is done in it after is
 /// done through the handle, so a folder swapped for a link meanwhile
 /// takes nothing.
-fn owned(folder: &Path) -> io::Result<OwnedFd> {
+///
+/// # Errors
+///
+/// When the folder can't be made, is a link, or its mode can't be set.
+pub fn owned(folder: &Path) -> io::Result<OwnedFd> {
     fs::create_dir_all(folder)?;
     let opened = opened_folder(folder)?;
     rustix::fs::fchmod(&opened, Mode::from_raw_mode(FOLDER_MODE))?;
     Ok(opened)
+}
+
+/// Whether `record` may be written for `realm`, as [`write`] judges it
+/// before writing anything, so a caller writing beside it can judge it
+/// first and leave everything as it was when it's refused.
+///
+/// # Errors
+///
+/// When the record is of another realm, reads more often than it could
+/// or less than daily, counts more addressed than it has, or names a
+/// process `living` says isn't running.
+pub fn admits(record: &Record, realm: &str, living: &impl Living) -> io::Result<()> {
+    if record.realm != realm {
+        return Err(refused(format!(
+            "a receptor of realm {:?} can't be written in realm {realm:?}",
+            record.realm
+        )));
+    }
+    sound(record)?;
+    if !living.lives(record.pid, record.started) {
+        return Err(refused(format!(
+            "process {} isn't running, so it can't keep a receptor",
+            record.pid
+        )));
+    }
+    Ok(())
 }
 
 /// `record` written whole to its file in `folder`, for `realm`, under a
@@ -254,19 +284,7 @@ pub fn write(
     mut record: Record,
     living: &impl Living,
 ) -> io::Result<PathBuf> {
-    if record.realm != realm {
-        return Err(refused(format!(
-            "a receptor of realm {:?} can't be written in realm {realm:?}",
-            record.realm
-        )));
-    }
-    sound(&record)?;
-    if !living.lives(record.pid, record.started) {
-        return Err(refused(format!(
-            "process {} isn't running, so it can't keep a receptor",
-            record.pid
-        )));
-    }
+    admits(&record, realm, living)?;
     let opened = owned(folder)?;
     let name = format!("{}.json", record.source.name());
     if let Some(was) = read_at(&opened, &name)

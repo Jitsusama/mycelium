@@ -23,6 +23,7 @@ use crate::carry::settle::{self, Settler, Settles};
 use crate::carry::{chain, ease, ground, kept, ordered, through};
 use crate::daemon;
 use crate::facts::{self, Readiness};
+use crate::feed;
 use crate::flow::{self, Flows};
 use crate::forage;
 use crate::group::{Group, Pattern, Routes};
@@ -66,6 +67,7 @@ mod viewed;
 pub use cell::records as cell_records;
 mod crossing;
 mod ended;
+mod feeding;
 mod fences;
 mod formed;
 pub use formed::Formed;
@@ -441,7 +443,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 17] = [
+pub const HOLDS: [&str; 18] = [
     "session",
     "machine",
     "message",
@@ -459,6 +461,7 @@ pub const HOLDS: [&str; 17] = [
     tie::KIND,
     formed::KIND,
     ended::KIND,
+    feed::KIND,
 ];
 
 /// The kind of record that is one thing a session did, as its presence's
@@ -540,6 +543,7 @@ where
     );
     let seeing_fences = tokio::spawn(shared.clone().see_fences());
     let signalling = tokio::spawn(shared.clone().signal_receptors());
+    let feeding = tokio::spawn(shared.clone().feed_cells());
     let easing = eases.map(|eases| tokio::spawn(shared.clone().ease(eases)));
     let Kept {
         sharing,
@@ -627,6 +631,7 @@ where
     let stopping = std::time::Instant::now();
     seeing_fences.abort();
     signalling.abort();
+    feeding.abort();
     // Neither the easing nor the keeping of receptors outlives the node.
     for task in [&easing, &keeping_receptors].into_iter().flatten() {
         task.abort();
@@ -1204,6 +1209,11 @@ struct Shared<S> {
     /// planted. Nothing else can add one, and it empties when the node
     /// starts again.
     refused: Arc<Mutex<HashSet<String>>>,
+    /// The folder its receptors say how they stand in, where each also
+    /// keeps the items it feeds to cells (`feed`); none when it has none.
+    receptors_at: Option<PathBuf>,
+    /// What each receptor has fed to cells this run.
+    feeders: Arc<Mutex<BTreeMap<receptor::Source, feed::Feeder>>>,
     /// Its cells' forages, as last read from the quest store.
     forages: forage::Held,
     /// Asks for a quest a cell works on to be read, when it hasn't been;
@@ -1219,6 +1229,8 @@ struct Said {
     messages: watch::Sender<u64>,
     receptors: watch::Sender<u64>,
     forages: watch::Sender<u64>,
+    /// Told as a receptor feeds a cell, or a feeding leaves the records.
+    fed: watch::Sender<u64>,
     /// Told as any of the sessions, the machines or the receptors are,
     /// whose records the cells are made of.
     cells: watch::Sender<u64>,
@@ -1238,6 +1250,7 @@ impl Default for Said {
             messages: watch::Sender::new(0),
             receptors: watch::Sender::new(0),
             forages: watch::Sender::new(0),
+            fed: watch::Sender::new(0),
             cells: watch::Sender::new(0),
             ties: watch::Sender::new(0),
             ended: watch::Sender::new(0),
@@ -1340,6 +1353,8 @@ impl<S: Clone> Clone for Shared<S> {
             stimuli: self.stimuli.clone(),
             spoken: Arc::clone(&self.spoken),
             refused: Arc::clone(&self.refused),
+            receptors_at: self.receptors_at.clone(),
+            feeders: Arc::clone(&self.feeders),
             forages: self.forages.clone(),
             to_read: self.to_read.clone(),
         }
@@ -1374,6 +1389,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             ties,
             formed,
             ended,
+            fed,
         ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
@@ -1429,6 +1445,8 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (ties, tie::LIVE.to_vec()),
             (formed, vec!["left"]),
             (ended, ended::LIVE.to_vec()),
+            // A cell fed again is fed later, and of another kind maybe.
+            (fed, vec!["at", "kind"]),
         ])
         .into_iter()
         .chain(served)
@@ -1497,6 +1515,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             murmur::KIND => Some(self.murmur_records()),
             tie::KIND => return Some(self.tie_records()),
             ended::KIND => Some(self.ended_records()),
+            feed::KIND => Some(self.fed_records()),
             // Shown but any whose act is done; the node's own judgements
             // read every record.
             _ => self.served.shown(kind),
@@ -1548,6 +1567,9 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // A tie moves as its messages come, and as one leaves its hour
             // or its day, which the minute's tick tells.
             tie::KIND => Some(self.said.ties.subscribe()),
+            // A cell is fed, or a feeding leaves its ten minutes, as the
+            // node's feeding pass says.
+            feed::KIND => Some(self.said.fed.subscribe()),
             _ => self.served.told(kind),
         }
     }
@@ -1893,7 +1915,7 @@ impl<S: Store> Shared<S> {
         let to_read = sharing
             .as_ref()
             .map(|places| keep_forages(places, &forages, &said, &inner, &hello.machine));
-        let (held, keeping_receptors) = keep_receptors(receptors, &hello.realm, &said);
+        let (held, keeping_receptors) = keep_receptors(receptors.clone(), &hello.realm, &said);
         let shared = Self {
             processes: processes.into(),
             // Beside the carries it judges, so it needs no place of its own.
@@ -1945,6 +1967,8 @@ impl<S: Store> Shared<S> {
             stimuli,
             spoken: Arc::default(),
             refused: Arc::default(),
+            receptors_at: receptors,
+            feeders: Arc::default(),
             forages,
             to_read,
         };
@@ -13566,5 +13590,204 @@ esac
         .expect("it starts");
 
         assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
+    }
+
+    /// The README of quest `id` of `realm`, claiming `changes` for its
+    /// active `sessions`.
+    fn claiming(id: &str, realm: &str, changes: &[&str], sessions: &[&str]) -> String {
+        let aliases: String = changes
+            .iter()
+            .map(|change| format!("  - type: github-pr\n    value: {change}\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let listed: String = sessions
+            .iter()
+            .map(|session| format!("  - id: {session}\n    status: active\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        format!(
+            "---\nid: {id}\nkind: quest\nstatus: active\nrealm: {realm}\naliases:\n{aliases}\
+             sessions:\n{listed}---\n# A Quest\n"
+        )
+    }
+
+    /// A session `id` at `address` on `machine`, standing as `state`, on
+    /// `quest`.
+    fn on_quest(id: &str, address: &str, machine: &str, state: &str, quest: &str) -> Session {
+        serde_json::from_value(json!({
+            "id": id,
+            "address": address,
+            "machine": machine,
+            "groups": [],
+            "state": state,
+            "at": "2026-11-18T08:00:00Z",
+            "quest": quest,
+        }))
+        .expect("a session")
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one machine's quests and cells, each kept from the feed for its own reason"
+    )]
+    async fn a_review_asked_feeds_only_the_live_cell_here_whose_quest_claims_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let receptors = dir.path().join("receptors");
+        fs::create_dir_all(&receptors).expect("its folder");
+        fs::set_permissions(&receptors, fs::Permissions::from_mode(0o700)).expect("kept");
+        let quests = dir.path().join("quests");
+        let claims: [(&str, &str, &[&str], &[&str]); 4] = [
+            (
+                "QEST-20261118-KESTRL",
+                "work",
+                &["jsama/tern#12"],
+                &["s-claims", "s-ended", "s-far", "s-lost"],
+            ),
+            (
+                "QEST-20261118-OSPREY",
+                "work",
+                &["jsama/tern#13", "jsama/tern#1"],
+                &["s-other"],
+            ),
+            (
+                "QEST-20261118-SKIFFS",
+                "work",
+                &["jsama/tern#12"],
+                &["s-listed"],
+            ),
+            (
+                "QEST-20261118-TERNSS",
+                "personal",
+                &["jsama/tern#12"],
+                &["s-personal"],
+            ),
+        ];
+        for (id, realm, changes, sessions) in claims {
+            let readme = quests.join(id).join("README.md");
+            fs::create_dir_all(readme.parent().expect("a folder")).expect("its folder");
+            fs::write(readme, claiming(id, realm, changes, sessions)).expect("written");
+        }
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            Given {
+                receptors: Some(receptors.clone()),
+                ..bare("/nowhere/steer".into(), None)
+            },
+            to_dial,
+        );
+        shared.lock().state.set_sessions(vec![
+            on_quest(
+                "s-claims",
+                "KESTRL1",
+                "skiff",
+                "idle",
+                "QEST-20261118-KESTRL",
+            ),
+            on_quest(
+                "s-ended",
+                "KESTRL2",
+                "skiff",
+                "ended",
+                "QEST-20261118-KESTRL",
+            ),
+            on_quest("s-far", "KESTRL3", "osprey", "busy", "QEST-20261118-KESTRL"),
+            on_quest(
+                "s-lost",
+                "KESTRL4",
+                "skiff",
+                "unreachable",
+                "QEST-20261118-KESTRL",
+            ),
+            on_quest(
+                "s-other",
+                "OSPREY1",
+                "skiff",
+                "busy",
+                "QEST-20261118-OSPREY",
+            ),
+            on_quest(
+                "s-unlisted",
+                "SKIFFS1",
+                "skiff",
+                "idle",
+                "QEST-20261118-SKIFFS",
+            ),
+            on_quest(
+                "s-personal",
+                "TERNSS1",
+                "skiff",
+                "idle",
+                "QEST-20261118-TERNSS",
+            ),
+        ]);
+        {
+            let mut shelf = shared
+                .forages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (id, ..) in claims {
+                assert!(shelf.read(&quests, id), "{id} is read");
+            }
+        }
+        feed::write(
+            &receptors,
+            receptor::Source::Github,
+            "work",
+            &[("jsama/tern".to_owned(), 12, feed::Reason::ReviewAsked)],
+            jiff::Timestamp::now(),
+        )
+        .expect("its items are kept");
+        feeding::reading(&receptors, receptor::Source::Github, "work");
+        let mut fed = shared.said.fed.subscribe();
+        fed.borrow_and_update();
+
+        for _ in 0..2 {
+            shared
+                .feed_once(&receptors, &[receptor::Source::Github])
+                .await;
+        }
+
+        let spoken: Vec<String> = shared
+            .spoken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(spoken.len(), 1, "one cell fed, once: {spoken:?}");
+        let said = shared
+            .store
+            .message(&spoken[0])
+            .expect("it is in the store");
+        assert_eq!(said["from"], "github@skiff");
+        assert_eq!(
+            said["to"],
+            json!(["@KESTRL1"]),
+            "to the claiming cell alone"
+        );
+        assert_eq!(said["intent"], "fyi");
+        assert_eq!(
+            said["text"],
+            "github: your person's review is asked on jsama/tern#12"
+        );
+        assert!(
+            fed.has_changed().expect("still kept"),
+            "the map's watchers are told"
+        );
+        let records = shared.fed_records();
+        assert_eq!(
+            records.keys().collect::<Vec<_>>(),
+            vec![&daemon::key(feed::KIND, "github@skiff~KESTRL1")],
+            "who fed whom"
+        );
+        let served = serde_json::to_string(&records).expect("json");
+        assert!(!served.contains("tern"), "never what: {served}");
     }
 }

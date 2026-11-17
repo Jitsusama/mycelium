@@ -2151,8 +2151,8 @@ The file is `receptors/<source>.json` in the realm's state folder,
 written whole through a dot-file renamed into place, the folder `0700`
 and the file `0600`. `mycelium receptors say SOURCE --state STATE
 --every SECS --pid PID` writes it, with `--hour`, `--today` and
-`--addressed` for its counts, and takes nothing else. It holds counts
-and times alone, never what was read:
+`--addressed` for its counts, and takes nothing else but the changes
+under Feeding. It holds counts and times alone, never what was read:
 
 | Field | What it is |
 | --- | --- |
@@ -2225,6 +2225,69 @@ it serves and carries: a reader of the messages folder itself, as a pi
 session is, reads whatever the folder's account wrote there, under a
 receptor's name or any other. A signal stays on its machine, as the
 receptor's record does.
+
+#### Feeding
+
+A receptor may also keep the outside changes that ask something of its
+person, so the node can feed each to the cell whose quest owns it.
+GitHub's alone does, with the reviews asked of the person. It keeps them
+in `receptors/<source>.items.json`, beside its record and written the
+same way, `0600`, which the node never serves and no link carries.
+`mycelium receptors say github ... --owner OWNER --item OWNER/NAME#N`
+writes it whole, `--owner` and `--item` each repeated, so naming the
+owners with no item clears it. An item whose owner isn't one named
+exactly, whose name isn't letters, digits, `-`, `_` and `.`, or whose
+number isn't a positive whole one is refused, and so is the whole
+write, before the record is: one bad item costs the counts too, so the
+receptor names each owner as its items spell it. A record refused
+(another realm's, counts that can't be, or a process not running)
+writes no items either; a write that fails on the disk after the items
+were written leaves them for the next round to write whole again. Each
+item is its change, `reason`
+(`review-asked`) and `since`, when it was first kept and never later
+than the writer's clock, never a title, body, author, branch or comment.
+One gone from the file is gone, and none is kept past 30 days. One
+still named at 30 days is let go for a round, then kept as new, so its
+cell hears it once more each 30 days while its review is asked.
+
+Which cell owns a change is its quest's word, never a session's: the
+quest's README names the change as a `github-pr` alias, exactly
+`owner/name#N` and never by prefix, and lists the session as `active`,
+and the quest's `realm` is the node's. Exactly means in the same case:
+GitHub's names are blind to case, but a receptor names a change as
+GitHub's own link spells it, so an alias copied from GitHub claims it,
+and one typed in another case claims nothing rather than too much. Each
+such session of this machine, running and not ended or out of reach,
+is fed, and two that claim one change are both fed. Feeding happens
+only for a source the person's table names and whose receptor keeps a
+record not reading `off`, as the node reads the folder's changes, a
+quest's README, and every 30 seconds. An items file that is there but
+can't be trusted (a link, too large, another realm's or source's, or
+malformed) leaves that source's feeding as it stood, rather than
+reading as no items.
+
+A fed cell hears an `fyi` from `<source>@<machine>`, as a signal is
+said, but to the cell alone (`@ADDRESS`, held as `peer.<address>`),
+worded from the item's fields alone: `github: your person's review is
+asked on owner/name#N`. Each cell hears an item once while it stands,
+and again only once it went and came back; a restarted node may say one
+again. A feeding counts only once it was said, so one the node couldn't
+say is tried again on its next look. The node serves what it fed for
+ten minutes as the `fed` kind, keyed `fed:<receptor>~<cell>`, so the
+map can draw the line:
+
+| Field | What it is |
+| --- | --- |
+| `receptor` | the receptor's cell, `<source>@<machine>` |
+| `cell` | the fed cell's address |
+| `at` | when it was fed |
+| `kind` | what fed it, in a word: `review` |
+
+The `fed` record never names the change, so the map shows who fed
+whom. The fyi itself is stored and served as any message is, addressed
+to the one cell it fed. Like a signal, it grants nothing: a fact for
+the cell to weigh, never an order. A feeding fades at ten minutes even
+when its receptor went off or its items can't be read.
 
 ### Forages
 

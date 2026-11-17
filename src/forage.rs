@@ -93,6 +93,108 @@ pub struct Quest {
     pub documents: Vec<Document>,
     /// What it waits on its person for, as its waiting file says.
     pub waits: Vec<Wait>,
+    /// What its README says decides which outside changes feed it, which
+    /// no forage serves.
+    #[serde(skip)]
+    pub claims: Claims,
+}
+
+/// What a quest's README says of the outside changes that are its own:
+/// the changes it claims, the sessions that are its, and its realm. Only
+/// the node's feeding reads it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Claims {
+    /// The changes its `github-pr` aliases name, as `owner/name#N`.
+    pub changes: Vec<String>,
+    /// The sessions it lists as active, by id.
+    pub sessions: Vec<String>,
+    /// Its realm.
+    pub realm: Option<String>,
+}
+
+/// The most entries of a README's list read, a guard against a file
+/// written wrong.
+const MOST_LISTED: usize = 500;
+
+/// The entries of the list under the key `key` in front matter `lines`,
+/// each as its own keys and values, and a value unquoted as front
+/// matter's are. The list's first `- ` sets where its entries start: an
+/// entry is a `- ` there, its keys are the lines two further in, as YAML
+/// lays a block list's entry, and anything deeper, a session's process
+/// or a list of its own, belongs to none of them.
+fn listed(lines: &[String], key: &str) -> Vec<HashMap<String, String>> {
+    let mut entries: Vec<HashMap<String, String>> = Vec::new();
+    let mut within = false;
+    let mut dash: Option<usize> = None;
+    for line in lines {
+        if !line.starts_with([' ', '\t', '-']) {
+            within = line
+                .split_once(':')
+                .is_some_and(|(said, _)| said.trim() == key);
+            dash = None;
+            continue;
+        }
+        if !within {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        let field = if let Some(field) = trimmed.strip_prefix("- ") {
+            if indent != *dash.get_or_insert(indent) {
+                continue;
+            }
+            if entries.len() == MOST_LISTED {
+                break;
+            }
+            entries.push(HashMap::new());
+            field
+        } else if dash.is_some_and(|dash| indent == dash + 2) {
+            trimmed
+        } else {
+            continue;
+        };
+        let (Some(entry), Some((name, value))) = (entries.last_mut(), field.split_once(':')) else {
+            continue;
+        };
+        let value = value.trim().trim_matches(['"', '\'']);
+        if !value.is_empty() {
+            entry.insert(name.trim().to_owned(), value.to_owned());
+        }
+    }
+    entries
+}
+
+/// What the README at `path` says decides which outside changes feed
+/// its quest.
+fn read_claims(path: &Path) -> Claims {
+    let Some(mut lines) = lines_of(path) else {
+        return Claims::default();
+    };
+    if lines.next().as_deref().map(str::trim_end) != Some("---") {
+        return Claims::default();
+    }
+    let front: Vec<String> = lines.take_while(|line| line.trim_end() != "---").collect();
+    let changes = listed(&front, "aliases")
+        .into_iter()
+        .filter(|alias| alias.get("type").map(String::as_str) == Some("github-pr"))
+        .filter_map(|mut alias| alias.remove("value"))
+        .collect();
+    let sessions = listed(&front, "sessions")
+        .into_iter()
+        .filter(|session| session.get("status").map(String::as_str) == Some("active"))
+        .filter_map(|mut session| session.remove("id"))
+        .collect();
+    let realm = front_matter(
+        &mut std::iter::once("---".to_owned())
+            .chain(front.iter().cloned())
+            .chain(std::iter::once("---".to_owned())),
+    )
+    .remove("realm");
+    Claims {
+        changes,
+        sessions,
+        realm,
+    }
 }
 
 /// One thing a quest waits on its person for, as the launcher keeps it in
@@ -703,6 +805,7 @@ fn read_quest(
     }
     let folder = store.join(id);
     let (parent, status, purpose) = read_readme(&folder.join("README.md"));
+    let claims = read_claims(&folder.join("README.md"));
     let mut documents = Vec::new();
     for kind in DOCUMENTS {
         let Ok(entries) = fs::read_dir(folder.join(kind)) else {
@@ -735,6 +838,7 @@ fn read_quest(
         parent,
         documents,
         waits: Vec::new(),
+        claims,
     }
 }
 
@@ -1337,6 +1441,58 @@ mod tests {
             parent("QEST-20261116-OSPREY").as_deref(),
             Some("null"),
             "a quoted null is the word"
+        );
+    }
+
+    #[test]
+    fn a_quest_claims_its_github_aliases_for_its_active_sessions_alone() {
+        let store = Store::new("claims");
+        let front = "---\nid: QEST-20261116-KESTRL\nrealm: work\naliases:\n  - type: \
+            github-pr\n    value: jsama/tern#12\n  - type: slack-message\n    value: \
+            C0/1\n  - type: github-pr\n    value: \"jsama/tern#13\"\nsessions:\n  - id: \
+            s-live\n    status: active\n    process:\n      status: ended\n  - id: \
+            s-gone\n    status: ended\nparent: QEST-20261101-OSPREY\n";
+        let readme = README.replacen("---\n", front, 1);
+        store.write("QEST-20261116-KESTRL/README.md", &readme);
+        let mut shelf = Shelf::default();
+        assert!(shelf.read(&store.0, "QEST-20261116-KESTRL"), "read");
+        let quest = shelf.quest("QEST-20261116-KESTRL").expect("read");
+        assert_eq!(
+            quest.claims,
+            Claims {
+                changes: vec!["jsama/tern#12".to_owned(), "jsama/tern#13".to_owned()],
+                sessions: vec!["s-live".to_owned()],
+                realm: Some("work".to_owned()),
+            }
+        );
+        let served = serde_json::to_string(quest).expect("json");
+        assert!(
+            !served.contains("tern") && !served.contains("s-live"),
+            "a forage served what feeds its quest: {served}"
+        );
+    }
+
+    #[test]
+    fn claims_are_read_at_any_list_indent_and_a_nested_list_claims_nothing() {
+        let store = Store::new("claims-laid-out");
+        // Lists flush with their key, as YAML allows, and a session holding
+        // a list of its own whose entries look like sessions.
+        let front = "---\nid: QEST-20261116-KESTRL\nrealm: work\naliases:\n- type: \
+            github-pr\n  value: jsama/tern#12\nsessions:\n- id: s-live\n  status: active\n- \
+            id: s-dormant\n  status: ended\n  children:\n  - id: s-nested\n    status: \
+            active\n- id: s-gone\n  status: ended\nparent: QEST-20261101-OSPREY\n";
+        let readme = README.replacen("---\n", front, 1);
+        store.write("QEST-20261116-KESTRL/README.md", &readme);
+        let mut shelf = Shelf::default();
+        assert!(shelf.read(&store.0, "QEST-20261116-KESTRL"), "read");
+        let quest = shelf.quest("QEST-20261116-KESTRL").expect("read");
+        assert_eq!(
+            (&quest.claims.changes, &quest.claims.sessions),
+            (
+                &vec!["jsama/tern#12".to_owned()],
+                &vec!["s-live".to_owned()]
+            ),
+            "a list laid out flush was misread, or a nested entry was taken as a session"
         );
     }
 

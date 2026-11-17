@@ -45,7 +45,7 @@ impl<S: Store + Clone + Send + Sync + 'static> Shared<S> {
 
     /// Writes one of its receptors' signals to the store, vouched for
     /// first, so the store's change brings it back as this node's own.
-    fn speak(&self, draft: &Draft) -> std::io::Result<()> {
+    pub(super) fn speak(&self, draft: &Draft) -> std::io::Result<()> {
         let (id, body) = mesh::written(draft, std::process::id());
         self.spoken
             .lock()

@@ -1065,9 +1065,22 @@ struct ReceptorSaid {
     /// Mycelium's own folder, if not where it goes by default.
     #[arg(long = "state-folder")]
     state_folder: Option<PathBuf>,
+    /// An owner whose changes it may name with `--item`, repeated for
+    /// each. Named at all, its items are written whole, so none clears
+    /// them. GitHub's receptor alone keeps items.
+    #[arg(long = "owner", value_name = "OWNER")]
+    owners: Vec<String>,
+    /// A change asking the person's review, as `owner/name#N`, repeated
+    /// for each; its owner must be named with `--owner`.
+    #[arg(long = "item", value_name = "CHANGE", requires = "owners")]
+    items: Vec<String>,
 }
 
-/// Writes how the receptor `said` stands for `realm`, saying where.
+/// Writes how the receptor `said` stands for `realm`, saying where, and
+/// the changes it feeds to cells when it names its owners.
+///
+/// Each item, and the record, is judged before anything is written, so
+/// one refused leaves both files as they were.
 fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
     use mycelium::receptor::{self, Counts, Record, Source, State};
     let word = |what: &str, value: &str| {
@@ -1085,6 +1098,24 @@ fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
         )
     })?;
     let state: State = word("state", &said.state)?;
+    let items = if said.owners.is_empty() {
+        None
+    } else if source != Source::Github {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{}'s receptor keeps no items", source.name()),
+        ));
+    } else {
+        Some(
+            said.items
+                .iter()
+                .map(|item| {
+                    mycelium::feed::change_of(item, &said.owners)
+                        .map(|(repo, number)| (repo, number, mycelium::feed::Reason::ReviewAsked))
+                })
+                .collect::<io::Result<Vec<_>>>()?,
+        )
+    };
     let now = jiff::Timestamp::now();
     let record = Record {
         source,
@@ -1102,8 +1133,19 @@ fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
         },
     };
     let folder = receptor::folder(&said.state_folder.unwrap_or_else(place::state));
-    let written = receptor::write(&folder, &record.realm.clone(), record, &receptor::Here)?;
-    writeln!(io::stdout().lock(), "{}", written.display())
+    let realm = record.realm.clone();
+    receptor::admits(&record, &realm, &receptor::Here)?;
+    // The items go first, so the node, woken by the record, reads the
+    // items it was written beside rather than those before them.
+    let kept = items
+        .map(|items| mycelium::feed::write(&folder, source, &realm, &items, now))
+        .transpose()?;
+    let written = receptor::write(&folder, &realm, record, &receptor::Here)?;
+    writeln!(io::stdout().lock(), "{}", written.display())?;
+    if let Some(kept) = kept {
+        writeln!(io::stdout().lock(), "{}", kept.display())?;
+    }
+    Ok(())
 }
 
 #[derive(clap::Args)]
