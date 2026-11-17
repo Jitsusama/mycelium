@@ -300,7 +300,9 @@ enum Action {
     Offers,
     /// Says which machine of the realm work should go to.
     ///
-    /// Or, where none fits, why not.
+    /// Or, where none fits, why not. An agent asking is told where its run
+    /// would go, so a machine whose fence runs no command is refused,
+    /// though a session it starts may still land there.
     #[command(after_help = "Example:\n  mycelium place --need system=linux")]
     Place(Asked),
     /// Asks a machine to update itself.

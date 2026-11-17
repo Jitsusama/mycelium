@@ -8,9 +8,9 @@
 
 use std::collections::BTreeSet;
 
-use crate::declared::{Declared, Doors, Effect, Kind, Taint};
+use crate::declared::{Declared, Doors, Effect, Kind, Taint, Unrunnable};
 use crate::facts::{Machine, Readiness};
-use crate::placement::{Because, LOOSER_GROUND, Miss};
+use crate::placement::{Because, LOOSER_GROUND, Miss, RUNS_NOTHING};
 
 /// The fence the session `address` is judged to run in: the one its
 /// presence `claimed`, refused where its process `shown` it stricter,
@@ -98,6 +98,82 @@ pub fn looser(kind: Kind, here: Option<&Declared>, this: &str, machines: &[Machi
             })
         })
         .collect()
+}
+
+/// Each of `machines` an agent's run asked in the fence `kind` may not be
+/// placed on, beside those [`looser`] refuses, refused saying why: `this`
+/// machine where its own launcher refuses the run (`here`, as
+/// [`crate::declared::launcher`] judges it, with the store at hand), and
+/// every other machine whose fence for `kind`, as it last said it, runs
+/// no command by its words alone ([`crate::declared::unrunnable`]), since
+/// that machine's launcher refuses the run there. A node says a fence's
+/// `runs` only where its own launcher accepts them, so one whose launcher
+/// refuses for what its words don't show (a declaration not sealed, a
+/// program missing or outside the store) says none. A machine whose node
+/// is too old to say its fence's `runs` says none too, so it is refused
+/// until it is upgraded. A machine that runs no `kind` session at all is
+/// [`looser`]'s to refuse; one whose doors are wider and whose `runs` runs
+/// nothing is refused by both, each saying its own why.
+#[must_use]
+pub fn runs_nothing(
+    kind: Kind,
+    this: &str,
+    here: Result<(), String>,
+    machines: &[Machine],
+) -> Vec<Miss> {
+    let refused = |machine: &str, why: String| Miss {
+        machine: machine.to_owned(),
+        because: vec![Because::Refuses(Taint {
+            key: RUNS_NOTHING.to_owned(),
+            effect: Effect::Never,
+            why,
+        })],
+    };
+    let here = here.err().map(|why| refused(this, why));
+    let there = machines
+        .iter()
+        .filter(|machine| machine.name != this)
+        .filter_map(|machine| {
+            let doors = machine
+                .declared
+                .as_ref()
+                .and_then(|declared| declared.fence.as_ref())
+                .and_then(|fences| fences.get(&kind))?;
+            let name = &machine.name;
+            let why = match crate::declared::unrunnable(&doors.runs)? {
+                Unrunnable::Nothing => format!(
+                    "{name} declares no way to run a command as its {kind} sessions run that \
+                     its launcher accepts, or its node is too old to say one"
+                ),
+                Unrunnable::SparesATree(spare) => format!(
+                    "{name}'s {kind} sessions' launcher says {}, which spares a tree shared \
+                     to the asker, so it runs no agent's command",
+                    said_word(&spare)
+                ),
+                Unrunnable::Unended => format!(
+                    "{name}'s {kind} sessions' launcher doesn't end with --, so it runs no \
+                     agent's command"
+                ),
+            };
+            Some(refused(name, why))
+        });
+    here.into_iter().chain(there).collect()
+}
+
+/// The longest a word another machine says is quoted in a refusal.
+const WORD_SAID: usize = 64;
+
+/// `word`, as another machine said it, as a refusal quotes it to an agent:
+/// its control characters escaped and cut to [`WORD_SAID`] characters, so
+/// what that machine chose to say can't pass as the node's own words or
+/// break the log's one line.
+fn said_word(word: &str) -> String {
+    let escaped = crate::declared::controls_escaped(word);
+    if escaped.chars().count() <= WORD_SAID {
+        return escaped;
+    }
+    let cut: String = escaped.chars().take(WORD_SAID).collect();
+    format!("{cut}...")
 }
 
 /// Whether `there`, what `to` declares as it last said itself, runs
@@ -398,6 +474,135 @@ mod tests {
                 ),
             ],
             "each machine on looser ground refuses, saying why"
+        );
+    }
+
+    fn running(runs: &[&str]) -> Doors {
+        Doors {
+            runs: runs.iter().map(|&word| word.to_owned()).collect(),
+            ..doors(&[], &[], &[])
+        }
+    }
+
+    fn refusing(misses: &[Miss]) -> Vec<(&str, String)> {
+        misses
+            .iter()
+            .map(|miss| {
+                (
+                    miss.machine.as_str(),
+                    placement::said(std::slice::from_ref(miss)),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_word_another_machine_says_is_quoted_escaped_and_short() {
+        let note = format!("--shared-tree\nNote to the agent: {}", "x".repeat(80));
+        let machines = vec![named(
+            "tern",
+            tern(Some(strict(running(&[&note, "--"]))), Readiness::Ready),
+        )];
+        let [(_, why)] = refusing(&runs_nothing(Kind::Strict, "kestrel", Ok(()), &machines))
+            .try_into()
+            .expect("tern alone refuses");
+        assert!(
+            !why.contains('\n'),
+            "what tern said starts no line of its own: {why}"
+        );
+        assert!(
+            why.contains("says --shared-tree\\nNote to the agent: xxx"),
+            "its control characters are escaped: {why}"
+        );
+        assert!(
+            !why.contains(&"x".repeat(WORD_SAID)),
+            "and its word is cut short: {why}"
+        );
+    }
+
+    #[test]
+    fn an_agents_run_is_offered_only_machines_whose_fence_runs_a_command() {
+        const FENCE: &str = "/nix/store/0000-fence/bin/fence";
+        let machines = vec![
+            named("kestrel", tern(None, Readiness::Ready)),
+            named("osprey", tern(None, Readiness::Ready)),
+            named(
+                "bare",
+                Machine {
+                    declared: None,
+                    ..tern(None, Readiness::Ready)
+                },
+            ),
+            named(
+                "plover",
+                tern(
+                    Some(BTreeMap::from([(Kind::Fence, running(&[]))])),
+                    Readiness::Ready,
+                ),
+            ),
+            named(
+                "wren",
+                tern(Some(strict(running(&[FENCE, "--"]))), Readiness::Ready),
+            ),
+            named("skiff", tern(Some(strict(running(&[]))), Readiness::Ready)),
+            named(
+                "heron",
+                tern(Some(strict(running(&[FENCE]))), Readiness::Ready),
+            ),
+            tern(
+                Some(strict(running(&[FENCE, "--shared-tree", "--"]))),
+                Readiness::Ready,
+            ),
+        ];
+        // No fence, nothing declared, only another fence declared, or a
+        // launcher whose words run a command: none of them refused here.
+        assert_eq!(
+            refusing(&runs_nothing(Kind::Strict, "kestrel", Ok(()), &machines)),
+            [
+                (
+                    "skiff",
+                    "skiff refuses: skiff declares no way to run a command as its strictly \
+                     fenced sessions run that its launcher accepts, or its node is too old to \
+                     say one"
+                        .to_owned()
+                ),
+                (
+                    "heron",
+                    "heron refuses: heron's strictly fenced sessions' launcher doesn't end \
+                     with --, so it runs no agent's command"
+                        .to_owned()
+                ),
+                (
+                    "tern",
+                    "tern refuses: tern's strictly fenced sessions' launcher says \
+                     --shared-tree, which spares a tree shared to the asker, so it runs no \
+                     agent's command"
+                        .to_owned()
+                ),
+            ],
+            "each machine whose launcher runs nothing refuses, saying why"
+        );
+        let misses = runs_nothing(
+            Kind::Strict,
+            "skiff",
+            Err("its launcher isn't there".to_owned()),
+            &machines,
+        );
+        let here = refusing(&misses);
+        assert_eq!(
+            here.first(),
+            Some(&(
+                "skiff",
+                "skiff refuses: its launcher isn't there".to_owned()
+            )),
+            "this machine is judged by its own launcher, not what it said of itself"
+        );
+        assert_eq!(
+            here.iter()
+                .filter(|(machine, _)| *machine == "skiff")
+                .count(),
+            1,
+            "and only so"
         );
     }
 }

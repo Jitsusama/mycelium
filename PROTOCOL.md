@@ -933,7 +933,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Builders"` | `{"Builders": [builder]}`, the builders it sends Nix builds to |
 | `"Offers"` | `{"Offers": {"offers", "unanswered"}}`, asked of each provider now |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
-| `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"`, counted here as a start |
+| `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
 | `{"Start": {"work", "folder", "command", "may_cost"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
@@ -1201,7 +1201,10 @@ kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,
 each door by the name the machine's configuration gives it, and with
 `runs`, the words that start a command as that fence runs its
-sessions, such as its launcher and the fence's rules. A fence
+sessions, such as its launcher and the fence's rules. A node says a
+fence's `runs` in its `Machine` only where its own launcher takes them
+(below), and none where it refuses them, so another machine judges it
+as a run there is judged. A fence
 missing a door, or of a kind this build doesn't know, is read as no
 fence, spoiling nothing else declared; a carry an orchestrator orders
 lands only where it says one (A Carry an Orchestrator Orders). Only
@@ -1397,7 +1400,8 @@ the log holds about two weeks.
 A processor reading that isn't a number counts as none, so every
 `headroom` is a number.
 
-`"Start"` places `work` as `"Place"` does and starts `command` held
+`"Start"` places `work` as `"PlaceToStart"` does (as `"Place"`,
+though an agent's start needs no `runs`) and starts `command` held
 there through the person's login shell (`$SHELL -lic`), so it has their
 environment rather than the node's, and the realm's kit's tools first on
 its path where its node is given a kit (`--kit`) and carries it, having
@@ -1621,14 +1625,26 @@ since a file can fail to be read. A
 fenced at least. An agent's run goes only where an ordered carry could
 land it (A Carry an Orchestrator Orders): placement is offered only
 this machine and those, each other one missed as `looser-ground`,
-`never`, saying why, which no `tolerates` lifts, and a `"Place"` an
-agent asks is judged the same way, so where it is told the work would
-go is where the work may run. Each machine so refused still counts for
-what the person's lasting machines reach, and a placement's record
-keeps it as `refused`, so a replay refuses it too.
-There it runs as its
-fence's declared `runs`, then the login shell, then `command`; a
-machine declaring no `runs` for it refuses it, as does one whose
+`never`, saying why, which no `tolerates` lifts. Nor is it offered a
+machine whose launcher for its fence would refuse it: this one where
+its own launcher, as below, refuses it, and another where the fence it
+last said names no `runs`, a `runs` saying `--shared-tree`, or one
+not ending with `--`, each missed as `runs-nothing`, `never`, saying
+why. That key so covers any reason a launcher refuses, a declaration
+not sealed or a program missing or outside the store among them; this
+machine logs each refusal of its own. A machine whose node is too old
+to say its `runs` says none, so it is refused so until it is upgraded.
+A `"Place"` an agent asks is judged the same way, as a run, so where
+it is told the work would go is where the work may run, though a start
+placed (`"PlaceToStart"`, `"Start"`) needs no `runs`. An agent's run
+naming no machine that every machine refuses, this one for its
+launcher, is told this one's reason and then every other's; one a
+link carried here is told this machine by name, not as here. Each
+machine so refused still counts for what the person's lasting machines
+reach, and a placement's record keeps it as `refused`, so a replay
+refuses it too. There it runs as its fence's declared `runs`, then the
+login shell, then `command`; a machine declaring no `runs` for it
+refuses it, as does one whose
 `runs` doesn't end with `--`, so nothing `command` says is read as
 `runs`' own options. `runs` saying `--shared-tree`, or a shortening
 of it, as a word of its own refuses every run, so pi-fence refuses a
