@@ -30,6 +30,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::hash::{BuildHasher, RandomState};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +40,7 @@ use crate::declared::{Effect, Taint};
 use crate::disk::Band;
 use crate::facts::{AcceleratorKind, Machine, Readiness};
 use crate::offer::Offer;
-use crate::room::Limit;
+use crate::room::{Limit, Room};
 
 /// The key a worker's refusal carries: a machine lent or paid for takes
 /// only work that names it.
@@ -231,6 +232,48 @@ pub const CPU_SATURATED: &str = "cpu-saturated";
 /// machine's processors are saturated: so much waits on them that a
 /// session started there is slow for everyone on it.
 pub const SATURATED_PRESSURE: f64 = 80.0;
+
+/// The processor pressure a machine saturated must fall under before it
+/// isn't: below [`SATURATED_PRESSURE`], so a machine whose pressure swings
+/// about that line, as a ten-second reading does under bursty work, isn't
+/// judged saturated and then not with each reading, sending each ask to a
+/// different machine.
+pub const UNSATURATED_PRESSURE: f64 = 70.0;
+
+/// Whether a machine's processors are saturated, as its own node judges
+/// them over time: saturated from [`SATURATED_PRESSURE`] until under
+/// [`UNSATURATED_PRESSURE`], and between the two as it was last judged.
+/// Its node says the verdict in its room, so every node places by the
+/// same one and a replay reads what was decided.
+#[derive(Debug, Default)]
+pub struct Saturation(AtomicBool);
+
+impl Saturation {
+    /// Whether processors at `cpu` pressure are saturated, given what this
+    /// judged last. A pressure that is no number changes nothing.
+    pub fn judge(&self, cpu: f64) -> bool {
+        let next = |was: bool| {
+            if cpu >= SATURATED_PRESSURE {
+                true
+            } else if cpu < UNSATURATED_PRESSURE {
+                false
+            } else {
+                was
+            }
+        };
+        let (Ok(was) | Err(was)) = self
+            .0
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |was| Some(next(was)));
+        next(was)
+    }
+}
+
+/// Whether `room` is saturated: as its node judged it, or by the line
+/// where a node too old to judge said none.
+fn saturated(room: &Room) -> bool {
+    room.saturated
+        .unwrap_or(room.pressure.cpu >= SATURATED_PRESSURE)
+}
 
 /// The key of the taint a machine whose home's disk is critically full
 /// carries, which takes no work: what it starts would fail to write.
@@ -919,15 +962,20 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
         ));
     }
     if let Some(room) = &machine.room
-        && room.pressure.cpu >= SATURATED_PRESSURE
+        && saturated(room)
     {
+        let cpu = room.pressure.cpu;
         taints.push(Taint {
             key: CPU_SATURATED.to_owned(),
             effect: Effect::PreferNot,
-            why: format!(
-                "its processors are saturated, at pressure {:.0}",
-                room.pressure.cpu
-            ),
+            why: if cpu >= SATURATED_PRESSURE {
+                format!("its processors are saturated, at pressure {cpu:.0}")
+            } else {
+                format!(
+                    "its processors are saturated still, at pressure {cpu:.0}, \
+                     until it falls under {UNSATURATED_PRESSURE:.0}"
+                )
+            },
         });
     }
     if machine.disk_band.is_some_and(|band| band > Band::Healthy) {
@@ -1392,6 +1440,7 @@ pub(crate) mod tests {
                     vm_tests: 1,
                 },
                 over: Some(Vec::new()),
+                saturated: None,
             }),
             declared: Some(Declared {
                 reach: reach.iter().map(|&one| one.to_owned()).collect(),
@@ -1687,6 +1736,61 @@ pub(crate) mod tests {
             placed(&place(&tolerant, &[kestrel, osprey])),
             Some("kestrel"),
             "work that minds no saturation weighs it as any other room"
+        );
+    }
+
+    #[test]
+    fn saturation_holds_through_the_band_between_its_lines() {
+        let band = Saturation::default();
+        let judged: Vec<bool> = [75.0, 85.0, 75.0, 70.0, 65.0, 75.0, 80.0]
+            .into_iter()
+            .map(|cpu| band.judge(cpu))
+            .collect();
+        assert_eq!(
+            judged,
+            [false, true, true, true, false, false, true],
+            "saturated at 80 or more, and saturated still until under 70"
+        );
+        assert!(
+            band.judge(f64::NAN),
+            "a pressure that is no number changes nothing"
+        );
+    }
+
+    #[test]
+    fn a_room_says_whether_it_is_saturated_over_its_pressure() {
+        let mut held = pressed(machine("kestrel", "macos", 60, &[]), 75.0);
+        held.room.as_mut().expect("a room").saturated = Some(true);
+        let osprey = pressed(machine("osprey", "linux", 8, &[]), 40.0);
+        let Placement::Placed {
+            machine: chosen,
+            passed,
+        } = place(&needing(Vec::new()), &[held.clone(), osprey.clone()])
+        else {
+            panic!("one takes it");
+        };
+        assert_eq!(
+            chosen, "osprey",
+            "a machine its node still judges saturated, under the line, goes after"
+        );
+        assert_eq!(
+            said(&passed),
+            "kestrel would rather not: its processors are saturated still, at pressure 75, \
+             until it falls under 70",
+            "and it says why"
+        );
+        let mut eased = pressed(machine("kestrel", "macos", 60, &[]), 85.0);
+        eased.room.as_mut().expect("a room").saturated = Some(false);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[eased, osprey.clone()])),
+            Some("kestrel"),
+            "a room its node says isn't saturated isn't, whatever its pressure"
+        );
+        let unsaid = pressed(machine("kestrel", "macos", 60, &[]), 85.0);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[unsaid, osprey])),
+            Some("osprey"),
+            "a room from a node too old to say is judged by the line"
         );
     }
 
