@@ -7552,6 +7552,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cell_here_is_dormant_only_once_its_park_is_marked() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let now = jiff::Timestamp::now().to_string();
+        let boot = store::folders::boot_id();
+        let parked = json!({
+            "session": "napper", "addresses": ["NAPPER"], "groups": [],
+            "busy": false, "state": "parked", "at": now, "owner": {"bootId": boot},
+        });
+        store.start_here("napper", parked, false);
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
+            .await;
+        let records = client.next().await;
+        let napper = |records: &Value, field: &str| -> Option<Value> {
+            records[field]
+                .as_array()?
+                .iter()
+                .find(|record| record["key"] == "cell:NAPPER")
+                .map(|record| record["standing"].clone())
+        };
+        assert_eq!(
+            napper(&records, "records"),
+            None,
+            "ended with nothing marked to wake it, it's no cell: {records}"
+        );
+
+        fs::write(parks_of(&socket).join("napper.json"), "{}").expect("a marker");
+        let marked = client.next().await;
+        assert_eq!(
+            napper(&marked, "changed"),
+            Some(json!("dormant")),
+            "its park marked, it's dormant: {marked}"
+        );
+    }
+
+    #[tokio::test]
     async fn another_machines_node_starts_joins_and_steers_its_sessions_for_this_one() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (holder, given) = stand_in_holder(dir.path());

@@ -643,11 +643,16 @@ fn a_session_here_is_dormant_only_while_its_node_says_it_can_wake() {
     };
     let mut wakes = ended("WAKES1", 1, Some(true));
     wakes["standing"] = json!("parked");
+    // Parking, its process not yet gone: its presence's word stands.
+    let mut parking = ended("LIVES1", 5, Some(true));
+    parking["state"] = json!("idle");
+    parking["standing"] = json!("running");
     let sessions = [
         wakes,
         ended("DEAD01", 2, Some(true)),
         ended("AWAY01", 3, Some(false)),
         ended("OLDER1", 4, None),
+        parking,
     ];
     let mycelium = Mycelium::of("home", &[], &sessions, &[]);
     let cells: Vec<(&str, Option<&str>)> = mycelium
@@ -661,6 +666,7 @@ fn a_session_here_is_dormant_only_while_its_node_says_it_can_wake() {
             ("WAKES1", Some("dormant")),
             ("AWAY01", Some("dormant")),
             ("OLDER1", Some("dormant")),
+            ("LIVES1", Some("dormant")),
         ],
         "one here that nothing can wake has ended, and is no cell"
     );
