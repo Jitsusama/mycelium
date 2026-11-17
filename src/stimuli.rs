@@ -95,19 +95,22 @@ pub fn cell(source: Source, machine: &str) -> String {
 /// Whether `from` names a receptor cell, of any machine, or could be read
 /// as one: what only a receptor's own node may say as. The part before the
 /// `@` counts as a source's name with its case, digits, punctuation and
-/// spaces set aside, so `GitHub@kestrel` or `git-hub@kestrel` is one, and
-/// any letter outside ASCII makes it one too, since a look-alike such as a
-/// Cyrillic `і` would read as the cell to whoever hears it.
+/// spaces set aside, so `GitHub@kestrel` or `git-hub@kestrel` is one. A
+/// name holding anything outside ASCII, anywhere, is one too, since a
+/// look-alike such as a Cyrillic `і` or a full-width `＠` would read as
+/// the cell to whoever hears it. The pi harness's `readsAsReceptor` is
+/// this rule, case for case, so the two must change together.
 #[must_use]
 pub fn speaks_as_receptor(from: &str) -> bool {
-    from.split_once('@').is_some_and(|(said, _)| {
-        let letters: String = said
-            .chars()
-            .filter(char::is_ascii_alphabetic)
-            .map(|c| c.to_ascii_lowercase())
-            .collect();
-        !said.is_ascii() || Source::named(&letters).is_some()
-    })
+    !from.is_ascii()
+        || from.split_once('@').is_some_and(|(said, _)| {
+            let letters: String = said
+                .chars()
+                .filter(char::is_ascii_alphabetic)
+                .map(|c| c.to_ascii_lowercase())
+                .collect();
+            Source::named(&letters).is_some()
+        })
 }
 
 /// What each receptor last said, or was first seen at, so a count is said
@@ -359,6 +362,14 @@ mod tests {
             "github\u{200b}@kestrel",
             "g\u{0456}thub@kestrel",
             "github@kestrel.",
+            // Digits are set aside, so this is GitHub's, the safe way round.
+            "github2@kestrel",
+            // A full-width @ is no @, but reads as one to whoever hears it.
+            "github\u{ff20}kestrel",
+            // A look-alike past the @ reads as the cell's machine.
+            "github@k\u{0435}strel",
+            // So does one in a name that isn't a source's.
+            "m\u{0443}celium@kestrel",
         ] {
             assert!(
                 speaks_as_receptor(name),
