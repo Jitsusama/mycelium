@@ -45,6 +45,11 @@ pub const LIVE: [&str; 0] = [];
 /// session ended before a night's sleep is still told in the morning.
 pub const KEPT_FOR: i64 = 24 * 60 * 60 * 1000;
 
+/// How long a carry ordered from here stands for its session's end, in
+/// milliseconds: half an hour, past which a carry that runs nowhere, or
+/// a session back from it that ended since, is work stopped.
+pub const CARRIED_WITHIN: i64 = 30 * 60 * 1000;
+
 /// How long this node sees a session ended before it is told, in
 /// milliseconds: ten minutes, past a park's marker following its presence
 /// by moments and a machine's holders starting again after a reboot.
@@ -100,10 +105,17 @@ pub fn ended(
         matches!(session.state, State::Busy | State::Idle)
             && (session.machine != judged.machine || (judged.standing)(session) == Some("running"))
     };
+    // Each quest any running session is attached to, though others
+    // attach it too: work going on anywhere it may be is work going on.
     let worked: HashSet<&str> = sessions
         .iter()
         .filter(|session| running(session))
-        .filter_map(|session| quest_of(&session.id, quests))
+        .flat_map(|session| {
+            quests
+                .iter()
+                .filter(|quest| attaches(quest, &session.id))
+                .filter_map(id)
+        })
         .collect();
     let ending: Vec<&Session> = sessions
         .iter()
@@ -116,26 +128,30 @@ pub fn ended(
     seen.since.retain(|id, _| still.contains(id.as_str()));
     let mut told = Vec::new();
     for session in ending {
-        let since = *seen.since.entry(session.id.clone()).or_insert(now);
-        let Some(written) = (judged.written)(&session.at) else {
-            continue;
-        };
-        if now - since < judged.settled_after || now - since > KEPT_FOR || now - written > KEPT_FOR
+        let record = quest_of(&session.id, quests);
+        if record
+            .and_then(id)
+            .is_some_and(|quest| worked.contains(quest))
         {
-            continue;
-        }
-        let (Some(quest), Some(address)) = (
-            quest_of(&session.id, quests),
-            address_told(&session.address),
-        ) else {
-            continue;
-        };
-        if worked.contains(quest) {
             // Its end counts from when the work stops again.
             seen.since.remove(&session.id);
             continue;
         }
-        let Some(record) = quests.iter().find(|each| id(each) == Some(quest)) else {
+        let since = *seen.since.entry(session.id.clone()).or_insert(now);
+        let Some(written) = (judged.written)(&session.at) else {
+            continue;
+        };
+        // A presence written ahead of the clock is as untold as an old one.
+        if now - since < judged.settled_after
+            || now - since > KEPT_FOR
+            || (now - written).abs() > KEPT_FOR
+        {
+            continue;
+        }
+        let (Some(record), Some(address)) = (record, address_told(&session.address)) else {
+            continue;
+        };
+        let Some(quest) = id(record) else {
             continue;
         };
         if record.get("status").and_then(Value::as_str) != Some("active") {
@@ -164,10 +180,10 @@ pub fn ended(
 
 /// The one quest whose record among `quests` attaches `session`; none
 /// where none or several do, as then whose it is can't be told.
-fn quest_of<'a>(session: &str, quests: &'a [Value]) -> Option<&'a str> {
+fn quest_of<'a>(session: &str, quests: &'a [Value]) -> Option<&'a Value> {
     let mut attaching = quests.iter().filter(|quest| attaches(quest, session));
     match (attaching.next(), attaching.next()) {
-        (Some(quest), None) => id(quest),
+        (Some(quest), None) => Some(quest),
         _ => None,
     }
 }

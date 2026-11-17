@@ -267,11 +267,10 @@ async fn changed(told: &mut Option<watch::Receiver<u64>>) {
 #[cfg(not(test))]
 const ENDS_SETTLE: i64 = ended::SETTLED_AFTER;
 
-/// A millisecond in the node's tests, which see an end settle by their
-/// next change rather than ten minutes on; `ended`'s own tests run the
-/// ten minutes.
+/// None in the node's tests, which see an end told as it is first seen
+/// rather than ten minutes on; `ended`'s own tests run the ten minutes.
 #[cfg(test)]
-const ENDS_SETTLE: i64 = 1;
+const ENDS_SETTLE: i64 = 0;
 
 /// Since when a carry is shown: a day ago.
 fn shown_since() -> jiff::Timestamp {
@@ -2094,16 +2093,24 @@ impl<S: Store> Shared<S> {
             .unwrap_or_default()
             .into_values()
             .collect();
+        // Where the park markers can't be read, which park its holder
+        // wakes can't be told, so none is.
+        if fs::read_dir(&self.parked).is_err_and(|error| error.kind() != io::ErrorKind::NotFound) {
+            return BTreeMap::new();
+        }
         let parked = standing::parked(&self.parked);
-        // A session carried from here ended for the carry, unless it
-        // refused it or is back; where the carries can't be read, which
-        // ended for one can't be told, so none is.
+        // A session carried from here in the last half hour ended for the
+        // carry, unless it refused it or is back; one carried longer ago
+        // that runs nowhere stopped. Where the carries can't be read,
+        // which ended for one can't be told, so none is.
+        let now = jiff::Timestamp::now().as_millisecond();
         let Ok(carries) = kept::read(&self.carries, shown_since()) else {
             return BTreeMap::new();
         };
         let runs_on = self.runs_on();
         let mut coming_back: HashSet<String> = carries
             .iter()
+            .filter(|carry| now - carry.at.as_millisecond() <= ended::CARRIED_WITHIN)
             .filter(|carry| {
                 let mut seen = self.handed(carry);
                 seen.runs_on = runs_on.get(carry.said("session")).cloned();
@@ -2118,7 +2125,6 @@ impl<S: Store> Shared<S> {
             let here = session.machine == self.machine;
             standing::standing(session, here, &parked, &self.boot)
         };
-        let now = jiff::Timestamp::now().as_millisecond();
         let mut inner = self.lock();
         let sessions = inner.state.sessions();
         coming_back.extend(inner.turns.waiting().map(str::to_owned));
@@ -8352,6 +8358,14 @@ esac
         );
     }
 
+    /// Serves `quests` to the node at `socket`, as the harness writes them:
+    /// beside, then renamed into place.
+    fn serve_quests(socket: &Path, quests: &Value) {
+        let beside = socket.with_file_name(".quests.json.new");
+        fs::write(&beside, quests.to_string()).expect("the quests are written");
+        fs::rename(&beside, socket.with_file_name("quests.json")).expect("renamed into place");
+    }
+
     /// Reads what `watching` is told until it has listed each of `keys`.
     async fn until_listed(watching: &mut Speaking, keys: &[&str]) {
         let mut listed = HashSet::new();
@@ -8384,9 +8398,7 @@ esac
             })
         };
         let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert_eq!(
             hello["kinds"]["ended"],
             json!({"live": []}),
@@ -8400,12 +8412,7 @@ esac
             "id": "QEST-20261116-HARBOR", "address": "HARBOR", "status": "active",
             "orchestrator": "oars", "sessions": ["napper", "sleeper"],
         }]});
-        let serve = |quests: &Value| {
-            let beside = socket.with_file_name(".quests.json.new");
-            fs::write(&beside, quests.to_string()).expect("the quests are written");
-            fs::rename(&beside, socket.with_file_name("quests.json")).expect("renamed into place");
-        };
-        serve(&quests);
+        serve_quests(&socket, &quests);
         client.next().await;
         let mut sessions = Speaking::greeted(&socket).await;
         sessions
@@ -8438,9 +8445,7 @@ esac
                 .find(|record| record["key"] == "ended:napper")
                 .cloned()
         };
-        // Seen ended, it is told once it settles, at the next change.
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        store.start_here("passer", presence("passer", "listening"), true);
+        // Seen ended, and settling at once here, it is told.
         let told = loop {
             assert!(
                 ["records", "changed"]
@@ -8469,11 +8474,21 @@ esac
         // quests changing alone builds the kind again.
         let mut concluded = quests;
         concluded["quests"][0]["status"] = json!("concluded");
-        serve(&concluded);
-        let mut changed = client.next().await;
-        while changed["gone"].as_array().is_none_or(Vec::is_empty) {
-            changed = client.next().await;
-        }
+        serve_quests(&socket, &concluded);
+        // Well within the minute, which builds it again too.
+        let changed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let changed = client.next().await;
+                if changed["gone"]
+                    .as_array()
+                    .is_some_and(|gone| !gone.is_empty())
+                {
+                    break changed;
+                }
+            }
+        })
+        .await
+        .expect("the quests changing builds the kind again");
         assert_eq!(
             changed["gone"],
             json!(["ended:napper"]),

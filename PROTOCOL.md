@@ -1598,12 +1598,15 @@ stopped while its quest goes on, keyed `ended:<session>`, so whoever
 orchestrates the quest can be told. A session counts once this node
 has seen its process ended for ten minutes, unparked or parked with
 nothing left to wake it (its node doesn't say it stands `parked`),
-and not carried from here (unless the carry was refused or came back)
-nor waiting its turn to resume, while its presence was written within
-a day and its quest, the one quest whose record attaches it in the
-quests this node serves, is `active`, names an `orchestrator` that
-reads as an address, and has no session of the realm running on it.
-Where the carries can't be read, none is told. A record says the
+and not carried from here in the last half hour (unless the carry was
+refused or came back) nor waiting its turn to resume, while its
+presence was written within a day either way and its quest, the one
+quest whose record attaches it in the quests this node serves, is
+`active`, names an `orchestrator` that reads as an address, and has
+no session of the realm running on it, though other quests attach
+that one too. A session running there restarts the ten minutes.
+Where the carries or the park markers can't be read, none is told.
+A record says the
 `session`, its `address`, the `quest`, the quest's `orchestrator`,
 uppercase, `at`, when the session last changed, and `why`: `ended`, or
 `parked-unwakeable`; it is heard when the node first saw the end. It

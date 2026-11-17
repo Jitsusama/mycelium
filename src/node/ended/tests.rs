@@ -205,13 +205,17 @@ fn a_session_coming_back_is_not_told() {
 fn a_session_is_on_the_quest_the_quests_record_attaches_it_to_alone() {
     let mut claims = ended_here("clai01");
     claims.quest = Some("QEST-20261116-HARBOR".to_owned());
-    let attached = ended_here("atta01");
+    let mut attached = ended_here("atta01");
+    attached.orchestrated_by = Some("TERN".to_owned());
     let told = told(&[claims, attached], &quests(&["atta01"]), (&[], &[]));
-    let ids: Vec<&str> = told.iter().map(|(id, _, _)| id.as_str()).collect();
+    let said: Vec<(&str, &Value)> = told
+        .iter()
+        .map(|(id, _, fields)| (id.as_str(), &fields["orchestrator"]))
+        .collect();
     assert_eq!(
-        ids,
-        ["atta01"],
-        "a presence naming a quest doesn't choose whose orchestrator is told"
+        said,
+        [("atta01", &json!("OARS"))],
+        "a presence naming a quest or an orchestrator doesn't choose who is told"
     );
 }
 
@@ -249,6 +253,45 @@ fn an_end_is_told_only_while_nobody_works_its_quest_and_settles_anew_after() {
         ids(&stopped, NOW + 3 * SETTLED_AFTER),
         ["gone01"],
         "the end here is told again once the work has stopped, the mesh side telling it once"
+    );
+}
+
+#[test]
+fn work_while_an_end_settles_restarts_its_settling() {
+    let quests = quests(&["gone01", "next01"]);
+    let mut seen = Seen::default();
+    let mut ids = |sessions: &[Session], now: i64| {
+        ids_of(told_at(now, &mut seen, sessions, &quests, (&[], &[])))
+    };
+    let gone = ended_here("gone01");
+    ids(std::slice::from_ref(&gone), NOW);
+    ids(&[gone.clone(), running("next01")], NOW + SETTLED_AFTER / 2);
+    assert_eq!(
+        ids(std::slice::from_ref(&gone), NOW + SETTLED_AFTER),
+        Vec::<String>::new(),
+        "the work stopped only now, so the end settles from now"
+    );
+    assert_eq!(
+        ids(std::slice::from_ref(&gone), NOW + 2 * SETTLED_AFTER),
+        ["gone01"]
+    );
+}
+
+#[test]
+fn a_session_running_on_two_quests_works_each() {
+    let mut quests = quests(&["gone01", "both01"]);
+    let mut other = quests[0].clone();
+    other["id"] = json!("QEST-20261116-SKERRY");
+    other["sessions"] = json!(["both01"]);
+    quests.push(other);
+    assert_eq!(
+        told(
+            &[ended_here("gone01"), running("both01")],
+            &quests,
+            (&[], &[])
+        ),
+        [],
+        "whichever of its quests it works, HARBOR's work goes on"
     );
 }
 
@@ -292,13 +335,19 @@ fn a_session_two_quests_attach_is_nobodys_to_tell() {
 }
 
 #[test]
-fn an_end_its_presence_wrote_over_a_day_ago_or_at_no_time_is_not_told() {
+fn an_end_its_presence_wrote_over_a_day_ago_or_ahead_or_at_no_time_is_not_told() {
     let mut old = ended_here("old001");
     old.at = said_at(NOW - KEPT_FOR - 1);
+    let mut ahead = ended_here("next02");
+    ahead.at = said_at(NOW + KEPT_FOR + SETTLED_AFTER + 1);
     let mut timeless = ended_here("when01");
     timeless.at = "yesterday".to_owned();
     assert_eq!(
-        told(&[old, timeless], &quests(&["old001", "when01"]), (&[], &[])),
+        told(
+            &[old, ahead, timeless],
+            &quests(&["old001", "next02", "when01"]),
+            (&[], &[])
+        ),
         [],
         "a node started again doesn't tell what ended long before"
     );
