@@ -236,7 +236,14 @@ enum Action {
     ///
     /// A receptor senses one outside source, intake only, and says how it
     /// stands in a file the node serves: counts and times alone, never what
-    /// it read. `mycelium cells` lists each beside the sessions.
+    /// it read. GitHub may also name the changes asking the person's
+    /// review, as `owner/name#N`, and calls the events whose summary is
+    /// written, by id alone, in a second file the node reads and never
+    /// serves. When the node started with a stimuli table naming that
+    /// source, it tells each name, while the receptor isn't off, to the
+    /// live sessions on this machine whose quest, of the node's realm,
+    /// claims it and lists them. A name refused refuses the whole say.
+    /// `mycelium cells` lists each receptor beside the sessions.
     #[command(
         alias = "receptor",
         after_help = "Example:\n  mycelium receptors say slack --state quiet \\\n    --every 300 --pid 4242"
@@ -1063,7 +1070,10 @@ enum ReceptorAct {
     /// Says how this receptor stands now.
     ///
     /// Written whole over what it said before, its counts and times
-    /// alone: any other word is refused.
+    /// alone. GitHub's changes, on a say given `--owner`, and calls'
+    /// events, on every reading or quiet say, are written whole to a
+    /// second file beside it, so such a say naming none empties that
+    /// list. Any other word is refused.
     #[command(
         override_usage = "mycelium receptors say [OPTIONS] --state <STATE>\n       --every <EVERY> --pid <PID> <SOURCE>",
         after_help = "Example:\n  mycelium receptors say slack --state reading \\\n    --today 4 --addressed 2 --every 300 --pid 4242"
@@ -1071,7 +1081,8 @@ enum ReceptorAct {
     Say(ReceptorSaid),
 }
 
-/// How a receptor says it stands: counts and times alone.
+/// How a receptor says it stands: counts and times, and for GitHub and
+/// calls the changes or events it names.
 #[derive(clap::Args)]
 struct ReceptorSaid {
     /// What it senses.

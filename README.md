@@ -156,11 +156,17 @@ The harness mesh's messages and presence, carried between machines:
   prints the networks alone, a summary for an agent to read.
 - A receptor senses one outside source for its person, such as Slack,
   intake only, and says how it stands with `mycelium receptors say`:
-  counts and times alone, never what it read. The node judges each,
+  counts and times, and of what it read only the names below. The
+  node judges each,
   marking one whose process is gone `off` and one fallen late
   `failing`, and the networks draw it as a cell of its source's
   `outside` network, beyond the machines; `mycelium cells` lists each
-  with what it brought in today.
+  with what it brought in today. GitHub may also name the changes
+  asking the person's review, as `owner/name#N`, and calls the events
+  whose summary is written, by id alone, in a second file the node
+  never serves. When the node starts with a stimuli table (`--stimuli`)
+  naming that source, it tells each to the live sessions on its
+  machine whose quest, of the node's realm, claims it and lists them.
 - `mycelium forage` says what each cell is for: its purpose, the first
   sentence of its quest's Summary, and each of its plans, research and
   reports with its stage and how many steps are ticked. Named by its

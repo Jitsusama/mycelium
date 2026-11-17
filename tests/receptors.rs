@@ -1,6 +1,7 @@
 //! `mycelium receptors say` as a receptor runs it: what it leaves on disk,
-//! and that it takes nothing but a source, a state, counts and times, so
-//! nothing a receptor read can reach the file through it.
+//! and that it takes nothing but a source, a state, counts and times,
+//! GitHub's owners and changes and calls' events, so nothing else a
+//! receptor read can reach its files through it.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
