@@ -81,19 +81,22 @@ fn heard(root: &Path, path: &Path, within: Duration, holds: impl Fn(&str) -> boo
         .expect("the folder is watched");
     let deadline = Instant::now() + within;
     loop {
-        // Only what was read counts: a path looked at after a failed read
-        // may have come to be in between, and its text is not yet known.
-        let read = fs::read_to_string(path);
+        // A socket can't be read, so its being there is all it says. A
+        // file counts only as what was read: one looked at after a failed
+        // read may have come to be in between, its text not yet known.
+        let read = match fs::metadata(path) {
+            Ok(found) if !found.is_file() => Ok(String::new()),
+            _ => fs::read_to_string(path),
+        };
         if let Ok(text) = read.as_deref()
             && holds(text)
         {
             return text.to_owned();
         }
-        let text = read.unwrap_or_default();
         let left = deadline.saturating_duration_since(Instant::now());
         assert!(
             !left.is_zero(),
-            "{} never came to be as wanted: {text:?}",
+            "{} never came to be as wanted: {read:?}",
             path.display()
         );
         // A watch that fails or times out has the path looked at again.
