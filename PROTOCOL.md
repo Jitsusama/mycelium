@@ -1560,10 +1560,18 @@ There it runs as its
 fence's declared `runs`, then the login shell, then `command`; a
 machine declaring no `runs` for it refuses it, as does one whose
 `runs` doesn't end with `--`, so nothing `command` says is read as
-`runs`' own options. The node doesn't yet say which work trees are
-shared to whom, so `runs` saying `--shared-tree`, or a shortening of
-it, as a word of its own refuses every run. So pi-fence refuses a run
-started in a work tree its asker doesn't hold. A run is told no
+`runs`' own options. `runs` saying `--shared-tree`, or a shortening
+of it, as a word of its own refuses every run, so pi-fence refuses a
+run started in a work tree its asker doesn't hold. Only the node says
+it, before the `--`, and only for an agent's run another machine
+asked, whose folder, its links and `..` followed as this machine
+finds them, lies in a work tree a session of a quest holds, as the
+work broker records it, where that quest's ledger names the asking
+machine; the run starts there. Any other run from another machine
+starting in a work tree is refused, saying why, and runs nothing. A
+run a client here says another machine asked is refused where the
+client is an agent's, as for `by`, since only a link that machine
+dialled says so. A run is told no
 `PI_SESSION_ID` but the session that asks it, where its process owns
 that session alone, as the kernel and pi's records prove it, since
 pi-fence grants the work trees that session holds. Alone counts
