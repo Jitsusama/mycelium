@@ -1306,12 +1306,13 @@ the machine the last was. A node older than this answers it as a
 request it doesn't know, and an asker then asks `"Place"`.
 
 Each placement, by `"Place"`, `"PlaceToStart"` or `"Start"`, is kept
-as a JSON line in `placements/<date>.jsonl` in mycelium's folder, a file for each day of
-the machine's calendar, so a monitor can judge how well work was placed
-and a replay can place it again under other weights: `at`, `start`
-(whether it was a start, or an ask to start answered here), the
-`work`, every machine's facts as placing read them (`machines`), each machine's `loads` (`sessions` and `placed`
-starts beyond what its room says), and the `decision`: the `placement`
+as a JSON line in `placements/<date>.jsonl` in mycelium's folder, a file
+for each day of the machine's calendar, so a monitor can judge how well
+work was placed and a replay can place it again under other weights:
+`at`, `start` (whether it was a start, or an ask to start answered
+here), the `work`, every machine's facts as placing read them
+(`machines`), each machine's `loads` (`sessions` and `placed` starts
+beyond what its room says), and the `decision`: the `placement`
 answered and, for each machine, how it was `judged` (`machine`,
 `qualifies`, `over`, `unheard`, how many preferences it met as
 `preferred`, its `headroom`, and its `chance` of being the one chosen,
