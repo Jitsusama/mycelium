@@ -3317,8 +3317,8 @@ impl<S: Store> Shared<S> {
     /// Makes a machine of `offer` for `asked` and starts it there once it
     /// links. A machine made that nothing starts on is let go.
     async fn start_made_of(&self, asked: Start, offer: &Offer) -> Reply {
-        let asker = self.asker_of_a_make().await;
-        let made = made::make(offer, lasting(&asked.work, offer)?, &asker).await?;
+        let who = self.asker_of_a_make().await;
+        let made = made::make(offer, lasting(&asked.work, offer)?, &who).await?;
         if let Err(error) = self.book.made(&made) {
             eprintln!(
                 "{} was made, but the book doesn't say so: {error}",
