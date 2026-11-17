@@ -75,9 +75,9 @@ The harness mesh's messages and presence, carried between machines:
   work: a row for each machine's load (the largest of the memory it
   uses, how busy its processors are and how long its work stalls),
   whether it is over (past its queue's memory limit, or at processor
-  pressure 70, as placement counts it) or has room, and its busy and
-  idle sessions; how
-  far the loads spread; and a sentence for each thing wrong, saying what
+  pressure 70) or has room (which a queue short of a processor for a
+  build hasn't), and its busy and idle sessions; how far the loads
+  spread; and a sentence for each thing wrong, saying what
   follows: a machine over while another has room, one resource spent
   while the other idles, loads spread too far, or facts too old to
   place by. `-o json` prints the same as one JSON line. `--follow` reads

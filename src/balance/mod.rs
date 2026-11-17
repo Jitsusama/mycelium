@@ -9,12 +9,13 @@
 //! Its processors count by how busy its cores are where its node says so,
 //! and by pressure where that is more or the node doesn't say, since
 //! pressure is zero until every core is busy. A machine is over past its
-//! queue's memory limit or at [`OVER_CPU_PRESSURE`], as placement counts
-//! it: a queue keeping a build from a VM test for want of a processor
-//! isn't over for the sessions and runs placement places. [`MEASURES`]
-//! names this definition, `balance/3`; `balance/2` also called that
-//! queue over, `balance/1` counted the processors by pressure alone, and
-//! a better one will be a new name, never this one changed.
+//! queue's memory limit, as placement counts it, or at
+//! [`OVER_CPU_PRESSURE`]. A queue keeping a build from a VM test for want
+//! of a processor is neither over nor has room: placement places sessions
+//! and runs, never builds, so it may still place there, but would rather
+//! not. [`MEASURES`] names this definition, `balance/3`; `balance/2`
+//! called that queue over, `balance/1` counted the processors by pressure
+//! alone, and a better one will be a new name, never this one changed.
 //!
 //! A reading flags, at once, a machine over while another has room (what
 //! placement exists to prevent), a machine stranded (one resource spent,
@@ -135,8 +136,10 @@ pub struct Load {
     /// Whether it is over: its queue says it is past its memory limit, or
     /// its processor pressure is at [`OVER_CPU_PRESSURE`].
     pub over: bool,
-    /// Whether it has room for more: not over, stalling under
-    /// [`ROOM_STALL`] and using under [`ROOM_MEMORY`] of its memory.
+    /// Whether it has room for more: not over, its queue not short of a
+    /// processor, stalling under [`ROOM_STALL`], its processors under
+    /// [`ROOM_PROCESSOR`] spent and using under [`ROOM_MEMORY`] of its
+    /// memory.
     pub room: bool,
     /// Its sessions running a turn.
     pub busy: usize,
@@ -247,13 +250,17 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
         .into_iter()
         .flatten()
         .reduce(f64::max);
-    let over = room.is_some_and(|room| {
-        room.over
-            .as_ref()
-            .is_some_and(|over| over.contains(&Limit::Memory))
-            || room.pressure.cpu >= OVER_CPU_PRESSURE
-    });
+    let past = |limit: Limit| {
+        room.and_then(|room| room.over.as_ref())
+            .is_some_and(|over| over.contains(&limit))
+    };
+    let over =
+        past(Limit::Memory) || room.is_some_and(|room| room.pressure.cpu >= OVER_CPU_PRESSURE);
+    // A queue short of a processor for a build isn't over for the sessions
+    // and runs placement places, but placement would rather not, so it has
+    // no room either: nothing is eased onto it or flagged cool beside it.
     let has_room = !over
+        && !past(Limit::Cpu)
         && stall.is_some_and(|stall| stall < ROOM_STALL)
         && processor.is_some_and(|processor| processor < ROOM_PROCESSOR)
         && memory.is_some_and(|memory| memory < ROOM_MEMORY);
@@ -544,6 +551,45 @@ mod tests {
             reading.measures, "balance/3",
             "a new definition, a new name"
         );
+    }
+
+    #[test]
+    fn a_queue_short_of_a_processor_has_no_room_however_quiet() {
+        let mut short = machine("osprey", 12, 48, 30, 5.0, 0);
+        if let Some(room) = short.room.as_mut() {
+            room.over = Some(vec![Limit::Cpu]);
+        }
+        let mut full = machine("skiff", 8, 32, 1, 5.0, 0);
+        if let Some(room) = full.room.as_mut() {
+            room.over = Some(vec![Limit::Memory]);
+        }
+        let reading = read(&[short, full], &[], now());
+        let osprey = of(&reading, "osprey");
+        assert!(
+            !osprey.over && !osprey.room,
+            "short of a processor: neither over nor roomy, {osprey:?}"
+        );
+        assert!(
+            !reading
+                .flags
+                .iter()
+                .any(|flag| matches!(flag, Flag::HotWhileCool { .. })),
+            "nothing eases onto a queue short of a processor: {:?}",
+            reading.flags
+        );
+    }
+
+    #[test]
+    fn processor_pressure_is_over_from_its_line() {
+        let at = |cpu: f64| {
+            let mut one = machine("osprey", 12, 48, 30, cpu, 0);
+            if let Some(room) = one.room.as_mut() {
+                room.over = Some(Vec::new());
+            }
+            of(&read(&[one], &[], now()), "osprey").over
+        };
+        assert!(!at(OVER_CPU_PRESSURE - 0.1), "under the line isn't over");
+        assert!(at(OVER_CPU_PRESSURE), "at the line is over");
     }
 
     #[test]
