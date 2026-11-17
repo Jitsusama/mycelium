@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use rustix::process::{Pid, Signal};
 use serde::{Deserialize, Serialize};
 
-use super::{held, socket};
+use super::{again, held, next, socket, steers, wake};
 
 /// How long a held program and its holder have, once told to end, to
 /// save what they hold and go before they are killed.
@@ -112,10 +112,19 @@ pub fn end(dir: &Path, id: &str, grace: Duration) -> io::Result<Ending> {
     Ok(ending)
 }
 
-/// Takes away the record and socket of the hold `id` in `dir`, which a
-/// holder that ended removed itself and one killed left.
+/// Takes away the record and socket of the hold `id` in `dir`, and every
+/// file its program spoke through, which a holder that ended removed
+/// itself and one killed left: a wake written there after would land
+/// where nothing reads it.
 fn take_away(dir: &Path, id: &str) -> io::Result<()> {
-    for left in [dir.join(format!("{id}.json")), socket(dir, id)] {
+    for left in [
+        dir.join(format!("{id}.json")),
+        socket(dir, id),
+        wake(dir, id),
+        again(dir, id),
+        next(dir, id),
+        steers(dir, id),
+    ] {
         match fs::remove_file(&left) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
             _ => {}
