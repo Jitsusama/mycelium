@@ -1384,8 +1384,8 @@ struct Inner {
 }
 
 /// Watches a folder of records, of what is held or what is parked, or,
-/// when it can't be watched, says so and leaves `what` it holds read only
-/// with presence.
+/// when it can't be watched, says so: `what` it holds is then read again
+/// only as a presence changes, so its change waits on the next one.
 fn watch(
     folder: &Path,
     what: &str,
@@ -1396,7 +1396,7 @@ fn watch(
     match hold::watch(folder) {
         Ok((watcher, changed)) => (Some(watcher), changed),
         Err(error) => {
-            eprintln!("{what} isn't watched, so is read only with presence: {error}");
+            eprintln!("{what} isn't watched, so is read again only as a presence changes: {error}");
             (None, mpsc::unbounded_channel().1)
         }
     }
