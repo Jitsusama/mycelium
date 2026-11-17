@@ -42,6 +42,10 @@ pub struct Settles {
     pub kept: PathBuf,
     /// The program asked, `pi-carry` on the node's `PATH`.
     pub program: PathBuf,
+    /// The realm the node serves, told to the program in `MYCELIUM_REALM`
+    /// as each session the node starts is, so it reads that realm's
+    /// records, not the home realm's, where a node serves another.
+    pub realm: String,
     /// How long one settling may take before the log says it is waited on.
     pub answers_within: Duration,
 }
@@ -267,7 +271,8 @@ impl Settler {
         self.settling.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Asks `pi-carry` to settle `carry`, in the node's own environment,
+    /// Asks `pi-carry` to settle `carry`, in the node's own environment
+    /// and its realm,
     /// saying in the node's log when it takes longer than it may and
     /// waiting on, never ending it part way, since a settling cut short
     /// could leave some trees gone and others kept. None where what it
@@ -291,6 +296,7 @@ impl Settler {
                 "--session",
                 carry.said("session"),
             ])
+            .env("MYCELIUM_REALM", &self.settles.realm)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             // What it says beside its lines goes to the node's own log.
@@ -427,8 +433,30 @@ mod tests {
         Arc::new(Settler::new(Settles {
             kept: dir.join("settles.jsonl"),
             program,
+            realm: "lighthouse".to_owned(),
             answers_within,
         }))
+    }
+
+    #[test]
+    fn pi_carry_settles_in_the_nodes_own_realm() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let realm = dir.path().join("realm");
+        let (program, _given) = stand_in(
+            dir.path(),
+            &format!(
+                "printf %s \"$MYCELIUM_REALM\" > {}\n\
+                 echo '{{\"kind\":\"settled\",\"session\":\"s-harbour\",\"let\":1}}'",
+                realm.display()
+            ),
+        );
+        let settler = settler(dir.path(), program, ANSWERS_WITHIN);
+        settled(&settler, &carried(30));
+        assert_eq!(
+            fs::read_to_string(&realm).expect("pi-carry said its realm"),
+            "lighthouse",
+            "pi-carry reads the realm the node serves, as the sessions it starts do"
+        );
     }
 
     /// Settles `carry` through `settler`, waiting until what it came to is

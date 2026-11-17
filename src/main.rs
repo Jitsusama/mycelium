@@ -1677,6 +1677,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         settles: Some(Settles {
             kept: state.join("settles.jsonl"),
             program: carry::PI_CARRY.into(),
+            realm: membership.name.clone(),
             answers_within: carry::settle::ANSWERS_WITHIN,
         }),
     };
