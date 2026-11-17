@@ -18,7 +18,9 @@
 //! here, which would drift from the queue's own rules. Placement's
 //! saturation is a different question, asked of sessions rather than of
 //! the queue's builds: whether so much waits on the processors that a
-//! session started there is slow, which no queue rule answers.
+//! session started there is slow, which no queue rule answers. The
+//! machine's own node judges it across its measures and says it in its
+//! room as `saturated`, which a queue's record never carries.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -41,6 +43,12 @@ pub struct Room {
     /// The queue's limits the machine is at or past now, none when it is
     /// under none, or unknown from a queue too old to say.
     pub over: Option<Vec<Limit>>,
+    /// Whether the machine's own node judges its processors saturated,
+    /// over time rather than by this pressure alone (placement's
+    /// `Saturation`): unknown from a queue's record as read, or from a
+    /// node too old to judge, when placement judges the pressure itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saturated: Option<bool>,
 }
 
 /// A limit of the queue's that a machine can be past.
@@ -187,6 +195,7 @@ fn said(record: &[u8], now: i64) -> Option<Room> {
                 .filter_map(|limit| serde_json::from_value(limit.as_str().into()).ok())
                 .collect()
         }),
+        saturated: None,
     })
 }
 
@@ -241,6 +250,22 @@ mod tests {
     }
 
     #[test]
+    fn a_rooms_verdict_on_saturation_crosses_the_wire_only_when_said() {
+        let mut room = said(&record(1, KEPT_AT), KEPT_AT + 30).expect("a room");
+        let unsaid = serde_json::to_value(&room).expect("a room is json");
+        assert!(
+            unsaid.get("saturated").is_none(),
+            "a room with no verdict says none, as an older node's does"
+        );
+        let older: Room = serde_json::from_value(unsaid).expect("an older room reads");
+        assert_eq!(older.saturated, None, "and reads back as none");
+        room.saturated = Some(true);
+        let said_on = serde_json::to_string(&room).expect("a room is json");
+        let heard: Room = serde_json::from_str(&said_on).expect("a room reads");
+        assert_eq!(heard.saturated, Some(true), "a verdict said is heard");
+    }
+
+    #[test]
     fn a_kept_queue_says_the_room_it_starts_work_by() {
         assert_eq!(
             said(&record(1, KEPT_AT), KEPT_AT + 30),
@@ -257,6 +282,7 @@ mod tests {
                     vm_tests: 1,
                 },
                 over: Some(vec![Limit::Memory]),
+                saturated: None,
             }),
             "its free memory in bytes, its pressure, what it would start, and \
              the limits it is past that this build knows"

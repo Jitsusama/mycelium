@@ -515,6 +515,7 @@ pub(super) mod tests {
             } else {
                 Vec::new()
             }),
+            saturated: None,
         });
         machine
     }

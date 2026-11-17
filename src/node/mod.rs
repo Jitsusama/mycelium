@@ -1115,6 +1115,9 @@ struct Shared<S> {
     /// daemon interface says beside the others rather than measuring it
     /// again for each reader, since a measure reads every part.
     measured: Arc<Mutex<Option<facts::Machine>>>,
+    /// Whether this machine's processors are saturated, judged across its
+    /// measures and said in its room.
+    saturation: Arc<placement::Saturation>,
     /// This machine's own health, as its health daemon last said it, which
     /// each measure and each link it keeps carries (`own_health`).
     health: own_health::Slot,
@@ -1266,6 +1269,7 @@ impl<S: Clone> Clone for Shared<S> {
             to_dial: self.to_dial.clone(),
             flows: self.flows.clone(),
             measured: self.measured.clone(),
+            saturation: self.saturation.clone(),
             health: self.health.clone(),
             built: self.built.clone(),
             receptors: self.receptors.clone(),
@@ -1862,6 +1866,7 @@ impl<S: Store> Shared<S> {
             said,
             flows: Arc::new(flows),
             measured: Arc::default(),
+            saturation: Arc::default(),
             health: own,
             built: Arc::default(),
             receptors: held,
@@ -2614,6 +2619,7 @@ impl<S: Store> Shared<S> {
             ..facts::Sources::here()
         };
         let mut here = facts::measure_in(&self.machine, &self.realm, &sources);
+        self.saturation.say(here.room.as_mut());
         here.health.clone_from(&self.health.borrow());
         here.kit = self.given_kit().and_then(start::Kit::said);
         here
@@ -5203,6 +5209,7 @@ mod tests {
                     vm_tests: 1,
                 },
                 over: Some(Vec::new()),
+                saturated: None,
             }),
             ..kestrel_at("2026-10-29T06:00:00Z")
         };

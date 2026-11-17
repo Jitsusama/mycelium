@@ -1103,10 +1103,16 @@ at or past now, as the queue judges them: `memory`, when it starts no
 work, and `cpu`, when it starts no build beside a VM test. `over` is
 empty when the machine is past none, so `takes` of none with nothing
 `over` means a full queue, not a pressed machine, and `null` from a
-queue too old to say. The room is `null` where no harness keeps a queue,
-or where the queue's record is of another shape or unwritten for two
-minutes. A machine keeps no reserve of mycelium's: its own slices keep
-its person's share.
+queue too old to say. Its `saturated` is whether its own node judges
+its processors saturated: from processor pressure 85 or more until it
+falls under 75, a band about the line of 80, so a machine whose
+pressure swings about the line doesn't flip with each reading. A node
+with no room to read forgets its verdict, and one restarted starts with
+none held. It is left out of a room a node too old to judge says, and
+placement then judges the pressure by the line of 80 alone. The room
+is `null` where no harness keeps a queue, or where the queue's record
+is of another shape or unwritten for two minutes. A machine keeps no
+reserve of mycelium's: its own slices keep its person's share.
 
 Its `declared` is what its configuration says of it, which can't be
 measured: `reach`, the networks work there always reaches, such as
@@ -1239,7 +1245,8 @@ out of reach; and how long it `lasts`, as an ISO 8601 duration such as
 `PT2H` (`2h` reads too). A machine carries the taints its configuration
 declares, and while they last, `on-battery`, `memory-pressure` (past
 its queue's memory limit), `cpu-pressure` (past its queue's processor
-limit), `cpu-saturated` (its `room` at processor pressure 80 or more)
+limit), `cpu-saturated` (its `room` `saturated`, or at processor
+pressure 80 or more where its room doesn't say)
 and `disk-pressure` (its `disk_band` past
 `healthy`), each `prefer_not`, and `low-battery` (on its battery below
 20%, when it is let sleep) and `disk-full` (its `disk_band`
