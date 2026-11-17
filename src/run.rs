@@ -26,6 +26,9 @@ use crate::wire::Ran;
 /// is killed.
 pub const GRACE: Duration = Duration::from_secs(10);
 
+/// What a run is told names the session proved to ask for it.
+const SESSION: &str = "PI_SESSION_ID";
+
 /// How often a stopped run is looked at while it has yet to end.
 const LOOKS_EVERY: Duration = Duration::from_millis(100);
 
@@ -128,11 +131,16 @@ pub fn words(
     words
 }
 
-/// Runs `words`, the first the program, in `folder`, handing what it says
-/// to `ran` as it says it and then how it ended; stops it once `ran`'s
-/// reader lets go.
-pub async fn here(words: Vec<String>, folder: PathBuf, ran: mpsc::Sender<Ran>) {
-    let ended = match spawn(&words, folder) {
+/// Runs `words`, the first the program, in `folder`, as `session` where
+/// the node proved that session asks, handing what it says to `ran` as it
+/// says it and then how it ended; stops it once `ran`'s reader lets go.
+pub async fn here(
+    words: Vec<String>,
+    folder: PathBuf,
+    session: Option<String>,
+    ran: mpsc::Sender<Ran>,
+) {
+    let ended = match command(&words, folder, session.as_deref()).and_then(|mut run| run.spawn()) {
         Ok(child) => follow(child, &ran).await,
         Err(error) => Some(Ran::Failed(format!("it didn't start: {error}"))),
     };
@@ -142,20 +150,31 @@ pub async fn here(words: Vec<String>, folder: PathBuf, ran: mpsc::Sender<Ran>) {
     }
 }
 
-/// Starts `words` in a process group of its own, so a stop reaches all it
-/// starts, with nothing on its standard input.
-fn spawn(words: &[String], folder: PathBuf) -> io::Result<tokio::process::Child> {
+/// `words` to start in a process group of its own, so a stop reaches all
+/// it starts, with nothing on its standard input. Its `PI_SESSION_ID`,
+/// which a fence's launcher reads to know whose work trees the run may
+/// stand in, is `session` alone, never the node's own.
+fn command(
+    words: &[String],
+    folder: PathBuf,
+    session: Option<&str>,
+) -> io::Result<tokio::process::Command> {
     let (program, arguments) = words
         .split_first()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "nothing to run"))?;
-    tokio::process::Command::new(program)
+    let mut command = tokio::process::Command::new(program);
+    command
         .args(arguments)
         .current_dir(folder)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()
+        .process_group(0);
+    match session {
+        Some(session) => command.env(SESSION, session),
+        None => command.env_remove(SESSION),
+    };
+    Ok(command)
 }
 
 /// Hands on what `child` says until it ends, and answers how it did, or
@@ -324,7 +343,7 @@ mod tests {
     async fn all_of(words: Vec<String>) -> (Vec<u8>, Vec<u8>, Ran) {
         let (ran, mut said) = mpsc::channel(BACKLOG);
         let folder = std::env::temp_dir();
-        tokio::spawn(here(words, folder, ran));
+        tokio::spawn(here(words, folder, None, ran));
         let (mut out, mut err) = (Vec::new(), Vec::new());
         loop {
             let next = tokio::time::timeout(PATIENCE, said.recv())
@@ -356,6 +375,67 @@ mod tests {
         assert_eq!(killed, Ran::Exited(128 + 9));
     }
 
+    /// What a run's own environment says `PI_SESSION_ID` is, as `session`
+    /// asks it, "none" where it's unset.
+    async fn its_session(session: Option<&str>) -> Vec<u8> {
+        let (ran, mut said) = mpsc::channel(BACKLOG);
+        tokio::spawn(here(
+            sh("printf %s \"${PI_SESSION_ID-none}\""),
+            std::env::temp_dir(),
+            session.map(str::to_owned),
+            ran,
+        ));
+        let mut out = Vec::new();
+        loop {
+            match tokio::time::timeout(PATIENCE, said.recv())
+                .await
+                .expect("the run says more")
+                .expect("the run ends with its end")
+            {
+                Ran::Out(piece) => out.extend(bytes(&piece).expect("base64")),
+                Ran::Exited(0) => return out,
+                other => panic!("it says its session and ends: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_is_told_the_session_proved_to_ask_and_no_other() {
+        assert_eq!(
+            its_session(Some("s-proved")).await,
+            b"s-proved",
+            "the session proved to ask is the run's own"
+        );
+        assert_eq!(
+            its_session(None).await,
+            b"none",
+            "where none was proved, the run names none"
+        );
+    }
+
+    #[test]
+    fn a_run_never_inherits_the_nodes_own_session() {
+        let words = sh("true");
+        let envs = |session| {
+            let run = command(&words, std::env::temp_dir(), session).expect("words to run");
+            run.as_std()
+                .get_envs()
+                .filter(|(key, _)| *key == "PI_SESSION_ID")
+                .map(|(_, value)| value.map(ToOwned::to_owned))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            envs(None),
+            [None],
+            "whatever session the node was started in, a run unproved is told none"
+        );
+        assert_eq!(
+            envs(Some("s-proved")),
+            [Some("s-proved".into())],
+            "and one proved is told only its own"
+        );
+    }
+
     #[tokio::test]
     async fn a_program_that_isnt_there_says_it_didnt_start() {
         let (_, _, ended) = all_of(vec!["/nowhere/at/all".to_owned()]).await;
@@ -371,6 +451,7 @@ mod tests {
         tokio::spawn(here(
             sh("head -c 8388608 /dev/zero"),
             std::env::temp_dir(),
+            None,
             ran,
         ));
         let mut got = 0;
@@ -405,7 +486,7 @@ mod tests {
             "sleep 600 & echo $! > {}; echo started; wait",
             mark.display()
         );
-        let run = tokio::spawn(here(sh(&script), folder.path().to_owned(), ran));
+        let run = tokio::spawn(here(sh(&script), folder.path().to_owned(), None, ran));
         let first = tokio::time::timeout(PATIENCE, said.recv())
             .await
             .expect("the run says something");
@@ -440,7 +521,7 @@ mod tests {
         let mark = folder.join("pid");
         let script = script.replace("MARK", &mark.display().to_string());
         let (ran, mut said) = mpsc::channel(BACKLOG);
-        let run = tokio::spawn(here(sh(&script), folder.to_owned(), ran));
+        let run = tokio::spawn(here(sh(&script), folder.to_owned(), None, ran));
         let first = tokio::time::timeout(PATIENCE, said.recv())
             .await
             .expect("the run says something");

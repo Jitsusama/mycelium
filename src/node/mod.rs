@@ -3891,8 +3891,16 @@ impl<S: Store> Shared<S> {
                 }
             };
             let words = run::words(launcher, &self.realm, self.kit(), asked.command);
+            // An agent's fence grants the work trees its session holds, so
+            // the run is told the session the kernel and pi's records prove
+            // asks, never one its words name; none where none is proved,
+            // or asked from another machine, so the fence grants none.
+            let session = match by {
+                By::Agent(_) if asked.from.is_none() => self.asking_session().await.ok(),
+                _ => None,
+            };
             let (ran, said) = mpsc::channel(run::BACKLOG);
-            tokio::spawn(run::here(words, folder, ran));
+            tokio::spawn(run::here(words, folder, session, ran));
             said
         } else {
             self.asks.run(&machine, asked).await?
@@ -9919,6 +9927,12 @@ esac
     /// launcher's must; its script drops that `--` and says
     /// `FENCED=strict` to what it starts.
     fn declares_runs(socket: &Path, runs: bool) {
+        declares_launcher(socket, runs.then_some("shift; FENCED=strict exec \"$@\""));
+    }
+
+    /// As [`declares_runs`], the launcher's stand-in running `script`, or
+    /// no launcher declared where there is none.
+    fn declares_launcher(socket: &Path, script: Option<&str>) {
         let folder = socket.parent().expect("its folder");
         fs::DirBuilder::new()
             .recursive(true)
@@ -9926,20 +9940,14 @@ esac
             .create(folder)
             .expect("its folder is made");
         let mut said = fenced("skiff", &["remote"]).declared.expect("it declares");
-        let launcher = if runs {
+        let launcher = if let Some(script) = script {
             let sh = std::env::split_paths(&std::env::var_os("PATH").expect("a PATH"))
                 .map(|folder| folder.join("sh"))
                 .find(|sh| sh.is_file())
                 .expect("sh is on the PATH");
-            [
-                &sh.display().to_string(),
-                "-c",
-                "shift; FENCED=strict exec \"$@\"",
-                "fence",
-                "--",
-            ]
-            .map(ToOwned::to_owned)
-            .to_vec()
+            [&sh.display().to_string(), "-c", script, "fence", "--"]
+                .map(ToOwned::to_owned)
+                .to_vec()
         } else {
             Vec::new()
         };
@@ -9955,6 +9963,67 @@ esac
 
     /// What it ran says as it goes, "unfenced" where no fence started it.
     const SAYS_ITS_FENCE: &str = "echo ${FENCED:-unfenced}";
+
+    /// A launcher's stand-in saying which session it was told it runs
+    /// for, as pi-fence reads it to know whose trees the run may stand
+    /// in, before it starts what was asked.
+    const SAYS_WHOSE: &str =
+        "echo \"the fence runs for ${PI_SESSION_ID-none}\"; shift; exec \"$@\"";
+
+    /// An ask that names another session in its own words, inside the
+    /// fence.
+    const NAMES_ANOTHER: &str = "PI_SESSION_ID=s-other; echo \"it says $PI_SESSION_ID\"";
+
+    #[tokio::test]
+    async fn an_agents_run_here_is_fenced_for_the_session_proved_to_ask_and_no_other() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        store.start_here(
+            "s-asker",
+            json!({"session": "s-asker", "addresses": ["ASKER1"], "groups": [],
+                   "busy": false, "state": "listening", "fence": "strict",
+                   "at": jiff::Timestamp::now().to_string(),
+                   "owner": {"pid": 7001, "startTicks": started_at(7001)}}),
+            true,
+        );
+        let running = alone(&store, "skiff", &socket);
+        declares_launcher(&socket, Some(SAYS_WHOSE));
+        asks_below(&socket, 7001);
+        let unproved = run_through(socket.clone(), run_of("skiff", NAMES_ANOTHER))
+            .await
+            .expect("an agent's runs here");
+        assert_eq!(
+            String::from_utf8_lossy(&unproved.out),
+            "the fence runs for none\nit says s-other\n",
+            "where no log proves who asks, the fence is told no session, \
+             whatever the node was started in or the ask's words say"
+        );
+        holds_log(&socket, 7001, "s-asker");
+        let proved = run_through(socket.clone(), run_of("skiff", NAMES_ANOTHER))
+            .await
+            .expect("an agent's runs here");
+        assert_eq!(
+            String::from_utf8_lossy(&proved.out),
+            "the fence runs for s-asker\nit says s-other\n",
+            "the fence is told the session proved to ask, and the ask's words \
+             reach only what runs inside it"
+        );
+        assert_eq!(proved.ended, Some(Ran::Exited(0)));
+        asks_as_person(&socket);
+        let person = run_through(socket, run_of("skiff", "echo ${PI_SESSION_ID-none}"))
+            .await
+            .expect("the person's runs here");
+        assert_eq!(
+            person.out, b"none\n",
+            "the person's run, through no fence, names no session either"
+        );
+        let (stop, node) = running;
+        drop(stop);
+        node.await
+            .expect("the node runs to its end")
+            .expect("it stops cleanly");
+    }
 
     #[tokio::test]
     async fn an_agents_run_here_runs_only_as_its_fence_says() {
