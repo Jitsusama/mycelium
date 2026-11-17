@@ -2466,16 +2466,19 @@ impl<S: Store> Shared<S> {
     /// yet show. A `start` placed is kept as one, under the same lock, so
     /// a burst of asks spreads rather than piling on whichever led. Each
     /// placement is kept in its log, where it keeps one, once the lock is
-    /// let go. Work an agent asks, running in the fence `fence`, is offered
-    /// only machines whose ground is as firm as here, so nothing is carried
-    /// to a machine that would refuse to run it once it got there.
+    /// let go. Work an agent asks, running in the fence `fence`, is refused
+    /// every machine whose ground is looser than here, so nothing is carried
+    /// to a machine that would refuse to run it once it got there. Those
+    /// machines still count for what the realm reaches, and the record
+    /// keeps why each was refused, so a replay refuses them too.
     fn place(&self, work: &Work, start: bool, fence: Option<crate::declared::Kind>) -> Placement {
-        let mut machines = self.machines();
-        let mut looser = Vec::new();
-        if let Some(kind) = fence {
-            let here = crate::declared::read(&self.declared);
-            (machines, looser) = ground::sift(kind, here.as_ref(), &self.machine, machines);
-        }
+        let machines = self.machines();
+        let refused = fence
+            .map(|kind| {
+                let here = crate::declared::read(&self.declared);
+                ground::looser(kind, here.as_ref(), &self.machine, &machines)
+            })
+            .unwrap_or_default();
         // This machine is measured first, so work asked on a worker stays
         // there unless it names another.
         let work = &placement::asked_on(work, &machines[0], &machines);
@@ -2485,15 +2488,11 @@ impl<S: Store> Shared<S> {
             let inner = &mut *inner;
             let sessions = inner.state.sessions();
             let loads = inner.starts.loads(&machines, running(&sessions), now);
-            let decision = placement::decide(work, &machines, &loads);
+            let decision = placement::decide_refusing(work, &machines, &loads, &refused);
             if start && let Placement::Placed { machine, .. } = &decision.placement {
                 inner.starts.placed(machine, now);
             }
             (loads, decision)
-        };
-        let decision = placement::Decision {
-            placement: decision.placement.also(looser),
-            ..decision
         };
         let Some(log) = &self.placements else {
             return decision.placement;
@@ -2504,6 +2503,7 @@ impl<S: Store> Shared<S> {
             work: work.clone(),
             machines,
             loads,
+            refused,
             decision,
         };
         let day = now.to_zoned(jiff::tz::TimeZone::system()).date();
@@ -3715,9 +3715,6 @@ impl<S: Store> Shared<S> {
         }
     }
 
-    /// Who asks a run, as [`asker::judge`] tells it, and the sessions
-    /// claiming the process that asks, nearest first, each of whose
-    /// presence says which fence it runs in.
     /// Places `work` as [`Node::place`] does for whoever asks, held to an
     /// agent's ground where an agent asks, as a run of its would be, so
     /// what it is told would take the work is where the work can run.
@@ -3730,6 +3727,9 @@ impl<S: Store> Shared<S> {
         Ok(Response::Placement(self.place(work, false, fence)))
     }
 
+    /// Who asks a run, as [`asker::judge`] tells it, and the sessions
+    /// claiming the process that asks, nearest first, each of whose
+    /// presence says which fence it runs in.
     async fn judged(&self) -> Result<(By, Vec<String>), String> {
         let standing = self.standing();
         let claims: Vec<asker::Claim> = standing
@@ -9074,21 +9074,30 @@ esac
             .expect("what it said is kept");
         let looser = "tern refuses: tern's strictly fenced session opens builders cloud, which \
                       here's doesn't, so the session would land looser there";
-        let place = |socket: PathBuf| async move {
-            let asked = tokio::task::spawn_blocking(move || {
-                Client::connect(&socket)
-                    .expect("the client connects")
-                    .ask(&Request::Place(work(Vec::new())))
-                    .expect("the node answers")
-            });
-            let answer = tokio::time::timeout(PATIENCE, asked)
-                .await
-                .expect("the node answers in time")
-                .expect("the client asks");
-            let Ok(Response::Placement(placement)) = answer else {
-                panic!("a placement: {answer:?}");
-            };
-            placement
+        // Work that would rather go to tern, so ranking alone would send it
+        // there: only its looser ground keeps it here.
+        let toward_tern = Work {
+            prefers: vec![Need::Machine("tern".to_owned())],
+            ..work(Vec::new())
+        };
+        let place = |socket: PathBuf| {
+            let toward_tern = toward_tern.clone();
+            async move {
+                let asked = tokio::task::spawn_blocking(move || {
+                    Client::connect(&socket)
+                        .expect("the client connects")
+                        .ask(&Request::Place(toward_tern))
+                        .expect("the node answers")
+                });
+                let answer = tokio::time::timeout(PATIENCE, asked)
+                    .await
+                    .expect("the node answers in time")
+                    .expect("the client asks");
+                let Ok(Response::Placement(placement)) = answer else {
+                    panic!("a placement: {answer:?}");
+                };
+                placement
+            }
         };
         asks_below(&socket, 7001);
         let Placement::Placed { machine, passed } = place(socket.clone()).await else {

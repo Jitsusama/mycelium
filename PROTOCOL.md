@@ -1178,7 +1178,9 @@ and `disk-pressure` (its `disk_band` past
 `healthy`), each `prefer_not`, and `low-battery` (on its battery below
 20%, when it is let sleep) and `disk-full` (its `disk_band`
 `critically_full`, where what it starts would fail to write), each
-`never`. A machine qualifies when
+`never`. Work may tolerate `disk-full` by its key, as a cleanup run on
+a full machine would; tolerating `disk-pressure` doesn't lift it. A
+machine qualifies when
 it is in reach, leaves after the work ends (now, for work that doesn't
 say how long it lasts), is what each need asks (a fact it never said
 meets none), and carries no `never` taint the work doesn't tolerate.
@@ -1410,8 +1412,11 @@ other mounts; else the person. A
 fenced at least. An agent's run goes only where an ordered carry could
 land it (A Carry an Orchestrator Orders): placement is offered only
 this machine and those, each other one missed as `looser-ground`,
-`never`, saying why, and a `"Place"` an agent asks is judged the same
-way, so where it is told the work would go is where the work may run.
+`never`, saying why, which no `tolerates` lifts, and a `"Place"` an
+agent asks is judged the same way, so where it is told the work would
+go is where the work may run. Each machine so refused still counts for
+what the person's lasting machines reach, and a placement's record
+keeps it as `refused`, so a replay refuses it too.
 There it runs as its
 fence's declared `runs`, then the login shell, then `command`; a
 machine declaring no `runs` for it refuses it, as does one whose

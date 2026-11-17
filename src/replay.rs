@@ -92,7 +92,14 @@ pub fn replay(records: &[Record], readings: &[Reading], weights: &Weights) -> Re
             continue;
         };
         let decide = |weights| {
-            placement::decide_as(&record.work, &record.machines, &record.loads, at, weights)
+            placement::decide_as(
+                &record.work,
+                &record.machines,
+                &record.loads,
+                &record.refused,
+                at,
+                weights,
+            )
         };
         if !draws(&decide(&record.decision.weights), kept) {
             stale += 1;
@@ -179,7 +186,7 @@ mod tests {
     fn kept(chosen: &str, machines: Vec<crate::facts::Machine>, loads: Loads) -> Record {
         let work = needing(Vec::new());
         let at = AT.parse().expect("a time");
-        let mut decision = decide_as(&work, &machines, &loads, at, &Weights::STARTING);
+        let mut decision = decide_as(&work, &machines, &loads, &[], at, &Weights::STARTING);
         let passed = match decision.placement {
             Placement::Placed { passed, .. } => passed,
             other => panic!("the starting weights placed nothing: {other:?}"),
@@ -194,6 +201,7 @@ mod tests {
             work,
             machines,
             loads,
+            refused: Vec::new(),
             decision,
         }
     }
