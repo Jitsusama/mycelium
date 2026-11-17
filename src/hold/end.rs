@@ -71,6 +71,18 @@ pub enum Ending {
 /// its record or socket can't be taken away.
 pub fn end(dir: &Path, id: &str, grace: Duration) -> io::Result<Ending> {
     let Some(one) = held(dir).into_iter().find(|one| one.id == id) else {
+        // A holder killed outright is no longer listed, but what it
+        // left still says it holds the session.
+        if left_behind(dir, id) {
+            take_away(dir, id)?;
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "the holder of {id} has gone, so nothing is signalled; what it left is \
+                     taken away"
+                ),
+            ));
+        }
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("nothing is held as {id}; `mycelium holds` lists what is"),
@@ -112,25 +124,44 @@ pub fn end(dir: &Path, id: &str, grace: Duration) -> io::Result<Ending> {
     Ok(ending)
 }
 
+/// Whether a hold no holder runs for left its record or socket as `id`
+/// in `dir`, `id` being one a holder could have: letters and digits
+/// alone, so it names nothing outside the folder.
+fn left_behind(dir: &Path, id: &str) -> bool {
+    let an_id = (1..=64).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_alphanumeric());
+    an_id && (dir.join(format!("{id}.json")).exists() || socket(dir, id).exists())
+}
+
 /// Takes away the record and socket of the hold `id` in `dir`, and every
 /// file its program spoke through, which a holder that ended removed
 /// itself and one killed left: a wake written there after would land
-/// where nothing reads it.
+/// where nothing reads it. Each is tried, and every one that couldn't
+/// go is named.
 fn take_away(dir: &Path, id: &str) -> io::Result<()> {
-    for left in [
+    let stuck: Vec<String> = [
         dir.join(format!("{id}.json")),
         socket(dir, id),
         wake(dir, id),
         again(dir, id),
         next(dir, id),
+        dir.join(format!(".{id}.next")),
         steers(dir, id),
-    ] {
-        match fs::remove_file(&left) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
+    ]
+    .iter()
+    .filter_map(|left| match fs::remove_file(left) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            Some(format!("{}: {error}", left.display()))
         }
+        _ => None,
+    })
+    .collect();
+    if stuck.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    Err(io::Error::other(format!(
+        "what the hold left couldn't all be taken away: {}",
+        stuck.join("; ")
+    )))
 }
 
 /// The process `raw` names, if it names one.
@@ -308,13 +339,13 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_record_is_taken_away_signalling_nothing() {
+    fn a_stale_record_and_every_file_it_spoke_through_go_signalling_nothing() {
         let dir = tempfile::tempdir().expect("a folder");
         let (holder, program) = (holder(), program("echo ready; sleep 1000 & wait"));
         drop(holds(dir.path(), "stale", holder, program));
         unanswered(&socket(dir.path(), "stale"));
-        // A holder killed outright leaves what its program said as it
-        // parked, and a wake written since.
+        // A holder that no longer answers leaves what its program said
+        // as it parked, and a wake written for it.
         let said = [
             wake(dir.path(), "stale"),
             again(dir.path(), "stale"),
@@ -337,13 +368,58 @@ mod tests {
         );
         assert!(
             said.iter().all(|file| !file.exists()),
-            "and every file it spoke through, so no wake is written where none reads it"
+            "and every file it spoke through, so none is found as though it were held"
         );
         for pid in [holder, program] {
             let _ =
                 rustix::process::kill_process_group(self::pid(pid).expect("a pid"), Signal::KILL);
             let _ = rustix::process::kill_process(self::pid(pid).expect("a pid"), Signal::KILL);
         }
+    }
+
+    #[test]
+    fn a_hold_whose_holder_was_killed_outright_leaves_nothing_once_ended() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let mut gone = std::process::Command::new("true")
+            .spawn()
+            .expect("it starts");
+        let holder = gone.id();
+        gone.wait().expect("it ends");
+        drop(holds(dir.path(), "killed1", holder, 0));
+        let left = [
+            dir.path().join("killed1.json"),
+            wake(dir.path(), "killed1"),
+            again(dir.path(), "killed1"),
+            next(dir.path(), "killed1"),
+            dir.path().join(".killed1.next"),
+            steers(dir.path(), "killed1"),
+        ];
+        for file in &left[1..] {
+            fs::write(file, b"[]").expect("it is written");
+        }
+        assert!(
+            socket(dir.path(), "killed1").exists() && held(dir.path()).is_empty(),
+            "its socket is left, and nothing lists it as held"
+        );
+
+        let error = end(dir.path(), "killed1", GRACE).expect_err("its holder has gone");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(
+            left.iter().all(|file| !file.exists()) && !socket(dir.path(), "killed1").exists(),
+            "what a holder killed outright left goes once it is ended"
+        );
+    }
+
+    #[test]
+    fn an_id_naming_a_path_reaches_nothing_outside_the_folder() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let folder = dir.path().join("work.held");
+        fs::create_dir(&folder).expect("made");
+        let outside = dir.path().join("kept.json");
+        fs::write(&outside, b"{}").expect("it is written");
+        let error = end(&folder, "../kept", GRACE).expect_err("no hold has that id");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(outside.exists(), "a file outside the folder is left");
     }
 
     #[test]
