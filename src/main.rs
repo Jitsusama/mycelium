@@ -330,7 +330,7 @@ enum Action {
     /// It goes to every group named, from who `--from` says.
     #[command(
         override_usage = "mycelium send [OPTIONS] --from <FROM> --text <TEXT>\n       <GROUPS>...",
-        after_help = "Example:\n  mycelium send --from HARBOR --text merged peer.kelp01"
+        after_help = "Example:\n  echo merged | mycelium send --from HARBOR --text - peer.kelp01"
     )]
     Send {
         /// Who sends it.
@@ -343,7 +343,8 @@ enum Action {
         /// The groups it goes to, such as `peer.4uhc5q`.
         #[arg(required = true)]
         groups: Vec<Group>,
-        /// What is said.
+        /// What is said, or `-` to read it from standard input, so it
+        /// never sits in a command line every process here can read.
         #[arg(long)]
         text: String,
         /// The realm it is for, by a flow, if not this one.
@@ -1392,16 +1393,17 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             groups,
             text,
             to_realm,
-        } => print_answer(
+        } => send(
             &socket,
-            &Request::Send(Draft {
+            Draft {
                 from,
                 groups,
                 intent,
-                text,
+                text: String::new(),
                 re: None,
                 realm: to_realm,
-            }),
+            },
+            text,
         ),
         Action::Flows => print_reply(&socket, &Request::Flows),
         Action::Attach(asked) => return attach_asked(&realm, &socket, asked),
@@ -1423,6 +1425,59 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         | Action::Again { .. } => unreachable!("each is read as its tree above"),
     };
     ran.map(|()| ExitCode::SUCCESS)
+}
+
+/// Sends `draft` through the node at `socket`, saying what `text`, or
+/// standard input where it is `-`, says (`said_text`).
+fn send(socket: &Path, mut draft: Draft, text: String) -> io::Result<()> {
+    draft.text = said_text(text, io::stdin().lock())?;
+    print_answer(socket, &Request::Send(draft))
+}
+
+/// The most a message read from standard input may hold, its last line's
+/// end aside.
+const SAID_MOST: usize = 256 * 1024;
+
+/// What a message says: `text` as given, or what `input` holds where
+/// `text` is `-`, its last line's end left off. Words read so never sit in
+/// a command line, which every process on the machine can read. Input is
+/// read only where asked, so a send whose input stays open is never left
+/// waiting on it unasked.
+///
+/// # Errors
+///
+/// When what is said is empty, or input can't be read, holds more than
+/// [`SAID_MOST`] or isn't UTF-8.
+fn said_text(text: String, input: impl io::Read) -> io::Result<String> {
+    use std::io::Read as _;
+    let refused = |why: String| io::Error::new(io::ErrorKind::InvalidInput, why);
+    if text != "-" {
+        return if text.is_empty() {
+            Err(refused("nothing is said".to_owned()))
+        } else {
+            Ok(text)
+        };
+    }
+    // Room for a line's end past the most, and a byte more to tell it's
+    // over, all held as bytes, so text cut there is said to be too long
+    // rather than not UTF-8.
+    let mut read = Vec::new();
+    let room = u64::try_from(SAID_MOST + 3).unwrap_or(u64::MAX);
+    input.take(room).read_to_end(&mut read)?;
+    let said = read.strip_suffix(b"\n").map_or(read.as_slice(), |line| {
+        line.strip_suffix(b"\r").unwrap_or(line)
+    });
+    if said.len() > SAID_MOST {
+        return Err(refused(format!(
+            "what is said on standard input is over {} KB",
+            SAID_MOST / 1024
+        )));
+    }
+    if said.is_empty() {
+        return Err(refused("nothing is said on standard input".to_owned()));
+    }
+    String::from_utf8(said.to_vec())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 /// Steers the session going by `address` with what standard input says.
@@ -2865,9 +2920,73 @@ mod tests {
     use std::io;
 
     use super::{
-        Action, Command, HELP_WIDTH, SwarmAsked, Tree, in_place, kit, reader_left, swarm_asked,
-        tree, write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, in_place, kit, reader_left,
+        said_text, swarm_asked, tree, write_line,
     };
+
+    #[test]
+    fn a_message_is_read_from_input_so_its_words_sit_in_no_command_line() {
+        let said = |text: &str, input: &[u8]| {
+            said_text(text.to_owned(), input).map_err(|error| error.kind())
+        };
+        assert_eq!(
+            said("merged", b"never read"),
+            Ok("merged".to_owned()),
+            "words given are said as they are, and input isn't read"
+        );
+        assert_eq!(
+            said("-", b"merged, at last\n"),
+            Ok("merged, at last".to_owned()),
+            "`-` reads them from input, its last line's end left off"
+        );
+        assert_eq!(
+            said("-", b"two\nlines\r\n"),
+            Ok("two\nlines".to_owned()),
+            "a line's end of either kind"
+        );
+        assert_eq!(
+            said("-", b"merged \n\n"),
+            Ok("merged \n".to_owned()),
+            "and only its last, so a blank line or a space meant stays"
+        );
+        for (text, input, why) in [
+            ("-", &b"\n"[..], "nothing read is nothing said"),
+            ("", &b""[..], "nor are words given empty"),
+        ] {
+            assert_eq!(said(text, input), Err(io::ErrorKind::InvalidInput), "{why}");
+        }
+        let most = "a".repeat(SAID_MOST);
+        assert_eq!(
+            said("-", format!("{most}\r\n").as_bytes()).map(|text| text.len()),
+            Ok(SAID_MOST),
+            "as much as a message may hold is said, its line's end aside"
+        );
+        assert_eq!(
+            said("-", format!("{most}a").as_bytes()),
+            Err(io::ErrorKind::InvalidInput),
+            "and no more"
+        );
+        assert_eq!(
+            said("-", "é".repeat(SAID_MOST).as_bytes()),
+            Err(io::ErrorKind::InvalidInput),
+            "too much is too much, though cut within a letter"
+        );
+        assert_eq!(
+            said("-", b"\xff\xfe"),
+            Err(io::ErrorKind::InvalidData),
+            "words that aren't UTF-8 aren't said"
+        );
+    }
+
+    #[test]
+    fn a_send_naming_no_words_reads_no_input_unasked() {
+        let parsed =
+            Command::try_parse_from(["mycelium", "send", "--from", "HARBOR", "peer.kelp01"]);
+        assert!(
+            parsed.is_err(),
+            "its words are named, or `-` asks for input, so an open input never holds it"
+        );
+    }
 
     /// A reader that has gone, as `| head` is once it has read enough.
     struct Gone;
