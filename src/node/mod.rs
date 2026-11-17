@@ -531,7 +531,7 @@ where
                 let dial = shared.book_for(&made);
                 let carries = (sharing.clone(), shared.starting(&dial, &socket.path), refusals.clone());
                 let linked = keep_linked(dial.clone(), store.clone(), membership.clone(), carries);
-                let keeping = Keeping { book: shared.book.clone(), store: store.clone() };
+                let keeping = shared.keeping();
                 links.spawn(keep_made(dial, made, keeping, unwanted, linked));
             }
             Some(()) = held.recv() => {
@@ -4038,6 +4038,15 @@ impl<S: Store> Shared<S> {
         };
         run::journal(&self.runs.journal, &started);
         Ok((machine, run::journaled(self.runs.journal.clone(), id, said)))
+    }
+
+    /// Where a machine made is kept: this node's book and store, and its
+    /// booking, let go with it.
+    fn keeping(&self) -> Keeping<S> {
+        Keeping {
+            book: self.book.clone(),
+            store: self.store.clone(),
+        }
     }
 
     /// Books `made` for whoever its make was told asked, so only that
@@ -11524,12 +11533,62 @@ esac
             to_dial,
         );
 
+        let mut made = made_by("/usr/bin/lend", "kestrel", long_ago);
+        made.asker = Some("P9R1KI".to_owned());
+        shared.book_for(&made);
+
         shared.each_minute(&mut Awake::by(None));
 
         assert_eq!(
             book.standing().expect("the book reads").made,
             Vec::new(),
             "the minute's round lets it go"
+        );
+        assert_eq!(
+            shared.admits().await,
+            Admits::All,
+            "and it is booked for nobody, so starts no longer ask who asks"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_machine_kept_and_let_go_is_booked_for_nobody() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let given = Given {
+            book: Book::at(dir.path().join("made.jsonl")).of_realm("work"),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            given,
+            to_dial,
+        );
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let mut made = made_by("/nowhere/lend", "kestrel", later);
+        made.asker = Some("P9R1KI".to_owned());
+        let dial = shared.book_for(&made);
+        let unwanted = Arc::new(Notify::new());
+        unwanted.notify_one();
+
+        keep_made(
+            dial,
+            made,
+            shared.keeping(),
+            unwanted,
+            std::future::pending(),
+        )
+        .await;
+
+        assert_eq!(
+            shared.admits().await,
+            Admits::All,
+            "a machine let go takes nobody's starts, so none is held to it"
         );
     }
 
