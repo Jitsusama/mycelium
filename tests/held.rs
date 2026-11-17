@@ -1,11 +1,13 @@
-//! A holder told to end, as its scope's stop tells it at a shutdown: the
-//! holder is a `mycelium` process of its own, as a scope holds it, with a
-//! window joined to it as a terminal's would be.
+//! A holder told to end, as its scope's stop tells it at a shutdown, and
+//! one whose window closed, which isn't told: the holder is a `mycelium`
+//! process of its own, as a scope holds it, with a window joined to it as
+//! a terminal's would be.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -132,4 +134,76 @@ fn a_holder_told_to_end_with_a_window_joined_ends_as_its_program_does() {
         !held.join("ending1.json").exists(),
         "its record is taken away once it has ended"
     );
+}
+
+/// Closing a window hangs up on the terminal it ran, as a terminal closing
+/// one and an ssh that drops alike do: the hangup goes to the shell in it
+/// and the process group it runs in the front. A holder started from that
+/// terminal, as `holds add` starts one, is in a session of its own, so the
+/// hangup never reaches it, and its program carries on, held, for another
+/// window to join (Joel, 16 November: closing a window never stops its
+/// session, it only gives back the room on the screen).
+#[test]
+fn a_holder_outlives_the_hangup_of_the_terminal_it_was_started_from() {
+    let home = tempfile::tempdir().expect("a temporary home");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(home.path().join("r"))
+        .expect("its runtime folder is made");
+    // The terminal's shell, in a group of its own as a terminal's job in
+    // front is, with the holder as its child; its program waits for a key.
+    let mut terminal = Command::new("sh")
+        .env("HOME", home.path())
+        .env("XDG_RUNTIME_DIR", home.path().join("r"))
+        .env("XDG_STATE_HOME", home.path().join("s"))
+        .args([
+            "-c",
+            "\"$0\" --realm harbour holder --id hangup1 --folder \"$1\" -- sh -c \
+             'read typed; echo \"got $typed\"'; sleep 1000",
+            env!("CARGO_BIN_EXE_mycelium"),
+        ])
+        .arg(home.path())
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the terminal's shell starts");
+    let mut said = String::new();
+    BufReader::new(terminal.stdout.take().expect("its standard output"))
+        .read_line(&mut said)
+        .expect("the holder says how it went");
+    assert_eq!(said.trim(), "held", "the holder holds its program");
+    let terminal = Running(terminal);
+
+    let group = rustix::process::Pid::from_raw(
+        i32::try_from(terminal.0.id()).expect("a process id fits a pid"),
+    )
+    .expect("the terminal's shell has a process id");
+    rustix::process::kill_process_group(group, rustix::process::Signal::HUP)
+        .expect("the terminal is hung up on, as its window closing does");
+    let (hung, hangs) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut terminal = terminal;
+        // The test hears it only while it still waits.
+        let _ = hung.send(terminal.0.wait());
+    });
+    let hung = hangs
+        .recv_timeout(PATIENCE)
+        .expect("the terminal's shell goes with its window")
+        .expect("the terminal's shell is waited on");
+    assert!(!hung.success(), "the hangup ended the terminal's shell: {hung:?}");
+
+    let held = home.path().join("r/mycelium/harbour.held");
+    assert!(
+        held.join("hangup1.json").exists(),
+        "what is held is still listed once its window has gone"
+    );
+    let mut window =
+        UnixStream::connect(socket(&held, "hangup1")).expect("another window joins it");
+    window
+        .write_all(&Said::Typed(b"again\r".to_vec()).encode())
+        .expect("the window types");
+    sees(&mut window, "got again");
 }
