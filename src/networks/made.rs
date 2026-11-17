@@ -229,6 +229,7 @@ fn bare(name: String, is: Is) -> Cell {
         doing: None,
         asks: None,
         repo: None,
+        subjects: Vec::new(),
         usage: Usage::default(),
         leads: Vec::new(),
         machine: None,
@@ -318,6 +319,67 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
     Ok(Mycelium::whole(
         realm, &teams, sessions, &machines, &receptors, &builders,
     ))
+}
+
+/// The most subjects a cell is held to declare, as the harness reads
+/// them.
+pub const MOST_SUBJECTS: usize = 12;
+
+/// The most characters one subject holds.
+const SUBJECT_MOST: usize = 120;
+
+/// The first [`MOST_SUBJECTS`] subjects a presence declares, each a
+/// string of at most [`SUBJECT_MOST`] characters with nothing a terminal
+/// acts on and nothing that draws as nothing; any other entry is passed
+/// over alone, so a cell's subjects never draw as more than plain words,
+/// nor two that draw alike hub apart.
+#[must_use]
+pub fn subjects(declared: &Value) -> Vec<String> {
+    declared
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|subject| {
+            !subject.is_empty()
+                && subject.chars().count() <= SUBJECT_MOST
+                && !subject.chars().any(|each| {
+                    each.is_control()
+                        || crate::forage::turns_direction(each)
+                        || unseen(each)
+                        || matches!(each, '\u{2028}' | '\u{2029}')
+                })
+        })
+        .take(MOST_SUBJECTS)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
+/// joiner, a word joiner or invisible operator, a grapheme joiner, a
+/// Hangul or Khmer filler, a variation selector, Mongolian or not, a byte order mark, or a
+/// tag, any of which hides
+/// text from the person or smuggles it past them.
+fn unseen(each: char) -> bool {
+    matches!(
+        each,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{17B4}'
+            | '\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{200B}'..='\u{200D}'
+            | '\u{2060}'..='\u{2065}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{E0100}'..='\u{E01EF}'
+            | '\u{E0000}'..='\u{E007F}'
+    )
 }
 
 /// Which of the networks' asks is for the node's receptors.
@@ -482,6 +544,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         doing: standing.doing(session).map(str::to_owned),
         asks: session["wants"]["said"].as_str().map(str::to_owned),
         repo: session["presence"]["repo"].as_str().map(str::to_owned),
+        subjects: subjects(&session["presence"]["subjects"]),
         usage: Usage::of(session),
         leads: Vec::new(),
         machine: text("machine"),

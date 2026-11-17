@@ -140,6 +140,7 @@ fn cell(n: usize) -> Cell {
         session: format!("0000-{n:08}"),
         quest: quest(n / SHARING),
         started_by: Some(format!("K{:05}", n / SHARING * SHARING)),
+        split_from: None,
     }
 }
 

@@ -418,15 +418,18 @@ mod tests {
                 .collect::<std::collections::BTreeMap<_, _>>()
         };
         // Worked out here, apart from the lookup under test: the proxy's
-        // socket in the node's own runtime folder, none where it has none.
+        // socket in the node's own runtime folder, at its old place only
+        // where that alone is there, none where the node has no folder.
         let proxy = std::env::var("XDG_RUNTIME_DIR")
             .ok()
             .filter(|runtime| !runtime.is_empty())
             .map(|runtime| {
-                Path::new(&runtime)
-                    .join("pi-agent.sock")
-                    .display()
-                    .to_string()
+                let (own, old) = (
+                    Path::new(&runtime).join("pi-agent/agent.sock"),
+                    Path::new(&runtime).join("pi-agent.sock"),
+                );
+                let alone = own.symlink_metadata().is_err() && old.symlink_metadata().is_ok();
+                if alone { old } else { own }.display().to_string()
             });
         let agents = std::collections::BTreeMap::from([
             (

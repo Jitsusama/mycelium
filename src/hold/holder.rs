@@ -126,8 +126,11 @@ const OTHER_AGENTS: [&str; 1] = ["SSH_TPM_AUTH_SOCK"];
 
 /// The agents' proxy's socket in the person's runtime folder: the one
 /// agent a held program may sign with, which offers only the keys and
-/// machines the person allowed agents, as hosted sessions are given.
-const PROXY: &str = "pi-agent.sock";
+/// machines the person allowed agents, as hosted sessions are given. It
+/// sits in its own folder, else at its old place, a link into that
+/// folder kept for a machine whose proxy hasn't moved, as pi's fence
+/// finds it.
+const PROXY: [&str; 2] = ["pi-agent/agent.sock", "pi-agent.sock"];
 
 /// The variable saying the agent again, for the login shell a node's
 /// start runs through to name once the person's profile has run, since
@@ -172,17 +175,21 @@ pub fn agents_proxy_here() -> Option<PathBuf> {
 /// The agents' proxy's socket, in the runtime folder `person` (the
 /// person's environment as it is now) names, else the holder's `own`;
 /// none where neither names one, so a held program is given no agent at
-/// all rather than whichever the person's session has.
+/// all rather than whichever the person's session has. Of its places,
+/// the first there, else its own folder's, since a proxy not yet started
+/// is started there and naming it grants nothing till it is.
 fn agents_proxy(person: &[(String, String)], own: Option<&str>) -> Option<PathBuf> {
     let named = person
         .iter()
         .find(|(name, _)| name == "XDG_RUNTIME_DIR")
         .map(|(_, runtime)| runtime.as_str());
-    [named, own]
+    let runtime = [named, own]
         .into_iter()
         .flatten()
-        .find(|runtime| !runtime.is_empty())
-        .map(|runtime| Path::new(runtime).join(PROXY))
+        .find(|runtime| !runtime.is_empty())?;
+    let places = PROXY.map(|place| Path::new(runtime).join(place));
+    let there = places.iter().find(|place| place.symlink_metadata().is_ok());
+    Some(there.unwrap_or(&places[0]).clone())
 }
 
 /// What to hold.
@@ -2394,7 +2401,7 @@ mod tests {
             )
             .await;
         window
-            .sees("[agent /run/user/4242/pi-agent.sock, no other, unsaid]")
+            .sees("[agent /run/user/4242/pi-agent/agent.sock, no other, unsaid]")
             .await;
     }
 
@@ -2427,7 +2434,7 @@ mod tests {
             )
             .await;
         window
-            .sees("[agent /run/user/4242/pi-agent.sock, no other, unsaid]")
+            .sees("[agent /run/user/4242/pi-agent/agent.sock, no other, unsaid]")
             .await;
     }
 
@@ -2436,18 +2443,49 @@ mod tests {
         let person = |runtime: &str| vec![("XDG_RUNTIME_DIR".to_owned(), runtime.to_owned())];
         assert_eq!(
             agents_proxy(&person("/run/user/4242"), Some("/run/user/7")),
-            Some(PathBuf::from("/run/user/4242/pi-agent.sock")),
+            Some(PathBuf::from("/run/user/4242/pi-agent/agent.sock")),
             "the person's runtime folder as it is now"
         );
         assert_eq!(
             agents_proxy(&[], Some("/run/user/7")),
-            Some(PathBuf::from("/run/user/7/pi-agent.sock")),
+            Some(PathBuf::from("/run/user/7/pi-agent/agent.sock")),
             "the holder's own, where the person's session says none"
         );
         assert_eq!(
             agents_proxy(&person(""), Some("")),
             None,
             "none where neither says one, so no agent is named"
+        );
+    }
+
+    #[test]
+    fn the_agents_proxy_is_in_its_own_folder_else_at_its_old_place() {
+        let runtime = tempfile::tempdir().expect("a runtime folder");
+        let person = vec![(
+            "XDG_RUNTIME_DIR".to_owned(),
+            runtime.path().display().to_string(),
+        )];
+        let (own, old) = (
+            runtime.path().join("pi-agent/agent.sock"),
+            runtime.path().join("pi-agent.sock"),
+        );
+        assert_eq!(
+            agents_proxy(&person, None),
+            Some(own.clone()),
+            "its own folder's, where neither is there yet"
+        );
+        std::os::unix::fs::symlink(&own, &old).expect("the old place links in");
+        assert_eq!(
+            agents_proxy(&person, None),
+            Some(old),
+            "the old place, where only it is there"
+        );
+        fs::create_dir(own.parent().expect("its folder")).expect("its folder is made");
+        fs::write(&own, "").expect("the proxy's socket stands in");
+        assert_eq!(
+            agents_proxy(&person, None),
+            Some(own),
+            "its own folder's, where both are there"
         );
     }
 

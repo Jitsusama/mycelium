@@ -983,6 +983,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
+| `{"Starts": {"act"}}` | `{"Starts": {"stopped", "newest"}}`, `stop`, `resume` or `list` from the person's own login |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"End": {"held"}}` | `{"Ended": {"machine", "held", "ending"}}`, `ending` `gently` or `killed` (A Held Session) |
 | `{"Run": {"work", "folder", "command", "by", "from"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
@@ -1542,6 +1543,38 @@ naming no realm, kept before lines named one, is never linked again.
 A start whose providers make nothing says why: each machine's and each
 offer's reasons, and each program that couldn't say what it offers.
 
+An agent starts sessions within limits the node keeps, so a cell gone
+wrong can't start without end. Each start an agent asks counts toward
+the nearest session claiming the asker's process, by its address, and
+toward every agent's starts through the node: in any hour a cell
+starts at most 8 and every agent together at most 32, and one past
+either is refused, saying which. A claim proves nothing, so the 8 are
+a cell's fair share, and the 32 the bound no agent gets round. A
+start counts whether it started or failed, since a failed one may
+still have spent, and so does one still starting, so starts asked at
+once can't pass the limit; a refused one doesn't. The person's own
+starts are never counted or refused. The person stops the agents'
+starts asked of a node in one act, `mycelium starts stop`, which
+holds through a restart till `mycelium starts resume`, and while
+whether it stands can't be told; an agent asking either, or the list,
+is refused. The stop is `starts.stopped` in the node's state folder,
+so an agent able to write there could lift it, as it could stop the
+node. Every start, refused ones too, is kept in
+`starts.jsonl` beside `runs.jsonl` as a JSON line, `{"at", "by",
+"started_by", "folder", "program", "machine", "held", "failed",
+"refused"}`: `at` in milliseconds, `started_by` null for the person's,
+`program` the command's first word alone, so no argument is kept,
+`failed` the node's reason alone, before the words naming the command,
+and the rest only where they apply. The node reads it again as it
+starts, passing over a line it can't read, and holds the newest 2,048,
+never letting one go that counts within the hour; once the file has
+grown by 8 MiB and doubled since, it writes it again from those. A start
+dated up to an hour ahead of an ask counts, as a clock set back leaves
+it; one further ahead doesn't. `mycelium starts` prints whether
+starts are stopped and the newest 100. A start counts on the node an
+agent asks, wherever it is placed, and only that node's book says who
+started it, so each machine's node is stopped on its own.
+
 `"Sprout"` starts a session of new work, as `mycelium sprout` asks, held
 in no window: the node makes the `"Start"` and starts it as above, under
 the same limits. `words` is the work, a link alone or words, which
@@ -1776,8 +1809,8 @@ A record carries `key` (`session:<id>`, `machine:<name>`,
 `message:<id>`, `team:<address>`, `network:<name>`, `cell:<name>`,
 `unanswered:<id>`, `said:<id>`, `event:<session>:<at>`,
 `receptor:<source>`, `builder:<name>`, `forage:<address>`,
-`murmur:<cell>:<at>`, `tie:<cell>~<cell>`, `tie:<cell>` or
-`ended:<session>`), `kind`,
+`murmur:<cell>:<at>`, `tie:<cell>~<cell>`, `tie:<cell>`,
+`ended:<session>` or `hub:<subject>`), `kind`,
 `heard` (milliseconds since the epoch)
 and the fields `Sessions`, `Machines` and `Messages` give it. A field
 its source named `key`, `kind` or `heard`, such as a
@@ -1894,8 +1927,10 @@ such as `slack@kestrel`. Each is the very cell that
 same records as the `network` kind, less its `kind`: its `type`
 (`session`, `machine` or `receptor`), and where it says them its
 `title`, a session's `id`, `window`, `standing` (`needs-you`, `stuck`,
-`moving`, `quiet` or `dormant`), `doing`, `asks`, `repo`, `usage`, the
-networks it `leads`, `machine`, `since`, `quest`, `plan`, `cwd`, the
+`moving`, `quiet` or `dormant`), `doing`, `asks`, `repo`, the
+`subjects` its presence declares (the first 12 strings of at most 120
+characters a terminal draws as plain text), `usage`, the networks it
+`leads`, `machine`, `since`, `quest`, `plan`, `cwd`, the
 `trees` it holds, the folders it `shares`, a machine's or a
 receptor's `state`, a machine's `busy` and the sessions it `runs`, a
 receptor's `counts`, and the `networks` it joined. A session's `quest`
@@ -1937,6 +1972,23 @@ cells with fifty thousand ties make their records within 30 MB, each
 held as the bytes it is sent as, in time that grows with them. The
 node folds the messages it holds once it lets them go, so a watch
 holds it only to take them.
+
+The `hub` kind holds, for each subject the realm's cells declare, the
+cells a need on it goes to first, keyed `hub:<subject>`, the subject in
+lower case. A subject has a hub for every 10 cells declaring it, each
+naming at most 5 of them as its `fits`, shared out among its hubs, the
+cell heard least lately first: by its own `tie:<cell>` record, its
+messages in the last hour and a 24th of the day's, so a cell talking
+least has the most room. A cell hubs one
+subject, the rarest first, except where every cell declaring a subject
+already hubs another: then the one hubbing fewest hubs it too, so no
+subject is left with none. A record says its `subject`, its `hubs`,
+each `{"hub", "fits"}`, and the first of them again as `hub` and
+`fits`, for a reader of one hub. A hub is made by the node's own count
+and grants nothing: it is where a need is sent first, never a cell
+that may do more. The kind is told as the sessions change, so a busy
+hour of talk moves the hubs with the next change, not a message at a
+time.
 
 The `ended` kind holds each session of this machine's whose work
 stopped while its quest goes on, keyed `ended:<session>`, so whoever
@@ -2394,7 +2446,7 @@ cells', and a reader gathers them as `mycelium forage` does.
 | `status` | the quest's status, such as `active` |
 | `documents` | each of its documents: `id`, `kind`, `title`, `stage`, and how many steps are `ticked` and `open` |
 | `waits` | only when there are any, what the quest waits on its person for: `id`, `title`, `why`, `minutes`, `when`, whether it's `ready`, and when it was `raised` |
-| `lineage` | `started_by`, the cell it answers to, and `parent`, the quest its own sits under |
+| `lineage` | `started_by`, the cell that asked this node to start it, else the orchestrator its presence names; `split_from`, the cell its presence says it split from, kept only as an address; and `parent`, the quest its own sits under |
 
 A quest's id names a folder in the store, so one that isn't a plain
 name of letters, digits, `-` and `_` is read as nothing, and a file is

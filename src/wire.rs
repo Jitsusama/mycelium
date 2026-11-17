@@ -107,6 +107,13 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         quests: Vec<String>,
     },
+    /// The sessions this node started lately, and whether agents may
+    /// start more: stopping, resuming and listing are each taken only
+    /// from the person's own login, since a list names their folders.
+    Starts {
+        /// What to do.
+        act: StartsAct,
+    },
     /// Frees `quest` from the session holding it by the node's record of
     /// orchestrations, taken only from the person's own login.
     Free {
@@ -218,6 +225,18 @@ pub struct Run {
     /// run asked elsewhere is told no session here (`PI_SESSION_ID`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+}
+
+/// What is asked of a node's book of starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartsAct {
+    /// Refuse every agent's start till the person resumes them.
+    Stop,
+    /// Let agents start again, within their limits.
+    Resume,
+    /// Only say how they stand.
+    List,
 }
 
 /// Who asks a run: the person, or an agent and the fence it runs in.
@@ -387,6 +406,14 @@ pub enum Response {
     Carried(serde_json::Value),
     /// The orchestrations asked for, recorded.
     Orchestrated,
+    /// Whether agents' starts are stopped, after the act asked, and the
+    /// newest starts the node keeps, newest last, as its book writes them.
+    Starts {
+        /// Whether the person has stopped agents starting sessions.
+        stopped: bool,
+        /// The newest starts.
+        newest: Vec<serde_json::Value>,
+    },
     /// Events follow, one per line.
     Watching,
     /// The process is counted present until it hangs up.
