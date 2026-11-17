@@ -2448,19 +2448,7 @@ mod tests {
             .await
             .expect("the far end says hello");
         let mut lines = BufReader::new(far_reading).lines();
-        let mut heard = Vec::new();
-        let waited = tokio::time::timeout(PATIENCE, async {
-            while let Some(line) = lines.next_line().await.expect("the pipe reads") {
-                let frame = serde_json::from_str::<Frame>(&line).expect("a frame");
-                let presence = matches!(frame, Frame::Presence { .. });
-                heard.push(frame);
-                if presence {
-                    return;
-                }
-            }
-        })
-        .await;
-        assert!(waited.is_ok(), "skiff's session never crossed");
+        let heard = heard_until(&mut lines, |frame| matches!(frame, Frame::Presence { .. })).await;
         assert!(
             !heard.iter().any(|frame| matches!(frame, Frame::Machine(_))),
             "an end that doesn't say it knows of machines hears none: {heard:?}"
@@ -2468,23 +2456,18 @@ mod tests {
 
         let mut tern = facts::measure("tern", &facts::Sources::nowhere());
         tern.state = Readiness::Ready;
-        for frame in [
-            Frame::Have {
-                messages: Vec::new(),
-                living: Some(vec!["walgit".to_owned()]),
-            },
-            Frame::Machine(Box::new(tern)),
-            Frame::Presence {
-                session: "walgit".to_owned(),
-                body: json!({"session": "walgit"}),
-                leases: None,
-                held: None,
-            },
-        ] {
-            send(&mut far_writing, &frame)
-                .await
-                .expect("the far end speaks");
-        }
+        says(
+            &mut far_writing,
+            &[
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(vec!["walgit".to_owned()]),
+                },
+                Frame::Machine(Box::new(tern)),
+                present("walgit"),
+            ],
+        )
+        .await;
         until(&skiff, |store| {
             store.presences().iter().any(|p| p.session == "walgit")
         })
@@ -2613,41 +2596,25 @@ mod tests {
                 .await
                 .expect("the far end says hello");
             let mut lines = BufReader::new(far_reading).lines();
-            let mut heard = Vec::new();
-            let waited = tokio::time::timeout(PATIENCE, async {
-                while let Some(line) = lines.next_line().await.expect("the pipe reads") {
-                    let frame = serde_json::from_str::<Frame>(&line).expect("a frame");
-                    let presence = matches!(frame, Frame::Presence { .. });
-                    heard.push(frame);
-                    if presence {
-                        return;
-                    }
-                }
-            })
-            .await;
-            assert!(waited.is_ok(), "{said}: skiff's session never crossed");
+            let heard =
+                heard_until(&mut lines, |frame| matches!(frame, Frame::Presence { .. })).await;
             let crossed = heard
                 .iter()
                 .any(|frame| matches!(frame, Frame::Carries { .. }));
             assert_eq!(crossed, said.ends_with("too many"), "{said}: {heard:?}");
 
-            for frame in [
-                Frame::Have {
-                    messages: Vec::new(),
-                    living: Some(vec!["walgit".to_owned()]),
-                },
-                Frame::Carries { carries: told },
-                Frame::Presence {
-                    session: "walgit".to_owned(),
-                    body: json!({"session": "walgit"}),
-                    leases: None,
-                    held: None,
-                },
-            ] {
-                send(&mut far_writing, &frame)
-                    .await
-                    .expect("the far end speaks");
-            }
+            says(
+                &mut far_writing,
+                &[
+                    Frame::Have {
+                        messages: Vec::new(),
+                        living: Some(vec!["walgit".to_owned()]),
+                    },
+                    Frame::Carries { carries: told },
+                    present("walgit"),
+                ],
+            )
+            .await;
             until(&skiff, |store| {
                 store.presences().iter().any(|p| p.session == "walgit")
             })
@@ -2963,11 +2930,7 @@ mod tests {
                 body: json!({"id": good, "to": ["@WCJQSG"]}),
             },
         ];
-        for frame in &frames {
-            send(&mut far_writing, frame)
-                .await
-                .expect("the far end sends");
-        }
+        says(&mut far_writing, &frames).await;
         until(&skiff, |store| store.message(&good).is_some()).await;
         assert_eq!(
             skiff.message_ids(0),
@@ -3052,18 +3015,18 @@ mod tests {
         };
         assert!(hello.releases, "an end that can release says so");
 
-        for frame in [
-            Frame::Hello(realm("lent").hello()),
-            Frame::Have {
-                messages: Vec::new(),
-                living: Some(Vec::new()),
-            },
-            Frame::HandedOver,
-        ] {
-            send(&mut far_writing, &frame)
-                .await
-                .expect("the far end speaks");
-        }
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("lent").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                Frame::HandedOver,
+            ],
+        )
+        .await;
         let ended = tokio::time::timeout(PATIENCE, skiff_end)
             .await
             .expect("skiff's end ends")
@@ -3161,11 +3124,7 @@ mod tests {
         let mut lines = BufReader::new(far_reading).lines();
 
         let message = recent(0, "SAK9FZ", 0);
-        for frame in a_workers_frames(quest, &message) {
-            send(&mut far_writing, &frame)
-                .await
-                .expect("the worker speaks");
-        }
+        says(&mut far_writing, &a_workers_frames(quest, &message)).await;
 
         let mut answers = BTreeMap::new();
         let mut ran = None;
@@ -3248,20 +3207,20 @@ mod tests {
             body: json!({"id": id, "from": from, "to": ["#outside/github"],
                          "intent": "fyi", "text": "github: 9 asked of you, up from 1; 9 today"}),
         };
-        for frame in [
-            Frame::Hello(realm("tern").hello()),
-            Frame::Have {
-                messages: Vec::new(),
-                living: Some(Vec::new()),
-            },
-            message(&forged, "github@tern"),
-            message(&theirs, "github@skiff"),
-            message(&ours, "OSPR01"),
-        ] {
-            send(&mut far_writing, &frame)
-                .await
-                .expect("the peer speaks");
-        }
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                message(&forged, "github@tern"),
+                message(&theirs, "github@skiff"),
+                message(&ours, "OSPR01"),
+            ],
+        )
+        .await;
 
         until(&skiff, |store| store.message(&ours).is_some()).await;
         assert!(
@@ -3296,26 +3255,21 @@ mod tests {
             id: id.to_owned(),
             body: json!({"id": id, "from": from, "to": ["@WCJQSG"], "text": text}),
         };
-        for frame in [
-            Frame::Hello(realm("tern").hello()),
-            Frame::Have {
-                messages: Vec::new(),
-                living: Some(Vec::new()),
-            },
-            Frame::Presence {
-                session: "sak9fz".to_owned(),
-                body: json!({"session": "sak9fz"}),
-                leases: None,
-                held: None,
-            },
-            message(&posing, "OSPR01", "osprey says so"),
-            message(&held, "SAK9FZ", "theirs"),
-            message(&own, "SAK9FZ", "done"),
-        ] {
-            send(&mut far_writing, &frame)
-                .await
-                .expect("the worker speaks");
-        }
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                present("sak9fz"),
+                message(&posing, "OSPR01", "osprey says so"),
+                message(&held, "SAK9FZ", "theirs"),
+                message(&own, "SAK9FZ", "done"),
+            ],
+        )
+        .await;
 
         until(&skiff, |store| store.message(&own).is_some()).await;
         assert!(
@@ -3392,25 +3346,20 @@ mod tests {
                 lines: lines.to_owned(),
             })
         };
-        for frame in [
-            Frame::Hello(realm("tern").hello()),
-            Frame::Have {
-                messages: Vec::new(),
-                living: Some(Vec::new()),
-            },
-            Frame::Presence {
-                session: "sak9fz".to_owned(),
-                body: json!({"session": "sak9fz"}),
-                leases: None,
-                held: None,
-            },
-            replies("OSPR01", "{\"posing\":true}\n"),
-            replies("SAK9FZ", "{\"done\":true}\n"),
-        ] {
-            send(&mut far_writing, &frame)
-                .await
-                .expect("the worker speaks");
-        }
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(Vec::new()),
+                },
+                present("sak9fz"),
+                replies("OSPR01", "{\"posing\":true}\n"),
+                replies("SAK9FZ", "{\"done\":true}\n"),
+            ],
+        )
+        .await;
 
         let talk = |address: &str| steer::replies(&inboxes, address, "t1").expect("a talk");
         until_file(&talk("SAK9FZ"), "{\"done\":true}\n").await;
@@ -3431,20 +3380,20 @@ mod tests {
         let skiff = Memory::default();
         let (far_reading, mut far_writing) = a_worker_steering(&skiff, dir.path());
 
-        for frame in [
-            Frame::Hello(realm("tern").hello()),
-            Frame::Follow {
-                talks: vec![steer::Talk {
-                    address: "WCJQSG".to_owned(),
-                    id: "t1".to_owned(),
-                    has: 0,
-                }],
-            },
-        ] {
-            send(&mut far_writing, &frame)
-                .await
-                .expect("the worker speaks");
-        }
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Follow {
+                    talks: vec![steer::Talk {
+                        address: "WCJQSG".to_owned(),
+                        id: "t1".to_owned(),
+                        has: 0,
+                    }],
+                },
+            ],
+        )
+        .await;
 
         // Skiff looks at what it follows every second, so three looks pass.
         let mut heard = Vec::new();
@@ -3553,27 +3502,23 @@ mod tests {
             id: said.clone(),
             body: json!({"id": said, "to": ["@WCJQSG"]}),
         });
-        for frame in &frames {
-            send(&mut far_writing, frame)
-                .await
-                .expect("the lent machine speaks");
-        }
+        says(&mut far_writing, &frames).await;
         until(&skiff, |store| store.message(&said).is_some()).await;
         assert!(
             !skiff_end.is_finished(),
             "skiff keeps the link while the README it asked for is on its way"
         );
 
-        for frame in files_asked_for(&mut lines, &mut exchange)
-            .await
-            .into_iter()
-            .map(Frame::Share)
-            .chain([Frame::HandedOver])
-        {
-            send(&mut far_writing, &frame)
+        says(
+            &mut far_writing,
+            &files_asked_for(&mut lines, &mut exchange)
                 .await
-                .expect("the lent machine speaks");
-        }
+                .into_iter()
+                .map(Frame::Share)
+                .chain([Frame::HandedOver])
+                .collect::<Vec<_>>(),
+        )
+        .await;
         let ended = tokio::time::timeout(PATIENCE, skiff_end)
             .await
             .expect("skiff's end ends")
@@ -3583,6 +3528,16 @@ mod tests {
             Ending::HandedOver,
             "once the README came, the lent machine may be released"
         );
+    }
+
+    /// The presence of `session`, saying nothing but its name.
+    fn present(session: &str) -> Frame {
+        Frame::Presence {
+            session: session.to_owned(),
+            body: json!({"session": session}),
+            leases: None,
+            held: None,
+        }
     }
 
     /// Says each of `frames` over `writing`, as the far end of a link.

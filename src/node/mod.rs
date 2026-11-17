@@ -4081,6 +4081,34 @@ mod tests {
         node(store, machine, Vec::<Piped>::new(), None, socket)
     }
 
+    /// Runs a node of skiff in the work realm on `socket`, as `given`
+    /// says and linked to nothing, until `stop` is dropped.
+    fn alone_with(
+        store: &Memory,
+        socket: &Path,
+        given: Given,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let bound = bind(socket).expect("the socket binds");
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let store = store.clone();
+        let node = tokio::spawn(async move {
+            let stopped = async {
+                // A dropped sender stops the node as surely as a sent stop.
+                let _ = stopped.await;
+            };
+            let nobody = Listed::<Ssh>(Vec::new());
+            run(store, membership, nobody, given, bound, stopped).await
+        });
+        (stop, node)
+    }
+
     /// Runs a node as [`node`] does, sharing the quests of `sharing`.
     fn node_sharing<D: Dial + Clone>(
         store: &Memory,
@@ -4584,9 +4612,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 0, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert!(hello["kinds"]["murmur"]["live"].is_array(), "{hello}");
         client
             .ask(json!({"id": 1, "ask": "watch", "kind": "murmur"}))
@@ -4656,9 +4682,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 0, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert!(hello["kinds"]["builder"]["live"].is_array(), "{hello}");
         client
             .ask(json!({"id": 1, "ask": "watch", "kind": "builder"}))
@@ -4992,6 +5016,15 @@ esac
         );
     }
 
+    /// The presence of `session`, going by `addresses`, listening and
+    /// idle now.
+    fn listening(session: &str, addresses: &[&str]) -> Value {
+        json!({
+            "session": session, "addresses": addresses, "groups": [],
+            "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
+        })
+    }
+
     /// A client of the node at a socket, speaking the daemon interface.
     struct Speaking {
         lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
@@ -5012,10 +5045,16 @@ esac
         /// heard its answer, so the node is up and the next answer is
         /// to what the test asks.
         async fn greeted(socket: &Path) -> Self {
+            Self::hello(socket).await.0
+        }
+
+        /// A client of the node at `socket` that has said hello, with
+        /// the node's answer.
+        async fn hello(socket: &Path) -> (Self, Value) {
             let mut client = Self::to(socket).await;
             client.ask(json!({"id": 1, "ask": "hello"})).await;
-            client.next().await;
-            client
+            let hello = client.next().await;
+            (client, hello)
         }
 
         async fn ask(&mut self, ask: Value) {
@@ -5116,10 +5155,7 @@ esac
             .put_machine(&kestrel_at("2026-10-31T04:00:00Z"))
             .expect("what it said is kept");
         let (_stop, _node) = alone(&store, "skiff", &socket);
-        let mut client = Speaking::to(&socket).await;
-
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert_eq!(
             (&hello["id"], &hello["version"], &hello["domain"]),
             (&json!(1), &json!(1), &json!("node")),
@@ -5209,10 +5245,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
-        let mut client = Speaking::to(&socket).await;
-
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert_eq!(
             hello["kinds"]["quest"],
             json!({"live": []}),
@@ -5270,10 +5303,7 @@ esac
         };
         let (first, body) = said("first");
         store.send_here(&first, body);
-        let mut client = Speaking::to(&socket).await;
-
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert_eq!(
             hello["kinds"]["message"],
             json!({"live": []}),
@@ -5325,10 +5355,7 @@ esac
         };
         let (first, body) = said("KP0L6A", "hnp07b");
         store.send_here(&first, body);
-        let mut client = Speaking::to(&socket).await;
-
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert_eq!(
             hello["kinds"]["tie"]["live"],
             json!(tie::LIVE),
@@ -5377,10 +5404,7 @@ esac
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         // SKIFF1's session goes by its own address too.
-        let presence = json!({
-            "session": "skiff", "addresses": ["SKIFF1", "5F6018AA"], "groups": [],
-            "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
-        });
+        let presence = listening("skiff", &["SKIFF1", "5F6018AA"]);
         store.start_here("skiff", presence, true);
         let (_stop, _node) = alone(&store, "skiff", &socket);
         let now = jiff::Timestamp::now();
@@ -5398,9 +5422,7 @@ esac
         };
         let asked = sent(1, "KESTRL", "@SKIFF1", "question", json!({}));
         let held = sent(2, "KESTRL", "#machine", "hold", json!({}));
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert_eq!(
             hello["kinds"]["unanswered"],
             json!({"live": ["waiting_on"]}),
@@ -5460,10 +5482,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let presence = json!({
-            "session": "here", "addresses": ["HERE12"], "groups": [],
-            "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
-        });
+        let presence = listening("here", &["HERE12"]);
         store.start_here("here", presence, true);
         let (_stop, _node) = alone(&store, "skiff", &socket);
         let mut client = Speaking::greeted(&socket).await;
@@ -5550,10 +5569,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let presence = json!({
-            "session": "here", "addresses": ["HERE12"], "groups": [],
-            "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
-        });
+        let presence = listening("here", &["HERE12"]);
         store.start_here("here", presence, true);
         let (_stop, _node) = alone(&store, "skiff", &socket);
         // The client runs in this process, which the stand-in for /proc
@@ -5595,18 +5611,7 @@ esac
             "so is its steer as Joel in the daemon interface"
         );
         let inbox = inboxes(&socket).join("HERE12");
-        let held = || -> Vec<Value> {
-            fs::read_dir(&inbox)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter(|entry| entry.path().extension().is_some_and(|it| it == "json"))
-                .map(|entry| {
-                    serde_json::from_str(&fs::read_to_string(entry.path()).expect("it reads"))
-                        .expect("it is JSON")
-                })
-                .collect()
-        };
+        let held = || held_in(&inbox);
         assert_eq!(
             held(),
             Vec::<Value>::new(),
@@ -6275,9 +6280,7 @@ esac
         );
         fences_below(&socket, 7100, 7003);
         // A presence changing has the node look at its sessions' processes.
-        let passing = json!({"session": "s-passing", "addresses": ["PASSNG"], "groups": [],
-                             "busy": false, "state": "listening",
-                             "at": jiff::Timestamp::now().to_string()});
+        let passing = listening("s-passing", &["PASSNG"]);
         store.start_here("s-passing", passing, true);
         let seen = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
@@ -6829,10 +6832,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
-        let presence = json!({
-            "session": "here", "addresses": ["HERE12"], "groups": [],
-            "busy": false, "state": "listening", "at": jiff::Timestamp::now().to_string(),
-        });
+        let presence = listening("here", &["HERE12"]);
         store.start_here("here", presence, true);
         // One parked has no process, and reads its inbox as it wakes.
         let parked = json!({
@@ -6984,9 +6984,7 @@ esac
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let (_stop, _node) = alone(&store, "skiff", &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert_eq!(
             hello["kinds"]["event"]["live"],
             json!([]),
@@ -7069,9 +7067,7 @@ esac
             &socket,
             Some(places),
         );
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert!(
             hello["kinds"]["forage"]["live"].is_array(),
             "hello names forages among the kinds it holds: {hello}"
@@ -7146,9 +7142,7 @@ esac
                 .expect("the presence is kept");
         };
         let (_stop, _node) = alone(&store, "skiff", &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert!(
             hello["kinds"]["network"]["live"].is_array(),
             "hello names networks among the kinds it holds: {hello}"
@@ -7248,9 +7242,7 @@ esac
                 .expect("the presence is kept");
         };
         let (_stop, _node) = alone(&store, "skiff", &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert!(
             hello["kinds"]["cell"]["live"].is_array(),
             "hello names cells among the kinds it holds: {hello}"
@@ -7678,9 +7670,7 @@ esac
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let (_stop, _node) = alone(&store, "skiff", &socket);
-        let mut client = Speaking::to(&socket).await;
-        client.ask(json!({"id": 1, "ask": "hello"})).await;
-        let hello = client.next().await;
+        let (mut client, hello) = Speaking::hello(&socket).await;
         assert_eq!(
             (
                 &hello["kinds"]["session"]["deep"],
@@ -9310,32 +9300,8 @@ esac
         let presence =
             json!({"session": "01a1", "addresses": ["4UHC5Q"], "at": "2026-10-26T20:00:00Z"});
         store.start_here("01a1", presence, true);
-        let membership = Realm {
-            name: "work".to_owned(),
-            machine: "skiff".to_owned(),
-        };
-        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let bound = bind(&socket).expect("the socket binds");
-        let steers = dir.path().join("steer");
-        let node = tokio::spawn({
-            let store = store.clone();
-            async move {
-                let stopped = async {
-                    // A dropped sender stops the node as surely as a sent stop.
-                    let _ = stopped.await;
-                };
-                let given = bare(steers, None);
-                run(
-                    store,
-                    membership,
-                    Listed::<Ssh>(Vec::new()),
-                    given,
-                    bound,
-                    stopped,
-                )
-                .await
-            }
-        });
+        let given = bare(dir.path().join("steer"), None);
+        let (stop, node) = alone_with(&store, &socket, given);
         let asked = tokio::task::spawn_blocking(move || {
             let mut watch = Client::connect(&socket).expect("the watch connects");
             let watching = watch.ask(&Request::Watch {
@@ -9405,12 +9371,6 @@ esac
     async fn a_node_easing_says_what_it_would_do_and_does_none_of_it() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("mycelium").join("work.sock");
-        let membership = Realm {
-            name: "work".to_owned(),
-            machine: "skiff".to_owned(),
-        };
-        let bound = bind(&socket).expect("the socket binds");
-        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let steers = dir.path().join("steer");
         let folder = dir.path().join("eases");
         let carries = dir.path().join("carries.jsonl");
@@ -9423,14 +9383,7 @@ esac
             carries: carries.clone(),
             ..bare(steers, None)
         };
-        let node = tokio::spawn(async move {
-            let stopped = async {
-                // A dropped sender stops the node as surely as a sent stop.
-                let _ = stopped.await;
-            };
-            let nobody = Listed::<Ssh>(Vec::new());
-            run(Memory::default(), membership, nobody, given, bound, stopped).await
-        });
+        let (stop, node) = alone_with(&Memory::default(), &socket, given);
 
         let day = folder.join(format!(
             "{}.jsonl",
@@ -9476,27 +9429,12 @@ esac
     async fn a_node_keeps_each_placement_with_what_it_knew() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("mycelium").join("work.sock");
-        let membership = Realm {
-            name: "work".to_owned(),
-            machine: "skiff".to_owned(),
-        };
-        let bound = bind(&socket).expect("the socket binds");
-        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let steers = dir.path().join("steer");
         let kept = dir.path().join("placements");
-        let log = placements::Log::at(kept.clone());
-        let node = tokio::spawn(async move {
-            let given = Given {
-                placements: Some(log),
-                ..bare(steers, None)
-            };
-            let stopped = async {
-                // A dropped sender stops the node as surely as a sent stop.
-                let _ = stopped.await;
-            };
-            let nobody = Listed::<Ssh>(Vec::new());
-            run(Memory::default(), membership, nobody, given, bound, stopped).await
-        });
+        let given = Given {
+            placements: Some(placements::Log::at(kept.clone())),
+            ..bare(dir.path().join("steer"), None)
+        };
+        let (stop, node) = alone_with(&Memory::default(), &socket, given);
 
         let answer = tokio::task::spawn_blocking(move || {
             let mut client = Client::connect(&socket).expect("the client connects");
@@ -9549,27 +9487,16 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("mycelium").join("work.sock");
         let (holder, given) = stand_in_holder(dir.path());
-        let membership = Realm {
-            name: "work".to_owned(),
-            machine: "skiff".to_owned(),
+        let holds = Starter {
+            program: holder,
+            scope: start::Scope::None,
+            kit: Some(PathBuf::from("/nix/store/kit")),
         };
-        let bound = bind(&socket).expect("the socket binds");
-        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let steers = dir.path().join("steer");
-        let node = tokio::spawn(async move {
-            let starter = Starter {
-                program: holder,
-                scope: start::Scope::None,
-                kit: Some(PathBuf::from("/nix/store/kit")),
-            };
-            let given = bare(steers, Some(starter));
-            let stopped = async {
-                // A dropped sender stops the node as surely as a sent stop.
-                let _ = stopped.await;
-            };
-            let nobody = Listed::<Ssh>(Vec::new());
-            run(Memory::default(), membership, nobody, given, bound, stopped).await
-        });
+        let (stop, node) = alone_with(
+            &Memory::default(),
+            &socket,
+            bare(dir.path().join("steer"), Some(holds)),
+        );
 
         let folder = dir.path().to_owned();
         let answers = tokio::task::spawn_blocking(move || {
