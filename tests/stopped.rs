@@ -8,32 +8,16 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use notify::{RecursiveMode, Watcher};
+use process::{made, mycelium};
+
+mod process;
 
 /// How long the node has to start, and then to stop.
 const PATIENCE: Duration = Duration::from_secs(30);
-
-/// Waits up to `within` for `path` to be there, hearing each change under
-/// `root`.
-fn made(root: &Path, path: &Path, within: Duration) {
-    let (telling, told) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(telling).expect("a watcher");
-    watcher
-        .watch(root, RecursiveMode::Recursive)
-        .expect("the folder is watched");
-    let deadline = Instant::now() + within;
-    while !path.exists() {
-        let left = deadline.saturating_duration_since(Instant::now());
-        assert!(!left.is_zero(), "{} was never made", path.display());
-        // A watch that fails or times out has the path looked at again.
-        let _ = told.recv_timeout(left);
-    }
-}
 
 #[test]
 fn a_node_told_to_stop_while_watched_lets_go_and_ends_well() {
@@ -45,16 +29,7 @@ fn a_node_told_to_stop_while_watched_lets_go_and_ends_well() {
         .create(home.join("r"))
         .expect("its runtime folder is made");
     let said = home.join("said");
-    let mut node = Command::new(env!("CARGO_BIN_EXE_mycelium"))
-        .args(["--realm", "work", "node"])
-        .env("HOME", home)
-        .env("XDG_RUNTIME_DIR", home.join("r"))
-        .env("XDG_CONFIG_HOME", home.join("c"))
-        .env("XDG_STATE_HOME", home.join("s"))
-        .env("XDG_DATA_HOME", home.join("d"))
-        .env("XDG_CACHE_HOME", home.join("k"))
-        .env_remove("INVOCATION_ID")
-        .stdin(Stdio::null())
+    let mut node = mycelium(home, &["node"])
         .stderr(fs::File::create(&said).expect("somewhere to say"))
         .spawn()
         .expect("the node starts");

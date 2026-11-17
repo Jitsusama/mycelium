@@ -24,7 +24,7 @@ use std::time::Duration;
 use mycelium::murmur::{self, Webs};
 use mycelium::web::{self, Event, Said};
 
-use counting::{HELD, PEAK};
+use counting::{HELD, PEAK, thread_time};
 
 /// How many cells the bar is held at, each murmuring once.
 const CELLS: usize = 10_000;
@@ -63,63 +63,8 @@ const AT_MOST: usize = 30_000_000;
 const NOW: i64 = 1_794_800_000;
 
 /// The system's allocator, counting what is held and the most held.
-#[expect(unsafe_code, reason = "an allocator is unsafe to implement")]
-mod counting {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// The system's allocator, counting.
-    struct Counting;
-
-    /// How many bytes are held now.
-    pub static HELD: AtomicUsize = AtomicUsize::new(0);
-
-    /// The most bytes held since it was last reset.
-    pub static PEAK: AtomicUsize = AtomicUsize::new(0);
-
-    /// That `bytes` more are held.
-    fn took(bytes: usize) {
-        let held = HELD.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        PEAK.fetch_max(held, Ordering::Relaxed);
-    }
-
-    /// That `bytes` fewer are held.
-    fn gave(bytes: usize) {
-        HELD.fetch_sub(bytes, Ordering::Relaxed);
-    }
-
-    // SAFETY: each call is the system allocator's own, only counted.
-    unsafe impl GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            // SAFETY: the caller keeps `alloc`'s contract, which this passes on.
-            let made = unsafe { System.alloc(layout) };
-            if !made.is_null() {
-                took(layout.size());
-            }
-            made
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            // SAFETY: the caller keeps `dealloc`'s contract, which this passes on.
-            unsafe { System.dealloc(ptr, layout) };
-            gave(layout.size());
-        }
-
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            // SAFETY: the caller keeps `realloc`'s contract, which this passes on.
-            let made = unsafe { System.realloc(ptr, layout, new_size) };
-            if !made.is_null() {
-                took(new_size);
-                gave(layout.size());
-            }
-            made
-        }
-    }
-
-    /// Every allocation this test makes, counted.
-    #[global_allocator]
-    static COUNTING: Counting = Counting;
-}
+#[path = "realm/counting.rs"]
+mod counting;
 
 #[test]
 fn ten_thousand_cells_murmurs_are_read_within_the_bar_and_read_again_by_what_changed() {
@@ -191,16 +136,6 @@ fn timed(scratch: &Path) -> Duration {
         &purposes(),
     ));
     thread_time().saturating_sub(begun)
-}
-
-/// How long the processor has run this thread, which waiting for it
-/// doesn't count towards.
-fn thread_time() -> Duration {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
-    Duration::new(
-        u64::try_from(now.tv_sec).unwrap_or(0),
-        u32::try_from(now.tv_nsec).unwrap_or(0),
-    )
 }
 
 /// What every hundredth cell says it works on.

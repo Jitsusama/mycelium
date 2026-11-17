@@ -63,63 +63,12 @@ const MOST_TIMINGS: usize = 25;
 const AT_MOST: usize = 64_000_000;
 
 /// The system's allocator, counting what is held and the most held.
-#[expect(unsafe_code, reason = "an allocator is unsafe to implement")]
-mod counting {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// The system's allocator, counting.
-    struct Counting;
-
-    /// How many bytes are held now.
-    pub static HELD: AtomicUsize = AtomicUsize::new(0);
-
-    /// The most bytes held since it was last reset.
-    pub static PEAK: AtomicUsize = AtomicUsize::new(0);
-
-    /// That `bytes` more are held.
-    fn took(bytes: usize) {
-        let held = HELD.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        PEAK.fetch_max(held, Ordering::Relaxed);
-    }
-
-    /// That `bytes` fewer are held.
-    fn gave(bytes: usize) {
-        HELD.fetch_sub(bytes, Ordering::Relaxed);
-    }
-
-    // SAFETY: each call is the system allocator's own, only counted.
-    unsafe impl GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            // SAFETY: the caller keeps `alloc`'s contract, which this passes on.
-            let made = unsafe { System.alloc(layout) };
-            if !made.is_null() {
-                took(layout.size());
-            }
-            made
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            // SAFETY: the caller keeps `dealloc`'s contract, which this passes on.
-            unsafe { System.dealloc(ptr, layout) };
-            gave(layout.size());
-        }
-
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            // SAFETY: the caller keeps `realloc`'s contract, which this passes on.
-            let made = unsafe { System.realloc(ptr, layout, new_size) };
-            if !made.is_null() {
-                took(new_size);
-                gave(layout.size());
-            }
-            made
-        }
-    }
-
-    /// Every allocation this test makes, counted.
-    #[global_allocator]
-    static COUNTING: Counting = Counting;
-}
+#[path = "realm/counting.rs"]
+#[expect(
+    dead_code,
+    reason = "the forages are timed by the clock, not the thread"
+)]
+mod counting;
 
 #[test]
 fn ten_thousand_cells_make_their_forage_records_within_the_bar() {
