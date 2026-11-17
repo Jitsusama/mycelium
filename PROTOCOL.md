@@ -1598,17 +1598,20 @@ stopped while its quest goes on, keyed `ended:<session>`, so whoever
 orchestrates the quest can be told. A session counts once this node
 has seen its process ended for ten minutes, unparked or parked with
 nothing left to wake it (its node doesn't say it stands `parked`),
-and not carried from here nor waiting its turn to resume, while its
-quest, the one whose record attaches it in the quests this node
-serves, is `active`, names an `orchestrator` that reads as an address,
-and has no session of the realm running on it. A record says the
+and not carried from here (unless the carry was refused or came back)
+nor waiting its turn to resume, while its presence was written within
+a day and its quest, the one quest whose record attaches it in the
+quests this node serves, is `active`, names an `orchestrator` that
+reads as an address, and has no session of the realm running on it.
+Where the carries can't be read, none is told. A record says the
 `session`, its `address`, the `quest`, the quest's `orchestrator`,
 uppercase, `at`, when the session last changed, and `why`: `ended`, or
 `parked-unwakeable`; it is heard when the node first saw the end. It
 grants nothing, a notice to an address and never an order. It is gone
-once a session runs on the quest, after which that end is never told
-again while the node runs, once the quest is no longer active, or a
-day after the node first saw it. Its quest and orchestrator change
+while a session runs on the quest, and comes back ten minutes after
+the work stops again with the same `session` and `at`, which a teller
+tells once; gone too once the quest is no longer active, or a day
+after the node first saw it. Its quest and orchestrator change
 only as the quests' record does. A node serving no quests holds none.
 It is told as the sessions or the quests change, and each minute.
 

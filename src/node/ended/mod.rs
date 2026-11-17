@@ -14,12 +14,13 @@
 //! written a moment after its presence, or a holder back after a restart
 //! and waiting its turn, is never told as an end. One carried from here
 //! ended for the carry, and one waiting its turn is coming back, so
-//! neither counts at all. It counts only while its quest, as the quests'
-//! record attaches it, is active, names an orchestrator and has no session
-//! running on it; once one is seen running there, the work was taken up,
-//! and that end is never told again while the node runs. It is kept a day
-//! from when the node first saw it ended, as a presence's own time is only
-//! its last write.
+//! neither counts at all. It counts only while its quest, the one quest
+//! the quests' record attaches it to, is active, names an orchestrator and
+//! has no session running on it: work going on there goes on. It is kept a
+//! day from when the node first saw it ended, and never once its presence
+//! was last written over a day ago, so a node started again doesn't tell
+//! last week's ends anew. The mesh side tells each end once, by its
+//! session and `at`, however often it comes and goes here.
 //!
 //! The quests' record is a file any process of the person's account can
 //! write, and a session's presence is its own word, so the record grants
@@ -47,13 +48,7 @@ pub const KEPT_FOR: i64 = 24 * 60 * 60 * 1000;
 /// How long this node sees a session ended before it is told, in
 /// milliseconds: ten minutes, past a park's marker following its presence
 /// by moments and a machine's holders starting again after a reboot.
-#[cfg(not(test))]
 pub const SETTLED_AFTER: i64 = 10 * 60 * 1000;
-
-/// A millisecond in tests, so a node's tests see an end settle by the
-/// next change rather than ten minutes on; its own tests count from it.
-#[cfg(test)]
-pub const SETTLED_AFTER: i64 = 1;
 
 /// The longest an orchestrator's address is told as, which a quest's six
 /// letters fit.
@@ -65,11 +60,10 @@ const ENDED: &str = "ended";
 const PARKED_UNWAKEABLE: &str = "parked-unwakeable";
 
 /// What this node has seen of sessions ending, kept while it runs: when
-/// it first saw each ended, and those whose work was taken up since.
+/// it first saw each ended.
 #[derive(Debug, Default)]
 pub struct Seen {
     since: HashMap<String, i64>,
-    taken_up: HashSet<String>,
 }
 
 /// How the node judges the sessions here: how each stands, and which are
@@ -81,13 +75,20 @@ pub struct Judged<'a> {
     pub standing: &'a dyn Fn(&Session) -> Option<&'static str>,
     /// Sessions whose end here isn't their work stopping.
     pub coming_back: &'a HashSet<String>,
+    /// How long an end is seen before it is told, in milliseconds:
+    /// [`SETTLED_AFTER`], but where a test says.
+    pub settled_after: i64,
+    /// When a presence was last written, in milliseconds, where its time
+    /// reads as one.
+    pub written: &'a dyn Fn(&str) -> Option<i64>,
 }
 
 /// Each session of `sessions` here that `seen` has held ended for
-/// [`SETTLED_AFTER`] and not past [`KEPT_FOR`] at `now`, as `judged`
-/// says, while its quest by `quests` is active, has an orchestrator and
-/// nobody running on it: its id, when the node first saw it ended, and
-/// its fields.
+/// `judged`'s settling and not past [`KEPT_FOR`] at `now`, written within
+/// [`KEPT_FOR`] too, while its quest by `quests` is active, has an
+/// orchestrator and nobody running on it: its id, when the node first saw
+/// it ended, and its fields. A session elsewhere runs while its own node
+/// says it's busy or idle, however long since it last wrote.
 pub fn ended(
     sessions: &[Session],
     judged: &Judged,
@@ -97,7 +98,7 @@ pub fn ended(
 ) -> Vec<(String, i64, Value)> {
     let running = |session: &Session| {
         matches!(session.state, State::Busy | State::Idle)
-            && (judged.standing)(session) == Some("running")
+            && (session.machine != judged.machine || (judged.standing)(session) == Some("running"))
     };
     let worked: HashSet<&str> = sessions
         .iter()
@@ -113,23 +114,25 @@ pub fn ended(
     // A session seen again, or gone from the record, ends afresh next time.
     let still: HashSet<&str> = ending.iter().map(|session| session.id.as_str()).collect();
     seen.since.retain(|id, _| still.contains(id.as_str()));
-    let known: HashSet<&str> = sessions.iter().map(|session| session.id.as_str()).collect();
-    seen.taken_up.retain(|id| known.contains(id.as_str()));
     let mut told = Vec::new();
     for session in ending {
-        if seen.taken_up.contains(&session.id) {
+        let since = *seen.since.entry(session.id.clone()).or_insert(now);
+        let Some(written) = (judged.written)(&session.at) else {
+            continue;
+        };
+        if now - since < judged.settled_after || now - since > KEPT_FOR || now - written > KEPT_FOR
+        {
             continue;
         }
-        let Some(quest) = quest_of(&session.id, quests) else {
+        let (Some(quest), Some(address)) = (
+            quest_of(&session.id, quests),
+            address_told(&session.address),
+        ) else {
             continue;
         };
         if worked.contains(quest) {
+            // Its end counts from when the work stops again.
             seen.since.remove(&session.id);
-            seen.taken_up.insert(session.id.clone());
-            continue;
-        }
-        let since = *seen.since.entry(session.id.clone()).or_insert(now);
-        if now - since < SETTLED_AFTER || now - since > KEPT_FOR {
             continue;
         }
         let Some(record) = quests.iter().find(|each| id(each) == Some(quest)) else {
@@ -148,7 +151,7 @@ pub fn ended(
         let parked = session.presence.get("state").and_then(Value::as_str) == Some("parked");
         let fields = json!({
             "session": session.id,
-            "address": session.address,
+            "address": address,
             "quest": quest,
             "orchestrator": orchestrator,
             "at": session.at,
@@ -159,12 +162,14 @@ pub fn ended(
     told
 }
 
-/// The quest whose record among `quests` attaches the session `id`.
+/// The one quest whose record among `quests` attaches `session`; none
+/// where none or several do, as then whose it is can't be told.
 fn quest_of<'a>(session: &str, quests: &'a [Value]) -> Option<&'a str> {
-    quests
-        .iter()
-        .find(|quest| attaches(quest, session))
-        .and_then(id)
+    let mut attaching = quests.iter().filter(|quest| attaches(quest, session));
+    match (attaching.next(), attaching.next()) {
+        (Some(quest), None) => id(quest),
+        _ => None,
+    }
 }
 
 /// Whether `quest`'s record attaches the session `id`.

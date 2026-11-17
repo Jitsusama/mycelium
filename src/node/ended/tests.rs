@@ -64,13 +64,26 @@ fn quests(sessions: &[&str]) -> Vec<Value> {
     })]
 }
 
-/// How the sessions stand, for the tests: `parked` where named, running
-/// where busy or idle, else as nothing.
+/// How the sessions stand, for the tests, as the node's standing says:
+/// running where not ended, unreachable ones too, else `parked` where
+/// named and as nothing otherwise.
 fn standing_of<'a>(parked: &'a [&'a str]) -> impl Fn(&Session) -> Option<&'static str> + 'a {
     move |session: &Session| match session.state {
-        State::Busy | State::Idle => Some("running"),
-        _ => parked.contains(&session.id.as_str()).then_some("parked"),
+        State::Ended => parked.contains(&session.id.as_str()).then_some("parked"),
+        _ => Some("running"),
     }
+}
+
+/// When `at` was written, as the node reads a presence's time.
+fn written(at: &str) -> Option<i64> {
+    at.parse::<jiff::Timestamp>()
+        .ok()
+        .map(jiff::Timestamp::as_millisecond)
+}
+
+/// The ids of what `told_at` makes.
+fn ids_of(told: Vec<(String, i64, Value)>) -> Vec<String> {
+    told.into_iter().map(|(id, _, _)| id).collect()
 }
 
 /// What `ended` makes of `sessions` against `quests` at `now`, the ones
@@ -88,6 +101,8 @@ fn told_at(
         machine: "skiff",
         standing: &standing,
         coming_back: &coming_back,
+        settled_after: SETTLED_AFTER,
+        written: &written,
     };
     ended(sessions, &judged, quests, now, seen)
 }
@@ -123,7 +138,9 @@ fn a_session_here_that_ended_on_an_active_quest_is_told_to_its_orchestrator() {
 
 #[test]
 fn an_end_is_told_only_once_the_node_has_seen_it_settle_and_for_a_day() {
-    let sessions = [ended_here("gone01")];
+    let mut gone = ended_here("gone01");
+    gone.at = said_at(NOW + HOUR);
+    let sessions = [gone];
     let quests = quests(&["gone01"]);
     let mut seen = Seen::default();
     let ids = |seen: &mut Seen, now: i64| -> Vec<String> {
@@ -199,29 +216,112 @@ fn a_session_is_on_the_quest_the_quests_record_attaches_it_to_alone() {
 }
 
 #[test]
-fn work_taken_up_is_never_told_again_while_the_node_runs() {
+fn an_end_is_told_only_while_nobody_works_its_quest_and_settles_anew_after() {
     let quests = quests(&["gone01", "next01"]);
     let mut seen = Seen::default();
-    let mut ids = |sessions: &[Session], now: i64| -> Vec<String> {
-        told_at(now, &mut seen, sessions, &quests, (&[], &[]))
-            .into_iter()
-            .map(|(id, _, _)| id)
-            .collect()
+    let mut ids = |sessions: &[Session], now: i64| {
+        ids_of(told_at(now, &mut seen, sessions, &quests, (&[], &[])))
     };
     let gone = ended_here("gone01");
+    let worked = [gone.clone(), running("next01")];
+    let stopped = [
+        gone.clone(),
+        session("next01", "kestrel", State::Ended, json!({})),
+    ];
     ids(std::slice::from_ref(&gone), NOW);
     assert_eq!(
         ids(std::slice::from_ref(&gone), NOW + SETTLED_AFTER),
         ["gone01"]
     );
     assert!(
-        ids(&[gone.clone(), running("next01")], NOW + SETTLED_AFTER + 1).is_empty(),
-        "a session running on the quest took the work up"
+        ids(&worked, NOW + SETTLED_AFTER + 1).is_empty(),
+        "a session running on the quest carries the work on"
     );
-    let next_gone = session("next01", "kestrel", State::Ended, json!({}));
     assert!(
-        ids(&[gone, next_gone], NOW + 2 * SETTLED_AFTER + 2).is_empty(),
-        "the first end was answered, and the second is its own node's to tell"
+        ids(&stopped, NOW + 2 * SETTLED_AFTER).is_empty(),
+        "work stopping again settles before it's told"
+    );
+    assert!(ids(&stopped, NOW + 3 * SETTLED_AFTER - 1).is_empty());
+    assert_eq!(
+        ids(&stopped, NOW + 3 * SETTLED_AFTER),
+        ["gone01"],
+        "the end here is told again once the work has stopped, the mesh side telling it once"
+    );
+}
+
+#[test]
+fn a_session_seen_again_ends_afresh() {
+    let quests = quests(&["back01"]);
+    let mut seen = Seen::default();
+    let mut ids = |session: &Session, now: i64| {
+        ids_of(told_at(
+            now,
+            &mut seen,
+            std::slice::from_ref(session),
+            &quests,
+            (&[], &[]),
+        ))
+    };
+    let gone = ended_here("back01");
+    let mut resumed = gone.clone();
+    resumed.state = State::Idle;
+    ids(&gone, NOW);
+    ids(&resumed, NOW + SETTLED_AFTER / 2);
+    assert!(
+        ids(&gone, NOW + SETTLED_AFTER).is_empty(),
+        "ended again, it settles from when it was seen ending this time"
+    );
+    assert_eq!(ids(&gone, NOW + 2 * SETTLED_AFTER), ["back01"]);
+}
+
+#[test]
+fn a_session_two_quests_attach_is_nobodys_to_tell() {
+    let mut quests = quests(&["both01"]);
+    let mut other = quests[0].clone();
+    other["id"] = json!("QEST-20261116-SKERRY");
+    other["orchestrator"] = json!("tern");
+    quests.push(other);
+    assert_eq!(
+        told(&[ended_here("both01")], &quests, (&[], &[])),
+        [],
+        "whose orchestrator it is can't be told"
+    );
+}
+
+#[test]
+fn an_end_its_presence_wrote_over_a_day_ago_or_at_no_time_is_not_told() {
+    let mut old = ended_here("old001");
+    old.at = said_at(NOW - KEPT_FOR - 1);
+    let mut timeless = ended_here("when01");
+    timeless.at = "yesterday".to_owned();
+    assert_eq!(
+        told(&[old, timeless], &quests(&["old001", "when01"]), (&[], &[])),
+        [],
+        "a node started again doesn't tell what ended long before"
+    );
+}
+
+#[test]
+fn a_session_elsewhere_its_node_says_works_is_working() {
+    let quests = quests(&["gone01", "away01"]);
+    let sessions = [
+        ended_here("gone01"),
+        session("away01", "kestrel", State::Idle, json!({})),
+    ];
+    let coming_back = HashSet::new();
+    let judged = Judged {
+        machine: "skiff",
+        standing: &|_| None,
+        coming_back: &coming_back,
+        settled_after: SETTLED_AFTER,
+        written: &written,
+    };
+    let mut seen = Seen::default();
+    ended(&sessions, &judged, &quests, NOW, &mut seen);
+    assert_eq!(
+        ended(&sessions, &judged, &quests, NOW + SETTLED_AFTER, &mut seen),
+        [],
+        "though this boot hasn't heard it, kestrel's node says it's idle"
     );
 }
 
@@ -264,6 +364,15 @@ fn only_what_ended_here_on_a_quest_nobody_runs_on_is_told() {
                 odd[0]["orchestrator"] = json!("#machine");
                 odd
             },
+        ),
+        (
+            "a session whose address doesn't read as one isn't named",
+            vec![{
+                let mut odd = ended_here("odd002");
+                odd.address = "#machine".to_owned();
+                odd
+            }],
+            quests(&["odd002"]),
         ),
         (
             "no quests served, so no orchestrator can be named",
