@@ -46,7 +46,8 @@ impl Seed {
 }
 
 fn is_link(word: &str) -> bool {
-    word.starts_with("https://") || word.starts_with("http://")
+    (word.starts_with("https://") || word.starts_with("http://"))
+        && !word.chars().any(char::is_whitespace)
 }
 
 /// Where a sprout is asked to begin, and what it can see of this machine.
@@ -406,6 +407,12 @@ mod tests {
         assert_eq!(
             Seed::of(&["fix".to_owned(), one.clone()]),
             Seed::Words(format!("fix {one}"))
+        );
+        let quoted = format!("{one} and fix it");
+        assert_eq!(
+            Seed::of(std::slice::from_ref(&quoted)),
+            words(&quoted),
+            "a link with words after it in one quote is words"
         );
         assert_eq!(
             Seed::of(&["make".to_owned(), "tea".to_owned()]),
