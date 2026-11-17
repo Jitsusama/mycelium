@@ -130,6 +130,11 @@ impl Hands for Through {
             .map_err(|error| error.to_string())
     }
 
+    fn cells(&mut self) -> Result<Vec<Value>, String> {
+        crate::swarm::records(&self.socket, crate::node::CELL_KIND, TIES_WITHIN)
+            .map_err(|error| error.to_string())
+    }
+
     fn formed(&mut self) -> Result<Vec<Value>, String> {
         crate::swarm::records(&self.socket, crate::networks::FORMED, TIES_WITHIN)
             .map_err(|error| error.to_string())
@@ -480,7 +485,7 @@ fn marked(done: &Path, mark: &Path) -> bool {
 /// A hostname up to its first dot, as the harness names a machine's
 /// handover: a Mac calls itself `lantern.local`, and its handover goes in
 /// `lantern`.
-fn short_host(host: &str) -> &str {
+pub(crate) fn short_host(host: &str) -> &str {
     host.split('.')
         .next()
         .filter(|short| !short.is_empty())

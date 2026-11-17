@@ -43,6 +43,20 @@ pub enum Request {
     PlaceToStart(Work),
     /// Start a program held where placement chooses.
     Start(Start),
+    /// Start a program here that the node of the linked machine `from`
+    /// was asked to start, has judged, counted and booked, and placed
+    /// here, so it starts here alone, where this machine's facts as they
+    /// are now still take it. Only this node's own process, or one judged
+    /// the person's, as a link's end is, relays it. From any other asker
+    /// it is taken as an agent's start: counted and limited here, started
+    /// here or nowhere, and never read for a carry. Where a person works,
+    /// one marked as the person's carry is refused instead.
+    Relayed {
+        /// The machine whose node was asked.
+        from: String,
+        /// What it was asked to start.
+        start: Start,
+    },
     /// Start a session of new work, held in no window, as `mycelium
     /// sprout` says: the node finds its folder as the asker would see it,
     /// and starts it there as a [`Start`] would.
@@ -176,6 +190,12 @@ pub struct Start {
     /// may cost money, where no machine of the realm takes it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub may_cost: bool,
+    /// Whether it brings in a session the person carried: set by the node
+    /// first asked, which judged who asked, only for the person's start
+    /// of a carry's command, and passed on as it relays it. What an asker
+    /// says of it is never taken, so no agent's start is taken for a carry.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub carries: bool,
 }
 
 /// New work to start a session on: the session's first words come from

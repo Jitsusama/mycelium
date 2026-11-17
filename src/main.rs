@@ -2543,6 +2543,7 @@ fn start(socket: &Path, asked: Starting) -> io::Result<()> {
         folder: said_within_home(asked.folder)?,
         command: asked.command,
         may_cost: asked.may_cost,
+        carries: false,
     };
     print_reply(socket, &Request::Start(start))
 }

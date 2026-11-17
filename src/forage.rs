@@ -757,7 +757,7 @@ fn read_waits(waiting: &Path, id: &str) -> Vec<Wait> {
 /// `most` bytes. It is opened never through a link and without waiting
 /// on a writer, and what was opened is what is judged, so a file swapped
 /// in meanwhile can neither hold nor flood its reader.
-fn read_at_most(path: &Path, most: u64) -> Option<Vec<u8>> {
+pub(crate) fn read_at_most(path: &Path, most: u64) -> Option<Vec<u8>> {
     let opened = rustix::fs::open(
         path,
         rustix::fs::OFlags::RDONLY

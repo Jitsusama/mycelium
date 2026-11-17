@@ -6,7 +6,9 @@
 //! formed network goes so the node it arrives on keeps the time it
 //! first formed, rather than forming it afresh.
 
-use serde::Serialize;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// What the file beside a carried session's done file ends with, after
@@ -18,8 +20,17 @@ pub const FILE: &str = ".cell.json";
 /// left out forms afresh where the session arrives.
 pub const FORMED_MOST: usize = 64;
 
+/// The most a cell's file read where its session arrives may hold, in
+/// bytes: far past what a cell brings, so only a file grown by
+/// something else is passed over.
+pub const FILE_MOST: u64 = 1 << 20;
+
+/// The longest name a cell may be read with where its session arrives,
+/// in bytes, past every address the mesh gives.
+const NAME_MOST: usize = 32;
+
 /// A carried session's cell, as the file beside its done file says it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Brought {
     /// The session's id.
     pub session: String,
@@ -28,14 +39,111 @@ pub struct Brought {
     pub cell: String,
     /// Every tie with the cell at an end, whole as the tie kind sends it,
     /// its strength as heard rather than faded to now.
+    #[serde(default)]
     pub ties: Vec<Value>,
     /// The cell's own record of its talk, `tie:<cell>`, or none where it
     /// has none.
+    #[serde(default)]
     pub talk: Option<Value>,
     /// The `formed:<network>` records this node holds of the networks
     /// the session's trees and shared folders make, whole as the formed
     /// kind sends them: at most [`FORMED_MOST`], earliest formed first.
+    #[serde(default)]
     pub formed: Vec<Value>,
+}
+
+/// The cell the file at `path` says the session `session` brought, as
+/// the node it arrived on reads it, or none when it says another
+/// session's, names no cell a tie could, or isn't a cell's file. The
+/// handover is its sessions' to write, so the file is read never
+/// through a link and at most [`FILE_MOST`] bytes of it, and only what
+/// a cell could bring of it is kept: each tie with the cell at an end,
+/// its ends in the order the tie kind keys them, the cell's own talk,
+/// each with only the fields the tie kind says, and records of formed
+/// networks, at most [`FORMED_MOST`].
+#[must_use]
+pub fn arrived(path: &Path, session: &str) -> Option<Brought> {
+    let bytes = crate::forage::read_at_most(path, FILE_MOST)?;
+    let said: Brought = serde_json::from_slice(&bytes).ok()?;
+    if said.session != session || !named(&said.cell) {
+        return None;
+    }
+    let cell = said.cell.as_str();
+    let ties = said
+        .ties
+        .iter()
+        .filter(|tie| {
+            tie_keyed(tie).is_some_and(|key| {
+                key.split_once('~').is_some_and(|(one, other)| {
+                    (one == cell || other == cell) && one < other && named(one) && named(other)
+                })
+            })
+        })
+        .map(tie_fields)
+        .collect();
+    let talk = said
+        .talk
+        .as_ref()
+        .filter(|talk| tie_keyed(talk).is_some_and(|key| key == cell))
+        .map(tie_fields);
+    let mut formed: Vec<Value> = said
+        .formed
+        .into_iter()
+        .filter(|one| keyed(one, "formed:").is_some_and(|name| !name.is_empty()))
+        .collect();
+    formed.truncate(FORMED_MOST);
+    Some(Brought {
+        session: said.session,
+        cell: said.cell,
+        ties,
+        talk,
+        formed,
+    })
+}
+
+/// Whether `cell` is a name a tie's key could hold at an end: as the
+/// mesh's addresses are, uppercase, and never the `~` that joins a
+/// pair.
+fn named(cell: &str) -> bool {
+    !cell.is_empty()
+        && cell.len() <= NAME_MOST
+        && cell
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || b"-_".contains(&byte))
+}
+
+/// The fields a tie kind's record says, a tie's or a cell's talk: so a
+/// cell brings nothing else under the tie kind's name.
+const TIE_FIELDS: [&str; 9] = [
+    "key", "kind", "heard", "hour", "today", "intents", "groups", "strength", "ties",
+];
+
+/// What follows `tie:` in the key of `record`, where it is of the tie
+/// kind, or none.
+fn tie_keyed(record: &Value) -> Option<String> {
+    (record.get("kind")? == "tie").then_some(())?;
+    keyed(record, "tie:")
+}
+
+/// `record` with only the fields of [`TIE_FIELDS`].
+fn tie_fields(record: &Value) -> Value {
+    let fields = record.as_object().into_iter().flatten();
+    Value::Object(
+        fields
+            .filter(|(field, _)| TIE_FIELDS.contains(&field.as_str()))
+            .map(|(field, value)| (field.clone(), value.clone()))
+            .collect(),
+    )
+}
+
+/// What follows `prefix` in the key of `record`, an object, or none.
+fn keyed(record: &Value, prefix: &str) -> Option<String> {
+    record
+        .as_object()?
+        .get("key")?
+        .as_str()?
+        .strip_prefix(prefix)
+        .map(str::to_owned)
 }
 
 /// Each of `formed`, every formed network the node holds, that is a
@@ -104,7 +212,135 @@ pub fn brought(session: &str, address: &str, ties: &[Value]) -> Brought {
 mod tests {
     use serde_json::json;
 
-    use super::{FORMED_MOST, brought, formed_of};
+    use std::fs;
+    use std::path::Path;
+
+    use super::{FILE_MOST, FORMED_MOST, arrived, brought, formed_of};
+
+    /// `said`, written whole at `name` in `folder`.
+    fn file(folder: &Path, name: &str, said: &serde_json::Value) -> std::path::PathBuf {
+        let path = folder.join(name);
+        fs::write(&path, serde_json::to_vec(said).expect("said")).expect("written");
+        path
+    }
+
+    #[test]
+    fn a_cell_arrives_with_what_it_could_bring_and_nothing_else() {
+        let folder = tempfile::tempdir().expect("a handover");
+        let path = file(
+            folder.path(),
+            "s-harbour.cell.json",
+            &json!({
+                "session": "s-harbour",
+                "cell": "HARBOR",
+                "ties": [
+                    {"key": "tie:HARBOR~KELP01", "kind": "tie", "strength": 2.0,
+                     "said": "what was said"},
+                    {"key": "tie:AAAAAA~HARBOR", "kind": "tie"},
+                    {"key": "tie:KELP01~REEF01", "kind": "tie"},
+                    {"key": "tie:KELP01~HARBOR", "kind": "tie"},
+                    {"key": "tie:HARBOR~REEF01", "kind": "cell"},
+                    {"key": "tie:HARBOR~REEF02"},
+                    {"key": "tie:HARBOR~kelp01", "kind": "tie"},
+                    {"key": "tie:HARBOR~A~B", "kind": "tie"},
+                    {"key": "cell:HARBOR~KELP01", "kind": "tie"},
+                    "tie:HARBOR~KELP01",
+                ],
+                "talk": {"key": "tie:HARBOR", "kind": "tie", "ties": 2},
+                "formed": [
+                    {"key": TIDES, "kind": "formed", "at": 1},
+                    {"key": "formed:", "kind": "formed"},
+                    {"key": "tie:HARBOR~KELP01", "kind": "tie"},
+                ],
+                "else": "passed over",
+            }),
+        );
+        let cell = arrived(&path, "s-harbour").expect("its cell");
+        assert_eq!(cell.cell, "HARBOR");
+        assert_eq!(
+            cell.ties,
+            [
+                json!({"key": "tie:HARBOR~KELP01", "kind": "tie", "strength": 2.0}),
+                json!({"key": "tie:AAAAAA~HARBOR", "kind": "tie"}),
+            ],
+            "only ties with it at an end between two cells' names, in order, and only \
+             the tie kind's fields; never another pair's, one out of order, another \
+             kind's, one saying no kind, one in lowercase, one of three, one keyed as \
+             another kind's or one that isn't a record"
+        );
+        assert_eq!(
+            cell.talk,
+            Some(json!({"key": "tie:HARBOR", "kind": "tie", "ties": 2}))
+        );
+        assert_eq!(
+            cell.formed,
+            [json!({"key": TIDES, "kind": "formed", "at": 1})],
+            "only records of a formed network that names one"
+        );
+        assert_eq!(
+            arrived(&path, "s-kelp01"),
+            None,
+            "a file saying another session's cell is passed over"
+        );
+        let quiet = file(
+            folder.path(),
+            "s-quiet.cell.json",
+            &json!({"session": "s-quiet", "cell": "QUIET9",
+                    "talk": {"key": "tie:KELP01", "kind": "tie"}}),
+        );
+        let cell = arrived(&quiet, "s-quiet").expect("a cell bringing nothing");
+        assert_eq!(
+            (cell.ties.len(), cell.talk, cell.formed.len()),
+            (0, None, 0),
+            "no ties or formed networks said is none; another's talk isn't its own"
+        );
+    }
+
+    #[test]
+    fn a_cell_naming_what_no_tie_could_is_passed_over() {
+        let folder = tempfile::tempdir().expect("a handover");
+        for cell in [
+            "",
+            "harbor",
+            "HARBOR~KELP01",
+            "HAR BOR",
+            &"A".repeat(33),
+            "HÄRBOR",
+        ] {
+            let path = file(
+                folder.path(),
+                "s.cell.json",
+                &json!({"session": "s", "cell": cell}),
+            );
+            assert_eq!(arrived(&path, "s"), None, "{cell:?} names no cell");
+        }
+        let path = file(
+            folder.path(),
+            "s.cell.json",
+            &json!({"session": "s", "cell": "A".repeat(32)}),
+        );
+        assert!(arrived(&path, "s").is_some(), "a name at the bound is kept");
+    }
+
+    #[test]
+    fn a_cells_file_is_read_only_as_a_small_file_of_its_own() {
+        let folder = tempfile::tempdir().expect("a handover");
+        let said = json!({"session": "s", "cell": "HARBOR"});
+        let real = file(folder.path(), "real.json", &said);
+        let link = folder.path().join("s.cell.json");
+        std::os::unix::fs::symlink(&real, &link).expect("linked");
+        assert!(arrived(&real, "s").is_some(), "the file itself is read");
+        assert_eq!(arrived(&link, "s"), None, "never through a link");
+        let big = folder.path().join("big.cell.json");
+        let mut bytes = serde_json::to_vec(&said).expect("said");
+        bytes.resize(usize::try_from(FILE_MOST).expect("fits") + 1, b' ');
+        fs::write(&big, bytes).expect("written");
+        assert_eq!(arrived(&big, "s"), None, "nor one past its bound");
+        let torn = folder.path().join("torn.cell.json");
+        fs::write(&torn, b"{\"session\": \"s\", \"cell").expect("written");
+        assert_eq!(arrived(&torn, "s"), None, "nor one that isn't a cell's");
+        assert_eq!(arrived(&folder.path().join("gone"), "s"), None);
+    }
 
     const TIDES: &str = "formed:tree.github:harbour/oars:jsama/tides";
 

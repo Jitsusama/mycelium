@@ -156,10 +156,34 @@ same code, each line a JSON value:
    before its machine slept gives way to its dialler's new one.
 8. `{"Start": {"ask", "start"}}`: start a session held on the other
    end's machine, as a `"Start"` request says it. The other end hands it
-   to its own node's socket, with a need for its own machine added, so
-   that node admits or refuses it on its own facts as they are then.
-   The end doesn't start it itself, since a process SSH started sits
-   outside its person's login session.
+   to its own node's socket as `{"Relayed": {"from", "start"}}`, `from`
+   the machine that asked, with a need for its own machine added.
+   That node takes `"Relayed"` as a linked node's only from its own
+   process or one it judges the person's, as a link's end is: none in
+   an agent's unit, below a pi or a session's claim, or barred or
+   mounted apart as a fence's. A relay from any other process is taken
+   as an agent's start, so it gains an agent nothing its own start
+   wouldn't: counted, limited and booked here as any agent's is, never
+   read for a carry, and logged; it starts there or nowhere, never on
+   a machine made for it, and waits for no room, since the asking node
+   stops waiting on its answer within 30 seconds. Where no person
+   works, an agent's SSH login can't be told from a link's end, so
+   every relay but its own process's is taken so, and a machine made
+   from a basin still takes the starts placed on it. Elsewhere, a
+   link's end an agent ran is taken so too, as is one whose owner the
+   kernel can't tell, but one marked as the person's carry is refused,
+   so the person hears the carry failed rather than finding its
+   session standing as a cell nobody knows. The end passes a start's
+   `"carries"` mark only once its link is proven, and clears it
+   otherwise, so a carry arrives as its cell only where the leaving
+   machine dialled the arriving one, whose end its key proves. The
+   node places a relay from its own process or the person's pinned to
+   its own machine, so its facts as they are then still refuse it and
+   count it as load, and starts it there or nowhere, never elsewhere
+   and never on a machine made for it. One it takes as the person's it
+   neither counts nor books, since the asking node did. The end
+   doesn't start it itself, since a process SSH started sits outside
+   its person's login session.
 9. `{"Started": {"ask", "reply"}}`: the other end's reply to the ask
    of that number: its node's, as its socket answered, for a start, and
    its own for a steer.
@@ -527,6 +551,20 @@ in order and says each step:
    as that session starts there. A carry taken again here takes away
    the cells of sessions an earlier attempt started, so the node there
    should read a cell as soon as it has the done file beside it.
+   The handover is its sessions' to write, so a file there proves no
+   carry. The node a session arrives on reads a cell only for a
+   session a linked node asked it to start as a carry, within the
+   hour, and only in the handover folder that start names, never
+   through a link. The asking node marks a start `"carries": true`
+   only where the person asked a carry's command, whatever the asker
+   said of it, so no agent's start is read for a carry. It reads the
+   cell each minute while the session runs there until it stands, and
+   keeps it while it runs, its file gone or not. The session stands
+   as that cell, its address an alias of it, unless another live
+   session goes by the name, as any address, in any case, or two say
+   it. A tie it brought said heard after it arrived counts as heard
+   then, and stands for a day from when it was heard. Carried on
+   again, it brings that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share
    --scratch handover` does.
 4. `start`: each carried session starts again on the machine, held, as
@@ -1553,16 +1591,33 @@ a cell's fair share, and the 32 the bound no agent gets round. A
 start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
 once can't pass the limit; a refused one doesn't. The person's own
-starts are never counted or refused. The person stops the agents'
-starts asked of a node in one act, `mycelium starts stop`, which
+starts are never counted or refused. An agent's first start in the
+hour that brings back a session the node knows has ended counts toward
+the 32 but not its cell's 8, so a wave brought back starts whole and
+no agent brings back more than 32 an hour; a cell brings back at most
+9 an hour beside its 8, and the tenth is refused, saying which. It is
+pi itself, named bare or under `/run/current-system/sw/bin/` or
+`/etc/profiles/per-user/`, given one session after `--session` or
+`--session-id`, by its id or by a file whose name ends in `_` and
+the id. A bare `pi` is the one the
+login finds, so it fences habit alone. A second bringing back the same
+one within the hour counts toward both, and one running or on a
+machine out of reach is never brought back. A start past the limits
+with room again within a minute waits for it and goes through; one
+further off is refused, saying in how many minutes and at what time
+there is room, and that it goes to the agent's orchestrator as a
+finding, since pacing is never the person's to lift. The person stops
+the agents' starts asked of a node in one act, `mycelium starts stop`, which
 holds through a restart till `mycelium starts resume`, and while
 whether it stands can't be told; an agent asking either, or the list,
 is refused. The stop is `starts.stopped` in the node's state folder,
 so an agent able to write there could lift it, as it could stop the
 node. Every start, refused ones too, is kept in
 `starts.jsonl` beside `runs.jsonl` as a JSON line, `{"at", "by",
-"started_by", "folder", "program", "machine", "held", "failed",
-"refused"}`: `at` in milliseconds, `started_by` null for the person's,
+"started_by", "folder", "program", "resumes", "machine", "held",
+"failed", "refused"}`: `at` in milliseconds, `started_by` null for the
+person's, `resumes` the id of the session it brings back, spared its
+cell's 8,
 `program` the command's first word alone, so no argument is kept,
 `failed` the node's reason alone, before the words naming the command,
 and the rest only where they apply. The node reads it again as it
@@ -1573,7 +1628,11 @@ dated up to an hour ahead of an ask counts, as a clock set back leaves
 it; one further ahead doesn't. `mycelium starts` prints whether
 starts are stopped and the newest 100. A start counts on the node an
 agent asks, wherever it is placed, and only that node's book says who
-started it, so each machine's node is stopped on its own.
+started it, so each machine's node is stopped on its own. A start
+relayed from another machine's node through the person's link is that
+node's to count, book and stop, so the machine it runs on does none of
+these again; one relayed by an agent is counted, booked and stopped
+there as that agent's own start.
 
 `"Sprout"` starts a session of new work, as `mycelium sprout` asks, held
 in no window: the node makes the `"Start"` and starts it as above, under
@@ -1894,14 +1953,14 @@ holding a colon joins none, as a folder's name does, so one called
 `folders`, as a session says it works in one, and nothing asks whether
 `mycelium share` keeps the copies alike. The `formed` kind holds each
 tree or files network formed, keyed by its name, as the node keeps
-them in `formed-<realm>.json` beside
-`carries.jsonl`: its `name`, `at`, when the node first saw two cells
-hold it, and `left`, when it first saw the last cell gone, or null,
-each in milliseconds since the epoch; it is heard at `left`, or else
-`at`. The node looks each minute, and as `network`, `cell` or `formed`
-is asked, so a tree two cells hold for less than a minute with nobody
-asking may form no network. One no cell holds isn't drawn, and fades
-ten minutes after `left`, so a cell back within them rejoins it; past
+them in `formed-<realm>.json` beside `carries.jsonl`: its `name`,
+`at`, when the node first saw two cells hold it, and `left`, when it
+first saw the last cell gone, or null, each in milliseconds since the
+epoch; it is heard at `left`, or else `at`. The node looks each
+minute, and as `network`, `cell` or `formed` is asked, so a tree two
+cells hold for less than a minute with nobody asking may form no
+network. One no cell holds isn't drawn, and fades ten minutes after
+`left`, so a cell back within them rejoins it; past
 them none serves it, and a cell back alone forms it no more. A watch
 of `formed` is told as the node sees one form, be left, be held again
 or fade, so within the minute, or at once where a `network` or `cell`

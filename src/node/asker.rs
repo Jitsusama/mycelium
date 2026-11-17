@@ -585,6 +585,20 @@ pub fn persons_own(asker: Option<i32>, processes: &Processes, does: &str) -> Res
     }
 }
 
+/// Whether process `asker`, judged `by` as [`judge`] judges any asker,
+/// claims and all, may relay a start as a linked node's: the node's own,
+/// or one judged the person's, as a link's far end, a `mycelium link` an
+/// ssh login runs, is. An agent's unit, a pi or a session's claim above
+/// it, a fence's bar on gaining privileges or mounts of its own each
+/// refuse it. On a machine no person works on every asker is judged an
+/// agent's, since an agent's ssh login lands in a login's unit as the
+/// person's does, so there the node's own process alone relays.
+#[must_use]
+pub fn relays(asker: Option<i32>, by: By) -> bool {
+    by == By::Person
+        || asker.is_some_and(|pid| u32::try_from(pid).is_ok_and(|pid| pid == std::process::id()))
+}
+
 /// The session that asks, by its own id, among `owners`, each session of
 /// this machine's that runs and the process that owns it, as [`proved`]
 /// proves them: the one whose process the asker is, or runs below. A pi host owns
@@ -1725,6 +1739,50 @@ mod tests {
             By::Agent(Kind::Strict),
             "one nothing can be read of"
         );
+    }
+
+    #[test]
+    fn a_start_is_relayed_only_from_the_node_or_a_process_judged_the_persons() {
+        let procs = procs(&[
+            (40, "mycelium", 39, "session.slice/sshd-login.scope"),
+            (39, "sshd", 1, "session.slice/sshd-login.scope"),
+            (
+                41,
+                "mycelium",
+                2,
+                "agents.slice/pi-host-work-attended.service",
+            ),
+            (42, "mycelium", 48, "session.slice/kitty-2830-4.scope"),
+            (48, "pi", 1, "session.slice/kitty-2830-4.scope"),
+            (43, "mycelium", 1, "session.slice/quickshell.service"),
+        ]);
+        fs::create_dir(procs.path().join("self")).expect("the node's folder is made");
+        let status = procs.path().join("43").join("status");
+        let said = fs::read_to_string(&status).unwrap_or_default();
+        fs::write(&status, format!("{said}NoNewPrivs:\t1\n")).expect("it is barred");
+        let kernel = folder(procs.path());
+        let own = i32::try_from(std::process::id()).expect("a pid");
+        let judged =
+            |pid: Option<i32>, processes: &Processes| relays(pid, judge(pid, processes, &[]));
+        assert!(
+            judged(Some(40), &kernel),
+            "a link's end an ssh login runs relays"
+        );
+        assert!(
+            !judged(Some(40), &kernel.clone().unattended()),
+            "but not where no person works, since an agent's ssh login lands so too"
+        );
+        assert!(
+            !relays(Some(40), judge(Some(40), &kernel, &[None])),
+            "nor one a session claims"
+        );
+        for processes in [kernel.clone(), kernel.unattended()] {
+            assert!(judged(Some(own), &processes), "the node's own relays");
+            assert!(!judged(Some(41), &processes), "an agent's unit doesn't");
+            assert!(!judged(Some(42), &processes), "nor one pi runs");
+            assert!(!judged(Some(43), &processes), "nor one a fence bars");
+            assert!(!judged(None, &processes), "nor one nothing names");
+        }
     }
 
     #[test]

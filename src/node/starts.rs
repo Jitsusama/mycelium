@@ -3,10 +3,13 @@
 //! them without end, each spending on the person's account: the node
 //! refuses an agent's start past what one cell, and all of them together,
 //! may start in an hour, and every one while the person has stopped them,
-//! which takes one act. The person's own starts are never held back.
+//! which takes one act. The person's own starts are never held back, and
+//! nor is pi's first start in the hour bringing back a session that
+//! ended, since it begins no new work.
 //!
 //! The book is kept in `starts.jsonl` beside the node's runs, a line a
-//! start: `{"at", "by", "started_by", "folder", "program"}`, then where it
+//! start: `{"at", "by", "started_by", "folder", "program"}`, `"resumes"`
+//! with the session's id when it brings one back uncounted, then where it
 //! started (`"machine"` and `"held"`), or why it didn't (`"failed"`), or
 //! why it was refused (`"refused"`). The person's stop is the file
 //! `starts.stopped` beside it, there for as long as starts are stopped.
@@ -18,7 +21,19 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
+use crate::record::{Session, State};
 use crate::wire::By;
+
+/// The program whose sessions a start may bring back.
+const PI: &str = "pi";
+
+/// Where a pi named by its path is the person's own: folders only the
+/// system's own build points, so no agent can put a program of its own
+/// there named `pi`. The store is not one, since anyone may build into it.
+const PIS_FOLDERS: [&str; 2] = ["/run/current-system/sw/bin/", "/etc/profiles/per-user/"];
+
+/// The words before the session pi is to bring back.
+const RESUMING: [&str; 2] = ["--session", "--session-id"];
 
 /// The most sessions one cell may start in an hour.
 pub const CELL_AN_HOUR: usize = 8;
@@ -26,6 +41,11 @@ pub const CELL_AN_HOUR: usize = 8;
 /// The most sessions agents together may start through one node in an
 /// hour.
 pub const NODE_AN_HOUR: usize = 32;
+
+/// The most sessions one cell's agents may bring back in an hour, beside
+/// the [`CELL_AN_HOUR`] new ones: enough for a wave of nine held sessions,
+/// so no one cell spends the node's whole hour bringing back old work.
+pub const RESUMES_A_CELL_AN_HOUR: usize = 9;
 
 /// An hour, in milliseconds.
 const HOUR: i64 = 3_600_000;
@@ -71,6 +91,15 @@ pub struct Kept {
     /// given is kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<String>,
+    /// The session it brings back, one the node knew had ended, as
+    /// [`brings_back`] tells: the first such start in the hour counts
+    /// toward agents' number through the node but not its cell's, since
+    /// it begins no new work, so a wave brought back starts whole and no
+    /// agent brings back more than the node's number uncounted. The
+    /// person's stop still holds it. A second within the hour counts
+    /// toward both, so bringing one back again and again is bounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumes: Option<String>,
     /// The machine it started on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
@@ -87,12 +116,79 @@ pub struct Kept {
 }
 
 impl Kept {
-    /// Whether it counts toward an agent's limits: an agent's start the
-    /// node let go ahead, started or not, since a start that fails can
-    /// still have spent.
+    /// Whether it counts toward agents' number through the node: an
+    /// agent's start the node let go ahead, started or not, since a start
+    /// that fails can still have spent.
     fn counts(&self) -> bool {
         matches!(self.by, By::Agent(_)) && self.refused.is_none()
     }
+
+    /// Whether it counts toward its cell's number too: one that counts
+    /// and begins new work, rather than bringing a session back.
+    fn counts_for_cell(&self) -> bool {
+        self.counts() && self.resumes.is_none()
+    }
+}
+
+/// The session of `sessions` that `command` brings back, if it is pi's
+/// and names one that ended after `--session` or `--session-id`, by its
+/// id or by a file whose name ends in `_` and it, as pi names a session's
+/// file, and names no other. Only pi itself is read, named bare, as the
+/// person's login finds it, or by a path in [`PIS_FOLDERS`], so no shell,
+/// nor a program an agent wrote and named `pi` elsewhere, hides other
+/// work behind the words; and only an ended session, so one running, or
+/// on a machine out of reach, where it may still run, is never brought
+/// back uncounted. A bare `pi` is fenced by habit alone, since the login
+/// finds it on a path an agent may write: the node's number still bounds
+/// what that hides.
+#[must_use]
+pub fn brings_back(command: &[String], sessions: &[Session]) -> Option<String> {
+    let program = command.first()?;
+    let named_pi = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some(PI);
+    let persons = program == PI
+        || (PIS_FOLDERS.iter().any(|folder| program.starts_with(folder))
+            && !program.contains("/../"));
+    if !(named_pi && persons) {
+        return None;
+    }
+    // In the command's order, as pi reads them; naming two is no resume,
+    // since which pi opens can't be told here.
+    let mut named: Vec<&str> = Vec::new();
+    for (at, word) in command.iter().enumerate() {
+        let said = if RESUMING.contains(&word.as_str()) {
+            command.get(at + 1).map(String::as_str)
+        } else {
+            word.split_once('=')
+                .and_then(|(flag, named)| RESUMING.contains(&flag).then_some(named))
+        };
+        if let Some(said) = said
+            && !named.contains(&said)
+        {
+            named.push(said);
+        }
+    }
+    let [named] = named[..] else {
+        return None;
+    };
+    let stem = Path::new(named)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    sessions
+        .iter()
+        .find(|session| {
+            let id = session.id.as_str();
+            let is_it = !id.is_empty()
+                && (named == id
+                    || stem
+                        .strip_suffix(id)
+                        .is_some_and(|before| before.ends_with('_')));
+            is_it && session.state == State::Ended
+        })
+        .map(|session| session.id.clone())
 }
 
 /// A start let go ahead, held as counted till it is kept.
@@ -141,7 +237,9 @@ impl Book {
                     self.kept
                         .iter()
                         // As the count reads them: one more than an hour
-                        // ahead counts no more than one long gone.
+                        // ahead counts no more than one long gone. An
+                        // agent's resume in the hour counts, and is kept,
+                        // since a second of its session counts more.
                         .position(|one| !one.counts() || one.at <= since || one.at > ahead)
                 });
             match oldest {
@@ -232,7 +330,8 @@ impl Starts {
             .map(|program| program.chars().take(PROGRAM_MOST).collect());
         let refused = {
             let mut book = self.lock();
-            let refused = self.refusal(&book, &asked);
+            Self::once_an_hour(&book, &mut asked);
+            let refused = self.refusal(&book, &asked).map(|(why, _)| why);
             if refused.is_none() {
                 let id = book.next;
                 book.next += 1;
@@ -246,28 +345,76 @@ impl Starts {
         Err(refused.unwrap_or_default())
     }
 
-    /// Why `asked` is refused, if it is.
-    fn refusal(&self, book: &Book, asked: &Kept) -> Option<String> {
-        if !asked.counts() {
+    /// When the limits that refuse `asked` would let it, in milliseconds
+    /// since the epoch, or none while they let it or the person's stop
+    /// holds it.
+    #[must_use]
+    pub fn room(&self, asked: &Kept) -> Option<i64> {
+        let book = self.lock();
+        let mut asked = asked.clone();
+        Self::once_an_hour(&book, &mut asked);
+        self.refusal(&book, &asked).and_then(|(_, room)| room)
+    }
+
+    /// Counts `asked` after all where it brings back a session the book
+    /// already shows brought back uncounted in the hour before it, going
+    /// or kept, so a burst of starts of one ended session counts from the
+    /// second on, before the first has run long enough to say so.
+    fn once_an_hour(book: &Book, asked: &mut Kept) {
+        let since = asked.at - HOUR;
+        let again = asked.resumes.as_ref().is_some_and(|session| {
+            book.kept
+                .iter()
+                .chain(book.going.iter().map(|(_, going)| going))
+                .any(|one| {
+                    matches!(one.by, By::Agent(_))
+                        && one.refused.is_none()
+                        && one.at > since
+                        && one.resumes.as_ref() == Some(session)
+                })
+        });
+        if again {
+            asked.resumes = None;
+        }
+    }
+
+    /// Why `asked` is refused, if it is, and when the limits that refuse
+    /// it would let it, where it is they that do.
+    fn refusal(&self, book: &Book, asked: &Kept) -> Option<(String, Option<i64>)> {
+        if !matches!(asked.by, By::Agent(_)) {
             return None;
         }
         match self.stop_stands() {
             Ok(false) => {}
             Ok(true) => {
-                return Some(
-                    "the person stopped agents starting sessions; only they resume it, \
-                     with `mycelium starts resume`"
+                return Some((
+                    "the person stopped agents starting sessions, and only they resume it, \
+                     with `mycelium starts resume`; don't ask them to, but tell your \
+                     orchestrator, as a finding"
                         .to_owned(),
-                );
+                    None,
+                ));
             }
             Err(error) => {
-                return Some(format!(
-                    "agents' starts are held, since whether the person stopped them \
-                     can't be told from {}: {error}",
-                    self.stopped.display()
+                return Some((
+                    format!(
+                        "agents' starts are held, since whether the person stopped them \
+                         can't be told from {}: {error}",
+                        self.stopped.display()
+                    ),
+                    None,
                 ));
             }
         }
+        if !asked.counts() {
+            return None;
+        }
+        let (why, room) = Self::past_limits(book, asked)?;
+        Some((paced(&why, room, asked.at), Some(room)))
+    }
+
+    /// Which limit `asked` would pass, said, and when it would no longer.
+    fn past_limits(book: &Book, asked: &Kept) -> Option<(String, i64)> {
         let since = asked.at - HOUR;
         let counted: Vec<&Kept> = book
             .kept
@@ -279,27 +426,56 @@ impl Starts {
             // it, counts no more than one long gone, so it blocks no hour.
             .filter(|one| one.counts() && one.at > since && one.at <= asked.at + HOUR)
             .collect();
-        let of_cell = counted
-            .iter()
-            .filter(|one| one.started_by == asked.started_by)
-            .count();
+        let of_cell = |resumes: bool| -> Vec<i64> {
+            counted
+                .iter()
+                .filter(|one| one.started_by == asked.started_by)
+                .filter(|one| one.resumes.is_some() == resumes)
+                .map(|one| one.at)
+                .collect()
+        };
+        let (begun, brought) = (of_cell(false), of_cell(true));
+        let all: Vec<i64> = counted.iter().map(|one| one.at).collect();
         let cell = asked
             .started_by
             .as_deref()
             .map_or_else(|| "agents of no known cell".to_owned(), str::to_owned);
-        if of_cell >= CELL_AN_HOUR {
-            return Some(format!(
-                "{cell} started {of_cell} sessions in the last hour, and a cell starts at most \
-                 {CELL_AN_HOUR} an hour"
-            ));
-        }
-        (counted.len() >= NODE_AN_HOUR).then(|| {
-            format!(
+        // Room comes once enough of the oldest have passed the hour: the
+        // node's for every start, and the cell's for new work or for
+        // sessions brought back, whichever the ask is.
+        let cell_limit = if asked.counts_for_cell() {
+            room_after(begun.clone(), CELL_AN_HOUR).map(|room| {
+                let why = format!(
+                    "{cell} started {} sessions in the last hour, and a cell starts at most \
+                     {CELL_AN_HOUR} an hour",
+                    begun.len()
+                );
+                (why, room)
+            })
+        } else {
+            room_after(brought.clone(), RESUMES_A_CELL_AN_HOUR).map(|room| {
+                let why = format!(
+                    "{cell} brought back {} sessions in the last hour, and a cell brings back \
+                     at most {RESUMES_A_CELL_AN_HOUR} an hour",
+                    brought.len()
+                );
+                (why, room)
+            })
+        };
+        let node_limit = room_after(all.clone(), NODE_AN_HOUR).map(|room| {
+            let why = format!(
                 "agents started {} sessions through this node in the last hour, and they start \
                  at most {NODE_AN_HOUR} an hour",
-                counted.len()
-            )
-        })
+                all.len()
+            );
+            (why, room)
+        });
+        // The limit said is the one whose room comes last.
+        match (cell_limit, node_limit) {
+            (Some(cell), Some(node)) if node.1 > cell.1 => Some(node),
+            (Some(cell), _) => Some(cell),
+            (None, node) => node,
+        }
     }
 
     /// Keeps how `admitted` ended: where it started, or why it didn't, as
@@ -407,6 +583,36 @@ impl Starts {
     }
 }
 
+/// When starts dated `ats` leave room under `most` an hour: once the
+/// oldest past `most`, one fewer, have passed the hour; none while they
+/// leave room already.
+fn room_after(mut ats: Vec<i64>, most: usize) -> Option<i64> {
+    let past = ats.len().checked_sub(most)?;
+    ats.sort_unstable();
+    Some(ats[past] + HOUR)
+}
+
+/// `why` a start is refused, said with when there is room again, `room`,
+/// as from `at`, and what an agent does then: it paces agents, so the
+/// person is no one to ask.
+fn paced(why: &str, room: i64, at: i64) -> String {
+    let minutes = match u64::try_from(room - at).unwrap_or(0).div_ceil(60_000) {
+        1 => "1 minute".to_owned(),
+        minutes => format!("{minutes} minutes"),
+    };
+    let clock = jiff::Timestamp::from_millisecond(room)
+        .map(|room| {
+            room.to_zoned(jiff::tz::TimeZone::system())
+                .strftime("%H:%M")
+                .to_string()
+        })
+        .unwrap_or_default();
+    format!(
+        "{why}; there is room again in {minutes}, at {clock}, so ask again then. \
+         It paces agents and isn't the person's to lift: tell your orchestrator, as a finding"
+    )
+}
+
 /// Where a node whose runs are kept in `runs` keeps its starts: beside
 /// them.
 #[must_use]
@@ -488,11 +694,260 @@ mod tests {
             started_by: cell.map(str::to_owned),
             folder: None,
             program: Some("pi".to_owned()),
+            resumes: None,
             machine: None,
             held: None,
             failed: None,
             refused: None,
         }
+    }
+
+    fn resuming(cell: &str, session: &str, at: i64) -> Kept {
+        Kept {
+            resumes: Some(session.to_owned()),
+            ..agent(cell, at)
+        }
+    }
+
+    fn session(id: &str, state: &str) -> Session {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "address": "OSPREY", "machine": "kestrel", "groups": [],
+            "state": state, "at": "2026-11-18T23:00:00Z",
+        }))
+        .expect("a session")
+    }
+
+    #[test]
+    fn a_wave_of_sessions_brought_back_all_start_though_the_persons_stop_holds_them() {
+        let (_dir, starts) = book();
+        for one in 0..=CELL_AN_HOUR {
+            let at = NOW + i64::try_from(one).expect("few");
+            started(&starts, resuming("OSPREY", &format!("s-{one}"), at), "h");
+        }
+        for _ in 1..CELL_AN_HOUR {
+            started(&starts, agent("OSPREY", NOW + 10), "h");
+        }
+        // Bringing one back again within the hour counts, as new work.
+        started(&starts, resuming("OSPREY", "s-0", NOW + 10), "h");
+        starts
+            .admit(agent("OSPREY", NOW + 10))
+            .expect_err("new work still counts");
+        starts
+            .admit(resuming("OSPREY", "s-1", NOW + 10))
+            .expect_err("and so does bringing one back again");
+        let refused = starts
+            .admit(resuming("OSPREY", "s-new", NOW + 10))
+            .expect_err("a tenth brought back in the hour is past the cell's number");
+        assert!(refused.contains("brings back at most 9"), "{refused}");
+        started(&starts, resuming("SKIFFS", "s-new", NOW + 10), "h");
+        starts.stop().expect("stopped");
+        starts
+            .admit(resuming("SKIFFS", "s-else", NOW + 10))
+            .expect_err("the person's stop holds every agent's start");
+    }
+
+    #[test]
+    fn the_book_keeps_an_agents_resume_in_the_hour_and_lets_the_persons_go() {
+        let (_dir, starts) = book();
+        let persons = Kept {
+            resumes: Some("s-1".to_owned()),
+            ..asked(By::Person, None, NOW)
+        };
+        {
+            let mut book = starts.lock();
+            book.hold(resuming("OSPREY", "s-0", NOW));
+            book.hold(persons.clone());
+            for _ in 1..KEPT_MOST {
+                book.hold(asked(By::Person, None, NOW + 1));
+            }
+            assert!(!book.kept.contains(&persons), "the person's went first");
+        }
+        for _ in 0..CELL_AN_HOUR {
+            started(&starts, agent("OSPREY", NOW + 2), "h");
+        }
+        starts
+            .admit(resuming("OSPREY", "s-0", NOW + 3))
+            .expect_err("the agent's was kept, so a second counts");
+    }
+
+    #[test]
+    fn a_resume_the_persons_stop_held_leaves_the_next_free() {
+        let (_dir, starts) = book();
+        starts.stop().expect("stopped");
+        starts
+            .admit(resuming("OSPREY", "s-0", NOW))
+            .expect_err("held");
+        starts.resume().expect("resumed");
+        for _ in 0..CELL_AN_HOUR {
+            started(&starts, agent("OSPREY", NOW + 1), "h");
+        }
+        started(&starts, resuming("OSPREY", "s-0", NOW + 2), "h");
+    }
+
+    #[test]
+    fn sessions_brought_back_count_toward_the_nodes_number_but_not_their_cells() {
+        let (_dir, starts) = book();
+        for one in 0..NODE_AN_HOUR {
+            let at = NOW + i64::try_from(one).expect("few");
+            let cell = format!("CELL{:02}", one / RESUMES_A_CELL_AN_HOUR);
+            started(&starts, resuming(&cell, &format!("s-{one}"), at), "h");
+        }
+        let refused = starts
+            .admit(resuming("OSPREY", "s-last", NOW + 100))
+            .expect_err("past the node's number");
+        assert!(refused.contains("through this node"), "{refused}");
+        assert!(
+            refused.ends_with("tell your orchestrator, as a finding"),
+            "{refused}"
+        );
+        assert_eq!(
+            starts.room(&resuming("OSPREY", "s-last", NOW + 100)),
+            Some(NOW + HOUR),
+            "room comes as the first brought back passes the hour"
+        );
+        starts
+            .admit(agent("SKIFFS", NOW + 100))
+            .expect_err("and new work of another cell waits with them");
+    }
+
+    #[test]
+    fn a_cell_brings_back_nine_sessions_an_hour_beside_its_new_work() {
+        let (_dir, starts) = book();
+        for one in 0..RESUMES_A_CELL_AN_HOUR {
+            let at = NOW + i64::try_from(one).expect("few");
+            started(&starts, resuming("OSPREY", &format!("s-{one}"), at), "h");
+        }
+        let refused = starts
+            .admit(resuming("OSPREY", "s-tenth", NOW + 100))
+            .expect_err("the tenth brought back is past the cell's number");
+        assert!(
+            refused.contains("OSPREY brought back 9 sessions"),
+            "{refused}"
+        );
+        assert_eq!(
+            starts.room(&resuming("OSPREY", "s-tenth", NOW + 100)),
+            Some(NOW + HOUR),
+            "room comes as the first brought back passes the hour"
+        );
+        started(&starts, agent("OSPREY", NOW + 100), "h");
+        started(&starts, resuming("SKIFFS", "s-other", NOW + 100), "h");
+    }
+
+    #[test]
+    fn a_start_names_a_session_brought_back_by_its_id_or_its_file_while_it_doesnt_run() {
+        let words = |words: &[&str]| {
+            words
+                .iter()
+                .map(|&word| word.to_owned())
+                .collect::<Vec<_>>()
+        };
+        let sessions = [
+            session("0193-ended", "ended"),
+            session("0193-busy", "busy"),
+            session("0193-away", "unreachable"),
+        ];
+        let file = "/home/x/.pi/agent/sessions/--x--/2026-11-18T22-00-00_0193-ended.jsonl";
+        for brought in [
+            words(&["pi", "--session", "0193-ended"]),
+            words(&["/run/current-system/sw/bin/pi", "--session", file]),
+            words(&["pi", "--session=0193-ended"]),
+            words(&["pi", "--session-id", "0193-ended"]),
+            words(&["/etc/profiles/per-user/x/bin/pi", "--session-id=0193-ended"]),
+        ] {
+            assert_eq!(
+                brings_back(&brought, &sessions).as_deref(),
+                Some("0193-ended"),
+                "{brought:?}"
+            );
+        }
+        for new in [
+            words(&["pi", "--session", "0193-busy"]),
+            words(&["pi", "--session", "0193-away"]),
+            words(&["pi", "--session", "0193-unknown"]),
+            words(&["pi", "--session", "x0193-ended"]),
+            words(&["pi", "0193-ended"]),
+            words(&["pi", "--session", "0193-busy", "--session", "0193-ended"]),
+            words(&["pi", "--session=0193-new", "--session-id", "0193-ended"]),
+            words(&["sh", "-c", "new work", "--session", "0193-ended"]),
+            words(&["pip", "--session", "0193-ended"]),
+            words(&["/home/x/work/pi", "--session", "0193-ended"]),
+            words(&["./pi", "--session", "0193-ended"]),
+            words(&["/nix/store/0000-not-pi/bin/pi", "--session", "0193-ended"]),
+            words(&[
+                "/run/current-system/sw/bin/../../../../tmp/pi",
+                "--session",
+                "0193-ended",
+            ]),
+        ] {
+            assert_eq!(brings_back(&new, &sessions), None, "{new:?}");
+        }
+    }
+
+    #[test]
+    fn a_session_brought_back_twice_at_once_counts_the_second_and_its_room_says_so() {
+        let (_dir, starts) = book();
+        for _ in 0..CELL_AN_HOUR {
+            started(&starts, agent("OSPREY", NOW), "h");
+        }
+        // The first still going, as a burst of the same one is.
+        let first = starts
+            .admit(resuming("OSPREY", "s-0", NOW + 1))
+            .expect("the first is free");
+        assert_eq!(
+            starts.room(&resuming("OSPREY", "s-0", NOW + 2)),
+            Some(NOW + HOUR),
+            "the second waits for a counted start's room"
+        );
+        starts
+            .admit(resuming("OSPREY", "s-0", NOW + 2))
+            .expect_err("the second counts");
+        assert_eq!(
+            starts.room(&resuming("OSPREY", "s-1", NOW + 2)),
+            None,
+            "another session is still free"
+        );
+        starts.keep(first, Ok(("kestrel".to_owned(), "h".to_owned())));
+        starts
+            .admit(resuming("OSPREY", "s-0", NOW + 3))
+            .expect_err("and counts once the first has started");
+        let person = Kept {
+            resumes: Some("s-2".to_owned()),
+            ..asked(By::Person, None, NOW + 3)
+        };
+        started(&starts, person, "h");
+        started(&starts, resuming("OSPREY", "s-2", NOW + 4), "h");
+    }
+
+    #[test]
+    fn a_start_past_the_limits_says_when_there_is_room_and_not_to_ask_the_person() {
+        let (_dir, starts) = book();
+        for one in 0..CELL_AN_HOUR {
+            let at = NOW + 60_000 * i64::try_from(one).expect("few");
+            started(&starts, agent("OSPREY", at), "h");
+        }
+        let late = agent("OSPREY", NOW + 30 * 60_000);
+        assert_eq!(
+            starts.room(&late),
+            Some(NOW + HOUR),
+            "once the oldest is an hour old"
+        );
+        let refused = starts.admit(late).expect_err("past its number");
+        assert!(refused.contains("room again in 30 minutes"), "{refused}");
+        assert!(
+            refused.ends_with("tell your orchestrator, as a finding"),
+            "{refused}"
+        );
+        assert_eq!(
+            starts.room(&agent("SKIFFS", NOW)),
+            None,
+            "another cell has room"
+        );
+        starts.stop().expect("stopped");
+        assert_eq!(
+            starts.room(&agent("SKIFFS", NOW)),
+            None,
+            "the stop names no time"
+        );
     }
 
     fn agent(cell: &str, at: i64) -> Kept {

@@ -198,6 +198,14 @@ pub trait Hands {
     ///
     /// When the node can't say.
     fn ties(&mut self) -> Result<Vec<Value>, String>;
+    /// Every cell the node holds, each record whole as the cell kind
+    /// lists it, so a session that arrived here under another cell's name
+    /// is carried on under that name.
+    ///
+    /// # Errors
+    ///
+    /// When the node can't say.
+    fn cells(&mut self) -> Result<Vec<Value>, String>;
     /// Every `formed` record the node holds: each tree and files network
     /// formed here, with when it formed.
     ///
@@ -570,6 +578,9 @@ fn bring_cells(hands: &mut impl Hands, sessions: &[Session]) -> Result<BTreeSet<
     let ties = hands
         .ties()
         .map_err(|why| format!("the node didn't say its ties: {why}"))?;
+    let cells = hands
+        .cells()
+        .map_err(|why| format!("the node didn't say its cells: {why}"))?;
     let in_a_network = carried
         .iter()
         .any(|(_, session)| !crate::networks::formed_networks(&session.presence).is_empty());
@@ -581,9 +592,10 @@ fn bring_cells(hands: &mut impl Hands, sessions: &[Session]) -> Result<BTreeSet<
         Vec::new()
     };
     for (id, session) in &carried {
+        let name = cell_named(&cells, &session.id).unwrap_or(&session.address);
         let brought = cell::Brought {
             formed: cell::formed_of(&session.presence, &formed),
-            ..cell::brought(id, &session.address, &ties)
+            ..cell::brought(id, name, &ties)
         };
         hands.bring(&brought).map_err(|why| {
             format!(
@@ -593,6 +605,16 @@ fn bring_cells(hands: &mut impl Hands, sessions: &[Session]) -> Result<BTreeSet<
         })?;
     }
     Ok(keeping)
+}
+
+/// The name of the cell `cells` hold for the session `id`: the cell it
+/// arrived as, where it arrived here, else its own address.
+fn cell_named<'cells>(cells: &'cells [Value], id: &str) -> Option<&'cells str> {
+    cells
+        .iter()
+        .find(|cell| cell["id"].as_str() == Some(id))
+        .and_then(|cell| cell["name"].as_str())
+        .filter(|name| !name.is_empty())
 }
 
 /// Waits until none of `sessions` runs on `here` any more.
@@ -685,7 +707,40 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done, ordered: Option<&Orde
         folder: None,
         command,
         may_cost: false,
+        carries: false,
     }
+}
+
+/// A session's arrival, as a start's command says it: the quest it was
+/// carried in, the machine it left, as its done file's folder is named,
+/// and its session.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Arrives<'a> {
+    /// The quest it was carried in.
+    pub(crate) quest: &'a str,
+    /// The machine it left.
+    pub(crate) from: &'a str,
+    /// The session that arrives.
+    pub(crate) session: &'a str,
+}
+
+/// The arrival `command` starts, when it has the shape [`arriving`]
+/// gives a carried session's start, or none: none for a quest's own
+/// trees, since no session arrives with them.
+pub(crate) fn arrives(command: &[String]) -> Option<Arrives<'_>> {
+    let [sh, c, script, name, quest, from, session, ..] = command else {
+        return None;
+    };
+    let shaped = sh == "sh"
+        && c == "-c"
+        && name == PI_CARRY
+        && script.starts_with(r#"pi-carry arrive "$1" --from "$2" --session "$3""#)
+        && script.contains("exec pi --session \"$3\"");
+    (shaped && session != quest).then_some(Arrives {
+        quest,
+        from,
+        session,
+    })
 }
 
 /// What a session carried from `from` is told as it starts, in the
@@ -812,6 +867,8 @@ mod tests {
         unsaid_ties: Option<String>,
         /// How many times the ties were asked for.
         ties_asked: usize,
+        /// Every cell the node holds, as the cell kind lists it.
+        cell_records: Vec<Value>,
         /// Every formed network the node holds.
         formed: Vec<Value>,
         /// Why the node can't say its formed networks, where it can't.
@@ -903,6 +960,9 @@ mod tests {
             self.unsaid_ties
                 .clone()
                 .map_or_else(|| Ok(self.ties.clone()), Err)
+        }
+        fn cells(&mut self) -> Result<Vec<Value>, String> {
+            Ok(self.cell_records.clone())
         }
         fn formed(&mut self) -> Result<Vec<Value>, String> {
             self.formed_asked += 1;
@@ -1144,6 +1204,43 @@ mod tests {
     }
 
     #[test]
+    fn a_session_that_arrived_as_another_cell_is_carried_on_as_that_cell() {
+        let mut realm = realm();
+        realm.ties = vec![
+            json!({"key": "tie:HARBOR~KELP01", "kind": "tie", "strength": 2.0}),
+            json!({"key": "tie:BUSY01~HARBOR", "kind": "tie", "strength": 1.0}),
+        ];
+        // BUSY01 arrived here as KELP01, so the node names its cell so; a
+        // cell of another session's, or with no name, names none.
+        realm.cell_records = vec![
+            json!({"key": "cell:KELP01", "kind": "cell", "name": "KELP01", "id": "r-BUSY01"}),
+            json!({"key": "cell:OTHER4", "kind": "cell", "name": "OTHER4", "id": "r-OTHER4"}),
+            json!({"key": "cell:", "kind": "cell", "name": "", "id": "r-NAPS02"}),
+        ];
+        let (done, lines) = carried(&mut realm, "tern");
+        assert!(done.is_ok(), "carried: {}", last_said(&lines));
+        let named: Vec<(&str, &str, Vec<&Value>)> = realm
+            .brought
+            .iter()
+            .map(|(brought, _)| {
+                (
+                    brought.session.as_str(),
+                    brought.cell.as_str(),
+                    brought.ties.iter().collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("s-busy01", "KELP01", vec![&realm.ties[0]]),
+                ("s-naps02", "NAPS02", Vec::new()),
+            ],
+            "a second carry brings the cell the session arrived as, with its ties"
+        );
+    }
+
+    #[test]
     fn an_earlier_carrys_cells_go_before_any_session_is_told_and_a_failed_ones_stay() {
         let done = |session: &str| Done {
             session: session.to_owned(),
@@ -1325,6 +1422,7 @@ mod tests {
             "and no session starts for them: {}",
             trees.command[2]
         );
+        assert_eq!(super::arrives(&trees.command), None, "so none arrives");
         let first = &realm.started[0];
         assert!(
             matches!(first.work.needs.as_slice(), [Need::Machine(on)] if on == "tern"),
@@ -1345,6 +1443,15 @@ mod tests {
         assert!(
             first.command[2].starts_with("pi-carry arrive"),
             "arrives before pi starts"
+        );
+        assert_eq!(
+            super::arrives(&first.command),
+            Some(super::Arrives {
+                quest: QUEST,
+                from: "skiff",
+                session: "s-busy01",
+            }),
+            "its start says which session arrives, from where"
         );
         assert_eq!(done.machine, "tern", "said where it went");
         let addresses: Vec<&str> = done
