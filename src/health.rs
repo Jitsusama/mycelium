@@ -1,8 +1,9 @@
 //! How a realm's network stands, as `mycelium health` prints it for a
 //! daily read: one JSON line saying each link and how often it dropped in
 //! the last day, the sessions on each machine, the presences written in
-//! the last day that still say they run with their process gone, and how
-//! long the node took to answer.
+//! the last day that still say they run with their process gone, how
+//! long the node took to answer, and, while this machine's node refuses
+//! its kit, why.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -79,14 +80,25 @@ pub fn line(
     // Whole seconds, as the day's other figures are, rounded so a 7.9 s
     // answer reads as the 8 it nearly was.
     let slowest = (read.slowest.as_millis() + 500) / 1000;
-    json!({
+    let mut line = json!({
         "realm": read.realm,
         "at": read.at,
         "links": links,
         "sessions": sessions,
         "deadPresences": dead,
         "slowestAsk": u64::try_from(slowest).unwrap_or(u64::MAX),
-    })
+    });
+    // A kit this machine's node refused stays off every path until the
+    // node starts again, so the read says why while it lasts.
+    if let Some(why) = read
+        .machines
+        .iter()
+        .find(|machine| machine.name == read.here)
+        .and_then(|machine| machine.kit.as_ref()?.refused.as_ref())
+    {
+        line["kitRefused"] = json!(why);
+    }
+    line
 }
 
 /// How long a presence left saying it runs is counted: a day, as the
@@ -231,6 +243,44 @@ mod tests {
                 {"machine": "tern", "state": "up", "ended24h": 0},
             ]),
             "a refusal says why while no link reaches the machine, and a link up outranks it"
+        );
+    }
+
+    #[test]
+    fn a_kit_this_machine_refused_says_why() {
+        let why = "its bin may be written by others";
+        let kitted = |name: &str, refused: Option<&str>| {
+            let mut one = machine(name, Readiness::Ready);
+            one.kit = Some(crate::facts::Kit {
+                path: "/home/someone/kit".to_owned(),
+                tools: Vec::new(),
+                refused: refused.map(str::to_owned),
+            });
+            one
+        };
+        let read = |machines: &[Machine]| {
+            line(
+                &Read {
+                    realm: "personal",
+                    at: 1_794_470_400,
+                    here: "skiff",
+                    machines,
+                    sessions: &[],
+                    slowest: Duration::ZERO,
+                },
+                |_| 0,
+                |_| None,
+            )
+        };
+        assert_eq!(
+            read(&[kitted("skiff", Some(why))])["kitRefused"],
+            json!(why),
+            "a kit this machine's node refused says why"
+        );
+        let others = read(&[kitted("skiff", None), kitted("tern", Some(why))]);
+        assert!(
+            others.get("kitRefused").is_none(),
+            "a kit carried here, or refused on another machine, says nothing: {others}"
         );
     }
 
