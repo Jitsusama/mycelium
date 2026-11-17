@@ -688,10 +688,11 @@ command line or the session's done file, so it arrives saying who
 carried it and why, never as the person.
 
 The node that kept a carry serves it in the daemon interface as a
-`carry` record for a day after it was ordered, or after it settled, its
+`carry` record for a day after it was kept, or after it settled, its
 id the machine whose node kept it, the carried session's and `at`, as
 `kestrel:s-harbour:2026-11-16T08:00:00Z`, holding `machine`, and `at`,
-`by`, `session`, `address`, `quest`, `from`, `to` and `why` as kept,
+`by`, `session`, `address`, `quest`, `from`, `to` and, where the line
+has one, `why`, as kept,
 `settle` once it settled, and `state`, judged from what the node sees
 itself, never from what a session or its orchestrator says: `refused`,
 with `refused` saying why, once the session wrote a refusal
@@ -700,7 +701,7 @@ after its done file was written since; `carrying` once it is gone from
 here, by its presence ending or running somewhere else; and `ordered`
 until then. Its `state` and `refused` are live. The chain and asker
 stay in the file, which proves them. Each node serves the carries it
-ordered, and those each linked machine's node told of in a `Carries`
+kept, and those each linked machine's node told of in a `Carries`
 frame while a link carried it within the last day. Of those, `refused`
 and `left` are as that node told them, since only its machine's
 handover shows them, and where the session runs is as this node sees
@@ -709,8 +710,8 @@ link has carried a machine for a day, what it told is let go.
 
 A carried session leaves its worktrees on the machine it left, so that
 machine's node lets them go once the carry is done with them: once a
-carry it ordered from here stands `arrived` and was ordered more than
-a day ago, it runs `pi-carry settle <quest> --session <session>` once,
+carry it kept from here stands `arrived` and was kept more than a
+day ago, it runs `pi-carry settle <quest> --session <session>` once,
 off its loop and in its own environment, saying in its log when that
 takes over a minute and waiting on it, never ending one part way
 itself. A service manager stopping the node ends it too, as it ends
@@ -719,7 +720,7 @@ carry whose session this node saw arrive stands `arrived` for
 settling while its session runs nowhere, as when it ended there or
 is on its way somewhere else, until it is seen back here; a node
 started afresh has seen none arrive. It looks as presences
-change and each minute, at the newest carry of each session ordered
+change and each minute, at the newest carry of each session kept
 within the week; never at one standing `refused`, `ordered`,
 `carrying` or `back`. Settling lets go of each tree holding
 nothing the carry didn't take, and otherwise keeps every one, saying
@@ -738,10 +739,28 @@ can't be kept, is asked again only once the node starts afresh,
 which settling allows. Where the file can't be read, nothing is settled.
 The carry's record then holds `settle`, `{"did", "let" or "why",
 "at"}`, and is shown for a day after it settled as well as a day
-after it was
-ordered, on every machine its `Carries` reach. A carry the person made
-with `mycelium carry` keeps no line in `carries.jsonl`, so the trees it
-leaves stay where they are.
+after it was kept, on every machine its `Carries` reach.
+
+A carry the person's own login asks, with `mycelium carry` or the
+one-act `carry` ask, is kept in `carries.jsonl` too, as each `carry`
+steer reaches a session here, and only where the asker was the
+person's own, as this node judged it or, for a carry a link brought,
+as the linked node said it checked: `by` is `person`, as the node
+judged it, since a steer giving `by` is refused. It holds no `why`,
+`asker`, `chain` or `source`, since the person gives no reason and is
+asked by nobody. Its quest is the one whose record the node serves
+holds the session running here, never the quest its presence claims.
+A carry naming no machine but this one, or of a session no quest's
+record holds running here, is carried with no line, since nothing
+settles a carry without its quest, and the node's log says why. One
+that can't be kept isn't carried. It is then served, told to linked
+machines and settled as one an orchestrator asked is. A one-act carry
+asked of a node its quest doesn't run on is kept where it runs: that
+node takes the asker as the person's on the word of the node that
+asked it over the link, as it takes any steer a link carries, then
+steers its own sessions through its own socket, where it is the
+person's own login. A steer a link carries to an inbox keeps no line,
+since that end knows no sessions or quests.
 
 ### A Machine Easing Itself
 
