@@ -216,6 +216,18 @@ pub const MEMORY_PRESSURE: &str = "memory-pressure";
 /// The key of the taint a machine whose home's disk is filling carries.
 pub const DISK_PRESSURE: &str = "disk-pressure";
 
+/// The key of the taint a machine whose processors are saturated carries:
+/// at [`SATURATED_PRESSURE`] or more, as its room last said. It goes after
+/// every machine that isn't, so work goes to one that can run it at once,
+/// and never refuses work, since every machine saturated still runs what
+/// it must somewhere.
+pub const CPU_SATURATED: &str = "cpu-saturated";
+
+/// The processor pressure, in percent of the last ten seconds, at which a
+/// machine's processors are saturated: so much waits on them that a
+/// session started there is slow for everyone on it.
+pub const SATURATED_PRESSURE: f64 = 80.0;
+
 /// The key of the taint a machine past its queue's processor limit carries.
 pub const CPU_PRESSURE: &str = "cpu-pressure";
 
@@ -583,7 +595,8 @@ fn decide_at(
             judged
         })
         .collect();
-    // Machines that qualify, those not over first, then by how many
+    // Machines that qualify, those not saturated first, then those not
+    // over, then by how many
     // preferences each meets, earliest most, then by the headroom it has,
     // then by name. Of the best and those as good but for headroom within
     // the band, one at random, so asks alike spread rather than herd.
@@ -592,8 +605,9 @@ fn decide_at(
         .collect();
     ranked.sort_by(|&one, &other| {
         let (one, other) = (&judged[one], &judged[other]);
-        (one.over || one.unheard)
-            .cmp(&(other.over || other.unheard))
+        one.saturated
+            .cmp(&other.saturated)
+            .then_with(|| (one.over || one.unheard).cmp(&(other.over || other.unheard)))
             .then_with(|| other.preferred.cmp(&one.preferred))
             .then_with(|| other.headroom.total_cmp(&one.headroom))
             .then_with(|| one.name.cmp(&other.name))
@@ -605,7 +619,8 @@ fn decide_at(
             .copied()
             .take_while(|&at| {
                 let one = &judged[at];
-                (one.over || one.unheard) == (best.over || best.unheard)
+                one.saturated == best.saturated
+                    && (one.over || one.unheard) == (best.over || best.unheard)
                     && one.preferred == best.preferred
                     && one.headroom >= best.headroom - weights.near_best
             })
@@ -777,6 +792,7 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
         headroom: 0.0,
         over: false,
         unheard: false,
+        saturated: false,
     }
 }
 
@@ -826,6 +842,18 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
             "its queue starts no build beside a VM test for want of a processor",
         ));
     }
+    if let Some(room) = &machine.room
+        && room.pressure.cpu >= SATURATED_PRESSURE
+    {
+        taints.push(Taint {
+            key: CPU_SATURATED.to_owned(),
+            effect: Effect::PreferNot,
+            why: format!(
+                "its processors are saturated, at pressure {:.0}",
+                room.pressure.cpu
+            ),
+        });
+    }
     if machine.disk_band.is_some_and(|band| band > Band::Healthy) {
         taints.push(condition(
             DISK_PRESSURE,
@@ -850,6 +878,8 @@ struct Judged {
     over: bool,
     /// Whether its room hasn't been said lately.
     unheard: bool,
+    /// Whether its processors are saturated, as its room said lately.
+    saturated: bool,
 }
 
 /// The networks the person's own lasting machines reach, always or by a
@@ -952,12 +982,17 @@ fn judge(
     // Over is read from the room even where it is unheard, and harmlessly:
     // a machine unheard ranks with those over either way.
     let over = rather_not.iter().any(|taint| is_over(&taint));
+    let is_saturated = |taint: &&Taint| taint.key == CPU_SATURATED;
+    // Saturation ranks a machine rather than costing it headroom, as
+    // being over does.
     let weighed = rather_not
         .iter()
-        .filter(|taint| !is_over(taint))
+        .filter(|taint| !is_over(taint) && !is_saturated(taint))
         .map(|taint| costs(machine, taint, weights))
         .sum();
     let lately = heard(machine, now);
+    // A room unheard says nothing of its processors now.
+    let saturated = lately && rather_not.iter().any(|taint| is_saturated(&taint));
     Judged {
         name: machine.name.clone(),
         hard,
@@ -970,6 +1005,7 @@ fn judge(
         headroom: headroom(machine, load, weighed, lately, weights),
         over,
         unheard: !lately,
+        saturated,
     }
 }
 
@@ -1462,9 +1498,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_saturated_machine_is_never_chosen_while_another_is_not() {
+        let kestrel = pressed(machine("kestrel", "macos", 60, &[]), 85.0);
+        let osprey = pressed(machine("osprey", "linux", 8, &[]), 40.0);
+        let Placement::Placed {
+            machine: chosen,
+            passed,
+        } = place(&needing(Vec::new()), &[kestrel.clone(), osprey.clone()])
+        else {
+            panic!("one takes it");
+        };
+        assert_eq!(
+            chosen, "osprey",
+            "however much memory a machine has, processors saturated send work elsewhere"
+        );
+        assert_eq!(
+            said(&passed),
+            "kestrel would rather not: its processors are saturated, at pressure 85",
+            "and it says why"
+        );
+        let busier = pressed(osprey.clone(), 90.0);
+        assert_eq!(
+            placed(&place(&needing(Vec::new()), &[kestrel.clone(), busier])),
+            Some("kestrel"),
+            "every machine saturated, the work still goes to the one with most room"
+        );
+        let mut tolerant = needing(Vec::new());
+        tolerant.tolerates.push(CPU_SATURATED.to_owned());
+        assert_eq!(
+            placed(&place(&tolerant, &[kestrel, osprey])),
+            Some("kestrel"),
+            "work that minds no saturation weighs it as any other room"
+        );
+    }
+
+    #[test]
     fn a_machine_over_a_limit_is_never_chosen_while_another_is_not() {
         let kestrel = over(
-            pressed(machine("kestrel", "macos", 60, &[]), 90.0),
+            pressed(machine("kestrel", "macos", 60, &[]), 75.0),
             &[Limit::Cpu],
         );
         let mut skiff = machine("skiff", "linux", 2, &[]);
@@ -1515,7 +1586,7 @@ pub(crate) mod tests {
     fn a_machine_whose_room_is_unheard_goes_after_one_heard_lately() {
         let mut kestrel = machine("kestrel", "linux", 60, &[]);
         kestrel.room.as_mut().expect("a room").said_at = "2026-10-29T05:50:00Z".to_owned();
-        let tern = pressed(machine("tern", "linux", 2, &[]), 80.0);
+        let tern = pressed(machine("tern", "linux", 2, &[]), 75.0);
         let Placement::Placed {
             machine: chosen,
             passed,
