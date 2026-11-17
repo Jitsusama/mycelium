@@ -2,7 +2,7 @@
 //! stores of the machines discovery finds, holds the sessions and messages
 //! in memory, and serves the local socket every client reads.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -863,7 +863,7 @@ fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) -> Vec<Ma
     let past = |made: &Made, by: jiff::SignedDuration| {
         made.until.checked_add(by).is_ok_and(|at| at <= now)
     };
-    let living: BTreeSet<&str> = standing
+    let living: std::collections::BTreeSet<&str> = standing
         .made
         .iter()
         .filter(|made| !past(made, ENDED_LET_GO_AFTER))
@@ -906,7 +906,7 @@ fn let_go_ended(book: &Book, store: &impl Store, now: jiff::Timestamp) -> Vec<Ma
         }
         gone.push(made.clone());
     }
-    let named: BTreeSet<&str> = standing
+    let named: std::collections::BTreeSet<&str> = standing
         .made
         .iter()
         .map(|made| made.machine.as_str())
@@ -11494,6 +11494,23 @@ esac
         );
     }
 
+    /// The machines `store` lists that have left by `now`, by name in order.
+    fn leaving(store: &Memory, now: jiff::Timestamp) -> Vec<String> {
+        let mut names: Vec<String> = store
+            .machines()
+            .into_iter()
+            .filter(|machine| {
+                machine
+                    .declared
+                    .as_ref()
+                    .is_some_and(|declared| declared.has_left(now))
+            })
+            .map(|machine| machine.name)
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
     fn a_machine_made_whose_time_is_up_leaves_once_no_link_reaches_it() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -11565,23 +11582,8 @@ esac
             vec![gone, just, unlisted, before],
             "the makes booked as let go, each at its place, and only those"
         );
-        let left: BTreeMap<String, bool> = store
-            .machines()
-            .into_iter()
-            .map(|machine| {
-                let left = machine
-                    .declared
-                    .is_some_and(|declared| declared.has_left(now));
-                (machine.name, left)
-            })
-            .collect();
-        let leaving: Vec<&str> = left
-            .iter()
-            .filter(|(_, left)| **left)
-            .map(|(name, _)| name.as_str())
-            .collect();
         assert_eq!(
-            leaving,
+            leaving(&store, now),
             ["harbour", "kestrel", "lent"],
             "what no link reaches leaves once its time is ten minutes up, a make \
              naming no realm too; one linked, one whose keeper has a while yet, \
@@ -11589,7 +11591,7 @@ esac
              a make naming no realm that is linked, declared nothing, ended over \
              a week ago or shares a name this realm's book holds, all stay"
         );
-        assert_eq!(left.len(), 11, "every machine is still listed");
+        assert_eq!(store.machines().len(), 11, "every machine is still listed");
         let standing = book.standing().expect("the book reads");
         assert_eq!(
             standing.made,
