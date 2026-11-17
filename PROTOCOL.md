@@ -921,11 +921,21 @@ Its `kit` is its realm's kit as its node was given it (`--kit`): a
 folder whose `bin` holds the tools every machine in the realm is to
 have, such as a Nix profile built for the realm, which each session and
 run the node starts finds first on its path. It carries `path`, where
-the folder is, which names its version where it is in the Nix store,
-and `tools`, the name of each entry in its `bin`, sorted, leaving out
-any beginning with a dot. It is absent where the node is given no kit,
-its `bin` can't be listed, or the node is too old to say, and absent
-reads as unknown.
+the folder is with any link to it resolved, which names its version
+where it is in the Nix store, and `tools`, the name of each entry in
+its `bin`, leaving out any beginning with a dot, in an order nothing
+should lean on. It is absent where the node is given no kit, its `bin`
+can't be listed, or the node is too old to say, and absent reads as
+unknown. Both the node a machine dialled and the links it keeps say it.
+
+A kit is a whole path holding no colon, which the node refuses
+otherwise. Its tools come first for every session and run, an agent's
+fenced ones too, so it belongs where no agent can write, such as the
+Nix store or a link only root can repoint; the node says at its start
+what the kit holds, and where an account but root could change it. A
+session held while the kit changes keeps the folder it was given, so a
+link the configuration moves to each new kit reaches it when it wakes,
+where a store path pins the old one until it is collected.
 
 Its `room` is the room it has for more work, as the harness's machine
 queue says it, since that queue is what starts work there: `said_at`,
@@ -1164,7 +1174,9 @@ isn't placed, or doesn't start, is an error saying why, such as
 starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in
 `app.slice`, so the session outlives the node. A start placed on
 another machine is asked of it through the link this node keeps to it,
-and its `attach` comes back as the words that join it over the dial,
+without the tools its work prefers, since a node too old to read one
+may have been preferred and would end the link rather than answer, and
+its `attach` comes back as the words that join it over the dial,
 as a held session's `attach` says, such as `mycelium --realm work
 attach --on kestrel <held> -- ssh -t -- kestrel mycelium --realm work
 attach <held>`. It fails with a reason when no link reaches the machine, its

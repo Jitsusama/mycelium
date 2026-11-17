@@ -64,6 +64,20 @@ pub struct Work {
     pub lasts: Option<jiff::SignedDuration>,
 }
 
+impl Work {
+    /// This work as it is asked of the machine already chosen for it,
+    /// without the tools it would rather have: a preference can choose a
+    /// node too old to read a tool, which would drop the link rather than
+    /// answer, and once a machine is chosen a preference changes nothing.
+    /// A tool it needs stays, since only a node that names its kit, and so
+    /// reads a tool, can have been chosen for it.
+    #[must_use]
+    pub fn asked_there(mut self) -> Self {
+        self.prefers.retain(|need| !matches!(need, Need::Tool(_)));
+        self
+    }
+}
+
 /// Something a machine is, which work can need or prefer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2077,7 +2091,8 @@ pub(crate) mod tests {
             tools: tools.iter().map(|&tool| tool.to_owned()).collect(),
         };
         let mut carrying = machine("kestrel", "linux", 8, &[]);
-        carrying.kit = Some(kit(&["gcloud", "gh", "git"]));
+        // Out of order, as a record read from the wire may be.
+        carrying.kit = Some(kit(&["git", "gh", "gcloud"]));
         let mut lacking = machine("osprey", "linux", 32, &[]);
         lacking.kit = Some(kit(&["gh", "git"]));
         let unsaid = machine("tern", "linux", 32, &[]);
@@ -2111,6 +2126,27 @@ pub(crate) mod tests {
             serde_json::to_value(Need::Tool("gcloud".to_owned())).expect("a need says itself"),
             serde_json::json!({"tool": "gcloud"}),
             "as PROTOCOL.md says it"
+        );
+    }
+
+    #[test]
+    fn work_asked_of_its_chosen_machine_prefers_no_tool_but_still_needs_one() {
+        let gcloud = Need::Tool("gcloud".to_owned());
+        let linux = Need::System("linux".to_owned());
+        let work = Work {
+            prefers: vec![gcloud.clone(), linux.clone()],
+            ..needing(vec![gcloud.clone()])
+        };
+        let there = work.asked_there();
+        assert_eq!(
+            there.prefers,
+            [linux],
+            "a node too old to read a tool may have been preferred"
+        );
+        assert_eq!(
+            there.needs,
+            [gcloud],
+            "only a node naming its kit can meet a need for a tool"
         );
     }
 

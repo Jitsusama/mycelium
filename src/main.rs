@@ -463,7 +463,7 @@ enum Action {
         login: bool,
         /// The kit whose tools come first on the path the login shell
         /// gives it.
-        #[arg(long, requires = "login")]
+        #[arg(long, requires = "login", value_parser = kit)]
         kit: Option<PathBuf>,
         #[arg(last = true, required = true)]
         command: Vec<String>,
@@ -534,8 +534,10 @@ struct Node {
     /// realm. Each session and run this node starts finds them first on
     /// its path, put there after the person's login profile, and the
     /// machine record names them as `kit`. Unnamed, nothing is put
-    /// first and the record says no kit.
-    #[arg(long)]
+    /// first and the record says no kit. It goes first for agents too,
+    /// so it belongs where none can write, such as the Nix store or a
+    /// link the configuration keeps to it.
+    #[arg(long, value_parser = kit)]
     kit: Option<PathBuf>,
     /// A realm this realm's text may cross into, one way, where a session
     /// names it; given again for each. PROTOCOL.md says what crosses.
@@ -1630,6 +1632,16 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
         "mycelium: {}",
         mycelium::declared::said_at_start(&declared, &given.runs.declarers)
     );
+    if let Some(kit) = given
+        .starter
+        .as_ref()
+        .and_then(|starter| starter.kit.as_deref())
+    {
+        tell!(
+            "mycelium: {}",
+            mycelium::declared::kit_said_at_start(kit, &given.runs.declarers)
+        );
+    }
     let runtime = runtime()?;
     let ran = runtime.block_on(async {
         let bound = node::bind(socket)?;
@@ -1666,6 +1678,7 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         // A dialled link runs apart from the node, so asks it.
         health: None,
         declared: None,
+        kit: None,
     };
     match far {
         Some(far) => {
@@ -2683,6 +2696,23 @@ fn need(said: &str) -> Result<Need, String> {
     })
 }
 
+/// A kit's folder as it can go on a path: whole, since every session
+/// starts in a folder of its own, and holding nothing a path would split
+/// or mangle.
+fn kit(said: &str) -> Result<PathBuf, String> {
+    if !said.starts_with('/') {
+        return Err(format!(
+            "{said:?} is not a whole path, and a session starts in its own folder"
+        ));
+    }
+    if said.contains(':') {
+        return Err(format!(
+            "{said:?} holds a colon, which would split it on a path"
+        ));
+    }
+    Ok(PathBuf::from(said))
+}
+
 /// A reason that says something.
 fn reason(said: &str) -> Result<String, String> {
     if said.trim().is_empty() {
@@ -2704,8 +2734,8 @@ mod tests {
     use std::io;
 
     use super::{
-        Action, Command, HELP_WIDTH, SwarmAsked, Tree, in_place, reader_left, swarm_asked, tree,
-        write_line,
+        Action, Command, HELP_WIDTH, SwarmAsked, Tree, in_place, kit, reader_left, swarm_asked,
+        tree, write_line,
     };
 
     /// A reader that has gone, as `| head` is once it has read enough.
@@ -2735,6 +2765,23 @@ mod tests {
                 "a broken pipe, not an error of its own, or `| head` reads as a failure"
             );
         }
+    }
+
+    #[test]
+    fn a_kit_is_taken_only_as_a_whole_path_a_path_list_can_hold() {
+        assert_eq!(
+            kit("/nix/store/kit"),
+            Ok("/nix/store/kit".into()),
+            "a whole path is taken"
+        );
+        assert!(
+            kit("kit").is_err_and(|why| why.contains("not a whole path")),
+            "a relative one would name another folder in each session's own"
+        );
+        assert!(
+            kit("/nix/store/a:b").is_err_and(|why| why.contains("colon")),
+            "a colon would split it in two on the path"
+        );
     }
 
     #[test]

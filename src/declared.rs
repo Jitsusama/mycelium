@@ -278,6 +278,31 @@ pub fn said_at_start(file: &Path, declarers: &[u32]) -> String {
     )
 }
 
+/// What a node says as it starts of the realm's kit it was given in
+/// `kit`: what it holds, which every session and run it starts finds first
+/// on its path, and whether an account but `declarers` could change that,
+/// since an agent among them could put its own program in a tool's place.
+#[must_use]
+pub fn kit_said_at_start(kit: &Path, declarers: &[u32]) -> String {
+    let Some(listed) = crate::facts::kit(kit) else {
+        return format!(
+            "puts the realm's kit at {} first on each path, but can't list its bin, so names no \
+             kit",
+            kit.display()
+        );
+    };
+    let held = format!(
+        "puts the realm's kit at {} first on each path: {} tools ({})",
+        listed.path,
+        listed.tools.len(),
+        listed.tools.join(" ")
+    );
+    match sealed(&kit.join("bin"), declarers) {
+        Ok(()) => held,
+        Err(why) => format!("{held}; an agent could change what they are: {why}"),
+    }
+}
+
 /// How many links a path may pass through before it is taken as a loop,
 /// as Linux counts them.
 const HOPS: usize = 40;
@@ -517,6 +542,37 @@ mod tests {
         assert!(
             sealed(&looping, &declarers()).is_err(),
             "a link to itself says nothing"
+        );
+    }
+
+    #[test]
+    fn a_node_says_what_its_kit_holds_and_whether_an_agent_could_change_it() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let kit = folder.path().join("kit");
+        assert!(
+            kit_said_at_start(&kit, &declarers()).ends_with("can't list its bin, so names no kit"),
+            "a kit with no bin to list is said to name none"
+        );
+        fs::create_dir_all(kit.join("bin")).expect("its bin");
+        for tool in ["gh", "gcloud"] {
+            fs::write(kit.join("bin").join(tool), "").expect("a tool");
+        }
+        let resolved = fs::canonicalize(&kit).expect("the kit resolves");
+        let held = format!(
+            "puts the realm's kit at {} first on each path: 2 tools (gcloud gh)",
+            resolved.display()
+        );
+        let mine = rustix::process::getuid().as_raw();
+        assert_eq!(
+            kit_said_at_start(&kit, &[0, mine]),
+            held,
+            "a kit only its declarers write is said as it is"
+        );
+        let anyone = mine.wrapping_add(1);
+        assert!(
+            kit_said_at_start(&kit, &[0, anyone])
+                .starts_with(&format!("{held}; an agent could change what they are: ")),
+            "a kit another account writes is said to be changeable"
         );
     }
 

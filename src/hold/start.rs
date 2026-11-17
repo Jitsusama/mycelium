@@ -238,7 +238,11 @@ pub fn login_shell(realm: &str, kit: Option<&Path>) -> Vec<String> {
 #[must_use]
 pub fn login_run(realm: &str, kit: Option<&Path>) -> Vec<String> {
     let mut words = login_shell(realm, kit);
-    words.retain(|word| !YIELDING_ON_A_MAC.contains(&word.as_str()));
+    // By where they stand, not what they say, so a realm or a kit that
+    // happens to read as one of them is kept.
+    if cfg!(target_os = "macos") {
+        words.drain(..YIELDING_ON_A_MAC.len());
+    }
     if let Some(flags) = words.iter_mut().find(|word| *word == "-lic") {
         "-lc".clone_into(flags);
     }

@@ -59,6 +59,10 @@ pub struct Starting {
     /// another machine dialled, which runs apart from the node and asks it
     /// for this machine's facts instead, so it can't be told another file.
     pub declared: Option<PathBuf>,
+    /// The realm's kit as the node was given it, which the link names in
+    /// this machine's facts beside what it declares; read only with
+    /// `declared`, since a dialled link asks the node for both.
+    pub kit: Option<PathBuf>,
 }
 
 /// How a link carries what this machine's node asks of the other machine.

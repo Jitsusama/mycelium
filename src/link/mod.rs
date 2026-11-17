@@ -473,11 +473,12 @@ fn asked_of(
 /// node behind it, which says only facts.
 fn declared_of(starting: Option<&Starting>) -> Declaring {
     match starting {
-        None => Declaring::File(crate::place::declared()),
+        None => Declaring::File(crate::place::declared(), None),
         Some(Starting {
             declared: Some(file),
+            kit,
             ..
-        }) => Declaring::File(file.clone()),
+        }) => Declaring::File(file.clone(), kit.clone()),
         Some(Starting {
             declared: None,
             node,
@@ -516,8 +517,9 @@ async fn measured_by(node: &std::path::Path) -> Option<Machine> {
 
 /// Where an end of a link reads what its machine declares.
 enum Declaring {
-    /// From this file.
-    File(PathBuf),
+    /// From this file, with the realm's kit in this folder, if the node
+    /// was given one.
+    File(PathBuf, Option<PathBuf>),
     /// From the node on this socket, asked for what it measures this
     /// machine to be, as a link another machine dialled does, since it
     /// runs apart from the node and is started by whatever SSH runs.
@@ -1481,23 +1483,26 @@ impl<S: Store> End<S> {
             return Ok(());
         }
         let (here, realm) = (self.here.clone(), self.realm.clone());
-        let declared = match &self.declared {
-            Declaring::File(file) => Some(file.clone()),
+        let (declared, kit) = match &self.declared {
+            Declaring::File(file, kit) => (Some(file.clone()), kit.clone()),
             Declaring::Node(node) => match measured_by(node).await {
                 Some(machine) => return self.say_machine(machine, writing).await,
                 // Nothing the account's files declare is said for it:
                 // anything running as the account could have written them.
-                None => None,
+                None => (None, None),
             },
         };
         let sources = facts::Sources {
             declared,
             ..facts::Sources::here()
         };
-        let machine =
-            tokio::task::spawn_blocking(move || facts::measure_in(&here, &realm, &sources))
-                .await
-                .map_err(io::Error::other)?;
+        let machine = tokio::task::spawn_blocking(move || {
+            let mut machine = facts::measure_in(&here, &realm, &sources);
+            machine.kit = kit.as_deref().and_then(facts::kit);
+            machine
+        })
+        .await
+        .map_err(io::Error::other)?;
         self.say_machine(machine, writing).await
     }
 
@@ -2222,6 +2227,7 @@ mod tests {
             steers: dir.path().join("steer"),
             health: Some(slot.subscribe()),
             declared: Some(dir.path().join("declared.json")),
+            kit: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2247,6 +2253,50 @@ mod tests {
         // Far sooner than the minute's keep, which would say it anyway.
         until(&skiff, |store| {
             store.machines()[0].health.as_ref() == Some(&health)
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_kept_end_names_the_realms_kit_its_node_was_given() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let kit = dir.path().join("kit");
+        std::fs::create_dir_all(kit.join("bin")).expect("the kit's bin is made");
+        std::fs::write(kit.join("bin/gcloud"), "").expect("the kit holds gcloud");
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _near = end(&skiff, "skiff", near);
+        let starting = Starting {
+            node: dir.path().join("node.sock"),
+            held: dir.path().join("held"),
+            asking: None,
+            steers: dir.path().join("steer"),
+            health: None,
+            declared: Some(dir.path().join("declared.json")),
+            kit: Some(kit),
+        };
+        let (reading, writing) = tokio::io::split(far);
+        let kestrel_end = kestrel.clone();
+        let _far = tokio::spawn(async move {
+            run(
+                kestrel_end,
+                &realm("kestrel"),
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+            .map(|_| ())
+        });
+
+        until(&skiff, |store| {
+            store.machines().first().is_some_and(|kestrel| {
+                kestrel
+                    .kit
+                    .as_ref()
+                    .is_some_and(|kit| kit.tools == ["gcloud"])
+            })
         })
         .await;
     }
@@ -2301,6 +2351,7 @@ mod tests {
             steers: dir.join("steer"),
             health: None,
             declared: None,
+            kit: None,
         };
         let (reading, writing) = tokio::io::split(far);
         tokio::spawn(async move {
@@ -3298,6 +3349,7 @@ mod tests {
             steers: dir.join("inboxes"),
             health: None,
             declared: Some(dir.join("declared.json")),
+            kit: None,
         }
     }
 

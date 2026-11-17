@@ -2176,12 +2176,15 @@ impl<S: Store> Shared<S> {
         };
         let mut here = facts::measure_in(&self.machine, &self.realm, &sources);
         here.health.clone_from(&self.health.borrow());
-        here.kit = self
-            .starter
+        here.kit = self.kit().and_then(facts::kit);
+        here
+    }
+
+    /// The folder of the realm's kit this node was given, if it was.
+    fn kit(&self) -> Option<&Path> {
+        self.starter
             .as_ref()
             .and_then(|starter| starter.kit.as_deref())
-            .and_then(facts::kit);
-        here
     }
 
     /// Keeps this machine's own `health`, just moved, in its last measure
@@ -2422,6 +2425,7 @@ impl<S: Store> Shared<S> {
             steers: self.steers.clone(),
             health: Some(self.health.subscribe()),
             declared: Some(self.declared.clone()),
+            kit: self.kit().map(Path::to_owned),
         }
     }
 
@@ -3390,8 +3394,9 @@ impl<S: Store> Shared<S> {
 
     /// Starts `asked` on `machine`: this one by its own starter, another
     /// through the link reaching it.
-    async fn start_on(&self, machine: String, asked: Start) -> Reply {
+    async fn start_on(&self, machine: String, mut asked: Start) -> Reply {
         if machine != self.machine {
+            asked.work = asked.work.asked_there();
             return self.asks.ask(&machine, asked).await;
         }
         let Some(starter) = self.starter.clone() else {
@@ -3493,16 +3498,13 @@ impl<S: Store> Shared<S> {
                     )?
                 }
             };
-            let kit = self
-                .starter
-                .as_ref()
-                .and_then(|starter| starter.kit.as_deref());
-            words.extend(start::login_run(&self.realm, kit));
+            words.extend(start::login_run(&self.realm, self.kit()));
             words.extend(asked.command);
             let (ran, said) = mpsc::channel(run::BACKLOG);
             tokio::spawn(run::here(words, folder, ran));
             said
         } else {
+            asked.work = asked.work.asked_there();
             self.asks.run(&machine, asked).await?
         };
         run::journal(&self.runs.journal, &started);
@@ -4081,6 +4083,7 @@ mod tests {
                     asking,
                     steers,
                     health: None,
+                    kit: None,
                 };
                 // The test judges the link by what crosses it.
                 let _ = if proven {
@@ -4320,6 +4323,7 @@ mod tests {
             steers: dir.path().join("steer"),
             health: None,
             declared: Some(dir.path().join("declared.json")),
+            kit: None,
         };
         let membership = Realm {
             name: "work".to_owned(),
@@ -8340,6 +8344,44 @@ mod tests {
         assert_eq!(
             nothing.err(),
             Some("nothing to run: name a command".to_owned())
+        );
+        let (stop, node) = running;
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    #[tokio::test]
+    async fn a_node_given_a_kit_runs_with_its_tools_first_and_names_them() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let kit = dir.path().join("kit");
+        fs::create_dir_all(kit.join("bin")).expect("the kit's bin is made");
+        fs::write(kit.join("bin/gcloud"), "").expect("the kit holds gcloud");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let starter = Starter {
+            // Nothing is held here, only run.
+            program: PathBuf::from("/bin/false"),
+            scope: start::Scope::None,
+            kit: Some(kit.clone()),
+        };
+        let running = node(&store, "skiff", Vec::<Piped>::new(), Some(starter), &socket);
+        asks_as_person(&socket);
+        let came = run_through(socket.clone(), run_of("skiff", "printf %s \"$PATH\""))
+            .await
+            .expect("it runs here");
+        let path = String::from_utf8_lossy(&came.out);
+        assert!(
+            path.starts_with(&format!("{}/bin:", kit.display())),
+            "the kit's tools come first, after the profile: {path}"
+        );
+        let Ok(Response::Machine(machine)) = ask(socket, Request::Machine).await else {
+            panic!("the node says its machine")
+        };
+        assert_eq!(
+            machine.kit.map(|kit| kit.tools),
+            Some(vec!["gcloud".to_owned()]),
+            "its machine names what the kit holds"
         );
         let (stop, node) = running;
         drop(stop);

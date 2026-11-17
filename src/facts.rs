@@ -107,10 +107,12 @@ pub struct Machine {
 /// every machine in the realm is to have.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Kit {
-    /// Where it is, such as a Nix profile's store path, which names its
+    /// Where it is, with any link it was given through resolved, so a
+    /// Nix profile's link names the store path it is now, which names its
     /// version: two machines with the same path have the same tools.
     pub path: String,
-    /// The name of each tool in its `bin`, in order.
+    /// The name of each tool in its `bin`, in order as this node lists
+    /// them, though a record read from another may not be.
     pub tools: Vec<String>,
 }
 
@@ -118,9 +120,7 @@ impl Kit {
     /// Whether it holds the tool `name`.
     #[must_use]
     pub fn holds(&self, name: &str) -> bool {
-        self.tools
-            .binary_search_by(|tool| tool.as_str().cmp(name))
-            .is_ok()
+        self.tools.iter().any(|tool| tool == name)
     }
 }
 
@@ -137,8 +137,10 @@ pub fn kit(folder: &Path) -> Option<Kit> {
         .filter(|tool| !tool.starts_with('.'))
         .collect();
     tools.sort_unstable();
+    // The tools were listed through the link, so it resolves.
+    let path = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_owned());
     Some(Kit {
-        path: folder.display().to_string(),
+        path: path.display().to_string(),
         tools,
     })
 }
@@ -859,10 +861,11 @@ mod tests {
             std::fs::write(bin.join(tool), "").expect("a tool");
         }
         let listed = kit(folder.path()).expect("a kit whose bin is listed");
+        let resolved = std::fs::canonicalize(folder.path()).expect("the kit resolves");
         assert_eq!(
             listed,
             Kit {
-                path: folder.path().display().to_string(),
+                path: resolved.display().to_string(),
                 tools: ["gh", "git", "websocat"].map(str::to_owned).to_vec(),
             },
             "its tools, sorted, and no start-up file among them"
@@ -872,10 +875,19 @@ mod tests {
             "it holds each"
         );
         assert!(!listed.holds("gcloud"), "and only those");
+
+        let link = tempfile::tempdir().expect("a folder for a link");
+        let profile = link.path().join("profile");
+        std::os::unix::fs::symlink(folder.path(), &profile).expect("a link to the kit");
+        assert_eq!(
+            kit(&profile).map(|linked| linked.path),
+            Some(resolved.display().to_string()),
+            "a kit given through a link names what it is now"
+        );
     }
 
     #[test]
-    fn a_machine_from_a_node_too_old_to_name_a_kit_has_none() {
+    fn a_machine_says_its_kit_only_where_it_has_one_as_an_older_node_reads_it() {
         let nowhere = Sources {
             home: "/".into(),
             queue: None,
@@ -884,11 +896,27 @@ mod tests {
             reached: "/nowhere".into(),
             updated: "/nowhere".into(),
         };
-        let mut said = serde_json::to_value(measure("osprey", &nowhere)).expect("it says itself");
-        assert!(said.get("kit").is_none(), "no kit is said as none");
-        said.as_object_mut().expect("a record").remove("kit");
+        let mut machine = measure("osprey", &nowhere);
+        let said = serde_json::to_value(&machine).expect("it says itself");
+        assert!(
+            said.get("kit").is_none(),
+            "no kit is said as an older node says it"
+        );
         let heard: Machine = serde_json::from_value(said).expect("an older record is heard");
         assert_eq!(heard.kit, None, "with no kit");
+
+        machine.kit = Some(Kit {
+            path: "/nix/store/kit".to_owned(),
+            tools: vec!["gh".to_owned()],
+        });
+        let said = serde_json::to_value(&machine).expect("it says itself");
+        assert_eq!(
+            said["kit"],
+            serde_json::json!({"path": "/nix/store/kit", "tools": ["gh"]}),
+            "a kit is said as PROTOCOL.md says it"
+        );
+        let heard: Machine = serde_json::from_value(said).expect("a record with a kit is heard");
+        assert_eq!(heard.kit, machine.kit, "and heard as it was said");
     }
 
     #[test]
