@@ -653,8 +653,23 @@ mod tests {
         );
     }
 
+    /// A kit in `folder` of three tools only their owner writes, one of
+    /// them oddly named, and the folder it resolves to.
+    fn kit_of_three(folder: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let kit = folder.join("kit");
+        let bin = kit.join("bin");
+        fs::create_dir_all(&bin).expect("its bin");
+        for tool in ["gh", "gcloud", "say\nit"] {
+            fs::write(bin.join(tool), "").expect("a tool");
+            fs::set_permissions(bin.join(tool), fs::Permissions::from_mode(0o755))
+                .expect("a tool only its owner writes");
+        }
+        let resolved = fs::canonicalize(&kit).expect("the kit resolves");
+        (kit, resolved)
+    }
+
     #[test]
-    fn a_node_carries_a_kit_only_its_declarers_can_change_and_says_so() {
+    fn a_node_refuses_a_kit_it_cant_find_or_an_agent_could_point_elsewhere() {
         let folder = tempfile::tempdir().expect("a temporary folder");
         let kit = folder.path().join("kit");
         let missing = kit_checked(&kit, &declarers());
@@ -681,14 +696,8 @@ mod tests {
             ),
             "and says so as it starts, and how it mends"
         );
-        let bin = kit.join("bin");
-        fs::create_dir_all(&bin).expect("its bin");
-        for tool in ["gh", "gcloud", "say\nit"] {
-            fs::write(bin.join(tool), "").expect("a tool");
-            fs::set_permissions(bin.join(tool), fs::Permissions::from_mode(0o755))
-                .expect("a tool only its owner writes");
-        }
-        let resolved = fs::canonicalize(&kit).expect("the kit resolves");
+        fs::remove_dir(&kit).expect("the bare kit is taken away");
+        let (kit, resolved) = kit_of_three(folder.path());
         // Given through a link, as a profile is.
         let profile = folder.path().join("profile");
         std::os::unix::fs::symlink(&kit, &profile).expect("a link to the kit");
@@ -727,6 +736,19 @@ mod tests {
             matches!(kit_checked(&linked, &declarers()), Kit::Refused { why, .. }
                 if why.ends_with("which holds a colon")),
             "a kit resolving to a folder with a colon is refused"
+        );
+    }
+
+    #[test]
+    fn a_node_carries_a_kit_only_while_its_declarers_alone_write_each_tool() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let (kit, resolved) = kit_of_three(folder.path());
+        let bin = kit.join("bin");
+        let carried = kit_checked(&kit, &declarers());
+        assert_eq!(
+            carried,
+            Kit::Carried(resolved.clone()),
+            "a kit whose tools only its declarers write is carried"
         );
         assert_eq!(
             kit_said_at_start(&carried),
