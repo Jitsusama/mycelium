@@ -3190,7 +3190,8 @@ impl<S: Store> Shared<S> {
                     session,
                     address: &target.address,
                 };
-                let open = self.records_of("quest");
+                let mut open = self.records_of("quest");
+                open.retain(ordered::open);
                 let proved = if ordered::holds(session, &open) {
                     self.ordered_by(asking_known, carried, &sessions)
                         .map(|_| ())
@@ -3793,9 +3794,24 @@ impl<S: Store> Shared<S> {
                 orchestrator,
             }],
         };
+        let running = grouped(sessions, &self.machine);
+        // The session to end must itself be in the orchestrator's group,
+        // as the mesh put it, not only those the record of ended quests
+        // lists beside it.
+        let group = format!("#orchestration/{}", orchestrator.to_ascii_lowercase());
+        if !running
+            .get(carried.session)
+            .is_some_and(|groups| groups.contains(&group))
+        {
+            return Err(format!(
+                "the mesh doesn't put {}'s session in {group}, so {orchestrator} isn't believed \
+                 to have orchestrated it",
+                carried.address
+            ));
+        }
         let quests: Vec<serde_json::Value> =
             ended.into_iter().chain(open.iter().cloned()).collect();
-        ordered::agreed(&order, asking, &quests, &grouped(sessions, &self.machine))
+        ordered::agreed(&order, asking, &quests, &running)
     }
 
     /// Puts a carry an orchestrator orders into the inbox of the session

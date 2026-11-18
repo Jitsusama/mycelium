@@ -221,16 +221,33 @@ pub fn ended_holding(session: Known, ended: &[Value]) -> Result<(String, String)
     Ok((id, orchestrator.to_ascii_uppercase()))
 }
 
-/// The record of the one quest among `quests` that goes by `address`.
+/// Whether `quest`'s record says it is open: neither concluded nor
+/// retired, as an index of quests can list one that ended a while.
+#[must_use]
+pub fn open(quest: &Value) -> bool {
+    !matches!(
+        quest.get("status").and_then(Value::as_str),
+        Some("concluded" | "retired")
+    )
+}
+
+/// The record of the one quest among `quests` whose id ends in `address`.
 ///
 /// # Errors
 ///
 /// When none does, or more than one, since then which heads it can't be
 /// told.
 pub fn going_by<'a>(address: &str, quests: &'a [Value]) -> Result<&'a Value, String> {
+    // By its id's last part, never its `address` field, since a quest's id
+    // is what this node's record of orchestrations says a session heads,
+    // and the field is the quests' record's word alone.
     let going: Vec<&Value> = quests
         .iter()
-        .filter(|quest| address_of(quest).is_some_and(|it| it.eq_ignore_ascii_case(address)))
+        .filter(|quest| {
+            id_of(quest)
+                .and_then(|id| id.rsplit('-').next())
+                .is_some_and(|last| last.eq_ignore_ascii_case(address))
+        })
         .collect();
     match going.as_slice() {
         [one] => Ok(*one),
