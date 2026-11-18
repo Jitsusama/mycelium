@@ -325,6 +325,23 @@ fn the_calls_summarized_are_kept_whole_by_their_events_alone() {
         String::from_utf8_lossy(&said.stderr)
     );
     assert_eq!(events(dir.path()), ["abc123"], "an event not named stayed");
+    let pid = std::process::id().to_string();
+    let failing = say(
+        dir.path(),
+        &[
+            "calls", "--state", "failing", "--every", "60", "--pid", &pid,
+        ],
+    );
+    assert!(
+        failing.status.success(),
+        "{}",
+        String::from_utf8_lossy(&failing.stderr)
+    );
+    assert_eq!(
+        events(dir.path()),
+        ["abc123"],
+        "a failing say, which read nothing, cleared the events"
+    );
     let said = calls(dir.path(), &[]);
     assert!(
         said.status.success(),

@@ -250,15 +250,29 @@ fn is_name(name: &str) -> bool {
             .all(|each| each.is_ascii_alphanumeric() || matches!(each, '-' | '_' | '.'))
 }
 
-/// Whether `event` is an id a calendar could give an event: ASCII
-/// letters, digits and `_`, as Google's base32hex id and a recurring
-/// event's instance suffix are, and at most [`LONGEST_EVENT`] of them.
+/// The fewest characters Google gives an event's own id.
+const SHORTEST_EVENT: usize = 5;
+
+/// Whether `event` is an id Google's calendar could give an event, at
+/// most [`LONGEST_EVENT`] long: its own id in base32hex, lowercase `a`
+/// to `v` and digits, then any `_` parts a recurring event's instances
+/// and splits add, each digits and `R`, `T` or `Z`, as
+/// `_R20261101T150000` or `_20261118T150000Z`. So most words, and any
+/// spaced or capitalised title, are no event.
 fn is_event(event: &str) -> bool {
-    !event.is_empty()
-        && event.len() <= LONGEST_EVENT
-        && event
+    let mut parts = event.split('_');
+    let own = parts.next().unwrap_or_default();
+    event.len() <= LONGEST_EVENT
+        && own.len() >= SHORTEST_EVENT
+        && own
             .bytes()
-            .all(|each| each.is_ascii_alphanumeric() || each == b'_')
+            .all(|each| matches!(each, b'a'..=b'v' | b'0'..=b'9'))
+        && parts.all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|each| matches!(each, b'0'..=b'9' | b'R' | b'T' | b'Z'))
+        })
 }
 
 /// Whether `source`'s receptor may name `named` for `reason`, the one
@@ -462,6 +476,14 @@ pub fn write(
         items: kept,
     })
     .map_err(io::Error::other)?;
+    // A file past what the node reads would leave its feeding frozen as
+    // it stood, so it's refused here, and the one before it stands.
+    if !u64::try_from(body.len()).is_ok_and(|len| len <= LARGEST_FILE) {
+        return Err(refused(format!(
+            "{}'s items come to more than the {LARGEST_FILE} bytes a node reads",
+            source.name()
+        )));
+    }
     let name = format!("{}{ITEMS}", source.name());
     let staged = format!(".{name}.{}", std::process::id());
     match rustix::fs::unlinkat(&opened, &staged, AtFlags::empty()) {
@@ -1133,7 +1155,7 @@ mod tests {
     }
 
     /// Calls' items file in `state`, holding `items` as planted.
-    fn planted_calls(state: &Path, items: Value) -> Option<Vec<Item>> {
+    fn planted_calls(state: &Path, items: &Value) -> Option<Vec<Item>> {
         let written = json!({"source": "calls", "realm": "work", "items": items});
         fs::create_dir_all(state).expect("a folder");
         fs::write(file(state, Source::Calls), written.to_string()).expect("planted");
@@ -1168,7 +1190,7 @@ mod tests {
         let state = tempfile::tempdir().expect("a folder");
         let sound = json!([{"event": EVENT, "reason": "summary-written", "since": NOW}]);
         assert_eq!(
-            planted_calls(state.path(), sound),
+            planted_calls(state.path(), &sound),
             Some(vec![event(EVENT)]),
             "the file planted from doesn't read soundly"
         );
@@ -1180,10 +1202,101 @@ mod tests {
             "since": NOW,
         }]);
         assert_eq!(
-            planted_calls(state.path(), both),
+            planted_calls(state.path(), &both),
             None,
             "an item naming a change and an event was read"
         );
+    }
+
+    #[test]
+    fn a_change_naming_an_event_too_isnt_read() {
+        let state = tempfile::tempdir().expect("a folder");
+        let path = file(state.path(), Source::Github);
+        let planted = |item: Value| {
+            let written = json!({"source": "github", "realm": "work", "items": [item]});
+            fs::write(&path, written.to_string()).expect("planted");
+            read(state.path(), Source::Github, "work", at(NOW))
+        };
+        let sound = json!({"repo": "jsama/tern", "number": 12, "reason": "review-asked",
+            "since": NOW});
+        assert_eq!(
+            planted(sound.clone()),
+            Some(vec![item("jsama/tern", 12)]),
+            "the file planted from doesn't read soundly"
+        );
+        let mut both = sound;
+        both["event"] = EVENT.into();
+        assert_eq!(planted(both), None, "a change naming an event was read");
+    }
+
+    #[test]
+    fn a_file_as_it_was_written_before_events_reads_as_it_did() {
+        // An items file byte for byte as GitHub's receptor wrote it
+        // before an item could point at an event.
+        let state = tempfile::tempdir().expect("a folder");
+        fs::write(
+            file(state.path(), Source::Github),
+            r#"{"source":"github","realm":"work","items":[{"repo":"jsama/tern","number":12,"reason":"review-asked","since":"2026-11-18T06:00:00Z"}]}"#,
+        )
+        .expect("planted");
+        assert_eq!(
+            read(state.path(), Source::Github, "work", at(NOW)),
+            Some(vec![item("jsama/tern", 12)])
+        );
+        write(
+            state.path(),
+            Source::Github,
+            "work",
+            &[asked("jsama/tern", 12)],
+            at(NOW),
+        )
+        .expect("written");
+        let text = fs::read_to_string(file(state.path(), Source::Github)).expect("read");
+        assert_eq!(
+            text,
+            r#"{"source":"github","realm":"work","items":[{"repo":"jsama/tern","number":12,"reason":"review-asked","since":"2026-11-18T06:00:00Z"}]}"#,
+            "a change is written in another shape than before"
+        );
+    }
+
+    #[test]
+    fn the_writer_refuses_items_past_what_a_node_reads_and_keeps_the_file_before() {
+        let state = tempfile::tempdir().expect("a folder");
+        write(
+            state.path(),
+            Source::Calls,
+            "work",
+            &[summed(EVENT)],
+            at(NOW),
+        )
+        .expect("written");
+        let many: Vec<(Named, Reason)> = (0..MOST_ITEMS)
+            .map(|each| {
+                let id = format!("{}{each:04}", "a".repeat(LONGEST_EVENT - 4));
+                summed(&id)
+            })
+            .collect();
+        assert!(
+            write(state.path(), Source::Calls, "work", &many, at(NOW)).is_err(),
+            "a file past the node's bound was written"
+        );
+        assert_eq!(
+            read(state.path(), Source::Calls, "work", at(NOW)),
+            Some(vec![event(EVENT)]),
+            "the file before a refused write didn't stand"
+        );
+    }
+
+    #[test]
+    fn an_event_claim_never_draws_a_change() {
+        let mut feeder = Feeder::default();
+        let fed = feeder.feed(
+            &[item("jsama/tern", 12)],
+            &[holding("KSTRL1", &["jsama/tern#12"])],
+            "work",
+            at(NOW),
+        );
+        assert!(fed.is_empty(), "an event claim drew a change: {fed:?}");
     }
 
     #[test]
@@ -1191,7 +1304,7 @@ mod tests {
         let state = tempfile::tempdir().expect("a folder");
         let neither = json!([{"reason": "summary-written", "since": NOW}]);
         assert_eq!(
-            planted_calls(state.path(), neither),
+            planted_calls(state.path(), &neither),
             None,
             "an item naming nothing was read"
         );
@@ -1217,7 +1330,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                planted_calls(state.path(), json!([item])),
+                planted_calls(state.path(), &json!([item])),
                 None,
                 "an event holding {why} was read"
             );
@@ -1246,7 +1359,14 @@ mod tests {
         ] {
             let state = tempfile::tempdir().expect("a folder");
             assert!(
-                write(state.path(), source, "work", &[named.clone()], now).is_err(),
+                write(
+                    state.path(),
+                    source,
+                    "work",
+                    std::slice::from_ref(&named),
+                    now
+                )
+                .is_err(),
                 "{} wrote {named:?}",
                 source.name()
             );
@@ -1281,12 +1401,25 @@ mod tests {
             event_of(EVENT).expect("taken"),
             Named::Event(EVENT.to_owned())
         );
-        let longest = "a".repeat(LONGEST_EVENT);
-        assert!(event_of(&longest).is_ok(), "the longest id was refused");
+        for taken in [
+            "a".repeat(LONGEST_EVENT),
+            "abcde".to_owned(),
+            "abc123def_R20261101T150000_20261118T150000Z".to_owned(),
+            "abc123def_20261118".to_owned(),
+        ] {
+            assert!(event_of(&taken).is_ok(), "{taken:?} was refused");
+        }
         for said in [
             String::new(),
             "a".repeat(LONGEST_EVENT + 1),
+            "abcd".to_owned(),
             "Pay review".to_owned(),
+            "pay_review".to_owned(),
+            "Abcdef".to_owned(),
+            "abcdefw".to_owned(),
+            "abcdef_".to_owned(),
+            "abcdef_x".to_owned(),
+            "abcdef__20261118".to_owned(),
             "abc-def".to_owned(),
             "abc/def".to_owned(),
             "abc@google.com".to_owned(),

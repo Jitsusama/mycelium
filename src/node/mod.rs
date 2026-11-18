@@ -13595,9 +13595,18 @@ esac
     /// The README of quest `id` of `realm`, claiming `changes` for its
     /// active `sessions`.
     fn claiming(id: &str, realm: &str, changes: &[&str], sessions: &[&str]) -> String {
+        // A claim of a change has its number after a `#`; any other is a
+        // calendar event's id.
+        let kind = |claim: &str| {
+            if claim.contains('#') {
+                "github-pr"
+            } else {
+                "calendar-event"
+            }
+        };
         let aliases: String = changes
             .iter()
-            .map(|change| format!("  - type: github-pr\n    value: {change}\n"))
+            .map(|claim| format!("  - type: {}\n    value: {claim}\n", kind(claim)))
             .collect::<Vec<_>>()
             .concat();
         let listed: String = sessions
@@ -13792,5 +13801,132 @@ esac
         );
         let served = serde_json::to_string(&records).expect("json");
         assert!(!served.contains("tern"), "never what: {served}");
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one machine's quests and cells, each kept from the feed for its own reason"
+    )]
+    async fn a_summarized_call_feeds_only_the_work_cell_whose_quest_claims_its_event() {
+        const EVENT: &str = "6kq3ehb1c4p0bt2oq1i5u4tq4c_20261118T150000Z";
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let receptors = dir.path().join("receptors");
+        fs::create_dir_all(&receptors).expect("its folder");
+        fs::set_permissions(&receptors, fs::Permissions::from_mode(0o700)).expect("kept");
+        let quests = dir.path().join("quests");
+        let claims: [(&str, &str, &[&str], &[&str]); 3] = [
+            ("QEST-20261118-KESTRL", "work", &[EVENT], &["s-claims"]),
+            (
+                "QEST-20261118-OSPREY",
+                "work",
+                &["jsama/tern#12"],
+                &["s-other"],
+            ),
+            (
+                "QEST-20261118-TERNSS",
+                "personal",
+                &[EVENT],
+                &["s-personal"],
+            ),
+        ];
+        for (id, realm, claimed, sessions) in claims {
+            let readme = quests.join(id).join("README.md");
+            fs::create_dir_all(readme.parent().expect("a folder")).expect("its folder");
+            fs::write(readme, claiming(id, realm, claimed, sessions)).expect("written");
+        }
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            Given {
+                receptors: Some(receptors.clone()),
+                ..bare("/nowhere/steer".into(), None)
+            },
+            to_dial,
+        );
+        shared.lock().state.set_sessions(vec![
+            on_quest(
+                "s-claims",
+                "KESTRL1",
+                "skiff",
+                "idle",
+                "QEST-20261118-KESTRL",
+            ),
+            on_quest(
+                "s-other",
+                "OSPREY1",
+                "skiff",
+                "idle",
+                "QEST-20261118-OSPREY",
+            ),
+            on_quest(
+                "s-personal",
+                "TERNSS1",
+                "skiff",
+                "idle",
+                "QEST-20261118-TERNSS",
+            ),
+        ]);
+        {
+            let mut shelf = shared
+                .forages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (id, ..) in claims {
+                assert!(shelf.read(&quests, id), "{id} is read");
+            }
+        }
+        feed::write(
+            &receptors,
+            receptor::Source::Calls,
+            "work",
+            &[(
+                feed::Named::Event(EVENT.to_owned()),
+                feed::Reason::SummaryWritten,
+            )],
+            jiff::Timestamp::now(),
+        )
+        .expect("its items are kept");
+        feeding::reading(&receptors, receptor::Source::Calls, "work");
+
+        shared
+            .feed_once(&receptors, &[receptor::Source::Calls])
+            .await;
+
+        let spoken: Vec<String> = shared
+            .spoken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(spoken.len(), 1, "one cell fed: {spoken:?}");
+        let said = shared
+            .store
+            .message(&spoken[0])
+            .expect("it is in the store");
+        assert_eq!(said["from"], "calls@skiff");
+        assert_eq!(
+            said["to"],
+            json!(["@KESTRL1"]),
+            "to the claiming work cell alone"
+        );
+        assert_eq!(
+            said["text"],
+            format!("calls: a summary is written of your person's call for calendar event {EVENT}")
+        );
+        let records = shared.fed_records();
+        assert_eq!(
+            records.keys().collect::<Vec<_>>(),
+            vec![&daemon::key(feed::KIND, "calls@skiff~KESTRL1")],
+            "who fed whom"
+        );
+        let served = serde_json::to_string(&records).expect("json");
+        assert!(!served.contains(EVENT), "never what: {served}");
     }
 }

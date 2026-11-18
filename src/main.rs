@@ -1076,15 +1076,18 @@ struct ReceptorSaid {
     items: Vec<String>,
     /// A calendar event a call's summary is written for, by its id,
     /// repeated for each. Calls' receptor alone names events, and its
-    /// items are written whole each time it says, so one not named again
-    /// is gone.
+    /// items are written whole each time it says it reads or is quiet,
+    /// so one not named again is gone.
     #[arg(long = "event", value_name = "EVENT")]
     events: Vec<String>,
 }
 
 /// Writes how the receptor `said` stands for `realm`, saying where, and
 /// what it feeds to cells: GitHub's changes when it names its owners,
-/// and calls' events whenever it says.
+/// and calls' events whenever it says it reads or is quiet. A calls
+/// receptor failing or off leaves its events as they stood, since what
+/// it couldn't read says nothing of which calls stand, and wiping them
+/// would feed each claiming cell again once it reads.
 ///
 /// Each item, and the record, is judged before anything is written, so
 /// one refused leaves both files as they were.
@@ -1127,7 +1130,7 @@ fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
                 })
                 .collect::<io::Result<Vec<_>>>()?,
         ),
-        Source::Calls => Some(
+        Source::Calls if matches!(state, State::Reading | State::Quiet) => Some(
             said.events
                 .iter()
                 .map(|event| {
