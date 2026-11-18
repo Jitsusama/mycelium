@@ -464,17 +464,26 @@ pub struct Share {
     /// `quest:QEST-20261112-HARBOR`.
     pub key: String,
     /// What it is for, which titles its network; empty where it says
-    /// nothing, or null, so its network is untitled.
-    #[serde(rename = "for", default, deserialize_with = "said_or_none")]
+    /// nothing, or anything but text, so its network is untitled, and
+    /// then left out of its cell's record.
+    #[serde(
+        rename = "for",
+        default,
+        deserialize_with = "said_or_none",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub about: String,
     /// Where this session's copy is.
     pub folder: String,
 }
 
-/// What a share says it is for, or empty where it says null, as it says
-/// nothing.
+/// What a share says it is for, or empty where it says null or anything
+/// but text, as it says nothing, so no folder is refused for its title.
 fn said_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<String, D::Error> {
-    Ok(Option::<String>::deserialize(said)?.unwrap_or_default())
+    Ok(match Value::deserialize(said)? {
+        Value::String(said) => said,
+        _ => String::new(),
+    })
 }
 
 impl Share {

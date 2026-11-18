@@ -1791,8 +1791,9 @@ name holds a colon; it is read in lower case, so keys differing only
 in case are one folder. `for` and `folder` are drawn on one line: each
 control character and line or paragraph separator in them is read as
 a space and each mark turning text's direction is dropped, and then
-`for` is cut to its first 120 characters and `folder` is 1 to 1024
-bytes. A cell's first 16 shares are read, those past these bounds are
+`for` is trimmed, cut to its first 120 characters and trimmed again,
+and `folder` is 1 to 1024 bytes. A `for` said as null or as anything
+but text is unsaid, and an unsaid one is left out of the cell record. A cell's first 16 shares are read, those past these bounds are
 passed over, and a key said twice is its first; each is among that
 cell record's `shares`. A group a presence names holding a colon joins
 none, as a folder's name does, so one called `files`, or under it with

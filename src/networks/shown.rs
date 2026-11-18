@@ -937,8 +937,8 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
             .max()
             .unwrap_or_default();
         for share in alone {
-            // An untitled folder's line ends at its key, as the list
-            // above trims its own.
+            // An untitled folder's line ends at its key, with no gap
+            // left after it for a title.
             if share.about.is_empty() {
                 lines.push(format!("  {}", share.key));
                 continue;
