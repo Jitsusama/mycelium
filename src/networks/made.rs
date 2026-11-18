@@ -321,7 +321,6 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
     ))
 }
 
-/// Which of the networks' asks is for the node's receptors.
 /// The most subjects a cell is held to declare, as the harness reads
 /// them.
 pub const MOST_SUBJECTS: usize = 12;
@@ -331,8 +330,9 @@ const SUBJECT_MOST: usize = 120;
 
 /// The first [`MOST_SUBJECTS`] subjects a presence declares, each a
 /// string of at most [`SUBJECT_MOST`] characters with nothing a terminal
-/// acts on; any other entry is passed over alone, so a cell's subjects
-/// never draw as more than plain words.
+/// acts on and nothing that draws as nothing; any other entry is passed
+/// over alone, so a cell's subjects never draw as more than plain words,
+/// nor two that draw alike hub apart.
 #[must_use]
 pub fn subjects(declared: &Value) -> Vec<String> {
     declared
@@ -347,6 +347,7 @@ pub fn subjects(declared: &Value) -> Vec<String> {
                 && !subject.chars().any(|each| {
                     each.is_control()
                         || crate::forage::turns_direction(each)
+                        || unseen(each)
                         || matches!(each, '\u{2028}' | '\u{2029}')
                 })
         })
@@ -355,6 +356,22 @@ pub fn subjects(declared: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
+/// joiner, a word joiner or invisible operator, a byte order mark, or a
+/// tag, any of which hides text from the person or smuggles it past them.
+fn unseen(each: char) -> bool {
+    matches!(
+        each,
+        '\u{00AD}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200D}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{FEFF}'
+            | '\u{E0000}'..='\u{E007F}'
+    )
+}
+
+/// Which of the networks' asks is for the node's receptors.
 const RECEPTORS_ASKED: u64 = 4;
 
 /// Which of the networks' asks is for the node's builders.

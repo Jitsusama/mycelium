@@ -939,7 +939,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
 | `{"Free": {"quest"}}` | `"Orchestrated"`, freed, from the person's own login |
-| `{"Starts": {"act"}}` | `{"Starts": {"stopped", "newest"}}`, `stop` or `resume` from the person's own login, `list` from anyone |
+| `{"Starts": {"act"}}` | `{"Starts": {"stopped", "newest"}}`, `stop`, `resume` or `list` from the person's own login |
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"End": {"held"}}` | `{"Ended": {"machine", "held", "ending"}}`, `ending` `gently` or `killed` (A Held Session) |
 | `{"Run": {"work", "folder", "command", "by", "from"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
@@ -1497,25 +1497,31 @@ offer's reasons, and each program that couldn't say what it offers.
 
 An agent starts sessions within limits the node keeps, so a cell gone
 wrong can't start without end. Each start an agent asks counts toward
-the nearest session the node proves asks, by its address, and toward
-every agent's starts through the node: in any hour a cell starts at
-most 8 and every agent together at most 32, and one past either is
-refused, saying which. A start counts whether it started or failed,
-since a failed one may still have spent, and so does one still
+the nearest session claiming the asker's process, by its address, and
+toward every agent's starts through the node: in any hour a cell
+starts at most 8 and every agent together at most 32, and one past
+either is refused, saying which. A claim proves nothing, so the 8 are
+a cell's fair share, and the 32 the bound no agent gets round. A
+start counts whether it started or failed, since a failed one may still have spent, and so does one still
 starting, so starts asked at once can't pass the limit; a refused one
 doesn't. The person's own starts are never counted or refused. The
-person stops every agent's start in one act, `mycelium starts stop`,
-which holds through a restart till `mycelium starts resume`; an agent
-asking either is refused. Every start, refused ones too, is kept in
+person stops the agents' starts asked of a node in one act, `mycelium
+starts stop`, which holds through a restart till `mycelium starts
+resume`, and while whether it stands can't be told; an agent asking
+either, or the list, is refused. The stop is `starts.stopped` in the
+node's state folder, so an agent able to write there could lift it, as
+it could stop the node. Every start, refused ones too, is kept in
 `starts.jsonl` beside `runs.jsonl` as a JSON line, `{"at", "by",
 "started_by", "folder", "program", "machine", "held", "failed",
 "refused"}`: `at` in milliseconds, `started_by` null for the person's,
 `program` the command's first word alone, so no argument is kept, and
 the rest only where they apply. The node reads it again as it starts,
-passing over a line it can't read, and holds the newest 2,048.
-`mycelium starts` prints whether starts are stopped and the newest
-100. A start answered on another machine is
-judged and counted by that machine's node.
+passing over a line it can't read, and holds the newest 2,048, never
+letting one go that counts within the hour; past 8 MiB more, it
+writes the file again from those. `mycelium starts` prints whether
+starts are stopped and the newest 100. A start counts on the node an
+agent asks, wherever it is placed, and only that node's book says who
+started it, so each machine's node is stopped on its own.
 
 `"Sprout"` starts a session of new work, as `mycelium sprout` asks, held
 in no window: the node makes the `"Start"` and starts it as above, under

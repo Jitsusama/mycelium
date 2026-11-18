@@ -390,7 +390,8 @@ const ADDRESS_MOST: usize = 32;
 /// on a forage record as one.
 #[must_use]
 pub fn is_address(said: &str) -> bool {
-    (1..=ADDRESS_MOST).contains(&said.len()) && said.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    (1..=ADDRESS_MOST).contains(&said.len())
+        && said.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
 /// A file as last read: its length and when it last changed.
@@ -1425,7 +1426,13 @@ mod tests {
         for address in ["KP0L6A", "C554836B", &"A".repeat(ADDRESS_MOST)] {
             assert!(is_address(address), "{address}");
         }
-        for not in ["", "peer.kp0l6a", "KP0L6A ", "K\u{202e}P", &"A".repeat(ADDRESS_MOST + 1)] {
+        for not in [
+            "",
+            "peer.kp0l6a",
+            "KP0L6A ",
+            "K\u{202e}P",
+            &"A".repeat(ADDRESS_MOST + 1),
+        ] {
             assert!(!is_address(not), "{not:?}");
         }
     }

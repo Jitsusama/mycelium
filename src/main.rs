@@ -337,8 +337,10 @@ enum Action {
     /// Says the sessions this node started lately, or stops or resumes
     /// agents starting more.
     ///
-    /// Stopping holds till resumed, through a restart; only the person
-    /// may stop or resume, and their own starts are never stopped.
+    /// Stopping holds till resumed, through a restart, and only on this
+    /// machine's node, so each machine's is stopped on its own. Only the
+    /// person may list, stop or resume, and their own starts are never
+    /// stopped.
     #[command(after_help = "Example:\n  mycelium starts stop")]
     Starts {
         /// What to do.

@@ -33,6 +33,21 @@ const HOLDERS_A_HUB: usize = 10;
 /// The most fits a hub names.
 const MOST_FITS: usize = 5;
 
+/// How much a cell's own record of talk, a `tie:<cell>` record, says it
+/// was heard lately: its messages in the last hour, and each of the day's
+/// as a 24th of one, so an hour's talk outweighs a day's of the same; by
+/// its cell. None for a tie between two, or a record it can't read.
+#[must_use]
+pub fn heard(talk: &serde_json::Value) -> Option<(String, f64)> {
+    let cell = talk["key"].as_str()?.strip_prefix("tie:")?;
+    if cell.contains('~') {
+        return None;
+    }
+    let (hour, today) = (talk["hour"].as_u64()?, talk["today"].as_u64()?);
+    let (hour, today) = (u32::try_from(hour).ok()?, u32::try_from(today).ok()?);
+    Some((cell.to_owned(), f64::from(hour) + f64::from(today) / 24.0))
+}
+
 /// A cell that declares subjects, and how much it was heard lately.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Holder {
@@ -40,8 +55,8 @@ pub struct Holder {
     pub address: String,
     /// The subjects it declares.
     pub subjects: Vec<String>,
-    /// How much it talked lately, its own talk faded to now: the less,
-    /// the more room it has.
+    /// How much it talked lately, as [`heard`] tells it: the less, the
+    /// more room it has.
     pub heard: f64,
 }
 
@@ -153,13 +168,19 @@ mod tests {
             holder("TERNSS", &["mycelium:hubs"], 1.0),
         ]);
         let record = &made["hub:mycelium:hubs"];
-        assert_eq!(record["hub"], "OSPREY", "the quietest holder hubs it: {record}");
+        assert_eq!(
+            record["hub"], "OSPREY",
+            "the quietest holder hubs it: {record}"
+        );
         assert_eq!(
             record["fits"],
             json!(["OSPREY", "TERNSS", "KESTRL"]),
             "its fits are its holders, quietest first, the case it was said in aside"
         );
-        assert_eq!(record["hubs"][0], json!({"hub": "OSPREY", "fits": record["fits"]}));
+        assert_eq!(
+            record["hubs"][0],
+            json!({"hub": "OSPREY", "fits": record["fits"]})
+        );
         assert_eq!(record["kind"], KIND);
     }
 
@@ -170,7 +191,11 @@ mod tests {
             holder("OSPREY", &["common"], 1.0),
             holder("SKIFFS", &["lone", "lonely"], 0.0),
         ]);
-        assert_eq!(hubs(&made, "rare"), ["KESTRL"], "the rarest is hubbed first");
+        assert_eq!(
+            hubs(&made, "rare"),
+            ["KESTRL"],
+            "the rarest is hubbed first"
+        );
         assert_eq!(
             hubs(&made, "common"),
             ["OSPREY"],
@@ -201,6 +226,17 @@ mod tests {
             json!(["K00001", "K00004", "K00007", "K00010", "K00013"]),
             "the holders are shared out among the hubs, so no two name the same fit"
         );
+    }
+
+    #[test]
+    fn a_cell_is_heard_by_its_own_talk_an_hours_outweighing_a_days() {
+        // As `tie::records` makes a cell's own record.
+        let cell = json!({"key": "tie:KESTRL", "kind": "tie", "hour": 2, "today": 48});
+        assert_eq!(heard(&cell), Some(("KESTRL".to_owned(), 4.0)));
+        let quiet = json!({"key": "tie:OSPREY", "kind": "tie", "hour": 0, "today": 47});
+        assert!(heard(&quiet).expect("read").1 < heard(&cell).expect("read").1);
+        let tie = json!({"key": "tie:KESTRL~OSPREY", "kind": "tie", "hour": [1, 0]});
+        assert_eq!(heard(&tie), None, "a tie between two is no cell's own talk");
     }
 
     #[test]

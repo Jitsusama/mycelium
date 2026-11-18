@@ -1880,3 +1880,32 @@ fn a_receptor_cells_since_is_drawn_as_the_time_it_names() {
         "a time with an offset is drawn as the time it names, and a state's word as itself"
     );
 }
+
+#[test]
+fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
+    use super::made::{MOST_SUBJECTS, subjects};
+    let declared = json!([
+        " mycelium:hubs ",
+        7,
+        "",
+        "a\u{202e}b",
+        "zero\u{200b}width",
+        "soft\u{00ad}hyphen",
+        "marked\u{feff}",
+        "tag\u{e0041}",
+        "line\u{2028}break",
+        "bell\u{7}",
+        "x".repeat(121),
+        "x".repeat(120),
+    ]);
+    assert_eq!(
+        subjects(&declared),
+        vec!["mycelium:hubs".to_owned(), "x".repeat(120)],
+        "only plain words of at most 120 characters are kept, trimmed"
+    );
+    let many: Vec<String> = (0..20).map(|n| format!("subject {n}")).collect();
+    let kept = subjects(&json!(many));
+    assert_eq!(kept.len(), MOST_SUBJECTS);
+    assert_eq!(kept[0], "subject 0", "the first declared are kept");
+    assert!(subjects(&json!("one")).is_empty(), "subjects are a list");
+}
