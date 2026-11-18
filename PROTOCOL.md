@@ -2017,14 +2017,23 @@ only where the kernel names the connection's other end as a process
 that proves `session` as its host, by its claim at its own start,
 and only of that process's own child, named `pi-spawner` by the
 kernel and started when it says. It answers `"Spawned"`, or refuses,
-saying why there and in its log. A spawner serves one session, and a
+saying why there and, once for each reason, in its log. A session is
+named in at most 256 bytes. A spawner serves one session, and a
 session's spawners are one host's at a time: another host's word for
-it is taken once the first's have all ended. Of 4096 kept at most,
-those ended are let go first, and none more is taken until some end.
+it is taken once the first's have all ended, or the first host has.
+Of 4096 kept at most, those ended, or whose host has, are let go
+first, and none more is taken until some end.
+
+The node keeps what hosts said only while it runs. A host says each
+of its live spawners again every 30 seconds, and saying one again is
+answered as the first time was, so a node that restarts knows them
+all again within 30 seconds; until then a command below one is told
+no session.
 
 The host says it before the spawner runs anything. A command below
 that spawner, each process between them started after the one above
-it and the host unchanged, is then proved as that session. Nothing a
+it, and the host and the asker unchanged from when it connected, is
+then proved as that session. Nothing a
 command runs can say it for another: it holds none of the host's
 connection, which the host opens closed on exec, and the node knows
 the speaker from the kernel, not from what it says. A command the
@@ -2032,15 +2041,29 @@ host starts as its own child, as it does once a spawner is lost, runs
 below no spawner the host said, and is told none; so is one below a
 spawner a command started itself.
 
-This rests on two things the node doesn't prove. It takes the word
-only where the kernel lets a process trace no more than its own
+This rests on three things the node doesn't prove. It takes the
+word only where the kernel lets a process trace no more than its own
 descendants, Yama's `ptrace_scope` at 1 or more, since otherwise a
 command could write the host's memory and speak as the host;
-elsewhere it refuses every spawner. And it can't tell the host's own
-code from code an agent brought into the host's process, an
-extension a project carries or a reload onto another tree among it,
-which can say any spawner serves any session the host proves. The
-fence the host runs under is what closes that.
+elsewhere, or where the kernel doesn't say, it refuses every
+spawner. For the same reason it takes it only from a host whose
+node can't be opened from outside: its command line must give
+`--disable-sigusr1` among node's own options, since otherwise any
+process of its user may send SIGUSR1 and open node's inspector, and
+neither that line nor the `NODE_OPTIONS` its environment holds may
+name `--inspect` in any form or `--enable-sigusr1`; a host whose
+environment can't be read is refused.
+
+It can't tell the host's own code from code an agent brought into
+the host's process, an extension a project carries or a reload onto
+another tree among it, which can say any spawner serves any session
+the host proves. And a command that can write the harness's files
+can change the code a host loads, then end the host, which runs that
+code when it starts again and may say any spawner. So the word
+proves a session only where the host's sessions run their commands
+fenced from the harness and its extensions; where they don't, it
+tells a command apart from its host only by accident. The fence the
+host's sessions run under is what closes both.
 
 ### The Daemon Interface
 

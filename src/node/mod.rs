@@ -3730,7 +3730,7 @@ impl<S: Store> Shared<S> {
     async fn session_alone(&self) -> Result<String, String> {
         let claims = self.claims();
         let (client, processes, hosts, logs, spawners) = (
-            self.client,
+            (self.client, self.client_started),
             self.processes.clone(),
             self.hosts.clone(),
             self.logs.clone(),
@@ -3747,8 +3747,17 @@ impl<S: Store> Shared<S> {
     /// Takes a pi host's word, the host being the process at the other
     /// end, that its child `spawner` serves `session`, as
     /// [`asker::Spawners::register`] takes it. A refusal is said on the
-    /// node's stderr too, since a host refused may be a command trying.
+    /// node's stderr too, since a host refused may be a command trying,
+    /// once for each reason, as a run told no session is, and with the
+    /// session it named cut short and escaped, since anyone may name one.
     async fn spawned(&self, spawner: (i32, u64), session: String) -> Reply {
+        // A session's id is far shorter; one longer is refused unread.
+        const LONGEST: usize = 256;
+        // How much of the session it named a refusal says.
+        const SAID_SESSION_CHARS: usize = 64;
+        if session.len() > LONGEST {
+            return Err(format!("a session is named in at most {LONGEST} bytes"));
+        }
         let claims = self.claims();
         let (host, processes, hosts, logs, spawners) = (
             (self.client, self.client_started),
@@ -3757,7 +3766,11 @@ impl<S: Store> Shared<S> {
             self.logs.clone(),
             Arc::clone(&self.spawners),
         );
-        let said = session.clone();
+        let said: String = session
+            .chars()
+            .take(SAID_SESSION_CHARS)
+            .flat_map(char::escape_debug)
+            .collect();
         let registered = tokio::task::spawn_blocking(move || {
             let owners = asker::proved(&claims, &processes, &hosts, &logs)?;
             spawners.register(host, spawner, &session, &processes, &owners, &claims)
@@ -3765,7 +3778,11 @@ impl<S: Store> Shared<S> {
         .await
         .map_err(|error| format!("the spawner couldn't be told: {error}"))?;
         if let Err(why) = &registered {
-            eprintln!("mycelium: a spawner for {said} isn't taken: {why}");
+            let why: String = why.chars().flat_map(char::escape_debug).collect();
+            let line = format!("a spawner for {said} isn't taken: {why}");
+            if self.untold.first(&line) {
+                eprintln!("mycelium: {line}");
+            }
         }
         registered.map(|()| Response::Spawned)
     }
@@ -6059,9 +6076,6 @@ async fn hand_on_run<S: Store>(
     }
 }
 
-/// Answers a holder's ask for a turn once it may resume `session`,
-/// looking at the turns each [`turns::LOOKS_EVERY`] while it waits. A holder that
-/// hangs up first leaves the queue.
 /// Send a watch's client the whole state, then each change, until it
 /// says anything more, hangs up or falls too far behind.
 async fn keep_watching<S: Store>(
@@ -6095,6 +6109,9 @@ async fn keep_watching<S: Store>(
     shared.unwatch(id);
 }
 
+/// Answers a holder's ask for a turn once it may resume `session`,
+/// looking at the turns each [`turns::LOOKS_EVERY`] while it waits. A holder that
+/// hangs up first leaves the queue.
 async fn take_turn<S: Store>(
     shared: &Shared<S>,
     session: &str,
@@ -14711,20 +14728,6 @@ esac
             "nor once both prove, whichever its command names"
         );
         asks_below_spawner(&socket, 7102, 7101);
-        let unsaid = run_through(socket.clone(), run_of("skiff", "true"))
-            .await
-            .expect("a hosted agent's runs here");
-        assert_eq!(
-            String::from_utf8_lossy(&unsaid.out),
-            "the fence runs for none\n",
-            "a command below a pi-spawner its host never said is told none"
-        );
-        assert!(
-            kept_start(&socket, 2)["untold"]
-                .as_str()
-                .is_some_and(|why| why.contains("through no pi-spawner")),
-            "and its record says it asked through no spawner its host said"
-        );
         let forged = ask(
             socket.clone(),
             Request::Spawned {
@@ -14738,13 +14741,32 @@ esac
             forged.is_err_and(|why| why.contains("no pi host")),
             "a command below the host can't say the spawner for it"
         );
+        let overlong = ask(
+            socket.clone(),
+            Request::Spawned {
+                pid: 7102,
+                started: started_at(7101) + 1,
+                session: "s".repeat(257),
+            },
+        )
+        .await;
+        assert!(
+            overlong.is_err_and(|why| why.contains("at most 256 bytes")),
+            "nor name a session longer than any, which is refused unread"
+        );
         let still = run_through(socket.clone(), run_of("skiff", "true"))
             .await
             .expect("a hosted agent's runs here");
         assert_eq!(
             String::from_utf8_lossy(&still.out),
             "the fence runs for none\n",
-            "so its runs are still told none"
+            "so a command below a pi-spawner its host never said is told none"
+        );
+        assert!(
+            kept_start(&socket, 2)["untold"]
+                .as_str()
+                .is_some_and(|why| why.contains("through no pi-spawner")),
+            "and its record says it asked through no spawner its host said"
         );
         let (stop, node) = running;
         drop(stop);
