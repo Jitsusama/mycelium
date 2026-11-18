@@ -308,7 +308,9 @@ pub fn event_of(said: &str) -> io::Result<Named> {
         Ok(named)
     } else {
         Err(refused(format!(
-            "{said:?} is no calendar event's id: base32hex, then _ parts of digits, R, T and Z"
+            "an event of {} characters is no calendar event's id: base32hex, then _ parts of \
+             digits, R, T and Z",
+            said.chars().count()
         )))
     }
 }
@@ -473,6 +475,7 @@ pub fn write(
         })
         .filter(|item| fresh(item, now))
         .collect();
+    let count = kept.len();
     let body = serde_json::to_vec(&Written {
         source,
         realm: realm.to_owned(),
@@ -483,9 +486,8 @@ pub fn write(
     // it stood, so it's refused here, and the one before it stands.
     if !u64::try_from(body.len()).is_ok_and(|len| len <= LARGEST_FILE) {
         return Err(refused(format!(
-            "{}'s {} items come to {} bytes, more than the {LARGEST_FILE} a node reads",
+            "{}'s {count} items come to {} bytes, more than the {LARGEST_FILE} a node reads",
             source.name(),
-            items.len(),
             body.len()
         )));
     }
@@ -1288,6 +1290,20 @@ mod tests {
         assert!(
             taken < MOST_ITEMS,
             "a file past the node's bound was written"
+        );
+        let refused = write(
+            state.path(),
+            Source::Calls,
+            "work",
+            &many[..=taken],
+            at(NOW),
+        )
+        .expect_err("refused")
+        .to_string();
+        assert!(
+            refused.starts_with(&format!("calls's {} items come to ", taken + 1))
+                && refused.ends_with(&format!("bytes, more than the {LARGEST_FILE} a node reads")),
+            "{refused}"
         );
         let file = state.path().join(format!("calls{ITEMS}"));
         let size = fs::metadata(&file).expect("written").len();

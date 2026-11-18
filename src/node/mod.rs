@@ -13592,22 +13592,23 @@ esac
         assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
     }
 
-    /// The README of quest `id` of `realm`, claiming `changes` for its
+    /// The README of quest `id` of `realm`, making `claims` for its
     /// active `sessions`.
-    fn claiming(id: &str, realm: &str, changes: &[&str], sessions: &[&str]) -> String {
-        // A claim of a change has its number after a `#`, one written
-        // `github-pr:` is a change claim whatever it spells, and any other
-        // is a calendar event's id.
+    fn claiming(id: &str, realm: &str, claims: &[&str], sessions: &[&str]) -> String {
+        // A claim says its kind, `github-pr:` or `calendar-event:`,
+        // before what it claims, or is a change's, `owner/name#N`; so no
+        // claim's kind is guessed from how it's spelled.
         fn kind(claim: &str) -> (&'static str, &str) {
             if let Some(spelled) = claim.strip_prefix("github-pr:") {
                 ("github-pr", spelled)
-            } else if claim.contains('#') {
-                ("github-pr", claim)
+            } else if let Some(spelled) = claim.strip_prefix("calendar-event:") {
+                ("calendar-event", spelled)
             } else {
-                ("calendar-event", claim)
+                assert!(claim.contains('#'), "{claim} says no kind");
+                ("github-pr", claim)
             }
         }
-        let aliases: String = changes
+        let aliases: String = claims
             .iter()
             .map(|claim| {
                 let (kind, value) = kind(claim);
@@ -13822,7 +13823,12 @@ esac
         fs::set_permissions(&receptors, fs::Permissions::from_mode(0o700)).expect("kept");
         let quests = dir.path().join("quests");
         let claims: [(&str, &str, &[&str], &[&str]); 3] = [
-            ("QEST-20261118-KESTRL", "work", &[EVENT], &["s-claims"]),
+            (
+                "QEST-20261118-KESTRL",
+                "work",
+                &["calendar-event:6kq3ehb1c4p0bt2oq1i5u4tq4c_20261118T150000Z"],
+                &["s-claims"],
+            ),
             // A change claim spelled as the event itself, so only the
             // claims' kinds keep it from drawing the summary.
             (
@@ -13837,7 +13843,7 @@ esac
             (
                 "QEST-20261118-TERNSS",
                 "personal",
-                &[EVENT],
+                &["calendar-event:6kq3ehb1c4p0bt2oq1i5u4tq4c_20261118T150000Z"],
                 &["s-personal"],
             ),
         ];
@@ -13905,9 +13911,11 @@ esac
         .expect("its items are kept");
         feeding::reading(&receptors, receptor::Source::Calls, "work");
 
-        shared
-            .feed_once(&receptors, &[receptor::Source::Calls])
-            .await;
+        for _ in 0..2 {
+            shared
+                .feed_once(&receptors, &[receptor::Source::Calls])
+                .await;
+        }
 
         let spoken: Vec<String> = shared
             .spoken
@@ -13916,7 +13924,7 @@ esac
             .iter()
             .cloned()
             .collect();
-        assert_eq!(spoken.len(), 1, "one cell fed: {spoken:?}");
+        assert_eq!(spoken.len(), 1, "one cell fed, once: {spoken:?}");
         let said = shared
             .store
             .message(&spoken[0])

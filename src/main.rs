@@ -1067,7 +1067,7 @@ struct ReceptorSaid {
     state_folder: Option<PathBuf>,
     /// An owner whose changes it may name with `--item`, repeated for
     /// each. Named at all, its items are written whole, so none clears
-    /// them. GitHub's receptor alone keeps items.
+    /// them. Only GitHub's receptor names changes; calls' names events.
     #[arg(long = "owner", value_name = "OWNER")]
     owners: Vec<String>,
     /// A change asking the person's review, as `owner/name#N`, repeated
