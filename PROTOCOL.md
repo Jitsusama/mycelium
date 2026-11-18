@@ -759,9 +759,12 @@ since a shell or an editor standing in a tree may have left it since;
 past the week nobody asks. As the node keeps a line, it lets go of
 each kept more than a fortnight before, since its carry was ordered
 before then and is no longer looked at, and of any torn by a write cut
-short; one whose `at` can't be read stays. The fortnight is twice the
-week, so a clock stepped back by less than a week brings no carry back
-without its line. A node keeps one line at a time under a lock on
+short. One whose `at` can't be read, or lies more than a fortnight
+ahead, stays, since it wouldn't fade by itself, and each time a line
+is kept the node names it on standard error, by its carry or else its
+line's number, until it is removed by hand. The fortnight is twice
+the week, so a clock stepped back by less than a week brings no carry
+back without its line. A node keeps one line at a time under a lock on
 `settles.jsonl.lock`, which holds too between two nodes given one
 state folder, writes the file aside and moves it into place: a reader
 sees the old lines or the new. One with
