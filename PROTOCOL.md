@@ -1190,6 +1190,12 @@ last said them there, while that is under two minutes old, since it
 reads neither of its own truly. A host declares each machine within it
 in `hosts`, in the same shape, and its node writes its `power` and
 `room` to each file each minute, whole.
+Where given, `basin` names the basin it is one of, as each cell an
+Aquifer basin makes says it, so a map can draw the basin once rather
+than every cell in it: lower-case letters, digits and hyphens, at most
+63, read as no basin in any other shape, which spoils nothing else
+declared. It is the cell's own word and only ever drawn, never weighed
+in placement.
 Where given, `fence` says the fences an agent session runs in there, by
 kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,
