@@ -1478,9 +1478,9 @@ mod tests {
         // Lists flush with their key, as YAML allows, and a session holding
         // a list of its own whose entries look like sessions.
         let front = "---\nid: QEST-20261116-KESTRL\nrealm: work\naliases:\n- type: \
-            github-pr\n  value: jsama/tern#12\nsessions:\n- id: s-live\n  children:\n  \
-            - id: s-nested\n    status: active\n  status: active\n- id: s-gone\n  \
-            status: ended\nparent: QEST-20261101-OSPREY\n";
+            github-pr\n  value: jsama/tern#12\nsessions:\n- id: s-live\n  status: active\n- \
+            id: s-dormant\n  status: ended\n  children:\n  - id: s-nested\n    status: \
+            active\n- id: s-gone\n  status: ended\nparent: QEST-20261101-OSPREY\n";
         let readme = README.replacen("---\n", front, 1);
         store.write("QEST-20261116-KESTRL/README.md", &readme);
         let mut shelf = Shelf::default();
