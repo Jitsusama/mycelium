@@ -3195,7 +3195,7 @@ impl<S: Store> Shared<S> {
                     self.ordered_by(asking_known, carried, &sessions)
                         .map(|_| ())
                 } else {
-                    self.orchestrated_ended(asking_known, carried, &open)
+                    self.orchestrated_ended(asking_known, carried, &open, &sessions)
                 };
                 proved.map_err(|why| {
                     format!(
@@ -3750,17 +3750,21 @@ impl<S: Store> Shared<S> {
     }
 
     /// Whether `asking` orchestrated the quest that ended holding
-    /// `carried`: the harness's record of ended quests names who
-    /// orchestrated it, by address, and this node's own record of
-    /// orchestrations must have `asking` head that orchestrator's quest,
-    /// still open among `open`, or orchestrate it from above. The
-    /// record's word alone proves nothing, since it names an address any
-    /// session could claim to go by.
+    /// `carried`, proved as an ordered carry is, each source checking
+    /// the others: the harness's record of ended quests names the quest
+    /// and who orchestrated it, by address; `asking` must head that
+    /// orchestrator's quest, still open among `open`, by this node's own
+    /// record of orchestrations, and that quest's record must hold it;
+    /// and the mesh must put the ended quest's sessions in that
+    /// orchestrator's group, and `asking` too, as `sessions` say. Only
+    /// the orchestrator itself ends them this way, never one above it,
+    /// whose claim to orchestrate a quest nothing checks once it ended.
     fn orchestrated_ended(
         &self,
         asking: ordered::Known,
         carried: ordered::Known,
         open: &[serde_json::Value],
+        sessions: &[Session],
     ) -> Result<(), String> {
         let ended = self.served.records("ended-quest").ok_or(
             "no open quest's record holds it, and this node serves no record of quests that \
@@ -3768,21 +3772,30 @@ impl<S: Store> Shared<S> {
         )?;
         let ended: Vec<serde_json::Value> = ended.into_values().collect();
         let (quest, orchestrator) = ordered::ended_holding(carried, &ended)?;
-        let heading = ordered::going_by(&orchestrator, open).ok_or_else(|| {
-            format!(
-                "{quest} ended orchestrated by {orchestrator}, whose own quest isn't open, so only \
-                 the person ends its sessions"
-            )
+        let heading = ordered::going_by(&orchestrator, open).map_err(|why| {
+            format!("{quest} ended orchestrated by {orchestrator}, but {why}, so only the person ends its sessions")
         })?;
         let record = self.orchestrations_standing()?;
-        if record.heads(asking.session) == Some(heading) || record.chain(heading, asking).is_ok() {
-            return Ok(());
+        if record.heads(asking.session) != Some(ordered::id(heading))
+            || !ordered::attached(heading, asking.session)
+        {
+            return Err(format!(
+                "{quest} ended orchestrated by {orchestrator}, and {} doesn't head \
+                 {orchestrator}'s quest by both this node's record and the quests' record",
+                asking.address
+            ));
         }
-        Err(format!(
-            "{quest} ended orchestrated by {orchestrator}, and {} neither heads nor orchestrates \
-             {orchestrator}'s quest by this node's record",
-            asking.address
-        ))
+        let order = ordered::Order {
+            by: orchestrator.clone(),
+            quest: quest.clone(),
+            chain: vec![ordered::Link {
+                quest,
+                orchestrator,
+            }],
+        };
+        let quests: Vec<serde_json::Value> =
+            ended.into_iter().chain(open.iter().cloned()).collect();
+        ordered::agreed(&order, asking, &quests, &grouped(sessions, &self.machine))
     }
 
     /// Puts a carry an orchestrator orders into the inbox of the session
@@ -7001,6 +7014,67 @@ esac
         );
     }
 
+    /// A node on `socket` as [`orchestrated_in`] runs it, keeping its
+    /// sessions in `store`, but HARBOR's quest has ended, orchestrated by
+    /// `orchestrator` as the harness's record of ended quests says, and
+    /// HARBOR's session is held for real; with that hold's folder, holder
+    /// and program.
+    async fn harbour_ended(
+        store: &Memory,
+        socket: &Path,
+        orchestrator: &str,
+    ) -> (Running, PathBuf, u32, u32) {
+        // Made as the node makes it, open to nobody else, so its socket goes
+        // there.
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(socket.parent().expect("its folder"))
+            .expect("made");
+        let ended = json!({"quests": [{"id": "QEST-20261115-HARBOR", "address": "HARBOR",
+            "status": "concluded", "sessions": ["s-harbour"], "orchestrator": orchestrator}]});
+        fs::write(socket.with_file_name("ended.json"), ended.to_string()).expect("written");
+        let mut open = orchestrations();
+        open["quests"]
+            .as_array_mut()
+            .expect("a list")
+            .retain(|quest| quest["address"] != "HARBOR");
+        let running = orchestrated_in(store, socket, &open, &[]).await;
+        steward_claims(socket).await;
+        let (held, holder, program) = harbour_held(store, socket).await;
+        (running, held, holder, program)
+    }
+
+    /// What keeps a node in a test running.
+    type Running = (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+        Speaking,
+    );
+
+    // A record of ended quests any process of the person's can write
+    // names OSPHT4 as orchestrating HARBOR's quest, but the mesh never put
+    // HARBOR's session in OSPHT4's group.
+    #[tokio::test]
+    async fn a_record_of_ended_quests_naming_another_orchestrator_proves_nothing() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_running, held, ..) = harbour_ended(&store, &socket, "OSPHT4").await;
+        assert_eq!(
+            claims(&socket, 7002, Some("QEST-20261108-OSPHT4"), &[]).await,
+            Ok(Response::Orchestrated)
+        );
+
+        let refused = ends_e0d4(&socket, 7002).await.expect_err("it ends nothing");
+
+        assert!(
+            refused.contains("the mesh doesn't put HARBOR's session in #orchestration/ospht4"),
+            "OSPHT4 heads its own quest, but the mesh says HARBOR isn't its: {refused}"
+        );
+        assert!(held.join("e0d4.json").exists(), "HARBOR is still held");
+    }
+
     // WCJQSG (2026-11-17): `holds 26d43b06 end` was refused for a session
     // of UQ5LOH's, a quest that had concluded, since no open quest's record
     // held it; the harness's record of ended quests names who orchestrated
@@ -7009,42 +7083,30 @@ esac
     async fn an_orchestrator_ends_a_session_of_a_quest_that_ended() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
-        // Made as the node makes it, open to nobody else, so its socket goes
-        // there.
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(socket.parent().expect("its folder"))
-            .expect("made");
-        let ended = |orchestrator: &str| {
-            json!({"quests": [{"id": "QEST-20261115-HARBOR", "address": "HARBOR",
-                "status": "concluded", "sessions": ["s-harbour"],
-                "orchestrator": orchestrator}]})
-        };
-        fs::write(
-            socket.with_file_name("ended.json"),
-            ended("WCJQSG").to_string(),
-        )
-        .expect("written");
-        let mut open = orchestrations();
-        open["quests"]
-            .as_array_mut()
-            .expect("a list")
-            .retain(|quest| quest["address"] != "HARBOR");
         let store = Memory::default();
-        let (_stop, _node, _client) = orchestrated_in(&store, &socket, &open, &[]).await;
-        steward_claims(&socket).await;
-        let (held, holder, program) = harbour_held(&store, &socket).await;
+        let (_running, held, holder, program) = harbour_ended(&store, &socket, "WCJQSG").await;
+        // OSPHT4 claims to orchestrate WCJQSG's quest from above, which
+        // nothing checks once the quest it would end ended.
+        assert_eq!(
+            claims(
+                &socket,
+                7002,
+                Some("QEST-20261108-OSPHT4"),
+                &["QEST-20261007-WCJQSG"]
+            )
+            .await,
+            Ok(Response::Orchestrated)
+        );
 
         assert_eq!(
             ends_e0d4(&socket, 7002).await,
             Err(
                 "OSPHT4 isn't proved to orchestrate the session held as e0d4, so it can't end \
-                 it: QEST-20261115-HARBOR ended orchestrated by WCJQSG, and OSPHT4 neither \
-                 heads nor orchestrates WCJQSG's quest by this node's record"
+                 it: QEST-20261115-HARBOR ended orchestrated by WCJQSG, and OSPHT4 doesn't \
+                 head WCJQSG's quest by both this node's record and the quests' record"
                     .to_owned()
             ),
-            "a session that didn't orchestrate the quest ends nothing of it"
+            "a session claiming to orchestrate from above ends nothing of a quest that ended"
         );
         assert_eq!(
             ends_e0d4(&socket, 7001).await,
