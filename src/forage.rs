@@ -1458,7 +1458,7 @@ mod tests {
         let front = "---\nid: QEST-20261116-KESTRL\nrealm: work\naliases:\n  - type: \
             github-pr\n    value: jsama/tern#12\n  - type: slack-message\n    value: \
             C0/1\n  - type: github-pr\n    value: \"jsama/tern#13\"\n  - type: \
-            calendar-event\n    value: abc_20261118T150000Z\nsessions:\n  - id: \
+            calendar-event\n    value: abcde_20261118T150000Z\nsessions:\n  - id: \
             s-live\n    status: active\n    process:\n      status: ended\n  - id: \
             s-gone\n    status: ended\nparent: QEST-20261101-OSPREY\n";
         let readme = README.replacen("---\n", front, 1);
@@ -1470,14 +1470,16 @@ mod tests {
             quest.claims,
             Claims {
                 changes: vec!["jsama/tern#12".to_owned(), "jsama/tern#13".to_owned()],
-                events: vec!["abc_20261118T150000Z".to_owned()],
+                events: vec!["abcde_20261118T150000Z".to_owned()],
                 sessions: vec!["s-live".to_owned()],
                 realm: Some("work".to_owned()),
             }
         );
         let served = serde_json::to_string(quest).expect("json");
         assert!(
-            !served.contains("tern") && !served.contains("s-live") && !served.contains("abc_2026"),
+            !served.contains("tern")
+                && !served.contains("s-live")
+                && !served.contains("abcde_2026"),
             "a forage served what feeds its quest: {served}"
         );
     }

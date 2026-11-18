@@ -326,21 +326,57 @@ fn the_calls_summarized_are_kept_whole_by_their_events_alone() {
     );
     assert_eq!(events(dir.path()), ["abc123"], "an event not named stayed");
     let pid = std::process::id().to_string();
-    let failing = say(
+    for state in ["failing", "off"] {
+        let unread = say(
+            dir.path(),
+            &[
+                "calls", "--state", state, "--every", "60", "--pid", &pid, "--event", EVENT,
+            ],
+        );
+        assert!(
+            unread.status.success(),
+            "{}",
+            String::from_utf8_lossy(&unread.stderr)
+        );
+        assert_eq!(
+            events(dir.path()),
+            ["abc123"],
+            "a say {state}, which read nothing, changed the events"
+        );
+        let titled = say(
+            dir.path(),
+            &[
+                "calls",
+                "--state",
+                state,
+                "--every",
+                "60",
+                "--pid",
+                &pid,
+                "--event",
+                "Pay review with Tern",
+            ],
+        );
+        assert!(
+            !titled.status.success(),
+            "a title passed as an event was taken on a say {state}"
+        );
+    }
+    let quiet = say(
         dir.path(),
         &[
-            "calls", "--state", "failing", "--every", "60", "--pid", &pid,
+            "calls", "--state", "quiet", "--every", "60", "--pid", &pid, "--event", EVENT,
         ],
     );
     assert!(
-        failing.status.success(),
+        quiet.status.success(),
         "{}",
-        String::from_utf8_lossy(&failing.stderr)
+        String::from_utf8_lossy(&quiet.stderr)
     );
     assert_eq!(
         events(dir.path()),
-        ["abc123"],
-        "a failing say, which read nothing, cleared the events"
+        [EVENT],
+        "a quiet say didn't write its events"
     );
     let said = calls(dir.path(), &[]);
     assert!(

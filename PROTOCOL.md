@@ -2256,11 +2256,13 @@ than the writer's clock, never a title, body, author, branch or comment.
 whole each time it says `reading` or `quiet`, `--event` repeated, so a
 call not named again is gone; a say `failing` or `off` leaves the file
 as it stood, since a receptor that couldn't read can't say which calls
-stand. No other source may name an event. An event's id is as Google's
-calendar gives one, at most 1024 long: its own id of at least 5
-lowercase `a` to `v` and digits, then any `_` parts of digits and `R`,
-`T` or `Z` a recurring event's splits and instances add, as
-`_20261118T150000Z`. Any other is refused, and so is the whole write.
+stand, though its events are judged all the same. No other source may
+name an event. An event's id is as Google's calendar gives one, at
+most 1024 long: its own id of at least 5 lowercase `a` to `v` and
+digits, after a `_` when an outside invitation made it, then any `_`
+parts of digits and `R`, `T` or `Z` a recurring event's splits and
+instances add, as `_20261118T150000Z`. Any other is refused, and so
+is the whole say.
 A write whose file would pass the 64 KiB the node reads is refused
 too, leaving the file before it. Its item is `event`, `reason`
 (`summary-written`) and `since`, never a title, a person, a quote or a

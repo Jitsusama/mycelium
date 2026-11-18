@@ -13595,18 +13595,24 @@ esac
     /// The README of quest `id` of `realm`, claiming `changes` for its
     /// active `sessions`.
     fn claiming(id: &str, realm: &str, changes: &[&str], sessions: &[&str]) -> String {
-        // A claim of a change has its number after a `#`; any other is a
-        // calendar event's id.
-        let kind = |claim: &str| {
-            if claim.contains('#') {
-                "github-pr"
+        // A claim of a change has its number after a `#`, one written
+        // `github-pr:` is a change claim whatever it spells, and any other
+        // is a calendar event's id.
+        fn kind(claim: &str) -> (&'static str, &str) {
+            if let Some(spelled) = claim.strip_prefix("github-pr:") {
+                ("github-pr", spelled)
+            } else if claim.contains('#') {
+                ("github-pr", claim)
             } else {
-                "calendar-event"
+                ("calendar-event", claim)
             }
-        };
+        }
         let aliases: String = changes
             .iter()
-            .map(|claim| format!("  - type: {}\n    value: {claim}\n", kind(claim)))
+            .map(|claim| {
+                let (kind, value) = kind(claim);
+                format!("  - type: {kind}\n    value: {value}\n")
+            })
             .collect::<Vec<_>>()
             .concat();
         let listed: String = sessions
@@ -13817,10 +13823,15 @@ esac
         let quests = dir.path().join("quests");
         let claims: [(&str, &str, &[&str], &[&str]); 3] = [
             ("QEST-20261118-KESTRL", "work", &[EVENT], &["s-claims"]),
+            // A change claim spelled as the event itself, so only the
+            // claims' kinds keep it from drawing the summary.
             (
                 "QEST-20261118-OSPREY",
                 "work",
-                &["jsama/tern#12"],
+                &[
+                    "jsama/tern#12",
+                    "github-pr:6kq3ehb1c4p0bt2oq1i5u4tq4c_20261118T150000Z",
+                ],
                 &["s-other"],
             ),
             (

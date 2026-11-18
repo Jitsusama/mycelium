@@ -48,8 +48,9 @@ pub const KEPT_FOR_DAYS: i64 = 30;
 /// The most items a file may hold: more than any person is asked at once.
 const MOST_ITEMS: usize = 200;
 
-/// The most an items file may hold, in bytes: [`MOST_ITEMS`] at well
-/// under 200 bytes each.
+/// The most an items file may hold, in bytes: [`MOST_ITEMS`] changes
+/// at well under 200 bytes each, or as many events of ids up to about
+/// 250 characters; a writer refuses a file past it.
 const LARGEST_FILE: u64 = 64 * 1024;
 
 /// The longest name GitHub gives an owner or a repository.
@@ -255,12 +256,14 @@ const SHORTEST_EVENT: usize = 5;
 
 /// Whether `event` is an id Google's calendar could give an event, at
 /// most [`LONGEST_EVENT`] long: its own id in base32hex, lowercase `a`
-/// to `v` and digits, then any `_` parts a recurring event's instances
-/// and splits add, each digits and `R`, `T` or `Z`, as
-/// `_R20261101T150000` or `_20261118T150000Z`. So most words, and any
-/// spaced or capitalised title, are no event.
+/// to `v` and digits, after a `_` when Google made it for an outside
+/// invitation, then any `_` parts a recurring event's instances and
+/// splits add, each digits and `R`, `T` or `Z`, as `_R20261101T150000`
+/// or `_20261118T150000Z`. So no spaced, capitalised or punctuated
+/// title is an event, though a lowercase run-together one of those
+/// letters could be; nothing is said of it but that it's an id.
 fn is_event(event: &str) -> bool {
-    let mut parts = event.split('_');
+    let mut parts = event.strip_prefix('_').unwrap_or(event).split('_');
     let own = parts.next().unwrap_or_default();
     event.len() <= LONGEST_EVENT
         && own.len() >= SHORTEST_EVENT
@@ -305,7 +308,7 @@ pub fn event_of(said: &str) -> io::Result<Named> {
         Ok(named)
     } else {
         Err(refused(format!(
-            "{said:?} is no calendar event's id: letters, digits and _ alone"
+            "{said:?} is no calendar event's id: base32hex, then _ parts of digits, R, T and Z"
         )))
     }
 }
@@ -480,8 +483,10 @@ pub fn write(
     // it stood, so it's refused here, and the one before it stands.
     if !u64::try_from(body.len()).is_ok_and(|len| len <= LARGEST_FILE) {
         return Err(refused(format!(
-            "{}'s items come to more than the {LARGEST_FILE} bytes a node reads",
-            source.name()
+            "{}'s {} items come to {} bytes, more than the {LARGEST_FILE} a node reads",
+            source.name(),
+            items.len(),
+            body.len()
         )));
     }
     let name = format!("{}{ITEMS}", source.name());
@@ -1270,19 +1275,29 @@ mod tests {
             at(NOW),
         )
         .expect("written");
+        // Items of about 360 bytes each, added one at a time, so the
+        // refusal is met within an item of the bound itself.
         let many: Vec<(Named, Reason)> = (0..MOST_ITEMS)
-            .map(|each| {
-                let id = format!("{}{each:04}", "a".repeat(LONGEST_EVENT - 4));
-                summed(&id)
-            })
+            .map(|each| summed(&format!("{}{each:04}", "a".repeat(296))))
             .collect();
+        let taken = (1..=MOST_ITEMS)
+            .take_while(|&count| {
+                write(state.path(), Source::Calls, "work", &many[..count], at(NOW)).is_ok()
+            })
+            .count();
         assert!(
-            write(state.path(), Source::Calls, "work", &many, at(NOW)).is_err(),
+            taken < MOST_ITEMS,
             "a file past the node's bound was written"
         );
+        let file = state.path().join(format!("calls{ITEMS}"));
+        let size = fs::metadata(&file).expect("written").len();
+        assert!(
+            size <= LARGEST_FILE && size > LARGEST_FILE - 400,
+            "the refusal came {size} bytes in, not at the bound"
+        );
         assert_eq!(
-            read(state.path(), Source::Calls, "work", at(NOW)),
-            Some(vec![event(EVENT)]),
+            read(state.path(), Source::Calls, "work", at(NOW)).map(|items| items.len()),
+            Some(taken),
             "the file before a refused write didn't stand"
         );
     }
@@ -1406,6 +1421,9 @@ mod tests {
             "abcde".to_owned(),
             "abc123def_R20261101T150000_20261118T150000Z".to_owned(),
             "abc123def_20261118".to_owned(),
+            // Google's id for an event an outside invitation made.
+            "_6tlnaqrle5p6cpb4dhmj4phpehk62qbd5l9mqr39dpq7arbg".to_owned(),
+            "_6tlnaqrle5p6cpb4dhmj4phpe_20261118T150000Z".to_owned(),
         ] {
             assert!(event_of(&taken).is_ok(), "{taken:?} was refused");
         }
@@ -1420,6 +1438,10 @@ mod tests {
             "abcdef_".to_owned(),
             "abcdef_x".to_owned(),
             "abcdef__20261118".to_owned(),
+            "_".to_owned(),
+            "_abcd".to_owned(),
+            "__abcdef".to_owned(),
+            "_Abcdef".to_owned(),
             "abc-def".to_owned(),
             "abc/def".to_owned(),
             "abc@google.com".to_owned(),

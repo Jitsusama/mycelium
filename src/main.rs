@@ -1120,6 +1120,17 @@ fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
     if source != Source::Calls && !said.events.is_empty() {
         return Err(keeps_none("events"));
     }
+    // Every event is judged, whatever the state, so a title passed as one
+    // is refused on any say; only a reading or quiet one writes them,
+    // since a failing or off receptor can't say which calls stand.
+    let events = said
+        .events
+        .iter()
+        .map(|event| {
+            mycelium::feed::event_of(event)
+                .map(|named| (named, mycelium::feed::Reason::SummaryWritten))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
     let items = match source {
         Source::Github if !said.owners.is_empty() => Some(
             said.items
@@ -1130,15 +1141,7 @@ fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
                 })
                 .collect::<io::Result<Vec<_>>>()?,
         ),
-        Source::Calls if matches!(state, State::Reading | State::Quiet) => Some(
-            said.events
-                .iter()
-                .map(|event| {
-                    mycelium::feed::event_of(event)
-                        .map(|named| (named, mycelium::feed::Reason::SummaryWritten))
-                })
-                .collect::<io::Result<Vec<_>>>()?,
-        ),
+        Source::Calls if matches!(state, State::Reading | State::Quiet) => Some(events),
         _ => None,
     };
     let now = jiff::Timestamp::now();
