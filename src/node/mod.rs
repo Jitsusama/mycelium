@@ -13254,8 +13254,9 @@ esac
         );
         let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
         let dial = shared.book_for(&made_by("/nowhere/lend", "kestrel", later));
-        // Clients are served from a clone of what the node shares, so the
-        // start is taken from one.
+        // What the node shares is cloned into each task that says its
+        // verdict, so the start is taken from a clone: one band must hold
+        // across them.
         let kept = shared.clone().starting(&dial, Path::new("/nowhere/node"));
         // The node's band saturates only after the link is given its start,
         // so a band copied at the start is caught as well as a fresh one.
