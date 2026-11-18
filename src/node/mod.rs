@@ -5630,19 +5630,28 @@ mod tests {
 
     /// Puts a provider beside `socket` offering a free machine reaching
     /// `basin`, whose make writes who it is told asks to `told` and fails,
-    /// so nothing is left to link.
+    /// so nothing is left to link. The machine would run every fence shut
+    /// but for no door, so an agent's start is never refused it for its
+    /// ground.
     fn provider_telling(socket: &Path, told: &Path) {
         crate::stand_in::program(
             &socket.with_file_name("provider"),
             &r#"#!/bin/sh
 case "$1" in
-offers) echo '{"shape": "cell", "costs": {"hourly": "0", "currency": "USD"}, "lasts": 600, "facts": {"declared": {"reach": ["basin"], "outlives": [], "costs_money": false, "taints": []}}}' ;;
+offers) echo '{"shape": "cell", "costs": {"hourly": "0", "currency": "USD"}, "lasts": 600, "facts": {"declared": {"reach": ["basin"], "outlives": [], "costs_money": false, "taints": [], "fence": SHUT}}}' ;;
 make) printf '%s\n' "$ASKER" > 'TOLD'; exit 1 ;;
 esac
 "#
                 .replace("ASKER", made::ASKER)
-                .replace("TOLD", &told.display().to_string()),
+                .replace("TOLD", &told.display().to_string())
+                .replace("SHUT", &shut_fences().to_string()),
         );
+    }
+
+    /// Every fence, each shut but for no door, as a machine declares it.
+    fn shut_fences() -> Value {
+        let shut = json!({"builders": [], "forges": [], "secrets": []});
+        json!({"none": shut, "fence": shut, "strict": shut})
     }
 
     /// Asks the node on `socket` to start work only a made machine
@@ -5687,6 +5696,13 @@ esac
         let told = dir.path().join("told");
         let (_stop, _node) = alone(&Memory::default(), "skiff", &socket);
         provider_telling(&socket, &told);
+        // Here runs its strict fence shut, so the machine offered, shut as
+        // well, is as firm for the strictly fenced agent this asks as.
+        fs::write(
+            socket.with_file_name("declared.json"),
+            serde_json::to_vec(&fenced("skiff", &[]).declared).expect("it is JSON"),
+        )
+        .expect("this machine's declaration is written");
         asks_below(&socket, 7009);
         assert_eq!(
             told_asker(&socket, &told).await,
