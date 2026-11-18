@@ -1190,13 +1190,6 @@ last said them there, while that is under two minutes old, since it
 reads neither of its own truly. A host declares each machine within it
 in `hosts`, in the same shape, and its node writes its `power` and
 `room` to each file each minute, whole.
-Where given, `unattended` `true` says no person works there, as in a
-cell lent from a basin, where the person reaches it only over a link: its
-node then takes whoever asks it locally for a strictly fenced agent, even
-one it would otherwise tell as the person, since there the node runs as
-fenced as the agents beside it. That takes in a link's end run there,
-so a run asked from another machine is refused, as an agent saying so
-is. Said in any shape but `false`, it holds.
 Where given, `fence` says the fences an agent session runs in there, by
 kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,
@@ -1606,7 +1599,16 @@ reaching it, as A Link says. The node judges who asks, as `by`,
 presences of its process and its forebears say, and in a strict one
 where it can't tell; an agent too where its process runs as one of
 the machine's agents, may gain no privileges the node may, or sees
-other mounts; else the person. A
+other mounts; else the person. A node started with `--unattended`, as
+one in a cell lent from a basin is, where the person reaches it only
+over a link, takes no asker for the person: one it would tell as the
+person is a strictly fenced agent there, since its node runs as fenced
+as the agents beside it and nothing else would tell them apart. That
+holds for every word the node takes only from the person, a steer
+claiming the person and their own login's acts too, and for a link's
+end run there, so a run another machine asked is refused, saying so.
+It is a flag on the node's command line rather than a word declared,
+since a file can fail to be read. A
 `by` the request says only makes it stricter, and an agent runs
 fenced at least. An agent's run goes only where an ordered carry could
 land it (A Carry an Orchestrator Orders): placement is offered only

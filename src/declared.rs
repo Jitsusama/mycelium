@@ -68,16 +68,6 @@ pub struct Declared {
         deserialize_with = "fence_or_none"
     )]
     pub fence: Option<BTreeMap<Kind, Doors>>,
-    /// Whether no person works there, as in a cell lent from a basin, so
-    /// whatever asks its node is an agent: the person only ever reaches it
-    /// over a link. Said in any shape but `false`, it is so, since a doubt
-    /// should only make a run stricter.
-    #[serde(
-        default,
-        skip_serializing_if = "std::ops::Not::not",
-        deserialize_with = "unattended_unless_denied"
-    )]
-    pub unattended: bool,
 }
 
 /// The fence an agent session runs in, as the harness names it.
@@ -127,12 +117,6 @@ fn fence_or_none<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<BTreeMap<Kind, Doors>>, D::Error> {
     Ok(Option::<serde_json::Value>::deserialize(said)?
         .and_then(|fence| serde_json::from_value(fence).ok()))
-}
-
-/// Whether `said` leaves a machine unattended: it does unless it says
-/// plainly that it doesn't.
-fn unattended_unless_denied<'de, D: serde::Deserializer<'de>>(said: D) -> Result<bool, D::Error> {
-    Ok(serde_json::Value::deserialize(said)? != serde_json::Value::Bool(false))
 }
 
 /// One machine within another, as either declares it: the other machine,
@@ -958,32 +942,6 @@ mod tests {
     }
 
     #[test]
-    fn a_machine_is_unattended_unless_it_says_plainly_it_isnt() {
-        let folder = tempfile::tempdir().expect("a temporary folder");
-        let file = folder.path().join("declared.json");
-        for (said, unattended) in [
-            ("", false),
-            (r#", "unattended": false"#, false),
-            (r#", "unattended": true"#, true),
-            (r#", "unattended": "no""#, true),
-            (r#", "unattended": null"#, true),
-        ] {
-            fs::write(
-                &file,
-                format!(
-                    r#"{{"reach": [], "outlives": [], "costs_money": false, "taints": []{said}}}"#
-                ),
-            )
-            .expect("the configuration is written");
-            assert_eq!(
-                read(&file).map(|declared| declared.unattended),
-                Some(unattended),
-                "declaring {said:?} reads as unattended {unattended}"
-            );
-        }
-    }
-
-    #[test]
     fn a_configuration_declares_what_cant_be_measured() {
         let folder = tempfile::tempdir().expect("a temporary folder");
         let file = folder.path().join("declared.json");
@@ -1014,7 +972,6 @@ mod tests {
                 within: None,
                 hosts: Vec::new(),
                 fence: None,
-                unattended: false,
             }),
             "it reads as declared"
         );
@@ -1034,7 +991,6 @@ mod tests {
             within: None,
             hosts: Vec::new(),
             fence: None,
-            unattended: false,
         };
         assert!(
             !lasting.is_worker(),
