@@ -2338,6 +2338,100 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_kept_end_says_its_nodes_verdict_in_the_room_it_measures() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        // Its host tells it a room at pressure 90 with no verdict, as a host
+        // older than the band does, so the room it measures is known here.
+        let host_says = dir.path().join("osprey.json");
+        std::fs::write(
+            dir.path().join("declared.json"),
+            serde_json::json!({
+                "reach": [], "outlives": [], "costs_money": false, "taints": [],
+                "within": {"machine": "osprey", "file": host_says}
+            })
+            .to_string(),
+        )
+        .expect("declared");
+        let now = jiff::Timestamp::now();
+        let room = crate::room::Room {
+            said_at: now.to_string(),
+            memory_available: 8 << 30,
+            pressure: crate::room::Pressure {
+                cpu: 90.0,
+                memory: 0.0,
+                io: 0.0,
+            },
+            takes: crate::room::Takes {
+                builds: 1,
+                vm_tests: 1,
+            },
+            over: Some(Vec::new()),
+            saturated: None,
+        };
+        let said = crate::within::Said {
+            at: now,
+            power: None,
+            room: Some(room),
+        };
+        crate::within::tell(&host_says, &said).expect("told");
+        let band = Arc::new(crate::placement::Saturation::default());
+        assert_eq!(
+            saturated_heard(dir.path(), Some(band)).await,
+            Some(true),
+            "a link its node keeps says the node's verdict"
+        );
+        assert_eq!(
+            saturated_heard(dir.path(), None).await,
+            None,
+            "where it holds no band, it says none"
+        );
+    }
+
+    /// The verdict skiff hears in kestrel's room over a link kestrel keeps,
+    /// holding `saturation`.
+    async fn saturated_heard(
+        dir: &std::path::Path,
+        saturation: Option<Arc<crate::placement::Saturation>>,
+    ) -> Option<bool> {
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _near = end(&skiff, "skiff", near);
+        let starting = Starting {
+            node: dir.join("node.sock"),
+            held: dir.join("held"),
+            asking: None,
+            steers: dir.join("steer"),
+            health: None,
+            declared: Some(dir.join("declared.json")),
+            kit: None,
+            saturation,
+        };
+        let (reading, writing) = tokio::io::split(far);
+        let kestrel_end = kestrel.clone();
+        let _far = tokio::spawn(async move {
+            run(
+                kestrel_end,
+                &realm("kestrel"),
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+            .map(|_| ())
+        });
+
+        until(&skiff, |store| {
+            store
+                .machines()
+                .first()
+                .is_some_and(|kestrel| kestrel.room.is_some())
+        })
+        .await;
+        skiff.machines()[0].room.as_ref().expect("a room").saturated
+    }
+
     /// The kit skiff hears of kestrel over a link kestrel keeps, its node
     /// having taken `kit` as it did.
     async fn kit_heard(dir: &std::path::Path, kit: hold::start::Kit) -> facts::Kit {

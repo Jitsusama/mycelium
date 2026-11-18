@@ -990,8 +990,11 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
             effect: Effect::PreferNot,
             why: if room.saturated == Some(true) && (UNSATURATES_UNDER..SATURATES_AT).contains(&cpu)
             {
+                // Rounded down, so a pressure just under where it
+                // saturates never reads as that pressure.
+                let under = cpu.floor();
                 format!(
-                    "its processors are saturated still, at pressure {cpu:.0}, \
+                    "its processors are saturated still, at pressure {under:.0}, \
                      until it falls under {UNSATURATES_UNDER:.0}"
                 )
             } else {
@@ -1806,6 +1809,14 @@ pub(crate) mod tests {
             own.saturated,
             Some(false),
             "and forgets its own, so its own after the host's isn't judged by one from before"
+        );
+        band.say(Some(&mut room(90.0, Some(true))));
+        let mut quiet = room(80.0, None);
+        band.say(Some(&mut quiet));
+        assert_eq!(
+            quiet.saturated,
+            Some(false),
+            "nor takes the host's verdict for its own once the host goes quiet"
         );
         band.say(Some(&mut room(90.0, None)));
         band.say(None);
