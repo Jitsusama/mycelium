@@ -181,6 +181,12 @@ impl Orchestrations {
         self.sessions.retain(|session, _| stands(session));
     }
 
+    /// The quest the session `session` heads, by this record.
+    #[must_use]
+    pub fn heads(&self, session: &str) -> Option<&str> {
+        self.sessions.get(session).map(|claim| claim.heads.as_str())
+    }
+
     /// Who orchestrates `quest` up to `asker`, by this record: the
     /// session that orchestrates it, then the one orchestrating the quest
     /// that session heads, and so on, until one is `asker`. Refused,

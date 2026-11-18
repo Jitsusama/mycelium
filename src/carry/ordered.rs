@@ -196,6 +196,40 @@ pub fn quest_of(session: Known, quests: &[Value]) -> Result<String, String> {
     holding(session, quests).map(|quest| id_of(quest).unwrap_or_default().to_owned())
 }
 
+/// Whether any quest's record among `quests` holds the session `session`.
+#[must_use]
+pub fn holds(session: &str, quests: &[Value]) -> bool {
+    quests.iter().any(|quest| attaches(quest, session))
+}
+
+/// The id of the one quest among `ended`, the quests that ended, whose
+/// record holds `session`, and the address of who orchestrated it, as
+/// the harness wrote it as the quest ended.
+///
+/// # Errors
+///
+/// When none holds it, more than one does, or it names no orchestrator.
+pub fn ended_holding(session: Known, ended: &[Value]) -> Result<(String, String), String> {
+    let quest = holding(session, ended)?;
+    let id = id_of(quest).unwrap_or_default().to_owned();
+    let orchestrator = quest
+        .get("orchestrator")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            format!("{id} ended naming no orchestrator, so only the person ends its sessions")
+        })?;
+    Ok((id, orchestrator.to_ascii_uppercase()))
+}
+
+/// The id of the quest among `quests` that goes by `address`.
+#[must_use]
+pub fn going_by<'a>(address: &str, quests: &'a [Value]) -> Option<&'a str> {
+    quests
+        .iter()
+        .find(|quest| address_of(quest).is_some_and(|it| it.eq_ignore_ascii_case(address)))
+        .and_then(id_of)
+}
+
 /// The one quest's record among `quests` that holds `session`.
 fn holding<'a>(session: Known, quests: &'a [Value]) -> Result<&'a Value, String> {
     let holding: Vec<&Value> = quests
