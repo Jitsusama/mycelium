@@ -55,7 +55,22 @@ pub fn firm(
             "{to} is out of reach, so nothing is carried there now"
         ));
     }
-    stands(kind, here, to, there)
+    stands(kind, here, to, there.declared.as_ref())
+}
+
+/// Why a machine that would declare `there` is looser ground than this
+/// one, as `here` declares it, for a session in the fence `kind`; none
+/// where it is as firm. A machine not yet made is judged by what its
+/// offer says it would declare, so none is made, and paid for, only to be
+/// refused once it links.
+#[must_use]
+pub fn looser_offered(
+    kind: Kind,
+    here: Option<&Declared>,
+    to: &str,
+    there: Option<&Declared>,
+) -> Option<String> {
+    stands(Some(kind), here, to, there).err()
 }
 
 /// Each of `machines` work asked by an agent running in the fence `kind`
@@ -72,7 +87,7 @@ pub fn looser(kind: Kind, here: Option<&Declared>, this: &str, machines: &[Machi
         .iter()
         .filter(|machine| machine.name != this)
         .filter_map(|machine| {
-            let why = stands(Some(kind), here, &machine.name, machine).err()?;
+            let why = stands(Some(kind), here, &machine.name, machine.declared.as_ref()).err()?;
             Some(Miss {
                 machine: machine.name.clone(),
                 because: vec![Because::Refuses(Taint {
@@ -85,20 +100,19 @@ pub fn looser(kind: Kind, here: Option<&Declared>, this: &str, machines: &[Machi
         .collect()
 }
 
-/// Whether `there`, as it last said itself, runs sessions in the fence
-/// `kind` with no door wider than this machine's, as `here` declares it.
+/// Whether `there`, what `to` declares as it last said itself, runs
+/// sessions in the fence `kind` with no door wider than this machine's,
+/// as `here` declares it.
 fn stands(
     kind: Option<Kind>,
     here: Option<&Declared>,
     to: &str,
-    there: &Machine,
+    there: Option<&Declared>,
 ) -> Result<(), String> {
     let kind = kind.ok_or(
         "the session doesn't say which fence it runs in, so where it lands can't be judged",
     )?;
     let fences = there
-        .declared
-        .as_ref()
         .and_then(|declared| declared.fence.as_ref())
         .ok_or_else(|| {
             format!("{to} declares no fence, so the session can't be told to land as {kind} there")

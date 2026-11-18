@@ -3988,11 +3988,49 @@ impl<S: Store> Shared<S> {
         fence: Option<crate::declared::Kind>,
     ) -> Reply {
         let who = self.asker_of_a_make().await;
-        let offers = self.offers().await;
+        let mut offers = self.offers().await;
+        offers.offers = self.offered_on_ground(offers.offers, fence)?;
         let offer = placement::to_make(&asked.work, &offers.offers, &self.machines())
             .map_err(|offered| nothing_offered(misses, &offered, &offers.unanswered))?
             .clone();
         self.start_made_of(asked, &offer, &who, fence).await
+    }
+
+    /// The `offers` a machine may be made of for a start asked in the
+    /// fence `fence`: every one for the person's, and for an agent's only
+    /// those whose machine would declare ground as firm as here, judged
+    /// by what each says it would declare, so no machine is made, and
+    /// paid for, only to be refused once it links.
+    ///
+    /// # Errors
+    ///
+    /// When an agent asks and every offer is looser, each named with why.
+    fn offered_on_ground(
+        &self,
+        offers: Vec<Offer>,
+        fence: Option<crate::declared::Kind>,
+    ) -> Result<Vec<Offer>, String> {
+        let Some(kind) = fence else {
+            return Ok(offers);
+        };
+        let here = crate::declared::read(&self.declared);
+        let mut firm = Vec::new();
+        let mut why = Vec::new();
+        for offer in offers {
+            let said = offer.facts.declared.as_ref();
+            match ground::looser_offered(kind, here.as_ref(), &offer.shape, said) {
+                None => firm.push(offer),
+                Some(looser) => why.push(looser),
+            }
+        }
+        if !firm.is_empty() || why.is_empty() {
+            return Ok(firm);
+        }
+        Err(format!(
+            "this asks as {}, so no machine is made for it on looser ground: {}",
+            By::Agent(kind),
+            why.join("; ")
+        ))
     }
 
     /// Makes a machine for `asked`, which never said it may cost, from an
@@ -4006,7 +4044,7 @@ impl<S: Store> Shared<S> {
         fence: Option<crate::declared::Kind>,
     ) -> Reply {
         let who = self.asker_of_a_make().await;
-        let offers = self.offers().await.offers;
+        let offers = self.offered_on_ground(self.offers().await.offers, fence)?;
         let free: Vec<Offer> = offers
             .iter()
             .filter(|offer| offer.costs.free())
@@ -10573,6 +10611,75 @@ esac
             ask(socket, Request::Start(start(tern(), Vec::new()))).await,
             Err("no link reaches tern now".to_owned()),
             "the person's start isn't held to an agent's ground"
+        );
+    }
+
+    // Our council on #304 (2026-11-17): an agent's start could make, and
+    // pay for, a machine whose fence would refuse it once it linked.
+    #[test]
+    fn an_agents_start_makes_no_machine_on_looser_ground() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let declared = dir.path().join("declared.json");
+        let here = fenced("skiff", &["remote"]).declared;
+        fs::write(&declared, serde_json::to_vec(&here).expect("it is JSON"))
+            .expect("this machine's declaration is written");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            Given {
+                declared,
+                ..bare("/nowhere/steer".into(), None)
+            },
+            to_dial,
+        );
+        let offered = |shape: &str, builders: Option<&[&str]>| Offer {
+            provider: "/usr/bin/lend".to_owned(),
+            shape: shape.to_owned(),
+            facts: offer::Shape {
+                declared: builders.and_then(|builders| fenced(shape, builders).declared),
+                ..offer::Shape::default()
+            },
+            costs: offer::Costs {
+                hourly: "0.12".to_owned(),
+                currency: "USD".to_owned(),
+            },
+            lasts: None,
+        };
+        let firm = offered("firm", Some(&["remote"]));
+        let loose = offered("loose", Some(&["remote", "cloud"]));
+        let bare_shape = offered("bare", None);
+        let all = vec![firm.clone(), loose.clone(), bare_shape.clone()];
+        let strict = Some(crate::declared::Kind::Strict);
+        assert_eq!(
+            shared.offered_on_ground(all.clone(), None),
+            Ok(all.clone()),
+            "the person's start may be made of any offer"
+        );
+        assert_eq!(
+            shared.offered_on_ground(all, strict),
+            Ok(vec![firm]),
+            "an agent's only of one whose machine would be as firm as here"
+        );
+        assert_eq!(
+            shared.offered_on_ground(vec![loose, bare_shape], strict),
+            Err(
+                "this asks as a strictly fenced agent, so no machine is made for it on looser \
+                 ground: loose's strictly fenced session opens builders cloud, which here's \
+                 doesn't, so the session would land looser there; bare declares no fence, so \
+                 the session can't be told to land as strictly fenced there"
+                    .to_owned()
+            ),
+            "and where every offer is looser, it says why of each before any is made"
+        );
+        assert_eq!(
+            shared.offered_on_ground(Vec::new(), strict),
+            Ok(Vec::new()),
+            "with nothing offered, nothing offered says so"
         );
     }
 
