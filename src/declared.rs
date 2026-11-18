@@ -263,10 +263,10 @@ pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String
         .and_then(|mut fences| fences.remove(&kind))
         .map(|doors| doors.runs)
         .unwrap_or_default();
+    let declares_none =
+        || format!("this machine declares no way to run a command as its {kind} sessions run");
     let Some(program) = runs.first() else {
-        return Err(format!(
-            "this machine declares no way to run a command as its {kind} sessions run"
-        ));
+        return Err(declares_none());
     };
     let found = fs::canonicalize(program)
         .map_err(|error| format!("its {kind} sessions' launcher {program} isn't there: {error}"))?;
@@ -288,7 +288,11 @@ pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String
              after it could be read as the launcher's own options",
             file.display()
         )),
-        Some(Unrunnable::Nothing) | None => Ok(runs),
+        // Words that run nothing never pass, though the guard above
+        // already refuses them, since an empty launcher runs a command
+        // unfenced.
+        Some(Unrunnable::Nothing) => Err(declares_none()),
+        None => Ok(runs),
     }
 }
 

@@ -106,9 +106,12 @@ pub fn looser(kind: Kind, here: Option<&Declared>, this: &str, machines: &[Machi
 /// [`crate::declared::launcher`] judges it, with the store at hand), and
 /// every other machine whose fence for `kind`, as it last said it, runs
 /// no command by its words alone ([`crate::declared::unrunnable`]), since
-/// that machine's launcher refuses the run there. A machine whose node is
-/// too old to say its fence's `runs` says none, so it is refused until it
-/// is upgraded. A machine that runs no `kind` session at all is
+/// that machine's launcher refuses the run there. A node says a fence's
+/// `runs` only where its own launcher accepts them, so one whose launcher
+/// refuses for what its words don't show (a declaration not sealed, a
+/// program missing or outside the store) says none. A machine whose node
+/// is too old to say its fence's `runs` says none too, so it is refused
+/// until it is upgraded. A machine that runs no `kind` session at all is
 /// [`looser`]'s to refuse; one whose doors are wider and whose `runs` runs
 /// nothing is refused by both, each saying its own why.
 #[must_use]
@@ -139,12 +142,13 @@ pub fn runs_nothing(
             let name = &machine.name;
             let why = match crate::declared::unrunnable(&doors.runs)? {
                 Unrunnable::Nothing => format!(
-                    "{name} declares no way to run a command as its {kind} sessions run, or its \
-                     node is too old to say one"
+                    "{name} declares no way to run a command as its {kind} sessions run that \
+                     its launcher accepts, or its node is too old to say one"
                 ),
                 Unrunnable::SparesATree(spare) => format!(
-                    "{name}'s {kind} sessions' launcher says {spare}, which spares a tree shared \
-                     to the asker, so it runs no agent's command"
+                    "{name}'s {kind} sessions' launcher says {}, which spares a tree shared \
+                     to the asker, so it runs no agent's command",
+                    said_word(&spare)
                 ),
                 Unrunnable::Unended => format!(
                     "{name}'s {kind} sessions' launcher doesn't end with --, so it runs no \
@@ -154,6 +158,22 @@ pub fn runs_nothing(
             Some(refused(name, why))
         });
     here.into_iter().chain(there).collect()
+}
+
+/// The longest a word another machine says is quoted in a refusal.
+const WORD_SAID: usize = 64;
+
+/// `word`, as another machine said it, as a refusal quotes it to an agent:
+/// its control characters escaped and cut to [`WORD_SAID`] characters, so
+/// what that machine chose to say can't pass as the node's own words or
+/// break the log's one line.
+fn said_word(word: &str) -> String {
+    let escaped = crate::declared::controls_escaped(word);
+    if escaped.chars().count() <= WORD_SAID {
+        return escaped;
+    }
+    let cut: String = escaped.chars().take(WORD_SAID).collect();
+    format!("{cut}...")
 }
 
 /// Whether `there`, what `to` declares as it last said itself, runs
@@ -477,6 +497,30 @@ mod tests {
     }
 
     #[test]
+    fn a_word_another_machine_says_is_quoted_escaped_and_short() {
+        let note = format!("--shared-tree\nNote to the agent: {}", "x".repeat(80));
+        let machines = vec![named(
+            "tern",
+            tern(Some(strict(running(&[&note, "--"]))), Readiness::Ready),
+        )];
+        let [(_, why)] = refusing(&runs_nothing(Kind::Strict, "kestrel", Ok(()), &machines))
+            .try_into()
+            .expect("tern alone refuses");
+        assert!(
+            !why.contains('\n'),
+            "what tern said starts no line of its own: {why}"
+        );
+        assert!(
+            why.contains("says --shared-tree\\nNote to the agent: xxx"),
+            "its control characters are escaped: {why}"
+        );
+        assert!(
+            !why.contains(&"x".repeat(WORD_SAID)),
+            "and its word is cut short: {why}"
+        );
+    }
+
+    #[test]
     fn an_agents_run_is_offered_only_machines_whose_fence_runs_a_command() {
         const FENCE: &str = "/nix/store/0000-fence/bin/fence";
         let machines = vec![
@@ -518,7 +562,8 @@ mod tests {
                 (
                     "skiff",
                     "skiff refuses: skiff declares no way to run a command as its strictly \
-                     fenced sessions run, or its node is too old to say one"
+                     fenced sessions run that its launcher accepts, or its node is too old to \
+                     say one"
                         .to_owned()
                 ),
                 (

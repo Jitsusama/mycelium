@@ -2722,6 +2722,18 @@ impl<S: Store> Shared<S> {
             ..facts::Sources::here()
         };
         let mut here = facts::measure_in(&self.machine, &self.realm, &sources);
+        // A fence's `runs` is said only where this machine's launcher takes
+        // it, so a machine judging this one by its words judges it as a run
+        // here is judged, sealing and the store among them.
+        let fences = here
+            .declared
+            .as_mut()
+            .and_then(|declared| declared.fence.as_mut());
+        for (kind, doors) in fences.into_iter().flatten() {
+            if crate::declared::launcher(&self.declared, *kind, &self.runs.declarers).is_err() {
+                doors.runs.clear();
+            }
+        }
         self.saturation.say(here.room.as_mut());
         here.health.clone_from(&self.health.borrow());
         here.kit = self.given_kit().and_then(start::Kit::said);
@@ -2934,9 +2946,17 @@ impl<S: Store> Shared<S> {
                 let here = crate::declared::read(&self.declared);
                 let mut refused = ground::looser(kind, here.as_ref(), &self.machine, &machines);
                 if runs {
+                    // Told in the log, since a broken launcher sends an
+                    // agent's runs elsewhere that would have run here.
                     let launches =
                         crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
-                            .map(drop);
+                            .map(drop)
+                            .inspect_err(|why| {
+                                eprintln!(
+                                    "an agent's run isn't placed here: {}",
+                                    why.escape_debug()
+                                );
+                            });
                     refused.extend(ground::runs_nothing(
                         kind,
                         &self.machine,
@@ -4387,6 +4407,58 @@ impl<S: Store> Shared<S> {
         Ok((folder, Some(ground)))
     }
 
+    /// Why the run `asked`, asking as `by`, goes nowhere, every machine
+    /// missed for `misses`: plainly for a machine it names that refused it
+    /// for looser ground or a fence that runs nothing, and otherwise among
+    /// every machine's reasons.
+    fn run_refused(&self, asked: &Run, by: By, misses: &[Miss]) -> String {
+        if let Some(why) = refused_named(&asked.work, misses, placement::LOOSER_GROUND) {
+            return format!("this asks as {by}, so it runs nothing on looser ground: {why}");
+        }
+        // Here, where the run names no other machine, is judged by its own
+        // launcher, saying so as a run here would. A run naming none was
+        // weighed everywhere, so it is told every other machine's reasons
+        // too.
+        let named =
+            |here: bool| {
+                asked.work.needs.iter().any(
+                    |need| matches!(need, Need::Machine(name) if (*name == self.machine) == here),
+                )
+            };
+        if let Some(why) =
+            refused_on(misses, &self.machine, placement::RUNS_NOTHING).filter(|_| !named(false))
+        {
+            let others: Vec<Miss> = misses
+                .iter()
+                .filter(|miss| miss.machine != self.machine)
+                .cloned()
+                .collect();
+            let rest = if named(true) || others.is_empty() {
+                String::new()
+            } else {
+                format!("; nor elsewhere: {}", placement::said(&others))
+            };
+            let here = self.here_to(asked.from.as_deref());
+            return format!("this asks as {by}, so it runs {here} only in that fence: {why}{rest}");
+        }
+        if let Some(why) = refused_named(&asked.work, misses, placement::RUNS_NOTHING) {
+            return format!(
+                "this asks as {by}, so it runs only where that fence runs a command: {why}"
+            );
+        }
+        format!("nowhere: {}", placement::said(misses))
+    }
+
+    /// This machine, as a refusal names it to the machine `from` that asked:
+    /// here, where that is this one, and by its name to another, which
+    /// passes the refusal on as its own.
+    fn here_to(&self, from: Option<&str>) -> String {
+        match from {
+            Some(from) if from != self.machine => format!("on {}", self.machine),
+            _ => "here".to_owned(),
+        }
+    }
+
     /// The launcher a run `by` asks goes through here, standing on
     /// `ground` where it was judged, from machine `from`; it keeps in
     /// `started` the folder a judged run entered and what it was spared.
@@ -4402,7 +4474,8 @@ impl<S: Store> Shared<S> {
             By::Agent(kind) => {
                 crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
                     .map_err(|why| {
-                        format!("this asks as {by}, so it runs here only in that fence: {why}")
+                        let here = self.here_to(Some(from));
+                        format!("this asks as {by}, so it runs {here} only in that fence: {why}")
                     })
                     .inspect_err(|why| {
                         if ground.is_some() {
@@ -4480,34 +4553,7 @@ impl<S: Store> Shared<S> {
                     placement::said(&misses)
                 ));
             }
-            Placement::Refused { misses } => {
-                if let Some(why) = refused_named(&asked.work, &misses, placement::LOOSER_GROUND) {
-                    return Err(format!(
-                        "this asks as {by}, so it runs nothing on looser ground: {why}"
-                    ));
-                }
-                // Here, where the run names no other machine, is judged
-                // by its own launcher, saying so as a run here would.
-                let elsewhere = asked
-                    .work
-                    .needs
-                    .iter()
-                    .any(|need| matches!(need, Need::Machine(name) if *name != self.machine));
-                if let Some(why) = refused_on(&misses, &self.machine, placement::RUNS_NOTHING)
-                    .filter(|_| !elsewhere)
-                {
-                    return Err(format!(
-                        "this asks as {by}, so it runs here only in that fence: {why}"
-                    ));
-                }
-                if let Some(why) = refused_named(&asked.work, &misses, placement::RUNS_NOTHING) {
-                    return Err(format!(
-                        "this asks as {by}, so it runs only where that fence runs a command: \
-                         {why}"
-                    ));
-                }
-                return Err(format!("nowhere: {}", placement::said(&misses)));
-            }
+            Placement::Refused { misses } => return Err(self.run_refused(&asked, by, &misses)),
         };
         let from = asked.from.clone().unwrap_or_else(|| self.machine.clone());
         let id = format!(
@@ -6962,7 +7008,10 @@ esac
 
     /// What `name` says of itself, running its sessions strictly fenced,
     /// building only on `builders`, reaching no forge and released no
-    /// secret.
+    /// secret. Its `runs` pass [`crate::declared::unrunnable`], but name a
+    /// program that isn't there, so no launcher takes them: written as
+    /// here's declaration (as [`harbour_claiming`] does), here runs no
+    /// agent's command until a test says [`declares_runs`].
     fn fenced(name: &str, builders: &[&str]) -> facts::Machine {
         let strict = crate::declared::Doors {
             builders: builders.iter().map(|&one| one.to_owned()).collect(),
@@ -11145,7 +11194,7 @@ esac
             Some(
                 "this asks as a strictly fenced agent, so it runs only where that fence runs a \
                  command: tern declares no way to run a command as its strictly fenced \
-                 sessions run, or its node is too old to say one"
+                 sessions run that its launcher accepts, or its node is too old to say one"
                     .to_owned()
             ),
             "tern's ground is as firm as here's, but its fence runs nothing"
@@ -11217,6 +11266,18 @@ esac
             ),
             "here's launcher judges here, as a run here would be judged"
         );
+        assert_eq!(
+            run_through(socket.clone(), run_of("tern", "true"))
+                .await
+                .err(),
+            Some(
+                "this asks as a strictly fenced agent, so it runs only where that fence runs a \
+                 command: tern declares no way to run a command as its strictly fenced \
+                 sessions run that its launcher accepts, or its node is too old to say one"
+                    .to_owned()
+            ),
+            "a run naming tern is told why not tern, never why not here"
+        );
         let unnamed = Run {
             work: work(Vec::new()),
             ..run_of("skiff", "true")
@@ -11226,10 +11287,12 @@ esac
             Some(
                 "this asks as a strictly fenced agent, so it runs here only in that fence: \
                  this machine declares no way to run a command as its strictly fenced \
-                 sessions run"
+                 sessions run; nor elsewhere: tern refuses: tern declares no way to run a \
+                 command as its strictly fenced sessions run that its launcher accepts, or \
+                 its node is too old to say one"
                     .to_owned()
             ),
-            "a run naming no machine is told why not here"
+            "a run naming no machine is told why not here, and why nowhere else"
         );
         let toward_tern = Work {
             prefers: vec![Need::Machine("tern".to_owned())],
@@ -11247,6 +11310,53 @@ esac
             ["skiff", "tern"],
             "neither here nor tern runs it: {}",
             placement::said(&misses)
+        );
+    }
+
+    // Here's words run a command, but the program they name isn't there,
+    // which only here's launcher sees: placement refuses here for it, and
+    // what this machine says of itself names no runs, so no other machine
+    // offers it the run either.
+    #[tokio::test]
+    async fn a_launcher_here_that_isnt_there_runs_nothing_here_and_says_none() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        asks_below(&socket, 7001);
+        let says = |socket: PathBuf| async move {
+            let Ok(Response::Machine(machine)) = ask(socket, Request::Machine).await else {
+                panic!("the node says its machine")
+            };
+            machine
+                .declared
+                .and_then(|declared| declared.fence)
+                .and_then(|mut fences| fences.remove(&crate::declared::Kind::Strict))
+                .map(|doors| doors.runs)
+        };
+        assert_eq!(
+            says(socket.clone()).await,
+            Some(Vec::new()),
+            "a launcher that isn't there is said as none"
+        );
+        let here = work(vec![Need::Machine("skiff".to_owned())]);
+        let answer = placement_through(socket.clone(), Request::Place(here)).await;
+        let Placement::Refused { misses } = answer else {
+            panic!("here doesn't take it: {answer:?}");
+        };
+        let why = refused_on(&misses, "skiff", placement::RUNS_NOTHING).unwrap_or_default();
+        assert!(
+            why.contains("launcher /nix/store/0000-fence/bin/fence isn't there"),
+            "here's launcher, not its words, refuses it: {}",
+            placement::said(&misses)
+        );
+        declares_runs(&socket, true);
+        assert!(
+            says(socket)
+                .await
+                .is_some_and(|runs| runs.last().map(String::as_str) == Some("--")),
+            "a launcher it takes is said whole"
         );
     }
 
@@ -12071,8 +12181,8 @@ esac
         assert_eq!(
             refused.ended,
             Some(Ran::Failed(
-                "this asks as a strictly fenced agent, so it runs here only in that fence: \
-                 this machine declares no way to run a command as its strictly fenced \
+                "this asks as a strictly fenced agent, so it runs on kestrel only in that \
+                 fence: this machine declares no way to run a command as its strictly fenced \
                  sessions run"
                     .to_owned()
             )),
