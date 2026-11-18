@@ -4148,20 +4148,19 @@ impl<S: Store> Shared<S> {
             spares::ground(&folder, &asker, &trees, shares.as_deref())
         })
         .await
-        .map_err(|error| format!("its folder wasn't judged: {error}"))??;
-        let (folder, quest) = match footing.ground {
-            spares::Ground::Plain(folder) => (folder, None),
+        .map_err(|error| format!("its folder wasn't judged: {error}"))?
+        // Refused here as well as there, so this machine keeps a trace.
+        .inspect_err(|why| eprintln!("a run is refused: {why}"))?;
+        let (folder, ground) = footing.entered();
+        let quest = match ground {
+            spares::Ground::Plain(_) => None,
             spares::Ground::Shared { folder, quest } => {
                 eprintln!(
-                    "{far} runs in {}, a work tree of {quest}, which is shared with it",
+                    "{far} runs in {}, a work tree of {quest}, shared with it",
                     folder.display()
                 );
-                (folder, Some(quest))
+                Some(quest)
             }
-        };
-        let folder = match footing.opened {
-            Some(opened) => run::Folder::Opened(opened),
-            None => run::Folder::At(folder),
         };
         Ok((folder, quest))
     }
@@ -4183,7 +4182,8 @@ impl<S: Store> Shared<S> {
         // a run from elsewhere may stand in a tree shared with that machine.
         if asked.from.is_some() && matches!(judged, By::Agent(_)) {
             return Err(format!(
-                "this asks as {judged}, which says no run was asked from another machine"
+                "this asks as {judged}, as this node tells who asks, and only a link another \
+                 machine dialled says a run was asked from there, so it runs nothing"
             ));
         }
         // What it says of who asks only ever makes it stricter, and an
@@ -10693,10 +10693,33 @@ esac
             "a run asked here is spared nothing: its fence grants what its \
              session holds"
         );
+        // Each run that ran is kept as it started, and only the one in the
+        // shared tree says what it was spared; a refused run is kept by none.
+        assert_eq!(
+            spared_kept(&socket),
+            [Some("QEST-20261117-HARBOR".to_owned()), None, None],
+            "the shared tree's run keeps its quest as spared"
+        );
         drop(stop);
         node.await
             .expect("the node runs to its end")
             .expect("it stops cleanly");
+    }
+
+    /// What each run the node at `socket` kept as it started says it was
+    /// spared, in order.
+    fn spared_kept(socket: &Path) -> Vec<Option<String>> {
+        fs::read_to_string(socket.with_file_name("runs.jsonl"))
+            .expect("the runs are kept")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("a line is JSON"))
+            .filter(|line| line.get("command").is_some())
+            .map(|line| {
+                line.get("spared")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -10713,7 +10736,7 @@ esac
             .await
             .expect_err("an agent here says no run came from elsewhere");
         assert!(
-            refused.contains("which says no run was asked from another machine"),
+            refused.contains("only a link another machine dialled says a run was asked from there"),
             "{refused}"
         );
         drop(stop);
@@ -10770,8 +10793,8 @@ esac
         assert_eq!(
             String::from_utf8_lossy(&relayed.out),
             "the fence runs for none\nit says s-other\n",
-            "a run asked of another machine is told no session here, \
-             since this machine proved no one asked it"
+            "a run another machine asked, handed on by a link judged as the \
+             person, is told no session here"
         );
         asks_as_person(&socket);
         let person = run_through(socket, run_of("skiff", "echo ${PI_SESSION_ID-none}"))

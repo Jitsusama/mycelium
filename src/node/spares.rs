@@ -29,25 +29,32 @@ use crate::share::exchange::Places;
 pub enum Ground {
     /// In no work tree: it runs in `folder`, spared nothing.
     Plain(PathBuf),
-    /// In a work tree of `quest`, which is shared with the machine that
+    /// In a work tree held only for quests shared with the machine that
     /// asks: it runs in `folder`, and the fence is told to spare it.
     Shared {
         /// The folder it runs in, as the opened folder's own path says.
         folder: PathBuf,
-        /// The quest whose tree it is.
+        /// The quests whose tree it is, named in order.
         quest: String,
     },
 }
 
 /// Where a far agent's run stands, and the folder opened to judge it,
-/// which the run enters: none where it couldn't be opened, so the run
-/// enters its folder by path, standing in no work tree.
+/// which the run enters.
 #[derive(Debug)]
 pub struct Footing {
     /// Where it stands.
     pub ground: Ground,
     /// The folder, opened.
-    pub opened: Option<OwnedFd>,
+    pub opened: OwnedFd,
+}
+
+impl Footing {
+    /// Where the run starts: the very folder judged, not its path again.
+    #[must_use]
+    pub fn entered(self) -> (crate::run::Folder, Ground) {
+        (crate::run::Folder::Opened(self.opened), self.ground)
+    }
 }
 
 /// Where the work broker keeps its trees and its record of each, and
@@ -70,40 +77,25 @@ pub struct Trees {
 ///
 /// # Errors
 ///
-/// When it stands in a work tree of no quest shared with `asker`, or in
-/// one its folder couldn't be opened in, which the run is refused, so
-/// nothing runs there.
+/// When it stands in a work tree held for any quest not shared with
+/// `asker`, or its folder can't be opened and named, so it can't be
+/// judged, which the run is refused, so nothing runs there.
 pub fn ground(
     folder: &Path,
     asker: &str,
     trees: &Trees,
     shares: Option<&Places>,
 ) -> Result<Footing, String> {
-    match opened(folder) {
-        Ok((opened, real)) => Ok(Footing {
-            ground: judged(&real, asker, trees, shares)?,
-            opened: Some(opened),
-        }),
-        // A folder that can't be opened is in no tree this machine can
-        // tell, and runs where it was asked, spared nothing, so the fence
-        // judges it: unless it resolves into a tree, which is refused,
-        // since what it would enter by path is no longer what was judged.
-        Err(error) => match fs::canonicalize(folder)
-            .ok()
-            .and_then(|real| tree_under(&real, &trees.root))
-        {
-            Some(tree) => Err(format!(
-                "{asker} asked to run in {}, in the work tree {}, which can't be opened to be \
-                 judged: {error}",
-                folder.display(),
-                tree.display()
-            )),
-            None => Ok(Footing {
-                ground: Ground::Plain(folder.to_owned()),
-                opened: None,
-            }),
-        },
-    }
+    let (opened, real) = opened(folder).map_err(|error| {
+        format!(
+            "{asker} asked to run in {}, which can't be opened to be judged: {error}",
+            folder.display()
+        )
+    })?;
+    Ok(Footing {
+        ground: judged(&real, asker, trees, shares)?,
+        opened,
+    })
 }
 
 /// Where a run asked by `asker` in `real`, the path of a folder opened,
@@ -138,35 +130,41 @@ fn judged(
             "{refused} of {named}, and this machine shares no quest"
         ));
     };
+    // Every quest the tree is held for must be shared, since a session
+    // of any other works in it too.
     let ledgers = places.ledgers();
-    let mut above = Vec::new();
-    for quest in quests {
-        let Ok(ledger) = ledgers.read(&quest) else {
-            continue;
-        };
-        if !ledger.theirs.contains_key(asker) {
-            continue;
+    let (mut unshared, mut above) = (Vec::new(), Vec::new());
+    for quest in &quests {
+        match ledgers.read(quest) {
+            Ok(ledger) if ledger.theirs.contains_key(asker) => {
+                // A quest shared only as one above another crosses as its
+                // README alone, so none of its trees is the far machine's.
+                if ledger.above {
+                    above.push(quest.as_str());
+                }
+            }
+            _ => unshared.push(quest.as_str()),
         }
-        // A quest shared only as one above another crosses as its README
-        // alone, so none of its trees is the far machine's to work in.
-        if ledger.above {
-            above.push(quest);
-            continue;
-        }
-        return Ok(Ground::Shared {
-            folder: real.to_owned(),
-            quest,
-        });
     }
-    if above.is_empty() {
+    if unshared.len() == quests.len() {
         Err(format!(
             "{refused} of {named}, none of which is shared with {asker}"
         ))
-    } else {
+    } else if !unshared.is_empty() {
+        Err(format!(
+            "{refused} of {named}, of which {} isn't shared with {asker}",
+            unshared.join(", ")
+        ))
+    } else if !above.is_empty() {
         Err(format!(
             "{refused} of {named}, shared with {asker} only as above another: {}",
             above.join(", ")
         ))
+    } else {
+        Ok(Ground::Shared {
+            folder: real.to_owned(),
+            quest: named,
+        })
     }
 }
 
@@ -367,11 +365,49 @@ mod tests {
             machine.ground(&machine.outside, "tern"),
             Ok(Ground::Plain(machine.outside.clone()))
         );
+    }
+
+    #[test]
+    fn a_folder_that_cant_be_opened_is_refused_wherever_it_is() {
+        let machine = Machine::new();
         let missing = machine.outside.join("missing");
+        let file = machine.outside.join("notes");
+        fs::write(&file, "").expect("written");
+        let in_tree = machine.tree("harbor").join("missing");
+        for folder in [&missing, &file, &in_tree] {
+            assert!(
+                machine
+                    .ground(folder, "tern")
+                    .is_err_and(|why| why.starts_with(&format!(
+                        "tern asked to run in {}, which can't be opened to be judged: ",
+                        folder.display()
+                    ))),
+                "what isn't opened isn't judged, so nothing runs there: {}",
+                folder.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_tree_held_for_two_quests_is_spared_only_where_both_are_shared() {
+        let machine = Machine::new();
+        machine.cut("both", &["s-near", "s-else"]);
         assert_eq!(
-            machine.ground(&missing, "tern"),
-            Ok(Ground::Plain(missing.clone())),
-            "a folder that isn't there runs where it was asked"
+            machine.ground(&machine.tree("both"), "tern"),
+            Err(format!(
+                "tern asked to run in {}, a work tree of {SHARED}, {OTHER}, of which \
+                 {OTHER} isn't shared with tern",
+                machine.tree("both").display()
+            )),
+            "s-else's work in it isn't tern's to reach"
+        );
+        machine.shares(OTHER, &["tern"], false);
+        assert_eq!(
+            machine.ground(&machine.tree("both"), "tern"),
+            Ok(Ground::Shared {
+                folder: machine.tree("both"),
+                quest: format!("{SHARED}, {OTHER}")
+            })
         );
     }
 
@@ -458,13 +494,21 @@ mod tests {
         let machine = Machine::new();
         let link = machine.tree("harbor").join("elsewhere");
         symlink(machine.tree("others"), &link).expect("linked");
-        machine
-            .ground(&link, "tern")
-            .expect_err("a link in the shared tree lands in another");
+        let others = Err(format!(
+            "tern asked to run in {}, a work tree of {OTHER}, none of which is shared with tern",
+            machine.tree("others").display()
+        ));
+        assert_eq!(
+            machine.ground(&link, "tern"),
+            others,
+            "a link in the shared tree lands in another"
+        );
         let climb = machine.tree("harbor").join("..").join("others");
-        machine
-            .ground(&climb, "tern")
-            .expect_err("a climb out of the shared tree lands in another");
+        assert_eq!(
+            machine.ground(&climb, "tern"),
+            others,
+            "a climb out of the shared tree lands in another"
+        );
         let into = machine.outside.join("harbor");
         symlink(machine.tree("harbor"), &into).expect("linked");
         assert_eq!(
@@ -477,8 +521,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_folder_judged_is_the_one_the_run_enters() {
+    #[tokio::test]
+    async fn the_folder_judged_is_the_one_the_run_enters() {
         let machine = Machine::new();
         let link = machine.outside.join("swapped");
         symlink(machine.tree("harbor"), &link).expect("linked");
@@ -488,10 +532,31 @@ mod tests {
         // swapping it between the check and the start would leave it.
         fs::remove_file(&link).expect("unlinked");
         symlink(machine.tree("others"), &link).expect("linked again");
-        let opened = footing.opened.expect("the folder was opened");
+        let (folder, _) = footing.entered();
+        let (ran, mut said) = tokio::sync::mpsc::channel(crate::run::BACKLOG);
+        tokio::spawn(crate::run::here(
+            vec!["sh".to_owned(), "-c".to_owned(), "pwd -P".to_owned()],
+            folder,
+            None,
+            ran,
+        ));
+        let mut out = Vec::new();
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), said.recv())
+                .await
+                .expect("the run says more")
+                .expect("the run ends with its end")
+            {
+                crate::wire::Ran::Out(piece) => {
+                    out.extend(crate::run::bytes(&piece).expect("base64"));
+                }
+                crate::wire::Ran::Exited(0) => break,
+                other => panic!("it ran amiss: {other:?}"),
+            }
+        }
         assert_eq!(
-            path_of(&opened).expect("it has a path"),
-            machine.tree("harbor"),
+            String::from_utf8_lossy(&out),
+            format!("{}\n", machine.tree("harbor").display()),
             "what the run enters is still the shared tree"
         );
     }
