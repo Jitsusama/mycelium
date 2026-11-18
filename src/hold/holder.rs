@@ -117,6 +117,34 @@ const WINDOW_VARIABLES: [&str; 5] = [
     "MYCELIUM_APP_ID",
 ];
 
+/// The variable naming the agent a program signs with over ssh.
+const AGENT: &str = "SSH_AUTH_SOCK";
+
+/// Variables naming other agents a program could sign with, which a held
+/// program is never given: it signs only through the agents' proxy.
+const OTHER_AGENTS: [&str; 1] = ["SSH_TPM_AUTH_SOCK"];
+
+/// The agents' proxy's socket in the person's runtime folder: the one
+/// agent a held program may sign with, which offers only the keys and
+/// machines the person allowed agents, as hosted sessions are given.
+const PROXY: &str = "pi-agent.sock";
+
+/// The agents' proxy's socket, in the runtime folder `person` (the
+/// person's environment as it is now) names, else the holder's `own`;
+/// none where neither names one, so a held program is given no agent at
+/// all rather than whichever the person's session has.
+fn agents_proxy(person: &[(String, String)], own: Option<&str>) -> Option<PathBuf> {
+    let named = person
+        .iter()
+        .find(|(name, _)| name == "XDG_RUNTIME_DIR")
+        .map(|(_, runtime)| runtime.as_str());
+    [named, own]
+        .into_iter()
+        .flatten()
+        .find(|runtime| !runtime.is_empty())
+        .map(|runtime| Path::new(runtime).join(PROXY))
+}
+
 /// What to hold.
 pub struct Holding<'a> {
     /// The realm's folder of held sessions.
@@ -275,21 +303,24 @@ fn starting(
     };
     // The person's environment goes first, so what the holder says and
     // takes away below is its own whatever that environment holds.
+    let person = holding.environment.now();
+    let proxy = agents_proxy(&person, std::env::var("XDG_RUNTIME_DIR").ok().as_deref());
     let mut command = pty_process::Command::new(program)
         .args(arguments)
         .current_dir(holding.folder)
-        .envs(keeping_path(
-            holding.environment.now(),
-            std::env::var("PATH").ok().as_deref(),
-        ))
+        .envs(keeping_path(person, std::env::var("PATH").ok().as_deref()))
         .env("MYCELIUM_REALM", holding.realm)
         .env("MYCELIUM_HELD", holding.id)
         .env("MYCELIUM_WAKE", &files.waking)
         .env("MYCELIUM_AGAIN", &files.naming)
         .env("MYCELIUM_STEERS", &files.steering);
-    for variable in WINDOW_VARIABLES {
+    for variable in WINDOW_VARIABLES.into_iter().chain(OTHER_AGENTS) {
         command = command.env_remove(variable);
     }
+    command = match proxy {
+        Some(proxy) => command.env(AGENT, proxy),
+        None => command.env_remove(AGENT),
+    };
     Ok(command)
 }
 
@@ -301,7 +332,9 @@ fn starting(
 /// parked in `MYCELIUM_WAKE`, the file it may name its next command in
 /// as it parks in `MYCELIUM_AGAIN`, and the file it may say where its
 /// steers land in as it parks in `MYCELIUM_STEERS`, which wakes it too as
-/// one lands that would give it a turn. A program exiting with [`PARKED`] is
+/// one lands that would give it a turn. It signs over ssh only through
+/// the agents' proxy in the runtime folder, never the person's own agent
+/// ([`agents_proxy`]). A program exiting with [`PARKED`] is
 /// started again on the same terminal when woken, with the command named
 /// for it from outside if any was (see [`super::name_next`]), else with
 /// the one it named itself; one that wrote its wake file before it went is restarting,
@@ -2254,6 +2287,44 @@ mod tests {
             .types("echo \"[$TRIAL_MODEL in $MYCELIUM_REALM, ${KITTY_PID:-no} window]\"\r")
             .await;
         window.sees("[newest in harbour, no window]").await;
+    }
+
+    #[tokio::test]
+    async fn a_held_program_signs_only_through_the_agents_proxy() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let person = Given(vec![
+            ("XDG_RUNTIME_DIR", "/run/user/4242"),
+            ("SSH_AUTH_SOCK", "/run/user/4242/every-key.sock"),
+            ("SSH_TPM_AUTH_SOCK", "/run/user/4242/every-key.sock"),
+        ]);
+        let (dir, held, _holder) = holding_sh_in(root.path(), Vec::new(), person).await;
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window
+            .types("echo \"[agent $SSH_AUTH_SOCK, ${SSH_TPM_AUTH_SOCK:-no} other]\"\r")
+            .await;
+        window
+            .sees("[agent /run/user/4242/pi-agent.sock, no other]")
+            .await;
+    }
+
+    #[test]
+    fn the_agents_proxy_is_in_the_persons_runtime_folder_else_the_holders_else_none() {
+        let person = |runtime: &str| vec![("XDG_RUNTIME_DIR".to_owned(), runtime.to_owned())];
+        assert_eq!(
+            agents_proxy(&person("/run/user/4242"), Some("/run/user/7")),
+            Some(PathBuf::from("/run/user/4242/pi-agent.sock")),
+            "the person's runtime folder as it is now"
+        );
+        assert_eq!(
+            agents_proxy(&[], Some("/run/user/7")),
+            Some(PathBuf::from("/run/user/7/pi-agent.sock")),
+            "the holder's own, where the person's session says none"
+        );
+        assert_eq!(
+            agents_proxy(&person(""), Some("")),
+            None,
+            "none where neither says one, so no agent is named"
+        );
     }
 
     #[tokio::test]
