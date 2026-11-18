@@ -11290,9 +11290,18 @@ esac
     /// for, as pi-fence reads it to know whose trees the run may stand
     /// in, and whether it was told to sign through the agents' proxy, as
     /// the login script after it reads it, before it starts what was asked.
-    const SAYS_WHOSE: &str = "echo \"the fence runs for ${PI_SESSION_ID-none}, \
-                              ${MYCELIUM_AGENT+signing through the proxy}\"; \
+    const SAYS_WHOSE: &str = "echo \"the fence runs for ${PI_SESSION_ID-none}\
+                              ${MYCELIUM_AGENT+, signing through the proxy}\"; \
                               shift; exec \"$@\"";
+
+    /// What [`SAYS_WHOSE`] says after whose an agent's run is, as the node
+    /// tells it how to sign: through the agents' proxy on Linux, and as the
+    /// person's session does on a Mac, which runs no proxy.
+    const SIGNS: &str = if cfg!(target_os = "macos") {
+        ""
+    } else {
+        ", signing through the proxy"
+    };
 
     /// An ask that names another session in its own words, inside the
     /// fence.
@@ -11571,7 +11580,7 @@ esac
             .expect("an agent's runs here");
         assert_eq!(
             String::from_utf8_lossy(&unproved.out),
-            "the fence runs for none, signing through the proxy\nit says s-other\n",
+            format!("the fence runs for none{SIGNS}\nit says s-other\n"),
             "where no log proves who asks, the fence is told no session, \
              whatever the ask's words say"
         );
@@ -11581,7 +11590,7 @@ esac
             .expect("an agent's runs here");
         assert_eq!(
             String::from_utf8_lossy(&proved.out),
-            "the fence runs for s-asker, signing through the proxy\nit says s-other\n",
+            format!("the fence runs for s-asker{SIGNS}\nit says s-other\n"),
             "the fence is told the session proved to ask, and the ask's words \
              reach only what runs inside it"
         );
@@ -11597,7 +11606,7 @@ esac
             .expect("a run relayed from another machine runs here");
         assert_eq!(
             String::from_utf8_lossy(&relayed.out),
-            "the fence runs for none, signing through the proxy\nit says s-other\n",
+            format!("the fence runs for none{SIGNS}\nit says s-other\n"),
             "a run another machine asked, handed on by a link judged as the \
              person, is told no session here, and signs as an agent's"
         );
@@ -11689,7 +11698,7 @@ esac
             .expect("a hosted agent's runs here");
         assert_eq!(
             String::from_utf8_lossy(&unproved.out),
-            "the fence runs for none, signing through the proxy\n",
+            format!("the fence runs for none{SIGNS}\n"),
             "a host's command is told none of its sessions, though only the one \
              it names proves, since its other still shares the host; it signs \
              as the agent it is all the same"
@@ -11703,7 +11712,7 @@ esac
             .expect("a hosted agent's runs here");
         assert_eq!(
             String::from_utf8_lossy(&proved.out),
-            "the fence runs for none, signing through the proxy\n",
+            format!("the fence runs for none{SIGNS}\n"),
             "nor once both prove, whichever its command names"
         );
         let (stop, node) = running;
