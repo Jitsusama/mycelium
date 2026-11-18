@@ -1261,7 +1261,8 @@ its queue's memory limit), `cpu-pressure` (past its queue's processor
 limit), `cpu-saturated` (its `room` `saturated`, or at processor
 pressure 80 or more where its room doesn't say)
 and `disk-filling` (its `disk_band` past `healthy`; work tolerating
-`disk-pressure`, its key before, tolerates it too), each
+`disk-pressure`, its key before, tolerates it too, and a node older
+than the new key knows only the old one), each
 `prefer_not`, and `low-battery` (on its battery below 20%, when it is
 let sleep) and `disk-full` (its `disk_band`
 `critically_full`, where what it starts would fail to write), each

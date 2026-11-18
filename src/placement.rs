@@ -1048,12 +1048,13 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
             },
         });
     }
-    if let Some(band) = machine.disk_band.filter(|band| *band > Band::Healthy) {
-        let full = match band {
-            Band::Healthy | Band::Filling => "filling",
-            Band::NearlyFull => "nearly full",
-            Band::CriticallyFull => "critically full",
-        };
+    let full = match machine.disk_band {
+        Some(Band::Filling) => Some("filling"),
+        Some(Band::NearlyFull) => Some("nearly full"),
+        Some(Band::CriticallyFull) => Some("critically full"),
+        Some(Band::Healthy) | None => None,
+    };
+    if let Some(full) = full {
         taints.push(condition(
             DISK_FILLING,
             &format!("its disk guard says its disk is {full}"),
@@ -1861,6 +1862,12 @@ pub(crate) mod tests {
             placed(&place(&filling, &lone)),
             None,
             "minding no filling disk isn't minding no full one"
+        );
+        filling.tolerates = vec!["disk-pressure".to_owned()];
+        assert_eq!(
+            placed(&place(&filling, &lone)),
+            None,
+            "nor is it by the filling disk's key before"
         );
         let mut full = needing(Vec::new());
         full.tolerates = vec![DISK_FILLING.to_owned(), DISK_FULL.to_owned()];
