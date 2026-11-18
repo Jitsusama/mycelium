@@ -4233,14 +4233,16 @@ impl<S: Store> Shared<S> {
         let started_by = {
             let inner = self.lock();
             let all = inner.state.sessions();
-            sessions.iter().find_map(|id| {
-                all.iter()
-                    .find(|session| session.id == *id)
-                    .map(|session| session.address.clone())
-                    // Lineage names only an address, never what a
-                    // presence says in its place.
-                    .filter(|address| forage::is_address(address))
-            })
+            sessions
+                .iter()
+                .find_map(|id| {
+                    all.iter()
+                        .find(|session| session.id == *id)
+                        .map(|session| session.address.clone())
+                })
+                // The nearest claim alone, and only as an address: one that
+                // isn't is no cell's, rather than passing to a farther one.
+                .filter(|address| forage::is_address(address))
         };
         let admitted = self.starts.admit(starts::Kept {
             at: jiff::Timestamp::now().as_millisecond(),

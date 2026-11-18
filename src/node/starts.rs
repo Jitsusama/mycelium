@@ -113,6 +113,11 @@ struct Book {
     next: u64,
     /// The bytes its file has grown by since it was last written whole.
     written: u64,
+    /// The bytes it was last written whole in: it is written whole again
+    /// only once it has grown past twice that, so a book whose held starts
+    /// weigh more than [`WRITTEN_MOST`], escaped lines and all, is never
+    /// rewritten on every ask.
+    whole: u64,
 }
 
 impl Book {
@@ -260,9 +265,11 @@ impl Starts {
             .kept
             .iter()
             .chain(book.going.iter().map(|(_, going)| going))
-            // One dated ahead of the ask, as a clock set back leaves it,
-            // still counts, so a step back hands no cell a fresh hour.
-            .filter(|one| one.counts() && one.at > since)
+            // One dated up to an hour ahead of the ask, as a clock set
+            // back leaves it, still counts, so a step back hands no cell a
+            // fresh hour; one further ahead, as a clock run far ahead left
+            // it, counts no more than one long gone, so it blocks no hour.
+            .filter(|one| one.counts() && one.at > since && one.at <= asked.at + HOUR)
             .collect();
         let of_cell = counted
             .iter()
@@ -324,9 +331,12 @@ impl Starts {
             Err(error) => eprintln!("a start isn't kept in {}: {error}", self.file.display()),
         }
         book.hold(start);
-        if book.written > WRITTEN_MOST {
+        if book.written > WRITTEN_MOST.max(book.whole.saturating_mul(2)) {
             match self.write_whole(book) {
-                Ok(bytes) => book.written = bytes,
+                Ok(bytes) => {
+                    book.written = bytes;
+                    book.whole = bytes;
+                }
                 Err(error) => eprintln!(
                     "the starts in {} aren't written again: {error}",
                     self.file.display()
@@ -474,6 +484,21 @@ mod tests {
         for _ in 0..NODE_AN_HOUR {
             started(&starts, asked(By::Person, None, NOW), "h");
         }
+        started(&starts, agent("SKIFFS", NOW), "h");
+    }
+
+    #[test]
+    fn a_start_dated_ahead_counts_for_an_hour_ahead_and_no_further() {
+        let (_dir, starts) = book();
+        for _ in 0..CELL_AN_HOUR {
+            started(&starts, agent("OSPREY", NOW + HOUR), "h");
+            started(&starts, agent("SKIFFS", NOW + HOUR + 1), "h");
+        }
+        starts
+            .admit(agent("OSPREY", NOW))
+            .expect_err("a clock stepped back hands no cell a fresh hour");
+        // SKIFFS's, dated past an hour ahead, block no hour.
+
         started(&starts, agent("SKIFFS", NOW), "h");
     }
 
