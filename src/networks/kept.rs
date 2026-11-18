@@ -72,6 +72,7 @@ pub(super) const PRESENCE: Kept = Only(&[
     ("repo", Whole),
     ("shares", Whole),
     ("state", Whole),
+    ("subjects", Whole),
     ("trees", Whole),
     (
         "usage",

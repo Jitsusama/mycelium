@@ -37,7 +37,28 @@ use mycelium::ssh::Asked as KeyAsked;
 use mycelium::store::Store as _;
 use mycelium::store::folders::Folders;
 use mycelium::web::Said;
-use mycelium::wire::{Draft, Ran, Reply, Request, Response, Run, Sprout, Start};
+use mycelium::wire::{Draft, Ran, Reply, Request, Response, Run, Sprout, Start, StartsAct};
+
+/// What `mycelium starts` is asked to do.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum StartsAsked {
+    /// Refuse every agent's start till resumed.
+    Stop,
+    /// Let agents start again, within their limits.
+    Resume,
+    /// Only say how they stand.
+    List,
+}
+
+impl From<StartsAsked> for StartsAct {
+    fn from(asked: StartsAsked) -> Self {
+        match asked {
+            StartsAsked::Stop => Self::Stop,
+            StartsAsked::Resume => Self::Resume,
+            StartsAsked::List => Self::List,
+        }
+    }
+}
 use mycelium::{carry, hold, hosted_attach, install, link, node, place, rejoin, served};
 
 /// Says a line on stderr as `eprintln!` does, but never panics where
@@ -312,6 +333,17 @@ enum Action {
     Update {
         /// The machine, such as `tern`.
         machine: String,
+    },
+    /// Says the sessions this node started lately, or stops or resumes
+    /// agents starting more.
+    ///
+    /// Stopping holds till resumed, through a restart; only the person
+    /// may stop or resume, and their own starts are never stopped.
+    #[command(after_help = "Example:\n  mycelium starts stop")]
+    Starts {
+        /// What to do.
+        #[arg(value_enum, default_value = "list")]
+        act: StartsAsked,
     },
     /// Prints the latest messages on the mesh.
     ///
@@ -1424,6 +1456,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Offers => print_reply(&socket, &Request::Offers),
         Action::Place(asked) => print_reply(&socket, &Request::Place(asked.into())),
         Action::Update { machine } => print_reply(&socket, &Request::Update { machine }),
+        Action::Starts { act } => print_reply(&socket, &Request::Starts { act: act.into() }),
         Action::Start(asked) => start(&socket, asked),
         Action::Sprout(asked) => sprout(&socket, asked),
         Action::Run(asked) => return run_there(&socket, asked),

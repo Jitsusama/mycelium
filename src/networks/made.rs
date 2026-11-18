@@ -229,6 +229,7 @@ fn bare(name: String, is: Is) -> Cell {
         doing: None,
         asks: None,
         repo: None,
+        subjects: Vec::new(),
         usage: Usage::default(),
         leads: Vec::new(),
         machine: None,
@@ -321,6 +322,39 @@ pub fn read(socket: &Path, realm: &str, within: Duration) -> io::Result<Mycelium
 }
 
 /// Which of the networks' asks is for the node's receptors.
+/// The most subjects a cell is held to declare, as the harness reads
+/// them.
+pub const MOST_SUBJECTS: usize = 12;
+
+/// The most characters one subject holds.
+const SUBJECT_MOST: usize = 120;
+
+/// The first [`MOST_SUBJECTS`] subjects a presence declares, each a
+/// string of at most [`SUBJECT_MOST`] characters with nothing a terminal
+/// acts on; any other entry is passed over alone, so a cell's subjects
+/// never draw as more than plain words.
+#[must_use]
+pub fn subjects(declared: &Value) -> Vec<String> {
+    declared
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|subject| {
+            !subject.is_empty()
+                && subject.chars().count() <= SUBJECT_MOST
+                && !subject.chars().any(|each| {
+                    each.is_control()
+                        || crate::forage::turns_direction(each)
+                        || matches!(each, '\u{2028}' | '\u{2029}')
+                })
+        })
+        .take(MOST_SUBJECTS)
+        .map(str::to_owned)
+        .collect()
+}
+
 const RECEPTORS_ASKED: u64 = 4;
 
 /// Which of the networks' asks is for the node's builders.
@@ -482,6 +516,7 @@ fn session_cell(session: &Value) -> Option<Cell> {
         doing: standing.doing(session).map(str::to_owned),
         asks: session["wants"]["said"].as_str().map(str::to_owned),
         repo: session["presence"]["repo"].as_str().map(str::to_owned),
+        subjects: subjects(&session["presence"]["subjects"]),
         usage: Usage::of(session),
         leads: Vec::new(),
         machine: text("machine"),

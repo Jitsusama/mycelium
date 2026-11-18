@@ -378,6 +378,19 @@ pub struct Cell {
     pub quest: String,
     /// The cell it answers to, which started it, by address.
     pub started_by: Option<String>,
+    /// The cell it split from, by address, as its presence says.
+    pub split_from: Option<String>,
+}
+
+/// The most characters a cell's address holds.
+const ADDRESS_MOST: usize = 32;
+
+/// Whether `said` could be a cell's address: letters and digits alone,
+/// at most [`ADDRESS_MOST`] of them, so a presence can put nothing else
+/// on a forage record as one.
+#[must_use]
+pub fn is_address(said: &str) -> bool {
+    (1..=ADDRESS_MOST).contains(&said.len()) && said.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
 /// A file as last read: its length and when it last changed.
@@ -880,6 +893,7 @@ pub fn records(
                 "documents": quest.documents,
                 "lineage": {
                     "started_by": cell.started_by,
+                    "split_from": cell.split_from,
                     "parent": quest.parent,
                 },
             });
@@ -1402,6 +1416,17 @@ mod tests {
             session: "0001".to_owned(),
             quest: quest.to_owned(),
             started_by: Some("OSPREY".to_owned()),
+            split_from: Some("TERNSS".to_owned()),
+        }
+    }
+
+    #[test]
+    fn an_address_is_letters_and_digits_alone_and_not_too_many() {
+        for address in ["KP0L6A", "C554836B", &"A".repeat(ADDRESS_MOST)] {
+            assert!(is_address(address), "{address}");
+        }
+        for not in ["", "peer.kp0l6a", "KP0L6A ", "K\u{202e}P", &"A".repeat(ADDRESS_MOST + 1)] {
+            assert!(!is_address(not), "{not:?}");
         }
     }
 
@@ -1948,6 +1973,7 @@ mod tests {
         assert_eq!(forage["quest"], "QEST-20261116-KESTRL");
         assert_eq!(forage["machine"], "kestrel");
         assert_eq!(forage["lineage"]["started_by"], "OSPREY");
+        assert_eq!(forage["lineage"]["split_from"], "TERNSS");
         assert_eq!(forage["lineage"]["parent"], "QEST-20261101-OSPREY");
     }
 
@@ -2332,6 +2358,7 @@ mod tests {
             session: "0000-kestrel".to_owned(),
             quest: "QEST-20261116-KESTRL".to_owned(),
             started_by: None,
+            split_from: None,
         };
         let cells = Arc::new(Mutex::new(vec![kestrel.clone()]));
         let now = Arc::clone(&cells);

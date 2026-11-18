@@ -72,16 +72,21 @@ mod fences;
 mod formed;
 pub use formed::Formed;
 mod glyph;
+mod hub;
 mod network;
 pub use network::{Holding, Standing, records as network_records};
 mod signals;
 mod spares;
 pub use spares::Trees;
 mod standing;
+mod starts;
 mod team;
 mod tie;
 pub use tie::{KIND as TIE_KIND, Talk, aliases as tie_aliases, records as tie_records, talk};
 mod turns;
+
+/// The most of its newest starts a node lists when asked.
+const STARTS_LISTED: usize = 100;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -443,7 +448,7 @@ const LINKED_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 /// The kinds the node holds itself in the daemon interface, which no
 /// served file may take.
-pub const HOLDS: [&str; 18] = [
+pub const HOLDS: [&str; 19] = [
     "session",
     "machine",
     "message",
@@ -462,6 +467,7 @@ pub const HOLDS: [&str; 18] = [
     formed::KIND,
     ended::KIND,
     feed::KIND,
+    hub::KIND,
 ];
 
 /// The kind of record that is one thing a session did, as its presence's
@@ -1129,6 +1135,8 @@ struct Shared<S> {
     /// Where it keeps each command it runs, and who may say how a fenced
     /// one runs.
     runs: Arc<run::Given>,
+    /// Each session it started or refused to, beside its runs.
+    starts: Arc<starts::Starts>,
     /// Where pi's hosts keep their records of the sessions they hold.
     hosts: PathBuf,
     /// Where it keeps who orchestrates which quests.
@@ -1321,6 +1329,7 @@ impl<S: Clone> Clone for Shared<S> {
             hostname: Arc::clone(&self.hostname),
             unreadable: Arc::clone(&self.unreadable),
             runs: self.runs.clone(),
+            starts: Arc::clone(&self.starts),
             hosts: self.hosts.clone(),
             orchestrations: self.orchestrations.clone(),
             logs: self.logs.clone(),
@@ -1390,6 +1399,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             formed,
             ended,
             fed,
+            hubs,
         ] = HOLDS.map(str::to_owned);
         BTreeMap::from([
             (
@@ -1447,6 +1457,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (ended, ended::LIVE.to_vec()),
             // A cell fed again is fed later, and of another kind maybe.
             (fed, vec!["at", "kind"]),
+            (hubs, hub::LIVE.to_vec()),
         ])
         .into_iter()
         .chain(served)
@@ -1516,6 +1527,7 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             tie::KIND => return Some(self.tie_records()),
             ended::KIND => Some(self.ended_records()),
             feed::KIND => Some(self.fed_records()),
+            hub::KIND => Some(self.hub_records()),
             // Shown but any whose act is done; the node's own judgements
             // read every record.
             _ => self.served.shown(kind),
@@ -1554,8 +1566,11 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             // a word kept tells its watchers too. A carry stands as its
             // session is seen, so it changes as sessions do, and a carry
             // kept tells its watchers too. A refusal comes as its session
-            // ends the turn that wrote it, which its presence says.
-            words::KIND | kept::KIND => Some(self.said.sessions.subscribe()),
+            // ends the turn that wrote it, which its presence says. A hub
+            // moves as cells come, go or declare otherwise; how much each
+            // was heard shows with the next, so a busy hour of talk never
+            // shuffles them a message at a time.
+            words::KIND | kept::KIND | hub::KIND => Some(self.said.sessions.subscribe()),
             // An end is told as the sessions or the quests change, and as
             // a minute settles it or its day ends.
             ended::KIND => Some(self.said.ended.subscribe()),
@@ -1754,9 +1769,10 @@ fn keep_forages(
     said: &Said,
     inner: &Arc<Mutex<Inner>>,
     machine: &str,
+    starts: &Arc<starts::Starts>,
 ) -> mpsc::UnboundedSender<String> {
     let (to_read, wanted) = mpsc::unbounded_channel();
-    let (state, machine) = (Arc::clone(inner), machine.to_owned());
+    let (state, machine, starts) = (Arc::clone(inner), machine.to_owned(), Arc::clone(starts));
     tokio::spawn(forage::keep(
         places.quests.clone(),
         Arc::clone(forages),
@@ -1768,6 +1784,7 @@ fn keep_forages(
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
                 &machine,
+                &starts,
             )
         },
         said.forages.clone(),
@@ -1775,20 +1792,42 @@ fn keep_forages(
     to_read
 }
 
+/// The fence an asker `by` runs in: an agent's at least the agent fence,
+/// as its runs are, and none for the person, whose work goes wherever
+/// placement says.
+fn fence_of(by: By) -> Option<crate::declared::Kind> {
+    match by {
+        By::Agent(kind) => Some(kind.max(crate::declared::Kind::Fence)),
+        By::Person => None,
+    }
+}
+
 /// The cells of `machine` that work on a quest, each with what its forage
-/// is made of, ordered by address.
-fn forage_cells(inner: &Inner, machine: &str) -> Vec<forage::Cell> {
+/// is made of, ordered by address. A cell was started by the cell this
+/// node's book of `starts` says asked for its hold, which the node proved
+/// as it started it, else by the orchestrator its presence names; it
+/// split from the cell its presence names, if that is an address.
+fn forage_cells(inner: &Inner, machine: &str, starts: &starts::Starts) -> Vec<forage::Cell> {
     let mut cells: Vec<forage::Cell> = inner
         .state
         .sessions()
         .into_iter()
         .filter(|session| session.machine == machine)
         .filter_map(|session| {
+            let started = session
+                .held
+                .as_deref()
+                .and_then(|held| starts.started_by(machine, held));
+            let split_from = session.presence["lineage"]["split_from"]
+                .as_str()
+                .filter(|address| forage::is_address(address))
+                .map(str::to_owned);
             Some(forage::Cell {
                 quest: session.quest?,
                 address: session.address,
                 session: session.id,
-                started_by: session.orchestrated_by,
+                started_by: started.or(session.orchestrated_by),
+                split_from,
             })
         })
         .collect();
@@ -1912,9 +1951,10 @@ impl<S: Store> Shared<S> {
         let said = Arc::<Said>::default();
         let inner = Arc::new(Mutex::new(Inner::after(&flows, &hello.realm)));
         let forages: forage::Held = Arc::new(Mutex::new(forage::Shelf::with_waits(waiting)));
-        let to_read = sharing
-            .as_ref()
-            .map(|places| keep_forages(places, &forages, &said, &inner, &hello.machine));
+        let starts = Arc::new(starts::Starts::at(starts::beside(&runs.journal)));
+        let to_read = sharing.as_ref().map(|places| {
+            keep_forages(places, &forages, &said, &inner, &hello.machine, &starts)
+        });
         let (held, keeping_receptors) = keep_receptors(receptors.clone(), &hello.realm, &said);
         let shared = Self {
             processes: processes.into(),
@@ -1927,6 +1967,7 @@ impl<S: Store> Shared<S> {
             scratch: sharing.as_ref().map(|places| places.scratch.clone()),
             hostname: rustix::system::uname().nodename().to_string_lossy().into(),
             unreadable: Arc::default(),
+            starts,
             runs: Arc::new(runs),
             hosts,
             orchestrations,
@@ -2554,6 +2595,43 @@ impl<S: Store> Shared<S> {
         tie::records(talk(messages.iter().map(AsRef::as_ref), &aliases, now))
     }
 
+    /// Each subject the realm's cells declare, and its hubs, the cells
+    /// heard least lately first, by their own talk faded to now.
+    fn hub_records(&self) -> BTreeMap<String, serde_json::Value> {
+        let now = jiff::Timestamp::now().as_millisecond();
+        let heard: HashMap<String, f64> = self
+            .tie_records()
+            .into_values()
+            .filter_map(|record| {
+                let talk: serde_json::Value = serde_json::from_str(record.as_str()).ok()?;
+                let cell = talk["key"].as_str()?.strip_prefix("tie:")?;
+                (!cell.contains('~')).then_some(())?;
+                let strength = talk["strength"].as_f64()?;
+                let since = now.saturating_sub(talk["heard"].as_i64()?);
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a day of milliseconds is far inside an f64's whole numbers"
+                )]
+                let halves = since as f64 / tie::HALF_LIFE as f64;
+                Some((cell.to_owned(), strength * (-halves).exp2()))
+            })
+            .collect();
+        let holders: Vec<hub::Holder> = self
+            .lock()
+            .state
+            .sessions()
+            .into_iter()
+            .filter(|session| forage::is_address(&session.address))
+            .map(|session| hub::Holder {
+                heard: heard.get(&session.address).copied().unwrap_or_default(),
+                subjects: crate::networks::subjects(&session.presence["subjects"]),
+                address: session.address,
+            })
+            .filter(|holder| !holder.subjects.is_empty())
+            .collect();
+        hub::records(&holders)
+    }
+
     /// The records `making` makes of what the node holds, as the networks
     /// view reads it, each session standing as it does here.
     fn made_records(
@@ -2632,7 +2710,7 @@ impl<S: Store> Shared<S> {
     /// asking for each quest not yet read to be read, which tells the
     /// forages' watchers once it is.
     fn forage_records(&self) -> BTreeMap<String, serde_json::Value> {
-        let cells = forage_cells(&self.lock(), &self.machine);
+        let cells = forage_cells(&self.lock(), &self.machine, &self.starts);
         let (records, unread) = forage::records(
             &mut self
                 .forages
@@ -3023,6 +3101,7 @@ impl<S: Store> Shared<S> {
                 Err("an orchestration is answered by `orchestrates`".to_owned())
             }
             Request::Free { .. } => Err("freeing a quest is answered by `frees`".to_owned()),
+            Request::Starts { .. } => Err("starts are answered by `starts_asked`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
             Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
             Request::Health => Err("health is answered by `own_health::tell`".to_owned()),
@@ -3764,6 +3843,34 @@ impl<S: Store> Shared<S> {
 
     /// Frees `quest` from the session holding it by this node's record of
     /// orchestrations, where the person's own login asks.
+    async fn starts_asked(&self, act: crate::wire::StartsAct) -> Reply {
+        use crate::wire::StartsAct;
+        if act != StartsAct::List {
+            let (client, processes) = (self.client, self.processes.clone());
+            tokio::task::spawn_blocking(move || {
+                asker::persons_own(client, &processes, "stop or resume agents' starts")
+            })
+            .await
+            .map_err(|error| format!("who asks couldn't be told: {error}"))??;
+        }
+        match act {
+            StartsAct::Stop => self.starts.stop(),
+            StartsAct::Resume => self.starts.resume(),
+            StartsAct::List => Ok(()),
+        }
+        .map_err(|error| format!("the starts' stop couldn't be changed: {error}"))?;
+        let newest = self
+            .starts
+            .newest(STARTS_LISTED)
+            .iter()
+            .filter_map(|start| serde_json::to_value(start).ok())
+            .collect();
+        Ok(Response::Starts {
+            stopped: self.starts.stopped(),
+            newest,
+        })
+    }
+
     async fn frees(&self, quest: String) -> Reply {
         let (client, processes) = (self.client, self.processes.clone());
         tokio::task::spawn_blocking(move || asker::persons_own(client, &processes, "free a quest"))
@@ -4109,17 +4216,58 @@ impl<S: Store> Shared<S> {
         self.start(start).await
     }
 
-    /// Starts a program held on the machine placement chooses, answering
-    /// where and how to join it, or why it didn't start. Where none of the
-    /// realm's machines takes it, on a machine made for it: one that costs
-    /// nothing for any start, and one that costs only for a start that
-    /// says it may. An agent's is held to its own ground, as a run of its
-    /// is, so a session it starts never lands looser than the one asking.
+    /// Starts a program held where placement chooses, as [`Self::placed`]
+    /// does, once the node's book of starts lets who asks start one more,
+    /// keeping it in the book whether it started, failed or was refused.
+    /// An agent's start counts toward its cell's limit by the address of
+    /// the nearest session the node proves asks.
     async fn start(&self, asked: Start) -> Reply {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let fence = self.fence_asked().await?;
+        let (by, sessions) = self.judged().await?;
+        let started_by = {
+            let inner = self.lock();
+            let all = inner.state.sessions();
+            sessions.iter().find_map(|id| {
+                all.iter()
+                    .find(|session| session.id == *id)
+                    .map(|session| session.address.clone())
+            })
+        };
+        let admitted = self.starts.admit(starts::Kept {
+            at: jiff::Timestamp::now().as_millisecond(),
+            by,
+            started_by: started_by.filter(|_| by != By::Person),
+            folder: asked.folder.clone(),
+            program: asked.command.first().cloned(),
+            machine: None,
+            held: None,
+            failed: None,
+            refused: None,
+        })?;
+        let started = self.placed(asked, fence_of(by)).await;
+        self.starts.keep(
+            admitted,
+            match &started {
+                Ok(Response::Started(started)) => {
+                    Ok((started.machine.clone(), started.held.clone()))
+                }
+                Ok(_) => Err("it answered with no session".to_owned()),
+                Err(why) => Err(why.clone()),
+            },
+        );
+        started
+    }
+
+    /// Starts a program held on the machine placement chooses, answering
+    /// where and how to join it, or why it didn't start. Where none of the
+    /// realm's machines takes it, on a machine made for it: one that costs
+    /// nothing for any start, and one that costs only for a start that
+    /// says it may. An agent's, asked in `fence`, is held to its own
+    /// ground, as a run of its is, so a session it starts never lands
+    /// looser than the one asking.
+    async fn placed(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
         let admits = self.admits().await;
         let (misses, nowhere) = match self.place(&asked.work, Counts::Always, fence, &admits) {
             Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
@@ -4666,15 +4814,11 @@ impl<S: Store> Shared<S> {
         ))
     }
 
-    /// The fence whoever asks runs in, as [`Self::judged`] tells it: an
-    /// agent's at least the agent fence, as its runs are, and none for
-    /// the person, whose work goes wherever placement says.
+    /// The fence whoever asks runs in, as [`Self::judged`] tells it and
+    /// [`fence_of`] holds it.
     async fn fence_asked(&self) -> Result<Option<crate::declared::Kind>, String> {
         let (judged, _) = self.judged().await?;
-        Ok(match judged {
-            By::Agent(kind) => Some(kind.max(crate::declared::Kind::Fence)),
-            By::Person => None,
-        })
+        Ok(fence_of(judged))
     }
 
     /// Who asks a run, as [`asker::judge`] tells it, and the sessions
@@ -4850,6 +4994,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
                 shared.orchestrates(heads, quests).await.into()
             }
             Ok(Request::Free { quest }) => shared.frees(quest).await.into(),
+            Ok(Request::Starts { act }) => shared.starts_asked(act).await.into(),
             Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
             Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
             // A receptor's cell is named `<source>@<machine>`, and only the
@@ -8921,6 +9066,50 @@ esac
         );
     }
 
+    // FZ9MFJ's plan, item 19 (2026-11-18): a need finds its fit through a
+    // subject's hub, made by the node's own count of who declares it.
+    #[tokio::test]
+    async fn the_subjects_cells_declare_are_served_with_their_hubs() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node) = alone(&store, "skiff", &socket);
+        let (mut client, hello) = Speaking::hello(&socket).await;
+        assert_eq!(hello["kinds"]["hub"]["live"], json!(hub::LIVE), "{hello}");
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "hub"}))
+            .await;
+        assert_eq!(client.next().await, json!({"id": 2, "records": []}));
+        let presence = json!({
+            "session": "there", "addresses": ["THERE1"], "groups": [],
+            "state": "busy", "at": jiff::Timestamp::now().to_string(),
+            "subjects": ["mycelium:Hubs", 7, "bad\u{202e}turn"],
+        });
+        store
+            .put_presence("there", "kestrel", &presence)
+            .expect("the presence is kept");
+        let arrived = client.next().await;
+        let hub = &arrived["changed"][0];
+        assert_eq!(
+            (&hub["key"], &hub["hub"], &hub["fits"]),
+            (&json!("hub:mycelium:hubs"), &json!("THERE1"), &json!(["THERE1"])),
+            "a subject one cell declares is hubbed by it: {arrived}"
+        );
+        assert_eq!(arrived["changed"].as_array().map(Vec::len), Some(1), "{arrived}");
+        client
+            .ask(json!({"id": 3, "ask": "list", "kind": "cell"}))
+            .await;
+        let cells = client.next().await;
+        let there = cells["records"]
+            .as_array()
+            .and_then(|all| all.iter().find(|cell| cell["key"] == "cell:THERE1"));
+        assert_eq!(
+            there.map(|cell| &cell["subjects"]),
+            Some(&json!(["mycelium:Hubs"])),
+            "a cell says the subjects it declares that are plain text: {cells}"
+        );
+    }
+
     #[tokio::test]
     async fn a_cell_working_on_a_quest_is_served_its_forage_as_it_changes() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -11348,6 +11537,76 @@ esac
             Err("no link reaches tern now".to_owned()),
             "the person's start isn't held to an agent's ground"
         );
+    }
+
+    // FZ9MFJ's web, not a funnel (2026-11-18): agents may start sessions
+    // only up to a number the node refuses past, and the person stops them
+    // all in one act, with every start written down.
+    #[tokio::test]
+    async fn an_agents_starts_stop_at_their_limit_or_when_the_person_stops_them() {
+        use crate::wire::StartsAct;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let start = || {
+            Request::Start(Start {
+                work: work(Vec::new()),
+                folder: None,
+                command: vec!["pi".to_owned(), "--said-once".to_owned()],
+                may_cost: false,
+            })
+        };
+        let unstarted = || Err("skiff's node starts no sessions".to_owned());
+        let starts = |act| ask(socket.clone(), Request::Starts { act });
+        asks_below(&socket, 7001);
+        for _ in 0..starts::CELL_AN_HOUR {
+            assert_eq!(ask(socket.clone(), start()).await, unstarted());
+        }
+        let refused = ask(socket.clone(), start()).await.expect_err("one past the limit");
+        assert!(
+            refused.ends_with("a cell starts at most 8 an hour"),
+            "a failed start counts, so the ninth is refused: {refused}"
+        );
+        let book = fs::read_to_string(socket.with_file_name("starts.jsonl"))
+            .expect("every start is written down");
+        assert_eq!(book.lines().count(), starts::CELL_AN_HOUR + 1);
+        assert!(!book.contains("--said-once"), "no argument is kept: {book}");
+        assert!(
+            starts(StartsAct::Stop).await.is_err(),
+            "an agent can't stop or resume starts"
+        );
+        asks_as_person(&socket);
+        assert_eq!(
+            ask(socket.clone(), start()).await,
+            unstarted(),
+            "the person's starts are never limited"
+        );
+        let Ok(Response::Starts { stopped, newest }) = starts(StartsAct::Stop).await else {
+            panic!("the person stops agents' starts");
+        };
+        assert!(stopped);
+        assert_eq!(newest.len(), starts::CELL_AN_HOUR + 2);
+        asks_below(&socket, 7001);
+        assert_eq!(
+            ask(socket.clone(), start()).await,
+            Err("the person stopped agents starting sessions; only they resume it, \
+                 with `mycelium starts resume`"
+                .to_owned())
+        );
+        assert!(
+            matches!(
+                starts(StartsAct::List).await,
+                Ok(Response::Starts { stopped: true, .. })
+            ),
+            "anyone may see how starts stand"
+        );
+        asks_as_person(&socket);
+        assert!(matches!(
+            starts(StartsAct::Resume).await,
+            Ok(Response::Starts { stopped: false, .. })
+        ));
     }
 
     // Our council on #304 (2026-11-17): an agent's start could make, and
