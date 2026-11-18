@@ -1190,6 +1190,13 @@ last said them there, while that is under two minutes old, since it
 reads neither of its own truly. A host declares each machine within it
 in `hosts`, in the same shape, and its node writes its `power` and
 `room` to each file each minute, whole.
+Where given, `unattended` `true` says no person works there, as in a
+cell lent from a basin, where the person reaches it only over a link: its
+node then takes whoever asks it locally for a strictly fenced agent, even
+one it would otherwise tell as the person, since there the node runs as
+fenced as the agents beside it. That takes in a link's end run there,
+so a run asked from another machine is refused, as an agent saying so
+is. Said in any shape but `false`, it holds.
 Where given, `fence` says the fences an agent session runs in there, by
 kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,

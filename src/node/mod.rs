@@ -4663,14 +4663,23 @@ impl<S: Store> Shared<S> {
                 (presence.session, fence)
             })
             .collect();
-        let (client, processes) = (self.client, self.processes.clone());
+        let (client, processes, declared) =
+            (self.client, self.processes.clone(), self.declared.clone());
         tokio::task::spawn_blocking(move || {
             let above = asker::claimed_above(client, &processes, &claims);
             let kinds: Vec<_> = above
                 .iter()
                 .map(|session| fences.get(session).copied().flatten())
                 .collect();
-            (asker::judge(client, &processes, &kinds), above)
+            let told = asker::judge(client, &processes, &kinds);
+            // Where no person works, nobody here is the person.
+            let nobody = crate::declared::read(&declared).is_some_and(|here| here.unattended);
+            let judged = if nobody {
+                asker::unattended(told)
+            } else {
+                told
+            };
+            (judged, above)
         })
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))
@@ -11731,6 +11740,47 @@ esac
     }
 
     #[tokio::test]
+    async fn where_no_person_works_whoever_asks_a_run_runs_as_an_agent() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let running = alone(&Memory::default(), "skiff", &socket);
+        // Told as the person would be, as a cell's every process is.
+        asks_as_person(&socket);
+        let unattended = |runs: bool| {
+            declares_runs(&socket, runs);
+            let declared = socket.with_file_name("declared.json");
+            let mut said: Value =
+                serde_json::from_slice(&fs::read(&declared).expect("it declares"))
+                    .expect("as JSON");
+            said["unattended"] = Value::Bool(true);
+            fs::write(&declared, said.to_string()).expect("it declares no person works here");
+        };
+        unattended(false);
+        assert_eq!(
+            run_through(socket.clone(), run_of("skiff", SAYS_ITS_FENCE))
+                .await
+                .err(),
+            Some(
+                "this asks as a strictly fenced agent, so it runs here only in that fence: \
+                 this machine declares no way to run a command as its strictly fenced \
+                 sessions run"
+                    .to_owned()
+            ),
+            "nobody here is the person, and with no launcher an agent runs nothing"
+        );
+        unattended(true);
+        let agent = run_through(socket.clone(), run_of("skiff", SAYS_ITS_FENCE))
+            .await
+            .expect("an agent's runs here");
+        assert_eq!(agent.out, b"strict\n", "through its fence's launcher");
+        let (stop, node) = running;
+        drop(stop);
+        node.await
+            .expect("the node runs to its end")
+            .expect("it stops cleanly");
+    }
+
+    #[tokio::test]
     async fn a_kit_an_agent_could_change_is_left_off_every_path_and_said_to_be() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let kit = dir.path().join("kit");
@@ -13005,6 +13055,7 @@ esac
                     within: None,
                     hosts: Vec::new(),
                     fence: None,
+                    unattended: false,
                 }),
                 ..facts::measure("kestrel", &facts::Sources::nowhere())
             })

@@ -831,6 +831,19 @@ pub fn judge(asker: Option<i32>, processes: &Processes, above: &[Option<Kind>]) 
     By::Person
 }
 
+/// Who asks, as [`judge`] told `by`, on a machine where no person works,
+/// as a cell lent from a basin declares: one taken for the person is an
+/// agent too, strictly fenced as one below no session is. There nothing
+/// else tells an agent from the person, since the node runs as fenced as
+/// the agents beside it, below no agent's unit.
+#[must_use]
+pub fn unattended(by: By) -> By {
+    match by {
+        By::Person => By::Agent(Kind::Strict),
+        agent @ By::Agent(_) => agent,
+    }
+}
+
 /// Whether process `pid` may gain no privileges, as a fence sets, while
 /// the node itself may.
 fn gains_less(procs: &Path, pid: i32) -> bool {
@@ -1707,5 +1720,26 @@ mod tests {
         let processes = folder(procs.path());
         assert_eq!(judge(Some(41), &processes, &[]), By::Agent(Kind::Strict));
         assert_eq!(judge(Some(42), &processes, &[]), By::Person);
+    }
+
+    #[test]
+    fn where_no_person_works_the_one_taken_for_the_person_is_an_agent() {
+        // The node itself runs barred from gaining privileges, as a
+        // basin's exec runs it, so the asker barred too gains no less.
+        let procs = procs(&[(41, "sh", 1, "session.slice/quickshell.service")]);
+        fs::create_dir(procs.path().join("self")).expect("the node's folder is made");
+        for process in ["41", "self"] {
+            let status = procs.path().join(process).join("status");
+            let said = fs::read_to_string(&status).unwrap_or_default();
+            fs::write(&status, format!("{said}NoNewPrivs:\t1\n")).expect("it is barred");
+        }
+        let judged = judge(Some(41), &folder(procs.path()), &[]);
+        assert_eq!(judged, By::Person, "nothing else tells it from the person");
+        assert_eq!(unattended(judged), By::Agent(Kind::Strict));
+        assert_eq!(
+            unattended(By::Agent(Kind::Fence)),
+            By::Agent(Kind::Fence),
+            "an agent keeps the fence it was told"
+        );
     }
 }
