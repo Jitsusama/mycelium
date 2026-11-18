@@ -1572,8 +1572,8 @@ once it has said what it holds of the quest, and goes on naming it
 until this machine stops sharing the quest. A worker is heard only of
 the quests it was given or began, so it names itself in no other
 ledger, while any other machine's word is taken as the person's.
-Nothing a share carries in, a README's sessions or trees among it, binds a tree to a quest,
-and a quest shared only as one above another spares none. The run
+Nothing a share carries in, a README's sessions or trees among it,
+binds a tree to a quest, and a quest shared only as one above another spares none. The run
 starts in the folder opened, not by its path again, so a link
 swapped since leads it nowhere else, and the record of runs keeps
 the quests as `spared`. Any other agent's run from another machine
