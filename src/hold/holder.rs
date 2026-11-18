@@ -2084,35 +2084,6 @@ mod tests {
         );
     }
 
-    // The usual end of a pi's hold: it parks, leaving its command and its
-    // steers, and is then ended while it waits to be woken.
-    #[tokio::test]
-    async fn a_parked_program_ended_leaves_no_file_of_its_own() {
-        let root = tempfile::tempdir().expect("a temporary folder");
-        let (dir, held, holder) = holding_sh(root.path()).await;
-        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
-        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
-        window
-            .types(concat!(
-                r#"printf '%s' '["sh"]' > "$MYCELIUM_AGAIN"; "#,
-                r#"printf '%s' '["merged"]' > "$MYCELIUM_STEERS"; exit 75"#,
-                "\r",
-            ))
-            .await;
-        listed_parked(&dir, &mut changes, true).await;
-        let (ending, id) = (dir.clone(), held.id.clone());
-        tokio::task::spawn_blocking(move || super::super::end::end(&ending, &id, PATIENCE))
-            .await
-            .expect("it ran")
-            .expect("it ends");
-        exited(holder).await;
-        assert_eq!(
-            left_of(&dir, &held.id),
-            Vec::<String>::new(),
-            "a parked hold ended leaves nothing of its id"
-        );
-    }
-
     // A pi on an old conversation, woken in its window, named itself as it
     // parked over the newer conversation named for it while it ran, and
     // each wake after started the old one again (2026-11-13).

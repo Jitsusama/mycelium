@@ -380,9 +380,7 @@ mod tests {
     #[test]
     fn a_hold_whose_holder_was_killed_outright_leaves_nothing_once_ended() {
         let dir = tempfile::tempdir().expect("a folder");
-        let mut gone = std::process::Command::new("true")
-            .spawn()
-            .expect("it starts");
+        let mut gone = Command::new("true").spawn().expect("it starts");
         let holder = gone.id();
         gone.wait().expect("it ends");
         drop(holds(dir.path(), "killed1", holder, 0));
@@ -407,6 +405,31 @@ mod tests {
         assert!(
             left.iter().all(|file| !file.exists()) && !socket(dir.path(), "killed1").exists(),
             "what a holder killed outright left goes once it is ended"
+        );
+    }
+
+    // The usual end of a pi's hold: it parks, leaving its command and its
+    // steers, and is then ended while it waits to be woken.
+    #[test]
+    fn a_parked_hold_ended_leaves_what_its_program_said_nowhere() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let holder = holder();
+        let _answers = holds(dir.path(), "parked1", holder, 0);
+        let record = dir.path().join("parked1.json");
+        let mut parked: Held =
+            serde_json::from_slice(&fs::read(&record).expect("read")).expect("a record");
+        parked.parked = true;
+        fs::write(&record, serde_json::to_vec(&parked).expect("a record")).expect("written");
+        let said = [again(dir.path(), "parked1"), steers(dir.path(), "parked1")];
+        for file in &said {
+            fs::write(file, b"[]").expect("it is written");
+        }
+
+        end(dir.path(), "parked1", GRACE).expect("it ends");
+        assert!(!runs(holder), "its holder is gone");
+        assert!(
+            said.iter().all(|file| !file.exists()) && !record.exists(),
+            "what it said as it parked goes with its record"
         );
     }
 
