@@ -250,6 +250,22 @@ mod tests {
     }
 
     #[test]
+    fn a_rooms_verdict_on_saturation_crosses_the_wire_only_when_said() {
+        let mut room = said(&record(1, KEPT_AT), KEPT_AT + 30).expect("a room");
+        let unsaid = serde_json::to_value(&room).expect("a room is json");
+        assert!(
+            unsaid.get("saturated").is_none(),
+            "a room with no verdict says none, as an older node's does"
+        );
+        let older: Room = serde_json::from_value(unsaid).expect("an older room reads");
+        assert_eq!(older.saturated, None, "and reads back as none");
+        room.saturated = Some(true);
+        let said_on = serde_json::to_string(&room).expect("a room is json");
+        let heard: Room = serde_json::from_str(&said_on).expect("a room reads");
+        assert_eq!(heard.saturated, Some(true), "a verdict said is heard");
+    }
+
+    #[test]
     fn a_kept_queue_says_the_room_it_starts_work_by() {
         assert_eq!(
             said(&record(1, KEPT_AT), KEPT_AT + 30),
