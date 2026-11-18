@@ -47,6 +47,11 @@ impl Viewed {
             .map_err(|_| "the asker has gone, so its folders can't be told".to_owned())
         };
         let root = opened("root")?;
+        // A kernel without openat2, or a filter refusing it, can't keep a
+        // path inside the root, so the view is said unreadable as a whole
+        // rather than every folder in it said missing.
+        within(&root, Path::new("/"))
+            .map_err(|_| "paths can't be kept within the asker's root here".to_owned())?;
         let cwd_opened = opened("cwd")?;
         let cwd = fs::read_link(process.join("cwd"))
             .map_err(|_| "the asker has gone, so its folders can't be told".to_owned())?;
@@ -73,19 +78,24 @@ impl Viewed {
     /// name the same file; none where the asker can't reach it, or the
     /// node's path is another file.
     fn here(&self, folder: &Path) -> Option<PathBuf> {
-        let opened = rustix::fs::openat2(
-            &self.root,
-            folder,
-            OFlags::PATH | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::IN_ROOT,
-        )
-        .ok()?;
+        let opened = within(&self.root, folder).ok()?;
         let there = rustix::fs::fstat(&opened).ok()?;
         let real = folder.canonicalize().ok()?;
         let here = fs::metadata(&real).ok()?;
         (here.dev() == there.st_dev && here.ino() == there.st_ino).then_some(real)
     }
+}
+
+/// Opens `folder` as if `root` were `/`: links and `..` can't leave it,
+/// nor can the kernel's own links in /proc, which point past any root.
+fn within(root: &OwnedFd, folder: &Path) -> rustix::io::Result<OwnedFd> {
+    rustix::fs::openat2(
+        root,
+        folder,
+        OFlags::PATH | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::IN_ROOT | ResolveFlags::NO_MAGICLINKS,
+    )
 }
 
 impl Disk for Viewed {
@@ -252,6 +262,35 @@ mod tests {
             &sprout_in(&rows),
             By::Agent(Kind::Fence),
             Some((47, 6)),
+            &Processes::Folder(procs),
+            &home,
+            "osprey",
+        )
+        .expect("it starts");
+
+        assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
+    }
+
+    #[test]
+    fn an_agents_own_word_for_where_it_is_counts_for_nothing_once_its_view_is_read() {
+        let place = tempfile::tempdir().expect("a place");
+        let home = place.path().canonicalize().expect("real").join("home");
+        let rows = home.join("src/rows");
+        let persons = home.join("src/persons");
+        checkout(&rows);
+        checkout(&persons);
+        let procs = place.path().join("proc");
+        asking(&procs, 48, 4, Path::new("/"), &rows);
+        let said = crate::wire::Sprout {
+            folder: None,
+            cwd: Some(persons),
+            ..sprout_in(&rows)
+        };
+
+        let start = super::super::sprouted(
+            &said,
+            By::Agent(Kind::Fence),
+            Some((48, 4)),
             &Processes::Folder(procs),
             &home,
             "osprey",

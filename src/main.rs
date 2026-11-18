@@ -2421,26 +2421,20 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
         on: asked.on,
         cwd: Some(std::env::current_dir()?),
     };
-    let mut reply = Client::connect(socket)?.ask(&Request::Sprout(sprouting.clone()))?;
+    // Judged first here, where this process stands and sees the disk as
+    // the node will judge it, so a sprout it would refuse is refused at
+    // once, with no node needed; the node judges it again for itself.
+    let cwd = std::env::current_dir()?;
+    let home = std::env::home_dir().ok_or_else(|| io::Error::other("no home folder"))?;
+    let here = place::machine(None, &place::state())?;
+    let start = sprout::starting(&sprouting, &cwd, &home, &here, &sprout::ThisDisk)
+        .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
+    let mut reply = Client::connect(socket)?.ask(&Request::Sprout(sprouting))?;
     // A node from before sprouts were its own to judge is asked for the
-    // Start this one would make, judged here as it was then.
+    // Start judged here, as it was then.
     if matches!(&reply, Err(why) if why.starts_with("not a request") && why.contains("Sprout")) {
-        let cwd = std::env::current_dir()?;
-        let home = std::env::home_dir().ok_or_else(|| io::Error::other("no home folder"))?;
-        let here = place::machine(None, &place::state())?;
-        let start = sprout::starting(&sprouting, &cwd, &home, &here, &sprout::ThisDisk)
-            .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
-        reply = Client::connect(socket)?.ask(&Request::Start(start))?;
+        reply = Client::connect(socket)?.ask(&Request::Start(start.clone()))?;
     }
-    // The folder named, as the node begins in it: through its links where
-    // it's here, and within home, which is where another machine finds it.
-    let asked_folder = sprouting.folder.as_deref().map(|named| {
-        let resolved = named.canonicalize().unwrap_or_else(|_| named.to_owned());
-        std::env::home_dir().map_or_else(
-            || resolved.clone(),
-            |home| sprout::within_home(resolved.clone(), &home),
-        )
-    });
     if asked.output.json() {
         return print_line(&reply);
     }
@@ -2450,7 +2444,11 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
         Err(why) => return Err(io::Error::other(why)),
     };
     let joining = started.attach.join(" ");
-    if asked_folder.is_some_and(|asked| !started.folder.ends_with(asked)) {
+    if !start
+        .folder
+        .as_deref()
+        .is_some_and(|judged| started.folder.ends_with(judged))
+    {
         tell!(
             "mycelium sprout: {} began it in {}, not the folder asked; if that is its home, its guard ends it",
             started.machine,

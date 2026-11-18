@@ -315,8 +315,18 @@ fn sprouted(
             sprout::starting(asked, cwd, home, here, &sprout::ThisDisk)
         }
         By::Agent(_) => Err(format!(
-            "an agent's sprout is judged on the disk as it sees it, and {unseen}"
+            "an agent's sprout is judged on the disk as it sees it, and {unseen}; \
+             the person can start it"
         )),
+    }
+}
+
+/// When the process `pid` started, in clock ticks since boot, where the
+/// machine's processes can be read; none otherwise, as on a Mac.
+fn started_at(pid: Option<i32>, processes: &Processes) -> Option<u64> {
+    match (pid, processes) {
+        (Some(pid), Processes::Folder(procs)) => asker::started(procs, pid),
+        _ => None,
     }
 }
 
@@ -3903,13 +3913,9 @@ impl<S: Store> Shared<S> {
     /// where it couldn't reach itself. Where the asker's view can't be
     /// read, the person's ask is judged on the node's disk and an agent's
     /// is refused. It starts as a [`Start`] does, under the same limits.
-    async fn sprout(&self, mut asked: Sprout) -> Reply {
+    async fn sprout(&self, asked: Sprout) -> Reply {
         let (by, _) = self.judged().await?;
         let home = std::env::home_dir().ok_or("the node has no home folder")?;
-        // Naming this machine is asking here, so its folder is judged.
-        if asked.on.as_deref() == Some(self.machine.as_str()) {
-            asked.on = None;
-        }
         let here = self.machine.clone();
         let (client, started, processes) =
             (self.client, self.client_started, self.processes.clone());
@@ -4430,10 +4436,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
     // say it is present for another, nor an agent's steer as the person.
     let process = stream.peer_cred().ok().and_then(|cred| cred.pid());
     shared.client = process;
-    shared.client_started = match (process, shared.processes.as_ref()) {
-        (Some(pid), Processes::Folder(procs)) => asker::started(procs, pid),
-        _ => None,
-    };
+    shared.client_started = started_at(process, &shared.processes);
     let (reading, mut writing) = stream.into_split();
     let mut lines = BufReader::new(reading).lines();
     while let Ok(Some(line)) = lines.next_line().await {
@@ -12094,7 +12097,11 @@ esac
 
         assert_eq!(
             refused,
-            Err("an agent's sprout is judged on the disk as it sees it, and the asker's folders can't be read here".to_owned())
+            Err(
+                "an agent's sprout is judged on the disk as it sees it, and the asker's \
+                 folders can't be read here; the person can start it"
+                    .to_owned()
+            )
         );
     }
 

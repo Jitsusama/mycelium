@@ -337,7 +337,8 @@ pub fn starting(
         return Err("say what the work is: a link or words".to_owned());
     }
     let from = asked.from.as_deref().map(origin_cell).transpose()?;
-    let on_here = asked.on.is_none();
+    // Naming this machine is asking here, so its folder is judged here.
+    let on_here = asked.on.as_deref().is_none_or(|on| on == here);
     let found = folder(
         Asked {
             folder: asked.folder.as_deref(),
@@ -744,6 +745,25 @@ mod tests {
         .expect("it starts");
         assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
         assert_eq!(start.work.needs, [Need::Machine("tern".to_owned())]);
+    }
+
+    #[test]
+    fn a_sprout_naming_this_machine_is_judged_here() {
+        let refused = starting(
+            &sprouting(
+                "tidy the rows",
+                Some("/home/kestrel/src/gone"),
+                Some("osprey"),
+            ),
+            Path::new("/home/kestrel"),
+            Path::new("/home/kestrel"),
+            "osprey",
+            &Held::of(&[], &[]),
+        );
+        assert_eq!(
+            refused,
+            Err("/home/kestrel/src/gone isn't a folder here".to_owned())
+        );
     }
 
     #[test]
