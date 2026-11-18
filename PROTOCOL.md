@@ -1343,8 +1343,9 @@ answered and, for each machine, how it was `judged` (`machine`,
 one in as many as were near the best and none for the rest), and the
 `weights` that weighed them (`cpu`, `memory`, `disk`, `session`,
 `running`, `rather_not`, `filling` and `near_best`; a record without
-them was weighed by the starting ones, and one without `running`
-weighed each session running as a start, by `session`). A placement
+them was weighed by the starting ones of before `running` was said,
+and one without `running` weighed each session running as a start, by
+`session`). A placement
 the node can't keep is said on its error output and answered all the
 same. When a day's file is
 first written, the files of days more than 14 before it are let go, so

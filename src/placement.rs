@@ -352,9 +352,11 @@ pub const FILLING_WEIGHT: f64 = 0.25;
 
 /// What each part of a machine's room is worth to placing, and how near
 /// the best a machine may be and still be drawn: the one set of knobs a
-/// replay of kept placements varies to tune placing. A set read from JSON
-/// takes the starting weight for each it leaves out, so a candidate names
-/// only the knob it turns.
+/// replay of kept placements varies to tune placing. A set read with
+/// [`Weights::read`] takes the starting weight for each it leaves out, so a
+/// candidate names only the knob it turns; one deserialized as a record's
+/// does too, but for `running`, which it leaves none, as a record kept
+/// before it was said was weighed.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Weights {
@@ -1354,6 +1356,57 @@ pub(crate) mod tests {
             (started - SESSION_WEIGHT).abs() < 1e-9,
             "a start on each costs the session weight, as its room shows none of it: {started}"
         );
+        assert!(
+            running < started,
+            "a running session costs less than a start: {running} against {started}"
+        );
+    }
+
+    #[test]
+    fn a_cool_machine_running_many_sessions_is_chosen_over_a_pressed_one() {
+        // Many sessions in a turn, mostly waiting on a model, on a machine
+        // whose processors are cool, against few on one that is pressed.
+        let mut cool = pressed(machine("kestrel", "linux", 32, &[]), 10.0);
+        cool.cpu.cores = Some(16);
+        let hot = pressed(machine("osprey", "linux", 32, &[]), 70.0);
+        let loads = Loads::from([
+            (
+                "kestrel".to_owned(),
+                Load {
+                    sessions: 48,
+                    placed: 0,
+                },
+            ),
+            (
+                "osprey".to_owned(),
+                Load {
+                    sessions: 10,
+                    placed: 0,
+                },
+            ),
+        ]);
+        let decide = |weights: &Weights| {
+            let decided = decide_at(
+                &needing(Vec::new()),
+                &[cool.clone(), hot.clone()],
+                &loads,
+                &[],
+                now(),
+                &mut first,
+                weights,
+            );
+            placed(&decided.placement).map(str::to_owned)
+        };
+        assert_eq!(
+            decide(&Weights::STARTING).as_deref(),
+            Some("kestrel"),
+            "what the sessions use already shows in its room"
+        );
+        assert_eq!(
+            decide(&Weights::before_said()).as_deref(),
+            Some("osprey"),
+            "weighed as starts, they counted twice and sent the work to the pressed one"
+        );
     }
 
     #[test]
@@ -1382,6 +1435,16 @@ pub(crate) mod tests {
             Ok(Some(RUNNING_WEIGHT)),
             "weights a replay reads take the starting one for it where left out"
         );
+        assert_eq!(
+            Weights::read(r#"{"running": 0.3}"#).map(|read| read.running),
+            Ok(Some(0.3)),
+            "and keep the one they name"
+        );
+        assert_eq!(
+            Weights::read(r#"{"running": null}"#),
+            Err("running is null, not a number".to_owned()),
+            "a replay can't ask for the weighing of before by saying none"
+        );
     }
 
     #[test]
@@ -1398,7 +1461,11 @@ pub(crate) mod tests {
         let kept = serde_json::json!({"placement": {"refused": {"misses": []}}, "judged": []});
         let decision: Result<Decision, _> = serde_json::from_value(kept);
         assert!(
-            decision.is_ok_and(|decision| decision.weights == Weights::before_said()),
+            decision.is_ok_and(|decision| decision.weights
+                == Weights {
+                    running: None,
+                    ..Weights::STARTING
+                }),
             "a decision kept before weights were said was weighed by the starting ones of then"
         );
     }
@@ -2070,11 +2137,12 @@ pub(crate) mod tests {
             Some("skiff"),
             "the disk more free"
         );
+        // Crowding kestrel, so the tie its name settles can't pass for it.
         let crowded = machine("kestrel", "linux", 32, &[]);
         let loads = Loads::from([(
-            "skiff".to_owned(),
+            "kestrel".to_owned(),
             Load {
-                sessions: 6,
+                sessions: 8,
                 placed: 0,
             },
         )]);
@@ -2086,7 +2154,7 @@ pub(crate) mod tests {
                 now(),
                 &mut first
             )),
-            Some("kestrel"),
+            Some("skiff"),
             "the fewer sessions"
         );
 
