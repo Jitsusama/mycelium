@@ -322,6 +322,16 @@ fn over(
     history: &History,
     now: Timestamp,
 ) -> Result<Timestamp, String> {
+    if reading
+        .machines
+        .iter()
+        .find(|load| load.machine == here)
+        .is_none_or(|load| load.stall.is_none())
+    {
+        return Err(format!(
+            "{here}'s own pressure can't be felt, so it never eases itself"
+        ));
+    }
     let held = reading.held.as_ref().ok_or_else(|| {
         format!("no watch follows {here}'s readings, so whether it stays over can't be told")
     })?;
@@ -604,6 +614,12 @@ pub(super) mod tests {
             machines: &realm,
             loads: &Loads::new(),
         };
+        let mut unfelt = realm.clone();
+        unfelt[0].room = None;
+        assert_eq!(
+            why_not(&chose(&unfelt, &[cell("s1")], &history)),
+            "skiff's own pressure can't be felt, so it never eases itself"
+        );
         let mut unwatched = reading(&realm, now());
         unwatched.held = None;
         assert_eq!(

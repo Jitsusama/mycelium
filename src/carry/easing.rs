@@ -24,7 +24,9 @@ use super::ease::{self, Busy, Cell, Choice, Here, History, Moved};
 use super::kept::Kept;
 use crate::balance::{Reading, Watch};
 use crate::declared::Kind;
+use crate::facts::Machine;
 use crate::record::{Session, State};
+use crate::room::Room;
 
 /// How often a node looks, as a reading of the balance is taken.
 pub const EVERY: Duration = Duration::from_secs(60);
@@ -100,6 +102,25 @@ pub fn cells(here: &str, looked: &Looked) -> Vec<Cell> {
 #[must_use]
 pub fn id(session: &Session) -> &str {
     super::session_id(session).unwrap_or(&session.id)
+}
+
+/// The realm's `machines` with `here`'s room the one its node `felt`
+/// ([`crate::room::felt`]), so whether `here` is over is judged only from
+/// what the node measures itself, never from a record a session can
+/// write. Where it felt none, `here` has no room, so it is never over. A
+/// machine within another has none either, since its own kernel doesn't
+/// see what its host's work presses on it. The other machines' rooms are
+/// as their own nodes said them over the link.
+#[must_use]
+pub fn felt_here(mut machines: Vec<Machine>, here: &str, felt: Option<Room>) -> Vec<Machine> {
+    if let Some(machine) = machines.iter_mut().find(|machine| machine.name == here) {
+        let within = machine
+            .declared
+            .as_ref()
+            .is_some_and(|declared| declared.within.is_some());
+        machine.room = felt.filter(|_| !within);
+    }
+    machines
 }
 
 /// Whether the session's quest runs only `here`; none without a quest.
@@ -406,9 +427,105 @@ mod tests {
 
     use super::*;
     use crate::balance;
+    use crate::balance::Flag;
     use crate::carry::ease::tests::{NOW, ago, cell, declaring, now, realm};
-    use crate::facts::Machine;
     use crate::placement::Loads;
+    use crate::room::{Limit, Pressure, Takes};
+
+    /// A room its node felt, at processor pressure `cpu`.
+    fn felt(cpu: f64) -> Room {
+        Room {
+            said_at: NOW.to_owned(),
+            memory_available: 40 << 30,
+            pressure: Pressure {
+                cpu,
+                memory: 0.0,
+                io: 0.0,
+            },
+            takes: Takes {
+                builds: 0,
+                vm_tests: 0,
+            },
+            over: Some(if cpu >= balance::OVER_CPU_PRESSURE {
+                vec![Limit::Cpu]
+            } else {
+                Vec::new()
+            }),
+            saturated: None,
+        }
+    }
+
+    /// Whether `machines` read with `sessions` hold skiff hot.
+    fn skiff_hot(machines: &[Machine], sessions: &[Session]) -> bool {
+        balance::read(machines, sessions, now())
+            .flags
+            .iter()
+            .any(|flag| matches!(flag, Flag::HotWhileCool { hot, .. } if hot == "skiff"))
+    }
+
+    #[test]
+    fn a_planted_record_saying_over_moves_nothing() {
+        let planted = realm();
+        assert!(skiff_hot(&planted, &[]), "as its queue's record says it");
+        let machines = felt_here(planted, "skiff", Some(felt(4.6)));
+        assert!(
+            !skiff_hot(&machines, &[]),
+            "skiff's node felt it calm, whatever the record said"
+        );
+    }
+
+    #[test]
+    fn a_planted_record_saying_calm_stops_nothing() {
+        let mut planted = realm();
+        planted[0].room = realm()[1].room.clone();
+        assert!(!skiff_hot(&planted, &[]), "as its queue's record says it");
+        let machines = felt_here(planted, "skiff", Some(felt(86.0)));
+        assert!(
+            skiff_hot(&machines, &[]),
+            "skiff's node felt it over, whatever the record said"
+        );
+        assert_eq!(
+            machines[1].room,
+            realm()[1].room,
+            "tern's room is as its own node said it"
+        );
+    }
+
+    #[test]
+    fn a_machine_its_node_cant_feel_is_never_over() {
+        let machines = felt_here(realm(), "skiff", None);
+        assert_eq!(machines[0].room, None);
+        assert!(!skiff_hot(&machines, &[]));
+    }
+
+    #[test]
+    fn a_machine_within_another_is_never_felt() {
+        let mut machines = realm();
+        let declared = machines[0].declared.get_or_insert_default();
+        declared.within = Some(crate::declared::Within {
+            machine: "tern".to_owned(),
+            file: "/nowhere/within.json".into(),
+        });
+        let machines = felt_here(machines, "skiff", Some(felt(86.0)));
+        assert_eq!(
+            machines[0].room, None,
+            "its kernel doesn't see its host's work"
+        );
+    }
+
+    /// Presences say only busy or idle, which balance never judges a
+    /// machine over by; this keeps it so.
+    #[test]
+    fn planted_presences_move_nothing() {
+        let busy: Vec<Session> = (0..64)
+            .map(|n| session(&format!("s{n}"), "skiff", &json!({"state": "busy"})))
+            .collect();
+        let machines = felt_here(realm(), "skiff", Some(felt(4.6)));
+        assert!(
+            !skiff_hot(&machines, &busy),
+            "sessions saying they're busy don't make skiff over"
+        );
+    }
 
     fn session(id: &str, machine: &str, more: &Value) -> Session {
         let mut said = json!({
