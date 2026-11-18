@@ -2202,6 +2202,49 @@ session is, reads whatever the folder's account wrote there, under a
 receptor's name or any other. A signal stays on its machine, as the
 receptor's record does.
 
+#### Feeding
+
+A receptor may also keep the outside changes that ask something of its
+person, so the node can feed each to the cell whose quest owns it.
+GitHub's alone does, with the reviews asked of the person. It keeps them
+in `receptors/<source>.items.json`, beside its record and written the
+same way, `0600`, which the node never serves and no link carries.
+`mycelium receptors say github ... --owner OWNER --item OWNER/NAME#N`
+writes it whole, `--owner` and `--item` each repeated, so naming the
+owners with no item clears it. An item whose owner isn't one named
+exactly, whose name isn't letters, digits, `-`, `_` and `.`, or whose
+number isn't a positive whole one is refused, and so is the whole
+write. Each item is its change, `reason` (`review-asked`) and `since`,
+when it was first kept, never a title, body, author, branch or comment.
+One gone from the file is gone, and none is kept past 30 days.
+
+Which cell owns a change is its quest's word, never a session's: the
+quest's README names the change as a `github-pr` alias, exactly
+`owner/name#N` and never by prefix, and lists the session as `active`,
+and the quest's `realm` is the node's. Each such session of this
+machine, running and not ended or out of reach, is fed, and two that
+claim one change are both fed. Feeding happens only for a source the
+person's table names, as the node reads the folder's changes, a quest's
+README, and every 30 seconds.
+
+A fed cell hears an `fyi` from `<source>@<machine>`, as a signal is
+said, but to the cell alone (`@ADDRESS`, held as `peer.<address>`),
+worded from the item's fields alone: `github: your person's review is
+asked on owner/name#N`. Each cell hears an item once while it stands,
+and again only once it went and came back; a restarted node may say one
+again. The node serves what it fed for ten minutes as the `fed` kind,
+keyed `fed:<receptor>~<cell>`, so the map can draw the line:
+
+| Field | What it is |
+| --- | --- |
+| `receptor` | the receptor's cell, `<source>@<machine>` |
+| `cell` | the fed cell's address |
+| `at` | when it was fed |
+| `kind` | what fed it, in a word: `review` |
+
+The record never names the change, so the map shows who fed whom, and
+only the cell fed hears what.
+
 ### Forages
 
 A forage is a cell's own purpose, with the research, plans and reports

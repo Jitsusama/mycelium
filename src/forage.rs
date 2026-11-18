@@ -93,6 +93,103 @@ pub struct Quest {
     pub documents: Vec<Document>,
     /// What it waits on its person for, as its waiting file says.
     pub waits: Vec<Wait>,
+    /// What its README says decides which outside changes feed it, which
+    /// no forage serves.
+    #[serde(skip)]
+    pub claims: Claims,
+}
+
+/// What a quest's README says of the outside changes that are its own:
+/// the changes it claims, the sessions that are its, and its realm. Only
+/// the node's feeding reads it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Claims {
+    /// The changes its `github-pr` aliases name, as `owner/name#N`.
+    pub changes: Vec<String>,
+    /// The sessions it lists as active, by id.
+    pub sessions: Vec<String>,
+    /// Its realm.
+    pub realm: Option<String>,
+}
+
+/// The most entries of a README's list read, a guard against a file
+/// written wrong.
+const MOST_LISTED: usize = 500;
+
+/// The entries of the list under the key `key` in front matter `lines`,
+/// each as its own keys and values: the lines of an entry are those
+/// indented under its `- `, and a value is unquoted as front matter's
+/// are.
+fn listed(lines: &[String], key: &str) -> Vec<HashMap<String, String>> {
+    let mut entries: Vec<HashMap<String, String>> = Vec::new();
+    let mut within = false;
+    for line in lines {
+        if !line.starts_with([' ', '\t', '-']) {
+            within = line
+                .split_once(':')
+                .is_some_and(|(said, _)| said.trim() == key);
+            continue;
+        }
+        if !within {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        let (field, starts) = match trimmed.strip_prefix("- ") {
+            Some(field) => (field, true),
+            None => (trimmed, false),
+        };
+        if starts {
+            if entries.len() == MOST_LISTED {
+                break;
+            }
+            entries.push(HashMap::new());
+        } else if indent > 4 {
+            // Deeper than an entry's own keys, as a session's process is.
+            continue;
+        }
+        let (Some(entry), Some((name, value))) = (entries.last_mut(), field.split_once(':')) else {
+            continue;
+        };
+        let value = value.trim().trim_matches(['"', '\'']);
+        if !value.is_empty() {
+            entry.insert(name.trim().to_owned(), value.to_owned());
+        }
+    }
+    entries
+}
+
+/// What the README at `path` says decides which outside changes feed
+/// its quest.
+fn read_claims(path: &Path) -> Claims {
+    let Some(mut lines) = lines_of(path) else {
+        return Claims::default();
+    };
+    if lines.next().as_deref().map(str::trim_end) != Some("---") {
+        return Claims::default();
+    }
+    let front: Vec<String> = lines.take_while(|line| line.trim_end() != "---").collect();
+    let changes = listed(&front, "aliases")
+        .into_iter()
+        .filter(|alias| alias.get("type").map(String::as_str) == Some("github-pr"))
+        .filter_map(|mut alias| alias.remove("value"))
+        .collect();
+    let sessions = listed(&front, "sessions")
+        .into_iter()
+        .filter(|session| session.get("status").map(String::as_str) == Some("active"))
+        .filter_map(|mut session| session.remove("id"))
+        .collect();
+    let realm = front_matter(
+        &mut std::iter::once("---".to_owned())
+            .chain(front.iter().cloned())
+            .chain(std::iter::once("---".to_owned())),
+    )
+    .remove("realm");
+    Claims {
+        changes,
+        sessions,
+        realm,
+    }
 }
 
 /// One thing a quest waits on its person for, as the launcher keeps it in
@@ -703,6 +800,7 @@ fn read_quest(
     }
     let folder = store.join(id);
     let (parent, status, purpose) = read_readme(&folder.join("README.md"));
+    let claims = read_claims(&folder.join("README.md"));
     let mut documents = Vec::new();
     for kind in DOCUMENTS {
         let Ok(entries) = fs::read_dir(folder.join(kind)) else {
@@ -735,6 +833,7 @@ fn read_quest(
         parent,
         documents,
         waits: Vec::new(),
+        claims,
     }
 }
 
@@ -1337,6 +1436,34 @@ mod tests {
             parent("QEST-20261116-OSPREY").as_deref(),
             Some("null"),
             "a quoted null is the word"
+        );
+    }
+
+    #[test]
+    fn a_quest_claims_its_github_aliases_for_its_active_sessions_alone() {
+        let store = Store::new("claims");
+        let front = "---\nid: QEST-20261116-KESTRL\nrealm: work\naliases:\n  - type: \
+            github-pr\n    value: jsama/tern#12\n  - type: slack-message\n    value: \
+            C0/1\n  - type: github-pr\n    value: \"jsama/tern#13\"\nsessions:\n  - id: \
+            s-live\n    status: active\n    process:\n      status: ended\n  - id: \
+            s-gone\n    status: ended\nparent: QEST-20261101-OSPREY\n";
+        let readme = README.replacen("---\n", front, 1);
+        store.write("QEST-20261116-KESTRL/README.md", &readme);
+        let mut shelf = Shelf::default();
+        assert!(shelf.read(&store.0, "QEST-20261116-KESTRL"), "read");
+        let quest = shelf.quest("QEST-20261116-KESTRL").expect("read");
+        assert_eq!(
+            quest.claims,
+            Claims {
+                changes: vec!["jsama/tern#12".to_owned(), "jsama/tern#13".to_owned()],
+                sessions: vec!["s-live".to_owned()],
+                realm: Some("work".to_owned()),
+            }
+        );
+        let served = serde_json::to_string(quest).expect("json");
+        assert!(
+            !served.contains("tern") && !served.contains("s-live"),
+            "a forage served what feeds its quest: {served}"
         );
     }
 

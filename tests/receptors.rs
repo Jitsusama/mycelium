@@ -143,6 +143,128 @@ fn counts_that_cant_be_are_refused() {
     assert!(!dir.path().join("receptors").join("slack.json").exists());
 }
 
+/// GitHub's receptor saying it reads, with `more` after its standing words.
+fn github(dir: &Path, more: &[&str]) -> Output {
+    let pid = std::process::id().to_string();
+    let standing = [
+        "github", "--state", "reading", "--every", "300", "--pid", &pid,
+    ];
+    let words: Vec<&str> = standing
+        .iter()
+        .copied()
+        .chain(more.iter().copied())
+        .collect();
+    say(dir, &words)
+}
+
+/// The changes kept in `dir`'s GitHub items file, as `owner/name#N`.
+fn kept(dir: &Path) -> Vec<String> {
+    let file = dir.join("receptors").join("github.items.json");
+    let written: serde_json::Value =
+        serde_json::from_slice(&fs::read(file).expect("written")).expect("JSON");
+    written["items"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|item| {
+            format!(
+                "{}#{}",
+                item["repo"].as_str().expect("a repo"),
+                item["number"]
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_changes_asking_review_are_kept_whole_in_a_file_of_their_own() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let said = github(
+        dir.path(),
+        &[
+            "--owner",
+            "jsama",
+            "--owner",
+            "tern",
+            "--item",
+            "jsama/kestrel#12",
+            "--item",
+            "tern/skiff#3",
+        ],
+    );
+    assert!(
+        said.status.success(),
+        "{}",
+        String::from_utf8_lossy(&said.stderr)
+    );
+    let file = dir.path().join("receptors").join("github.items.json");
+    assert!(
+        String::from_utf8_lossy(&said.stdout).contains(&file.display().to_string()),
+        "it says where"
+    );
+    let mode = fs::metadata(&file).expect("there").permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "its owner's alone");
+    assert_eq!(kept(dir.path()), ["jsama/kestrel#12", "tern/skiff#3"]);
+
+    let said = github(dir.path(), &["--owner", "jsama"]);
+    assert!(
+        said.status.success(),
+        "{}",
+        String::from_utf8_lossy(&said.stderr)
+    );
+    assert!(
+        kept(dir.path()).is_empty(),
+        "owners named with no item clear them"
+    );
+
+    let said = github(dir.path(), &[]);
+    assert!(
+        said.status.success(),
+        "{}",
+        String::from_utf8_lossy(&said.stderr)
+    );
+    assert!(kept(dir.path()).is_empty(), "no owners leave the items be");
+}
+
+#[test]
+fn a_change_that_isnt_an_owned_one_by_number_is_refused_and_nothing_written() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    for planted in [
+        vec![
+            "--owner",
+            "jsama",
+            "--item",
+            "jsama/kestrel#12 Fix the sign-in",
+        ],
+        vec!["--owner", "jsama", "--item", "Fix the sign-in"],
+        vec!["--owner", "jsama", "--item", "tern/skiff#3"],
+        vec!["--owner", "jsama", "--item", "jsamax/kestrel#3"],
+        vec!["--owner", "jsama", "--item", "jsama/kestrel#0"],
+        vec!["--owner", "jsama", "--item", "jsama/kestrel#-4"],
+        vec!["--owner", "jsama", "--item", "jsama/kestrel"],
+        vec!["--item", "jsama/kestrel#12"],
+    ] {
+        let said = github(dir.path(), &planted);
+        assert!(
+            !said.status.success(),
+            "{planted:?} was taken: {}",
+            String::from_utf8_lossy(&said.stdout)
+        );
+    }
+    assert!(
+        !dir.path().join("receptors").exists(),
+        "nothing was written"
+    );
+    let pid = std::process::id().to_string();
+    let said = say(
+        dir.path(),
+        &[
+            "slack", "--state", "reading", "--every", "300", "--pid", &pid, "--owner", "jsama",
+        ],
+    );
+    assert!(!said.status.success(), "only GitHub's receptor keeps items");
+}
+
 #[test]
 fn a_process_that_isnt_running_is_refused() {
     let dir = tempfile::tempdir().expect("a temporary folder");

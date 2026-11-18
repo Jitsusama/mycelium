@@ -79,6 +79,7 @@ pub mod daemon;
 pub mod declared;
 pub mod disk;
 pub mod facts;
+pub mod feed;
 pub mod flow;
 pub mod forage;
 pub mod group;
