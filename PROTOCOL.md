@@ -1894,14 +1894,14 @@ holding a colon joins none, as a folder's name does, so one called
 `folders`, as a session says it works in one, and nothing asks whether
 `mycelium share` keeps the copies alike. The `formed` kind holds each
 tree or files network formed, keyed by its name, as the node keeps
-them in `formed-<realm>.json` beside
-`carries.jsonl`: its `name`, `at`, when the node first saw two cells
-hold it, and `left`, when it first saw the last cell gone, or null,
-each in milliseconds since the epoch; it is heard at `left`, or else
-`at`. The node looks each minute, and as `network`, `cell` or `formed`
-is asked, so a tree two cells hold for less than a minute with nobody
-asking may form no network. One no cell holds isn't drawn, and fades
-ten minutes after `left`, so a cell back within them rejoins it; past
+them in `formed-<realm>.json` beside `carries.jsonl`: its `name`,
+`at`, when the node first saw two cells hold it, and `left`, when it
+first saw the last cell gone, or null, each in milliseconds since the
+epoch; it is heard at `left`, or else `at`. The node looks each
+minute, and as `network`, `cell` or `formed` is asked, so a tree two
+cells hold for less than a minute with nobody asking may form no
+network. One no cell holds isn't drawn, and fades ten minutes after
+`left`, so a cell back within them rejoins it; past
 them none serves it, and a cell back alone forms it no more. A watch
 of `formed` is told as the node sees one form, be left, be held again
 or fade, so within the minute, or at once where a `network` or `cell`
