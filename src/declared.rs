@@ -878,6 +878,26 @@ mod tests {
             ])
         );
         assert_eq!(
+            sparing(words(&[
+                "/nix/store/env",
+                "--",
+                "/nix/store/pi-fence",
+                "--kind",
+                "strict",
+                "--"
+            ])),
+            words(&[
+                "/nix/store/env",
+                "--",
+                "/nix/store/pi-fence",
+                "--kind",
+                "strict",
+                "--shared-tree",
+                "--"
+            ]),
+            "the -- ending the launcher is pi-fence's, last as core declares it"
+        );
+        assert_eq!(
             sparing(words(&["/nix/store/pi-fence", "--kind", "strict"])),
             words(&["/nix/store/pi-fence", "--kind", "strict"]),
             "with no -- to end its options, nothing is the launcher's own"

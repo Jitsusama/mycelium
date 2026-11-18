@@ -6,10 +6,10 @@
 //! in none. A quest shared between two machines is the one exception: a
 //! session there may run in this machine's trees of the quest it shares.
 //! The node tells the fence so (`--shared-tree`) only for a folder it has
-//! opened itself and found in a tree whose holding session works, as this
-//! machine's own record of that session says, a quest whose ledger names
-//! the machine that asks, shared in its own right rather than only as a
-//! quest above another. The run then enters the folder it opened, not
+//! opened itself and found in a tree, wherever the broker cut it, whose
+//! every holding session works, as this machine's own record of that
+//! session says, a quest whose ledger names the machine that asks,
+//! shared in its own right rather than only as a quest above another. The run then enters the folder it opened, not
 //! its path again, so a link swapped meanwhile moves nothing. What the
 //! ask says never spares it, nor anything a share carries in.
 
@@ -34,8 +34,8 @@ pub enum Ground {
     Shared {
         /// The folder it runs in, as the opened folder's own path says.
         folder: PathBuf,
-        /// The quests whose tree it is, named in order.
-        quest: String,
+        /// The quests whose tree it is, in order.
+        quests: Vec<String>,
     },
 }
 
@@ -106,24 +106,35 @@ fn judged(
     trees: &Trees,
     shares: Option<&Places>,
 ) -> Result<Ground, String> {
-    let Some(tree) = tree_under(real, &trees.root) else {
+    let records = records(&trees.records);
+    let Some(tree) = tree_under(real, &trees.root).or_else(|| recorded_under(real, &records))
+    else {
         return Ok(Ground::Plain(real.to_owned()));
     };
     let refused = format!("{asker} asked to run in {}, a work tree", tree.display());
-    let holders = holders(&tree, &trees.records);
+    let holders = holders(&tree, &records);
     if holders.is_empty() {
         return Err(format!("{refused} no session here is recorded holding"));
     }
-    let quests: BTreeSet<String> = holders
+    // A session working no quest here may work in the tree too, and its
+    // work is no shared quest's.
+    let worked: Vec<(&String, Option<String>)> = holders
         .iter()
-        .filter_map(|session| quest_of(session, &trees.sessions))
+        .map(|session| (session, quest_of(session, &trees.sessions)))
         .collect();
-    if quests.is_empty() {
+    let loose: Vec<&str> = worked
+        .iter()
+        .filter(|(_, quest)| quest.is_none())
+        .map(|(session, _)| session.as_str())
+        .collect();
+    if !loose.is_empty() {
         return Err(format!(
-            "{refused} held by {}, which work no quest here",
-            holders.join(", ")
+            "{refused} held by {}, where pi keeps no quest for {}",
+            holders.join(", "),
+            loose.join(", ")
         ));
     }
+    let quests: BTreeSet<String> = worked.into_iter().filter_map(|(_, quest)| quest).collect();
     let named = quests.iter().cloned().collect::<Vec<_>>().join(", ");
     let Some(places) = shares else {
         return Err(format!(
@@ -163,7 +174,7 @@ fn judged(
     } else {
         Ok(Ground::Shared {
             folder: real.to_owned(),
-            quest: named,
+            quests: quests.into_iter().collect(),
         })
     }
 }
@@ -217,10 +228,9 @@ struct Record {
     sessions: Vec<String>,
 }
 
-/// The sessions the broker's `records` say hold `tree`, a resolved
-/// folder: those of each record whose path resolves to it. A record that
-/// can't be read names no one.
-fn holders(tree: &Path, records: &Path) -> Vec<String> {
+/// The broker's records in `records`, each with its tree's path resolved.
+/// A record that can't be read, or whose tree is gone, names nothing.
+fn records(records: &Path) -> Vec<Record> {
     let Ok(entries) = fs::read_dir(records) else {
         return Vec::new();
     };
@@ -230,8 +240,34 @@ fn holders(tree: &Path, records: &Path) -> Vec<String> {
         .filter(|path| path.extension() == Some(OsStr::new("json")))
         .filter_map(|path| fs::read(path).ok())
         .filter_map(|text| serde_json::from_slice::<Record>(&text).ok())
-        .filter(|record| fs::canonicalize(&record.path).is_ok_and(|path| path == tree))
-        .flat_map(|record| record.sessions)
+        .filter_map(|record| {
+            Some(Record {
+                path: fs::canonicalize(&record.path).ok()?,
+                sessions: record.sessions,
+            })
+        })
+        .collect()
+}
+
+/// The tree `real`, a resolved folder, stands in among those the broker
+/// cut outside its root, as a World tree is: the deepest whose path holds
+/// it.
+fn recorded_under(real: &Path, records: &[Record]) -> Option<PathBuf> {
+    records
+        .iter()
+        .map(|record| &record.path)
+        .filter(|tree| real.starts_with(tree))
+        .max_by_key(|tree| tree.components().count())
+        .cloned()
+}
+
+/// The sessions the broker's `records` say hold `tree`, a resolved
+/// folder: those of each record whose path is it.
+fn holders(tree: &Path, records: &[Record]) -> Vec<String> {
+    records
+        .iter()
+        .filter(|record| record.path == tree)
+        .flat_map(|record| record.sessions.iter().cloned())
         .collect()
 }
 
@@ -311,7 +347,12 @@ mod tests {
 
         /// Cuts tree `name`, held by `sessions`, as the broker records it.
         fn cut(&self, name: &str, sessions: &[&str]) {
-            let tree = self.tree(name);
+            self.cut_at(&self.tree(name), name, sessions);
+        }
+
+        /// Cuts a tree at `tree`, held by `sessions`, as the broker records
+        /// it under `name`.
+        fn cut_at(&self, tree: &Path, name: &str, sessions: &[&str]) {
             fs::create_dir_all(tree.join("src")).expect("made");
             fs::create_dir_all(&self.trees.records).expect("made");
             fs::write(
@@ -406,7 +447,58 @@ mod tests {
             machine.ground(&machine.tree("both"), "tern"),
             Ok(Ground::Shared {
                 folder: machine.tree("both"),
-                quest: format!("{SHARED}, {OTHER}")
+                quests: vec![SHARED.to_owned(), OTHER.to_owned()]
+            })
+        );
+        machine.cut("beside", &["s-near", "s-above"]);
+        machine.works("s-above", ABOVE);
+        machine.shares(ABOVE, &["tern"], true);
+        assert_eq!(
+            machine.ground(&machine.tree("beside"), "tern"),
+            Err(format!(
+                "tern asked to run in {}, a work tree of {ABOVE}, {SHARED}, shared with tern \
+                 only as above another: {ABOVE}",
+                machine.tree("beside").display()
+            )),
+            "s-above's work in it crosses as no tree of tern's"
+        );
+    }
+
+    #[test]
+    fn a_tree_also_held_by_a_session_working_no_quest_here_is_refused() {
+        let machine = Machine::new();
+        machine.cut("mixed", &["s-near", "s-loose"]);
+        assert_eq!(
+            machine.ground(&machine.tree("mixed"), "tern"),
+            Err(format!(
+                "tern asked to run in {}, a work tree held by s-near, s-loose, where pi keeps \
+                 no quest for s-loose",
+                machine.tree("mixed").display()
+            )),
+            "s-loose's work in it is no quest's that tern shares"
+        );
+    }
+
+    #[test]
+    fn a_tree_the_broker_records_outside_its_root_is_judged_as_one() {
+        let machine = Machine::new();
+        let apart = machine.outside.join("world").join("s-apart").join("src");
+        machine.cut_at(&apart, "apart", &["s-else"]);
+        assert_eq!(
+            machine.ground(&apart.join("src"), "tern"),
+            Err(format!(
+                "tern asked to run in {}, a work tree of {OTHER}, none of which is shared \
+                 with tern",
+                apart.display()
+            )),
+            "a tree is a tree wherever it was cut"
+        );
+        machine.cut_at(&apart, "apart", &["s-near"]);
+        assert_eq!(
+            machine.ground(&apart.join("src"), "tern"),
+            Ok(Ground::Shared {
+                folder: apart.join("src"),
+                quests: vec![SHARED.to_owned()]
             })
         );
     }
@@ -419,7 +511,7 @@ mod tests {
             machine.ground(&folder, "tern"),
             Ok(Ground::Shared {
                 folder,
-                quest: SHARED.to_owned()
+                quests: vec![SHARED.to_owned()]
             })
         );
     }
@@ -515,7 +607,7 @@ mod tests {
             machine.ground(&into, "tern"),
             Ok(Ground::Shared {
                 folder: machine.tree("harbor"),
-                quest: SHARED.to_owned()
+                quests: vec![SHARED.to_owned()]
             }),
             "a link from outside into the shared tree runs where it lands"
         );
@@ -528,10 +620,12 @@ mod tests {
         symlink(machine.tree("harbor"), &link).expect("linked");
         let footing = ground(&link, "tern", &machine.trees, Some(&machine.places))
             .expect("the shared tree is spared");
-        // The link now points at another quest's tree, as an asker
-        // swapping it between the check and the start would leave it.
-        fs::remove_file(&link).expect("unlinked");
-        symlink(machine.tree("others"), &link).expect("linked again");
+        // The shared tree moves aside and its path now leads to another
+        // quest's, as an asker swapping them between the check and the
+        // start would leave it: neither the path asked nor the path
+        // judged leads to the folder judged any more.
+        fs::rename(machine.tree("harbor"), machine.tree("moved")).expect("moved");
+        symlink(machine.tree("others"), machine.tree("harbor")).expect("linked");
         let (folder, _) = footing.entered();
         let (ran, mut said) = tokio::sync::mpsc::channel(crate::run::BACKLOG);
         tokio::spawn(crate::run::here(
@@ -556,8 +650,8 @@ mod tests {
         }
         assert_eq!(
             String::from_utf8_lossy(&out),
-            format!("{}\n", machine.tree("harbor").display()),
-            "what the run enters is still the shared tree"
+            format!("{}\n", machine.tree("moved").display()),
+            "what the run enters is still the shared tree, wherever it went"
         );
     }
 
@@ -577,8 +671,8 @@ mod tests {
         assert_eq!(
             machine.ground(&machine.tree("unworked"), "tern"),
             Err(format!(
-                "tern asked to run in {}, a work tree held by s-gone, ../s-near, which work \
-                 no quest here",
+                "tern asked to run in {}, a work tree held by s-gone, ../s-near, where pi \
+                 keeps no quest for s-gone, ../s-near",
                 machine.tree("unworked").display()
             )),
             "a session pi keeps no record of, or an id that is a path, works nothing"
