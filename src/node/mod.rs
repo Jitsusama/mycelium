@@ -13254,18 +13254,23 @@ esac
         );
         let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
         let dial = shared.book_for(&made_by("/nowhere/lend", "kestrel", later));
-        let kept = shared.starting(&dial, Path::new("/nowhere/node"));
+        // Clients are served from a clone of what the node shares, so the
+        // start is taken from one.
+        let kept = shared.clone().starting(&dial, Path::new("/nowhere/node"));
+        // The node's band saturates only after the link is given its start,
+        // so a band copied at the start is caught as well as a fresh one.
         assert!(
-            shared.saturation.judge(90.0),
+            shared.saturation.judge(placement::SATURATES_AT + 5.0),
             "the node's own measure saturates its machine"
         );
         let band = kept
             .saturation
             .expect("a link the node keeps is given a band");
+        let inside = f64::midpoint(placement::UNSATURATES_UNDER, placement::SATURATES_AT);
         assert!(
-            band.judge(80.0),
-            "and the link holds it saturated still at 80, as the node's own band does, \
-             rather than judging afresh by a band of its own"
+            band.judge(inside),
+            "and the link holds it saturated still inside the band, as the node's own \
+             band does, rather than judging afresh by a band of its own"
         );
     }
 
