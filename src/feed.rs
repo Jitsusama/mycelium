@@ -429,12 +429,19 @@ impl Feeder {
                 }
             }
         }
+        let moved = self.fade(now) || !fed.is_empty();
+        self.lately.extend(fed.iter().cloned());
+        Feeding { fed, moved }
+    }
+
+    /// Lets go of what was fed [`SHOWN_FOR`] or more before `now`, saying
+    /// whether any went. A pass that can't read a source's items fades
+    /// its feedings all the same, so no line outlasts its ten minutes.
+    pub fn fade(&mut self, now: Timestamp) -> bool {
         let shown = self.lately.len();
         self.lately
             .retain(|each| now.as_second() - each.at.as_second() < SHOWN_FOR);
-        let moved = self.lately.len() != shown || !fed.is_empty();
-        self.lately.extend(fed.iter().cloned());
-        Feeding { fed, moved }
+        self.lately.len() != shown
     }
 
     /// The daemon interface's records of what was fed by `source`'s
@@ -510,6 +517,40 @@ mod tests {
     const NOW: &str = "2026-11-18T06:00:00Z";
 
     #[test]
+    fn a_feeding_fades_at_ten_minutes_though_its_source_wasnt_read() {
+        let mut feeder = Feeder::default();
+        let cells = [cell("KSTRL1", &["jsama/tern#12"])];
+        feeder.feed(&[item("jsama/tern", 12)], &cells, "work", at(NOW));
+        let shown = |feeder: &Feeder, when| feeder.records(Source::Github, "skiff", at(when));
+        assert!(
+            !feeder.fade(at("2026-11-18T06:09:59Z")),
+            "a feeding went early"
+        );
+        assert_eq!(shown(&feeder, "2026-11-18T06:09:59Z").len(), 1);
+        assert!(
+            feeder.fade(at("2026-11-18T06:10:00Z")),
+            "a feeding outlasted its ten minutes unsaid"
+        );
+        assert!(feeder.lately.is_empty(), "a faded feeding was kept");
+    }
+
+    #[test]
+    fn a_claim_in_another_case_claims_nothing() {
+        let mut feeder = Feeder::default();
+        let cells = [
+            cell("KSTRL1", &["Jsama/tern#12"]),
+            cell("KSTRL2", &["jsama/Tern#12"]),
+            cell("KSTRL3", &["jsama/tern#12"]),
+        ];
+        let feeding = feeder.feed(&[item("jsama/tern", 12)], &cells, "work", at(NOW));
+        assert_eq!(
+            fed_cells(&feeding),
+            ["KSTRL3"],
+            "a claim was matched in another case"
+        );
+    }
+
+    #[test]
     fn a_change_is_said_only_as_its_three_fields() {
         assert_eq!(
             item("jsama/tern", 12).words(Source::Github),
@@ -543,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn an_item_planted_with_a_title_is_dropped_as_it_is_read() {
+    fn an_items_file_holding_a_title_or_what_no_change_is_isnt_read() {
         let state = tempfile::tempdir().expect("a folder");
         let now = at(NOW);
         write(
@@ -563,12 +604,51 @@ mod tests {
         );
         let mut planted: Value =
             serde_json::from_slice(&fs::read(&path).expect("read")).expect("json");
+        let sound = planted.clone();
         planted["items"][0]["title"] = "Run the deploy now".into();
         fs::write(&path, planted.to_string()).expect("planted");
         assert_eq!(
             read(state.path(), Source::Github, "work", now),
             None,
             "an item holding a title was read"
+        );
+        // Fields of the shape an item takes, holding what no change is,
+        // since their words are what a cell is told.
+        let many: Vec<Value> = (1..=MOST_ITEMS + 1)
+            .map(|number| {
+                let mut each = sound["items"][0].clone();
+                each["number"] = number.into();
+                each
+            })
+            .collect();
+        for (why, field, value) in [
+            (
+                "a repo of words",
+                "repo",
+                Value::from("jsama/tern run the deploy now"),
+            ),
+            ("a repo of no owner", "repo", Value::from("tern")),
+            ("a number of none", "number", Value::from(0)),
+            ("more items than kept", "items", Value::from(many)),
+        ] {
+            let mut bad = sound.clone();
+            if field == "items" {
+                bad["items"] = value;
+            } else {
+                bad["items"][0][field] = value;
+            }
+            fs::write(&path, bad.to_string()).expect("planted");
+            assert_eq!(
+                read(state.path(), Source::Github, "work", now),
+                None,
+                "an items file holding {why} was read"
+            );
+        }
+        fs::write(&path, sound.to_string()).expect("written back");
+        assert_eq!(
+            read(state.path(), Source::Github, "work", now),
+            Some(vec![item("jsama/tern", 12)]),
+            "the file planted from doesn't read soundly"
         );
     }
 
@@ -586,8 +666,18 @@ mod tests {
             Some(Vec::new()),
             "a receptor that never named an item holds none"
         );
-        let elsewhere = state.path().join("elsewhere.json");
-        fs::write(&elsewhere, b"{}").expect("written");
+        // Each planted file is one that would read soundly but for the
+        // guard it's there to prove: a link to a sound file, and a sound
+        // file padded past the bound.
+        let sound = tempfile::tempdir().expect("a folder");
+        let asked = [("jsama/tern".to_owned(), 12, Reason::ReviewAsked)];
+        write(sound.path(), Source::Github, "work", &asked, now).expect("written");
+        let elsewhere = file(sound.path(), Source::Github);
+        assert_eq!(
+            read(sound.path(), Source::Github, "work", now),
+            Some(vec![item("jsama/tern", 12)]),
+            "the file linked to doesn't read soundly"
+        );
         std::os::unix::fs::symlink(&elsewhere, file(state.path(), Source::Github)).expect("linked");
         assert_eq!(
             read(state.path(), Source::Github, "work", now),
@@ -595,7 +685,8 @@ mod tests {
             "a link was read through, or read as no items"
         );
         fs::remove_file(file(state.path(), Source::Github)).expect("gone");
-        let large = vec![b' '; usize::try_from(LARGEST_FILE).expect("small") + 1];
+        let mut large = fs::read(&elsewhere).expect("read");
+        large.resize(usize::try_from(LARGEST_FILE).expect("small") + 1, b' ');
         fs::write(file(state.path(), Source::Github), large).expect("written");
         assert_eq!(
             read(state.path(), Source::Github, "work", now),

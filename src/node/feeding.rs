@@ -89,6 +89,11 @@ impl<S: Store + Clone + Send + Sync + 'static> Shared<S> {
             });
             moved |= feeding.moved;
         }
+        // A source left out above, its receptor off or its file unsound,
+        // still lets its feedings go once they're ten minutes old.
+        for feeder in feeders.values_mut() {
+            moved |= feeder.fade(now);
+        }
         drop(feeders);
         if moved {
             self.said.fed.send_modify(|said| *said += 1);
@@ -266,6 +271,22 @@ mod tests {
             [1],
             "a running receptor's item is read"
         );
+
+        // The same record, its process since ended, reads off.
+        let mut ended = std::process::Command::new("true")
+            .spawn()
+            .expect("a process runs");
+        ended.wait().expect("it ended");
+        let record = receptor::file(&folder, Source::Github);
+        let mut gone: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&record).expect("kept")).expect("json");
+        gone["pid"] = ended.id().into();
+        std::fs::write(&record, gone.to_string()).expect("planted");
+        assert!(
+            read().await.is_empty(),
+            "a receptor that reads off still fed what it last named"
+        );
+        reading(&folder, Source::Github, "work");
 
         std::fs::write(feed::file(&folder, Source::Github), b"{ not whole").expect("planted");
         assert!(

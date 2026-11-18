@@ -2127,8 +2127,8 @@ The file is `receptors/<source>.json` in the realm's state folder,
 written whole through a dot-file renamed into place, the folder `0700`
 and the file `0600`. `mycelium receptors say SOURCE --state STATE
 --every SECS --pid PID` writes it, with `--hour`, `--today` and
-`--addressed` for its counts, and takes nothing else. It holds counts
-and times alone, never what was read:
+`--addressed` for its counts, and takes nothing else but the changes
+under Feeding. It holds counts and times alone, never what was read:
 
 | Field | What it is |
 | --- | --- |
@@ -2214,10 +2214,17 @@ writes it whole, `--owner` and `--item` each repeated, so naming the
 owners with no item clears it. An item whose owner isn't one named
 exactly, whose name isn't letters, digits, `-`, `_` and `.`, or whose
 number isn't a positive whole one is refused, and so is the whole
-write, before the record is. Each item is its change, `reason`
+write, before the record is: one bad item costs the counts too, so the
+receptor names each owner as its items spell it. A record refused
+(another realm's, counts that can't be, or a process not running)
+writes no items either; a write that fails on the disk after the items
+were written leaves them for the next round to write whole again. Each
+item is its change, `reason`
 (`review-asked`) and `since`, when it was first kept and never later
 than the writer's clock, never a title, body, author, branch or comment.
-One gone from the file is gone, and none is kept past 30 days.
+One gone from the file is gone, and none is kept past 30 days. One
+still named at 30 days is let go for a round, then kept as new, so its
+cell hears it once more each 30 days while its review is asked.
 
 Which cell owns a change is its quest's word, never a session's: the
 quest's README names the change as a `github-pr` alias, exactly
@@ -2254,7 +2261,9 @@ map can draw the line:
 
 The `fed` record never names the change, so the map shows who fed
 whom. The fyi itself is stored and served as any message is, addressed
-to the one cell it fed.
+to the one cell it fed. Like a signal, it grants nothing: a fact for
+the cell to weigh, never an order. A feeding fades at ten minutes even
+when its receptor went off or its items can't be read.
 
 ### Forages
 

@@ -299,6 +299,12 @@ fn a_record_refused_keeps_none_of_the_items_named_beside_it() {
     let gone = ended.id().to_string();
     let here = std::process::id().to_string();
     let items = ["--owner", "jsama", "--item", "jsama/kestrel#12"];
+    let empty = tempfile::tempdir().expect("a temporary folder");
+    let kept_before = github(
+        dir.path(),
+        &["--owner", "jsama", "--item", "jsama/kestrel#11"],
+    );
+    assert!(kept_before.status.success(), "a sound say was refused");
     for (why, standing) in [
         (
             "its process is gone",
@@ -324,14 +330,22 @@ fn a_record_refused_keeps_none_of_the_items_named_beside_it() {
             .chain(standing)
             .chain(items)
             .collect();
-        let said = say(dir.path(), &words);
-        assert!(!said.status.success(), "a record was taken though {why}");
+        for folder in [empty.path(), dir.path()] {
+            let said = say(folder, &words);
+            assert!(!said.status.success(), "a record was taken though {why}");
+        }
         assert!(
-            !dir.path()
+            !empty
+                .path()
                 .join("receptors")
                 .join("github.items.json")
                 .exists(),
             "items were kept beside a record refused because {why}"
+        );
+        assert_eq!(
+            kept(dir.path()),
+            ["jsama/kestrel#11"],
+            "the items kept before were changed by a record refused because {why}"
         );
     }
 }
