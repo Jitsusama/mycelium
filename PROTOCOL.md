@@ -1967,9 +1967,16 @@ the node's link to that machine says so. A run is told no
 that session alone, as the kernel and pi's records prove it, since
 pi-fence grants the work trees that session holds. Alone counts
 every session claimed there, proved or not, and every one its host's
-record lists, so the sessions of a pi
-host holding more than one, the person's, one on a Mac and one asked
-from another machine are told none. The node takes `runs`
+record lists. A pi host's sessions share its process, so one of them
+is proved instead by the pi-spawner the host started for it: the
+host's own child, named `pi-spawner` by the kernel, whose starting
+environment's `PI_SPAWNER_SESSION` names a session of the host proved
+as above. Only the host makes its own children and pi-spawner never
+replaces itself, so nothing a command runs can change what that
+names; any other process can, so it proves nothing. Otherwise the
+sessions of a host holding more than one, the person's, one on a Mac,
+where no process's environment is read, and one asked from another
+machine are told none. The node takes `runs`
 only from a declaration reached through folders and links root owns
 and no one else may write, each followed as written, with any part
 within the Nix store taken as the store's, and only where its first

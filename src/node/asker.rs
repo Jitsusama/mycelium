@@ -158,11 +158,26 @@ impl Processes {
         let Self::Folder(procs) = self.kernel() else {
             return None;
         };
-        let environ = fs::read(procs.join(pid.to_string()).join("environ")).ok()?;
-        environ.split(|byte| *byte == 0).find_map(|pair| {
-            let value = pair.strip_prefix(b"PI_SESSION_ID=")?;
-            String::from_utf8(value.to_vec()).ok()
-        })
+        began_with(procs, pid, b"PI_SESSION_ID=")
+    }
+
+    /// The session the host at process `host` started the spawner below
+    /// it, in `asker`'s lineage, to run commands for, as the spawner's own
+    /// environment names it. Only the host makes its direct children, and
+    /// pi-spawner never replaces itself, so nothing it runs can change what
+    /// it began with; a command the host started itself could, and names
+    /// none here.
+    fn spawned_for(&self, asker: i32, host: i32) -> Option<String> {
+        let Self::Folder(procs) = self else {
+            return None;
+        };
+        let lineage = self.lineage(asker);
+        let at = lineage.iter().position(|process| *process == host)?;
+        let spawner = *lineage.get(at.checked_sub(1)?)?;
+        let status = fs::read_to_string(procs.join(spawner.to_string()).join("status")).ok()?;
+        let (name, parent) = named(&status)?;
+        (name == SPAWNER && parent == host).then_some(())?;
+        began_with(procs, spawner, SPAWNED_FOR)
     }
 
     /// What is told of process `pid`.
@@ -501,6 +516,24 @@ pub(super) fn started(procs: &Path, pid: i32) -> Option<u64> {
     after.split_whitespace().nth(19)?.parse().ok()
 }
 
+/// The value of the variable `key` names, its `=` included, in the
+/// environment process `pid` in `procs` began with.
+fn began_with(procs: &Path, pid: i32, key: &[u8]) -> Option<String> {
+    let environ = fs::read(procs.join(pid.to_string()).join("environ")).ok()?;
+    environ.split(|byte| *byte == 0).find_map(|pair| {
+        let value = pair.strip_prefix(key)?;
+        String::from_utf8(value.to_vec()).ok()
+    })
+}
+
+/// The name the kernel gives the harness's pi-spawner, which a pi host
+/// starts once for each of its sessions.
+const SPAWNER: &str = "pi-spawner";
+
+/// What names, in a pi-spawner's own environment, the session whose
+/// commands it runs.
+const SPAWNED_FOR: &[u8] = b"PI_SPAWNER_SESSION=";
+
 /// Whether process `pid` in `procs` is pi's own, by the name the kernel
 /// gives it.
 fn named_pi(procs: &Path, pid: i32) -> bool {
@@ -700,6 +733,15 @@ pub fn session_alone(
         .filter(|(_, owner)| *owner == process)
         .map(|(session, _)| session.as_str())
         .collect();
+    // A host's sessions share its process, but each runs its commands
+    // through a spawner of its own that the host names it to.
+    let spawned = (!keys.is_empty())
+        .then(|| processes.spawned_for(pid, process))
+        .flatten()
+        .filter(|session| proved.contains(&session.as_str()));
+    if let Some(session) = spawned {
+        return Ok(session);
+    }
     match proved.as_slice() {
         [one] if sharing <= 1 => Ok((*one).to_owned()),
         [] => Err(format!(
@@ -1365,6 +1407,87 @@ mod tests {
         assert!(
             alone(None, &claims, &owners).is_err(),
             "nor where nothing names the asker"
+        );
+    }
+
+    #[test]
+    fn a_hosts_session_is_proved_by_the_spawner_the_host_started_for_it() {
+        let host = "agents.slice/pi-host-work-background.service";
+        let procs = procs(&[
+            (78, "node", 1, host),
+            (88, "pi-spawner", 78, "pi-spawner-b.scope"),
+            (89, "bash", 88, "pi-spawner-b.scope"),
+            (90, "mycelium", 89, "pi-spawner-b.scope"),
+            (87, "pi-spawner", 78, "pi-spawner-a.scope"),
+            (86, "mycelium", 87, "pi-spawner-a.scope"),
+            (94, "pi-spawner", 89, "pi-spawner-b.scope"),
+            (95, "mycelium", 94, "pi-spawner-b.scope"),
+            (79, "bash", 78, host),
+            (80, "mycelium", 79, host),
+            (84, "pi-spawner", 78, "pi-spawner-c.scope"),
+            (85, "mycelium", 84, "pi-spawner-c.scope"),
+            (82, "pi-spawner", 78, "pi-spawner-d.scope"),
+            (83, "mycelium", 82, "pi-spawner-d.scope"),
+        ]);
+        for (pid, environ) in [
+            (88, "PI_QUEST=QEST-B\0PI_SPAWNER_SESSION=s-two\0"),
+            (87, "PI_SPAWNER_SESSION=s-one\0"),
+            (94, "PI_SPAWNER_SESSION=s-one\0"),
+            (79, "PI_SPAWNER_SESSION=s-one\0PI_SESSION_ID=s-one\0"),
+            (84, "PI_SPAWNER_SESSION=s-alone\0"),
+            (82, "PI_SPAWNER_SESSION=s-three\0"),
+        ] {
+            fs::write(procs.path().join(pid.to_string()).join("environ"), environ)
+                .expect("its environment is written");
+        }
+        let claims = [
+            claim("s-one", 78, Some(1), Some("work")),
+            claim("s-two", 78, Some(1), Some("work")),
+            claim("s-three", 78, Some(1), Some("work")),
+            claim("s-alone", 69, Some(1), None),
+        ];
+        let mut owners = vec![
+            ("s-one".to_owned(), 78),
+            ("s-two".to_owned(), 78),
+            ("s-alone".to_owned(), 69),
+        ];
+        let processes = folder(procs.path());
+        let hosts = tempfile::tempdir().expect("a folder for hosts' records");
+        let alone = |asker, owners: &[(String, i32)]| {
+            session_alone(Some(asker), &processes, owners, &claims, hosts.path())
+        };
+        assert_eq!(
+            alone(90, &owners),
+            Ok("s-two".to_owned()),
+            "the host started that spawner for s-two, and nothing below it can say otherwise"
+        );
+        assert_eq!(
+            alone(86, &owners),
+            Ok("s-one".to_owned()),
+            "and the other spawner for s-one"
+        );
+        assert_eq!(
+            alone(95, &owners),
+            Ok("s-two".to_owned()),
+            "a spawner started below a command proves nothing: only the host's own child does"
+        );
+        assert!(
+            alone(80, &owners).is_err_and(|why| why.contains("sessions share")),
+            "a command the host started itself, rather than a spawner, may have set its \
+             own environment, so it proves no session"
+        );
+        assert!(
+            alone(85, &owners).is_err_and(|why| why.contains("sessions share")),
+            "a spawner naming a session another process owns proves nothing here"
+        );
+        assert!(
+            alone(83, &owners).is_err_and(|why| why.contains("sessions share")),
+            "nor one naming a session its host claims but can't prove"
+        );
+        owners.retain(|(session, _)| session != "s-two");
+        assert!(
+            alone(90, &owners).is_err_and(|why| why.contains("sessions share")),
+            "nor once the session it names no longer proves"
         );
     }
 
