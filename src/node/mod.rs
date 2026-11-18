@@ -4886,7 +4886,10 @@ mod tests {
         let store = store.clone();
         let steers = inboxes(socket);
         let updater = updater_of(socket);
-        let serves = BTreeMap::from([("quest".to_owned(), quests_of(socket))]);
+        let serves = BTreeMap::from([
+            ("quest".to_owned(), quests_of(socket)),
+            ("ended-quest".to_owned(), ended_quests_of(socket)),
+        ]);
         let providers = providers_of(socket);
         let book = Book::at(socket.with_file_name("made.jsonl"));
         let parked = parks_of(socket);
@@ -5986,6 +5989,15 @@ esac
         }
     }
 
+    /// The quests that ended a node on `socket` serves, from a file beside
+    /// it, as the harness keeps them.
+    fn ended_quests_of(socket: &Path) -> served::Source {
+        served::Source {
+            file: Some(socket.with_file_name("ended.json")),
+            ..quests_of(socket)
+        }
+    }
+
     #[tokio::test]
     async fn a_file_the_node_serves_is_a_kind_its_clients_watch() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -6845,17 +6857,12 @@ esac
         );
     }
 
-    // WCJQSG (2026-11-16): an orchestrator ends a session it orchestrates,
-    // held where both run, as this node's record of orchestrations proves.
-    #[tokio::test]
-    async fn an_orchestrator_ends_a_session_it_orchestrates_held_here() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("skiff").join("work.sock");
-        let store = Memory::default();
-        let (_stop, _node, _client) =
-            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
-        steward_claims(&socket).await;
-        let held = held_of(&socket);
+    /// Holds HARBOR's session for real in the folder of holds beside
+    /// `socket` as `e0d4`, its presence in `store` naming the hold, and
+    /// answers once the node lists it, with that folder, the holder and
+    /// the program.
+    async fn harbour_held(store: &Memory, socket: &Path) -> (PathBuf, u32, u32) {
+        let held = held_of(socket);
         let (holder, program) = holds_for_real(&held, "e0d4");
         // HARBOR's pi is a stand-in, so its presence names its hold by the
         // file that wakes it rather than by the program's pid.
@@ -6872,7 +6879,7 @@ esac
             }),
             true,
         );
-        let listing = socket.clone();
+        let listing = socket.to_path_buf();
         let listed = tokio::task::spawn_blocking(move || {
             let mut client = Client::connect(&listing).expect("the client connects");
             // Nothing tells a client when the node has read the hold, so it
@@ -6891,18 +6898,35 @@ esac
             .await
             .expect("the node reads HARBOR's hold in time")
             .expect("the client asks");
-        asks_below(&socket, 7001);
+        (held, holder, program)
+    }
 
-        let ended = ask(
-            socket.clone(),
+    /// What the node at `socket` answers pi `asker` as it ends `e0d4`.
+    async fn ends_e0d4(socket: &Path, asker: i32) -> Reply {
+        asks_below(socket, asker);
+        ask(
+            socket.to_owned(),
             Request::End {
                 held: "e0d4".to_owned(),
             },
         )
-        .await;
+        .await
+    }
+
+    // WCJQSG (2026-11-16): an orchestrator ends a session it orchestrates,
+    // held where both run, as this node's record of orchestrations proves.
+    #[tokio::test]
+    async fn an_orchestrator_ends_a_session_it_orchestrates_held_here() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        steward_claims(&socket).await;
+        let (held, holder, program) = harbour_held(&store, &socket).await;
 
         assert_eq!(
-            ended,
+            ends_e0d4(&socket, 7001).await,
             Ok(Response::Ended {
                 machine: "skiff".to_owned(),
                 held: "e0d4".to_owned(),
@@ -6917,6 +6941,60 @@ esac
         assert!(
             !held.join("e0d4.json").exists() && !held.join("e0d4.sock").exists(),
             "its record and socket are taken away"
+        );
+    }
+
+    // WCJQSG (2026-11-17): `holds 26d43b06 end` was refused for a session
+    // of UQ5LOH's, a quest that had concluded, since no open quest's record
+    // held it; the harness's record of ended quests names who orchestrated
+    // each and its sessions.
+    #[tokio::test]
+    async fn an_orchestrator_ends_a_session_of_a_quest_that_ended() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        fs::create_dir_all(socket.parent().expect("its folder")).expect("made");
+        let ended = |orchestrator: &str| {
+            json!({"quests": [{"id": "QEST-20261115-HARBOR", "address": "HARBOR",
+                "status": "concluded", "sessions": ["s-harbour"],
+                "orchestrator": orchestrator}]})
+        };
+        fs::write(
+            socket.with_file_name("ended.json"),
+            ended("WCJQSG").to_string(),
+        )
+        .expect("written");
+        let mut open = orchestrations();
+        open["quests"]
+            .as_array_mut()
+            .expect("a list")
+            .retain(|quest| quest["address"] != "HARBOR");
+        let store = Memory::default();
+        let (_stop, _node, _client) = orchestrated_in(&store, &socket, &open, &[]).await;
+        steward_claims(&socket).await;
+        let (held, holder, program) = harbour_held(&store, &socket).await;
+
+        assert_eq!(
+            ends_e0d4(&socket, 7002).await,
+            Err(
+                "OSPHT4 isn't proved to orchestrate the session held as e0d4, so it can't end \
+                 it: QEST-20261115-HARBOR ended orchestrated by WCJQSG, and OSPHT4 neither \
+                 heads nor orchestrates WCJQSG's quest by this node's record"
+                    .to_owned()
+            ),
+            "a session that didn't orchestrate the quest ends nothing of it"
+        );
+        assert_eq!(
+            ends_e0d4(&socket, 7001).await,
+            Ok(Response::Ended {
+                machine: "skiff".to_owned(),
+                held: "e0d4".to_owned(),
+                ending: hold::end::Ending::Gently,
+            }),
+            "WCJQSG ends the session of HARBOR's quest, which it orchestrated"
+        );
+        assert!(
+            !runs(holder) && !runs(program) && !held.join("e0d4.json").exists(),
+            "its holder and program are gone, and its record"
         );
     }
 
