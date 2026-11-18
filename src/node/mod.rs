@@ -1140,7 +1140,7 @@ struct Shared<S> {
     placements: Option<Arc<placements::Log>>,
     /// The strictest fence each session here was seen to run in.
     fences: Arc<fences::Seen>,
-    /// The tree networks formed, kept across restarts.
+    /// The tree and files networks formed, kept across restarts.
     formed: Arc<Formed>,
     /// This node's own socket, which a carry the person asks of it runs
     /// its steps through, as `mycelium carry` does.
@@ -2773,8 +2773,8 @@ impl<S: Store> Shared<S> {
 
     /// What the node does each minute: it measures this machine, hands its
     /// sessions over once it leaves soon, keeps it awake while work wants
-    /// it, tells its links of its carries, judges which tree networks
-    /// stand and lets go of machines made whose time is up and that no
+    /// it, tells its links of its carries, judges which tree and files
+    /// networks stand and lets go of machines made whose time is up and that no
     /// link reaches, answering what it runs on.
     fn each_minute(&self, awake: &mut Awake) -> Option<facts::Power> {
         let here = self.measure();
@@ -9140,6 +9140,129 @@ esac
                     .any(|one| one["key"] == "formed:tree.github:harbour/oars:jsama/tides")
             }),
             "asked alone, formed networks are made first: {formed}"
+        );
+    }
+
+    /// Says in `store` that `session`, on kestrel, shares its quest's
+    /// scratch folder.
+    fn sharing_scratch(store: &Memory, session: &str) {
+        let presence = json!({
+            "session": session, "addresses": [session.to_uppercase()], "groups": [],
+            "busy": true, "state": "busy", "at": jiff::Timestamp::now().to_string(),
+            "shares": [{"key": "quest:QEST-20261112-HARBOR", "for": "Harbour Ships",
+                         "folder": format!("/scratch/{session}")}],
+        });
+        store
+            .put_presence(session, "kestrel", &presence)
+            .expect("the presence is kept");
+    }
+
+    /// What `client` is answered to a list of `kind`, asked as `id`.
+    async fn records_of(client: &mut Speaking, id: u64, kind: &str) -> Vec<Value> {
+        client
+            .ask(json!({"id": id, "ask": "list", "kind": kind}))
+            .await;
+        loop {
+            let said = client.next().await;
+            if said["id"] == id {
+                break said["records"].as_array().cloned().unwrap_or_default();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_folder_two_cells_shared_stays_while_one_says_it_though_the_node_restarts() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let network = "network:files.quest:QEST-20261112-HARBOR";
+
+        let both = Memory::default();
+        let (stop, running) = node(&both, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 0, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(json!({"id": 1, "ask": "watch", "kind": "network"}))
+            .await;
+        sharing_scratch(&both, "reef01");
+        sharing_scratch(&both, "kelp01");
+        let formed = watched_until(&mut client, network, |one| {
+            one["cells"]
+                .as_array()
+                .is_some_and(|cells| cells.len() == 2)
+        })
+        .await;
+        assert_eq!(
+            (&formed["shape"], &formed["title"]),
+            (&json!("files"), &json!("Harbour Ships")),
+            "two cells saying one folder's key form its network, titled by what it is for"
+        );
+        drop(client);
+        stop_one((stop, running)).await;
+
+        let one = Memory::default();
+        let (_stop, _running) = node(&one, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 0, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
+            .await;
+        sharing_scratch(&one, "reef01");
+        let cell = watched_until(&mut client, "cell:REEF01", |_| true).await;
+        assert_eq!(
+            cell["networks"],
+            json!(["files.quest:QEST-20261112-HARBOR"]),
+            "formed before the node restarted, its one cell left is on it: {cell}"
+        );
+        let networks = records_of(&mut client, 3, "network").await;
+        let kept = networks.iter().find(|one| one["key"] == network);
+        assert_eq!(
+            kept.map(|one| &one["cells"]),
+            Some(&json!(["REEF01"])),
+            "and it is listed, with that cell: {networks:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_folder_none_shared_for_ten_minutes_is_gone_though_a_cell_says_it_again() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        // As the node makes its own: open to nobody else, or no socket
+        // goes there.
+        DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700)
+            .create(dir.path().join("skiff"))
+            .expect("its folder");
+        let now = jiff::Timestamp::now().as_millisecond();
+        let name = "files.quest:QEST-20261112-HARBOR";
+        let kept = json!({name: {"at": now - 30 * 60 * 1000, "left": now - 11 * 60 * 1000}});
+        fs::write(socket.with_file_name("formed-work.json"), kept.to_string())
+            .expect("what formed before is kept");
+
+        let store = Memory::default();
+        let (_stop, _running) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 0, "ask": "hello"})).await;
+        client.next().await;
+        client
+            .ask(json!({"id": 1, "ask": "watch", "kind": "cell"}))
+            .await;
+        sharing_scratch(&store, "reef01");
+        let cell = watched_until(&mut client, "cell:REEF01", |_| true).await;
+        assert_eq!(
+            cell["networks"],
+            json!([]),
+            "faded, its cell is on it no more: {cell}"
+        );
+        let networks = records_of(&mut client, 2, "network").await;
+        assert!(
+            networks.iter().all(|one| one["name"] != name),
+            "nor is it listed: {networks:?}"
+        );
+        let formed = records_of(&mut client, 3, "formed").await;
+        assert!(
+            formed.iter().all(|one| one["name"] != name),
+            "nor kept as formed: {formed:?}"
         );
     }
 

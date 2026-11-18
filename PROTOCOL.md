@@ -1756,8 +1756,8 @@ The `network` kind holds each network of the realm, keyed by its name
 as the mesh names its group, such as `repo.skiff` or `machines`, made
 by the very model `mycelium networks` draws, of the node's teams,
 sessions, machines, receptors and builders, with its fields: its
-`shape` (`orchestration`, `project`, `repository`, `tree`, `group`,
-`machines` or `outside`), the `short` name a person types, its `title`
+`shape` (`orchestration`, `project`, `repository`, `tree`, `files`,
+`group`, `machines` or `outside`), the `short` name a person types, its `title`
 and `glyph`
 where something says them, the network it is `within`, its `cells` and
 the `machines` they run on, the machines' own network's `builders`
@@ -1776,8 +1776,20 @@ where two trees' short names would be one. The machine is no part of
 it: cells on two machines holding one branch share one tree. A tree one
 cell holds alone, which no two have held at once, is no network, only
 among that cell record's `trees`, and a group named as a tree joins
-none. The `formed` kind holds each tree network formed, keyed by its
-name, as the node keeps them in `formed-<realm>.json` beside
+none. A folder is a `files` network the same way, once two cells or
+more share it at once, as each session's presence lists its `shares`
+(each `key`, what it is `for` and the `folder` its own copy is in), and
+stays one while any cell shares it. Each machine keeps its own copy, so
+one is known by its key alone, such as `quest:<id>` for a quest's
+scratch folder: its name is `files.<key>`, its short name the key, and
+its title what the earliest of its cells says it is `for`. A key is 1
+to 96 letters, digits, colons, dashes and underscores, beginning with a
+letter or digit; `for` is 1 to 120 characters and `folder` 1 to 1024,
+neither with a control character. A cell's first 16 shares are read,
+those past these bounds are passed over, and a key said twice is its
+first; each is among that cell record's `shares`, and a group named as
+a files network joins none. The `formed` kind holds each tree or files
+network formed, keyed by its name, as the node keeps them in `formed-<realm>.json` beside
 `carries.jsonl`: its `name`, `at`, when the node first saw two cells
 hold it, and `left`, when it first saw the last cell gone, or null,
 each in milliseconds since the epoch; it is heard at `left`, or else
@@ -1790,7 +1802,7 @@ of `formed` is told as the node sees one form, be left, be held again
 or fade, so within the minute, or at once where a `network` or `cell`
 ask saw it. Each node keeps its own, formed as its own
 record of the realm holds them; a link doesn't carry them, though a
-carried session's cell brings those its trees make. A file
+carried session's cell brings those its trees and shares make. A file
 that can't be read forms none. One that doesn't parse is moved aside
 as the node starts, as `formed-<realm>.json.bad.<millis>`, so none
 is lost under another. One that can't be opened, or moved, is left
@@ -1811,8 +1823,8 @@ same records as the `network` kind, less its `kind`: its `type`
 (`session`, `machine` or `receptor`), and where it says them its
 `title`, a session's `id`, `window`, `standing` (`needs-you`, `stuck`,
 `moving`, `quiet` or `dormant`), `doing`, `asks`, `repo`, `usage`, the
-networks it `leads`, `machine`, `since`, `quest`, `plan`, `cwd` and the
-`trees` it holds, a machine's or a receptor's `state`, a machine's
+networks it `leads`, `machine`, `since`, `quest`, `plan`, `cwd`, the
+`trees` it holds, the folders it `shares`, a machine's or a receptor's `state`, a machine's
 `busy` and the sessions it `runs`, a receptor's `counts`, and the
 `networks` it joined. A session's `quest`
 is the quest it works on, a field like any other; a cell is known by its

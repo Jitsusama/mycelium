@@ -70,6 +70,7 @@ pub(super) const PRESENCE: Kept = Only(&[
     ("paused", Whole),
     ("questInfo", Only(&[("short", Whole), ("title", Whole)])),
     ("repo", Whole),
+    ("shares", Whole),
     ("state", Whole),
     ("trees", Whole),
     (

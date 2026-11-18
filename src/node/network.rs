@@ -28,7 +28,7 @@ pub const KIND: &str = "network";
 
 /// What the node's records hold: its `teams`, `machines`, `receptors` and
 /// `builders` records, by key, its `sessions`, the machine it runs on, and
-/// the tree networks `formed`.
+/// the tree and files networks `formed`.
 pub struct Holding<'a> {
     /// The machine the node runs on, whose sessions' standing is its own
     /// judgement rather than their presences' word.
@@ -43,7 +43,8 @@ pub struct Holding<'a> {
     pub receptors: &'a BTreeMap<String, Value>,
     /// Its builders' records.
     pub builders: &'a BTreeMap<String, Value>,
-    /// The tree networks formed, which each making keeps up to date.
+    /// The tree and files networks formed, which each making keeps up to
+    /// date.
     pub formed: &'a Formed,
 }
 
@@ -95,7 +96,8 @@ pub(super) struct Made {
 
 /// The mycelium `held` makes, each session standing as `standing` says,
 /// made as `mycelium networks` makes it (`Mycelium::of_records`), with
-/// the tree networks formed told how many cells hold each now.
+/// the tree and files networks formed told how many cells hold each
+/// now.
 pub(super) fn made(held: &Holding<'_>, standing: &Standing<'_>) -> Made {
     let mut heard: HashMap<String, i64> = HashMap::new();
     let mut hear = |name: String, at: Option<i64>| {
@@ -140,7 +142,7 @@ pub(super) fn made(held: &Holding<'_>, standing: &Standing<'_>) -> Made {
     let holding: BTreeMap<String, usize> = mycelium
         .networks
         .iter()
-        .filter(|network| network.shape == Shape::Tree)
+        .filter(|network| matches!(network.shape, Shape::Tree | Shape::Files))
         .map(|network| (network.name.clone(), network.cells.len()))
         .collect();
     held.formed.saw(&holding, now);

@@ -572,11 +572,11 @@ fn bring_cells(hands: &mut impl Hands, sessions: &[Session]) -> Result<BTreeSet<
         .map_err(|why| format!("the node didn't say its ties: {why}"))?;
     let in_a_network = carried
         .iter()
-        .any(|(_, session)| !crate::networks::tree_networks(&session.presence).is_empty());
+        .any(|(_, session)| !crate::networks::formed_networks(&session.presence).is_empty());
     let formed = if in_a_network {
         hands
             .formed()
-            .map_err(|why| format!("the node didn't say which tree networks formed: {why}"))?
+            .map_err(|why| format!("the node didn't say which networks formed: {why}"))?
     } else {
         Vec::new()
     };
@@ -1216,7 +1216,7 @@ mod tests {
                     unsaid_formed: Some("no answer".to_owned()),
                     ..realm_in_a_tree()
                 },
-                "the node didn't say which tree networks formed: no answer",
+                "the node didn't say which networks formed: no answer",
             ),
             (
                 Realm {

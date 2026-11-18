@@ -32,6 +32,7 @@ impl Shape {
             Self::Project => "projects",
             Self::Repository => "repositories",
             Self::Tree => "trees",
+            Self::Files => "shared files",
             Self::Group => "groups",
             Self::Machines => "machines",
             Self::Outside => "outside",
@@ -45,6 +46,7 @@ impl Shape {
             Self::Project => "project",
             Self::Repository => "repository",
             Self::Tree => "tree",
+            Self::Files => "shared folder",
             Self::Group => "group",
             Self::Machines => "the machines' network",
             Self::Outside => "outside source",
@@ -519,10 +521,10 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
     ];
     for shape in Shape::EACH {
         // A realm whose machines sense nothing outside says nothing of it,
-        // and a tree is a network only while two cells hold it, so neither
-        // heading is drawn while no such network is.
+        // and a tree or a folder is a network only while two cells share
+        // it, so none of their headings is drawn while no such network is.
         let any = mycelium.networks.iter().any(|each| each.shape == shape);
-        if matches!(shape, Shape::Outside | Shape::Tree) && !any {
+        if matches!(shape, Shape::Outside | Shape::Tree | Shape::Files) && !any {
             continue;
         }
         lines.push(look.paint(BOLD, shape.heading()));

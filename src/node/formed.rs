@@ -1,8 +1,10 @@
-//! The tree networks that have formed, kept across the node's restarts.
+//! The tree and files networks that have formed, kept across the node's
+//! restarts.
 //!
-//! A tree's network forms once two cells hold the tree at once, and stays
-//! while one does, so a network two sessions shared isn't lost the moment
-//! one of them ends. Once none holds it, it is kept 10 minutes more, so a
+//! A tree's network forms once two cells hold the tree at once, and a
+//! folder's once two share it, and each stays while one does, so a
+//! network two sessions shared isn't lost the moment one of them ends.
+//! Once none holds it, it is kept 10 minutes more, so a
 //! cell starting again soon after rejoins it, and then it fades. Each is
 //! kept as a `formed:<network name>` record, saying when it formed (`at`)
 //! and, while none holds it, when its last cell went (`left`), each in
@@ -43,7 +45,7 @@ impl Kept {
     }
 }
 
-/// The tree networks formed, by name, as kept in their file.
+/// The tree and files networks formed, by name, as kept in their file.
 pub struct Formed {
     file: PathBuf,
     /// Whether what forms is written to `file`: not where what stood there
@@ -108,7 +110,8 @@ impl Formed {
             .collect()
     }
 
-    /// Takes in how many cells hold each tree network made at `now`, by
+    /// Takes in how many cells hold each tree or files network made at
+    /// `now`, by
     /// name: one two hold forms, one none holds is left, and one left
     /// [`FADES_AFTER`] ago fades. Keeps it in its file where anything
     /// changed, and says whether it did.
