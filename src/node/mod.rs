@@ -59,6 +59,7 @@ use crate::within;
 use crate::{unanswered, words};
 use turns::{Asked, Turns};
 
+mod arrival;
 mod asker;
 pub use asker::Processes;
 mod cell;
@@ -1155,6 +1156,8 @@ struct Shared<S> {
     fences: Arc<fences::Seen>,
     /// The tree and files networks formed, kept across restarts.
     formed: Arc<Formed>,
+    /// The cells sessions carried here arrived with.
+    arrivals: Arc<arrival::Arrivals>,
     /// This node's own socket, which a carry the person asks of it runs
     /// its steps through, as `mycelium carry` does.
     node: PathBuf,
@@ -1339,6 +1342,7 @@ impl<S: Clone> Clone for Shared<S> {
             placements: self.placements.clone(),
             fences: self.fences.clone(),
             formed: self.formed.clone(),
+            arrivals: self.arrivals.clone(),
             node: self.node.clone(),
             shares: self.shares.clone(),
             claiming: self.claiming.clone(),
@@ -1971,6 +1975,7 @@ impl<S: Store> Shared<S> {
             fences: Arc::new(fences::Seen::at(carries.with_file_name("fences.json"))),
             // Beside the carries too, its realm's own in the machine's state.
             formed: Arc::new(Formed::beside(&carries, &hello.realm)),
+            arrivals: Arc::default(),
             carries,
             settles: settles.map(|settles| Arc::new(Settler::new(settles))),
             scratch: sharing.as_ref().map(|places| places.scratch.clone()),
@@ -2598,10 +2603,14 @@ impl<S: Store> Shared<S> {
         let now = jiff::Timestamp::now().as_millisecond();
         let (aliases, messages) = {
             let inner = self.lock();
-            let aliases = tie::aliases(inner.state.each_session());
+            let mut aliases = tie::aliases(inner.state.each_session());
+            self.arrivals
+                .alias(inner.state.each_session(), &mut aliases);
             (aliases, inner.state.shared_messages())
         };
-        tie::records(talk(messages.iter().map(AsRef::as_ref), &aliases, now))
+        let mut made = tie::records(talk(messages.iter().map(AsRef::as_ref), &aliases, now));
+        self.arrivals.ties(&mut made, now);
+        made
     }
 
     /// Each subject the realm's running cells declare, and its hubs, the
@@ -2645,7 +2654,8 @@ impl<S: Store> Shared<S> {
         let receptors = self.receptor_records();
         let builders = self.builder_records();
         let parked = standing::parked(&self.parked);
-        let sessions = self.lock().state.sessions();
+        let mut sessions = self.lock().state.sessions();
+        self.arrivals.named(&mut sessions);
         let standing = |session: &Session| {
             let here = session.machine == self.machine;
             standing::standing(session, here, &parked, &self.boot)
@@ -2900,6 +2910,7 @@ impl<S: Store> Shared<S> {
         self.keep_awake(awake, power.as_ref());
         self.cross_waiting();
         self.tell_carries();
+        self.read_arrivals();
         // A making is what forms, leaves and fades a tree's or a folder's
         // network, so one runs each minute though nobody asks.
         self.network_records();
@@ -2909,6 +2920,22 @@ impl<S: Store> Shared<S> {
             self.unbook(&made);
         }
         power
+    }
+
+    /// Reads the cell each session carried here arrived with, and tells
+    /// each watching ties that they changed, where they did.
+    fn read_arrivals(&self) {
+        let Some(scratch) = self.scratch.as_deref() else {
+            return;
+        };
+        let sessions = self.lock().state.sessions();
+        let now = jiff::Timestamp::now().as_millisecond();
+        if self
+            .arrivals
+            .read(scratch, &self.hostname, &self.machine, &sessions, now)
+        {
+            self.said.ties.send_modify(|told| *told += 1);
+        }
     }
 
     /// Tells each session running here that hasn't been told yet, once this
@@ -14123,6 +14150,68 @@ esac
             standing.unnamed.first(),
             Some(&older),
             "a make naming no realm is no realm's to book"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_carried_here_stands_as_the_cell_it_left_as_with_its_ties() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = dir.path().join("places");
+        let sharing = Places {
+            quests: places.join("quests"),
+            scratch: places.join("scratch"),
+            home: places.join("home"),
+            state: places.join("state"),
+        };
+        let quest = "QEST-20261112-HARBOR";
+        // As tern left it, the machine the session was carried from.
+        let handover = sharing.scratch.join(quest).join("handover").join("tern");
+        fs::create_dir_all(&handover).expect("tern's handover");
+        let heard = jiff::Timestamp::now().as_millisecond() - 60_000;
+        let brought = json!({
+            "session": "s-harbour", "cell": "HARBOR",
+            "ties": [{"key": "tie:HARBOR~KELP01", "kind": "tie", "heard": heard,
+                      "strength": 2.0}],
+        });
+        fs::write(handover.join("s-harbour.cell.json"), brought.to_string())
+            .expect("its cell left");
+        let store = Memory::default();
+        store.start_here(
+            "s-harbour",
+            json!({"session": "s-harbour", "addresses": ["STAND1"], "groups": [],
+                   "busy": true, "state": "working", "quest": quest,
+                   "at": jiff::Timestamp::now().to_string()}),
+            true,
+        );
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let given = Given {
+            sharing: Some(sharing),
+            ..bare("/nowhere/steer".into(), None)
+        };
+        let (shared, _) = Shared::of(
+            store,
+            (membership.hello(), dir.path().join("node.sock")),
+            given,
+            to_dial,
+        );
+        shared.read_sessions();
+
+        shared.each_minute(&mut Awake::by(None));
+
+        assert_eq!(
+            shared.tie_records()["tie:HARBOR~KELP01"].value()["strength"],
+            json!(2.0),
+            "the tie it brought is kept"
+        );
+        let cells = shared.cell_records();
+        assert!(
+            cells.contains_key("cell:HARBOR") && !cells.contains_key("cell:STAND1"),
+            "it stands as the cell it left as: {:?}",
+            cells.keys().collect::<Vec<_>>()
         );
     }
 
