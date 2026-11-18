@@ -1782,21 +1782,21 @@ stays one while any cell shares it. Each machine keeps its own copy, so
 one is known by its key alone, such as `quest:<id>` for a quest's
 scratch folder: its name is `files.<key>`, its short name the key, and
 its title what more of its cells say it is `for` than say anything
-else, or none where two things are said as often. A key is 3 to 96
+else, or none where two things are said as often or none says. A key
+is 3 to 96
 letters, digits, colons, dashes and underscores, beginning with a
 letter or digit and saying its kind, a colon and what it is of, as
-`quest:<id>`, so its short name is never another network's, as no
-group's name holds a colon; it is read in lower case, so keys
-differing only in case are one folder. `for` is cut to its first 120
-characters before it is judged, and `folder` is 1 to 1024 bytes; each
-is said, with no control character, mark turning text's direction,
-line or paragraph separator or Unicode format character, such as a
-zero-width space. A cell's first 16 shares are read, those past these
-bounds are passed over, and a key said twice is its first; each is
-among that cell record's `shares`. A name under `files.` holding a
-colon is a folder's alone, so a group named as one joins none, though
-one called `files`, or under it with no colon, is a group still; and
-a group a presence names holding a colon joins none. Its heading is
+`quest:<id>`, so its short name is never a group's, as no group's
+name holds a colon; it is read in lower case, so keys differing only
+in case are one folder. `for` and `folder` are drawn on one line: each
+control character and line or paragraph separator in them is read as
+a space and each mark turning text's direction is dropped, and then
+`for` is cut to its first 120 characters and `folder` is 1 to 1024
+bytes. A cell's first 16 shares are read, those past these bounds are
+passed over, and a key said twice is its first; each is among that
+cell record's `shares`. A group a presence names holding a colon joins
+none, as a folder's name does, so one called `files`, or under it with
+no colon, is a group still. Its heading is
 `folders`, as a session says it works in one, and nothing asks whether
 `mycelium share` keeps the copies alike. The `formed` kind holds each
 tree or files network formed, keyed by its name, as the node keeps

@@ -81,12 +81,16 @@ fn shares_of(presence: &Value) -> Vec<Share> {
             continue;
         };
         share.key.make_ascii_lowercase();
+        // Cleaned whole before the cut, so what a terminal would act on is
+        // gone wherever it was said, and the cut counts what is drawn.
+        share.about = drawable(&share.about);
+        share.folder = drawable(&share.folder);
         if let Some((cut, _)) = share.about.char_indices().nth(SHARE_FOR_MOST) {
             share.about.truncate(cut);
-            // A cut keeps what was read, so a long `for` held in every
-            // cell would still cost its whole length without this.
-            share.about.shrink_to_fit();
         }
+        // Cleaning and a cut keep what was read, so a long `for` held in
+        // every cell would still cost its whole length without this.
+        share.about.shrink_to_fit();
         if share.fits() && shares.iter().all(|each| each.key != share.key) {
             shares.push(share);
         }
@@ -202,10 +206,8 @@ impl Shape {
             "quest" => Some(Self::Project),
             "repo" => Some(Self::Repository),
             "tree" => Some(Self::Tree),
-            // Only a name under `files.` holding a key's colon is a
-            // folder's, so a group called `files` or `files.sync` is a
-            // group still.
-            "files" if group.contains('.') && group.contains(':') => Some(Self::Files),
+            // A folder's name holds its key's colon, which no group's can,
+            // so a group called `files` or `files.sync` is a group.
             _ => Some(Self::Group),
         }
     }
@@ -459,8 +461,9 @@ pub struct Share {
     /// What it is known by on every machine, such as
     /// `quest:QEST-20261112-HARBOR`.
     pub key: String,
-    /// What it is for, which titles its network.
-    #[serde(rename = "for")]
+    /// What it is for, which titles its network; empty where it says
+    /// nothing, so its network is untitled.
+    #[serde(rename = "for", default)]
     pub about: String,
     /// Where this session's copy is.
     pub folder: String,
@@ -472,13 +475,12 @@ impl Share {
     /// network's name can't be cut anywhere but its first dot, and saying
     /// its kind, a colon and what it is of, as `quest:<id>`, so its short
     /// name is never another shape's, as no mesh group holds a colon;
-    /// and what it is for and its folder each said, with nothing a
-    /// terminal draws as nothing or acts on, as both are drawn in one.
-    /// What it is for is cut to its bound before, in [`shares_of`].
+    /// and its folder said. What it is for, and its folder, are made
+    /// [`drawable`] and the first cut to its bound before, in
+    /// [`shares_of`].
     fn fits(&self) -> bool {
         let keyed = |byte: u8| byte.is_ascii_alphanumeric() || b":-_".contains(&byte);
         let key = self.key.as_bytes();
-        let plain = |said: &str| !said.is_empty() && !said.chars().any(unseen);
         key.first().is_some_and(u8::is_ascii_alphanumeric)
             && key.len() <= SHARE_KEY_MOST
             && key.iter().all(|byte| keyed(*byte))
@@ -486,8 +488,7 @@ impl Share {
                 .key
                 .split_once(':')
                 .is_some_and(|(_, of)| !of.is_empty())
-            && plain(&self.about)
-            && plain(&self.folder)
+            && !self.folder.is_empty()
             && self.folder.len() <= SHARE_FOLDER_MOST
     }
 
@@ -498,37 +499,25 @@ impl Share {
     }
 }
 
-/// Whether a terminal acts on `each` or draws it as nothing: a control
-/// character, a mark turning text's direction, a line or paragraph
-/// separator, or one of Unicode's format characters, such as a
-/// zero-width space, which would let one folder's title pass for
-/// another's.
-fn unseen(each: char) -> bool {
-    each.is_control()
-        || crate::forage::turns_direction(each)
-        || matches!(
-            each,
-            '\u{00AD}'
-                | '\u{0600}'..='\u{0605}'
-                | '\u{06DD}'
-                | '\u{070F}'
-                | '\u{0890}'..='\u{0891}'
-                | '\u{08E2}'
-                | '\u{180E}'
-                | '\u{200B}'..='\u{200D}'
-                | '\u{2028}'..='\u{2029}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{206A}'..='\u{206F}'
-                | '\u{FEFF}'
-                | '\u{FFF9}'..='\u{FFFB}'
-                | '\u{110BD}'
-                | '\u{110CD}'
-                | '\u{13430}'..='\u{1343F}'
-                | '\u{1BCA0}'..='\u{1BCA3}'
-                | '\u{1D173}'..='\u{1D17A}'
-                | '\u{E0001}'
-                | '\u{E0020}'..='\u{E007F}'
-        )
+/// `said` as a terminal can draw it on one line, as a forage's lines
+/// are: each control character and line or paragraph separator a space,
+/// and each mark turning text's direction gone, so nothing it says acts
+/// on the terminal or turns the text after it. Every other character
+/// stays, the joiners an emoji or a script spells with among them: a
+/// folder is never refused for its title, which was the quest's.
+fn drawable(said: &str) -> String {
+    said.chars()
+        .filter(|each| !crate::forage::turns_direction(*each))
+        .map(|each| {
+            if each.is_control() || matches!(each, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                each
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }
 
 /// One thing a session drawn says it did, as a line of its own.

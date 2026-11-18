@@ -623,16 +623,25 @@ fn a_shared_folder_is_titled_by_what_most_of_its_cells_say_it_is_for() {
             .map(|(_, _, title, cells)| (title.map(str::to_owned), cells.clone()))
     };
     let renamed = [
-        titled("ROWS01", 1, "Harbour"),
+        titled("ROWS01", 1, "Kelp"),
         titled("OARS01", 2, "Harbour Ships"),
         titled("KELP01", 3, "Harbour Ships"),
+        titled("TERN01", 4, "Harbour Ships"),
+        titled("SKIF01", 5, "Kelp"),
+        titled("REEF01", 6, ""),
+        titled("BUOY01", 7, ""),
+        titled("DOCK01", 8, ""),
     ];
-    let (most, _) = title(&renamed).expect("a network");
+    let (most, cells) = title(&renamed).expect("a network");
     assert_eq!(
-        most.as_deref(),
-        Some("Harbour Ships"),
-        "what most say, though the earliest says otherwise"
+        (most.as_deref(), cells.len()),
+        (Some("Harbour Ships"), 8),
+        "what most say, though the earliest, the latest and the greatest say otherwise, \
+         and those saying nothing, though on it, have no say"
     );
+    let (untitled, _) =
+        title(&[titled("ROWS01", 1, ""), titled("OARS01", 2, "")]).expect("a network");
+    assert_eq!(untitled, None, "where none says, none");
     let even = [
         titled("ROWS01", 1, "Harbour"),
         titled("OARS01", 2, "Harbour Ships"),
@@ -699,7 +708,42 @@ fn a_folder_two_cells_shared_stays_a_network_while_one_says_it_and_goes_once_fad
 }
 
 #[test]
-fn a_cell_shares_at_most_sixteen_folders_and_none_past_a_keys_or_titles_bounds() {
+fn a_folder_is_picked_by_its_key_and_a_group_called_files_by_its_name() {
+    let mut grouped = sharing("TERN01", 3, &json!([]));
+    grouped["groups"] = json!(["files", "files.sync"]);
+    let sessions = [
+        sharing("ROWS01", 1, &json!([scratch("/home/rows/scratch")])),
+        sharing("OARS01", 2, &json!([scratch("/Users/oars/scratch")])),
+        grouped,
+    ];
+    let mycelium = Mycelium::of("home", &[], &sessions, &[]);
+    let picked = |asked: &str| mycelium.named_network(asked).map(|each| each.name.clone());
+    assert_eq!(
+        [
+            picked("quest:QEST-20261112-HARBOR"),
+            picked("files"),
+            picked("files/sync"),
+        ],
+        [
+            Ok(HARBOUR.to_owned()),
+            Ok("files".to_owned()),
+            Ok("files.sync".to_owned()),
+        ],
+        "a folder is picked by its key, whatever its case, and the groups beside it by theirs"
+    );
+    let drawn =
+        network(&mycelium, "quest:qest-20261112-harbor", &look(), false).expect("found by its key");
+    assert!(
+        drawn
+            .lines()
+            .next()
+            .is_some_and(|head| head.ends_with("Harbour Ships · folder quest:qest-20261112-harbor")),
+        "its heading says it is a folder, by its key: {drawn}"
+    );
+}
+
+#[test]
+fn a_cell_shares_at_most_sixteen_folders() {
     let keys = |sessions: &[Value]| -> Vec<String> {
         let mycelium = Mycelium::of("home", &[], sessions, &[]);
         let rows = mycelium.cell("ROWS01").expect("Rows");
@@ -721,19 +765,27 @@ fn a_cell_shares_at_most_sixteen_folders_and_none_past_a_keys_or_titles_bounds()
         Vec::<String>::new(),
         "the first sixteen it says are read, though none of them fits"
     );
+}
 
-    let shared = |odd: &[Value]| -> Vec<(String, Option<String>)> {
-        let sessions = [
-            sharing("ROWS01", 1, &json!(odd)),
-            sharing("OARS01", 2, &json!(odd)),
-        ];
-        let mycelium = Mycelium::of("home", &[], &sessions, &[]);
-        files(&mycelium)
-            .iter()
-            .map(|(_, short, title, _)| ((*short).to_owned(), title.map(str::to_owned)))
-            .collect()
-    };
-    let passed_over = [
+/// Each folder network two cells make, both saying each of `said`, as
+/// its short name and title: at most [`super::SHARES_MOST`] said, so
+/// none is passed over for their count alone.
+fn shared_by_two(said: &[Value]) -> Vec<(String, Option<String>)> {
+    assert!(said.len() <= 16, "each is read: {}", said.len());
+    let sessions = [
+        sharing("ROWS01", 1, &json!(said)),
+        sharing("OARS01", 2, &json!(said)),
+    ];
+    let mycelium = Mycelium::of("home", &[], &sessions, &[]);
+    files(&mycelium)
+        .iter()
+        .map(|(_, short, title, _)| ((*short).to_owned(), title.map(str::to_owned)))
+        .collect()
+}
+
+#[test]
+fn a_share_past_its_keys_or_folders_bounds_is_passed_over() {
+    let keys = [
         json!({"key": "", "for": "Empty", "folder": "/e"}),
         json!({"key": format!("quest:{}", "k".repeat(91)), "for": "Long", "folder": "/l"}),
         json!({"key": "quest:a.b", "for": "Dotted", "folder": "/d"}),
@@ -741,52 +793,84 @@ fn a_cell_shares_at_most_sixteen_folders_and_none_past_a_keys_or_titles_bounds()
         json!({"key": ":quest", "for": "Colon first", "folder": "/c"}),
         json!({"key": "quest:", "for": "Of nothing", "folder": "/n"}),
         json!({"key": "harness", "for": "No kind", "folder": "/h"}),
-        json!({"key": "quest:untitled", "for": "", "folder": "/u"}),
+    ];
+    assert_eq!(
+        shared_by_two(&keys),
+        [],
+        "a key past 96, holding a dot, a space or no colon, beginning with none of a \
+         letter or digit, or saying nothing after its colon, is passed over"
+    );
+    let folders = [
         json!({"key": "quest:unfoldered", "for": "Nowhere", "folder": ""}),
+        json!({"key": "quest:blank", "for": "Blank", "folder": "\t\u{202E} "}),
         json!({"key": "quest:said", "for": "Said"}),
-        json!({"key": "quest:tabbed", "for": "Tab\there", "folder": "/t"}),
-        json!({"key": "quest:turned", "for": "fly\u{202E}nwod", "folder": "/t"}),
-        json!({"key": "quest:unseen", "for": "Harbour\u{200B}Ships", "folder": "/u"}),
-        json!({"key": "quest:tagged", "for": "Tagged", "folder": "/t\u{E0041}"}),
-        json!({"key": "quest:lined", "for": "Lined\u{2028}up", "folder": "/l"}),
-        json!({"key": "quest:broken", "for": "Broken", "folder": "/b\nroken"}),
         json!({"key": "quest:deep", "for": "Deep", "folder": "f".repeat(1025)}),
         json!({"key": "quest:wide", "for": "Wide", "folder": "é".repeat(513)}),
     ];
     assert_eq!(
-        shared(&passed_over),
+        shared_by_two(&folders),
         [],
-        "a key past 96, holding a dot, a space or no colon, beginning with none of a \
-         letter or digit, or saying nothing after its colon; a share saying no title or \
-         folder; or one whose title or folder holds a control character, a mark turning \
-         its direction, a separator or a format character, or a folder past 1024 bytes, \
-         though of 513 characters, is passed over"
+        "a share saying no folder, or none but what a terminal can't draw, or a folder \
+         past 1024 bytes, though of 513 characters, is passed over"
     );
     let fits = format!("quest:{}", "k".repeat(90));
     let kept = [
         json!({"key": fits, "for": "Fits", "folder": "/f"}),
-        json!({"key": "quest:titled", "for": "t".repeat(121), "folder": "/t"}),
-        json!({"key": "quest:accented", "for": "é".repeat(121), "folder": "/a"}),
-        json!({"key": "quest:cut", "for": format!("{}\t\u{202E}\u{200B}", "c".repeat(120)),
-               "folder": "/c"}),
         json!({"key": "quest:roomy", "for": "Roomy", "folder": "é".repeat(512)}),
         json!({"key": "quest:twice", "for": "Twice", "folder": "/one"}),
         json!({"key": "QUEST:Twice", "for": "Again", "folder": "/two"}),
     ];
     let said = |short: &str, title: &str| (short.to_owned(), Some(title.to_owned()));
     assert_eq!(
-        shared(&kept),
+        shared_by_two(&kept),
         [
-            said("quest:accented", &"é".repeat(120)),
-            said("quest:cut", &"c".repeat(120)),
             said(&fits, "Fits"),
             said("quest:roomy", "Roomy"),
-            said("quest:titled", &"t".repeat(120)),
             said("quest:twice", "Twice"),
         ],
         "a key of 96 letters, digits, colons, dashes and underscores is shared, in lower \
-         case; a title past 120 characters is cut to them, however many bytes each is, and \
-         what was past them is not read; and a folder of 1024 bytes is within bounds"
+         case, and a folder of 1024 bytes is within bounds"
+    );
+}
+
+#[test]
+fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
+    let long = |c: &str| c.repeat(121);
+    let said = [
+        json!({"key": "quest:titled", "for": long("t"), "folder": "/t"}),
+        json!({"key": "quest:accented", "for": long("é"), "folder": "/a"}),
+        json!({"key": "quest:cut", "for": format!("{}\t\u{202E}x", "c".repeat(119)),
+               "folder": "/c"}),
+        json!({"key": "quest:tabbed", "for": "Tab\there", "folder": "/t\nb"}),
+        json!({"key": "quest:turned", "for": "fly\u{202E}nwod\u{2066}", "folder": "/t"}),
+        json!({"key": "quest:lined", "for": "Lined\u{2028}up\u{2029}", "folder": "/l"}),
+        json!({"key": "quest:joined", "for": "👩\u{200D}💻 Harbour", "folder": "/j"}),
+        json!({"key": "quest:persian", "for": "می\u{200C}خواهم", "folder": "/p"}),
+        json!({"key": "quest:untitled", "for": "", "folder": "/u"}),
+        json!({"key": "quest:unsaid", "folder": "/u"}),
+        json!({"key": "quest:blank", "for": "\u{202E}\t", "folder": "/b"}),
+    ];
+    let titled = |short: &str, title: &str| (short.to_owned(), Some(title.to_owned()));
+    let untitled = |short: &str| (short.to_owned(), None);
+    assert_eq!(
+        shared_by_two(&said),
+        [
+            titled("quest:accented", &"é".repeat(120)),
+            untitled("quest:blank"),
+            titled("quest:cut", &format!("{} ", "c".repeat(119))),
+            titled("quest:joined", "👩\u{200D}💻 Harbour"),
+            titled("quest:lined", "Lined up"),
+            titled("quest:persian", "می\u{200C}خواهم"),
+            titled("quest:tabbed", "Tab here"),
+            titled("quest:titled", &"t".repeat(120)),
+            titled("quest:turned", "flynwod"),
+            untitled("quest:unsaid"),
+            untitled("quest:untitled"),
+        ],
+        "a title past 120 characters is cut to them, however many bytes each is, counting \
+         what is drawn; a control character or separator in it is a space and a mark \
+         turning its direction is gone; the joiners an emoji or a script spells with stay; \
+         and a share saying nothing it is for is kept, untitled"
     );
 }
 

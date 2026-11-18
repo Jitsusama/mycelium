@@ -461,12 +461,12 @@ fn session_cell(session: &Value) -> Option<Cell> {
         .filter_map(Value::as_str)
         // A tree's network is made only of the trees its cells hold, and a
         // folder's of the folders they share, so a group named as either
-        // is passed over, as is one holding a colon, which no mesh group
-        // holds and a folder's short name does.
+        // is passed over: a tree's by its shape, and a folder's as one
+        // holding a colon, which a folder's key does and no mesh group
+        // can (`group::check`).
         .filter(|group| {
             !group.contains(':')
-                && Shape::of_group(group)
-                    .is_some_and(|shape| !matches!(shape, Shape::Tree | Shape::Files))
+                && Shape::of_group(group).is_some_and(|shape| !matches!(shape, Shape::Tree))
         })
         .map(str::to_owned)
         .collect();
@@ -636,7 +636,13 @@ fn shared_files(sessions: &[Cell], formed: &BTreeSet<String>) -> Vec<Network> {
             let name = first.network();
             let cells: Vec<&Cell> = shared.iter().map(|(cell, _)| *cell).collect();
             (cells.len() > 1 || formed.contains(&name)).then(|| Network {
-                title: most_said(shared.iter().map(|(_, share)| share.about.as_str())),
+                // A cell saying nothing it is for has no say in its title.
+                title: most_said(
+                    shared
+                        .iter()
+                        .map(|(_, share)| share.about.as_str())
+                        .filter(|about| !about.is_empty()),
+                ),
                 ..network_of(&name, Shape::Files, &cells)
             })
         })
