@@ -68,6 +68,14 @@ pub struct Work {
 }
 
 impl Work {
+    /// Whether this work doesn't mind the taint keyed `key`.
+    #[must_use]
+    pub fn tolerating(&self, key: &str) -> bool {
+        self.tolerates.iter().any(|tolerated| {
+            tolerated == key || (tolerated == DISK_FILLING_BEFORE && key == DISK_FILLING)
+        })
+    }
+
     /// This work as it is asked of the machine already chosen for it,
     /// without the tools it would rather have: a preference can choose a
     /// node too old to read a tool, which would drop the link rather than
@@ -216,8 +224,13 @@ pub const LOW_BATTERY: &str = "low-battery";
 /// The key of the taint a machine past its queue's memory limit carries.
 pub const MEMORY_PRESSURE: &str = "memory-pressure";
 
-/// The key of the taint a machine whose home's disk is filling carries.
-pub const DISK_PRESSURE: &str = "disk-pressure";
+/// The key of the taint a machine whose home's disk is past healthy
+/// carries: filling, nearly full or critically full.
+pub const DISK_FILLING: &str = "disk-filling";
+
+/// The key [`DISK_FILLING`] had before, by which work still tolerates it:
+/// disk pressure is waiting on the disk, not how full it is.
+pub const DISK_FILLING_BEFORE: &str = "disk-pressure";
 
 /// The key of the taint a machine whose processors are saturated carries:
 /// as its room's own node judged them (a [`Saturation`]), or at
@@ -467,7 +480,7 @@ impl Default for Weights {
 
 /// What `taint`, which would rather not have the work, costs `machine`.
 fn costs(machine: &Machine, taint: &Taint, weights: &Weights) -> f64 {
-    if taint.key == DISK_PRESSURE && machine.disk_band == Some(Band::Filling) {
+    if taint.key == DISK_FILLING && machine.disk_band == Some(Band::Filling) {
         weights.filling
     } else {
         weights.rather_not
@@ -946,7 +959,7 @@ fn judge_offer(work: &Work, offer: &Offer) -> Judged {
     }
     let mut rather_not = Vec::new();
     let taints = shape.declared.iter().flat_map(|declared| &declared.taints);
-    for taint in taints.filter(|taint| !work.tolerates.contains(&taint.key)) {
+    for taint in taints.filter(|taint| !work.tolerating(&taint.key)) {
         match taint.effect {
             Effect::Never => hard.push(Because::Refuses(taint.clone())),
             Effect::PreferNot => rather_not.push(taint.clone()),
@@ -1035,10 +1048,15 @@ pub fn taints(machine: &Machine) -> Vec<Taint> {
             },
         });
     }
-    if machine.disk_band.is_some_and(|band| band > Band::Healthy) {
+    if let Some(band) = machine.disk_band.filter(|band| *band > Band::Healthy) {
+        let full = match band {
+            Band::Healthy | Band::Filling => "filling",
+            Band::NearlyFull => "nearly full",
+            Band::CriticallyFull => "critically full",
+        };
         taints.push(condition(
-            DISK_PRESSURE,
-            "its disk guard says its disk is filling",
+            DISK_FILLING,
+            &format!("its disk guard says its disk is {full}"),
         ));
     }
     if machine.disk_band == Some(Band::CriticallyFull) {
@@ -1161,7 +1179,7 @@ fn judge(
     }
     let mut rather_not = Vec::new();
     for taint in taints(machine) {
-        if work.tolerates.contains(&taint.key) {
+        if work.tolerating(&taint.key) {
             continue;
         }
         match taint.effect {
@@ -1785,11 +1803,18 @@ pub(crate) mod tests {
             "a disk past healthy weighs against its machine, though it has more memory free"
         );
         let mut tolerant = needing(Vec::new());
-        tolerant.tolerates = vec![DISK_PRESSURE.to_owned()];
+        tolerant.tolerates = vec!["disk-filling".to_owned()];
         assert_eq!(
             placed(&place(&tolerant, &realm)),
             Some("skiff"),
             "unless the work doesn't mind"
+        );
+        let mut before = needing(Vec::new());
+        before.tolerates = vec!["disk-pressure".to_owned()];
+        assert_eq!(
+            placed(&place(&before, &realm)),
+            Some("skiff"),
+            "nor does work minding it by the name it had before"
         );
         skiff.disk_band = None;
         assert_eq!(
@@ -1797,6 +1822,27 @@ pub(crate) mod tests {
             Some("skiff"),
             "a disk no guard bands is no reason to pass a machine by"
         );
+    }
+
+    #[test]
+    fn a_disk_past_healthy_is_said_as_full_as_its_guard_says() {
+        let mut skiff = machine("skiff", "linux", 30, &[]);
+        for (band, said) in [
+            (Band::Filling, "filling"),
+            (Band::NearlyFull, "nearly full"),
+            (Band::CriticallyFull, "critically full"),
+        ] {
+            skiff.disk_band = Some(band);
+            let why = taints(&skiff)
+                .into_iter()
+                .find(|taint| taint.key == "disk-filling")
+                .map(|taint| taint.why);
+            assert_eq!(
+                why.as_deref(),
+                Some(format!("its disk guard says its disk is {said}").as_str()),
+                "a disk {said} is said as {said}"
+            );
+        }
     }
 
     #[test]
@@ -1810,14 +1856,14 @@ pub(crate) mod tests {
             "work started on a full disk fails to write, so it waits instead"
         );
         let mut filling = needing(Vec::new());
-        filling.tolerates = vec![DISK_PRESSURE.to_owned()];
+        filling.tolerates = vec![DISK_FILLING.to_owned()];
         assert_eq!(
             placed(&place(&filling, &lone)),
             None,
             "minding no filling disk isn't minding no full one"
         );
         let mut full = needing(Vec::new());
-        full.tolerates = vec![DISK_PRESSURE.to_owned(), DISK_FULL.to_owned()];
+        full.tolerates = vec![DISK_FILLING.to_owned(), DISK_FULL.to_owned()];
         assert_eq!(
             placed(&place(&full, &lone)),
             Some("skiff"),

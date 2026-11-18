@@ -1260,12 +1260,13 @@ declares, and while they last, `on-battery`, `memory-pressure` (past
 its queue's memory limit), `cpu-pressure` (past its queue's processor
 limit), `cpu-saturated` (its `room` `saturated`, or at processor
 pressure 80 or more where its room doesn't say)
-and `disk-pressure` (its `disk_band` past
-`healthy`), each `prefer_not`, and `low-battery` (on its battery below
-20%, when it is let sleep) and `disk-full` (its `disk_band`
+and `disk-filling` (its `disk_band` past `healthy`; work tolerating
+`disk-pressure`, its key before, tolerates it too), each
+`prefer_not`, and `low-battery` (on its battery below 20%, when it is
+let sleep) and `disk-full` (its `disk_band`
 `critically_full`, where what it starts would fail to write), each
 `never`. Work may tolerate `disk-full` by its key, as a cleanup run on
-a full machine would; tolerating `disk-pressure` doesn't lift it. The
+a full machine would; tolerating `disk-filling` doesn't lift it. The
 person's work is held to it as an agent's is, so where every machine's
 disk is critically full a start goes to a machine made for it, or is
 refused with each disk named, rather than starting where it couldn't
@@ -1311,7 +1312,7 @@ room doesn't yet show: each counts until the machine says its room
 thirty seconds or more after it, since a room said sooner can't yet
 show a session begun, or for five minutes at most, kept in memory only,
 so a burst of starts spreads across machines alike rather than piling
-on whichever led. A `prefer_not` taint such as `disk-pressure` is only
+on whichever led. A `prefer_not` taint such as `disk-filling` is only
 a weight, so a machine idle beside one busy may take work despite it;
 a disk `filling` costs a quarter of one `nearly-full` or
 `critically-full`, its guard clearing what has waited a while. The
