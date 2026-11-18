@@ -1224,6 +1224,8 @@ struct Shared<S> {
     starts: Arc<starts::Starts>,
     /// Each start asked under a name, so an ask again joins it.
     onces: Arc<once::Onces>,
+    /// Why each asking process's runs here were told no session, said once.
+    untold: Arc<run::Untold>,
     /// Where pi's hosts keep their records of the sessions they hold.
     hosts: PathBuf,
     /// Where it keeps who orchestrates which quests.
@@ -1423,6 +1425,7 @@ impl<S: Clone> Clone for Shared<S> {
             runs: self.runs.clone(),
             starts: Arc::clone(&self.starts),
             onces: Arc::clone(&self.onces),
+            untold: Arc::clone(&self.untold),
             hosts: self.hosts.clone(),
             orchestrations: self.orchestrations.clone(),
             logs: self.logs.clone(),
@@ -2117,6 +2120,7 @@ impl<S: Store> Shared<S> {
             starts,
             onces: Arc::default(),
             runs: Arc::new(runs),
+            untold: Arc::default(),
             hosts,
             orchestrations,
             logs,
@@ -5597,7 +5601,11 @@ impl<S: Store> Shared<S> {
                 By::Agent(_) if asked.from.is_none() => self
                     .session_alone()
                     .await
-                    .inspect_err(|why| eprintln!("a run here is told no session: {why}"))
+                    .inspect_err(|why| {
+                        if self.untold.first(self.client, self.client_started, why) {
+                            eprintln!("a run here is told no session: {why}");
+                        }
+                    })
                     .ok(),
                 _ => None,
             };

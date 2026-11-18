@@ -7,10 +7,12 @@
 //! [`GRACE`]. Each run is kept in a record of runs, a line as it starts
 //! and a line as it ends, on each machine it crosses.
 
+use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use base64::Engine;
@@ -72,6 +74,27 @@ impl Given {
 impl Default for Given {
     fn default() -> Self {
         Self::at(Path::new("/nowhere"))
+    }
+}
+
+/// Why each asking process's runs here are told no session, said once
+/// for each process and reason, since a host's background session asks
+/// for every run it makes.
+#[derive(Debug, Default)]
+pub struct Untold(Mutex<BTreeSet<Said>>);
+
+/// A process, by its id and when it started, and why its runs were told
+/// no session.
+type Said = (Option<i32>, Option<u64>, String);
+
+impl Untold {
+    /// Whether `why` is said for the first time of the process `asker`,
+    /// started at `started` ticks since boot.
+    pub fn first(&self, asker: Option<i32>, started: Option<u64>, why: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((asker, started, why.to_owned()))
     }
 }
 
@@ -364,6 +387,27 @@ mod tests {
 
     /// How long a test waits on a run before failing.
     const PATIENCE: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn why_a_process_is_told_no_session_is_said_once_for_it() {
+        let untold = Untold::default();
+        let why = "this asks from a process 2 sessions share";
+
+        assert!(untold.first(Some(40), Some(7), why), "its first run");
+        assert!(
+            !untold.first(Some(40), Some(7), why),
+            "its next, for the same reason"
+        );
+        assert!(
+            untold.first(Some(40), Some(7), "no session here claims it"),
+            "another reason"
+        );
+        assert!(untold.first(Some(41), Some(7), why), "another process");
+        assert!(
+            untold.first(Some(40), Some(9), why),
+            "another process given the same id later"
+        );
+    }
 
     #[test]
     fn an_ask_never_says_the_fences_words() {
