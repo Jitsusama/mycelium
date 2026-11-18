@@ -7011,7 +7011,9 @@ esac
         let socket = dir.path().join("skiff").join("work.sock");
         // Made as the node makes it, open to nobody else, so its socket goes
         // there.
-        std::os::unix::fs::DirBuilderExt::mode(fs::DirBuilder::new().recursive(true), 0o700)
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
             .create(socket.parent().expect("its folder"))
             .expect("made");
         let ended = |orchestrator: &str| {
