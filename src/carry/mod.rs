@@ -198,8 +198,8 @@ pub trait Hands {
     ///
     /// When the node can't say.
     fn ties(&mut self) -> Result<Vec<Value>, String>;
-    /// Every `formed` record the node holds: each tree network formed
-    /// here, with when it formed.
+    /// Every `formed` record the node holds: each tree and files network
+    /// formed here, with when it formed.
     ///
     /// # Errors
     ///

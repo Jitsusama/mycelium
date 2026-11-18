@@ -2774,8 +2774,8 @@ impl<S: Store> Shared<S> {
     /// What the node does each minute: it measures this machine, hands its
     /// sessions over once it leaves soon, keeps it awake while work wants
     /// it, tells its links of its carries, judges which tree and files
-    /// networks stand and lets go of machines made whose time is up and that no
-    /// link reaches, answering what it runs on.
+    /// networks stand and lets go of machines made whose time is up and
+    /// that no link reaches, answering what it runs on.
     fn each_minute(&self, awake: &mut Awake) -> Option<facts::Power> {
         let here = self.measure();
         let power = self.keep_measured(&here);
@@ -2784,8 +2784,8 @@ impl<S: Store> Shared<S> {
         self.keep_awake(awake, power.as_ref());
         self.cross_waiting();
         self.tell_carries();
-        // A making is what forms, leaves and fades a tree's network, so
-        // one runs each minute though nobody asks.
+        // A making is what forms, leaves and fades a tree's or a folder's
+        // network, so one runs each minute though nobody asks.
         self.network_records();
         self.said.minute_passed();
         self.settle_carries();
@@ -9289,8 +9289,10 @@ esac
         let formed = records_of(&mut client, 3, "formed").await;
         assert!(
             formed.iter().all(|one| one["name"] != name)
-                && formed.iter().any(|one| one["name"] == lately),
-            "nor kept as formed, though the other is: {formed:?}"
+                && formed
+                    .iter()
+                    .any(|one| one["name"] == lately && one["left"].is_null()),
+            "nor kept as formed, though the other is, held again: {formed:?}"
         );
     }
 

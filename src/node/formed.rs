@@ -111,10 +111,9 @@ impl Formed {
     }
 
     /// Takes in how many cells hold each tree or files network made at
-    /// `now`, by
-    /// name: one two hold forms, one none holds is left, and one left
-    /// [`FADES_AFTER`] ago fades. Keeps it in its file where anything
-    /// changed, and says whether it did.
+    /// `now`, by name: one two hold forms, one none holds is left, and
+    /// one left [`FADES_AFTER`] ago fades. Keeps it in its file where
+    /// anything changed, and says whether it did.
     pub fn saw(&self, holding: &BTreeMap<String, usize>, now: i64) -> bool {
         let mut held = self.lock();
         // One faded stays gone, though a cell holds its tree again.

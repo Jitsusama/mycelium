@@ -83,6 +83,9 @@ fn shares_of(presence: &Value) -> Vec<Share> {
         share.key.make_ascii_lowercase();
         if let Some((cut, _)) = share.about.char_indices().nth(SHARE_FOR_MOST) {
             share.about.truncate(cut);
+            // A cut keeps what was read, so a long `for` held in every
+            // cell would still cost its whole length without this.
+            share.about.shrink_to_fit();
         }
         if share.fits() && shares.iter().all(|each| each.key != share.key) {
             shares.push(share);
@@ -199,9 +202,10 @@ impl Shape {
             "quest" => Some(Self::Project),
             "repo" => Some(Self::Repository),
             "tree" => Some(Self::Tree),
-            // A group called plain `files` is a group still; only a
-            // name under it is a shared folder's.
-            "files" if group.contains('.') => Some(Self::Files),
+            // Only a name under `files.` holding a key's colon is a
+            // folder's, so a group called `files` or `files.sync` is a
+            // group still.
+            "files" if group.contains('.') && group.contains(':') => Some(Self::Files),
             _ => Some(Self::Group),
         }
     }
@@ -466,25 +470,23 @@ impl Share {
     /// Whether it is within its bounds: a key of letters, digits, colons,
     /// dashes and underscores, beginning with a letter or digit, so its
     /// network's name can't be cut anywhere but its first dot, and saying
-    /// its kind before a colon, as `quest:`, so its short name is never
-    /// another shape's; and what it is for and its folder each said,
-    /// without a control character or a mark turning text's direction,
-    /// as both are drawn in a terminal.
+    /// its kind, a colon and what it is of, as `quest:<id>`, so its short
+    /// name is never another shape's, as no mesh group holds a colon;
+    /// and what it is for and its folder each said, with nothing a
+    /// terminal draws as nothing or acts on, as both are drawn in one.
+    /// What it is for is cut to its bound before, in [`shares_of`].
     fn fits(&self) -> bool {
         let keyed = |byte: u8| byte.is_ascii_alphanumeric() || b":-_".contains(&byte);
         let key = self.key.as_bytes();
-        let plain = |said: &str| {
-            !said.is_empty()
-                && !said
-                    .chars()
-                    .any(|each| each.is_control() || crate::forage::turns_direction(each))
-        };
+        let plain = |said: &str| !said.is_empty() && !said.chars().any(unseen);
         key.first().is_some_and(u8::is_ascii_alphanumeric)
             && key.len() <= SHARE_KEY_MOST
             && key.iter().all(|byte| keyed(*byte))
-            && key.contains(&b':')
+            && self
+                .key
+                .split_once(':')
+                .is_some_and(|(_, of)| !of.is_empty())
             && plain(&self.about)
-            && self.about.chars().count() <= SHARE_FOR_MOST
             && plain(&self.folder)
             && self.folder.len() <= SHARE_FOLDER_MOST
     }
@@ -494,6 +496,39 @@ impl Share {
     fn network(&self) -> String {
         format!("files.{}", self.key)
     }
+}
+
+/// Whether a terminal acts on `each` or draws it as nothing: a control
+/// character, a mark turning text's direction, a line or paragraph
+/// separator, or one of Unicode's format characters, such as a
+/// zero-width space, which would let one folder's title pass for
+/// another's.
+fn unseen(each: char) -> bool {
+    each.is_control()
+        || crate::forage::turns_direction(each)
+        || matches!(
+            each,
+            '\u{00AD}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08E2}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200D}'
+                | '\u{2028}'..='\u{2029}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{206A}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{110BD}'
+                | '\u{110CD}'
+                | '\u{13430}'..='\u{1343F}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0001}'
+                | '\u{E0020}'..='\u{E007F}'
+        )
 }
 
 /// One thing a session drawn says it did, as a line of its own.

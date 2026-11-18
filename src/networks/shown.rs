@@ -32,7 +32,9 @@ impl Shape {
             Self::Project => "projects",
             Self::Repository => "repositories",
             Self::Tree => "trees",
-            Self::Files => "shared files",
+            // Folders, not shared files: a session says it works in one,
+            // and nothing here asks whether the share keeps it in step.
+            Self::Files => "folders",
             Self::Group => "groups",
             Self::Machines => "machines",
             Self::Outside => "outside",
@@ -46,7 +48,7 @@ impl Shape {
             Self::Project => "project",
             Self::Repository => "repository",
             Self::Tree => "tree",
-            Self::Files => "shared folder",
+            Self::Files => "folder",
             Self::Group => "group",
             Self::Machines => "the machines' network",
             Self::Outside => "outside source",
@@ -928,7 +930,7 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
         .filter(|share| mycelium.network(&share.network()).is_none())
         .collect();
     if !alone.is_empty() {
-        lines.extend([String::new(), look.paint(BOLD, "its own shared folders")]);
+        lines.extend([String::new(), look.paint(BOLD, "its own folders")]);
         let width = alone
             .iter()
             .map(|share| share.key.chars().count())

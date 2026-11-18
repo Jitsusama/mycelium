@@ -1758,9 +1758,9 @@ by the very model `mycelium networks` draws, of the node's teams,
 sessions, machines, receptors and builders, with its fields: its
 `shape` (`orchestration`, `project`, `repository`, `tree`, `files`,
 `group`, `machines` or `outside`), the `short` name a person types,
-its `title` and `glyph` where something says them, the network it is `within`, its `cells` and
-the `machines` they run on, the machines' own network's `builders`
-beside its machines, and `counts` of its sessions as
+its `title` and `glyph` where something says them, the network it is
+`within`, its `cells` and the `machines` they run on, the machines' own
+network's `builders` beside its machines, and `counts` of its sessions as
 `needs-you`, `stuck`, `moving`, `quiet` and `dormant`. A tree is a
 network once two cells or more hold it at once, as each session's
 presence lists its `trees` (each `key`, `repo` and a worktree's
@@ -1781,18 +1781,24 @@ more share it at once, as each session's presence lists its `shares`
 stays one while any cell shares it. Each machine keeps its own copy, so
 one is known by its key alone, such as `quest:<id>` for a quest's
 scratch folder: its name is `files.<key>`, its short name the key, and
-its title what most of its cells say it is `for`, the earliest's among
-as many. A key is 1 to 96 letters, digits, colons, dashes and
-underscores, beginning with a letter or digit and holding a colon, its
-kind before it, so its short name is never another network's; it is
-read in lower case, so keys differing only in case are one folder.
-`for` is cut to its first 120 characters, and `folder` is 1 to 1024
-bytes; each is said, with no control character and no mark turning
-text's direction. A cell's first 16 shares are read, those past these
+its title what more of its cells say it is `for` than say anything
+else, or none where two things are said as often. A key is 3 to 96
+letters, digits, colons, dashes and underscores, beginning with a
+letter or digit and saying its kind, a colon and what it is of, as
+`quest:<id>`, so its short name is never another network's, as no
+group's name holds a colon; it is read in lower case, so keys
+differing only in case are one folder. `for` is cut to its first 120
+characters before it is judged, and `folder` is 1 to 1024 bytes; each
+is said, with no control character, mark turning text's direction,
+line or paragraph separator or Unicode format character, such as a
+zero-width space. A cell's first 16 shares are read, those past these
 bounds are passed over, and a key said twice is its first; each is
-among that cell record's `shares`. Names under `files.` are the shared
-folders' alone, so a group named as one joins none, though a group
-called plain `files` is a group still. The `formed` kind holds each
+among that cell record's `shares`. A name under `files.` holding a
+colon is a folder's alone, so a group named as one joins none, though
+one called `files`, or under it with no colon, is a group still; and
+a group a presence names holding a colon joins none. Its heading is
+`folders`, as a session says it works in one, and nothing asks whether
+`mycelium share` keeps the copies alike. The `formed` kind holds each
 tree or files network formed, keyed by its name, as the node keeps
 them in `formed-<realm>.json` beside
 `carries.jsonl`: its `name`, `at`, when the node first saw two cells
@@ -1830,8 +1836,8 @@ same records as the `network` kind, less its `kind`: its `type`
 `moving`, `quiet` or `dormant`), `doing`, `asks`, `repo`, `usage`, the
 networks it `leads`, `machine`, `since`, `quest`, `plan`, `cwd`, the
 `trees` it holds, the folders it `shares`, a machine's or a
-receptor's `state`, a machine's `busy` and the sessions it `runs`, a receptor's `counts`, and the
-`networks` it joined. A session's `quest`
+receptor's `state`, a machine's `busy` and the sessions it `runs`, a
+receptor's `counts`, and the `networks` it joined. A session's `quest`
 is the quest it works on, a field like any other; a cell is known by its
 name alone. A builder is no cell: the machines' network names it among
 its `builders`, and it is a `builder` record. A cell is heard when its

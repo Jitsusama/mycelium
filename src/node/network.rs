@@ -43,8 +43,8 @@ pub struct Holding<'a> {
     pub receptors: &'a BTreeMap<String, Value>,
     /// Its builders' records.
     pub builders: &'a BTreeMap<String, Value>,
-    /// The tree and files networks formed, which each making keeps up to
-    /// date.
+    /// The tree and files networks formed, which each making keeps up
+    /// to date.
     pub formed: &'a Formed,
 }
 
@@ -96,8 +96,7 @@ pub(super) struct Made {
 
 /// The mycelium `held` makes, each session standing as `standing` says,
 /// made as `mycelium networks` makes it (`Mycelium::of_records`), with
-/// the tree and files networks formed told how many cells hold each
-/// now.
+/// the tree and files networks formed told how many cells hold each now.
 pub(super) fn made(held: &Holding<'_>, standing: &Standing<'_>) -> Made {
     let mut heard: HashMap<String, i64> = HashMap::new();
     let mut hear = |name: String, at: Option<i64>| {

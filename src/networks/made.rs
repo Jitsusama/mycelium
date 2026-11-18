@@ -460,10 +460,13 @@ fn session_cell(session: &Value) -> Option<Cell> {
         .flatten()
         .filter_map(Value::as_str)
         // A tree's network is made only of the trees its cells hold, and a
-        // shared folder's of the folders they share, so a group named as
-        // either is passed over.
+        // folder's of the folders they share, so a group named as either
+        // is passed over, as is one holding a colon, which no mesh group
+        // holds and a folder's short name does.
         .filter(|group| {
-            Shape::of_group(group).is_some_and(|shape| !matches!(shape, Shape::Tree | Shape::Files))
+            !group.contains(':')
+                && Shape::of_group(group)
+                    .is_some_and(|shape| !matches!(shape, Shape::Tree | Shape::Files))
         })
         .map(str::to_owned)
         .collect();
@@ -614,8 +617,9 @@ fn joined(
 
 /// The networks of the folders two cells or more of `sessions` share,
 /// each known by its key, as each machine keeps its own copy, and titled
-/// by what most of its cells say it is for, the earliest's among as
-/// many, so no one cell names a folder the rest call otherwise. One of
+/// by what most of its cells say it is for, or untitled where no one
+/// thing is said most, so no one cell names a folder the rest call
+/// otherwise, by its order or anything else it says. One of
 /// `formed`, which two cells shared before, stays a network while one
 /// cell shares it.
 fn shared_files(sessions: &[Cell], formed: &BTreeSet<String>) -> Vec<Network> {
@@ -632,26 +636,27 @@ fn shared_files(sessions: &[Cell], formed: &BTreeSet<String>) -> Vec<Network> {
             let name = first.network();
             let cells: Vec<&Cell> = shared.iter().map(|(cell, _)| *cell).collect();
             (cells.len() > 1 || formed.contains(&name)).then(|| Network {
-                title: Some(most_said(
-                    shared.iter().map(|(_, share)| share.about.as_str()),
-                )),
+                title: most_said(shared.iter().map(|(_, share)| share.about.as_str())),
                 ..network_of(&name, Shape::Files, &cells)
             })
         })
         .collect()
 }
 
-/// What most of `said` says, the first said among as many.
-fn most_said<'a>(said: impl Iterator<Item = &'a str>) -> String {
-    let mut counted: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
-    for (at, each) in said.enumerate() {
-        counted.entry(each).or_insert((0, at)).0 += 1;
+/// What more of `said` says than says anything else, or none where two
+/// things are said as often.
+fn most_said<'a>(said: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut counted: BTreeMap<&str, usize> = BTreeMap::new();
+    for each in said {
+        *counted.entry(each).or_default() += 1;
     }
-    counted
-        .into_iter()
-        .max_by(|(_, (one, at)), (_, (other, later))| one.cmp(other).then(later.cmp(at)))
-        .map(|(each, _)| each.to_owned())
-        .unwrap_or_default()
+    let mut most: Vec<(&str, usize)> = counted.into_iter().collect();
+    most.sort_unstable_by_key(|(_, times)| std::cmp::Reverse(*times));
+    match most.as_slice() {
+        [(each, _)] => Some((*each).to_owned()),
+        [(each, times), (_, next), ..] if times > next => Some((*each).to_owned()),
+        _ => None,
+    }
 }
 
 /// The networks of the trees two cells or more of `sessions` hold, each

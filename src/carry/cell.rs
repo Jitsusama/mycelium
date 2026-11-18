@@ -3,8 +3,8 @@
 //! folders make formed here. The ties were made from messages this node
 //! held, so they go beside the session's done file for the node it
 //! arrives on to keep, as names and counts only, never what was said. A
-//! formed network goes so the node it arrives on keeps the time it first formed, rather
-//! than forming it afresh.
+//! formed network goes so the node it arrives on keeps the time it
+//! first formed, rather than forming it afresh.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -33,8 +33,8 @@ pub struct Brought {
     /// has none.
     pub talk: Option<Value>,
     /// The `formed:<network>` records this node holds of the networks
-    /// the session's trees and shared folders make, whole as the formed kind sends them:
-    /// at most [`FORMED_MOST`], earliest formed first.
+    /// the session's trees and shared folders make, whole as the formed
+    /// kind sends them: at most [`FORMED_MOST`], earliest formed first.
     pub formed: Vec<Value>,
 }
 

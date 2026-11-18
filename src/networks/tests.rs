@@ -537,7 +537,12 @@ fn files(mycelium: &Mycelium) -> Vec<(&str, &str, Option<&str>, Vec<String>)> {
 #[test]
 fn a_folder_two_cells_share_by_key_is_a_network_named_for_what_it_is_for() {
     let mut posing = sharing("TERN01", 3, &json!([]));
-    posing["groups"] = json!(["files.quest:QEST-20261112-HARBOR", "files"]);
+    posing["groups"] = json!([
+        "files.quest:QEST-20261112-HARBOR",
+        "quest:qest-20261112-harbor",
+        "files",
+        "files.sync",
+    ]);
     let sessions = [
         // Each machine keeps its own copy, so one key is one network
         // though their folders differ.
@@ -581,22 +586,26 @@ fn a_folder_two_cells_share_by_key_is_a_network_named_for_what_it_is_for() {
             mycelium.cell("TERN01").expect("Tern").networks.clone(),
             mycelium.cell("KELP01").expect("Kelp").networks.clone()
         ),
-        (vec!["files".to_owned()], Vec::<String>::new()),
-        "a folder shared alone is no network, and a group called plain files is a group"
+        (
+            vec!["files".to_owned(), "files.sync".to_owned()],
+            Vec::<String>::new()
+        ),
+        "a folder shared alone is no network; a group called files, or under it without a \
+         key's colon, is a group; and one holding a colon, as no mesh group does, is none"
     );
     let drawn = overview(&mycelium, &look(), false, true);
     assert!(
-        drawn.contains("shared files") && drawn.contains("quest:qest-20261112-harbor"),
+        drawn.contains("folders") && drawn.contains("quest:qest-20261112-harbor"),
         "the shared folders are drawn under their heading: {drawn}"
     );
     let rows = cell(&mycelium, rows, &look());
     assert!(
-        rows.contains("quest:qest-20261112-harbor") && !rows.contains("its own shared folders"),
+        rows.contains("quest:qest-20261112-harbor") && !rows.contains("its own folders"),
         "a cell's shared folders are among its networks: {rows}"
     );
     let kelp = cell(&mycelium, mycelium.cell("KELP01").expect("Kelp"), &look());
     assert!(
-        kelp.ends_with("its own shared folders\n  quest:qest-20261112-kelped  Kelp"),
+        kelp.ends_with("its own folders\n  quest:qest-20261112-kelped  Kelp"),
         "a cell lists the folders it shares alone as its own: {kelp}"
     );
 }
@@ -628,16 +637,22 @@ fn a_shared_folder_is_titled_by_what_most_of_its_cells_say_it_is_for() {
         titled("ROWS01", 1, "Harbour"),
         titled("OARS01", 2, "Harbour Ships"),
     ];
-    let (tied, cells) = title(&even).expect("a network");
-    let earliest = if cells[0] == "ROWS01" {
-        "Harbour"
-    } else {
-        "Harbour Ships"
-    };
+    let (tied, _) = title(&even).expect("a network");
     assert_eq!(
-        tied.as_deref(),
-        Some(earliest),
-        "among as many, the earliest's"
+        tied, None,
+        "where two things are said as often, none, so no cell's order names it"
+    );
+    let split = [
+        titled("ROWS01", 1, "Harbour"),
+        titled("OARS01", 2, "Harbour"),
+        titled("KELP01", 3, "Harbour Ships"),
+        titled("TERN01", 4, "Harbour Ships"),
+        titled("SKIF01", 5, "Kelp"),
+    ];
+    let (most_tied, _) = title(&split).expect("a network");
+    assert_eq!(
+        most_tied, None,
+        "nor where the two said most are said as often, though a third is said less"
     );
 }
 
@@ -724,28 +739,36 @@ fn a_cell_shares_at_most_sixteen_folders_and_none_past_a_keys_or_titles_bounds()
         json!({"key": "quest:a.b", "for": "Dotted", "folder": "/d"}),
         json!({"key": "quest:a b", "for": "Spaced", "folder": "/s"}),
         json!({"key": ":quest", "for": "Colon first", "folder": "/c"}),
+        json!({"key": "quest:", "for": "Of nothing", "folder": "/n"}),
         json!({"key": "harness", "for": "No kind", "folder": "/h"}),
         json!({"key": "quest:untitled", "for": "", "folder": "/u"}),
         json!({"key": "quest:unfoldered", "for": "Nowhere", "folder": ""}),
         json!({"key": "quest:said", "for": "Said"}),
         json!({"key": "quest:tabbed", "for": "Tab\there", "folder": "/t"}),
         json!({"key": "quest:turned", "for": "fly\u{202E}nwod", "folder": "/t"}),
+        json!({"key": "quest:unseen", "for": "Harbour\u{200B}Ships", "folder": "/u"}),
+        json!({"key": "quest:tagged", "for": "Tagged", "folder": "/t\u{E0041}"}),
+        json!({"key": "quest:lined", "for": "Lined\u{2028}up", "folder": "/l"}),
         json!({"key": "quest:broken", "for": "Broken", "folder": "/b\nroken"}),
         json!({"key": "quest:deep", "for": "Deep", "folder": "f".repeat(1025)}),
+        json!({"key": "quest:wide", "for": "Wide", "folder": "é".repeat(513)}),
     ];
     assert_eq!(
         shared(&passed_over),
         [],
-        "a key past 96, holding a dot, a space or no colon, or beginning with none of a \
-         letter or digit; a share saying no title or folder; or one whose title or folder \
-         holds a control character or a mark turning its direction, or a folder past 1024 \
-         bytes, is passed over"
+        "a key past 96, holding a dot, a space or no colon, beginning with none of a \
+         letter or digit, or saying nothing after its colon; a share saying no title or \
+         folder; or one whose title or folder holds a control character, a mark turning \
+         its direction, a separator or a format character, or a folder past 1024 bytes, \
+         though of 513 characters, is passed over"
     );
     let fits = format!("quest:{}", "k".repeat(90));
     let kept = [
         json!({"key": fits, "for": "Fits", "folder": "/f"}),
         json!({"key": "quest:titled", "for": "t".repeat(121), "folder": "/t"}),
         json!({"key": "quest:accented", "for": "é".repeat(121), "folder": "/a"}),
+        json!({"key": "quest:cut", "for": format!("{}\t\u{202E}\u{200B}", "c".repeat(120)),
+               "folder": "/c"}),
         json!({"key": "quest:roomy", "for": "Roomy", "folder": "é".repeat(512)}),
         json!({"key": "quest:twice", "for": "Twice", "folder": "/one"}),
         json!({"key": "QUEST:Twice", "for": "Again", "folder": "/two"}),
@@ -755,6 +778,7 @@ fn a_cell_shares_at_most_sixteen_folders_and_none_past_a_keys_or_titles_bounds()
         shared(&kept),
         [
             said("quest:accented", &"é".repeat(120)),
+            said("quest:cut", &"c".repeat(120)),
             said(&fits, "Fits"),
             said("quest:roomy", "Roomy"),
             said("quest:titled", &"t".repeat(120)),
@@ -762,29 +786,48 @@ fn a_cell_shares_at_most_sixteen_folders_and_none_past_a_keys_or_titles_bounds()
         ],
         "a key of 96 letters, digits, colons, dashes and underscores is shared, in lower \
          case; a title past 120 characters is cut to them, however many bytes each is, and \
-         a folder of 1024 bytes is within bounds"
+         what was past them is not read; and a folder of 1024 bytes is within bounds"
     );
-    assert_eq!(
-        serde_json::to_value(
-            &Mycelium::of("home", &[], &[sharing("ROWS01", 1, &json!(kept))], &[])
-                .cell("ROWS01")
-                .expect("Rows")
-                .shares
-        )
-        .expect("shares")[4],
+}
+
+#[test]
+fn a_key_said_twice_whatever_its_case_is_its_first_and_a_cut_title_keeps_no_more_room() {
+    let said = [
+        json!({"key": "quest:accented", "for": "é".repeat(121), "folder": "/a"}),
         json!({"key": "quest:twice", "for": "Twice", "folder": "/one"}),
-        "and a key said twice, whatever its case, is the first one"
-    );
-    let twice = [
-        json!({"key": "quest:twice", "for": "Twice", "folder": "/one"}),
-        json!({"key": "quest:twice", "for": "Twice", "folder": "/two"}),
+        json!({"key": "QUEST:Twice", "for": "Again", "folder": "/two"}),
     ];
-    let alone = Mycelium::of("home", &[], &[sharing("ROWS01", 1, &json!(twice))], &[]);
+    let rows = Mycelium::of("home", &[], &[sharing("ROWS01", 1, &json!(said))], &[]);
+    let rows = rows.cell("ROWS01").expect("Rows");
     assert_eq!(
-        files(&alone),
-        [],
-        "one cell saying a key twice is no network"
+        (
+            rows.shares.len(),
+            serde_json::to_value(rows.shares.last()).expect("share")
+        ),
+        (
+            2,
+            json!({"key": "quest:twice", "for": "Twice", "folder": "/one"})
+        ),
+        "a key said twice, whatever its case, is the first one alone"
     );
+    assert!(
+        rows.shares
+            .iter()
+            .all(|share| share.about.capacity() <= 240),
+        "and a title cut keeps no more room than its 120 characters take"
+    );
+    for again in ["quest:twice", "QUEST:Twice"] {
+        let twice = [
+            json!({"key": "quest:twice", "for": "Twice", "folder": "/one"}),
+            json!({"key": again, "for": "Twice", "folder": "/two"}),
+        ];
+        let alone = Mycelium::of("home", &[], &[sharing("ROWS01", 1, &json!(twice))], &[]);
+        assert_eq!(
+            files(&alone),
+            [],
+            "one cell saying a key twice, as {again}, is no network"
+        );
+    }
 }
 
 #[test]
