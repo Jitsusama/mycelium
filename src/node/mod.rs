@@ -13475,7 +13475,7 @@ esac
                 "QEST-20261118-KESTRL",
                 "work",
                 &["jsama/tern#12"],
-                &["s-claims", "s-ended", "s-far"],
+                &["s-claims", "s-ended", "s-far", "s-lost"],
             ),
             (
                 "QEST-20261118-OSPREY",
@@ -13532,6 +13532,13 @@ esac
             ),
             on_quest("s-far", "KESTRL3", "osprey", "busy", "QEST-20261118-KESTRL"),
             on_quest(
+                "s-lost",
+                "KESTRL4",
+                "skiff",
+                "unreachable",
+                "QEST-20261118-KESTRL",
+            ),
+            on_quest(
                 "s-other",
                 "OSPREY1",
                 "skiff",
@@ -13570,6 +13577,7 @@ esac
             jiff::Timestamp::now(),
         )
         .expect("its items are kept");
+        feeding::reading(&receptors, receptor::Source::Github, "work");
         let mut fed = shared.said.fed.subscribe();
         fed.borrow_and_update();
 

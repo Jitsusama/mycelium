@@ -231,7 +231,11 @@ fn opened_folder(folder: &Path) -> io::Result<OwnedFd> {
 /// on it and on nothing a link points at. What is done in it after is
 /// done through the handle, so a folder swapped for a link meanwhile
 /// takes nothing.
-fn owned(folder: &Path) -> io::Result<OwnedFd> {
+///
+/// # Errors
+///
+/// When the folder can't be made, is a link, or its mode can't be set.
+pub fn owned(folder: &Path) -> io::Result<OwnedFd> {
     fs::create_dir_all(folder)?;
     let opened = opened_folder(folder)?;
     rustix::fs::fchmod(&opened, Mode::from_raw_mode(FOLDER_MODE))?;

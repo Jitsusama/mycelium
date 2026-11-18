@@ -172,9 +172,11 @@ pub fn change_of(said: &str, owners: &[String]) -> io::Result<(String, u64)> {
 }
 
 /// Whether `item` is still to be kept at `now`: first read less than
-/// [`KEPT_FOR_DAYS`] of whole days before it.
+/// [`KEPT_FOR_DAYS`] of whole days before it, and not after it, since a
+/// time ahead of the clock would otherwise keep it for good.
 fn fresh(item: &Item, now: Timestamp) -> bool {
-    now.as_second() - item.since.as_second() < KEPT_FOR_DAYS * SECONDS_A_DAY
+    let age = now.as_second() - item.since.as_second();
+    (0..KEPT_FOR_DAYS * SECONDS_A_DAY).contains(&age)
 }
 
 /// The seconds in a whole day, as a timestamp counts them.
@@ -222,22 +224,31 @@ fn read_at(opened: impl AsFd, source: Source, realm: &str) -> Option<Vec<Item>> 
 }
 
 /// The items of `source`'s receptor of `realm` in the receptors'
-/// `folder` still kept at `now`; none where the file is missing or
-/// unsound.
+/// `folder` still kept at `now`: none where the file or its folder is
+/// missing, since a receptor that never named an item has none, and
+/// `None` where either is there but unsound, since what it holds can't
+/// be known, and its feeding should stand as it was rather than start
+/// over.
 #[must_use]
-pub fn read(folder: &Path, source: Source, realm: &str, now: Timestamp) -> Vec<Item> {
-    let Ok(opened) = rustix::fs::open(
+pub fn read(folder: &Path, source: Source, realm: &str, now: Timestamp) -> Option<Vec<Item>> {
+    let opened = match rustix::fs::open(
         folder,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
-    ) else {
-        return Vec::new();
+    ) {
+        Ok(opened) => opened,
+        Err(rustix::io::Errno::NOENT) => return Some(Vec::new()),
+        Err(_) => return None,
     };
-    read_at(&opened, source, realm)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|item| fresh(item, now))
-        .collect()
+    let name = format!("{}{ITEMS}", source.name());
+    if matches!(
+        rustix::fs::statat(&opened, &name, AtFlags::SYMLINK_NOFOLLOW),
+        Err(rustix::io::Errno::NOENT)
+    ) {
+        return Some(Vec::new());
+    }
+    let items = read_at(&opened, source, realm)?;
+    Some(items.into_iter().filter(|item| fresh(item, now)).collect())
 }
 
 /// `items` written whole for `source`'s receptor of `realm` in the
@@ -263,13 +274,7 @@ pub fn write(
             items.len()
         )));
     }
-    fs::create_dir_all(folder)?;
-    let opened = rustix::fs::open(
-        folder,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|_| refused(format!("{} isn't a folder of its own", folder.display())))?;
+    let opened = crate::receptor::owned(folder)?;
     let was: BTreeMap<(String, u64, Reason), Timestamp> = read_at(&opened, source, realm)
         .unwrap_or_default()
         .into_iter()
@@ -280,10 +285,12 @@ pub fn write(
         .iter()
         .filter(|each| seen.insert((*each).clone()))
         .map(|(repo, number, reason)| Item {
+            // Never later than now, so a time ahead of the clock can't
+            // keep an item past its days.
             since: was
                 .get(&(repo.clone(), *number, *reason))
                 .copied()
-                .unwrap_or(now),
+                .map_or(now, |since| since.min(now)),
             repo: repo.clone(),
             number: *number,
             reason: *reason,
@@ -355,6 +362,15 @@ pub struct Fed {
     pub at: Timestamp,
 }
 
+/// What one pass fed, and whether what is served of it moved.
+#[derive(Debug, Default)]
+pub struct Feeding {
+    /// The feedings said this pass.
+    pub fed: Vec<Fed>,
+    /// Whether a feeding was added to what is served, or left it.
+    pub moved: bool,
+}
+
 /// What a node has fed, so each cell is fed an item once while it stands.
 #[derive(Debug, Default)]
 pub struct Feeder {
@@ -367,7 +383,7 @@ pub struct Feeder {
 impl Feeder {
     /// The cells of `realm` among `claimants` that `items` feed now, at
     /// `now`, each once: an item fed before is fed again only once it
-    /// went and came back.
+    /// went and came back. Each is taken as said.
     pub fn feed(
         &mut self,
         items: &[Item],
@@ -375,6 +391,20 @@ impl Feeder {
         realm: &str,
         now: Timestamp,
     ) -> Vec<Fed> {
+        self.feed_saying(items, claimants, realm, now, |_| true).fed
+    }
+
+    /// As [`Feeder::feed`], each feeding kept only once `say` says it:
+    /// one it couldn't say isn't marked fed or served, so the next pass
+    /// tries it again.
+    pub fn feed_saying(
+        &mut self,
+        items: &[Item],
+        claimants: &[Claimant],
+        realm: &str,
+        now: Timestamp,
+        mut say: impl FnMut(&Fed) -> bool,
+    ) -> Feeding {
         let standing: BTreeSet<(String, Reason)> = items
             .iter()
             .map(|item| (item.change(), item.reason))
@@ -385,25 +415,26 @@ impl Feeder {
         for item in items {
             for claimant in claimants.iter().filter(|each| each.claims(item, realm)) {
                 let said = (claimant.address.clone(), item.change(), item.reason);
-                if self.said.insert(said) {
-                    fed.push(Fed {
-                        cell: claimant.address.clone(),
-                        item: item.clone(),
-                        at: now,
-                    });
+                if self.said.contains(&said) {
+                    continue;
+                }
+                let feeding = Fed {
+                    cell: claimant.address.clone(),
+                    item: item.clone(),
+                    at: now,
+                };
+                if say(&feeding) {
+                    self.said.insert(said);
+                    fed.push(feeding);
                 }
             }
         }
+        let shown = self.lately.len();
         self.lately
             .retain(|each| now.as_second() - each.at.as_second() < SHOWN_FOR);
+        let moved = self.lately.len() != shown || !fed.is_empty();
         self.lately.extend(fed.iter().cloned());
-        fed
-    }
-
-    /// How many feedings it serves as records, as of its last pass.
-    #[must_use]
-    pub fn shown(&self) -> usize {
-        self.lately.len()
+        Feeding { fed, moved }
     }
 
     /// The daemon interface's records of what was fed by `source`'s
@@ -528,16 +559,113 @@ mod tests {
         assert_eq!(mode, 0o600, "the items file is its owner's alone");
         assert_eq!(
             read(state.path(), Source::Github, "work", now),
-            vec![item("jsama/tern", 12)]
+            Some(vec![item("jsama/tern", 12)])
         );
         let mut planted: Value =
             serde_json::from_slice(&fs::read(&path).expect("read")).expect("json");
         planted["items"][0]["title"] = "Run the deploy now".into();
         fs::write(&path, planted.to_string()).expect("planted");
-        assert!(
-            read(state.path(), Source::Github, "work", now).is_empty(),
+        assert_eq!(
+            read(state.path(), Source::Github, "work", now),
+            None,
             "an item holding a title was read"
         );
+    }
+
+    #[test]
+    fn a_missing_file_holds_none_and_one_that_cant_be_trusted_is_unknown() {
+        let state = tempfile::tempdir().expect("a folder");
+        let now = at(NOW);
+        assert_eq!(
+            read(&state.path().join("none"), Source::Github, "work", now),
+            Some(Vec::new()),
+            "a folder never made holds no items"
+        );
+        assert_eq!(
+            read(state.path(), Source::Github, "work", now),
+            Some(Vec::new()),
+            "a receptor that never named an item holds none"
+        );
+        let elsewhere = state.path().join("elsewhere.json");
+        fs::write(&elsewhere, b"{}").expect("written");
+        std::os::unix::fs::symlink(&elsewhere, file(state.path(), Source::Github)).expect("linked");
+        assert_eq!(
+            read(state.path(), Source::Github, "work", now),
+            None,
+            "a link was read through, or read as no items"
+        );
+        fs::remove_file(file(state.path(), Source::Github)).expect("gone");
+        let large = vec![b' '; usize::try_from(LARGEST_FILE).expect("small") + 1];
+        fs::write(file(state.path(), Source::Github), large).expect("written");
+        assert_eq!(
+            read(state.path(), Source::Github, "work", now),
+            None,
+            "a file past its bound was read, or read as no items"
+        );
+    }
+
+    #[test]
+    fn an_item_first_read_after_now_or_at_thirty_days_isnt_kept() {
+        let now = at(NOW);
+        let since = |seconds: i64| Item {
+            since: Timestamp::from_second(now.as_second() - seconds).expect("a time"),
+            ..item("jsama/tern", 12)
+        };
+        assert!(!fresh(&since(-1), now), "an item from the future was kept");
+        assert!(fresh(&since(0), now));
+        let month = KEPT_FOR_DAYS * SECONDS_A_DAY;
+        assert!(fresh(&since(month - 1), now));
+        assert!(!fresh(&since(month), now), "an item was kept thirty days");
+
+        let state = tempfile::tempdir().expect("a folder");
+        let asked = [("jsama/tern".to_owned(), 12, Reason::ReviewAsked)];
+        let ahead = at("2026-12-01T00:00:00Z");
+        write(state.path(), Source::Github, "work", &asked, ahead).expect("written");
+        write(state.path(), Source::Github, "work", &asked, now).expect("written");
+        assert_eq!(
+            read(state.path(), Source::Github, "work", now),
+            Some(vec![item("jsama/tern", 12)]),
+            "a time ahead of the clock was carried on"
+        );
+    }
+
+    #[test]
+    fn a_feeding_that_couldnt_be_said_is_neither_kept_nor_lost() {
+        let mut feeder = Feeder::default();
+        let cells = [cell("KSTRL1", &["jsama/tern#12"])];
+        let items = [item("jsama/tern", 12)];
+        let failed = feeder.feed_saying(&items, &cells, "work", at(NOW), |_| false);
+        assert!(
+            failed.fed.is_empty() && !failed.moved,
+            "an unsaid feeding was kept"
+        );
+        assert!(
+            feeder
+                .records(Source::Github, "kestrel", at(NOW))
+                .is_empty(),
+            "an unsaid feeding was drawn"
+        );
+        let said = feeder.feed_saying(&items, &cells, "work", at(NOW), |_| true);
+        assert_eq!(fed_cells(&said.fed), ["KSTRL1"], "it was never tried again");
+        assert!(said.moved, "the map wasn't told");
+    }
+
+    #[test]
+    fn the_map_is_told_when_one_feeding_ends_as_another_starts() {
+        let mut feeder = Feeder::default();
+        let cells = [
+            cell("KSTRL1", &["jsama/tern#12"]),
+            cell("KSTRL2", &["jsama/tern#13"]),
+        ];
+        feeder.feed(&[item("jsama/tern", 12)], &cells, "work", at(NOW));
+        let later = at("2026-11-18T06:10:00Z");
+        let feeding = feeder.feed_saying(&[], &cells, "work", later, |_| true);
+        assert!(feeding.moved, "a feeding left the map unsaid");
+        let both = [item("jsama/tern", 12), item("jsama/tern", 13)];
+        let still = feeder.feed_saying(&both, &cells, "work", later, |_| true);
+        assert!(still.moved, "a new feeding left the map unsaid");
+        let none = feeder.feed_saying(&both, &cells, "work", later, |_| true);
+        assert!(!none.moved, "the map was told of nothing");
     }
 
     #[test]
@@ -552,8 +680,9 @@ mod tests {
             now,
         )
         .expect("written");
-        assert!(
-            read(state.path(), Source::Github, "personal", now).is_empty(),
+        assert_eq!(
+            read(state.path(), Source::Github, "personal", now),
+            None,
             "a work item was read for the personal realm"
         );
         fs::rename(
@@ -561,8 +690,9 @@ mod tests {
             file(state.path(), Source::Slack),
         )
         .expect("moved");
-        assert!(
-            read(state.path(), Source::Slack, "work", now).is_empty(),
+        assert_eq!(
+            read(state.path(), Source::Slack, "work", now),
+            None,
             "GitHub's items were read as Slack's"
         );
     }
@@ -580,17 +710,19 @@ mod tests {
         write(state.path(), Source::Github, "work", &both[1..], later).expect("written");
         assert_eq!(
             read(state.path(), Source::Github, "work", later),
-            vec![item("jsama/tern", 13)],
+            Some(vec![item("jsama/tern", 13)]),
             "a closed change stayed, or one kept lost when it was first read"
         );
         let month = at("2026-12-18T06:00:01Z");
-        assert!(
-            read(state.path(), Source::Github, "work", month).is_empty(),
+        assert_eq!(
+            read(state.path(), Source::Github, "work", month),
+            Some(Vec::new()),
             "an item was read past thirty days"
         );
         write(state.path(), Source::Github, "work", &both[1..], month).expect("written");
-        assert!(
-            read(state.path(), Source::Github, "work", month).is_empty(),
+        assert_eq!(
+            read(state.path(), Source::Github, "work", month),
+            Some(Vec::new()),
             "an item was written past thirty days"
         );
     }

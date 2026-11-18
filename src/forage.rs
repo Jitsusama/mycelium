@@ -117,17 +117,21 @@ pub struct Claims {
 const MOST_LISTED: usize = 500;
 
 /// The entries of the list under the key `key` in front matter `lines`,
-/// each as its own keys and values: the lines of an entry are those
-/// indented under its `- `, and a value is unquoted as front matter's
-/// are.
+/// each as its own keys and values, and a value unquoted as front
+/// matter's are. The list's first `- ` sets where its entries start: an
+/// entry is a `- ` there, its keys are the lines two further in, as YAML
+/// lays a block list's entry, and anything deeper, a session's process
+/// or a list of its own, belongs to none of them.
 fn listed(lines: &[String], key: &str) -> Vec<HashMap<String, String>> {
     let mut entries: Vec<HashMap<String, String>> = Vec::new();
     let mut within = false;
+    let mut dash: Option<usize> = None;
     for line in lines {
         if !line.starts_with([' ', '\t', '-']) {
             within = line
                 .split_once(':')
                 .is_some_and(|(said, _)| said.trim() == key);
+            dash = None;
             continue;
         }
         if !within {
@@ -135,19 +139,20 @@ fn listed(lines: &[String], key: &str) -> Vec<HashMap<String, String>> {
         }
         let trimmed = line.trim_start();
         let indent = line.len() - trimmed.len();
-        let (field, starts) = match trimmed.strip_prefix("- ") {
-            Some(field) => (field, true),
-            None => (trimmed, false),
-        };
-        if starts {
+        let field = if let Some(field) = trimmed.strip_prefix("- ") {
+            if indent != *dash.get_or_insert(indent) {
+                continue;
+            }
             if entries.len() == MOST_LISTED {
                 break;
             }
             entries.push(HashMap::new());
-        } else if indent > 4 {
-            // Deeper than an entry's own keys, as a session's process is.
+            field
+        } else if dash.is_some_and(|dash| indent == dash + 2) {
+            trimmed
+        } else {
             continue;
-        }
+        };
         let (Some(entry), Some((name, value))) = (entries.last_mut(), field.split_once(':')) else {
             continue;
         };
@@ -1464,6 +1469,30 @@ mod tests {
         assert!(
             !served.contains("tern") && !served.contains("s-live"),
             "a forage served what feeds its quest: {served}"
+        );
+    }
+
+    #[test]
+    fn claims_are_read_at_any_list_indent_and_a_nested_list_claims_nothing() {
+        let store = Store::new("claims-laid-out");
+        // Lists flush with their key, as YAML allows, and a session holding
+        // a list of its own whose entries look like sessions.
+        let front = "---\nid: QEST-20261116-KESTRL\nrealm: work\naliases:\n- type: \
+            github-pr\n  value: jsama/tern#12\nsessions:\n- id: s-live\n  children:\n  \
+            - id: s-nested\n    status: active\n  status: active\n- id: s-gone\n  \
+            status: ended\nparent: QEST-20261101-OSPREY\n";
+        let readme = README.replacen("---\n", front, 1);
+        store.write("QEST-20261116-KESTRL/README.md", &readme);
+        let mut shelf = Shelf::default();
+        assert!(shelf.read(&store.0, "QEST-20261116-KESTRL"), "read");
+        let quest = shelf.quest("QEST-20261116-KESTRL").expect("read");
+        assert_eq!(
+            (&quest.claims.changes, &quest.claims.sessions),
+            (
+                &vec!["jsama/tern#12".to_owned()],
+                &vec!["s-live".to_owned()]
+            ),
+            "a list laid out flush was misread, or a nested entry was taken as a session"
         );
     }
 

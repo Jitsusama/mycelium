@@ -1134,10 +1134,14 @@ fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
     };
     let folder = receptor::folder(&said.state_folder.unwrap_or_else(place::state));
     let realm = record.realm.clone();
+    // The items go first, so the node, woken by the record, reads the
+    // items it was written beside rather than those before them.
+    let kept = items
+        .map(|items| mycelium::feed::write(&folder, source, &realm, &items, now))
+        .transpose()?;
     let written = receptor::write(&folder, &realm, record, &receptor::Here)?;
     writeln!(io::stdout().lock(), "{}", written.display())?;
-    if let Some(items) = items {
-        let kept = mycelium::feed::write(&folder, source, &realm, &items, now)?;
+    if let Some(kept) = kept {
         writeln!(io::stdout().lock(), "{}", kept.display())?;
     }
     Ok(())

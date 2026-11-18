@@ -206,6 +206,18 @@ fn the_changes_asking_review_are_kept_whole_in_a_file_of_their_own() {
     assert_eq!(mode, 0o600, "its owner's alone");
     assert_eq!(kept(dir.path()), ["jsama/kestrel#12", "tern/skiff#3"]);
 
+    let said = github(dir.path(), &[]);
+    assert!(
+        said.status.success(),
+        "{}",
+        String::from_utf8_lossy(&said.stderr)
+    );
+    assert_eq!(
+        kept(dir.path()),
+        ["jsama/kestrel#12", "tern/skiff#3"],
+        "no owners leave the items be"
+    );
+
     let said = github(dir.path(), &["--owner", "jsama"]);
     assert!(
         said.status.success(),
@@ -216,14 +228,6 @@ fn the_changes_asking_review_are_kept_whole_in_a_file_of_their_own() {
         kept(dir.path()).is_empty(),
         "owners named with no item clear them"
     );
-
-    let said = github(dir.path(), &[]);
-    assert!(
-        said.status.success(),
-        "{}",
-        String::from_utf8_lossy(&said.stderr)
-    );
-    assert!(kept(dir.path()).is_empty(), "no owners leave the items be");
 }
 
 #[test]

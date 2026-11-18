@@ -14,7 +14,7 @@ use jiff::Timestamp;
 use super::Shared;
 use crate::feed::{self, Claimant, Item};
 use crate::mesh;
-use crate::receptor::Source;
+use crate::receptor::{self, Source};
 use crate::record::{Intent, State as SessionState};
 use crate::stimuli::{self, Table};
 use crate::store::Store;
@@ -23,6 +23,12 @@ use crate::wire::Draft;
 /// The sources whose receptors keep items to feed: GitHub's alone, for
 /// now, the reviews asked of the person.
 const FED_BY: [Source; 1] = [Source::Github];
+
+/// The sources fed from: those that keep items, of those the person's
+/// table `says`, so a source the table leaves out feeds no cell either.
+fn feeding_sources(says: impl Fn(Source) -> bool) -> Vec<Source> {
+    FED_BY.into_iter().filter(|source| says(*source)).collect()
+}
 
 /// How often the node looks again without being told: a new cell, or a
 /// quest's README claiming a change, shows within this.
@@ -40,10 +46,7 @@ impl<S: Store + Clone + Send + Sync + 'static> Shared<S> {
         };
         // What the table couldn't say is said once, by the signalling.
         let (table, _) = Table::read(self.stimuli.as_deref(), &self.runs.declarers);
-        let sources: Vec<Source> = FED_BY
-            .into_iter()
-            .filter(|source| table.says(*source))
-            .collect();
+        let sources = feeding_sources(|source| table.says(source));
         if sources.is_empty() {
             return;
         }
@@ -68,27 +71,25 @@ impl<S: Store + Clone + Send + Sync + 'static> Shared<S> {
         let items = read_items(folder.to_owned(), sources.to_vec(), self.realm.clone(), now).await;
         let claimants = self.claimants();
         let mut moved = false;
+        let mut feeders = self
+            .feeders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (source, items) in items {
-            let fed = {
-                let mut feeders = self
-                    .feeders
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let feeder = feeders.entry(source).or_default();
-                let shown = feeder.shown();
-                let fed = feeder.feed(&items, &claimants, &self.realm, now);
-                moved |= feeder.shown() != shown;
-                fed
-            };
-            for each in fed {
+            let feeder = feeders.entry(source).or_default();
+            // Each feeding is said before it's kept, so one that couldn't
+            // be said is neither served nor marked fed, and is tried again.
+            let feeding = feeder.feed_saying(&items, &claimants, &self.realm, now, |each| {
                 let Some(draft) = fed_draft(source, &self.machine, &each.cell, &each.item) else {
-                    continue;
+                    return false;
                 };
-                if let Err(why) = self.speak(&draft) {
-                    eprintln!("mycelium: {} couldn't be said: {why}", draft.from);
-                }
-            }
+                self.speak(&draft)
+                    .map_err(|why| eprintln!("mycelium: {} couldn't be said: {why}", draft.from))
+                    .is_ok()
+            });
+            moved |= feeding.moved;
         }
+        drop(feeders);
         if moved {
             self.said.fed.send_modify(|said| *said += 1);
         }
@@ -154,6 +155,11 @@ impl<S: Store + Clone + Send + Sync + 'static> Shared<S> {
 
 /// Each of `sources`' items in `folder` for `realm`, read off the
 /// runtime's threads, since a file read blocks.
+///
+/// A source whose receptor reads off, or keeps no record, is left out, so
+/// what a stopped receptor last named isn't fed to cells that come later;
+/// so is one whose items file is there but unsound, so its feeding stands
+/// as it was rather than starting over once the file reads again.
 async fn read_items(
     folder: PathBuf,
     sources: Vec<Source>,
@@ -161,9 +167,15 @@ async fn read_items(
     now: Timestamp,
 ) -> Vec<(Source, Vec<Item>)> {
     tokio::task::spawn_blocking(move || {
+        let receptors = receptor::judged(&folder, &realm, now, &receptor::Here);
         sources
             .into_iter()
-            .map(|source| (source, feed::read(&folder, source, &realm, now)))
+            .filter(|source| {
+                receptors
+                    .get(source)
+                    .is_some_and(|record| record.state != receptor::State::Off)
+            })
+            .filter_map(|source| Some((source, feed::read(&folder, source, &realm, now)?)))
             .collect()
     })
     .await
@@ -190,9 +202,83 @@ fn fed_draft(source: Source, machine: &str, address: &str, item: &Item) -> Optio
     })
 }
 
+/// A record of `source`'s receptor in `folder`, kept by this process and
+/// reading, so the node reads it as running.
+#[cfg(test)]
+pub(super) fn reading(folder: &Path, source: Source, realm: &str) {
+    let now = Timestamp::now();
+    let pid = std::process::id();
+    let record = receptor::Record {
+        source,
+        realm: realm.to_owned(),
+        state: receptor::State::Reading,
+        since: now,
+        read_at: now,
+        every: 300,
+        pid,
+        started: receptor::started_at(pid),
+        counts: receptor::Counts {
+            hour: 1,
+            today: 1,
+            addressed: 1,
+        },
+    };
+    receptor::write(folder, realm, record, &receptor::Here).expect("its record is kept");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_source_the_table_says_is_fed_from() {
+        assert_eq!(feeding_sources(|_| true), [Source::Github]);
+        assert!(
+            feeding_sources(|source| source != Source::Github).is_empty(),
+            "a table leaving GitHub out feeds nothing"
+        );
+        assert!(
+            feeding_sources(|_| false).is_empty(),
+            "a silent table feeds nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_running_receptors_sound_items_are_read() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let folder = dir.path().join("receptors");
+        let now = Timestamp::now();
+        let asked = [("jsama/tern".to_owned(), 12, feed::Reason::ReviewAsked)];
+        feed::write(&folder, Source::Github, "work", &asked, now).expect("kept");
+        let read = || read_items(folder.clone(), vec![Source::Github], "work".to_owned(), now);
+        assert!(
+            read().await.is_empty(),
+            "a receptor with no record feeds nothing"
+        );
+
+        reading(&folder, Source::Github, "work");
+        let items = read().await;
+        assert_eq!(
+            items
+                .iter()
+                .map(|(_, items)| items.len())
+                .collect::<Vec<_>>(),
+            [1],
+            "a running receptor's item is read"
+        );
+
+        std::fs::write(feed::file(&folder, Source::Github), b"{ not whole").expect("planted");
+        assert!(
+            read().await.is_empty(),
+            "an unsound file is left out, not read as none"
+        );
+        std::fs::remove_file(feed::file(&folder, Source::Github)).expect("gone");
+        assert_eq!(
+            read().await,
+            [(Source::Github, Vec::new())],
+            "a file gone holds none"
+        );
+    }
 
     #[test]
     fn a_fed_item_goes_to_its_one_cell_from_the_receptor_alone() {
