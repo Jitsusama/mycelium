@@ -77,24 +77,30 @@ impl Default for Given {
     }
 }
 
-/// Why each asking process's runs here are told no session, said once
-/// for each process and reason, since a host's background session asks
-/// for every run it makes.
+/// Why runs here are told no session, said once for each reason. Each
+/// `mycelium run` asks as a process of its own, so a reason is kept
+/// rather than its asker; a reason names its host's process and how many
+/// sessions share it, so a host restarted, or one more session, is said
+/// anew. At most [`UNTOLD_KEPT`] are kept, all forgotten once that many
+/// are, so a node running for weeks never grows with them.
 #[derive(Debug, Default)]
-pub struct Untold(Mutex<BTreeSet<Said>>);
+pub struct Untold(Mutex<BTreeSet<String>>);
 
-/// A process, by its id and when it started, and why its runs were told
-/// no session.
-type Said = (Option<i32>, Option<u64>, String);
+/// How many reasons for telling a run no session are kept, so each is
+/// said once.
+const UNTOLD_KEPT: usize = 256;
 
 impl Untold {
-    /// Whether `why` is said for the first time of the process `asker`,
-    /// started at `started` ticks since boot.
-    pub fn first(&self, asker: Option<i32>, started: Option<u64>, why: &str) -> bool {
-        self.0
+    /// Whether `why` is said for the first time.
+    pub fn first(&self, why: &str) -> bool {
+        let mut said = self
+            .0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert((asker, started, why.to_owned()))
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if said.len() >= UNTOLD_KEPT && !said.contains(why) {
+            said.clear();
+        }
+        said.insert(why.to_owned())
     }
 }
 
@@ -389,23 +395,31 @@ mod tests {
     const PATIENCE: Duration = Duration::from_secs(10);
 
     #[test]
-    fn why_a_process_is_told_no_session_is_said_once_for_it() {
+    fn why_a_run_is_told_no_session_is_said_once_for_each_reason() {
         let untold = Untold::default();
         let why = "this asks from a process 2 sessions share";
 
-        assert!(untold.first(Some(40), Some(7), why), "its first run");
+        assert!(untold.first(why), "its first run");
         assert!(
-            !untold.first(Some(40), Some(7), why),
-            "its next, for the same reason"
+            !untold.first(why),
+            "nor the next run's, though each run asks as its own process"
+        );
+        assert!(untold.first("no session here claims it"), "another reason");
+    }
+
+    #[test]
+    fn reasons_said_are_kept_only_up_to_a_bound() {
+        let untold = Untold::default();
+        for each in 0..UNTOLD_KEPT {
+            assert!(untold.first(&format!("reason {each}")), "each new reason");
+        }
+        assert!(
+            untold.first("one more"),
+            "one past the bound, said once the rest are forgotten"
         );
         assert!(
-            untold.first(Some(40), Some(7), "no session here claims it"),
-            "another reason"
-        );
-        assert!(untold.first(Some(41), Some(7), why), "another process");
-        assert!(
-            untold.first(Some(40), Some(9), why),
-            "another process given the same id later"
+            untold.first("reason 0"),
+            "so an old reason is said again rather than kept for ever"
         );
     }
 

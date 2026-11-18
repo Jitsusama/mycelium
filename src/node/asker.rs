@@ -165,8 +165,16 @@ impl Processes {
     /// it, in `asker`'s lineage, to run commands for, as the spawner's own
     /// environment names it. Only the host makes its direct children, and
     /// pi-spawner never replaces itself, so nothing it runs can change what
-    /// it began with; a command the host started itself could, and names
-    /// none here.
+    /// it began with.
+    ///
+    /// The spawner is the host's child whose program is a file named
+    /// pi-spawner, since a process may rename itself but not the program
+    /// it runs. So a command the host ran as its own child could pass as
+    /// one only by running a copy of a program under that name, on purpose;
+    /// the harness runs an agent's commands through pi-spawner, and none
+    /// of them as the host's own children. Its parent and start are read
+    /// again after its environment, so a spawner gone, its id reused, names
+    /// nothing.
     fn spawned_for(&self, asker: i32, host: i32) -> Option<String> {
         let Self::Folder(procs) = self else {
             return None;
@@ -174,10 +182,16 @@ impl Processes {
         let lineage = self.lineage(asker);
         let at = lineage.iter().position(|process| *process == host)?;
         let spawner = *lineage.get(at.checked_sub(1)?)?;
+        let before = started(procs, spawner);
+        let session = began_with(procs, spawner, SPAWNED_FOR)?;
         let status = fs::read_to_string(procs.join(spawner.to_string()).join("status")).ok()?;
         let (name, parent) = named(&status)?;
-        (name == SPAWNER && parent == host).then_some(())?;
-        began_with(procs, spawner, SPAWNED_FOR)
+        let program = fs::read_link(procs.join(spawner.to_string()).join("exe")).ok()?;
+        let runs_spawner = program
+            .file_name()
+            .is_some_and(|file| file == std::ffi::OsStr::new(SPAWNER));
+        (name == SPAWNER && runs_spawner && parent == host && started(procs, spawner) == before)
+            .then_some(session)
     }
 
     /// What is told of process `pid`.
@@ -527,7 +541,7 @@ fn began_with(procs: &Path, pid: i32, key: &[u8]) -> Option<String> {
 }
 
 /// The name the kernel gives the harness's pi-spawner, which a pi host
-/// starts once for each of its sessions.
+/// starts once for each of its sessions, and the name of its program.
 const SPAWNER: &str = "pi-spawner";
 
 /// What names, in a pi-spawner's own environment, the session whose
@@ -679,8 +693,10 @@ pub fn session_of(
 /// [`session_of`] tells who asks, but only where the process proved to
 /// own it owns no other: a pi host's sessions share one process, and
 /// which of them a command runs for is only what its environment says,
-/// which any command there may set. So a host's session is never told
-/// to a fence as the one a run stands for, whatever its command names.
+/// which any command there may set. So a host's session is told to a
+/// fence only by the spawner the host started for it, which the asker
+/// runs below (`Processes::spawned_for`), never by what its command
+/// names.
 ///
 /// Alone is counted over every claim here, proved or not, since a
 /// session whose claim doesn't prove yet still shares its host's process:
@@ -1100,8 +1116,18 @@ mod tests {
             )
             .expect("its status is written");
             fs::write(process.join("cgroup"), under_manager(below)).expect("its group is written");
+            runs_program(procs.path(), *pid, name);
         }
         procs
+    }
+
+    /// Links, for process `pid` in `procs`, the program it runs, a file
+    /// named `name` in the store, as the kernel links `exe`.
+    fn runs_program(procs: &Path, pid: i32, name: &str) {
+        let exe = procs.join(pid.to_string()).join("exe");
+        let _ = fs::remove_file(&exe);
+        std::os::unix::fs::symlink(format!("/nix/store/x-{name}/bin/{name}"), exe)
+            .expect("its program is linked");
     }
 
     /// The stand-in for `/proc` at `procs`, as the node reads it.
@@ -1428,7 +1454,15 @@ mod tests {
             (85, "mycelium", 84, "pi-spawner-c.scope"),
             (82, "pi-spawner", 78, "pi-spawner-d.scope"),
             (83, "mycelium", 82, "pi-spawner-d.scope"),
+            (96, "pi-spawner", 78, host),
+            (97, "mycelium", 96, host),
+            (69, "pi", 1, "agents.slice/pi-a.scope"),
+            (70, "pi-spawner", 69, "pi-spawner-e.scope"),
+            (71, "mycelium", 70, "pi-spawner-e.scope"),
         ]);
+        // A command the host started renamed itself, as any process may,
+        // but the program it runs is still its own.
+        runs_program(procs.path(), 96, "bash");
         for (pid, environ) in [
             (88, "PI_QUEST=QEST-B\0PI_SPAWNER_SESSION=s-two\0"),
             (87, "PI_SPAWNER_SESSION=s-one\0"),
@@ -1436,6 +1470,8 @@ mod tests {
             (79, "PI_SPAWNER_SESSION=s-one\0PI_SESSION_ID=s-one\0"),
             (84, "PI_SPAWNER_SESSION=s-alone\0"),
             (82, "PI_SPAWNER_SESSION=s-three\0"),
+            (96, "PI_SPAWNER_SESSION=s-one\0"),
+            (70, "PI_SPAWNER_SESSION=s-alone\0"),
         ] {
             fs::write(procs.path().join(pid.to_string()).join("environ"), environ)
                 .expect("its environment is written");
@@ -1477,8 +1513,18 @@ mod tests {
              own environment, so it proves no session"
         );
         assert!(
+            alone(97, &owners).is_err_and(|why| why.contains("sessions share")),
+            "nor does a child of the host named pi-spawner whose program isn't"
+        );
+        assert!(
             alone(85, &owners).is_err_and(|why| why.contains("sessions share")),
             "a spawner naming a session another process owns proves nothing here"
+        );
+        let mut unhosted = owners.clone();
+        unhosted.push(("s-beside".to_owned(), 69));
+        assert!(
+            alone(71, &unhosted).is_err_and(|why| why.contains("sessions share")),
+            "a pi that is no host proves none of its sessions by a spawner"
         );
         assert!(
             alone(83, &owners).is_err_and(|why| why.contains("sessions share")),

@@ -1969,11 +1969,16 @@ pi-fence grants the work trees that session holds. Alone counts
 every session claimed there, proved or not, and every one its host's
 record lists. A pi host's sessions share its process, so one of them
 is proved instead by the pi-spawner the host started for it: the
-host's own child, named `pi-spawner` by the kernel, whose starting
-environment's `PI_SPAWNER_SESSION` names a session of the host proved
-as above. Only the host makes its own children and pi-spawner never
-replaces itself, so nothing a command runs can change what that
-names; any other process can, so it proves nothing. Otherwise the
+host's own child, named `pi-spawner` by the kernel and running a
+program of that name, whose starting environment's
+`PI_SPAWNER_SESSION` names a session of the host proved as above.
+Only the host makes its own children, the harness runs none of an
+agent's commands as one, and pi-spawner never replaces itself. So a
+command can change what that names only by running a copy of the
+program under that name on purpose, or, where the kernel lets a
+process trace more than its own descendants, by writing the
+spawner's memory. It stops a mistake, not a forger. Any other
+process's environment proves nothing. Otherwise the
 sessions of a host holding more than one, the person's, one on a Mac,
 where no process's environment is read, and one asked from another
 machine are told none. The node takes `runs`
@@ -1991,8 +1996,10 @@ up stops it: its process group is sent the terminate signal, then the
 kill signal if any of it still runs 10 seconds on. Each machine a run
 crosses keeps it in `runs.jsonl` in mycelium's folder, and logs each
 line: `{"run", "at", "by", "sessions", "from", "on", "folder",
-"command", "spared"}` as it starts, `"spared"` only where the node
-spared it a shared quest's tree, then `{"run", "at", "ended"}`, the last `Ran`
+"command", "spared", "untold"}` as it starts, `"spared"` only where
+the node spared it a shared quest's tree and `"untold"`, why, only
+where an agent's run here was told no session, then
+`{"run", "at", "ended"}`, the last `Ran`
 or `{"Stopped": why}` where its asker let go.
 `mycelium run` prints what it writes as it comes and exits with its
 code, or 255 when it couldn't run.

@@ -5602,9 +5602,10 @@ impl<S: Store> Shared<S> {
                     .session_alone()
                     .await
                     .inspect_err(|why| {
-                        if self.untold.first(self.client, self.client_started, why) {
+                        if self.untold.first(why) {
                             eprintln!("a run here is told no session: {why}");
                         }
+                        started["untold"] = serde_json::Value::from(why.as_str());
                     })
                     .ok(),
                 _ => None,
@@ -7884,6 +7885,45 @@ esac
             )
             .expect("its group is written");
         }
+    }
+
+    /// Tells the stand-in for /proc beside `socket` that this test asks
+    /// from below pi-spawner `spawner`, which the host `host` started for
+    /// `session`.
+    fn asks_below_spawner(socket: &Path, spawner: i32, host: i32, session: &str) {
+        let procs = procs_of(socket);
+        let folder = procs.join(spawner.to_string());
+        fs::create_dir_all(&folder).expect("its folder is made");
+        fs::write(
+            folder.join("status"),
+            format!("Name:\tpi-spawner\nPPid:\t{host}\n"),
+        )
+        .expect("its status is written");
+        fs::write(
+            folder.join("environ"),
+            format!("PI_SPAWNER_SESSION={session}\0"),
+        )
+        .expect("the host started it for the session");
+        std::os::unix::fs::symlink("/nix/store/x-pi-spawner/bin/pi-spawner", folder.join("exe"))
+            .expect("its program is linked");
+        fs::write(
+            procs.join(std::process::id().to_string()).join("status"),
+            format!("Name:\tmycelium\nPPid:\t{spawner}\n"),
+        )
+        .expect("its command runs below the spawner");
+    }
+
+    /// The `nth` run started that the node on `socket` keeps in its
+    /// record of runs.
+    fn kept_start(socket: &Path, nth: usize) -> Value {
+        let record = fs::read_to_string(socket.with_file_name("runs.jsonl"))
+            .expect("the node keeps its runs");
+        let started: Vec<Value> = record
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a line is JSON"))
+            .filter(|line: &Value| line.get("command").is_some())
+            .collect();
+        started.get(nth).cloned().expect("the run is kept")
     }
 
     /// Tells the stand-in for /proc beside `socket` that pi `pid` runs,
@@ -14546,7 +14586,7 @@ esac
     }
 
     #[tokio::test]
-    async fn a_hosts_run_is_fenced_for_none_of_its_sessions_whichever_its_command_names() {
+    async fn a_hosts_run_is_fenced_for_the_session_its_spawner_was_started_for_alone() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
@@ -14596,6 +14636,12 @@ esac
              it names proves, since its other still shares the host; it signs \
              as the agent it is all the same"
         );
+        assert!(
+            kept_start(&socket, 0)["untold"]
+                .as_str()
+                .is_some_and(|why| why.contains("sessions share")),
+            "its record says why it was told none"
+        );
         let fds = procs_of(&socket).join("7101").join("fd");
         fs::rename(fds.join("3"), fds.join("4")).expect("s-one's log is held as 4");
         holds_log(&socket, 7101, "s-two");
@@ -14607,6 +14653,21 @@ esac
             String::from_utf8_lossy(&proved.out),
             format!("the fence runs for none{SIGNS}\n"),
             "nor once both prove, whichever its command names"
+        );
+        asks_below_spawner(&socket, 7102, 7101, "s-two");
+        let below = run_through(socket.clone(), run_of("skiff", "true"))
+            .await
+            .expect("a hosted agent's runs here");
+        assert_eq!(
+            String::from_utf8_lossy(&below.out),
+            "the fence runs for s-two\n",
+            "a command below the spawner its host started for s-two runs for s-two, \
+             though its own environment names s-one"
+        );
+        assert_eq!(
+            kept_start(&socket, 2).get("untold"),
+            None,
+            "and its record says nothing was untold"
         );
         let (stop, node) = running;
         drop(stop);
