@@ -756,15 +756,25 @@ newest line stands, even for a node started afresh: one without
 `again` for good, so its trees stay, and one with `again` for a day,
 when `pi-carry` is asked again while the carry is within the week,
 since a shell or an editor standing in a tree may have left it since;
-past the week nobody asks. As the node keeps a line, it lets go of
-each kept more than a fortnight before, since its carry was ordered
-before then and is no longer looked at, and of any torn by a write cut
-short. One whose `at` can't be read, or lies more than a fortnight
-ahead, stays, since it wouldn't fade by itself, and each time a line
-is kept the node names it on standard error, by its carry or else its
-line's number, until it is removed by hand. The fortnight is twice
-the week, so a clock stepped back by less than a week brings no carry
-back without its line. A node keeps one line at a time under a lock on
+past the week nobody asks. Once a `kept` line is kept, the node tells
+the carried session, at the address its carry names, wherever it runs
+now: a finding from `mycelium@<machine>` saying its trees stay, why,
+as `pi-carry` put it, and whether `pi-carry` is asked again, so the
+session takes what's in them or lets them go. Once a `settled` line
+follows a `kept` one, it is told they're let go since. It isn't told
+where its line says what the one before it said, where the trees were
+let go at first, nor where its session came back here, since the trees
+are its own again. It is told at most once: a send that fails, or a
+node stopped between keeping the line and sending, isn't tried again.
+As the node keeps a line, it lets go of each kept more than a
+fortnight before, since its carry was ordered before then and is no
+longer looked at, and of any torn by a write cut short. One whose
+`at` can't be read, or lies more than a fortnight ahead, stays, since
+it wouldn't fade by itself, and each time a line is kept the node
+names it on standard error, by its carry or else its line's number,
+until it is removed by hand. The fortnight is twice the week, so a
+clock stepped back by less than a week brings no carry back without
+its line. A node keeps one line at a time under a lock on
 `settles.jsonl.lock`, which holds too between two nodes given one
 state folder, writes the file aside and moves it into place: a reader
 sees the old lines or the new. One with

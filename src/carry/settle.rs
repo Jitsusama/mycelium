@@ -11,7 +11,9 @@
 //! while the carry is within its week, since what held them, a shell or
 //! an editor standing in one, may have let them go; what the node kept
 //! without asking stays for good, as does one held whose session is seen
-//! back here. A line fades a fortnight after it was kept, twice the week
+//! back here. Where trees stay, the carried session is told so,
+//! wherever it runs, with why, each time what kept them changes. A line
+//! fades a fortnight after it was kept, twice the week
 //! a carry is looked at for, as another is kept. An answer lost, to a
 //! signal ending the settling or a line that can't be kept, is asked
 //! again only by a node started afresh, which settling allows. A carry
@@ -217,6 +219,63 @@ pub fn to_look_at<S: std::hash::BuildHasher>(
     carries
 }
 
+/// What to tell `carry`'s session, where it went, once settling it came
+/// to `outcome`, kept after `before`: that its trees stay where it left
+/// them, and why, as `pi-carry` said it, so it takes what's in them or
+/// lets them go; or, where they had stayed, that they are let go since.
+/// Nothing where they were let go at first, where its session came back
+/// to them, or where `before` said the same.
+#[must_use]
+pub fn telling(carry: &Kept, before: Option<&Value>, outcome: &Outcome) -> Option<String> {
+    let from = shown(carry.said("from"));
+    let to = shown(carry.said("to"));
+    let (why, after) =
+        match outcome {
+            Outcome::Settled { let_go } => {
+                return before.is_some_and(|before| before["did"] == "kept").then(|| {
+                format!(
+                    "The trees your carry from {from} to {to} left on {from}, told as kept, \
+                     are let go since: {let_go} of them. Nothing of them is left to take."
+                )
+            });
+            }
+            _ if *outcome == came_back() => return None,
+            Outcome::Held(why) => (
+                why,
+                "pi-carry is asked again a day after, until a week has passed since the carry; \
+             take what's in them, or let them go there, before then.",
+            ),
+            Outcome::Kept(why) => (
+                why,
+                "They stay for good: take what's in them, or let them go there by hand.",
+            ),
+        };
+    let said = outcome.said();
+    let same = |field: &str| before.is_some_and(|before| before[field] == said[field]);
+    if same("did") && same("why") && same("again") {
+        return None;
+    }
+    Some(format!(
+        "The trees your carry from {from} to {to} left on {from} weren't let go; pi-carry \
+         said: {}. {after}",
+        shown(why)
+    ))
+}
+
+/// `text` as a finding shows it: as it was written, but for each control
+/// character, escaped, so none moves the terminal it is read in.
+fn shown(text: &str) -> String {
+    let mut shown = String::new();
+    for character in text.chars() {
+        if character.is_control() {
+            shown.extend(character.escape_default());
+        } else {
+            shown.push(character);
+        }
+    }
+    shown
+}
+
 /// What a carry `pi-carry` held the trees of comes to once its session is
 /// seen back here: kept for good, since the trees are its own again.
 fn came_back() -> Outcome {
@@ -367,32 +426,30 @@ impl Settler {
 
     /// Settles `carry` on a thread of its own, unless it is being settled
     /// already or what settling it came to is kept and stands
-    /// (`stands_at`), calling `kept` once what it came to is kept. Says
-    /// whether it began.
-    pub fn settle(self: &Arc<Self>, carry: &Kept, kept: impl FnOnce() + Send + 'static) -> bool {
+    /// (`stands_at`), calling `kept` once what it came to is kept, with
+    /// what to tell its session of it (`telling`). Says whether it began.
+    pub fn settle(
+        self: &Arc<Self>,
+        carry: &Kept,
+        kept: impl FnOnce(Option<String>) + Send + 'static,
+    ) -> bool {
         if !self.settling().insert(carry.id.clone()) {
             return false;
         }
         // A settling keeps its line before it lets its id go, so one that
         // ended since the caller read the lines is seen here; where they
         // can't be read, nothing is settled.
-        let already = match self.settled() {
-            Ok(settled) => settled.get(&carry.id).is_some_and(|said| {
-                let stands = stands_at(said, jiff::Timestamp::now());
-                if !stands {
-                    eprintln!(
-                        "asking {PI_CARRY} again to settle {}'s carry, a day after it kept its \
-                         trees: {}",
-                        carry.said("address"),
-                        said["why"]
-                            .as_str()
-                            .unwrap_or("it said not why")
-                            .escape_debug()
-                    );
-                }
-                stands
-            }),
-            Err(_) => true,
+        let (already, before) = match self.settled() {
+            Ok(mut settled) => {
+                let before = settled.remove(&carry.id);
+                (
+                    before
+                        .as_ref()
+                        .is_some_and(|said| Self::stands_yet(carry, said)),
+                    before,
+                )
+            }
+            Err(_) => (true, None),
         };
         if already {
             self.settling().remove(&carry.id);
@@ -403,12 +460,14 @@ impl Settler {
         thread::spawn(move || {
             // An answer lost stays among those settling, so it is asked
             // again only by a node started afresh, never each minute.
-            match settler
-                .ask(&carry)
-                .map(|outcome| settler.keep(&carry.id, &settler.once_back(&carry.id, outcome)))
-            {
-                Some(Ok(())) => {
+            let mut told = None;
+            match settler.ask(&carry).map(|outcome| {
+                let outcome = settler.once_back(&carry.id, outcome);
+                settler.keep(&carry.id, &outcome).map(|()| outcome)
+            }) {
+                Some(Ok(outcome)) => {
                     settler.settling().remove(&carry.id);
+                    told = telling(&carry, before.as_ref(), &outcome);
                 }
                 Some(Err(error)) => eprintln!(
                     "what settling {}'s carry came to can't be kept ({error}); it is asked \
@@ -417,9 +476,27 @@ impl Settler {
                 ),
                 None => {}
             }
-            kept();
+            kept(told);
         });
         true
+    }
+
+    /// Whether what settling `carry` came to, `said`, stands yet, saying
+    /// in the log where it doesn't, since it is asked again.
+    fn stands_yet(carry: &Kept, said: &Value) -> bool {
+        let stands = stands_at(said, jiff::Timestamp::now());
+        if !stands {
+            eprintln!(
+                "asking {PI_CARRY} again to settle {}'s carry, a day after it kept its \
+                         trees: {}",
+                carry.said("address"),
+                said["why"]
+                    .as_str()
+                    .unwrap_or("it said not why")
+                    .escape_debug()
+            );
+        }
+        stands
     }
 
     fn settling(&self) -> MutexGuard<'_, BTreeSet<String>> {
@@ -609,8 +686,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        ANSWERS_WITHIN, FADES_AFTER, Fading, LOOKED_FOR, Outcome, Settler, Settles, due, fade,
-        fading, judged, newest_each, stands_at, to_look_at,
+        ANSWERS_WITHIN, FADES_AFTER, Fading, LOOKED_FOR, Outcome, Settler, Settles, came_back, due,
+        fade, fading, judged, newest_each, stands_at, telling, to_look_at,
     };
     use crate::carry::kept::{Kept, State};
 
@@ -685,13 +762,109 @@ mod tests {
     /// Settles `carry` through `settler`, waiting until what it came to is
     /// kept.
     fn settled(settler: &Arc<Settler>, carry: &Kept) -> Value {
+        settled_telling(settler, carry).0
+    }
+
+    /// Settles `carry` as `settled` does, with what its session is told.
+    fn settled_telling(settler: &Arc<Settler>, carry: &Kept) -> (Value, Option<String>) {
         let (told, kept) = mpsc::channel();
         assert!(
-            settler.settle(carry, move || told.send(()).expect("the test waits")),
+            settler.settle(carry, move |telling| told
+                .send(telling)
+                .expect("the test waits")),
             "it begins"
         );
-        kept.recv_timeout(PATIENCE).expect("it is kept in time");
-        settler.settled().expect("it reads")[&carry.id].clone()
+        let telling = kept.recv_timeout(PATIENCE).expect("it is kept in time");
+        (
+            settler.settled().expect("it reads")[&carry.id].clone(),
+            telling,
+        )
+    }
+
+    #[test]
+    fn a_session_is_told_where_its_trees_stay_and_why_once_for_each_why() {
+        let carry = carried(30);
+        let held = Outcome::Held("Joel's \"shell\" stands in /trees/a\u{1b}[2J".to_owned());
+        let told = telling(&carry, None, &held).expect("held trees are told");
+        for said in [
+            "from skiff to tern",
+            "left on skiff",
+            "pi-carry said: Joel's \"shell\" stands in /trees/a\\u{1b}[2J.",
+        ] {
+            assert!(
+                told.contains(said),
+                "it says {said}, as written but for control characters: {told}"
+            );
+        }
+        assert!(
+            told.contains("asked again"),
+            "and that they're asked for again: {told}"
+        );
+        assert_eq!(
+            telling(&carry, Some(&held.said()), &held),
+            None,
+            "the same answer again isn't told again"
+        );
+
+        let kept = Outcome::Kept("a shell stands in /trees/a\u{1b}[2J".to_owned());
+        let told = telling(&carry, Some(&held.said()), &kept).expect("kept for good is told");
+        assert!(told.contains("for good"), "once they stay for good: {told}");
+        assert!(
+            telling(&carry, Some(&kept.said()), &held).is_some(),
+            "as is one held again after another answer"
+        );
+        assert_eq!(
+            telling(&carry, None, &Outcome::Settled { let_go: 2 }),
+            None,
+            "trees let go at first aren't told"
+        );
+        let since = telling(&carry, Some(&held.said()), &Outcome::Settled { let_go: 2 })
+            .expect("trees told as kept and let go since are told");
+        assert!(since.contains("let go since: 2"), "{since}");
+        assert_eq!(
+            telling(&carry, Some(&held.said()), &came_back()),
+            None,
+            "nor ones its session came back to"
+        );
+    }
+
+    #[test]
+    fn what_settling_came_to_is_told_as_it_is_kept() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (program, _given) = stand_in(
+            dir.path(),
+            "echo '{\"kind\":\"failed\",\"why\":\"a shell stands in /trees/a\"}'\nexit 1",
+        );
+        let settler = settler(dir.path(), program, PATIENCE);
+        let carry = carried(50);
+        let (said, told) = settled_telling(&settler, &carry);
+        let told = told.expect("the session is told");
+        assert!(
+            told.contains("pi-carry said: a shell stands in /trees/a."),
+            "the trees pi-carry kept are told as kept: {said} {told}"
+        );
+
+        // A day on, pi-carry is asked again, by this node or one started
+        // afresh, and reads the earlier line from the file.
+        let kept = dir.path().join("settles.jsonl");
+        let a_day_ago = (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(25)).to_string();
+        let day_old = |why: &str| {
+            format!(
+                "{}\n",
+                json!({"carry": carry.id, "did": "kept", "why": why, "again": true,
+                       "at": a_day_ago})
+            )
+        };
+        fs::write(&kept, day_old("a shell stands in /trees/a")).expect("a day-old line");
+        let (_, again) = settled_telling(&settler, &carry);
+        assert_eq!(again, None, "the same answer again isn't told again");
+
+        fs::write(&kept, day_old("an editor stands in /trees/a")).expect("a day-old line");
+        let (_, other) = settled_telling(&settler, &carry);
+        assert!(
+            other.is_some_and(|other| other.contains("a shell stands in")),
+            "a new answer is told"
+        );
     }
 
     #[test]
@@ -709,7 +882,7 @@ mod tests {
             "what settling came to can't be read"
         );
         assert!(
-            !settler.settle(&carried(30), || {}),
+            !settler.settle(&carried(30), |_| {}),
             "so no carry begins settling"
         );
         assert!(!given.exists(), "and pi-carry is never asked");
@@ -1056,7 +1229,7 @@ mod tests {
             "{said}"
         );
         assert!(
-            !settler.settle(&carry, || ()),
+            !settler.settle(&carry, |_| ()),
             "within a day of being kept, it isn't asked again"
         );
         let asked = || fs::read_to_string(&given).expect("it ran").lines().count();
@@ -1081,14 +1254,14 @@ mod tests {
         );
         assert_ne!(again["at"], json!(kept_at.to_string()), "{again}");
         assert!(
-            !settler.settle(&carry, || ()),
+            !settler.settle(&carry, |_| ()),
             "its newest answer stands, not the day-old one"
         );
         assert_eq!(asked(), 2, "so it isn't asked a third time");
 
         fs::write(&kept, line(false)).expect("a day-old line of the node's own");
         assert!(
-            !settler.settle(&carry, || ()),
+            !settler.settle(&carry, |_| ()),
             "trees the node kept without asking are never asked for again"
         );
         assert_eq!(asked(), 2, "and pi-carry isn't asked");
@@ -1121,7 +1294,7 @@ mod tests {
             said,
             "a node started afresh reads it as kept"
         );
-        assert!(!afresh.settle(&carry, || ()), "and never settles it again");
+        assert!(!afresh.settle(&carry, |_| ()), "and never settles it again");
         assert_eq!(
             fs::read_to_string(&given).expect("it ran").lines().count(),
             1,
@@ -1142,11 +1315,11 @@ mod tests {
         let carry = carried(25);
         let (told, kept) = mpsc::channel();
         assert!(
-            settler.settle(&carry, move || told.send(()).expect("the test waits")),
+            settler.settle(&carry, move |_| told.send(()).expect("the test waits")),
             "it begins"
         );
         assert!(
-            !settler.settle(&carry, || ()),
+            !settler.settle(&carry, |_| ()),
             "it isn't begun again while it runs"
         );
         kept.recv_timeout(PATIENCE).expect("its answer is kept");
@@ -1171,7 +1344,7 @@ mod tests {
         let carry = carried(25);
         let (told, ended) = mpsc::channel();
         assert!(
-            running.settle(&carry, move || told.send(()).expect("the test waits")),
+            running.settle(&carry, move |_| told.send(()).expect("the test waits")),
             "it begins"
         );
         ended.recv_timeout(PATIENCE).expect("it ends in time");
@@ -1181,7 +1354,7 @@ mod tests {
             program.display()
         );
         assert!(
-            !running.settle(&carry, || ()),
+            !running.settle(&carry, |_| ()),
             "nor is it asked again while this node runs"
         );
         carry
@@ -1199,7 +1372,7 @@ mod tests {
             "asked once"
         );
         assert!(
-            settler(dir.path(), program, PATIENCE).settle(&carry, || ()),
+            settler(dir.path(), program, PATIENCE).settle(&carry, |_| ()),
             "a node started afresh asks it again, which settling allows"
         );
     }
@@ -1253,7 +1426,7 @@ mod tests {
         for program in [dir.path().join("no-such"), too_old] {
             let carry = ends_keeping_nothing(dir.path(), &program);
             assert!(
-                settler(dir.path(), program, PATIENCE).settle(&carry, || ()),
+                settler(dir.path(), program, PATIENCE).settle(&carry, |_| ()),
                 "a node started afresh asks it again"
             );
         }
@@ -1391,7 +1564,7 @@ mod tests {
         let carry = carried(25);
         let (told, kept) = mpsc::channel();
         assert!(
-            settler.settle(&carry, move || told.send(()).expect("the test waits")),
+            settler.settle(&carry, move |_| told.send(()).expect("the test waits")),
             "it begins"
         );
         assert_eq!(settler.stands(&carry, State::Back, None), State::Back);

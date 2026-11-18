@@ -25,7 +25,7 @@ use crate::daemon;
 use crate::facts::{self, Readiness};
 use crate::flow::{self, Flows};
 use crate::forage;
-use crate::group::{Pattern, Routes};
+use crate::group::{Group, Pattern, Routes};
 use crate::handover::{self, Sleeping, Told};
 use crate::hold::{self, start, start::Starter};
 use crate::hosted_attach;
@@ -42,7 +42,7 @@ use crate::place;
 use crate::placement::{self, Miss, Need, Placement, Work};
 use crate::placements;
 use crate::receptor;
-use crate::record::{Message, Session, State as SessionState};
+use crate::record::{Intent, Message, Session, State as SessionState};
 use crate::room;
 use crate::run;
 use crate::served::{self, Served};
@@ -1003,6 +1003,11 @@ async fn said_why(refused: Option<tokio::task::JoinHandle<Option<String>>>) -> O
         .await
         .ok()?
         .ok()?
+}
+
+/// The group that reaches the session going by `address`.
+fn peer(address: &str) -> Result<Group, String> {
+    Group::new(format!("peer.{}", address.to_ascii_lowercase())).map_err(|error| error.to_string())
 }
 
 /// What has a refused link dialled again.
@@ -2091,11 +2096,42 @@ impl<S: Store> Shared<S> {
             // read the file to say so.
             let stands = said.is_some_and(|said| settle::stands_at(said, now));
             if !stands && settle::due(&carry, &state, &self.machine, now) {
-                let said = Arc::clone(&self.said);
-                settler.settle(&carry, move || said.sessions_moved());
+                let node = self.clone();
+                let address = carry.said("address").to_owned();
+                settler.settle(&carry, move |told| {
+                    if let Some(told) = told {
+                        node.tell_settled(&address, told);
+                    }
+                    node.said.sessions_moved();
+                });
             }
         }
         settler.watch(places);
+    }
+
+    /// Tells the session at `address`, wherever it runs now, what settling
+    /// its carry from here came to, `told`, as a finding from this node, or
+    /// says in the log why it can't be told.
+    fn tell_settled(&self, address: &str, told: String) {
+        let draft = peer(address).map(|session| Draft {
+            from: self.speaker(),
+            groups: vec![session],
+            intent: Some(Intent::Finding),
+            text: told,
+            re: None,
+            realm: None,
+        });
+        if let Err(error) = draft.and_then(|draft| self.send(&draft)) {
+            eprintln!(
+                "{}'s session can't be told where its trees stay: {error}",
+                address.escape_debug()
+            );
+        }
+    }
+
+    /// The name this node says its own findings under.
+    fn speaker(&self) -> String {
+        format!("mycelium@{}", self.machine.replace('-', "_"))
     }
 
     /// Settles as `settle_carries` does, but only once a session of a
@@ -7223,6 +7259,12 @@ esac
     /// settles at once, letting two trees go, after writing down what it
     /// was given, a line each time, in the file it answers.
     fn stand_in_settling(socket: &Path) -> PathBuf {
+        stand_in_answering(socket, r#"echo '{"kind":"settled","let":2}'"#)
+    }
+
+    /// A `pi-carry` as `stand_in_settling`'s, that answers by running
+    /// `answer`.
+    fn stand_in_answering(socket: &Path, answer: &str) -> PathBuf {
         // The node's own, as a socket's folder must be.
         fs::DirBuilder::new()
             .mode(0o700)
@@ -7232,10 +7274,7 @@ esac
         let text = socket.with_file_name("pi-carry.sh");
         fs::write(
             &text,
-            format!(
-                "#!/bin/sh\necho \"$*\" >> {}\necho '{{\"kind\":\"settled\",\"let\":2}}'\n",
-                given.display()
-            ),
+            format!("#!/bin/sh\necho \"$*\" >> {}\n{answer}\n", given.display()),
         )
         .expect("the stand-in is written");
         // A child process puts it in place, since another test's fork
@@ -7335,6 +7374,83 @@ esac
             fs::read_to_string(&given).expect("it ran"),
             "settle QEST-20261115-HARBOR --session s-harbour\n",
             "asked once, and never for a carry kestrel ordered"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_carried_session_is_told_where_its_trees_stay_and_why() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        stand_in_answering(
+            &socket,
+            r#"echo '{"kind":"failed","why":"a shell stands in /trees/a"}'; exit 1"#,
+        );
+        let at = (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(48)).to_string();
+        fs::write(
+            socket.with_file_name("carries.jsonl"),
+            format!(
+                "{}\n",
+                json!({"at": at, "by": "WCJQSG", "session": "s-harbour", "address": "HARBOR",
+                       "quest": "QEST-20261115-HARBOR", "from": "skiff", "to": "tern",
+                       "why": "it needs the camera"})
+            ),
+        )
+        .expect("the carry is kept");
+        let store = Memory::default();
+        let (_stop, _node) = node(&store, "skiff", Vec::<Piped>::new(), None, &socket);
+        let mut client = Speaking::to(&socket).await;
+        client.ask(json!({"id": 1, "ask": "hello"})).await;
+        client.next().await;
+        store
+            .put_machine(&fenced("tern", &["remote"]))
+            .expect("what it said is kept");
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "carry"}))
+            .await;
+        client.next().await;
+        store
+            .put_presence(
+                "s-harbour",
+                "tern",
+                &json!({"session": "s-harbour", "addresses": ["HARBOR"], "groups": [],
+                        "busy": true, "state": "listening",
+                        "at": jiff::Timestamp::now().to_string(),
+                        "quest": "QEST-20261115-HARBOR"}),
+            )
+            .expect("the presence is kept");
+        // The watches are told the sessions moved once it is told, so each
+        // change they hear is a time to look.
+        let told = || -> Vec<_> {
+            store
+                .message_ids(0)
+                .iter()
+                .filter_map(|id| store.message(id))
+                .filter_map(|body| mesh::message(&body))
+                .collect()
+        };
+        tokio::time::timeout(PATIENCE, async {
+            while told().is_empty() {
+                client.next().await;
+            }
+        })
+        .await
+        .expect("it is told in time");
+        let told = told();
+        assert_eq!(told.len(), 1, "one message: {told:?}");
+        let told = &told[0];
+        assert_eq!(
+            (&told.from, &told.groups, told.intent),
+            (
+                &"mycelium@skiff".to_owned(),
+                &vec![Group::new("peer.harbor").expect("a valid group")],
+                Some(Intent::Finding)
+            ),
+            "a finding from skiff's node to HARBOR: {told:?}"
+        );
+        assert!(
+            told.text.contains("a shell stands in /trees/a"),
+            "saying why its trees stay: {}",
+            told.text
         );
     }
 
