@@ -135,23 +135,38 @@ const PROXY: &str = "pi-agent.sock";
 /// proxy, or empty for none.
 const AGENT_SAID: &str = "MYCELIUM_AGENT";
 
-/// What a held program's start says of agents, given the agents' proxy
-/// if one is known: each variable with its value, or none to take it
-/// away. On Linux it signs only through the proxy, or with no agent
-/// where none is known, and never with another agent. A Mac runs no
-/// proxy, and its hosted sessions sign with the person's agent, so
-/// there a held program's agent is left as the person's session has it.
-fn agents(proxy: Option<&Path>) -> Vec<(&'static str, Option<std::ffi::OsString>)> {
+/// What an agent's start says of agents, given the agents' proxy if one
+/// is known, and whether it runs `through_login`, the login shell's
+/// script that names the agent again once the profile has run: each
+/// variable with its value, or none to take it away. On Linux it names
+/// only the proxy, or no agent where none is known, and never another,
+/// and says it again for the script only where there is one, so the
+/// word is never left for what it starts. A Mac runs no proxy, and its
+/// hosted sessions sign with the person's agent, so there an agent's
+/// is left as the person's session has it. A program running as the
+/// person could still reach their agent's socket by its path: this is
+/// what it is told to sign with, not a fence.
+pub fn agents(
+    proxy: Option<&Path>,
+    through_login: bool,
+) -> Vec<(&'static str, Option<std::ffi::OsString>)> {
     if cfg!(target_os = "macos") {
         return Vec::new();
     }
     let named = proxy.map(|proxy| proxy.as_os_str().to_owned());
-    let mut said = vec![
-        (AGENT, named.clone()),
-        (AGENT_SAID, Some(named.unwrap_or_default())),
-    ];
+    let mut said = vec![(AGENT, named.clone())];
+    if through_login {
+        said.push((AGENT_SAID, Some(named.unwrap_or_default())));
+    }
     said.extend(OTHER_AGENTS.map(|other| (other, None)));
     said
+}
+
+/// The agents' proxy's socket in the runtime folder this process has,
+/// for a start that has no person's environment of its own to read.
+#[must_use]
+pub fn agents_proxy_here() -> Option<PathBuf> {
+    agents_proxy(&[], std::env::var("XDG_RUNTIME_DIR").ok().as_deref())
 }
 
 /// The agents' proxy's socket, in the runtime folder `person` (the
@@ -342,7 +357,7 @@ fn starting(
     for variable in WINDOW_VARIABLES {
         command = command.env_remove(variable);
     }
-    for (variable, value) in agents(proxy.as_deref()) {
+    for (variable, value) in agents(proxy.as_deref(), !holding.through.is_empty()) {
         command = match value {
             Some(value) => command.env(variable, value),
             None => command.env_remove(variable),
@@ -359,9 +374,10 @@ fn starting(
 /// parked in `MYCELIUM_WAKE`, the file it may name its next command in
 /// as it parks in `MYCELIUM_AGAIN`, and the file it may say where its
 /// steers land in as it parks in `MYCELIUM_STEERS`, which wakes it too as
-/// one lands that would give it a turn. On Linux it signs over ssh only
-/// through the agents' proxy in the runtime folder, never the person's
-/// own agent, a login shell's profile notwithstanding ([`agents`]). A program exiting with [`PARKED`] is
+/// one lands that would give it a turn. On Linux it is told to sign over
+/// ssh only through the agents' proxy in the runtime folder, never the
+/// person's own agent, a login shell's profile notwithstanding
+/// ([`agents`]). A program exiting with [`PARKED`] is
 /// started again on the same terminal when woken, with the command named
 /// for it from outside if any was (see [`super::name_next`]), else with
 /// the one it named itself; one that wrote its wake file before it went is restarting,
@@ -2317,12 +2333,31 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn a_start_on_a_mac_leaves_the_persons_agent() {
+        let proxy = Path::new("/run/user/4242/pi-agent.sock");
+        assert_eq!(
+            [agents(Some(proxy), true), agents(None, false)],
+            [Vec::new(), Vec::new()],
+            "a Mac runs no proxy, so its sessions sign as the person's do"
+        );
+    }
+
+    #[test]
     #[cfg(target_os = "linux")]
     fn a_start_names_the_proxy_or_no_agent_and_never_another() {
         let proxy = Path::new("/run/user/4242/pi-agent.sock");
         let said = |value: &str| Some(std::ffi::OsString::from(value));
         assert_eq!(
-            agents(Some(proxy)),
+            agents(Some(proxy), false),
+            [
+                ("SSH_AUTH_SOCK", said("/run/user/4242/pi-agent.sock")),
+                ("SSH_TPM_AUTH_SOCK", None),
+            ],
+            "with no login script to read it, the agent isn't said again"
+        );
+        assert_eq!(
+            agents(Some(proxy), true),
             [
                 ("SSH_AUTH_SOCK", said("/run/user/4242/pi-agent.sock")),
                 ("MYCELIUM_AGENT", said("/run/user/4242/pi-agent.sock")),
@@ -2331,7 +2366,7 @@ mod tests {
             "the proxy, said again for after the profile, and no other agent"
         );
         assert_eq!(
-            agents(None),
+            agents(None, true),
             [
                 ("SSH_AUTH_SOCK", None),
                 ("MYCELIUM_AGENT", said("")),
@@ -2353,10 +2388,13 @@ mod tests {
         let (dir, held, _holder) = holding_sh_in(root.path(), Vec::new(), person).await;
         let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
         window
-            .types("echo \"[agent $SSH_AUTH_SOCK, ${SSH_TPM_AUTH_SOCK:-no} other]\"\r")
+            .types(
+                "echo \"[agent $SSH_AUTH_SOCK, ${SSH_TPM_AUTH_SOCK-no} other, \
+                 ${MYCELIUM_AGENT-unsaid}]\"\r",
+            )
             .await;
         window
-            .sees("[agent /run/user/4242/pi-agent.sock, no other]")
+            .sees("[agent /run/user/4242/pi-agent.sock, no other, unsaid]")
             .await;
     }
 

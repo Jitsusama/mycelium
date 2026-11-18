@@ -185,7 +185,11 @@ pub async fn here(
 /// `words` to start in a process group of its own, so a stop reaches all
 /// it starts, with nothing on its standard input. Its `PI_SESSION_ID`,
 /// which a fence's launcher reads to know whose work trees the run may
-/// stand in, is `session` alone, never the node's own.
+/// stand in, is `session` alone, never the node's own. A session's run
+/// signs over ssh as a held session does, through the agents' proxy
+/// ([`crate::hold::holder::agents`]), named again after the login
+/// shell's profile [`words`] puts it through; a person's run keeps the
+/// person's agent.
 fn command(
     words: &[String],
     folder: Folder,
@@ -220,9 +224,20 @@ fn command(
         .stderr(Stdio::piped())
         .process_group(0);
     match session {
-        Some(session) => command.env(SESSION, session),
-        None => command.env_remove(SESSION),
-    };
+        Some(session) => {
+            command.env(SESSION, session);
+            let proxy = crate::hold::holder::agents_proxy_here();
+            for (variable, value) in crate::hold::holder::agents(proxy.as_deref(), true) {
+                match value {
+                    Some(value) => command.env(variable, value),
+                    None => command.env_remove(variable),
+                };
+            }
+        }
+        None => {
+            command.env_remove(SESSION);
+        }
+    }
     Ok(command)
 }
 
@@ -381,6 +396,43 @@ mod tests {
             words[launcher.len()..words.len() - asked.len()],
             crate::hold::start::login_run("work", None),
             "the login shell stands between them"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_sessions_run_is_told_the_agents_proxy_and_a_persons_keeps_its_own() {
+        let told = |session| {
+            let run = command(&sh("true"), std::env::temp_dir().into(), session)
+                .expect("the run is made");
+            run.as_std()
+                .get_envs()
+                .map(|(name, value)| {
+                    let shown = |said: &std::ffi::OsStr| said.to_string_lossy().into_owned();
+                    (shown(name), value.map(shown))
+                })
+                .filter(|(name, _)| name.contains("AGENT") || name.contains("AUTH_SOCK"))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let proxy =
+            crate::hold::holder::agents_proxy_here().map(|proxy| proxy.display().to_string());
+        assert_eq!(
+            told(Some("s-harbour")),
+            [
+                (
+                    "MYCELIUM_AGENT".to_owned(),
+                    Some(proxy.clone().unwrap_or_default())
+                ),
+                ("SSH_AUTH_SOCK".to_owned(), proxy),
+                ("SSH_TPM_AUTH_SOCK".to_owned(), None),
+            ]
+            .into(),
+            "a session's run is told the proxy, again for after the profile, and no other"
+        );
+        assert_eq!(
+            told(None),
+            std::collections::BTreeMap::new(),
+            "a person's run is left as the person's session has it"
         );
     }
 

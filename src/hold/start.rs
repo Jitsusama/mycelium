@@ -440,6 +440,8 @@ mod tests {
             .arg("-c")
             .args(&words[script + 1..])
             .args(["sh", "-c", program])
+            // Whatever this test runs in, only the profile says an agent.
+            .env_remove("MYCELIUM_AGENT")
             .envs(profile.iter().copied())
             .output()
             .expect("the stand-in shell runs");
