@@ -553,7 +553,9 @@ fn a_folder_two_cells_share_by_key_is_a_network_named_for_what_it_is_for() {
             "KELP01",
             4,
             &json!([{"key": "quest:QEST-20261112-KELPED", "for": "Kelp", "folder": "/k"},
-                    {"key": "quest:QEST-20261112-KELPSY", "for": 7, "folder": "/s"}]),
+                    {"key": "quest:QEST-20261112-KELPSY", "for": 7, "folder": "/s"},
+                    {"key": "quest:QEST-20261112-KELPOB", "for": {"a": [1, {"b": null}]},
+                     "folder": "/o"}]),
         ),
     ];
     let mycelium = Mycelium::of("home", &[], &sessions, &[]);
@@ -606,15 +608,17 @@ fn a_folder_two_cells_share_by_key_is_a_network_named_for_what_it_is_for() {
     );
     let kelped = mycelium.cell("KELP01").expect("Kelp");
     assert_eq!(
-        serde_json::to_value(&kelped.shares).expect("shares")[1],
-        json!({"key": "quest:qest-20261112-kelpsy", "folder": "/s"}),
-        "a share saying what it is for as anything but text is kept, untitled, and its \
-         record leaves out what it doesn't say"
+        serde_json::to_value(kelped.shares.get(1..)).expect("shares"),
+        json!([{"key": "quest:qest-20261112-kelpsy", "folder": "/s"},
+               {"key": "quest:qest-20261112-kelpob", "folder": "/o"}]),
+        "a share saying what it is for as anything but text, a number or a whole object, \
+         is kept, untitled, and its record leaves out what it doesn't say"
     );
     let kelp = cell(&mycelium, kelped, &look());
     assert!(
         kelp.ends_with(
-            "its own folders\n  quest:qest-20261112-kelped  Kelp\n  quest:qest-20261112-kelpsy"
+            "its own folders\n  quest:qest-20261112-kelped  Kelp\n  quest:qest-20261112-kelpsy\n  \
+             quest:qest-20261112-kelpob"
         ),
         "a cell lists the folders it shares alone as its own, an untitled one's line \
          ending at its key: {kelp}"

@@ -479,11 +479,51 @@ pub struct Share {
 
 /// What a share says it is for, or empty where it says null or anything
 /// but text, as it says nothing, so no folder is refused for its title.
+/// Anything else is passed over unbuilt, so a large one costs no copy.
 fn said_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<String, D::Error> {
-    Ok(match Value::deserialize(said)? {
-        Value::String(said) => said,
-        _ => String::new(),
-    })
+    use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
+
+    struct Said;
+    impl<'de> Visitor<'de> for Said {
+        type Value = String;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("what a share is for")
+        }
+        fn visit_str<E>(self, said: &str) -> Result<String, E> {
+            Ok(said.to_owned())
+        }
+        fn visit_string<E>(self, said: String) -> Result<String, E> {
+            Ok(said)
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_unit<E>(self) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_none<E>(self) -> Result<String, E> {
+            Ok(String::new())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<String, A::Error> {
+            while seq.next_element::<IgnoredAny>()?.is_some() {}
+            Ok(String::new())
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<String, A::Error> {
+            while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            Ok(String::new())
+        }
+    }
+    said.deserialize_any(Said)
 }
 
 impl Share {
