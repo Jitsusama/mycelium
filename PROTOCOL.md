@@ -830,26 +830,29 @@ has been held over for ten minutes while another has room, it would
 put its sessions that wait to sleep where they are. If the readings
 five minutes on still say over, it would carry one session to a peer
 with room: the smallest log first, placed as any work is and onto
-ground as firm. A session in a turn, on the person's screen, holding a
-lease or a heavy run, or whose quest runs elsewhere too stays. So does
-one it can't tell any of these of. What a session is part way through
-is told only once its presence says `"leases": {"background": true}`,
-its harness keeping a lease for each background run. After a carry it
-would carry none for half an hour. A session moved by anyone stays put
-for a day, by the carries kept here, and nothing goes to a machine a
-session came from within the hour.
+ground as firm. A session in a turn, on the person's screen,
+orchestrating other sessions, holding a lease or a heavy run, or whose
+quest runs elsewhere too stays. So does one it can't tell any of these
+of. A session waiting on a secret's release or a password prompt waits
+inside its turn, so it stays as one in a turn. What a session is part
+way through is told only once its presence says `"leases":
+{"background": true}`, its harness keeping a lease for each background
+run. After a carry it would carry none for half an hour, and it would
+carry at most six in a day. A session moved by anyone stays put for a
+day, by the carries kept here, and nothing goes to a machine a session
+came from within the hour.
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at
-most 8 MiB, the folder its owner's alone. Each line holds `at`, `would:
-true`, `choice` (`nothing` with `why`, `sleep` with `sessions`, or
-`carry` with `session`, `to` and `why`) and the `reading` it was chosen
-by. A carry's line adds `holds`, what the session's own process holds
-where it has one: `memory` resident in bytes, and `cpu` in cores over
-the last ten minutes. What it would have done counts in its memory
-alone, so a session it would have put to sleep counts as asleep, and
-one it would have carried as gone. Nothing reaches the record of
-carries.
+most 8 MiB but for carries, the folder its owner's alone. Each line
+holds `at`, `would: true`, `choice` (`nothing` with `why`, `sleep`
+with `sessions`, or `carry` with `session`, `to` and `why`) and the
+`reading` it was chosen by. A carry's line adds `holds`, what the
+session's own process holds where it has one: `memory` resident in
+bytes, and `cpu` in cores over the last ten minutes. What it would
+have done counts in its memory, and a carry in its lines too, so a
+session it would have put to sleep counts as asleep, and one it would
+have carried as gone. Nothing reaches the record of carries.
 
 Whether its own machine is over it judges only from what the kernel
 says, read afresh each look and kept in memory: the `some` `avg10`
@@ -866,6 +869,47 @@ whether it has room to take a session, is as its own node said it over
 the link, from that machine's queue. The queue's record also still
 names the sessions holding a heavy run, which can only keep a session
 here.
+
+A session orchestrates others where this node's record of
+orchestrations holds a claim of its naming a quest, or where the
+quests' record names its quest as another quest's `orchestrator`. A
+claim naming none orchestrates nobody, since any session may make one.
+An orchestrator is never put to sleep either, since asleep it steers
+nothing. While the node's record can't be read, or the node serves no
+quests' record, hasn't read it whole or finds its file or folder not
+there as it was last read, though it be there since, whether any
+session orchestrates can't be told, so none is put to sleep or
+carried, and the line says why as `orchestrators_unknown`. A line is
+kept whenever that why comes, changes or clears, though nothing else
+changed, until the day's file is full. A node with no quests' record
+served therefore never eases.
+
+The six a day are counted twice, and the larger counts. One count is
+what the node remembers: what it did since it began, and from when it
+began, each carry its own lines in `eases` say it made, or would have,
+within the day, and each carry the record of carries keeps `by`
+`node@<machine>` and `from` here, a session in both counted once.
+Nothing writes such a carry yet; only a node that acts on its choices
+will. Its own lines are read from each day's file from yesterday's on,
+a name that isn't a day's passed over, and a line it can't read, torn
+by a stop part way, counting for none; a line kept after a torn one
+starts a line of its own, and a carry is kept however full its day's
+file is. A torn line in the record of carries counts for none too,
+though it end part way into a letter, and the carry kept after it
+starts a line of its own. In either file, a line holding a byte no
+letter has counts for none, never as some other session's. While a
+day's file, or the folder's list of them, is there but can't be read,
+easing doesn't begin, saying why in
+its lines, or on its standard error where those can't be written
+either. The other count is the record's lines by `node@<machine>`
+from here within the day, read at each look. That
+record is the person's file to edit, so one cut short lifts no limit,
+even across a restart while the node's own lines stand; one that can't
+be read stops every carry, saying why. A carry kept by
+`node@<machine>`, or said in its own lines, also starts the half hour
+after a carry and pins its session, across a restart. A line dated
+ahead counts until a day past its time, which can only hold carries
+back.
 
 ## Realm Flows
 
