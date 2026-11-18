@@ -1502,9 +1502,9 @@ toward every agent's starts through the node: in any hour a cell
 starts at most 8 and every agent together at most 32, and one past
 either is refused, saying which. A claim proves nothing, so the 8 are
 a cell's fair share, and the 32 the bound no agent gets round. A
-start counts whether it started or failed, since a failed one may still have spent, and so does one still
-starting, so starts asked at once can't pass the limit; a refused one
-doesn't. The person's own starts are never counted or refused. The
+start counts whether it started or failed, since a failed one may
+still have spent, and so does one still starting, so starts asked at
+once can't pass the limit; a refused one doesn't. The person's own starts are never counted or refused. The
 person stops the agents' starts asked of a node in one act, `mycelium
 starts stop`, which holds through a restart till `mycelium starts
 resume`, and while whether it stands can't be told; an agent asking
@@ -1913,8 +1913,9 @@ The `hub` kind holds, for each subject the realm's cells declare, the
 cells a need on it goes to first, keyed `hub:<subject>`, the subject in
 lower case. A subject has a hub for every 10 cells declaring it, each
 naming at most 5 of them as its `fits`, shared out among its hubs, the
-cell heard least lately first: by its own `tie:<cell>` strength faded
-to now, so a cell talking least has the most room. A cell hubs one
+cell heard least lately first: by its own `tie:<cell>` record, its
+messages in the last hour and a 24th of the day's, so a cell talking
+least has the most room. A cell hubs one
 subject, the rarest first, except where every cell declaring a subject
 already hubs another: then the one hubbing fewest hubs it too, so no
 subject is left with none. A record says its `subject`, its `hubs`,

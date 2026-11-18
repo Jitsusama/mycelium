@@ -357,16 +357,24 @@ pub fn subjects(declared: &Value) -> Vec<String> {
 }
 
 /// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
-/// joiner, a word joiner or invisible operator, a byte order mark, or a
-/// tag, any of which hides text from the person or smuggles it past them.
+/// joiner, a word joiner or invisible operator, a grapheme joiner, a
+/// Hangul or Khmer filler, a byte order mark, or a tag, any of which hides
+/// text from the person or smuggles it past them.
 fn unseen(each: char) -> bool {
     matches!(
         each,
         '\u{00AD}'
+            | '\u{034F}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{17B4}'
+            | '\u{17B5}'
             | '\u{180E}'
             | '\u{200B}'..='\u{200D}'
-            | '\u{2060}'..='\u{2064}'
+            | '\u{2060}'..='\u{2065}'
+            | '\u{3164}'
             | '\u{FEFF}'
+            | '\u{FFA0}'
             | '\u{E0000}'..='\u{E007F}'
     )
 }

@@ -1827,7 +1827,11 @@ fn forage_cells(inner: &Inner, machine: &str, starts: &starts::Starts) -> Vec<fo
                 quest: session.quest?,
                 address: session.address,
                 session: session.id,
-                started_by: started.or(session.orchestrated_by),
+                started_by: started.or_else(|| {
+                    session
+                        .orchestrated_by
+                        .filter(|address| forage::is_address(address))
+                }),
                 split_from,
             })
         })
@@ -2617,7 +2621,11 @@ impl<S: Store> Shared<S> {
             .filter(|session| matches!(session.state, SessionState::Busy | SessionState::Idle))
             .filter(|session| forage::is_address(&session.address))
             .map(|session| hub::Holder {
-                heard: heard.get(&session.address).copied().unwrap_or_default(),
+                // Tie records are keyed in upper case.
+                heard: heard
+                    .get(&session.address.to_ascii_uppercase())
+                    .copied()
+                    .unwrap_or_default(),
                 subjects: crate::networks::subjects(&session.presence["subjects"]),
                 address: session.address,
             })
@@ -9125,6 +9133,14 @@ esac
         };
         let (said, body) = mesh::written(&draft, 1);
         store.send_here(&said, body);
+        // GONE01 has ended: quietest and first by address, it would hub
+        // were an ended cell a holder, so the hubs below say it isn't.
+        let gone = json!({
+            "session": "gone", "addresses": ["GONE01"], "groups": [],
+            "state": "idle", "at": jiff::Timestamp::now().to_string(),
+            "subjects": ["mycelium:hubs"],
+        });
+        store.start_here("gone", gone, false);
         let loud = json!({
             "session": "loud", "addresses": ["LOUD01"], "groups": [],
             "state": "busy", "at": jiff::Timestamp::now().to_string(),

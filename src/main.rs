@@ -38,6 +38,7 @@ use mycelium::store::Store as _;
 use mycelium::store::folders::Folders;
 use mycelium::web::Said;
 use mycelium::wire::{Draft, Ran, Reply, Request, Response, Run, Sprout, Start, StartsAct};
+use mycelium::{carry, hold, hosted_attach, install, link, node, place, rejoin, served};
 
 /// What `mycelium starts` is asked to do.
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -59,7 +60,6 @@ impl From<StartsAsked> for StartsAct {
         }
     }
 }
-use mycelium::{carry, hold, hosted_attach, install, link, node, place, rejoin, served};
 
 /// Says a line on stderr as `eprintln!` does, but never panics where
 /// nobody reads it any more, as a caller's `2>&1 | head` leaves it, so the

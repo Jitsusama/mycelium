@@ -40,6 +40,13 @@ const KEPT_MOST: usize = 2048;
 /// from what memory holds, so asks refused without end fill no disk.
 const WRITTEN_MOST: u64 = 8 * 1024 * 1024;
 
+/// The longest folder a start keeps, in bytes: a longer one, which no
+/// system opens, is kept as none.
+const FOLDER_MOST: usize = 4096;
+
+/// The most characters of a program's name a start keeps.
+const PROGRAM_MOST: usize = 256;
+
 /// A start the node made, or was asked and refused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Kept {
@@ -139,9 +146,11 @@ impl Starts {
         let mut book = Book::default();
         if let Ok(read) = std::fs::File::open(&file) {
             book.written = read.metadata().map_or(0, |meta| meta.len());
-            for line in std::io::BufReader::new(read).lines() {
+            // By bytes, so a line that isn't UTF-8 is passed over alone
+            // rather than ending the read and every start after it.
+            for line in std::io::BufReader::new(read).split(b'\n') {
                 let Ok(line) = line else { break };
-                if let Ok(start) = serde_json::from_str::<Kept>(&line) {
+                if let Ok(start) = serde_json::from_slice::<Kept>(&line) {
                     book.hold(start);
                 }
             }
@@ -159,7 +168,14 @@ impl Starts {
     pub fn stopped(&self) -> bool {
         match self.stopped.symlink_metadata() {
             Ok(_) => true,
-            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                eprintln!(
+                    "agents' starts are held: whether {} stops them can't be told: {error}",
+                    self.stopped.display()
+                );
+                true
+            }
         }
     }
 
@@ -193,6 +209,14 @@ impl Starts {
     ///
     /// Why it is refused.
     pub fn admit(&self, mut asked: Kept) -> Result<Admitted, String> {
+        // What an agent chose is held to a bound, so its asks, refused
+        // ones too, can't grow the book past what starts would.
+        asked.folder = asked
+            .folder
+            .filter(|folder| folder.as_os_str().len() <= FOLDER_MOST);
+        asked.program = asked
+            .program
+            .map(|program| program.chars().take(PROGRAM_MOST).collect());
         let refused = {
             let mut book = self.lock();
             let refused = self.refusal(&book, &asked);
@@ -226,7 +250,9 @@ impl Starts {
             .kept
             .iter()
             .chain(book.going.iter().map(|(_, going)| going))
-            .filter(|one| one.counts() && one.at > since)
+            // One dated ahead of the ask, as a clock set back leaves it,
+            // counts no more than one long gone.
+            .filter(|one| one.counts() && one.at > since && one.at <= asked.at)
             .collect();
         let of_cell = counted
             .iter()

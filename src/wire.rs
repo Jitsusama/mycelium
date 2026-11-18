@@ -108,8 +108,8 @@ pub enum Request {
         quests: Vec<String>,
     },
     /// The sessions this node started lately, and whether agents may
-    /// start more: stopping or resuming them is taken only from the
-    /// person's own login, listing from anyone.
+    /// start more: stopping, resuming and listing are each taken only
+    /// from the person's own login, since a list names their folders.
     Starts {
         /// What to do.
         act: StartsAct,
