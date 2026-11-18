@@ -1604,9 +1604,16 @@ other mounts; else the person. A
 fenced at least. An agent's run goes only where an ordered carry could
 land it (A Carry an Orchestrator Orders): placement is offered only
 this machine and those, each other one missed as `looser-ground`,
-`never`, saying why, which no `tolerates` lifts, and a `"Place"` an
-agent asks is judged the same way, so where it is told the work would
-go is where the work may run. Each machine so refused still counts for
+`never`, saying why, which no `tolerates` lifts. Nor is it offered a
+machine whose launcher for its fence would refuse it: this one where
+its own launcher, as below, refuses it, and another where the fence it
+last said names no `runs`, a `runs` saying `--shared-tree`, or one
+not ending with `--`, each missed as `runs-nothing`, `never`, saying
+why; a machine whose node is too old to say its `runs` says none, so
+it is refused so until it is upgraded. A `"Place"` an agent asks is
+judged the same way, so where it is told the work would go is where
+the work may run, though a start placed (`"PlaceToStart"`) needs no
+`runs`. Each machine so refused still counts for
 what the person's lasting machines reach, and a placement's record
 keeps it as `refused`, so a replay refuses it too.
 There it runs as its

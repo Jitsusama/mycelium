@@ -276,22 +276,47 @@ pub fn launcher(file: &Path, kind: Kind, declarers: &[u32]) -> Result<Vec<String
              trusted to fence"
         ));
     }
-    if let Some(spare) = runs.iter().find(|word| spares_a_tree(word)) {
-        return Err(format!(
+    match unrunnable(&runs) {
+        Some(Unrunnable::SparesATree(spare)) => Err(format!(
             "its {kind} sessions' launcher in {} says {spare}, which spares a tree shared \
              to the asker; only the node asks that, of a run it found in such a tree: take \
              it out of the declaration",
             file.display()
-        ));
-    }
-    if runs.last().map(String::as_str) != Some("--") {
-        return Err(format!(
+        )),
+        Some(Unrunnable::Unended) => Err(format!(
             "its {kind} sessions' launcher in {} doesn't end with --, so what an ask says \
              after it could be read as the launcher's own options",
             file.display()
-        ));
+        )),
+        Some(Unrunnable::Nothing) | None => Ok(runs),
     }
-    Ok(runs)
+}
+
+/// Why a fence's declared `runs` runs no agent's command, as its words
+/// alone tell, so another machine can judge it from what that one said of
+/// itself. Whether its program is in the Nix store only the machine itself
+/// can tell ([`launcher`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unrunnable {
+    /// It names no words at all.
+    Nothing,
+    /// A word of it, this one, asks the launcher to spare a shared tree.
+    SparesATree(String),
+    /// It doesn't end with `--`.
+    Unended,
+}
+
+/// Why `runs`, as a fence declares it, runs no agent's command, or none
+/// where its words would run one.
+#[must_use]
+pub fn unrunnable(runs: &[String]) -> Option<Unrunnable> {
+    if runs.is_empty() {
+        return Some(Unrunnable::Nothing);
+    }
+    if let Some(spare) = runs.iter().find(|word| spares_a_tree(word)) {
+        return Some(Unrunnable::SparesATree(spare.clone()));
+    }
+    (runs.last().map(String::as_str) != Some("--")).then_some(Unrunnable::Unended)
 }
 
 /// Whether `word` asks a launcher to spare a shared tree: `--shared-tree`,
