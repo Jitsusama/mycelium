@@ -1105,6 +1105,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Cross": {"message", "from_realm"}}` | `{"Sent": message}`, or refused |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
+| `{"Spawned": {"pid", "started", "session"}}` | `"Spawned"`, from a pi host, of its own spawner (A Hosted Session's Spawner) |
 | `{"Carry": {"machine"}}` | `"Carrying"`, then what it asks of `machine` |
 | `"Health"` | `{"Health": health}`, then another each time it moves |
 | `{"Turn": {"session"}}` | `"Turn"`, once a holder may resume `session` (A Held Session) |
@@ -1968,20 +1969,11 @@ that session alone, as the kernel and pi's records prove it, since
 pi-fence grants the work trees that session holds. Alone counts
 every session claimed there, proved or not, and every one its host's
 record lists. A pi host's sessions share its process, so one of them
-is proved instead by the pi-spawner the host started for it: the
-host's own child, named `pi-spawner` by the kernel and running a
-program of that name, whose starting environment's
-`PI_SPAWNER_SESSION` names a session of the host proved as above.
-Only the host makes its own children, the harness runs none of an
-agent's commands as one, and pi-spawner never replaces itself. So a
-command can change what that names only by running a copy of the
-program under that name on purpose, or, where the kernel lets a
-process trace more than its own descendants, by writing the
-spawner's memory. It stops a mistake, not a forger. Any other
-process's environment proves nothing. Otherwise the
-sessions of a host holding more than one, the person's, one on a Mac,
-where no process's environment is read, and one asked from another
-machine are told none. The node takes `runs`
+is proved instead by the pi-spawner its command runs below, where
+the host said that spawner serves it (A Hosted Session's Spawner).
+Otherwise the sessions of a host holding more than one, the
+person's, one on a Mac, whose processes the node doesn't read, and
+one asked from another machine are told none. The node takes `runs`
 only from a declaration reached through folders and links root owns
 and no one else may write, each followed as written, with any part
 within the Nix store taken as the store's, and only where its first
@@ -2012,6 +2004,43 @@ again for the whole state.
 A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 `quest.4uhc5q`, and a peer's `@4UHC5Q` is `peer.4uhc5q`. A pattern takes
 `*` for any one token and a final `>` for one or more.
+
+### A Hosted Session's Spawner
+
+A pi host runs many sessions in one process, so its process alone
+can't say which of them asked for a run. It starts a pi-spawner for
+the commands of each, and says so on a connection of its own:
+`{"Spawned": {"pid", "started", "session"}}` names the spawner by
+its process and its start, in clock ticks since boot as the kernel's
+`stat` counts them, and the session it serves. The node takes it
+only where the kernel names the connection's other end as a process
+that proves `session` as its host, by its claim at its own start,
+and only of that process's own child, named `pi-spawner` by the
+kernel and started when it says. It answers `"Spawned"`, or refuses,
+saying why there and in its log. A spawner serves one session, and a
+session's spawners are one host's at a time: another host's word for
+it is taken once the first's have all ended. Of 4096 kept at most,
+those ended are let go first, and none more is taken until some end.
+
+The host says it before the spawner runs anything. A command below
+that spawner, each process between them started after the one above
+it and the host unchanged, is then proved as that session. Nothing a
+command runs can say it for another: it holds none of the host's
+connection, which the host opens closed on exec, and the node knows
+the speaker from the kernel, not from what it says. A command the
+host starts as its own child, as it does once a spawner is lost, runs
+below no spawner the host said, and is told none; so is one below a
+spawner a command started itself.
+
+This rests on two things the node doesn't prove. It takes the word
+only where the kernel lets a process trace no more than its own
+descendants, Yama's `ptrace_scope` at 1 or more, since otherwise a
+command could write the host's memory and speak as the host;
+elsewhere it refuses every spawner. And it can't tell the host's own
+code from code an agent brought into the host's process, an
+extension a project carries or a reload onto another tree among it,
+which can say any spawner serves any session the host proves. The
+fence the host runs under is what closes that.
 
 ### The Daemon Interface
 

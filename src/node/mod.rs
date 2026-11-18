@@ -1226,6 +1226,8 @@ struct Shared<S> {
     onces: Arc<once::Onces>,
     /// Why each asking process's runs here were told no session, said once.
     untold: Arc<run::Untold>,
+    /// Each hosted session's spawner, as its host said it.
+    spawners: Arc<asker::Spawners>,
     /// Where pi's hosts keep their records of the sessions they hold.
     hosts: PathBuf,
     /// Where it keeps who orchestrates which quests.
@@ -1426,6 +1428,7 @@ impl<S: Clone> Clone for Shared<S> {
             starts: Arc::clone(&self.starts),
             onces: Arc::clone(&self.onces),
             untold: Arc::clone(&self.untold),
+            spawners: Arc::clone(&self.spawners),
             hosts: self.hosts.clone(),
             orchestrations: self.orchestrations.clone(),
             logs: self.logs.clone(),
@@ -2121,6 +2124,7 @@ impl<S: Store> Shared<S> {
             onces: Arc::default(),
             runs: Arc::new(runs),
             untold: Arc::default(),
+            spawners: Arc::default(),
             hosts,
             orchestrations,
             logs,
@@ -3308,6 +3312,7 @@ impl<S: Store> Shared<S> {
             }
             Request::Free { .. } => Err("freeing a quest is answered by `frees`".to_owned()),
             Request::Starts { .. } => Err("starts are answered by `starts_asked`".to_owned()),
+            Request::Spawned { .. } => Err("a spawner is answered by `spawned`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
             Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
             Request::Health => Err("health is answered by `own_health::tell`".to_owned()),
@@ -3724,18 +3729,45 @@ impl<S: Store> Shared<S> {
     /// [`asker::session_alone`] proves it from the presences here.
     async fn session_alone(&self) -> Result<String, String> {
         let claims = self.claims();
-        let (client, processes, hosts, logs) = (
+        let (client, processes, hosts, logs, spawners) = (
             self.client,
             self.processes.clone(),
             self.hosts.clone(),
             self.logs.clone(),
+            Arc::clone(&self.spawners),
         );
         tokio::task::spawn_blocking(move || {
             let owners = asker::proved(&claims, &processes, &hosts, &logs)?;
-            asker::session_alone(client, &processes, &owners, &claims, &hosts)
+            asker::session_alone(client, &processes, &owners, &claims, &hosts, &spawners)
         })
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))?
+    }
+
+    /// Takes a pi host's word, the host being the process at the other
+    /// end, that its child `spawner` serves `session`, as
+    /// [`asker::Spawners::register`] takes it. A refusal is said on the
+    /// node's stderr too, since a host refused may be a command trying.
+    async fn spawned(&self, spawner: (i32, u64), session: String) -> Reply {
+        let claims = self.claims();
+        let (host, processes, hosts, logs, spawners) = (
+            (self.client, self.client_started),
+            self.processes.clone(),
+            self.hosts.clone(),
+            self.logs.clone(),
+            Arc::clone(&self.spawners),
+        );
+        let said = session.clone();
+        let registered = tokio::task::spawn_blocking(move || {
+            let owners = asker::proved(&claims, &processes, &hosts, &logs)?;
+            spawners.register(host, spawner, &session, &processes, &owners, &claims)
+        })
+        .await
+        .map_err(|error| format!("the spawner couldn't be told: {error}"))?;
+        if let Err(why) = &registered {
+            eprintln!("mycelium: a spawner for {said} isn't taken: {why}");
+        }
+        registered.map(|()| Response::Spawned)
     }
 
     /// The fence `session` shows it runs in, by its owner's process,
@@ -5903,27 +5935,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             return;
         }
         if let Ok(Request::Watch { groups, recent }) = request {
-            if write(&mut writing, &Reply::Ok(Response::Watching))
-                .await
-                .is_ok()
-            {
-                let (id, mut events) = shared.watch(groups.as_ref(), recent);
-                loop {
-                    tokio::select! {
-                        event = events.recv() => {
-                            let Some(event) = event else { break };
-                            let written = tokio::time::timeout(WATCH_PATIENCE, write(&mut writing, &event)).await;
-                            if !matches!(written, Ok(Ok(()))) {
-                                break;
-                            }
-                        }
-                        // A watch's client says nothing more; anything it
-                        // does send, or its hanging up, ends the watch.
-                        _ = lines.next_line() => break,
-                    }
-                }
-                shared.unwatch(id);
-            }
+            keep_watching(&shared, groups.as_ref(), recent, lines, writing).await;
             return;
         }
         let reply: Answer = match request {
@@ -5937,6 +5949,11 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             }
             Ok(Request::Free { quest }) => shared.frees(quest).await.into(),
             Ok(Request::Starts { act }) => shared.starts_asked(act).await.into(),
+            Ok(Request::Spawned {
+                pid,
+                started,
+                session,
+            }) => shared.spawned((pid, started), session).await.into(),
             Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
             Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
             // A receptor's cell is named `<source>@<machine>`, and only the
@@ -6045,6 +6062,39 @@ async fn hand_on_run<S: Store>(
 /// Answers a holder's ask for a turn once it may resume `session`,
 /// looking at the turns each [`turns::LOOKS_EVERY`] while it waits. A holder that
 /// hangs up first leaves the queue.
+/// Send a watch's client the whole state, then each change, until it
+/// says anything more, hangs up or falls too far behind.
+async fn keep_watching<S: Store>(
+    shared: &Shared<S>,
+    groups: Option<&Pattern>,
+    recent: usize,
+    mut lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    mut writing: tokio::net::unix::OwnedWriteHalf,
+) {
+    if write(&mut writing, &Reply::Ok(Response::Watching))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let (id, mut events) = shared.watch(groups, recent);
+    loop {
+        tokio::select! {
+            event = events.recv() => {
+                let Some(event) = event else { break };
+                let written = tokio::time::timeout(WATCH_PATIENCE, write(&mut writing, &event)).await;
+                if !matches!(written, Ok(Ok(()))) {
+                    break;
+                }
+            }
+            // A watch's client says nothing more; anything it does send,
+            // or its hanging up, ends the watch.
+            _ = lines.next_line() => break,
+        }
+    }
+    shared.unwatch(id);
+}
+
 async fn take_turn<S: Store>(
     shared: &Shared<S>,
     session: &str,
@@ -7888,29 +7938,33 @@ esac
     }
 
     /// Tells the stand-in for /proc beside `socket` that this test asks
-    /// from below pi-spawner `spawner`, which the host `host` started for
-    /// `session`.
-    fn asks_below_spawner(socket: &Path, spawner: i32, host: i32, session: &str) {
+    /// from below pi-spawner `spawner`, which the host `host` started,
+    /// each started after its parent, and that the kernel lets a process
+    /// be traced only by its forebears.
+    fn asks_below_spawner(socket: &Path, spawner: i32, host: i32) {
         let procs = procs_of(socket);
-        let folder = procs.join(spawner.to_string());
-        fs::create_dir_all(&folder).expect("its folder is made");
-        fs::write(
-            folder.join("status"),
-            format!("Name:\tpi-spawner\nPPid:\t{host}\n"),
-        )
-        .expect("its status is written");
-        fs::write(
-            folder.join("environ"),
-            format!("PI_SPAWNER_SESSION={session}\0"),
-        )
-        .expect("the host started it for the session");
-        std::os::unix::fs::symlink("/nix/store/x-pi-spawner/bin/pi-spawner", folder.join("exe"))
-            .expect("its program is linked");
-        fs::write(
-            procs.join(std::process::id().to_string()).join("status"),
-            format!("Name:\tmycelium\nPPid:\t{spawner}\n"),
-        )
-        .expect("its command runs below the spawner");
+        let zeros = "0 ".repeat(17);
+        let asker = i32::try_from(std::process::id()).expect("a pid");
+        for (pid, name, parent, ticks) in [
+            (spawner, "pi-spawner", host, started_at(host) + 1),
+            (asker, "mycelium", spawner, started_at(host) + 2),
+        ] {
+            let folder = procs.join(pid.to_string());
+            fs::create_dir_all(&folder).expect("its folder is made");
+            fs::write(
+                folder.join("status"),
+                format!("Name:\t{name}\nPPid:\t{parent}\n"),
+            )
+            .expect("its status is written");
+            fs::write(
+                folder.join("stat"),
+                format!("{pid} ({name}) S {parent} {zeros}{ticks} 0 0\n"),
+            )
+            .expect("its stat is written");
+        }
+        let scope = procs.join("sys/kernel/yama/ptrace_scope");
+        fs::create_dir_all(scope.parent().expect("its folder")).expect("its folder is made");
+        fs::write(scope, "1\n").expect("the scope is written");
     }
 
     /// The `nth` run started that the node on `socket` keeps in its
@@ -14586,7 +14640,7 @@ esac
     }
 
     #[tokio::test]
-    async fn a_hosts_run_is_fenced_for_the_session_its_spawner_was_started_for_alone() {
+    async fn a_hosts_run_is_told_no_session_by_a_spawner_its_host_never_said() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
@@ -14654,20 +14708,41 @@ esac
             format!("the fence runs for none{SIGNS}\n"),
             "nor once both prove, whichever its command names"
         );
-        asks_below_spawner(&socket, 7102, 7101, "s-two");
-        let below = run_through(socket.clone(), run_of("skiff", "true"))
+        asks_below_spawner(&socket, 7102, 7101);
+        let unsaid = run_through(socket.clone(), run_of("skiff", "true"))
             .await
             .expect("a hosted agent's runs here");
         assert_eq!(
-            String::from_utf8_lossy(&below.out),
-            "the fence runs for s-two\n",
-            "a command below the spawner its host started for s-two runs for s-two, \
-             though its own environment names s-one"
+            String::from_utf8_lossy(&unsaid.out),
+            "the fence runs for none\n",
+            "a command below a pi-spawner its host never said is told none"
         );
+        assert!(
+            kept_start(&socket, 2)["untold"]
+                .as_str()
+                .is_some_and(|why| why.contains("through no pi-spawner")),
+            "and its record says it asked through no spawner its host said"
+        );
+        let forged = ask(
+            socket.clone(),
+            Request::Spawned {
+                pid: 7102,
+                started: started_at(7101) + 1,
+                session: "s-two".to_owned(),
+            },
+        )
+        .await;
+        assert!(
+            forged.is_err_and(|why| why.contains("no pi host")),
+            "a command below the host can't say the spawner for it"
+        );
+        let still = run_through(socket.clone(), run_of("skiff", "true"))
+            .await
+            .expect("a hosted agent's runs here");
         assert_eq!(
-            kept_start(&socket, 2).get("untold"),
-            None,
-            "and its record says nothing was untold"
+            String::from_utf8_lossy(&still.out),
+            "the fence runs for none\n",
+            "so its runs are still told none"
         );
         let (stop, node) = running;
         drop(stop);

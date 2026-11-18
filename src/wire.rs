@@ -140,6 +140,21 @@ pub enum Request {
     /// ends. The process is the one the kernel says is at the other end, so
     /// no process can speak for another. It says nothing more.
     Present,
+    /// A pi host's word that its child `pid`, started `started` clock
+    /// ticks after boot as the host read it before handing it any command,
+    /// is the pi-spawner it started for `session`, so a command asking
+    /// below it asks for that session alone. Taken only from the host
+    /// itself, as the kernel names the process at the other end, and only
+    /// for a session it proves; see PROTOCOL.md's A Hosted Session's
+    /// Spawner.
+    Spawned {
+        /// The spawner's process.
+        pid: i32,
+        /// When it started, in clock ticks since boot.
+        started: u64,
+        /// The session it serves.
+        session: String,
+    },
     /// What this node asks of `machine`, handed to the connection one ask
     /// a line for as long as it stays, each answered on a line of its own:
     /// a link `machine` dialled, which runs outside the node, carries them.
@@ -445,6 +460,8 @@ pub enum Response {
     Watching,
     /// The process is counted present until it hangs up.
     Present,
+    /// The spawner said, registered for its session.
+    Spawned,
     /// Asks follow, one per line, each to be answered on a line back.
     Carrying,
     /// This machine's own health, or none while it is unknown: one at
