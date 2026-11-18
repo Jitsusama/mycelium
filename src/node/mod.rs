@@ -2905,7 +2905,9 @@ impl<S: Store> Shared<S> {
     /// on whichever led. Each placement is kept in its log, where it keeps
     /// one, once the lock is let go. Work an agent asks, running in the fence `fence`, is refused
     /// every machine whose ground is looser than here, so nothing is carried
-    /// to a machine that would refuse to run it once it got there. Those
+    /// to a machine that would refuse to run it once it got there; and an
+    /// agent's run, where `runs` says it is one, every machine whose fence
+    /// names no way to run a command, which refuses that run there. Those
     /// machines still count for what the realm reaches, and the record
     /// keeps why each was refused, so a replay refuses them too. A machine
     /// booked for one asker ([`Inner::booked`]) is weighed only where
@@ -2915,6 +2917,7 @@ impl<S: Store> Shared<S> {
         work: &Work,
         counts: Counts,
         fence: Option<crate::declared::Kind>,
+        runs: bool,
         admits: &Admits,
     ) -> Placement {
         // Measured before the lock is taken, since measuring reads this
@@ -2928,7 +2931,11 @@ impl<S: Store> Shared<S> {
         let refused = fence
             .map(|kind| {
                 let here = crate::declared::read(&self.declared);
-                ground::looser(kind, here.as_ref(), &self.machine, &machines)
+                let mut refused = ground::looser(kind, here.as_ref(), &self.machine, &machines);
+                if runs {
+                    refused.extend(ground::runs_nothing(kind, &self.machine, &machines));
+                }
+                refused
             })
             .unwrap_or_default();
         // This machine is measured first, so work asked on a worker stays
@@ -4097,7 +4104,8 @@ impl<S: Store> Shared<S> {
         }
         let fence = self.fence_asked().await?;
         let admits = self.admits().await;
-        let (misses, nowhere) = match self.place(&asked.work, Counts::Always, fence, &admits) {
+        let (misses, nowhere) = match self.place(&asked.work, Counts::Always, fence, false, &admits)
+        {
             Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
             Placement::Pending { misses } => {
                 let nowhere = format!(
@@ -4107,7 +4115,10 @@ impl<S: Store> Shared<S> {
                 (misses, nowhere)
             }
             Placement::Refused { misses } => {
-                if let (Some(kind), Some(why)) = (fence, looser_named(&asked.work, &misses)) {
+                if let (Some(kind), Some(why)) = (
+                    fence,
+                    refused_named(&asked.work, &misses, placement::LOOSER_GROUND),
+                ) {
                     return Err(format!(
                         "this asks as {}, so it starts nothing on looser ground: {why}",
                         By::Agent(kind)
@@ -4293,7 +4304,7 @@ impl<S: Store> Shared<S> {
         let mut there = asked.work.clone();
         there.needs.push(Need::Machine(made.machine.clone()));
         // Pinned to the machine made for it, which is booked for its asker.
-        match self.place(&there, Counts::Always, fence, &Admits::All) {
+        match self.place(&there, Counts::Always, fence, false, &Admits::All) {
             Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 let its: Vec<Miss> = misses
@@ -4452,7 +4463,7 @@ impl<S: Store> Shared<S> {
         // only on ground as firm as here, where it stands in the fence its
         // launcher sets.
         let admits = self.admits().await;
-        let machine = match self.place(&asked.work, Counts::Never, fence, &admits) {
+        let machine = match self.place(&asked.work, Counts::Never, fence, true, &admits) {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } => {
                 return Err(format!(
@@ -4461,9 +4472,15 @@ impl<S: Store> Shared<S> {
                 ));
             }
             Placement::Refused { misses } => {
-                if let Some(why) = looser_named(&asked.work, &misses) {
+                if let Some(why) = refused_named(&asked.work, &misses, placement::LOOSER_GROUND) {
                     return Err(format!(
                         "this asks as {by}, so it runs nothing on looser ground: {why}"
+                    ));
+                }
+                if let Some(why) = refused_named(&asked.work, &misses, placement::RUNS_NOTHING) {
+                    return Err(format!(
+                        "this asks as {by}, so it runs only where that fence runs a command: \
+                         {why}"
                     ));
                 }
                 return Err(format!("nowhere: {}", placement::said(&misses)));
@@ -4622,14 +4639,20 @@ impl<S: Store> Shared<S> {
 
     /// Places `work` as [`Node::place`] does for whoever asks, held to an
     /// agent's ground where an agent asks, as a run of its would be, so
-    /// what it is told would take the work is where the work can run.
+    /// what it is told would take the work is where the work can run. Work
+    /// placed to start (`counts` other than [`Counts::Never`]) starts a
+    /// session, which needs no way to run a command in its fence there.
     async fn place_asked(&self, work: &Work, counts: Counts) -> Reply {
         let fence = self.fence_asked().await?;
         // Held to the machines booked for whoever asks, as its run is.
         let admits = self.admits().await;
-        Ok(Response::Placement(
-            self.place(work, counts, fence, &admits),
-        ))
+        Ok(Response::Placement(self.place(
+            work,
+            counts,
+            fence,
+            counts == Counts::Never,
+            &admits,
+        )))
     }
 
     /// The fence whoever asks runs in, as [`Self::judged`] tells it: an
@@ -4855,18 +4878,17 @@ fn refused(why: &str) {
     eprintln!("a run is refused: {}", why.escape_debug());
 }
 
-/// Why the machine `work` names refused it for its looser ground, where
-/// one did, so an agent naming such a machine is told so plainly rather
-/// than among every other machine's reasons.
-fn looser_named(work: &Work, misses: &[Miss]) -> Option<String> {
+/// Why the machine `work` names refused it with the refusal `key` (its
+/// looser ground, or a fence that runs nothing), where one did, so an
+/// agent naming such a machine is told so plainly rather than among every
+/// other machine's reasons.
+fn refused_named(work: &Work, misses: &[Miss], key: &str) -> Option<String> {
     misses
         .iter()
         .filter(|miss| work.needs.contains(&Need::Machine(miss.machine.clone())))
         .flat_map(|miss| &miss.because)
         .find_map(|because| match because {
-            placement::Because::Refuses(taint) if taint.key == placement::LOOSER_GROUND => {
-                Some(taint.why.clone())
-            }
+            placement::Because::Refuses(taint) if taint.key == key => Some(taint.why.clone()),
             _ => None,
         })
 }
@@ -6911,7 +6933,7 @@ esac
             builders: builders.iter().map(|&one| one.to_owned()).collect(),
             forges: std::collections::BTreeSet::new(),
             secrets: std::collections::BTreeSet::new(),
-            runs: Vec::new(),
+            runs: vec!["/nix/store/0000-fence/bin/fence".to_owned()],
         };
         facts::Machine {
             declared: Some(crate::declared::Declared {
@@ -11037,6 +11059,83 @@ esac
         );
     }
 
+    // S99IA2 (2026-11-17): a machine whose fence names no way to run a
+    // command refuses an agent's run there, so placement never sends one
+    // to it, as the basin's cell, declared fenced with no runs, would.
+    #[tokio::test]
+    async fn an_agents_run_goes_nowhere_its_fence_runs_no_command() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let mut tern = fenced("tern", &["remote"]);
+        let declared = tern.declared.as_mut().expect("declared");
+        let fences = declared.fence.as_mut().expect("a fence");
+        fences
+            .get_mut(&crate::declared::Kind::Strict)
+            .expect("its strict fence")
+            .runs
+            .clear();
+        store.put_machine(&tern).expect("what it said is kept");
+        asks_below(&socket, 7001);
+
+        assert_eq!(
+            run_through(socket.clone(), run_of("tern", "true"))
+                .await
+                .err(),
+            Some(
+                "this asks as a strictly fenced agent, so it runs only where that fence runs a \
+                 command: tern declares no way to run a command as its strictly fenced \
+                 sessions run"
+                    .to_owned()
+            ),
+            "tern's ground is as firm as here's, but its fence runs nothing"
+        );
+        let toward_tern = Work {
+            prefers: vec![Need::Machine("tern".to_owned())],
+            ..work(Vec::new())
+        };
+        let placed = |request: Request| {
+            let socket = socket.clone();
+            async move {
+                let asked = tokio::task::spawn_blocking(move || {
+                    Client::connect(&socket)
+                        .expect("the client connects")
+                        .ask(&request)
+                        .expect("the node answers")
+                });
+                let answer = tokio::time::timeout(PATIENCE, asked)
+                    .await
+                    .expect("the node answers in time")
+                    .expect("the client asks");
+                match answer {
+                    Ok(Response::Placement(Placement::Placed { machine, .. })) => machine,
+                    other => panic!("a placement: {other:?}"),
+                }
+            }
+        };
+        assert_eq!(
+            placed(Request::Place(toward_tern.clone())).await,
+            "skiff",
+            "where a run would go is never where its fence runs nothing"
+        );
+        // A start weighs the sessions here, so it is pinned to tern to be
+        // judged there alone.
+        let on_tern = work(vec![Need::Machine("tern".to_owned())]);
+        assert_eq!(
+            placed(Request::PlaceToStart(on_tern)).await,
+            "tern",
+            "a session started there needs no way to run a command"
+        );
+        asks_as_person(&socket);
+        assert_eq!(
+            run_through(socket, run_of("tern", "true")).await.err(),
+            Some("no link reaches tern now".to_owned()),
+            "the person's run needs no fence, so it goes as far as the link"
+        );
+    }
+
     #[tokio::test]
     async fn a_fenced_agent_is_never_offered_looser_ground() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -11095,11 +11194,12 @@ esac
             run_through(socket.clone(), unnamed).await.err(),
             Some(
                 "this asks as a strictly fenced agent, so it runs here only in that fence: \
-                 this machine declares no way to run a command as its strictly fenced \
-                 sessions run"
+                 its strictly fenced sessions' launcher /nix/store/0000-fence/bin/fence isn't \
+                 there: No such file or directory (os error 2)"
                     .to_owned()
             ),
-            "an agent's run naming no machine stays here, on its own ground"
+            "an agent's run naming no machine stays here, on its own ground, in its own \
+             launcher"
         );
         asks_as_person(&socket);
         let Placement::Placed { passed, .. } = place(socket).await else {
@@ -12880,6 +12980,7 @@ esac
             &basin,
             Counts::Always,
             None,
+            false,
             &Admits::Asker(told.to_owned()),
         ) {
             Placement::Placed { machine, .. } => Some(machine),
@@ -12921,6 +13022,7 @@ esac
                 &anywhere,
                 Counts::Always,
                 None,
+                false,
                 &Admits::Asker("P9R1KI".to_owned()),
             ) {
                 Placement::Placed { machine, .. } => Some(machine),

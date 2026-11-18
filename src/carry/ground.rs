@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use crate::declared::{Declared, Doors, Effect, Kind, Taint};
 use crate::facts::{Machine, Readiness};
-use crate::placement::{Because, LOOSER_GROUND, Miss};
+use crate::placement::{Because, LOOSER_GROUND, Miss, RUNS_NOTHING};
 
 /// The fence the session `address` is judged to run in: the one its
 /// presence `claimed`, refused where its process `shown` it stricter,
@@ -96,6 +96,39 @@ pub fn looser(kind: Kind, here: Option<&Declared>, this: &str, machines: &[Machi
                     why,
                 })],
             })
+        })
+        .collect()
+}
+
+/// Each of `machines` an agent's run asked in the fence `kind` may not be
+/// placed on from `this`, beside those [`looser`] refuses, refused saying
+/// why: every other machine whose fence for `kind` names no words a
+/// command runs after (`runs`), since that machine refuses an agent's run
+/// there ([`crate::declared::launcher`]). A machine that runs no `kind`
+/// session at all is [`looser`]'s to refuse, so it is never refused twice.
+#[must_use]
+pub fn runs_nothing(kind: Kind, this: &str, machines: &[Machine]) -> Vec<Miss> {
+    machines
+        .iter()
+        .filter(|machine| machine.name != this)
+        .filter(|machine| {
+            machine
+                .declared
+                .as_ref()
+                .and_then(|declared| declared.fence.as_ref())
+                .and_then(|fences| fences.get(&kind))
+                .is_some_and(|doors| doors.runs.is_empty())
+        })
+        .map(|machine| Miss {
+            machine: machine.name.clone(),
+            because: vec![Because::Refuses(Taint {
+                key: RUNS_NOTHING.to_owned(),
+                effect: Effect::Never,
+                why: format!(
+                    "{} declares no way to run a command as its {kind} sessions run",
+                    machine.name
+                ),
+            })],
         })
         .collect()
 }

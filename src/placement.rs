@@ -316,6 +316,10 @@ pub const DISK_FULL: &str = "disk-full";
 /// is looser than where it asks, which would refuse to run it there.
 pub const LOOSER_GROUND: &str = "looser-ground";
 
+/// The key of the refusal an agent's run meets on a machine whose fence
+/// for it names no way to run a command, which would refuse it there.
+pub const RUNS_NOTHING: &str = "runs-nothing";
+
 /// The key of the taint a machine past its queue's processor limit carries.
 pub const CPU_PRESSURE: &str = "cpu-pressure";
 
