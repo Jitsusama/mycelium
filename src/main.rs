@@ -1079,8 +1079,8 @@ struct ReceptorSaid {
 /// Writes how the receptor `said` stands for `realm`, saying where, and
 /// the changes it feeds to cells when it names its owners.
 ///
-/// Each item is judged before anything is written, so one refused
-/// leaves both files as they were.
+/// Each item, and the record, is judged before anything is written, so
+/// one refused leaves both files as they were.
 fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
     use mycelium::receptor::{self, Counts, Record, Source, State};
     let word = |what: &str, value: &str| {
@@ -1134,6 +1134,7 @@ fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
     };
     let folder = receptor::folder(&said.state_folder.unwrap_or_else(place::state));
     let realm = record.realm.clone();
+    receptor::admits(&record, &realm, &receptor::Here)?;
     // The items go first, so the node, woken by the record, reads the
     // items it was written beside rather than those before them.
     let kept = items

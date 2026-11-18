@@ -2222,14 +2222,18 @@ One gone from the file is gone, and none is kept past 30 days.
 Which cell owns a change is its quest's word, never a session's: the
 quest's README names the change as a `github-pr` alias, exactly
 `owner/name#N` and never by prefix, and lists the session as `active`,
-and the quest's `realm` is the node's. Each such session of this
-machine, running and not ended or out of reach, is fed, and two that
-claim one change are both fed. Feeding happens only for a source the
-person's table names and whose receptor keeps a record not reading
-`off`, as the node reads the folder's changes, a quest's README, and
-every 30 seconds. An items file that is there but can't be trusted (a
-link, too large, another realm's or source's, or malformed) leaves that
-source's feeding as it stood, rather than reading as no items.
+and the quest's `realm` is the node's. Exactly means in the same case:
+GitHub's names are blind to case, but a receptor names a change as
+GitHub's own link spells it, so an alias copied from GitHub claims it,
+and one typed in another case claims nothing rather than too much. Each
+such session of this machine, running and not ended or out of reach,
+is fed, and two that claim one change are both fed. Feeding happens
+only for a source the person's table names and whose receptor keeps a
+record not reading `off`, as the node reads the folder's changes, a
+quest's README, and every 30 seconds. An items file that is there but
+can't be trusted (a link, too large, another realm's or source's, or
+malformed) leaves that source's feeding as it stood, rather than
+reading as no items.
 
 A fed cell hears an `fyi` from `<source>@<machine>`, as a signal is
 said, but to the cell alone (`@ADDRESS`, held as `peer.<address>`),

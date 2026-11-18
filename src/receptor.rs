@@ -242,6 +242,32 @@ pub fn owned(folder: &Path) -> io::Result<OwnedFd> {
     Ok(opened)
 }
 
+/// Whether `record` may be written for `realm`, as [`write`] judges it
+/// before writing anything, so a caller writing beside it can judge it
+/// first and leave everything as it was when it's refused.
+///
+/// # Errors
+///
+/// When the record is of another realm, reads more often than it could
+/// or less than daily, counts more addressed than it has, or names a
+/// process `living` says isn't running.
+pub fn admits(record: &Record, realm: &str, living: &impl Living) -> io::Result<()> {
+    if record.realm != realm {
+        return Err(refused(format!(
+            "a receptor of realm {:?} can't be written in realm {realm:?}",
+            record.realm
+        )));
+    }
+    sound(record)?;
+    if !living.lives(record.pid, record.started) {
+        return Err(refused(format!(
+            "process {} isn't running, so it can't keep a receptor",
+            record.pid
+        )));
+    }
+    Ok(())
+}
+
 /// `record` written whole to its file in `folder`, for `realm`, under a
 /// dot-name renamed into place, the folder its owner's alone and the file
 /// too. Its `since` stays the one its file already holds while the same
@@ -258,19 +284,7 @@ pub fn write(
     mut record: Record,
     living: &impl Living,
 ) -> io::Result<PathBuf> {
-    if record.realm != realm {
-        return Err(refused(format!(
-            "a receptor of realm {:?} can't be written in realm {realm:?}",
-            record.realm
-        )));
-    }
-    sound(&record)?;
-    if !living.lives(record.pid, record.started) {
-        return Err(refused(format!(
-            "process {} isn't running, so it can't keep a receptor",
-            record.pid
-        )));
-    }
+    admits(&record, realm, living)?;
     let opened = owned(folder)?;
     let name = format!("{}.json", record.source.name());
     if let Some(was) = read_at(&opened, &name)

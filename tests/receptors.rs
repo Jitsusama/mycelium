@@ -286,3 +286,52 @@ fn a_process_that_isnt_running_is_refused() {
     assert!(!said.status.success(), "a process gone can't keep it");
     assert!(!dir.path().join("receptors").join("slack.json").exists());
 }
+
+#[test]
+fn a_record_refused_keeps_none_of_the_items_named_beside_it() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let mut ended = Command::new(env!("CARGO_BIN_EXE_mycelium"))
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("mycelium runs");
+    ended.wait().expect("it ended");
+    let gone = ended.id().to_string();
+    let here = std::process::id().to_string();
+    let items = ["--owner", "jsama", "--item", "jsama/kestrel#12"];
+    for (why, standing) in [
+        (
+            "its process is gone",
+            vec!["--every", "300", "--pid", &gone],
+        ),
+        ("it reads too often", vec!["--every", "0", "--pid", &here]),
+        (
+            "it counts more addressed than it has",
+            vec![
+                "--every",
+                "300",
+                "--pid",
+                &here,
+                "--today",
+                "1",
+                "--addressed",
+                "2",
+            ],
+        ),
+    ] {
+        let words: Vec<&str> = ["github", "--state", "reading"]
+            .into_iter()
+            .chain(standing)
+            .chain(items)
+            .collect();
+        let said = say(dir.path(), &words);
+        assert!(!said.status.success(), "a record was taken though {why}");
+        assert!(
+            !dir.path()
+                .join("receptors")
+                .join("github.items.json")
+                .exists(),
+            "items were kept beside a record refused because {why}"
+        );
+    }
+}
