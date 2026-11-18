@@ -68,6 +68,11 @@ pub struct Declared {
         deserialize_with = "fence_or_none"
     )]
     pub fence: Option<BTreeMap<Kind, Doors>>,
+    /// The basin it is one of, as each cell a basin makes says it, so a
+    /// map can draw the basin once rather than every cell in it; none
+    /// where it is no basin's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basin: Option<String>,
 }
 
 /// The fence an agent session runs in, as the harness names it.
@@ -972,6 +977,7 @@ mod tests {
                 within: None,
                 hosts: Vec::new(),
                 fence: None,
+                basin: None,
             }),
             "it reads as declared"
         );
@@ -991,6 +997,7 @@ mod tests {
             within: None,
             hosts: Vec::new(),
             fence: None,
+            basin: None,
         };
         assert!(
             !lasting.is_worker(),
@@ -1175,6 +1182,43 @@ mod tests {
             read(&file),
             None,
             "a time this build can't read is never guessed"
+        );
+    }
+
+    #[test]
+    fn a_cell_names_the_basin_it_is_one_of() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let file = folder.path().join("declared.json");
+        fs::write(
+            &file,
+            r#"{"reach": ["internet", "aquifer"], "outlives": [],
+                "costs_money": true, "taints": [], "basin": "shoal"}"#,
+        )
+        .expect("the configuration is written");
+        let declared = read(&file).expect("it reads");
+        assert_eq!(
+            declared.basin.as_deref(),
+            Some("shoal"),
+            "the basin reads as declared"
+        );
+        let said = serde_json::to_value(&declared).expect("it says itself");
+        assert_eq!(
+            said["basin"], "shoal",
+            "and goes on in what the machine says of itself"
+        );
+        fs::write(
+            &file,
+            r#"{"reach": [], "outlives": [], "costs_money": false, "taints": []}"#,
+        )
+        .expect("written");
+        let lasting = read(&file).expect("it reads");
+        assert_eq!(lasting.basin, None, "a machine of no basin names none");
+        assert!(
+            serde_json::to_value(&lasting)
+                .expect("it says itself")
+                .get("basin")
+                .is_none(),
+            "and says nothing of one"
         );
     }
 }
