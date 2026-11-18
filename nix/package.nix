@@ -29,7 +29,13 @@ rustPlatform.buildRustPackage {
   # of their own, fail in a Mac's Nix build alone: they still run under
   # cargo test on a Mac, and in the Linux build, where notify uses
   # inotify. `--exact` makes each skip match a whole name, so a test added
-  # later is never skipped unseen.
+  # later is never skipped unseen. Most of tests/ starts a node, which
+  # watches its folders the same way, so a Mac's Nix build runs only the
+  # unit tests in src/, and Linux runs tests/ too.
+  cargoTestFlags = lib.optionals stdenv.hostPlatform.isDarwin [
+    "--lib"
+    "--bins"
+  ];
   checkFlags = lib.optionals stdenv.hostPlatform.isDarwin (
     [ "--exact" ]
     ++ map (test: "--skip=${test}") (
