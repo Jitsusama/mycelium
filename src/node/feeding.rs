@@ -107,7 +107,7 @@ impl<S: Store + Clone + Send + Sync + 'static> Shared<S> {
             .collect();
         let mut unread = Vec::new();
         let claimants = {
-            let mut shelf = self
+            let mut read_quests = self
                 .forages
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -115,7 +115,7 @@ impl<S: Store + Clone + Send + Sync + 'static> Shared<S> {
                 .into_iter()
                 .filter_map(|session| {
                     let quest = session.quest?;
-                    let Some(read) = shelf.quest(&quest) else {
+                    let Some(read) = read_quests.quest(&quest) else {
                         unread.push(quest);
                         return None;
                     };

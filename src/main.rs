@@ -1081,10 +1081,6 @@ struct ReceptorSaid {
 ///
 /// Each item is judged before anything is written, so one refused
 /// leaves both files as they were.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one command's whole write, its refusals beside what they guard"
-)]
 fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
     use mycelium::receptor::{self, Counts, Record, Source, State};
     let word = |what: &str, value: &str| {

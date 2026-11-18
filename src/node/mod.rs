@@ -1915,8 +1915,7 @@ impl<S: Store> Shared<S> {
         let to_read = sharing
             .as_ref()
             .map(|places| keep_forages(places, &forages, &said, &inner, &hello.machine));
-        let receptors_at = receptors.clone();
-        let (held, keeping_receptors) = keep_receptors(receptors, &hello.realm, &said);
+        let (held, keeping_receptors) = keep_receptors(receptors.clone(), &hello.realm, &said);
         let shared = Self {
             processes: processes.into(),
             // Beside the carries it judges, so it needs no place of its own.
@@ -1968,7 +1967,7 @@ impl<S: Store> Shared<S> {
             stimuli,
             spoken: Arc::default(),
             refused: Arc::default(),
-            receptors_at,
+            receptors_at: receptors,
             feeders: Arc::default(),
             forages,
             to_read,
@@ -13432,11 +13431,13 @@ esac
         let aliases: String = changes
             .iter()
             .map(|change| format!("  - type: github-pr\n    value: {change}\n"))
-            .collect();
+            .collect::<Vec<_>>()
+            .concat();
         let listed: String = sessions
             .iter()
             .map(|session| format!("  - id: {session}\n    status: active\n"))
-            .collect();
+            .collect::<Vec<_>>()
+            .concat();
         format!(
             "---\nid: {id}\nkind: quest\nstatus: active\nrealm: {realm}\naliases:\n{aliases}\
              sessions:\n{listed}---\n# A Quest\n"
@@ -13459,6 +13460,10 @@ esac
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one machine's quests and cells, each kept from the feed for its own reason"
+    )]
     async fn a_review_asked_feeds_only_the_live_cell_here_whose_quest_claims_it() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let receptors = dir.path().join("receptors");
