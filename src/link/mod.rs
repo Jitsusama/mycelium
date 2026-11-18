@@ -482,12 +482,13 @@ fn asked_of(
 /// node behind it, which says only facts.
 fn declared_of(starting: Option<&Starting>) -> Declaring {
     match starting {
-        None => Declaring::File(crate::place::declared(), None),
+        None => Declaring::File(crate::place::declared(), None, None),
         Some(Starting {
             declared: Some(file),
             kit,
+            saturation,
             ..
-        }) => Declaring::File(file.clone(), kit.clone()),
+        }) => Declaring::File(file.clone(), kit.clone(), saturation.clone()),
         Some(Starting {
             declared: None,
             node,
@@ -527,8 +528,13 @@ async fn measured_by(node: &std::path::Path) -> Option<Machine> {
 /// Where an end of a link reads what its machine declares.
 enum Declaring {
     /// From this file, with the realm's kit as the node was given it, if
-    /// it was given one.
-    File(PathBuf, Option<hold::start::Kit>),
+    /// it was given one, and the node's judgement of saturation, if a
+    /// node keeps the link.
+    File(
+        PathBuf,
+        Option<hold::start::Kit>,
+        Option<Arc<crate::placement::Saturation>>,
+    ),
     /// From the node on this socket, asked for what it measures this
     /// machine to be, as a link another machine dialled does, since it
     /// runs apart from the node and is started by whatever SSH runs.
@@ -1492,13 +1498,15 @@ impl<S: Store> End<S> {
             return Ok(());
         }
         let (here, realm) = (self.here.clone(), self.realm.clone());
-        let (declared, kit) = match &self.declared {
-            Declaring::File(file, kit) => (Some(file.clone()), kit.clone()),
+        let (declared, kit, saturation) = match &self.declared {
+            Declaring::File(file, kit, saturation) => {
+                (Some(file.clone()), kit.clone(), saturation.clone())
+            }
             Declaring::Node(node) => match measured_by(node).await {
                 Some(machine) => return self.say_machine(machine, writing).await,
                 // Nothing the account's files declare is said for it:
                 // anything running as the account could have written them.
-                None => (None, None),
+                None => (None, None, None),
             },
         };
         let sources = facts::Sources {
@@ -1507,6 +1515,9 @@ impl<S: Store> End<S> {
         };
         let machine = tokio::task::spawn_blocking(move || {
             let mut machine = facts::measure_in(&here, &realm, &sources);
+            if let Some(band) = &saturation {
+                band.say(machine.room.as_mut());
+            }
             machine.kit = kit.as_ref().and_then(hold::start::Kit::said);
             machine
         })
@@ -2265,6 +2276,7 @@ mod tests {
             health: Some(slot.subscribe()),
             declared: Some(dir.path().join("declared.json")),
             kit: None,
+            saturation: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2341,6 +2353,7 @@ mod tests {
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: Some(kit),
+            saturation: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2417,6 +2430,7 @@ mod tests {
             health: None,
             declared: None,
             kit: None,
+            saturation: None,
         };
         let (reading, writing) = tokio::io::split(far);
         tokio::spawn(async move {
@@ -3333,6 +3347,7 @@ mod tests {
             health: None,
             declared: Some(dir.join("declared.json")),
             kit: None,
+            saturation: None,
         }
     }
 

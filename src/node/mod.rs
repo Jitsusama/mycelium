@@ -2917,6 +2917,7 @@ impl<S: Store> Shared<S> {
             health: Some(self.health.subscribe()),
             declared: Some(self.declared.clone()),
             kit: self.given_kit().cloned(),
+            saturation: Some(self.saturation.clone()),
         }
     }
 
@@ -4907,6 +4908,7 @@ mod tests {
                     steers,
                     health: None,
                     kit: None,
+                    saturation: None,
                 };
                 // The test judges the link by what crosses it.
                 let _ = if proven {
@@ -5147,6 +5149,7 @@ mod tests {
             health: None,
             declared: Some(dir.path().join("declared.json")),
             kit: None,
+            saturation: None,
         };
         let membership = Realm {
             name: "work".to_owned(),

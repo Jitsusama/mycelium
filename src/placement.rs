@@ -270,16 +270,21 @@ impl Saturation {
 
     /// Says this machine's verdict in `room`, its room as just measured.
     /// A host's room told to a machine within it keeps the host's verdict,
-    /// where the host said one. No room forgets the verdict, so a reading
-    /// after a silence is never judged by one from before it.
+    /// where the host said one. No room, or a host's verdict, forgets this
+    /// one's, so a reading of its own after either is never judged by one
+    /// from before it.
     pub fn say(&self, room: Option<&mut Room>) {
         match room {
             Some(room) if room.saturated.is_none() => {
                 room.saturated = Some(self.judge(room.pressure.cpu));
             }
-            Some(_) => {}
-            None => *self.0.lock().unwrap_or_else(PoisonError::into_inner) = false,
+            Some(_) | None => self.forget(),
         }
+    }
+
+    /// Forgets the verdict, so the next is judged afresh.
+    fn forget(&self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = false;
     }
 }
 
@@ -1795,6 +1800,14 @@ pub(crate) mod tests {
             Some(false),
             "a host's verdict told to a machine within it stands"
         );
+        let mut own = room(80.0, None);
+        band.say(Some(&mut own));
+        assert_eq!(
+            own.saturated,
+            Some(false),
+            "and forgets its own, so its own after the host's isn't judged by one from before"
+        );
+        band.say(Some(&mut room(90.0, None)));
         band.say(None);
         let mut after = room(80.0, None);
         band.say(Some(&mut after));
@@ -1808,9 +1821,18 @@ pub(crate) mod tests {
 
     #[test]
     fn a_room_says_whether_it_is_saturated_over_its_pressure() {
-        let mut held = pressed(machine("kestrel", "macos", 60, &[]), 80.0);
-        held.room.as_mut().expect("a room").saturated = Some(true);
+        let unjudged = pressed(machine("kestrel", "macos", 60, &[]), 78.0);
         let osprey = pressed(machine("osprey", "linux", 8, &[]), 40.0);
+        assert_eq!(
+            placed(&place(
+                &needing(Vec::new()),
+                &[unjudged.clone(), osprey.clone()]
+            )),
+            Some("kestrel"),
+            "under the line, a room that says nothing isn't saturated"
+        );
+        let mut held = unjudged;
+        held.room.as_mut().expect("a room").saturated = Some(true);
         let Placement::Placed {
             machine: chosen,
             passed,
@@ -1824,9 +1846,20 @@ pub(crate) mod tests {
         );
         assert_eq!(
             said(&passed),
-            "kestrel would rather not: its processors are saturated still, at pressure 80, \
+            "kestrel would rather not: its processors are saturated still, at pressure 78, \
              until it falls under 75",
             "and it says why"
+        );
+        let mut hot = pressed(machine("kestrel", "macos", 60, &[]), 85.0);
+        hot.room.as_mut().expect("a room").saturated = Some(true);
+        let Placement::Placed { passed, .. } = place(&needing(Vec::new()), &[hot, osprey.clone()])
+        else {
+            panic!("one takes it");
+        };
+        assert_eq!(
+            said(&passed),
+            "kestrel would rather not: its processors are saturated, at pressure 85",
+            "from where it saturates, it is saturated, not still"
         );
         let mut eased = pressed(machine("kestrel", "macos", 60, &[]), 85.0);
         eased.room.as_mut().expect("a room").saturated = Some(false);
