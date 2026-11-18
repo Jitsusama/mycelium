@@ -14766,7 +14766,7 @@ esac
             .expect("a hosted agent's runs here");
         assert_eq!(
             String::from_utf8_lossy(&still.out),
-            "the fence runs for none\n",
+            format!("the fence runs for none{SIGNS}\n"),
             "so a command below a pi-spawner its host never said is told none"
         );
         assert!(
