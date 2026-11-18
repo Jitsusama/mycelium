@@ -129,6 +129,31 @@ const OTHER_AGENTS: [&str; 1] = ["SSH_TPM_AUTH_SOCK"];
 /// machines the person allowed agents, as hosted sessions are given.
 const PROXY: &str = "pi-agent.sock";
 
+/// The variable saying the agent again, for the login shell a node's
+/// start runs through to name once the person's profile has run, since
+/// a profile names the person's own agent ([`super::start`]): the
+/// proxy, or empty for none.
+const AGENT_SAID: &str = "MYCELIUM_AGENT";
+
+/// What a held program's start says of agents, given the agents' proxy
+/// if one is known: each variable with its value, or none to take it
+/// away. On Linux it signs only through the proxy, or with no agent
+/// where none is known, and never with another agent. A Mac runs no
+/// proxy, and its hosted sessions sign with the person's agent, so
+/// there a held program's agent is left as the person's session has it.
+fn agents(proxy: Option<&Path>) -> Vec<(&'static str, Option<std::ffi::OsString>)> {
+    if cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    let named = proxy.map(|proxy| proxy.as_os_str().to_owned());
+    let mut said = vec![
+        (AGENT, named.clone()),
+        (AGENT_SAID, Some(named.unwrap_or_default())),
+    ];
+    said.extend(OTHER_AGENTS.map(|other| (other, None)));
+    said
+}
+
 /// The agents' proxy's socket, in the runtime folder `person` (the
 /// person's environment as it is now) names, else the holder's `own`;
 /// none where neither names one, so a held program is given no agent at
@@ -314,13 +339,15 @@ fn starting(
         .env("MYCELIUM_WAKE", &files.waking)
         .env("MYCELIUM_AGAIN", &files.naming)
         .env("MYCELIUM_STEERS", &files.steering);
-    for variable in WINDOW_VARIABLES.into_iter().chain(OTHER_AGENTS) {
+    for variable in WINDOW_VARIABLES {
         command = command.env_remove(variable);
     }
-    command = match proxy {
-        Some(proxy) => command.env(AGENT, proxy),
-        None => command.env_remove(AGENT),
-    };
+    for (variable, value) in agents(proxy.as_deref()) {
+        command = match value {
+            Some(value) => command.env(variable, value),
+            None => command.env_remove(variable),
+        };
+    }
     Ok(command)
 }
 
@@ -332,9 +359,9 @@ fn starting(
 /// parked in `MYCELIUM_WAKE`, the file it may name its next command in
 /// as it parks in `MYCELIUM_AGAIN`, and the file it may say where its
 /// steers land in as it parks in `MYCELIUM_STEERS`, which wakes it too as
-/// one lands that would give it a turn. It signs over ssh only through
-/// the agents' proxy in the runtime folder, never the person's own agent
-/// ([`agents_proxy`]). A program exiting with [`PARKED`] is
+/// one lands that would give it a turn. On Linux it signs over ssh only
+/// through the agents' proxy in the runtime folder, never the person's
+/// own agent, a login shell's profile notwithstanding ([`agents`]). A program exiting with [`PARKED`] is
 /// started again on the same terminal when woken, with the command named
 /// for it from outside if any was (see [`super::name_next`]), else with
 /// the one it named itself; one that wrote its wake file before it went is restarting,
@@ -2289,7 +2316,33 @@ mod tests {
         window.sees("[newest in harbour, no window]").await;
     }
 
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_start_names_the_proxy_or_no_agent_and_never_another() {
+        let proxy = Path::new("/run/user/4242/pi-agent.sock");
+        let said = |value: &str| Some(std::ffi::OsString::from(value));
+        assert_eq!(
+            agents(Some(proxy)),
+            [
+                ("SSH_AUTH_SOCK", said("/run/user/4242/pi-agent.sock")),
+                ("MYCELIUM_AGENT", said("/run/user/4242/pi-agent.sock")),
+                ("SSH_TPM_AUTH_SOCK", None),
+            ],
+            "the proxy, said again for after the profile, and no other agent"
+        );
+        assert_eq!(
+            agents(None),
+            [
+                ("SSH_AUTH_SOCK", None),
+                ("MYCELIUM_AGENT", said("")),
+                ("SSH_TPM_AUTH_SOCK", None),
+            ],
+            "where no proxy is known, no agent at all, the person's taken away"
+        );
+    }
+
     #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn a_held_program_signs_only_through_the_agents_proxy() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let person = Given(vec![
