@@ -1074,10 +1074,17 @@ struct ReceptorSaid {
     /// for each; its owner must be named with `--owner`.
     #[arg(long = "item", value_name = "CHANGE", requires = "owners")]
     items: Vec<String>,
+    /// A calendar event a call's summary is written for, by its id,
+    /// repeated for each. Calls' receptor alone names events, and its
+    /// items are written whole each time it says, so one not named again
+    /// is gone.
+    #[arg(long = "event", value_name = "EVENT")]
+    events: Vec<String>,
 }
 
 /// Writes how the receptor `said` stands for `realm`, saying where, and
-/// the changes it feeds to cells when it names its owners.
+/// what it feeds to cells: GitHub's changes when it names its owners,
+/// and calls' events whenever it says.
 ///
 /// Each item, and the record, is judged before anything is written, so
 /// one refused leaves both files as they were.
@@ -1098,23 +1105,38 @@ fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
         )
     })?;
     let state: State = word("state", &said.state)?;
-    let items = if said.owners.is_empty() {
-        None
-    } else if source != Source::Github {
-        return Err(io::Error::new(
+    let keeps_none = |what: &str| {
+        io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("{}'s receptor keeps no items", source.name()),
-        ));
-    } else {
-        Some(
+            format!("{}'s receptor keeps no {what}", source.name()),
+        )
+    };
+    if source != Source::Github && !said.owners.is_empty() {
+        return Err(keeps_none("changes"));
+    }
+    if source != Source::Calls && !said.events.is_empty() {
+        return Err(keeps_none("events"));
+    }
+    let items = match source {
+        Source::Github if !said.owners.is_empty() => Some(
             said.items
                 .iter()
                 .map(|item| {
                     mycelium::feed::change_of(item, &said.owners)
-                        .map(|(repo, number)| (repo, number, mycelium::feed::Reason::ReviewAsked))
+                        .map(|named| (named, mycelium::feed::Reason::ReviewAsked))
                 })
                 .collect::<io::Result<Vec<_>>>()?,
-        )
+        ),
+        Source::Calls => Some(
+            said.events
+                .iter()
+                .map(|event| {
+                    mycelium::feed::event_of(event)
+                        .map(|named| (named, mycelium::feed::Reason::SummaryWritten))
+                })
+                .collect::<io::Result<Vec<_>>>()?,
+        ),
+        _ => None,
     };
     let now = jiff::Timestamp::now();
     let record = Record {

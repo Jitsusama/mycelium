@@ -13740,7 +13740,10 @@ esac
             &receptors,
             receptor::Source::Github,
             "work",
-            &[("jsama/tern".to_owned(), 12, feed::Reason::ReviewAsked)],
+            &[(
+                feed::Named::Change("jsama/tern".to_owned(), 12),
+                feed::Reason::ReviewAsked,
+            )],
             jiff::Timestamp::now(),
         )
         .expect("its items are kept");

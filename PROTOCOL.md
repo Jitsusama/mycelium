@@ -2152,7 +2152,7 @@ written whole through a dot-file renamed into place, the folder `0700`
 and the file `0600`. `mycelium receptors say SOURCE --state STATE
 --every SECS --pid PID` writes it, with `--hour`, `--today` and
 `--addressed` for its counts, and takes nothing else but the changes
-under Feeding. It holds counts and times alone, never what was read:
+and events under Feeding. It holds counts and times alone, never what was read:
 
 | Field | What it is |
 | --- | --- |
@@ -2228,11 +2228,16 @@ receptor's record does.
 
 #### Feeding
 
-A receptor may also keep the outside changes that ask something of its
+A receptor may also keep the outside things that ask something of its
 person, so the node can feed each to the cell whose quest owns it.
-GitHub's alone does, with the reviews asked of the person. It keeps them
-in `receptors/<source>.items.json`, beside its record and written the
+GitHub's keeps the changes whose review is asked of the person, and
+calls' the calls a summary is written of. Each keeps them in
+`receptors/<source>.items.json`, beside its record and written the
 same way, `0600`, which the node never serves and no link carries.
+What a source may name is one rule, held as items are written and as
+they are read: GitHub's a change, as `review-asked`, and calls' a
+calendar event, as `summary-written`, and no other source anything. A
+file holding an item of another source's kind is unsound.
 `mycelium receptors say github ... --owner OWNER --item OWNER/NAME#N`
 writes it whole, `--owner` and `--item` each repeated, so naming the
 owners with no item clears it. An item whose owner isn't one named
@@ -2246,14 +2251,29 @@ were written leaves them for the next round to write whole again. Each
 item is its change, `reason`
 (`review-asked`) and `since`, when it was first kept and never later
 than the writer's clock, never a title, body, author, branch or comment.
+
+`mycelium receptors say calls ... --event ID` writes calls' file
+whole each time, `--event` repeated, so a call not named again is
+gone; no other source may name an event. An event's id is ASCII
+letters, digits and `_`, from 1 to 1024 of them, as Google's base32hex
+id and a recurring event's instance suffix are; any other is refused,
+and so is the whole write. Its item is `event`, `reason`
+(`summary-written`) and `since`, never a title, a person, a quote or a
+path. An item names a change or an event and never both: one naming
+both, or neither, is unsound.
+
 One gone from the file is gone, and none is kept past 30 days. One
 still named at 30 days is let go for a round, then kept as new, so its
-cell hears it once more each 30 days while its review is asked.
+cell hears it once more each 30 days while it stands.
 
 Which cell owns a change is its quest's word, never a session's: the
 quest's README names the change as a `github-pr` alias, exactly
 `owner/name#N` and never by prefix, and lists the session as `active`,
-and the quest's `realm` is the node's. Exactly means in the same case:
+and the quest's `realm` is the node's. A call is owned the same way, by
+a `calendar-event` alias naming its event's id exactly, and a claim of
+one kind never draws an item of the other. A claim is a notice and
+grants no read: the cell hears that a summary is written, and of which
+event, and nothing of where it is or what it says. Exactly means in the same case:
 GitHub's names are blind to case, but a receptor names a change as
 GitHub's own link spells it, so an alias copied from GitHub claims it,
 and one typed in another case claims nothing rather than too much. Each
@@ -2269,7 +2289,8 @@ reading as no items.
 A fed cell hears an `fyi` from `<source>@<machine>`, as a signal is
 said, but to the cell alone (`@ADDRESS`, held as `peer.<address>`),
 worded from the item's fields alone: `github: your person's review is
-asked on owner/name#N`. Each cell hears an item once while it stands,
+asked on owner/name#N`, or `calls: a summary is written of your
+person's call for calendar event ID`. Each cell hears an item once while it stands,
 and again only once it went and came back; a restarted node may say one
 again. A feeding counts only once it was said, so one the node couldn't
 say is tried again on its next look. The node serves what it fed for
@@ -2281,9 +2302,9 @@ map can draw the line:
 | `receptor` | the receptor's cell, `<source>@<machine>` |
 | `cell` | the fed cell's address |
 | `at` | when it was fed |
-| `kind` | what fed it, in a word: `review` |
+| `kind` | what fed it, in a word: `review` or `summary` |
 
-The `fed` record never names the change, so the map shows who fed
+The `fed` record never names the change or the event, so the map shows who fed
 whom. The fyi itself is stored and served as any message is, addressed
 to the one cell it fed. Like a signal, it grants nothing: a fact for
 the cell to weigh, never an order. A feeding fades at ten minutes even

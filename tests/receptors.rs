@@ -269,6 +269,105 @@ fn a_change_that_isnt_an_owned_one_by_number_is_refused_and_nothing_written() {
     assert!(!said.status.success(), "only GitHub's receptor keeps items");
 }
 
+/// Calls' receptor saying it reads, with `more` after its standing words.
+fn calls(dir: &Path, more: &[&str]) -> Output {
+    let pid = std::process::id().to_string();
+    let standing = [
+        "calls", "--state", "reading", "--every", "60", "--pid", &pid,
+    ];
+    let words: Vec<&str> = standing
+        .iter()
+        .copied()
+        .chain(more.iter().copied())
+        .collect();
+    say(dir, &words)
+}
+
+/// The events kept in `dir`'s calls items file, by id.
+fn events(dir: &Path) -> Vec<String> {
+    let file = dir.join("receptors").join("calls.items.json");
+    let written: serde_json::Value =
+        serde_json::from_slice(&fs::read(file).expect("written")).expect("JSON");
+    written["items"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|item| item["event"].as_str().expect("an event").to_owned())
+        .collect()
+}
+
+/// An event's id as Google gives a recurring one's instance.
+const EVENT: &str = "6kq3ehb1c4p0bt2oq1i5u4tq4c_20261118T150000Z";
+
+#[test]
+fn the_calls_summarized_are_kept_whole_by_their_events_alone() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let said = calls(dir.path(), &["--event", EVENT, "--event", "abc123"]);
+    assert!(
+        said.status.success(),
+        "{}",
+        String::from_utf8_lossy(&said.stderr)
+    );
+    let file = dir.path().join("receptors").join("calls.items.json");
+    let mode = fs::metadata(&file).expect("there").permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "its owner's alone");
+    assert_eq!(events(dir.path()), [EVENT, "abc123"]);
+    let text = fs::read_to_string(&file).expect("written");
+    assert!(
+        text.contains("\"reason\":\"summary-written\"") && !text.contains("repo"),
+        "{text}"
+    );
+
+    let said = calls(dir.path(), &["--event", "abc123"]);
+    assert!(
+        said.status.success(),
+        "{}",
+        String::from_utf8_lossy(&said.stderr)
+    );
+    assert_eq!(events(dir.path()), ["abc123"], "an event not named stayed");
+    let said = calls(dir.path(), &[]);
+    assert!(
+        said.status.success(),
+        "{}",
+        String::from_utf8_lossy(&said.stderr)
+    );
+    assert!(events(dir.path()).is_empty(), "no event named left one");
+}
+
+#[test]
+fn an_event_that_isnt_an_id_or_said_by_another_source_is_refused_and_nothing_written() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    for planted in [
+        vec!["--event", "Pay review with Tern"],
+        vec!["--event", ""],
+        vec!["--event", "abc-def"],
+        vec!["--event", EVENT, "--event", "abc/def"],
+        vec!["--owner", "jsama"],
+        vec!["--owner", "jsama", "--item", "jsama/kestrel#12"],
+    ] {
+        let said = calls(dir.path(), &planted);
+        assert!(
+            !said.status.success(),
+            "{planted:?} was taken: {}",
+            String::from_utf8_lossy(&said.stdout)
+        );
+    }
+    for planted in [
+        vec!["--event", EVENT],
+        vec!["--owner", "jsama", "--event", EVENT],
+    ] {
+        let said = github(dir.path(), &planted);
+        assert!(
+            !said.status.success(),
+            "GitHub's receptor named an event: {planted:?}"
+        );
+    }
+    assert!(
+        !dir.path().join("receptors").exists(),
+        "nothing was written"
+    );
+}
+
 #[test]
 fn a_process_that_isnt_running_is_refused() {
     let dir = tempfile::tempdir().expect("a temporary folder");
