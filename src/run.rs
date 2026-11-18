@@ -422,7 +422,12 @@ mod tests {
         let proxy = std::env::var("XDG_RUNTIME_DIR")
             .ok()
             .filter(|runtime| !runtime.is_empty())
-            .map(|runtime| format!("{runtime}/pi-agent.sock"));
+            .map(|runtime| {
+                Path::new(&runtime)
+                    .join("pi-agent.sock")
+                    .display()
+                    .to_string()
+            });
         let agents = std::collections::BTreeMap::from([
             (
                 "MYCELIUM_AGENT".to_owned(),

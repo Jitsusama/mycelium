@@ -2401,19 +2401,17 @@ mod tests {
     #[tokio::test]
     #[cfg(target_os = "linux")]
     async fn a_program_held_through_a_login_shell_signs_through_the_proxy_after_its_profile() {
-        use std::os::unix::fs::PermissionsExt as _;
         let root = tempfile::tempdir().expect("a temporary folder");
         // A login shell whose profile names the person's own agents again,
-        // as a real one does, and then runs the script it is given.
+        // as a real one does, and then runs the script it is given. A
+        // child writes it, so no fork here holds it open as it runs.
         let shell = root.path().join("login-shell");
-        fs::write(
+        crate::stand_in::program(
             &shell,
             "#!/bin/sh\nSSH_AUTH_SOCK=/run/user/4242/every-key.sock\n\
              SSH_TPM_AUTH_SOCK=/run/user/4242/every-key.sock\n\
              export SSH_AUTH_SOCK SSH_TPM_AUTH_SOCK\nshift\nexec /bin/sh -c \"$@\"\n",
-        )
-        .expect("the stand-in shell is written");
-        fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).expect("it runs");
+        );
         let mut through = crate::hold::start::login_shell("harbour", None);
         through[0] = shell.display().to_string();
         let person = Given(vec![
