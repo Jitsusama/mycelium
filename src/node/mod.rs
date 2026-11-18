@@ -2619,13 +2619,7 @@ impl<S: Store> Shared<S> {
             ..facts::Sources::here()
         };
         let mut here = facts::measure_in(&self.machine, &self.realm, &sources);
-        // A host's room told to a machine within it keeps the host's own
-        // verdict, where the host said one.
-        if let Some(room) = here.room.as_mut()
-            && room.saturated.is_none()
-        {
-            room.saturated = Some(self.saturation.judge(room.pressure.cpu));
-        }
+        self.saturation.say(here.room.as_mut());
         here.health.clone_from(&self.health.borrow());
         here.kit = self.given_kit().and_then(start::Kit::said);
         here
