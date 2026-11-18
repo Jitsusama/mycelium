@@ -132,14 +132,17 @@ fn fence_or_none<'de, D: serde::Deserializer<'de>>(
 /// The longest name a basin is read by, a DNS label's.
 const BASIN_LONGEST: usize = 63;
 
-/// A basin as declared, or none where it isn't a name of lower-case
-/// letters, digits and hyphens no longer than a DNS label, which spoils
-/// only the basin, never the rest of what's declared.
+/// A basin as declared, or none where it isn't a name as a DNS label is
+/// one, lower-case letters, digits and hyphens, at most 63 of them,
+/// starting and ending with no hyphen, which spoils only the basin, never
+/// the rest of what's declared.
 fn basin_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<Option<String>, D::Error> {
     Ok(Option::<serde_json::Value>::deserialize(said)?
         .and_then(|basin| basin.as_str().map(str::to_owned))
         .filter(|name| {
             (1..=BASIN_LONGEST).contains(&name.len())
+                && !name.starts_with('-')
+                && !name.ends_with('-')
                 && name
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
@@ -1223,6 +1226,22 @@ mod tests {
             Some("shoal"),
             "the basin reads as declared"
         );
+        let longest = format!("b{}", "-1".repeat(31));
+        for named in ["basin-1", "9", longest.as_str()] {
+            fs::write(
+                &file,
+                format!(
+                    r#"{{"reach": [], "outlives": [], "costs_money": false, "taints": [],
+                        "basin": "{named}"}}"#
+                ),
+            )
+            .expect("written");
+            assert_eq!(
+                read(&file).expect("it reads").basin.as_deref(),
+                Some(named),
+                "{named} is a basin's name"
+            );
+        }
         let said = serde_json::to_value(&declared).expect("it says itself");
         assert_eq!(
             said["basin"], "shoal",
@@ -1233,7 +1252,11 @@ mod tests {
             r#"{"name": "shoal"}"#,
             r#""""#,
             r#""Shoal Basin""#,
+            r#""Shoal""#,
             r#""shoal<script>""#,
+            r#""-""#,
+            r#""-shoal""#,
+            r#""shoal-""#,
         ] {
             fs::write(
                 &file,
