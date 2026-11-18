@@ -305,8 +305,12 @@ fn spares_a_tree(word: &str) -> bool {
 /// `launcher`, words [`launcher`] gave, asking the fence to spare the work
 /// tree its run stands in: `--shared-tree` before the `--` that ends them.
 /// The node asks it only of a run it found, itself, in a tree of a quest
-/// shared with the machine that asks. Words with no `--` are left as they
-/// are, sparing nothing, since nowhere in them is the launcher's own.
+/// shared with the machine that asks. The `--` that ends them is the
+/// fence's where the fence's program comes last, as every launcher core
+/// declares; where another follows it, that one is told the option, and
+/// either refuses it, running nothing, or spares nothing. Words with no
+/// `--` are left as they are, sparing nothing, though [`launcher`] gives
+/// none such.
 #[must_use]
 pub fn sparing(mut launcher: Vec<String>) -> Vec<String> {
     if let Some(end) = launcher.iter().rposition(|word| word == "--") {

@@ -1565,15 +1565,22 @@ of it, as a word of its own refuses every run, so pi-fence refuses a
 run started in a work tree its asker doesn't hold. Only the node says
 it, before the `--`, and only for an agent's run another machine
 asked, whose folder, opened and named as the kernel names the open
-folder, lies in a work tree the work broker records a session as
-holding, where pi's own record of that session here says it works a
-quest whose ledger names the asking machine. Nothing a share carries
-in, a README's sessions or trees among it, binds a tree to a quest,
+folder, lies in a work tree the work broker records sessions as
+holding, where pi's own record of each here says it works a quest
+whose ledger names the asking machine. A ledger names a machine
+once it has said what it holds of the quest, and goes on naming it
+until this machine stops sharing the quest. A worker is heard only of
+the quests it was given or began, so it names itself in no other
+ledger, while any other machine's word is taken as the person's.
+Nothing a share carries in, a README's sessions or trees among it, binds a tree to a quest,
 and a quest shared only as one above another spares none. The run
 starts in the folder opened, not by its path again, so a link
 swapped since leads it nowhere else, and the record of runs keeps
-the quest as `spared`. Any other run from another machine starting
-in a work tree is refused, saying why, and runs nothing. A
+the quests as `spared`. Any other agent's run from another machine
+starting in a work tree, or in a folder the node can't open, is
+refused, saying why there and in the node's log, and runs nothing.
+A run another machine says the person asked goes as the person, in
+no fence, so no tree is judged for it. A
 run a client here says another machine asked is refused where the
 client is an agent's, as for `by`, since only a link that machine
 dialled says so. A run is told no
