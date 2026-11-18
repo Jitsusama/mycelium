@@ -53,7 +53,7 @@ const FOREBEARS: usize = 64;
 
 /// What an unattended machine tells of whoever asks: an agent, since no
 /// person works there.
-const UNATTENDED: &str = "a machine no person works on";
+const UNATTENDED: &str = "a process on a machine no person works on";
 
 /// Where a machine tells who runs each of its processes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -860,7 +860,7 @@ pub fn judge(asker: Option<i32>, processes: &Processes, above: &[Option<Kind>]) 
         Told::Agent(_) => return By::Agent(fence),
         Told::Untold => return By::Agent(Kind::Strict),
     }
-    if let Processes::Folder(procs) = processes
+    if let Processes::Folder(procs) = processes.kernel()
         && (gains_less(procs, pid) || mounts_otherwise(procs, pid))
     {
         return By::Agent(fence);
@@ -1772,7 +1772,7 @@ mod tests {
         assert_eq!(
             judge(Some(41), &unattended, &[Some(Kind::Fence)]),
             By::Agent(Kind::Fence),
-            "below a session, in the fence that session claims"
+            "a session claimed above it keeps its fence, as it would where a person works"
         );
         assert!(
             may_say(

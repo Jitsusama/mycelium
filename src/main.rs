@@ -2942,8 +2942,8 @@ mod tests {
     use std::io;
 
     use super::{
-        Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, in_place, kit, reader_left,
-        said_text, swarm_asked, tree, write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, in_place, kit, processes_here,
+        reader_left, said_text, swarm_asked, tree, write_line,
     };
 
     #[test]
@@ -3075,6 +3075,33 @@ mod tests {
         assert!(
             holder("/nix/store/kit").is_ok(),
             "the holder takes a whole path"
+        );
+    }
+
+    #[test]
+    fn a_node_told_no_person_works_here_takes_every_asker_for_an_agent() {
+        let unattended =
+            |words: &[&str]| match Command::try_parse_from(words).map(|asked| asked.action) {
+                Ok(Some(Action::Node(node))) => Some(node.unattended),
+                _ => None,
+            };
+        assert_eq!(
+            unattended(&["mycelium", "node", "--unattended"]),
+            Some(true),
+            "--unattended is read on the node's command line"
+        );
+        assert_eq!(
+            unattended(&["mycelium", "node"]),
+            Some(false),
+            "a node not told so takes a person to work on its machine"
+        );
+        assert!(
+            processes_here(true).is_unattended(),
+            "the flag reaches what the node reads of who asks"
+        );
+        assert!(
+            !processes_here(false).is_unattended(),
+            "without it the machine's processes are read as they are"
         );
     }
 

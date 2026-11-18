@@ -1606,7 +1606,9 @@ person is a strictly fenced agent there, since its node runs as fenced
 as the agents beside it and nothing else would tell them apart. That
 holds for every word the node takes only from the person, a steer
 claiming the person and their own login's acts too, and for a link's
-end run there, so a run another machine asked is refused, saying so.
+end run there, so a run another machine asked is refused, saying so,
+and so is a carry the person asks of it from another machine, since
+the link's end claims the person on their behalf.
 It is a flag on the node's command line rather than a word declared,
 since a file can fail to be read. A
 `by` the request says only makes it stricter, and an agent runs
