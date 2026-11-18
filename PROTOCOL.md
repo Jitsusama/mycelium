@@ -1285,7 +1285,8 @@ named in `src/placement.rs` to be tuned:
 headroom = 1.0 * (1 - processor)               CPU_WEIGHT
          + 1.0 * memory_available / memory     MEMORY_WEIGHT
          + 0.5 * disk_free / disk              DISK_WEIGHT
-         - 0.5 * (sessions + starts) / cores   SESSION_WEIGHT
+         - 0.5 * starts / cores                SESSION_WEIGHT
+         - 0.1 * sessions / cores              RUNNING_WEIGHT
          - 0.25 * a disk filling               FILLING_WEIGHT
          - 1.0 * each other prefer_not taint   RATHER_NOT_WEIGHT
 ```
@@ -1341,9 +1342,11 @@ answered and, for each machine, how it was `judged` (`machine`,
 `preferred`, its `headroom`, and its `chance` of being the one chosen,
 one in as many as were near the best and none for the rest), and the
 `weights` that weighed them (`cpu`, `memory`, `disk`, `session`,
-`rather_not`, `filling` and `near_best`; a record without them was
-weighed by the starting ones). A placement the node can't keep is said
-on its error output and answered all the same. When a day's file is
+`running`, `rather_not`, `filling` and `near_best`; a record without
+them was weighed by the starting ones, and one without `running`
+weighed each session running as a start, by `session`). A placement
+the node can't keep is said on its error output and answered all the
+same. When a day's file is
 first written, the files of days more than 14 before it are let go, so
 the log holds about two weeks.
 A processor reading that isn't a number counts as none, so every

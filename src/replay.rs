@@ -236,7 +236,7 @@ mod tests {
     }
 
     /// Kestrel's processor is 0.6 free and it carries nothing; skiff's is
-    /// all free and it carries four sessions on its eight cores, so the
+    /// all free and it carries four starts on its eight cores, so the
     /// starting weights choose skiff and doubled session weight kestrel.
     fn crowded_skiff() -> (Vec<crate::facts::Machine>, Loads) {
         let machines = vec![
@@ -246,8 +246,8 @@ mod tests {
         let loads = Loads::from([(
             "skiff".to_owned(),
             Load {
-                sessions: 4,
-                placed: 0,
+                sessions: 0,
+                placed: 4,
             },
         )]);
         (machines, loads)
