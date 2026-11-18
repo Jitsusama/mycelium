@@ -2340,11 +2340,11 @@ and the quest's `realm` is the node's. A call is owned the same way, by
 a `calendar-event` alias naming its event's id exactly, and a claim of
 one kind never draws an item of the other. A claim is a notice and
 grants no read: the cell hears that a summary is written, and of which
-event, and nothing of where it is or what it says. Exactly means in the same case:
-GitHub's names are blind to case, but a receptor names a change as
-GitHub's own link spells it, so an alias copied from GitHub claims it,
-and one typed in another case claims nothing rather than too much. Each
-such session of this machine, running and not ended or out of reach,
+event, and nothing of where it is or what it says. Exactly means in
+the same case: GitHub's names are blind to case, but a receptor names
+a change as GitHub's own link spells it, so an alias copied from GitHub
+claims it, and one typed in another case claims nothing rather than too
+much. Each such session of this machine, running and not ended or out of reach,
 is fed, and two that claim one change are both fed. Feeding happens
 only for a source the person's table names and whose receptor keeps a
 record not reading `off`, as the node reads the folder's changes, a
@@ -2357,12 +2357,12 @@ A fed cell hears an `fyi` from `<source>@<machine>`, as a signal is
 said, but to the cell alone (`@ADDRESS`, held as `peer.<address>`),
 worded from the item's fields alone: `github: your person's review is
 asked on owner/name#N`, or `calls: a summary is written of your
-person's call for calendar event ID`. Each cell hears an item once while it stands,
-and again only once it went and came back; a restarted node may say one
-again. A feeding counts only once it was said, so one the node couldn't
-say is tried again on its next look. The node serves what it fed for
-ten minutes as the `fed` kind, keyed `fed:<receptor>~<cell>`, so the
-map can draw the line:
+person's call for calendar event ID`. Each cell hears an item once
+while it stands, and again only once it went and came back; a restarted
+node may say one again. A feeding counts only once it was said, so one
+the node couldn't say is tried again on its next look. The node serves
+what it fed for ten minutes as the `fed` kind, keyed
+`fed:<receptor>~<cell>`, so the map can draw the line:
 
 | Field | What it is |
 | --- | --- |

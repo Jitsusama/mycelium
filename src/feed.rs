@@ -486,7 +486,8 @@ pub fn write(
     // it stood, so it's refused here, and the one before it stands.
     if !u64::try_from(body.len()).is_ok_and(|len| len <= LARGEST_FILE) {
         return Err(refused(format!(
-            "{}'s {count} items come to {} bytes, more than the {LARGEST_FILE} a node reads",
+            "the {} receptor's {count} items come to {} bytes, more than the {LARGEST_FILE} a \
+             node reads",
             source.name(),
             body.len()
         )));
@@ -1301,8 +1302,10 @@ mod tests {
         .expect_err("refused")
         .to_string();
         assert!(
-            refused.starts_with(&format!("calls's {} items come to ", taken + 1))
-                && refused.ends_with(&format!("bytes, more than the {LARGEST_FILE} a node reads")),
+            refused.starts_with(&format!(
+                "the calls receptor's {} items come to ",
+                taken + 1
+            )) && refused.ends_with(&format!("bytes, more than the {LARGEST_FILE} a node reads")),
             "{refused}"
         );
         let file = state.path().join(format!("calls{ITEMS}"));
