@@ -1779,6 +1779,16 @@ impl Inner {
     }
 }
 
+/// This machine's own health, kept as its health daemon at `socket`, if
+/// it has one, says it.
+fn keep_own_health(socket: Option<PathBuf>) -> own_health::Slot {
+    let own = own_health::Slot::new(None);
+    if let Some(socket) = socket {
+        tokio::spawn(own_health::keep(socket, own.clone()));
+    }
+    own
+}
+
 /// The receptors the node judges in `folder`, if it has one, kept as each
 /// changes and telling `said` so.
 fn keep_receptors(
@@ -1869,10 +1879,7 @@ impl<S: Store> Shared<S> {
             eases: _,
             settles,
         } = given;
-        let own = own_health::Slot::new(None);
-        if let Some(socket) = health {
-            tokio::spawn(own_health::keep(socket, own.clone()));
-        }
+        let own = keep_own_health(health);
         let said = Arc::<Said>::default();
         let inner = Arc::new(Mutex::new(Inner::after(&flows, &hello.realm)));
         let forages: forage::Held = Arc::new(Mutex::new(forage::Shelf::with_waits(waiting)));
