@@ -848,6 +848,7 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         json!({"key": "quest:persian", "for": "می\u{200C}خواهم", "folder": "/p"}),
         json!({"key": "quest:untitled", "for": "", "folder": "/u"}),
         json!({"key": "quest:unsaid", "folder": "/u"}),
+        json!({"key": "quest:nulled", "for": null, "folder": "/n"}),
         json!({"key": "quest:blank", "for": "\u{202E}\t", "folder": "/b"}),
     ];
     let titled = |short: &str, title: &str| (short.to_owned(), Some(title.to_owned()));
@@ -857,9 +858,10 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         [
             titled("quest:accented", &"é".repeat(120)),
             untitled("quest:blank"),
-            titled("quest:cut", &format!("{} ", "c".repeat(119))),
+            titled("quest:cut", &"c".repeat(119)),
             titled("quest:joined", "👩\u{200D}💻 Harbour"),
             titled("quest:lined", "Lined up"),
+            untitled("quest:nulled"),
             titled("quest:persian", "می\u{200C}خواهم"),
             titled("quest:tabbed", "Tab here"),
             titled("quest:titled", &"t".repeat(120)),
@@ -869,8 +871,9 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         ],
         "a title past 120 characters is cut to them, however many bytes each is, counting \
          what is drawn; a control character or separator in it is a space and a mark \
-         turning its direction is gone; the joiners an emoji or a script spells with stay; \
-         and a share saying nothing it is for is kept, untitled"
+         turning its direction is gone, and a cut ends in no space; the joiners an emoji or \
+         a script spells with stay; and a share saying nothing or null it is for is kept, \
+         untitled"
     );
 }
 

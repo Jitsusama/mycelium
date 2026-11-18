@@ -87,6 +87,8 @@ fn shares_of(presence: &Value) -> Vec<Share> {
         share.folder = drawable(&share.folder);
         if let Some((cut, _)) = share.about.char_indices().nth(SHARE_FOR_MOST) {
             share.about.truncate(cut);
+            // Trimmed again, so a cut falling after a space ends in none.
+            share.about.truncate(share.about.trim_end().len());
         }
         // Cleaning and a cut keep what was read, so a long `for` held in
         // every cell would still cost its whole length without this.
@@ -462,11 +464,17 @@ pub struct Share {
     /// `quest:QEST-20261112-HARBOR`.
     pub key: String,
     /// What it is for, which titles its network; empty where it says
-    /// nothing, so its network is untitled.
-    #[serde(rename = "for", default)]
+    /// nothing, or null, so its network is untitled.
+    #[serde(rename = "for", default, deserialize_with = "said_or_none")]
     pub about: String,
     /// Where this session's copy is.
     pub folder: String,
+}
+
+/// What a share says it is for, or empty where it says null, as it says
+/// nothing.
+fn said_or_none<'de, D: serde::Deserializer<'de>>(said: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(said)?.unwrap_or_default())
 }
 
 impl Share {
