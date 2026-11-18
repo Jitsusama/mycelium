@@ -1896,6 +1896,7 @@ fn a_cell_declares_plain_subjects_alone_each_bad_one_passed_over() {
         "varied\u{fe0f}",
         "varied\u{e0100}",
         "mongolian\u{180b}",
+        "mongolian\u{180f}",
         "filler\u{3164}",
         "joined\u{034f}",
         "line\u{2028}break",

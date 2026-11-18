@@ -4233,15 +4233,13 @@ impl<S: Store> Shared<S> {
         let started_by = {
             let inner = self.lock();
             let all = inner.state.sessions();
+            // The nearest claim alone, and only as an address: one the
+            // node doesn't hold, or that isn't one, is no cell's, rather
+            // than passing to a farther one.
             sessions
-                .iter()
-                .find_map(|id| {
-                    all.iter()
-                        .find(|session| session.id == *id)
-                        .map(|session| session.address.clone())
-                })
-                // The nearest claim alone, and only as an address: one that
-                // isn't is no cell's, rather than passing to a farther one.
+                .first()
+                .and_then(|id| all.iter().find(|session| session.id == *id))
+                .map(|session| session.address.clone())
                 .filter(|address| forage::is_address(address))
         };
         let admitted = self.starts.admit(starts::Kept {

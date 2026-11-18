@@ -36,9 +36,13 @@ const HOUR: i64 = 3_600_000;
 /// of them out.
 const KEPT_MOST: usize = 2048;
 
-/// How many bytes the book's file grows by before it is written again
-/// from what memory holds, so asks refused without end fill no disk.
+/// How many bytes the book's file grows by, at least, before it is
+/// written again from what memory holds, so asks refused without end fill
+/// no disk; past that, it waits till the file has doubled since.
 const WRITTEN_MOST: u64 = 8 * 1024 * 1024;
+
+/// The most characters of why a start failed that the book keeps.
+const FAILED_MOST: usize = 512;
 
 /// The longest folder a start keeps, in bytes: a longer one is kept as
 /// none. With [`PROGRAM_MOST`], it keeps the [`KEPT_MOST`] starts held
@@ -125,6 +129,7 @@ impl Book {
     /// else the oldest that no longer counts within the hour, else none.
     fn hold(&mut self, start: Kept) {
         let since = start.at - HOUR;
+        let ahead = start.at + HOUR;
         self.kept.push_back(start);
         while self.kept.len() > KEPT_MOST {
             let oldest = self
@@ -134,7 +139,9 @@ impl Book {
                 .or_else(|| {
                     self.kept
                         .iter()
-                        .position(|one| !one.counts() || one.at <= since)
+                        // As the count reads them: one more than an hour
+                        // ahead counts no more than one long gone.
+                        .position(|one| !one.counts() || one.at <= since || one.at > ahead)
                 });
             match oldest {
                 Some(at) => drop(self.kept.remove(at)),
@@ -302,7 +309,7 @@ impl Starts {
                 asked.machine = Some(machine);
                 asked.held = Some(held);
             }
-            Err(why) => asked.failed = Some(why),
+            Err(why) => asked.failed = Some(why.chars().take(FAILED_MOST).collect()),
         }
         // Going and kept under one lock, so a start asked meanwhile never
         // sees it in neither.
@@ -337,10 +344,15 @@ impl Starts {
                     book.written = bytes;
                     book.whole = bytes;
                 }
-                Err(error) => eprintln!(
-                    "the starts in {} aren't written again: {error}",
-                    self.file.display()
-                ),
+                Err(error) => {
+                    // Tried again only once it doubles again, so a full
+                    // disk isn't rewritten on every ask.
+                    book.whole = book.written;
+                    eprintln!(
+                        "the starts in {} aren't written again: {error}",
+                        self.file.display()
+                    );
+                }
             }
         }
     }
@@ -512,6 +524,28 @@ mod tests {
         starts.resume().expect("resumed");
         starts.resume().expect("resuming twice is no harm");
         started(&starts, agent("OSPREY", NOW), "h");
+    }
+
+    #[test]
+    fn the_book_is_written_whole_only_once_it_has_doubled() {
+        let (dir, starts) = book();
+        let file = dir.path().join("starts.jsonl");
+        started(&starts, agent("OSPREY", NOW), "h-1");
+        let mut written = std::fs::read(&file).expect("the book");
+        written.extend(b"left over\n");
+        std::fs::write(&file, written).expect("a line a rewrite drops");
+        {
+            let mut book = starts.lock();
+            book.written = WRITTEN_MOST + 1;
+            book.whole = WRITTEN_MOST;
+        }
+        started(&starts, agent("OSPREY", NOW), "h-2");
+        let read = || std::fs::read_to_string(&file).expect("the book");
+        assert!(read().contains("left over"), "past 8 MiB, not yet doubled");
+        starts.lock().written = 2 * WRITTEN_MOST + 1;
+        started(&starts, agent("OSPREY", NOW), "h-3");
+        assert!(!read().contains("left over"), "doubled, so written whole");
+        assert_eq!(read().lines().count(), 3, "{}", read());
     }
 
     #[test]

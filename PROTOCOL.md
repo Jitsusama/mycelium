@@ -1504,21 +1504,24 @@ either is refused, saying which. A claim proves nothing, so the 8 are
 a cell's fair share, and the 32 the bound no agent gets round. A
 start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
-once can't pass the limit; a refused one doesn't. The person's own starts are never counted or refused. The
-person stops the agents' starts asked of a node in one act, `mycelium
-starts stop`, which holds through a restart till `mycelium starts
-resume`, and while whether it stands can't be told; an agent asking
-either, or the list, is refused. The stop is `starts.stopped` in the
-node's state folder, so an agent able to write there could lift it, as
-it could stop the node. Every start, refused ones too, is kept in
+once can't pass the limit; a refused one doesn't. The person's own
+starts are never counted or refused. The person stops the agents'
+starts asked of a node in one act, `mycelium starts stop`, which
+holds through a restart till `mycelium starts resume`, and while
+whether it stands can't be told; an agent asking either, or the list,
+is refused. The stop is `starts.stopped` in the node's state folder,
+so an agent able to write there could lift it, as it could stop the
+node. Every start, refused ones too, is kept in
 `starts.jsonl` beside `runs.jsonl` as a JSON line, `{"at", "by",
 "started_by", "folder", "program", "machine", "held", "failed",
 "refused"}`: `at` in milliseconds, `started_by` null for the person's,
 `program` the command's first word alone, so no argument is kept, and
 the rest only where they apply. The node reads it again as it starts,
 passing over a line it can't read, and holds the newest 2,048, never
-letting one go that counts within the hour; past 8 MiB more, it
-writes the file again from those. `mycelium starts` prints whether
+letting one go that counts within the hour; once the file has grown
+by 8 MiB and doubled since, it writes it again from those. A start
+dated up to an hour ahead of an ask counts, as a clock set back leaves
+it; one further ahead doesn't. `mycelium starts` prints whether
 starts are stopped and the newest 100. A start counts on the node an
 agent asks, wherever it is placed, and only that node's book says who
 started it, so each machine's node is stopped on its own.
