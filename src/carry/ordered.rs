@@ -706,6 +706,31 @@ mod tests {
             Err("more than one open quest goes by WCJQSG".to_owned()),
             "an address two open quests go by heads neither"
         );
+        let mut renamed = quests();
+        renamed[0]["address"] = json!("OSPHT4");
+        renamed[2]["address"] = json!("WCJQSG");
+        assert_eq!(
+            going_by("WCJQSG", &renamed).map(|quest| quest["id"].clone()),
+            Ok(json!("QEST-20261007-WCJQSG")),
+            "a quest goes by its id, never an address field another quest's record could say"
+        );
+    }
+
+    #[test]
+    fn a_quest_an_index_lists_as_ended_is_not_open() {
+        for (status, is_open) in [
+            (json!("active"), true),
+            (json!("paused"), true),
+            (json!(null), true),
+            (json!("concluded"), false),
+            (json!("retired"), false),
+        ] {
+            assert_eq!(
+                super::open(&json!({"id": "QEST-1-HARBOR", "status": status})),
+                is_open,
+                "a quest whose status is {status}"
+            );
+        }
     }
 
     #[test]
