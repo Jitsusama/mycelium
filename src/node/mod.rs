@@ -3786,14 +3786,6 @@ impl<S: Store> Shared<S> {
                 asking.address
             ));
         }
-        let order = ordered::Order {
-            by: orchestrator.clone(),
-            quest: quest.clone(),
-            chain: vec![ordered::Link {
-                quest,
-                orchestrator,
-            }],
-        };
         let running = grouped(sessions, &self.machine);
         // The session to end must itself be in the orchestrator's group,
         // as the mesh put it, not only those the record of ended quests
@@ -3809,6 +3801,14 @@ impl<S: Store> Shared<S> {
                 carried.address
             ));
         }
+        let order = ordered::Order {
+            by: orchestrator.clone(),
+            quest: quest.clone(),
+            chain: vec![ordered::Link {
+                quest,
+                orchestrator,
+            }],
+        };
         let quests: Vec<serde_json::Value> =
             ended.into_iter().chain(open.iter().cloned()).collect();
         ordered::agreed(&order, asking, &quests, &running)
