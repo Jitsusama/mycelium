@@ -1783,10 +1783,9 @@ one is known by its key alone, such as `quest:<id>` for a quest's
 scratch folder: its name is `files.<key>`, its short name the key, and
 its title what more of its cells say it is `for` than say anything
 else, or none where two things are said as often or none says. A key
-is 3 to 96
-letters, digits, colons, dashes and underscores, beginning with a
-letter or digit and saying its kind, a colon and what it is of, as
-`quest:<id>`, so its short name is never a group's, as no group's
+is 3 to 96 letters, digits, colons, dashes and underscores, beginning
+with a letter or digit and saying its kind, a colon and what it is of,
+as `quest:<id>`, so its short name is never a group's, as no group's
 name holds a colon; it is read in lower case, so keys differing only
 in case are one folder. `for` and `folder` are drawn on one line: each
 control character and line or paragraph separator in them is read as

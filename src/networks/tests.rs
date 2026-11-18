@@ -555,7 +555,13 @@ fn a_folder_two_cells_share_by_key_is_a_network_named_for_what_it_is_for() {
             &json!([{"key": "quest:QEST-20261112-KELPED", "for": "Kelp", "folder": "/k"},
                     {"key": "quest:QEST-20261112-KELPSY", "for": 7, "folder": "/s"},
                     {"key": "quest:QEST-20261112-KELPOB", "for": {"a": [1, {"b": null}]},
-                     "folder": "/o"}]),
+                     "folder": "/o"},
+                    {"key": "quest:QEST-20261112-KELPAR", "for": [true, -1.5],
+                     "folder": "/a"},
+                    {"key": "quest:QEST-20261112-KELPBO", "for": false, "folder": "/b"},
+                    {"key": "quest:QEST-20261112-KELPNE", "for": -7, "folder": "/n"},
+                    {"key": "quest:QEST-20261112-KELPFL", "for": 0.5, "folder": "/f"},
+                    {"key": "quest:QEST-20261112-KELPNU", "for": null, "folder": "/u"}]),
         ),
     ];
     let mycelium = Mycelium::of("home", &[], &sessions, &[]);
@@ -610,15 +616,23 @@ fn a_folder_two_cells_share_by_key_is_a_network_named_for_what_it_is_for() {
     assert_eq!(
         serde_json::to_value(kelped.shares.get(1..)).expect("shares"),
         json!([{"key": "quest:qest-20261112-kelpsy", "folder": "/s"},
-               {"key": "quest:qest-20261112-kelpob", "folder": "/o"}]),
-        "a share saying what it is for as anything but text, a number or a whole object, \
-         is kept, untitled, and its record leaves out what it doesn't say"
+               {"key": "quest:qest-20261112-kelpob", "folder": "/o"},
+               {"key": "quest:qest-20261112-kelpar", "folder": "/a"},
+               {"key": "quest:qest-20261112-kelpbo", "folder": "/b"},
+               {"key": "quest:qest-20261112-kelpne", "folder": "/n"},
+               {"key": "quest:qest-20261112-kelpfl", "folder": "/f"},
+               {"key": "quest:qest-20261112-kelpnu", "folder": "/u"}]),
+        "a share saying what it is for as anything but text (a number of each kind, a \
+         truth, a list, a whole object or null) is kept, untitled, and its record leaves \
+         out what it doesn't say"
     );
     let kelp = cell(&mycelium, kelped, &look());
     assert!(
         kelp.ends_with(
             "its own folders\n  quest:qest-20261112-kelped  Kelp\n  quest:qest-20261112-kelpsy\n  \
-             quest:qest-20261112-kelpob"
+             quest:qest-20261112-kelpob\n  quest:qest-20261112-kelpar\n  \
+             quest:qest-20261112-kelpbo\n  quest:qest-20261112-kelpne\n  \
+             quest:qest-20261112-kelpfl\n  quest:qest-20261112-kelpnu"
         ),
         "a cell lists the folders it shares alone as its own, an untitled one's line \
          ending at its key: {kelp}"
