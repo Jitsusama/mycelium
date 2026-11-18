@@ -2237,8 +2237,9 @@ worded from the item's fields alone: `github: your person's review is
 asked on owner/name#N`. Each cell hears an item once while it stands,
 and again only once it went and came back; a restarted node may say one
 again. A feeding counts only once it was said, so one the node couldn't
-say is tried again on its next look. The node serves what it fed for ten minutes as the `fed` kind,
-keyed `fed:<receptor>~<cell>`, so the map can draw the line:
+say is tried again on its next look. The node serves what it fed for
+ten minutes as the `fed` kind, keyed `fed:<receptor>~<cell>`, so the
+map can draw the line:
 
 | Field | What it is |
 | --- | --- |
