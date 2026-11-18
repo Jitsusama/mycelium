@@ -8187,6 +8187,21 @@ esac
         std::os::unix::fs::symlink(&log, fds.join("3")).expect("linked");
     }
 
+    /// Writes the record the pi host `pid` keeps, beside `socket`, of the
+    /// `sessions` it holds.
+    fn hosts_sessions(socket: &Path, pid: i32, sessions: &[&str]) {
+        let hosts = socket.with_file_name("hosts");
+        fs::create_dir_all(&hosts).expect("its folder is made");
+        let sessions: Vec<Value> = sessions.iter().map(|id| json!({"id": id})).collect();
+        fs::write(
+            hosts.join(format!("{pid}-{}.json", started_at(pid))),
+            json!({"key": "work", "sessions": sessions,
+                   "owner": {"pid": pid, "startTicks": started_at(pid)}})
+            .to_string(),
+        )
+        .expect("the host's record is written");
+    }
+
     /// What the node at `socket` answers the session owned by pi `pid` as it
     /// says it heads `heads` and orchestrates `quests`.
     async fn claims(socket: &Path, pid: i32, heads: Option<&str>, quests: &[&str]) -> Reply {
@@ -14659,19 +14674,6 @@ esac
         declares_launcher(&socket, Some(SAYS_WHOSE));
         asks_below(&socket, 7101);
         holds_log(&socket, 7101, "s-one");
-        let hosts = socket.with_file_name("hosts");
-        fs::create_dir_all(&hosts).expect("its folder is made");
-        let record = hosts.join(format!("7101-{}.json", started_at(7101)));
-        let hosting = |sessions: &[&str]| {
-            let sessions: Vec<Value> = sessions.iter().map(|id| json!({"id": id})).collect();
-            fs::write(
-                &record,
-                json!({"key": "work", "sessions": sessions,
-                       "owner": {"pid": 7101, "startTicks": started_at(7101)}})
-                .to_string(),
-            )
-            .expect("the host's record is written");
-        };
         fs::write(
             procs_of(&socket)
                 .join(std::process::id().to_string())
@@ -14679,7 +14681,7 @@ esac
             "PI_SESSION_ID=s-one\0",
         )
         .expect("its command names s-one");
-        hosting(&["s-one"]);
+        hosts_sessions(&socket, 7101, &["s-one"]);
         let unproved = run_through(socket.clone(), run_of("skiff", "true"))
             .await
             .expect("a hosted agent's runs here");
@@ -14699,7 +14701,7 @@ esac
         let fds = procs_of(&socket).join("7101").join("fd");
         fs::rename(fds.join("3"), fds.join("4")).expect("s-one's log is held as 4");
         holds_log(&socket, 7101, "s-two");
-        hosting(&["s-one", "s-two"]);
+        hosts_sessions(&socket, 7101, &["s-one", "s-two"]);
         let proved = run_through(socket.clone(), run_of("skiff", "true"))
             .await
             .expect("a hosted agent's runs here");

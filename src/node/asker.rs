@@ -1590,7 +1590,12 @@ mod tests {
         let host = "agents.slice/pi-host-work-background.service";
         let processes = [
             (78, "node", 1, host),
-            (79, "node", 1, "agents.slice/pi-host-other-background.service"),
+            (
+                79,
+                "node",
+                1,
+                "agents.slice/pi-host-other-background.service",
+            ),
             (98, "pi-spawner", 79, "pi-spawner-f.scope"),
             (88, "pi-spawner", 78, "pi-spawner-b.scope"),
             (89, "bash", 88, "pi-spawner-b.scope"),
@@ -1636,7 +1641,7 @@ mod tests {
             claim("s-three", 78, Some(1), Some("work")),
             claim("s-alone", 69, Some(1), None),
         ];
-        let mut owners = vec![
+        let owners = vec![
             ("s-one".to_owned(), 78),
             ("s-two".to_owned(), 78),
             ("s-alone".to_owned(), 69),
@@ -1717,6 +1722,48 @@ mod tests {
             alone(71, &unhosted, &claims).is_err_and(|why| why.contains("proved alone")),
             "so none of its shared sessions is proved by one"
         );
+    }
+
+    #[test]
+    fn a_said_spawner_proves_nothing_once_it_its_line_or_its_session_is_gone() {
+        let procs = a_host_and_its_spawners();
+        let claims = [
+            claim("s-one", 78, Some(1), Some("work")),
+            claim("s-two", 78, Some(1), Some("work")),
+        ];
+        let mut owners = vec![("s-one".to_owned(), 78), ("s-two".to_owned(), 78)];
+        let processes = folder(procs.path());
+        let spawners = Spawners::default();
+        let says = |spawner: i32, session: &str, owners: &[(String, i32)]| {
+            let ticks = u64::try_from(spawner).expect("a small id");
+            let at = (spawner, ticks);
+            spawners.register(
+                (Some(78), Some(1)),
+                at,
+                session,
+                &processes,
+                owners,
+                &claims,
+            )
+        };
+        assert_eq!(says(88, "s-two", &owners), Ok(()), "one for s-two");
+        assert_eq!(says(87, "s-one", &owners), Ok(()), "one for s-one");
+        let hosts = tempfile::tempdir().expect("a folder for hosts' records");
+        let refused = |asker, owners: &[(String, i32)], claims: &[Claim]| {
+            let alone = session_alone(
+                Some(asker),
+                &processes,
+                owners,
+                claims,
+                hosts.path(),
+                &spawners,
+            );
+            alone.is_err_and(|why| why.contains("through no pi-spawner"))
+        };
+        assert!(
+            !refused(90, &owners, &claims),
+            "the said spawner proves its session"
+        );
         let mut restarted = claims.clone();
         for claim in &mut restarted {
             claim.start_ticks = claim.start_ticks.map(|ticks| ticks + 1);
@@ -1737,7 +1784,7 @@ mod tests {
             "nor once the spawner said has gone and its id been given another"
         );
         assert_eq!(
-            says(78, 96, 96, "s-two", &owners),
+            says(96, "s-two", &owners),
             Ok(()),
             "and then the host may say a fresh one for its session"
         );
