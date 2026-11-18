@@ -7023,7 +7023,7 @@ esac
         store: &Memory,
         socket: &Path,
         orchestrator: &str,
-    ) -> (Running, PathBuf, u32, u32) {
+    ) -> (Orchestrated, PathBuf, u32, u32) {
         // Made as the node makes it, open to nobody else, so its socket goes
         // there.
         fs::DirBuilder::new()
@@ -7045,8 +7045,8 @@ esac
         (running, held, holder, program)
     }
 
-    /// What keeps a node in a test running.
-    type Running = (
+    /// What keeps an orchestrated node in a test running, and its client.
+    type Orchestrated = (
         tokio::sync::oneshot::Sender<()>,
         tokio::task::JoinHandle<io::Result<()>>,
         Speaking,
