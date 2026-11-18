@@ -19,7 +19,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use super::{Cell, Is, MACHINES, Mycelium, Network, Shape};
+use super::{Cell, Is, MACHINES, Mycelium, Network, Shape, Share};
 use crate::swarm::{
     BOLD, FAINT, GAP, Label, Look, NARROWEST, Standing, fit, header, padded, row, says_again,
 };
@@ -919,6 +919,30 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
     if !own.is_empty() {
         lines.extend([String::new(), look.paint(BOLD, "its own trees")]);
         lines.extend(own.iter().map(|short| format!("  {short}")));
+    }
+    // Likewise a folder it shares with no other cell, so one it says that
+    // forms no network can still be seen to be said.
+    let alone: Vec<&Share> = cell
+        .shares
+        .iter()
+        .filter(|share| mycelium.network(&share.network()).is_none())
+        .collect();
+    if !alone.is_empty() {
+        lines.extend([String::new(), look.paint(BOLD, "its own shared folders")]);
+        let width = alone
+            .iter()
+            .map(|share| share.key.chars().count())
+            .max()
+            .unwrap_or_default();
+        for share in alone {
+            let line = format!("  {}{GAP}", padded(&share.key, width));
+            let room = look
+                .width
+                .saturating_sub(line.chars().count())
+                .max(NARROWEST);
+            let about = look.paint(FAINT, &fit(&share.about, room));
+            lines.push(format!("{line}{about}"));
+        }
     }
     lines.join("\n")
 }

@@ -159,10 +159,10 @@ mod tests {
         });
         let record = |key: &str, at: i64| json!({"key": key, "kind": "formed", "at": at});
         let formed = [
-            record("formed:files.quest:QEST-20261112-HARBOR", 2),
+            record("formed:files.quest:qest-20261112-harbor", 2),
             record(TIDES, 1),
             record("formed:files.quest:a.b", 3),
-            record("formed:files.quest:QEST-20261112-KELPED", 4),
+            record("formed:files.quest:qest-20261112-kelped", 4),
         ];
         assert_eq!(
             formed_of(&presence, &formed),

@@ -9174,7 +9174,7 @@ esac
     async fn a_folder_two_cells_shared_stays_while_one_says_it_though_the_node_restarts() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
-        let network = "network:files.quest:QEST-20261112-HARBOR";
+        let network = "network:files.quest:qest-20261112-harbor";
 
         let both = Memory::default();
         let (stop, running) = node(&both, "skiff", Vec::<Piped>::new(), None, &socket);
@@ -9212,7 +9212,7 @@ esac
         let cell = watched_until(&mut client, "cell:REEF01", |_| true).await;
         assert_eq!(
             cell["networks"],
-            json!(["files.quest:QEST-20261112-HARBOR"]),
+            json!(["files.quest:qest-20261112-harbor"]),
             "formed before the node restarted, its one cell left is on it: {cell}"
         );
         let networks = records_of(&mut client, 3, "network").await;
@@ -9234,8 +9234,14 @@ esac
             .create(dir.path().join("skiff"))
             .expect("its folder");
         let now = jiff::Timestamp::now().as_millisecond();
-        let name = "files.quest:QEST-20261112-HARBOR";
-        let kept = json!({name: {"at": now - 30 * 60 * 1000, "left": now - 11 * 60 * 1000}});
+        let name = "files.quest:qest-20261112-harbor";
+        // Beside it, one left only a minute ago, which a cell saying it
+        // again holds, so what fades is the folder left too long alone.
+        let lately = "files.quest:qest-20261112-kelped";
+        let kept = json!({
+            name: {"at": now - 30 * 60 * 1000, "left": now - 11 * 60 * 1000},
+            lately: {"at": now - 30 * 60 * 1000, "left": now - 60 * 1000},
+        });
         fs::write(socket.with_file_name("formed-work.json"), kept.to_string())
             .expect("what formed before is kept");
 
@@ -9248,21 +9254,43 @@ esac
             .ask(json!({"id": 1, "ask": "watch", "kind": "cell"}))
             .await;
         sharing_scratch(&store, "reef01");
-        let cell = watched_until(&mut client, "cell:REEF01", |_| true).await;
+        let kelp = json!({
+            "session": "kelp01", "addresses": ["KELP01"], "groups": [],
+            "busy": true, "state": "busy", "at": jiff::Timestamp::now().to_string(),
+            "shares": [{"key": "quest:QEST-20261112-KELPED", "for": "Kelp", "folder": "/k"}],
+        });
+        store
+            .put_presence("kelp01", "kestrel", &kelp)
+            .expect("the presence is kept");
+        // Watched for the cell said last, as one record can pass while
+        // another is waited for; the other is then read from a list.
+        let kelp = watched_until(&mut client, "cell:KELP01", |_| true).await;
         assert_eq!(
-            cell["networks"],
+            kelp["networks"],
+            json!([lately]),
+            "left lately, its cell is on it still: {kelp}"
+        );
+        let cells = records_of(&mut client, 4, "cell").await;
+        let reef = cells
+            .iter()
+            .find(|one| one["key"] == "cell:REEF01")
+            .expect("its cell is listed");
+        assert_eq!(
+            reef["networks"],
             json!([]),
-            "faded, its cell is on it no more: {cell}"
+            "faded, its cell is on it no more: {reef}"
         );
         let networks = records_of(&mut client, 2, "network").await;
         assert!(
-            networks.iter().all(|one| one["name"] != name),
-            "nor is it listed: {networks:?}"
+            networks.iter().all(|one| one["name"] != name)
+                && networks.iter().any(|one| one["name"] == lately),
+            "nor is it listed, though the other is: {networks:?}"
         );
         let formed = records_of(&mut client, 3, "formed").await;
         assert!(
-            formed.iter().all(|one| one["name"] != name),
-            "nor kept as formed: {formed:?}"
+            formed.iter().all(|one| one["name"] != name)
+                && formed.iter().any(|one| one["name"] == lately),
+            "nor kept as formed, though the other is: {formed:?}"
         );
     }
 

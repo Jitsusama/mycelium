@@ -614,27 +614,44 @@ fn joined(
 
 /// The networks of the folders two cells or more of `sessions` share,
 /// each known by its key, as each machine keeps its own copy, and titled
-/// by what the earliest of its cells says it is for. One of `formed`,
-/// which two cells shared before, stays a network while one cell shares
-/// it.
+/// by what most of its cells say it is for, the earliest's among as
+/// many, so no one cell names a folder the rest call otherwise. One of
+/// `formed`, which two cells shared before, stays a network while one
+/// cell shares it.
 fn shared_files(sessions: &[Cell], formed: &BTreeSet<String>) -> Vec<Network> {
-    let mut sharing: BTreeMap<&str, (&Share, Vec<&Cell>)> = BTreeMap::new();
+    let mut sharing: BTreeMap<&str, Vec<(&Cell, &Share)>> = BTreeMap::new();
     for cell in sessions {
         for share in &cell.shares {
-            let (_, cells) = sharing.entry(&share.key).or_insert((share, Vec::new()));
-            cells.push(cell);
+            sharing.entry(&share.key).or_default().push((cell, share));
         }
     }
     sharing
         .into_values()
-        .filter_map(|(first, cells)| {
+        .filter_map(|shared| {
+            let (_, first) = shared.first()?;
             let name = first.network();
+            let cells: Vec<&Cell> = shared.iter().map(|(cell, _)| *cell).collect();
             (cells.len() > 1 || formed.contains(&name)).then(|| Network {
-                title: Some(first.about.clone()),
+                title: Some(most_said(
+                    shared.iter().map(|(_, share)| share.about.as_str()),
+                )),
                 ..network_of(&name, Shape::Files, &cells)
             })
         })
         .collect()
+}
+
+/// What most of `said` says, the first said among as many.
+fn most_said<'a>(said: impl Iterator<Item = &'a str>) -> String {
+    let mut counted: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for (at, each) in said.enumerate() {
+        counted.entry(each).or_insert((0, at)).0 += 1;
+    }
+    counted
+        .into_iter()
+        .max_by(|(_, (one, at)), (_, (other, later))| one.cmp(other).then(later.cmp(at)))
+        .map(|(each, _)| each.to_owned())
+        .unwrap_or_default()
 }
 
 /// The networks of the trees two cells or more of `sessions` hold, each

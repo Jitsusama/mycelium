@@ -1220,6 +1220,13 @@ mod tests {
             ),
             (
                 Realm {
+                    unsaid_formed: Some("no answer".to_owned()),
+                    ..realm_sharing_a_folder()
+                },
+                "the node didn't say which networks formed: no answer",
+            ),
+            (
+                Realm {
                     unbrought: Some("the disk is full".to_owned()),
                     ..realm()
                 },
@@ -1253,6 +1260,17 @@ mod tests {
             {"key": "oars-tides", "repo": "github:harbour/oars", "branch": "jsama/tides"},
         ]});
         realm.sessions[0] = session("BUSY01", "skiff", QUEST, "busy", &tides);
+        realm
+    }
+
+    /// The realm, its first session sharing a folder and holding no
+    /// tree, so only its share makes a network.
+    fn realm_sharing_a_folder() -> Realm {
+        let mut realm = realm();
+        let harbour = json!({"shares": [
+            {"key": "quest:QEST-20261112-HARBOR", "for": "Harbour", "folder": "/h"},
+        ]});
+        realm.sessions[0] = session("BUSY01", "skiff", QUEST, "busy", &harbour);
         realm
     }
 

@@ -1156,7 +1156,7 @@ fn one_line(text: &str) -> String {
 
 /// Whether `each` is one of Unicode's marks that turn the direction text
 /// is drawn in, which a terminal may honour past the words they came in.
-const fn turns_direction(each: char) -> bool {
+pub(crate) const fn turns_direction(each: char) -> bool {
     matches!(each, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 

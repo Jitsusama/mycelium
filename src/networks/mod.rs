@@ -42,7 +42,7 @@ pub const SHARES_MOST: usize = 16;
 /// How long a share's key may be, in bytes.
 pub const SHARE_KEY_MOST: usize = 96;
 
-/// How long what a share is for may be, in characters: a title's
+/// How much of what a share is for is read, in characters: a title's
 /// length, as an event's title is cut to.
 pub const SHARE_FOR_MOST: usize = 120;
 
@@ -68,18 +68,27 @@ pub fn formed_networks(presence: &Value) -> BTreeSet<String> {
 }
 
 /// The folders `presence` says it shares: of its first [`SHARES_MOST`],
-/// each within its bounds, the first saying each key.
+/// each within its bounds, the first saying each key. A key is read in
+/// lower case, as a network is picked by name whatever its case, so two
+/// keys differing only in case are one folder; and what a share is for
+/// is cut to [`SHARE_FOR_MOST`] characters, as a long title still names
+/// a folder.
 fn shares_of(presence: &Value) -> Vec<Share> {
     let mut shares: Vec<Share> = Vec::new();
     let said = presence["shares"].as_array().into_iter().flatten();
     for share in said.take(SHARES_MOST) {
-        let Ok(share) = Share::deserialize(share) else {
+        let Ok(mut share) = Share::deserialize(share) else {
             continue;
         };
+        share.key.make_ascii_lowercase();
+        if let Some((cut, _)) = share.about.char_indices().nth(SHARE_FOR_MOST) {
+            share.about.truncate(cut);
+        }
         if share.fits() && shares.iter().all(|each| each.key != share.key) {
             shares.push(share);
         }
     }
+    shares.shrink_to_fit();
     shares
 }
 
@@ -190,7 +199,9 @@ impl Shape {
             "quest" => Some(Self::Project),
             "repo" => Some(Self::Repository),
             "tree" => Some(Self::Tree),
-            "files" => Some(Self::Files),
+            // A group called plain `files` is a group still; only a
+            // name under it is a shared folder's.
+            "files" if group.contains('.') => Some(Self::Files),
             _ => Some(Self::Group),
         }
     }
@@ -454,15 +465,24 @@ pub struct Share {
 impl Share {
     /// Whether it is within its bounds: a key of letters, digits, colons,
     /// dashes and underscores, beginning with a letter or digit, so its
-    /// network's name can't be cut anywhere but its first dot; and what
-    /// it is for and its folder each said, without a control character.
+    /// network's name can't be cut anywhere but its first dot, and saying
+    /// its kind before a colon, as `quest:`, so its short name is never
+    /// another shape's; and what it is for and its folder each said,
+    /// without a control character or a mark turning text's direction,
+    /// as both are drawn in a terminal.
     fn fits(&self) -> bool {
         let keyed = |byte: u8| byte.is_ascii_alphanumeric() || b":-_".contains(&byte);
         let key = self.key.as_bytes();
-        let plain = |said: &str| !said.is_empty() && !said.chars().any(char::is_control);
+        let plain = |said: &str| {
+            !said.is_empty()
+                && !said
+                    .chars()
+                    .any(|each| each.is_control() || crate::forage::turns_direction(each))
+        };
         key.first().is_some_and(u8::is_ascii_alphanumeric)
             && key.len() <= SHARE_KEY_MOST
             && key.iter().all(|byte| keyed(*byte))
+            && key.contains(&b':')
             && plain(&self.about)
             && self.about.chars().count() <= SHARE_FOR_MOST
             && plain(&self.folder)
