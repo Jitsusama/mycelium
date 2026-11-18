@@ -185,6 +185,11 @@ impl Processes {
         let Self::Folder(procs) = self else {
             return None;
         };
+        // Read at each proof, not only as the host said it, since a spawner
+        // taken while tracing was shut proves nothing once it opens.
+        if tracing_open(procs).is_some() {
+            return None;
+        }
         let unchanged =
             || started(procs, host.0) == Some(host.1) && started(procs, asker.0) == Some(asker.1);
         let lineage = self.lineage(asker.0);
@@ -550,7 +555,7 @@ fn began_with(procs: &Path, pid: i32, key: &[u8]) -> Option<String> {
 }
 
 /// The name the kernel gives the harness's pi-spawner, which a pi host
-/// starts once for each of its sessions, and the name of its program.
+/// starts once for each of its sessions.
 const SPAWNER: &str = "pi-spawner";
 
 /// How many spawners are kept at most, so hosts that come and go can't
@@ -564,19 +569,36 @@ const PTRACE_SCOPE: &str = "sys/kernel/yama/ptrace_scope";
 /// send, from opening node's inspector.
 const NO_SIGUSR1: &str = "--disable-sigusr1";
 
-/// Whether a node option, its underscores read as dashes as node reads
-/// them, opens node's inspector or lets SIGUSR1 open it.
+/// Whether a node option, its underscores read as dashes and its quotes
+/// and escapes dropped, as node reads `NODE_OPTIONS`, opens node's
+/// inspector or lets SIGUSR1 open it. A word a quote split from its
+/// option is read on its own, so one that hides an option is refused.
 fn opens_inspector(option: &str) -> bool {
-    let option = option.replace('_', "-");
+    let option = option.replace(['"', '\\'], "").replace('_', "-");
     option.starts_with("--inspect") || option.starts_with("--enable-sigusr1")
 }
 
+/// Why a process here might trace another of its user, if it might: a
+/// pi host's word is taken, and a spawner it said proves its session,
+/// only while the kernel lets a process trace none but its descendants.
+fn tracing_open(procs: &Path) -> Option<&'static str> {
+    let scope = fs::read_to_string(procs.join(PTRACE_SCOPE))
+        .ok()
+        .and_then(|scope| scope.trim().parse::<u8>().ok());
+    match scope {
+        None => Some("this machine doesn't say who may trace a process"),
+        Some(0) => Some("any process here may trace another of its user"),
+        Some(_) => None,
+    }
+}
+
 /// Why another process of its user could run code inside the pi host at
-/// `pid` through node's inspector, if it could: unless the host's own
-/// options say [`NO_SIGUSR1`], before anything that isn't an option, a
-/// SIGUSR1 opens it, and an option on its command line or in its
-/// `NODE_OPTIONS` may open it outright. An environment that can't be
-/// read is taken as one that might.
+/// `pid` through node's inspector, if it could: unless node's first
+/// option is [`NO_SIGUSR1`], as a host's unit starts it, a SIGUSR1 opens
+/// it, and an option on its command line or in its `NODE_OPTIONS` may
+/// open it outright. The first, since an option taking a value would
+/// take one later as its own. An environment that can't be read is
+/// taken as one that might.
 fn inspector_open(procs: &Path, pid: i32) -> Option<String> {
     let process = procs.join(pid.to_string());
     let Ok(line) = fs::read(process.join("cmdline")) else {
@@ -588,13 +610,12 @@ fn inspector_open(procs: &Path, pid: i32) -> Option<String> {
         .map(|word| String::from_utf8_lossy(word).into_owned())
         .collect();
     let closed = words
-        .iter()
-        .take_while(|word| word.starts_with('-') && *word != "--")
-        .any(|word| word.replace('_', "-") == NO_SIGUSR1);
+        .first()
+        .is_some_and(|word| word.replace('_', "-") == NO_SIGUSR1);
     if !closed {
         return Some(format!(
-            "process {pid} runs node without {NO_SIGUSR1}, so any process of its user may \
-             open its inspector"
+            "process {pid} runs node without {NO_SIGUSR1} as its first option, so any \
+             process of its user may open its inspector"
         ));
     }
     let Ok(environ) = fs::read(process.join("environ")) else {
@@ -632,6 +653,10 @@ pub struct Spawners {
     kept: Mutex<HashMap<(i32, u64), Registered>>,
     /// How many it keeps at most.
     room: usize,
+    /// Why a host's word for a spawner was refused, said once for each
+    /// host and reason, kept apart from the runs' reasons so that no
+    /// flood of these forgets those.
+    refused: crate::run::Untold,
 }
 
 impl Default for Spawners {
@@ -646,7 +671,14 @@ impl Spawners {
         Self {
             kept: Mutex::default(),
             room,
+            refused: crate::run::Untold::default(),
         }
+    }
+
+    /// Whether a host's word for a spawner is refused for `why` for the
+    /// first time, so the node says it once.
+    pub fn first_refusal(&self, why: &str) -> bool {
+        self.refused.first(why)
     }
 
     /// Takes the word of `host`, the process at the other end of the
@@ -683,28 +715,23 @@ impl Spawners {
         owners: &[(String, i32)],
         claims: &[Claim],
     ) -> Result<(), String> {
-        let Processes::Folder(procs) = processes else {
-            return Err("this machine can't show its processes, so no spawner is told".into());
+        let procs = match processes {
+            Processes::Folder(procs) => procs,
+            Processes::Unattended(_) => {
+                return Err(
+                    "this machine runs unattended, where every run is told its agent, so \
+                     no spawner is told"
+                        .into(),
+                );
+            }
+            Processes::Listed => {
+                return Err("this machine can't show its processes, so no spawner is told".into());
+            }
         };
-        let scope = fs::read_to_string(procs.join(PTRACE_SCOPE))
-            .ok()
-            .and_then(|scope| scope.trim().parse::<u8>().ok());
-        match scope {
-            None => {
-                return Err(
-                    "this machine doesn't say who may trace a process, so a host's \
-                            word can't be told from a command's"
-                        .into(),
-                );
-            }
-            Some(0) => {
-                return Err(
-                    "any process here may trace another of its user, so a host's \
-                            word can't be told from a command's"
-                        .into(),
-                );
-            }
-            Some(_) => {}
+        if let Some(why) = tracing_open(procs) {
+            return Err(format!(
+                "{why}, so a host's word can't be told from a command's"
+            ));
         }
         let (Some(pid), Some(ticks)) = host else {
             return Err("nothing names the process that says it, so no spawner is told".into());
@@ -1011,7 +1038,7 @@ pub fn session_alone(
         )),
         _ if !keys.is_empty() => Err(format!(
             "this asks below pi host process {process}, which {shared} sessions share, \
-             through no pi-spawner it said it started for one it proves"
+             through no pi-spawner this node took its word for, for one it proves"
         )),
         _ => Err(format!(
             "this asks from process {process}, which {shared} sessions share, so none is \
@@ -1936,6 +1963,13 @@ mod tests {
             started(procs.path(), pid, name, ticks);
         }
         assert!(!refused(90, &owners, &claims), "and proves again as it was");
+        traced_by_forebears(procs.path(), "0");
+        assert!(
+            refused(90, &owners, &claims),
+            "nor once any process may trace another of its user, though it was said \
+             while none could"
+        );
+        traced_by_forebears(procs.path(), "1");
         assert_eq!(
             says(96, "s-two", &owners),
             Ok(()),
@@ -2052,15 +2086,31 @@ mod tests {
             "a host whose inspector SIGUSR1 opens isn't heard, since any process of its user \
              may send it"
         );
+        runs(&["--title", "--disable-sigusr1"], None);
+        assert!(
+            refused("without --disable-sigusr1 as its first option"),
+            "nor one given it anywhere but first, where an option taking a value could \
+             take it as its own"
+        );
         runs(&["--disable_sigusr1", "--inspect=0"], None);
         assert!(
             refused("opens its inspector"),
             "nor one whose options open it outright"
         );
+        runs(&["--disable-sigusr1", "--enable-sigusr1"], None);
+        assert!(
+            refused("opens its inspector"),
+            "nor one whose options let SIGUSR1 open it again"
+        );
         runs(&HOST_NODE, Some("--inspect-brk"));
         assert!(
             refused("opens its inspector"),
             "nor one whose environment's NODE_OPTIONS open it"
+        );
+        runs(&HOST_NODE, Some("--max-old-space-size=100 \"--inspect\""));
+        assert!(
+            refused("opens its inspector"),
+            "nor one whose NODE_OPTIONS quote the option, as node reads them"
         );
         fs::remove_file(procs.path().join("78").join("environ")).expect("it goes");
         assert!(

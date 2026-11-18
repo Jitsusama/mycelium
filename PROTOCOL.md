@@ -2048,11 +2048,14 @@ command could write the host's memory and speak as the host;
 elsewhere, or where the kernel doesn't say, it refuses every
 spawner. For the same reason it takes it only from a host whose
 node can't be opened from outside: its command line must give
-`--disable-sigusr1` among node's own options, since otherwise any
+`--disable-sigusr1` as node's first option, since otherwise any
 process of its user may send SIGUSR1 and open node's inspector, and
-neither that line nor the `NODE_OPTIONS` its environment holds may
-name `--inspect` in any form or `--enable-sigusr1`; a host whose
-environment can't be read is refused.
+an option taking a value could take a later one as its own; and
+neither that line nor the `NODE_OPTIONS` its environment holds, its
+quotes dropped as node drops them, may name `--inspect` in any form
+or `--enable-sigusr1`. A host whose environment can't be read is
+refused. The kernel's word is read again at each proof, so a
+spawner taken while tracing was shut proves nothing once it opens.
 
 It can't tell the host's own code from code an agent brought into
 the host's process, an extension a project carries or a reload onto
@@ -2062,8 +2065,11 @@ can change the code a host loads, then end the host, which runs that
 code when it starts again and may say any spawner. So the word
 proves a session only where the host's sessions run their commands
 fenced from the harness and its extensions; where they don't, it
-tells a command apart from its host only by accident. The fence the
-host's sessions run under is what closes both.
+tells a command apart from its host only by accident. So too a
+command of the same user can open another session's spawner's pipe
+again through `/proc/<pid>/fd`, which Yama's scope 1 doesn't stop,
+and have it start a command for that session. The fence the host's
+sessions run under is what closes all three.
 
 ### The Daemon Interface
 

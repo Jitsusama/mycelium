@@ -1224,7 +1224,7 @@ struct Shared<S> {
     starts: Arc<starts::Starts>,
     /// Each start asked under a name, so an ask again joins it.
     onces: Arc<once::Onces>,
-    /// Why each asking process's runs here were told no session, said once.
+    /// Why runs here were told no session, said once for each reason.
     untold: Arc<run::Untold>,
     /// Each hosted session's spawner, as its host said it.
     spawners: Arc<asker::Spawners>,
@@ -3747,11 +3747,13 @@ impl<S: Store> Shared<S> {
     /// Takes a pi host's word, the host being the process at the other
     /// end, that its child `spawner` serves `session`, as
     /// [`asker::Spawners::register`] takes it. A refusal is said on the
-    /// node's stderr too, since a host refused may be a command trying,
-    /// once for each reason, as a run told no session is, and with the
-    /// session it named cut short and escaped, since anyone may name one.
+    /// node's stderr too, since a host refused may be a command trying:
+    /// once for each process and reason, whatever session it named, so
+    /// naming new ones says nothing more, and with the session it named
+    /// cut short and escaped, since anyone may name one.
     async fn spawned(&self, spawner: (i32, u64), session: String) -> Reply {
-        // A session's id is far shorter; one longer is refused unread.
+        // A session's id is far shorter; one longer is refused before
+        // anything is weighed.
         const LONGEST: usize = 256;
         // How much of the session it named a refusal says.
         const SAID_SESSION_CHARS: usize = 64;
@@ -3771,6 +3773,7 @@ impl<S: Store> Shared<S> {
             .take(SAID_SESSION_CHARS)
             .flat_map(char::escape_debug)
             .collect();
+        let named = session.clone();
         let registered = tokio::task::spawn_blocking(move || {
             let owners = asker::proved(&claims, &processes, &hosts, &logs)?;
             spawners.register(host, spawner, &session, &processes, &owners, &claims)
@@ -3778,10 +3781,14 @@ impl<S: Store> Shared<S> {
         .await
         .map_err(|error| format!("the spawner couldn't be told: {error}"))?;
         if let Err(why) = &registered {
-            let why: String = why.chars().flat_map(char::escape_debug).collect();
-            let line = format!("a spawner for {said} isn't taken: {why}");
-            if self.untold.first(&line) {
-                eprintln!("mycelium: {line}");
+            let reason = if named.is_empty() {
+                why.clone()
+            } else {
+                why.replace(named.as_str(), "")
+            };
+            if self.spawners.first_refusal(&format!("{host:?} {reason}")) {
+                let why: String = why.chars().flat_map(char::escape_debug).collect();
+                eprintln!("mycelium: a spawner for {said} isn't taken: {why}");
             }
         }
         registered.map(|()| Response::Spawned)
