@@ -13239,6 +13239,36 @@ esac
         );
     }
 
+    #[tokio::test]
+    async fn the_links_a_node_keeps_hold_its_machine_saturated_as_it_does() {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            bare("/nowhere/steer".into(), None),
+            to_dial,
+        );
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let dial = shared.book_for(&made_by("/nowhere/lend", "kestrel", later));
+        let kept = shared.starting(&dial, Path::new("/nowhere/node"));
+        assert!(
+            shared.saturation.judge(90.0),
+            "the node's own measure saturates its machine"
+        );
+        let band = kept
+            .saturation
+            .expect("a link the node keeps is given a band");
+        assert!(
+            band.judge(80.0),
+            "and the link holds it saturated still at 80, as the node's own band does, \
+             rather than judging afresh by a band of its own"
+        );
+    }
+
     #[test]
     fn a_provider_is_still_asked_by_its_path_or_as_built_again() {
         let at =
