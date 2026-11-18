@@ -4237,6 +4237,9 @@ impl<S: Store> Shared<S> {
                 all.iter()
                     .find(|session| session.id == *id)
                     .map(|session| session.address.clone())
+                    // Lineage names only an address, never what a
+                    // presence says in its place.
+                    .filter(|address| forage::is_address(address))
             })
         };
         let admitted = self.starts.admit(starts::Kept {

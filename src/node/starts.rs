@@ -40,12 +40,13 @@ const KEPT_MOST: usize = 2048;
 /// from what memory holds, so asks refused without end fill no disk.
 const WRITTEN_MOST: u64 = 8 * 1024 * 1024;
 
-/// The longest folder a start keeps, in bytes: a longer one, which no
-/// system opens, is kept as none.
-const FOLDER_MOST: usize = 4096;
+/// The longest folder a start keeps, in bytes: a longer one is kept as
+/// none. With [`PROGRAM_MOST`], it keeps the [`KEPT_MOST`] starts held
+/// far under [`WRITTEN_MOST`], so a rewrite always leaves room to grow.
+const FOLDER_MOST: usize = 1024;
 
 /// The most characters of a program's name a start keeps.
-const PROGRAM_MOST: usize = 256;
+const PROGRAM_MOST: usize = 128;
 
 /// A start the node made, or was asked and refused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,16 +167,15 @@ impl Starts {
     /// they have can't be told, so a stop never lifts for a fault.
     #[must_use]
     pub fn stopped(&self) -> bool {
+        self.stop_stands().unwrap_or(true)
+    }
+
+    /// Whether the person's stop stands, or why that can't be told.
+    fn stop_stands(&self) -> std::io::Result<bool> {
         match self.stopped.symlink_metadata() {
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => {
-                eprintln!(
-                    "agents' starts are held: whether {} stops them can't be told: {error}",
-                    self.stopped.display()
-                );
-                true
-            }
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
         }
     }
 
@@ -238,12 +238,22 @@ impl Starts {
         if !asked.counts() {
             return None;
         }
-        if self.stopped() {
-            return Some(
-                "the person stopped agents starting sessions; only they resume it, \
-                 with `mycelium starts resume`"
-                    .to_owned(),
-            );
+        match self.stop_stands() {
+            Ok(false) => {}
+            Ok(true) => {
+                return Some(
+                    "the person stopped agents starting sessions; only they resume it, \
+                     with `mycelium starts resume`"
+                        .to_owned(),
+                );
+            }
+            Err(error) => {
+                return Some(format!(
+                    "agents' starts are held, since whether the person stopped them \
+                     can't be told from {}: {error}",
+                    self.stopped.display()
+                ));
+            }
         }
         let since = asked.at - HOUR;
         let counted: Vec<&Kept> = book
@@ -251,8 +261,8 @@ impl Starts {
             .iter()
             .chain(book.going.iter().map(|(_, going)| going))
             // One dated ahead of the ask, as a clock set back leaves it,
-            // counts no more than one long gone.
-            .filter(|one| one.counts() && one.at > since && one.at <= asked.at)
+            // still counts, so a step back hands no cell a fresh hour.
+            .filter(|one| one.counts() && one.at > since)
             .collect();
         let of_cell = counted
             .iter()
@@ -486,9 +496,12 @@ mod tests {
         starts.stop().expect("stopped");
         starts.admit(agent("OSPREY", NOW)).expect_err("stopped");
         let file = dir.path().join("starts.jsonl");
-        let mut written = std::fs::read_to_string(&file).expect("the book");
-        written.push_str("not a start\n");
-        std::fs::write(&file, written).expect("a line it can't read");
+        // A line that isn't UTF-8 first, then one that isn't a start:
+        // each is passed over alone.
+        let mut written = b"\xff\xfe\n".to_vec();
+        written.extend(std::fs::read(&file).expect("the book"));
+        written.extend(b"not a start\n");
+        std::fs::write(&file, written).expect("lines it can't read");
         let again = Starts::at(file);
         let kept = again.newest(10);
         assert_eq!(kept.len(), 2, "{kept:?}");
@@ -555,7 +568,30 @@ mod tests {
         std::fs::write(&not_a_folder, "").expect("a file");
         let starts = Starts::at(not_a_folder.join("starts.jsonl"));
         assert!(starts.stopped(), "a stop that can't be told is a stop");
-        starts.admit(agent("OSPREY", NOW)).expect_err("held back");
+        let refused = starts.admit(agent("OSPREY", NOW)).expect_err("held back");
+        assert!(
+            refused.starts_with("agents' starts are held, since whether"),
+            "it says the stop can't be told, not that the person stopped: {refused}"
+        );
+    }
+
+    #[test]
+    fn what_an_agent_names_is_kept_within_a_bound() {
+        let (_dir, starts) = book();
+        let mut asked = agent("OSPREY", NOW);
+        asked.folder = Some(PathBuf::from("f".repeat(FOLDER_MOST + 1)));
+        asked.program = Some("p".repeat(PROGRAM_MOST + 1));
+        started(&starts, asked, "h-1");
+        let kept = starts.newest(1);
+        assert_eq!(
+            kept[0].folder, None,
+            "a folder past the bound is kept as none"
+        );
+        assert_eq!(
+            kept[0].program.as_deref().map(str::len),
+            Some(PROGRAM_MOST),
+            "a program is cut at the bound"
+        );
     }
 
     #[test]

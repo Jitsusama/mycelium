@@ -358,7 +358,8 @@ pub fn subjects(declared: &Value) -> Vec<String> {
 
 /// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
 /// joiner, a word joiner or invisible operator, a grapheme joiner, a
-/// Hangul or Khmer filler, a byte order mark, or a tag, any of which hides
+/// Hangul or Khmer filler, a variation selector, a byte order mark, or a
+/// tag, any of which hides
 /// text from the person or smuggles it past them.
 fn unseen(each: char) -> bool {
     matches!(
@@ -373,8 +374,10 @@ fn unseen(each: char) -> bool {
             | '\u{200B}'..='\u{200D}'
             | '\u{2060}'..='\u{2065}'
             | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
             | '\u{FEFF}'
             | '\u{FFA0}'
+            | '\u{E0100}'..='\u{E01EF}'
             | '\u{E0000}'..='\u{E007F}'
     )
 }
