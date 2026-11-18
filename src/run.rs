@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::mpsc;
 
-use crate::wire::Ran;
+use crate::wire::{By, Ran};
 
 /// How long what a run started has to end once asked to stop, before it
 /// is killed.
@@ -163,19 +163,22 @@ impl From<PathBuf> for Folder {
 }
 
 /// Runs `words`, the first the program, in `folder`, as `session` where
-/// the node proved that session asks, handing what it says to `ran` as it
-/// says it and then how it ended; stops it once `ran`'s reader lets go.
+/// the node proved that session asks, signing as `by` asks, handing what
+/// it says to `ran` as it says it and then how it ended; stops it once
+/// `ran`'s reader lets go.
 pub async fn here(
     words: Vec<String>,
     folder: impl Into<Folder>,
     session: Option<String>,
+    by: By,
     ran: mpsc::Sender<Ran>,
 ) {
-    let ended =
-        match command(&words, folder.into(), session.as_deref()).and_then(|mut run| run.spawn()) {
-            Ok(child) => follow(child, &ran).await,
-            Err(error) => Some(Ran::Failed(format!("it didn't start: {error}"))),
-        };
+    let ended = match command(&words, folder.into(), session.as_deref(), by)
+        .and_then(|mut run| run.spawn())
+    {
+        Ok(child) => follow(child, &ran).await,
+        Err(error) => Some(Ran::Failed(format!("it didn't start: {error}"))),
+    };
     if let Some(ended) = ended {
         // A reader that let go meanwhile hears nothing.
         let _ = ran.send(ended).await;
@@ -185,15 +188,17 @@ pub async fn here(
 /// `words` to start in a process group of its own, so a stop reaches all
 /// it starts, with nothing on its standard input. Its `PI_SESSION_ID`,
 /// which a fence's launcher reads to know whose work trees the run may
-/// stand in, is `session` alone, never the node's own. A session's run
+/// stand in, is `session` alone, never the node's own. An agent's run
 /// signs over ssh as a held session does, through the agents' proxy
 /// ([`crate::hold::holder::agents`]), named again after the login
-/// shell's profile [`words`] puts it through; a person's run keeps the
-/// person's agent.
+/// shell's profile [`words`] puts it through, whether or not its session
+/// was proved and wherever it was asked from; only a person's run keeps
+/// the person's agent.
 fn command(
     words: &[String],
     folder: Folder,
     session: Option<&str>,
+    by: By,
 ) -> io::Result<tokio::process::Command> {
     let (program, arguments) = words
         .split_first()
@@ -224,18 +229,16 @@ fn command(
         .stderr(Stdio::piped())
         .process_group(0);
     match session {
-        Some(session) => {
-            command.env(SESSION, session);
-            let proxy = crate::hold::holder::agents_proxy_here();
-            for (variable, value) in crate::hold::holder::agents(proxy.as_deref(), true) {
-                match value {
-                    Some(value) => command.env(variable, value),
-                    None => command.env_remove(variable),
-                };
-            }
-        }
-        None => {
-            command.env_remove(SESSION);
+        Some(session) => command.env(SESSION, session),
+        None => command.env_remove(SESSION),
+    };
+    if let By::Agent(_) = by {
+        let proxy = crate::hold::holder::agents_proxy_here();
+        for (variable, value) in crate::hold::holder::agents(proxy.as_deref(), true) {
+            match value {
+                Some(value) => command.env(variable, value),
+                None => command.env_remove(variable),
+            };
         }
     }
     Ok(command)
@@ -401,9 +404,9 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn a_sessions_run_is_told_the_agents_proxy_and_a_persons_keeps_its_own() {
-        let told = |session| {
-            let run = command(&sh("true"), std::env::temp_dir().into(), session)
+    fn an_agents_run_is_told_the_agents_proxy_and_a_persons_keeps_its_own() {
+        let told = |session, by| {
+            let run = command(&sh("true"), std::env::temp_dir().into(), session, by)
                 .expect("the run is made");
             run.as_std()
                 .get_envs()
@@ -414,23 +417,33 @@ mod tests {
                 .filter(|(name, _)| name.contains("AGENT") || name.contains("AUTH_SOCK"))
                 .collect::<std::collections::BTreeMap<_, _>>()
         };
-        let proxy =
-            crate::hold::holder::agents_proxy_here().map(|proxy| proxy.display().to_string());
+        // Worked out here, apart from the lookup under test: the proxy's
+        // socket in the node's own runtime folder, none where it has none.
+        let proxy = std::env::var("XDG_RUNTIME_DIR")
+            .ok()
+            .filter(|runtime| !runtime.is_empty())
+            .map(|runtime| format!("{runtime}/pi-agent.sock"));
+        let agents = std::collections::BTreeMap::from([
+            (
+                "MYCELIUM_AGENT".to_owned(),
+                Some(proxy.clone().unwrap_or_default()),
+            ),
+            ("SSH_AUTH_SOCK".to_owned(), proxy),
+            ("SSH_TPM_AUTH_SOCK".to_owned(), None),
+        ]);
+        let agent = By::Agent(crate::declared::Kind::Fence);
         assert_eq!(
-            told(Some("s-harbour")),
-            [
-                (
-                    "MYCELIUM_AGENT".to_owned(),
-                    Some(proxy.clone().unwrap_or_default())
-                ),
-                ("SSH_AUTH_SOCK".to_owned(), proxy),
-                ("SSH_TPM_AUTH_SOCK".to_owned(), None),
-            ]
-            .into(),
+            told(Some("s-harbour"), agent),
+            agents,
             "a session's run is told the proxy, again for after the profile, and no other"
         );
         assert_eq!(
-            told(None),
+            told(None, agent),
+            agents,
+            "so is an agent's run with no session proved, or one asked from elsewhere"
+        );
+        assert_eq!(
+            told(None, By::Person),
             std::collections::BTreeMap::new(),
             "a person's run is left as the person's session has it"
         );
@@ -444,7 +457,7 @@ mod tests {
     async fn all_of(words: Vec<String>) -> (Vec<u8>, Vec<u8>, Ran) {
         let (ran, mut said) = mpsc::channel(BACKLOG);
         let folder = std::env::temp_dir();
-        tokio::spawn(here(words, folder, None, ran));
+        tokio::spawn(here(words, folder, None, By::Person, ran));
         let (mut out, mut err) = (Vec::new(), Vec::new());
         loop {
             let next = tokio::time::timeout(PATIENCE, said.recv())
@@ -484,6 +497,7 @@ mod tests {
             sh("printf %s \"${PI_SESSION_ID-none}\""),
             std::env::temp_dir(),
             session.map(str::to_owned),
+            By::Person,
             ran,
         ));
         let mut out = Vec::new();
@@ -518,8 +532,13 @@ mod tests {
     fn a_run_never_inherits_the_nodes_own_session() {
         let words = sh("true");
         let envs = |session| {
-            let run =
-                command(&words, Folder::At(std::env::temp_dir()), session).expect("words to run");
+            let run = command(
+                &words,
+                Folder::At(std::env::temp_dir()),
+                session,
+                By::Person,
+            )
+            .expect("words to run");
             run.as_std()
                 .get_envs()
                 .filter(|(key, _)| *key == "PI_SESSION_ID")
@@ -565,7 +584,13 @@ mod tests {
         fs::rename(&judged, &moved).expect("moved");
         fs::create_dir(&judged).expect("made again");
         let (ran, mut said) = mpsc::channel(BACKLOG);
-        tokio::spawn(here(sh("pwd -P"), Folder::Opened(opened), None, ran));
+        tokio::spawn(here(
+            sh("pwd -P"),
+            Folder::Opened(opened),
+            None,
+            By::Person,
+            ran,
+        ));
         let mut out = Vec::new();
         loop {
             match tokio::time::timeout(PATIENCE, said.recv())
@@ -592,6 +617,7 @@ mod tests {
             sh("head -c 8388608 /dev/zero"),
             std::env::temp_dir(),
             None,
+            By::Person,
             ran,
         ));
         let mut got = 0;
@@ -626,7 +652,13 @@ mod tests {
             "sleep 600 & echo $! > {}; echo started; wait",
             mark.display()
         );
-        let run = tokio::spawn(here(sh(&script), folder.path().to_owned(), None, ran));
+        let run = tokio::spawn(here(
+            sh(&script),
+            folder.path().to_owned(),
+            None,
+            By::Person,
+            ran,
+        ));
         let first = tokio::time::timeout(PATIENCE, said.recv())
             .await
             .expect("the run says something");
@@ -661,7 +693,7 @@ mod tests {
         let mark = folder.join("pid");
         let script = script.replace("MARK", &mark.display().to_string());
         let (ran, mut said) = mpsc::channel(BACKLOG);
-        let run = tokio::spawn(here(sh(&script), folder.to_owned(), None, ran));
+        let run = tokio::spawn(here(sh(&script), folder.to_owned(), None, By::Person, ran));
         let first = tokio::time::timeout(PATIENCE, said.recv())
             .await
             .expect("the run says something");

@@ -2398,6 +2398,41 @@ mod tests {
             .await;
     }
 
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn a_program_held_through_a_login_shell_signs_through_the_proxy_after_its_profile() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().expect("a temporary folder");
+        // A login shell whose profile names the person's own agents again,
+        // as a real one does, and then runs the script it is given.
+        let shell = root.path().join("login-shell");
+        fs::write(
+            &shell,
+            "#!/bin/sh\nSSH_AUTH_SOCK=/run/user/4242/every-key.sock\n\
+             SSH_TPM_AUTH_SOCK=/run/user/4242/every-key.sock\n\
+             export SSH_AUTH_SOCK SSH_TPM_AUTH_SOCK\nshift\nexec /bin/sh -c \"$@\"\n",
+        )
+        .expect("the stand-in shell is written");
+        fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).expect("it runs");
+        let mut through = crate::hold::start::login_shell("harbour", None);
+        through[0] = shell.display().to_string();
+        let person = Given(vec![
+            ("XDG_RUNTIME_DIR", "/run/user/4242"),
+            ("SSH_AUTH_SOCK", "/run/user/4242/every-key.sock"),
+        ]);
+        let (dir, held, _holder) = holding_sh_in(root.path(), through, person).await;
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window
+            .types(
+                "echo \"[agent $SSH_AUTH_SOCK, ${SSH_TPM_AUTH_SOCK-no} other, \
+                 ${MYCELIUM_AGENT-unsaid}]\"\r",
+            )
+            .await;
+        window
+            .sees("[agent /run/user/4242/pi-agent.sock, no other, unsaid]")
+            .await;
+    }
+
     #[test]
     fn the_agents_proxy_is_in_the_persons_runtime_folder_else_the_holders_else_none() {
         let person = |runtime: &str| vec![("XDG_RUNTIME_DIR".to_owned(), runtime.to_owned())];

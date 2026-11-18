@@ -4513,7 +4513,9 @@ impl<S: Store> Shared<S> {
                 _ => None,
             };
             let (ran, said) = mpsc::channel(run::BACKLOG);
-            tokio::spawn(run::here(words, folder, session, ran));
+            // It signs as who asks, not as the session proved: an agent's
+            // run gets the agents' proxy whether or not one is.
+            tokio::spawn(run::here(words, folder, session, by, ran));
             said
         } else {
             self.asks.run(&machine, asked).await?
