@@ -2066,8 +2066,9 @@ line, its quotes dropped as node drops them, may name neither
 `--inspect` in any form nor `--no-disable-sigusr1`, which undoes the
 first; and its environment may give no `NODE_OPTIONS` but a blank
 one, since `--require` or `--import` there runs code as the host,
-nor any `LD_PRELOAD`, `LD_AUDIT` or `LD_LIBRARY_PATH`, which load a
-library's code into it as it starts, or `OPENSSL_CONF` or
+nor any `NODE_PATH`, where a require that finds nothing beside it
+looks, nor any `LD_PRELOAD`, `LD_AUDIT` or `LD_LIBRARY_PATH`, which
+load a library's code into it as it starts, or `OPENSSL_CONF` or
 `OPENSSL_MODULES`, whose configuration has OpenSSL load a module.
 A host whose environment can't be read is refused. The kernel's
 word is read again at each proof, so a spawner taken while tracing

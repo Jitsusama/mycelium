@@ -604,10 +604,12 @@ const NO_SIGUSR1: &str = "--disable-sigusr1";
 
 /// The variables that would run code inside a pi host as its node
 /// starts, so a host given any of them but blank is refused: node's own
-/// options, the loader's libraries, and the modules OpenSSL's
-/// configuration loads. A host's unit clears each.
-const LOADS_CODE: [&str; 6] = [
+/// options, where a require that finds nothing beside it looks (as a
+/// library's optional require does), the loader's libraries, and the
+/// modules OpenSSL's configuration loads. A host's unit clears each.
+const LOADS_CODE: [&str; 7] = [
     "NODE_OPTIONS",
+    "NODE_PATH",
     "LD_PRELOAD",
     "LD_AUDIT",
     "LD_LIBRARY_PATH",
@@ -2403,6 +2405,7 @@ mod tests {
             "nor one given any NODE_OPTIONS, which could run code in it"
         );
         for loads in [
+            "NODE_PATH=/tmp",
             "LD_PRELOAD=/tmp/x.so",
             "LD_AUDIT=/tmp/x.so",
             "LD_LIBRARY_PATH=/tmp",
