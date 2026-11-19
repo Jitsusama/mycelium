@@ -765,6 +765,24 @@ impl Exchange {
             .insert(key.to_owned());
     }
 
+    /// Whether taking up quest `id`, ended here and shared here no
+    /// longer, brings a record back for the one it moves aside: the
+    /// other end's last Shares names it live, as one reopened there is,
+    /// and what it holds of it, `files`, has a README. Anything less
+    /// would move the ended record aside for nothing: what the other end
+    /// said before it stopped too, a link's Holds heard before its first
+    /// Shares, or an end whose own record was moved aside and so names
+    /// the quest live with nothing of it to give.
+    fn brings_back(&self, id: &str, files: &BTreeMap<String, State>) -> bool {
+        let live = self
+            .theirs
+            .as_ref()
+            .is_some_and(|theirs| theirs.quests.contains(id) && !theirs.ended.contains(id));
+        live && files
+            .get(README)
+            .is_some_and(|readme| readme.hash.is_some())
+    }
+
     /// Whether quest `id` has ended at the other end as far as this end
     /// knows: it said so, or it no longer names it at all.
     fn has_ended_there(&self, id: &str) -> bool {
@@ -1070,7 +1088,7 @@ impl Exchange {
         id: &str,
         files: &BTreeMap<String, State>,
     ) -> io::Result<Option<Vec<Say>>> {
-        if !self.take_up(id)? {
+        if !self.take_up(id, files)? {
             return Ok(None);
         }
         let wants = self.held(id, files.clone())?;
@@ -1085,18 +1103,19 @@ impl Exchange {
     /// moving its own record aside first, and saying whether it shares it:
     /// one the other end shares only as a quest above others is shared so
     /// here too, and isn't taken up once no shared quest is under it. None
-    /// of its scratch is shared until a folder of it is named.
-    fn take_up(&self, id: &str) -> io::Result<bool> {
+    /// of its scratch is shared until a folder of it is named. One that
+    /// has ended here is taken up only as [`Self::brings_back`] says.
+    fn take_up(&self, id: &str, files: &BTreeMap<String, State>) -> io::Result<bool> {
         let ledgers = self.places.ledgers();
         if !is_quest(id) || ledgers.shares(id) {
             return Ok(true);
         }
-        // A quest ended at both ends, which this end has stopped sharing,
-        // is never taken up again, by whatever the other end says of it.
-        // What it said before it too stopped still crosses after this end
-        // stopped, and taking it up would move the whole record aside,
-        // with nothing left to share to bring it back.
-        if self.places.ended(id) && self.has_ended_there(id) {
+        if self.places.ended(id) && !self.brings_back(id, files) {
+            eprintln!(
+                "{id} has ended here, and {} neither says it is live nor holds its README, \
+                 so this machine's record of it stays where it is",
+                self.other
+            );
             return Ok(false);
         }
         let above = self
@@ -1183,10 +1202,11 @@ impl Exchange {
         let scratch = theirs.scratch.clone();
         let clones = theirs.clones.clone();
         for id in &quests {
-            // A quest ended at both ends, which this end has stopped
-            // sharing, isn't taken up again; one reopened there is.
-            if !(self.places.ended(id) && self.has_ended_there(id)) {
-                self.take_up(id)?;
+            // A quest ended here waits for what the other end holds of it,
+            // since only that says whether taking it up brings a record
+            // back ([`Self::brings_back`]).
+            if !self.places.ended(id) {
+                self.take_up(id, &BTreeMap::new())?;
             }
         }
         for (id, folders) in &scratch {
@@ -3347,8 +3367,8 @@ mod tests {
         );
     }
 
-    // WM4KSZ (2026-11-19): 31 quests' records left optimus and 16 the
-    // Mac, each moved aside when what one end said before it stopped
+    // WM4KSZ (2026-11-19): 31 quests' records left one machine and 16
+    // another, each moved aside when what one end said before it stopped
     // sharing reached the other after it had.
     #[test]
     fn what_an_end_said_before_it_stopped_moves_no_ended_record_aside() {
@@ -3377,14 +3397,23 @@ mod tests {
             "neither end shares it"
         );
 
-        // What skiff said of the quest while it still shared it, heard late,
-        // and again as a link dialled anew says it.
+        // What each end said of the quest while it still shared it, README
+        // and all, heard late on this link, and first on a link dialled
+        // anew, before the Shares that says the quest ended there.
         let late = || Say::Holds {
             quest: QUEST.to_owned(),
-            files: BTreeMap::new(),
+            files: BTreeMap::from([(
+                README.to_owned(),
+                State {
+                    hash: Some("an older README".to_owned()),
+                    ..State::default()
+                },
+            )]),
         };
         far.hear(late()).expect("heard");
         near.hear(late()).expect("heard");
+        kestrel.exchange(&skiff).hear(late()).expect("heard");
+        skiff.exchange(&kestrel).hear(late()).expect("heard");
         for machine in [&skiff, &kestrel] {
             assert_eq!(
                 machine.read("attachments/map.md"),
@@ -3394,6 +3423,67 @@ mod tests {
             );
             assert!(!shares(machine), "and doesn't take it up again");
         }
+    }
+
+    // An end whose own record was moved aside still shares the quest with
+    // nothing of it, so it names it live, as one reopened there would be.
+    #[test]
+    fn an_end_holding_nothing_of_a_quest_moves_no_ended_record_aside() {
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        let concluded = format!("---\nid: {QUEST}\nstatus: concluded\n---\n# Shared\n");
+        kestrel.write("README.md", &concluded);
+        kestrel.write("attachments/map.md", "the map\n");
+        share(&skiff, QUEST);
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+        for _ in 0..3 {
+            talk(&mut near, &mut far);
+        }
+        assert_eq!(kestrel.read("README.md"), Some(concluded));
+        assert_eq!(
+            kestrel.read("attachments/map.md"),
+            Some("the map\n".to_owned()),
+            "kestrel keeps the ended quest's record where it was"
+        );
+        assert!(
+            !kestrel.places.state.join("before-share").exists(),
+            "and moves nothing of it aside"
+        );
+        assert!(!kestrel.places.ledgers().shares(QUEST), "nor takes it up");
+    }
+
+    #[test]
+    fn a_quest_ended_at_both_ends_and_reopened_at_one_is_taken_up_at_the_other() {
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        let readme = |status: &str| format!("---\nid: {QUEST}\nstatus: {status}\n---\n# Shared\n");
+        let shares = |machine: &Machine| machine.places.ledgers().shares(QUEST);
+        skiff.write("README.md", &readme("active"));
+        share(&skiff, QUEST);
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+        talk(&mut near, &mut far);
+        skiff.write("README.md", &readme("concluded"));
+        for _ in 0..3 {
+            talk(&mut near, &mut far);
+        }
+        assert!(
+            !shares(&skiff) && !shares(&kestrel),
+            "neither end shares it"
+        );
+
+        kestrel.write("README.md", &readme("active"));
+        kestrel.write("attachments/map.md", "the map\n");
+        share(&kestrel, QUEST);
+        for _ in 0..2 {
+            talk(&mut near, &mut far);
+        }
+        assert!(shares(&skiff), "skiff takes the reopened quest up");
+        assert_eq!(skiff.read("README.md"), Some(readme("active")));
+        assert_eq!(
+            skiff.read("attachments/map.md"),
+            Some("the map\n".to_owned()),
+            "with all kestrel holds of it"
+        );
     }
 
     /// What works inside a folder, as a test says.
