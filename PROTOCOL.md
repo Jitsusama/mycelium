@@ -588,17 +588,20 @@ in order and says each step:
    it one where one did, and otherwise what of its process did: no
    process the kernel names, an agent's unit or pi above it, none that
    can be read, a bar on gaining privileges or mounts of its own; and
-   it is logged there too. A tie it brought said
-   heard after it arrived counts as heard then, and stands for a day
-   from when it was heard. A cell brings
-   at most its 128 strongest ties, and where its strongest is past
-   the strongest tie between two cells the arriving node holds, or a
-   message's where that is stronger, each is made weaker alike, so
-   none is stronger and they keep their order. Each strength is
-   weighed as it stands now, faded by the two hours' half-life from
-   when it was heard, so an old strong tie counts for what it is now,
-   and is weighed once, the first time the node weighs it: from then
-   on it fades as a tie held there does. It is
+   it is logged there too. A tie it brought said heard after its
+   carry started or it arrived, whichever was earlier, counts as
+   heard then, and stands for a day from when it was heard. A cell
+   brings at most its 128 strongest ties, and no more than the most
+   ties any one cell has at the arriving node, or one where it holds
+   none. Each past the middle tie between two cells the node holds,
+   or a message's where it holds none, is made as strong as it, so a
+   forged file can't put its cell first among the ties of every cell
+   it names. Each strength is weighed as it stands now, faded by the
+   two hours' half-life from when it was heard, so an old strong tie
+   counts for what it is now, and is weighed once, the first time the
+   node weighs it: from then on it fades as a tie held there does.
+   The file is the session's to write, so these bound a forged cell
+   rather than prove it: the leaving node's own ties would. It is
    weighed as a hub by its cell's talk. Carried on again, it brings
    that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share

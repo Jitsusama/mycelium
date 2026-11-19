@@ -49,8 +49,8 @@ const CARRIES_MOST: usize = 256;
 /// never one whose session runs here.
 const KEPT_MOST: usize = CARRIES_MOST;
 
-/// The strength a brought tie may have where this node holds none as
-/// strong: a message's, heard as it arrived.
+/// The strength a brought tie may have where this node holds none: a
+/// message's, heard as it arrived.
 const STRONGEST_ALONE: f64 = 1.0;
 
 /// A carry a linked node asked this one to start: the quest the session
@@ -139,9 +139,9 @@ impl Arrivals {
     /// Reads, once, the cell each of `sessions` running on `machine`
     /// that a carry started here arrived with, in the folder of its
     /// quest's handover in `scratch` the carry named, and forgets each
-    /// whose session hasn't run here for a day. Each tie it brought said heard
-    /// after `now` is kept as heard `now`. Answers whether what is kept
-    /// changed.
+    /// whose session hasn't run here for a day. Each tie it brought said
+    /// heard after its carry started, or after `now`, is kept as heard
+    /// at the earlier. Answers whether what is kept changed.
     pub(super) fn read(
         &self,
         scratch: &Path,
@@ -186,7 +186,7 @@ impl Arrivals {
             };
             if let Some(brought) = left_for(scratch, &waited.carry, &session.id) {
                 waited.stood = true;
-                let brought = settled(brought, now);
+                let brought = settled(brought, waited.carry.at.min(now));
                 let one = Kept {
                     brought,
                     ran: now,
@@ -308,17 +308,19 @@ impl Arrivals {
     /// the cells that arrived brought heard within a day of `now`,
     /// where this node holds none of it heard later. A cell's file is
     /// its session's to write, so the ties each cell brought are held
-    /// to [`bounded`]'s strength, once, the first time they are weighed
-    /// here: from then on they fade from when each was heard, as every
-    /// tie held here does, and say the same strength each time.
+    /// to [`bounded`]'s count and strength, once, the first time they
+    /// are weighed here: from then on they fade from when each was
+    /// heard, as every tie held here does, and say the same strength
+    /// each time.
     pub(super) fn ties(&self, made: &mut BTreeMap<String, daemon::Record>, now: i64) {
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         if kept.is_empty() {
             return;
         }
-        let most = strongest_held(made, now);
+        let bar = median_held(made, now);
+        let most = most_held_by_one(made);
         for one in kept.values_mut().filter(|one| one.stands && !one.bounded) {
-            one.brought.ties = bounded(&one.brought.ties, most, now).collect();
+            one.brought.ties = bounded(&one.brought.ties, bar, most, now);
             one.bounded = true;
         }
         let brought = kept.values().filter(|one| one.stands).flat_map(|one| {
@@ -357,51 +359,83 @@ fn at_now(strength: f64, heard: i64, now: i64) -> f64 {
     strength * tie::faded(now.saturating_sub(heard).max(0))
 }
 
-/// The strength of the strongest tie between two cells in `made`, at
-/// `now`, or [`STRONGEST_ALONE`] where that is stronger.
-fn strongest_held(made: &BTreeMap<String, daemon::Record>, now: i64) -> f64 {
-    made.iter()
+/// The strength at `now` of the middle tie between two cells in
+/// `made`, the weaker of the middle two where they are even, or
+/// [`STRONGEST_ALONE`] where it holds none.
+fn median_held(made: &BTreeMap<String, daemon::Record>, now: i64) -> f64 {
+    let mut held: Vec<f64> = made
+        .iter()
         .filter(|(key, _)| key.contains('~'))
         .filter_map(|(_, record)| {
             cell::strength(&record.value()).map(|one| at_now(one, record.heard(), now))
         })
-        .fold(STRONGEST_ALONE, f64::max)
+        .collect();
+    held.sort_by(f64::total_cmp);
+    held.get(held.len().saturating_sub(1) / 2)
+        .copied()
+        .unwrap_or(STRONGEST_ALONE)
 }
 
-/// `ties`, the ties a cell brought, each saying a strength no tie could
-/// have saying none, and all made weaker alike where its strongest at
-/// `now` is past `most`, so it is `most`: no file makes a brought tie
-/// stronger, as read at any time, than any this node holds, and its
-/// ties keep their order.
-fn bounded(ties: &[Value], most: f64, now: i64) -> impl Iterator<Item = Value> + '_ {
-    let strongest = ties
-        .iter()
-        .filter_map(|tie| {
-            let heard = tie["heard"].as_i64()?;
-            Some(at_now(cell::strength(tie)?, heard, now))
-        })
-        .fold(0.0, f64::max);
-    let scale = if strongest > most {
-        most / strongest
-    } else {
-        1.0
-    };
-    ties.iter().map(move |tie| {
-        let mut tie = tie.clone();
-        if tie.get("strength").is_some() {
-            tie["strength"] = (cell::strength(&tie).unwrap_or_default() * scale).into();
+/// The most ties between two cells in `made` that any one cell has, and
+/// at least one, so a node holding none still takes a brought cell's
+/// strongest.
+fn most_held_by_one(made: &BTreeMap<String, daemon::Record>) -> usize {
+    let mut held: HashMap<&str, usize> = HashMap::new();
+    for key in made.keys() {
+        let pair = key.split_once(':').map_or(key.as_str(), |(_, pair)| pair);
+        let Some((one, other)) = pair.split_once('~') else {
+            continue;
+        };
+        for named in [one, other] {
+            *held.entry(named).or_default() += 1;
         }
-        tie
-    })
+    }
+    held.into_values().max().unwrap_or_default().max(1)
 }
 
-/// `brought` with each tie and its talk said heard after `now`, when it
-/// arrived, heard `now` instead, once, so no time a file says puts a
-/// brought tie past this node's own for good.
-fn settled(mut brought: Brought, now: i64) -> Brought {
+/// `ties`, the ties a cell brought: the `most` strongest at `now`, each
+/// saying a strength no tie could have saying none, and each stronger
+/// at `now` than `bar` made as strong as `bar`. A file can then bring
+/// no more ties than a cell here holds, none stronger, as read at any
+/// time, than the middle tie held here, and so put its cell first among
+/// the ties of no cell that holds one stronger than the middle.
+fn bounded(ties: &[Value], bar: f64, most: usize, now: i64) -> Vec<Value> {
+    let strength_now = |tie: &Value| {
+        tie["heard"]
+            .as_i64()
+            .zip(cell::strength(tie))
+            .map_or(0.0, |(heard, strength)| at_now(strength, heard, now))
+    };
+    let mut ranked: Vec<&Value> = ties.iter().collect();
+    ranked.sort_by(|one, other| strength_now(other).total_cmp(&strength_now(one)));
+    ranked
+        .into_iter()
+        .take(most)
+        .map(|tie| {
+            let mut tie = tie.clone();
+            if tie.get("strength").is_some() {
+                let (strength, then) =
+                    (cell::strength(&tie).unwrap_or_default(), strength_now(&tie));
+                let held = if then > bar {
+                    strength * bar / then
+                } else {
+                    strength
+                };
+                tie["strength"] = held.into();
+            }
+            tie
+        })
+        .collect()
+}
+
+/// `brought` with each tie and its talk said heard after `then`, when
+/// its carry started or it arrived, whichever was earlier, heard `then`
+/// instead, once, so no time a file says makes a brought tie fade from
+/// later than it left, nor puts it past this node's own for good.
+fn settled(mut brought: Brought, then: i64) -> Brought {
     for record in brought.ties.iter_mut().chain(brought.talk.as_mut()) {
-        if record["heard"].as_i64().is_some_and(|heard| heard > now) {
-            record["heard"] = now.into();
+        if record["heard"].as_i64().is_some_and(|heard| heard > then) {
+            record["heard"] = then.into();
         }
     }
     brought
@@ -913,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn no_tie_a_cell_brought_is_stronger_than_the_strongest_held_here() {
+    fn no_tie_a_cell_brought_is_stronger_than_the_middle_held_here() {
         let scratch = tempfile::tempdir().expect("a scratch folder");
         let tie = |other: &str, strength: f64| {
             json!({"key": format!("tie:HARBOR~{other}"), "kind": "tie",
@@ -927,31 +961,108 @@ mod tests {
         let sessions = [session("s-harbour", "stand1", "skiff")];
         arrivals.read(scratch.path(), "skiff", &sessions, NOW);
 
-        let held = json!({"key": "tie:OSPREY~TERN01", "kind": "tie", "heard": NOW,
-                          "strength": 8.0});
-        let mut made =
-            BTreeMap::from([("tie:OSPREY~TERN01".to_owned(), daemon::Record::from(held))]);
+        // Its middle tie is 1.0, and OSPREY holds the most, three.
+        let mut made = held_ties(&[
+            ("OSPREY~TERN01", 8.0),
+            ("KELP01~OSPREY", 2.0),
+            ("KELP01~TERN01", 1.0),
+            ("OSPREY~REEF01", 0.5),
+        ]);
         arrivals.ties(&mut made, NOW);
-        // As every reader of ties reads them: faded to now.
-        let at_now = |key: &str| {
-            let record = &made[key];
-            record.value()["strength"].as_f64().unwrap_or_default()
-                * super::tie::faded(NOW - record.heard())
-        };
+        let at_now = |key: &str| strength_now(&made, key);
         assert!(
-            (at_now("tie:HARBOR~KELP01") - 8.0).abs() < 1e-9,
-            "its strongest is as strong now as the strongest here: {}",
+            (at_now("tie:HARBOR~KELP01") - 1.0).abs() < 1e-9,
+            "its strongest is as strong now as the middle tie here: {}",
             at_now("tie:HARBOR~KELP01")
         );
         assert!(
-            (at_now("tie:HARBOR~REEF01") - 4.0).abs() < 1e-9,
-            "and the rest weaker alike, so they keep their order: {}",
+            (at_now("tie:HARBOR~REEF01") - 1.0).abs() < 1e-9,
+            "and so is each past it, not only the strongest: {}",
             at_now("tie:HARBOR~REEF01")
         );
         assert_eq!(
             made["tie:HARBOR~TIDE01"].value().get("strength"),
             None,
             "one saying a strength no tie could have says none"
+        );
+    }
+
+    /// What `made` holds as ties heard [`NOW`], one for each of `pairs`
+    /// at its strength.
+    fn held_ties(pairs: &[(&str, f64)]) -> BTreeMap<String, daemon::Record> {
+        pairs
+            .iter()
+            .map(|(pair, strength)| {
+                let key = format!("tie:{pair}");
+                let tie = json!({"key": key, "kind": "tie", "heard": NOW,
+                                 "strength": strength});
+                (key, daemon::Record::from(tie))
+            })
+            .collect()
+    }
+
+    /// The strength the tie `key` in `made` has at [`NOW`], faded as
+    /// every reader of ties fades it.
+    fn strength_now(made: &BTreeMap<String, daemon::Record>, key: &str) -> f64 {
+        let record = &made[key];
+        record.value()["strength"].as_f64().unwrap_or_default()
+            * super::tie::faded(NOW - record.heard())
+    }
+
+    #[test]
+    fn a_forged_handover_of_equal_ties_puts_its_cell_first_for_no_cell_named() {
+        let scratch = tempfile::tempdir().expect("a scratch folder");
+        // As many ties as a cell may bring, each as strong as can be and
+        // heard just before the carry started.
+        let named =
+            std::iter::once("KELP01".to_owned()).chain((1..128).map(|at| format!("Z{at:05}")));
+        let ties: Vec<Value> = named
+            .map(|other| {
+                json!({"key": format!("tie:HARBOR~{other}"), "kind": "tie",
+                       "heard": NOW - 1, "strength": 1e9})
+            })
+            .collect();
+        let mut forged = harbour();
+        forged["ties"] = Value::from(ties);
+        left(scratch.path(), "tern", "s-harbour", &forged);
+        let arrivals = Arrivals::default();
+        arrivals.carried("s-harbour", from("tern"));
+        let sessions = [session("s-harbour", "stand1", "skiff")];
+        arrivals.read(scratch.path(), "skiff", &sessions, NOW);
+
+        // KELP01's ties run 4.0, 2.0 and 1.0, the middle held here is
+        // 2.0, and KELP01 holds the most, three.
+        let mut made = held_ties(&[
+            ("A00001~KELP01", 4.0),
+            ("B00001~KELP01", 2.0),
+            ("C00001~KELP01", 1.0),
+            ("OSPREY~TERN01", 3.0),
+        ]);
+        arrivals.ties(&mut made, NOW);
+        let brought: Vec<&String> = made.keys().filter(|key| key.contains("HARBOR")).collect();
+        assert_eq!(
+            brought.len(),
+            3,
+            "no more than the most any cell here holds: {brought:?}"
+        );
+        assert!(
+            brought
+                .iter()
+                .all(|key| strength_now(&made, key) <= 2.0 + 1e-9),
+            "none stronger than the middle tie here"
+        );
+        let first = made
+            .keys()
+            .filter(|key| key.contains("KELP01"))
+            .max_by(|one, other| strength_now(&made, one).total_cmp(&strength_now(&made, other)));
+        assert_eq!(
+            first.map(String::as_str),
+            Some("tie:A00001~KELP01"),
+            "so KELP01's strongest tie is still its own"
+        );
+        assert!(
+            made.contains_key("tie:HARBOR~KELP01"),
+            "though the tie to it came"
         );
     }
 
