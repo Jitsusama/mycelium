@@ -558,7 +558,10 @@ in order and says each step:
    as that cell, its address an alias of it, unless another live
    session goes by the name, as any address, in any case, or two say
    it. A tie it brought said heard after it arrived counts as heard
-   then, and stands for a day from when it was heard. Carried on
+   then, and stands for a day from when it was heard. Its talk keeps
+   how many ties it had, but none of the messages it says it heard in
+   the hour or the day, so its cell ranks as a hub only on talk heard
+   here. Carried on
    again, it brings that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share
    --scratch handover` does.

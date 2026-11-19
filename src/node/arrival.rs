@@ -226,12 +226,19 @@ impl Arrivals {
 
 /// `brought` with each tie and its talk said heard after `now`, when it
 /// arrived, heard `now` instead, once, so no time a file says puts a
-/// brought tie past this node's own for good.
+/// brought tie past this node's own for good. Its talk keeps how many
+/// ties it had but none of the messages it says were heard in the hour
+/// or the day, since the file is its session's to write and hubs are
+/// ranked on them: its cell is ranked only on talk heard here.
 fn settled(mut brought: Brought, now: i64) -> Brought {
     for record in brought.ties.iter_mut().chain(brought.talk.as_mut()) {
         if record["heard"].as_i64().is_some_and(|heard| heard > now) {
             record["heard"] = now.into();
         }
+    }
+    if let Some(talk) = brought.talk.as_mut().and_then(Value::as_object_mut) {
+        talk.insert("hour".to_owned(), 0.into());
+        talk.insert("today".to_owned(), 0.into());
     }
     brought
 }
@@ -616,6 +623,40 @@ mod tests {
         let mut made = BTreeMap::new();
         arrivals.ties(&mut made, arrived + KEPT);
         assert!(made.is_empty(), "and it ages out a day after it arrived");
+    }
+
+    #[test]
+    fn a_cell_brought_saying_it_was_heard_without_end_ranks_only_on_talk_heard_here() {
+        let scratch = tempfile::tempdir().expect("a scratch folder");
+        let mut boasting = harbour();
+        boasting["talk"]["heard"] = json!(NOW - 60_000);
+        boasting["talk"]["hour"] = json!(4_000_000_000_u64);
+        boasting["talk"]["today"] = json!(4_000_000_000_u64);
+        left(scratch.path(), "tern", "s-harbour", &boasting);
+        let arrivals = Arrivals::default();
+        arrivals.carried("s-harbour", from("tern"));
+        arrivals.read(
+            scratch.path(),
+            "skiff",
+            &[session("s-harbour", "stand1", "skiff")],
+            NOW,
+        );
+
+        let mut made = BTreeMap::new();
+        arrivals.ties(&mut made, NOW);
+        let talk = made["tie:HARBOR"].value();
+        assert_eq!(talk["ties"], json!(1), "it keeps how many ties it had");
+        let talked_here = json!({"key": "tie:KELP01", "kind": "tie", "hour": 1, "today": 1});
+        let (brought, here) = (
+            crate::node::hub::heard(&talk).expect("its talk reads").1,
+            crate::node::hub::heard(&talked_here)
+                .expect("talk here reads")
+                .1,
+        );
+        assert!(
+            brought < here,
+            "but ranks below a cell that talked here once: {brought} against {here}"
+        );
     }
 
     #[test]
