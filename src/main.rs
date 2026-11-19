@@ -3064,24 +3064,25 @@ fn unanswered(socket: &Path, output: &Output) -> io::Result<()> {
     io::stdout().lock().write_all(drawn.as_bytes())
 }
 
-/// The columns stdout has, as core.nix's commands find them: `COLUMNS`,
-/// then its terminal's, then eighty; into a pipe, none, so nothing is
-/// cut.
+/// The columns stdout has, as [`width`] finds them for a terminal; into
+/// a pipe, none, so nothing is cut.
 fn room() -> Option<usize> {
     use std::io::IsTerminal as _;
     let stdout = io::stdout();
-    if !stdout.is_terminal() {
-        return None;
-    }
-    let columns = std::env::var("COLUMNS")
-        .ok()
-        .and_then(|columns| columns.parse().ok())
-        .filter(|columns: &usize| *columns > 0);
-    let terminal = rustix::termios::tcgetwinsize(&stdout)
-        .ok()
-        .filter(|size| size.ws_col > 0)
-        .map(|size| usize::from(size.ws_col));
-    Some(columns.or(terminal).unwrap_or(80))
+    let terminal = stdout.is_terminal();
+    room_of(
+        terminal,
+        std::env::var("COLUMNS").ok().as_deref(),
+        rustix::termios::tcgetwinsize(&stdout)
+            .ok()
+            .map(|size| size.ws_col),
+    )
+}
+
+/// [`room`] from what it reads: whether stdout is a `terminal`, the
+/// `columns` set in `COLUMNS`, and the terminal's own `size`.
+fn room_of(terminal: bool, columns: Option<&str>, size: Option<u16>) -> Option<usize> {
+    terminal.then(|| width(true, columns, size))
 }
 
 /// Prints each record of `kind` the node holds, a JSON line each, oldest
@@ -3153,7 +3154,7 @@ mod tests {
 
     use super::{
         Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, in_place, kit,
-        processes_here, reader_left, said_text, swarm_asked, tree, width, write_line,
+        processes_here, reader_left, room_of, said_text, swarm_asked, tree, width, write_line,
     };
 
     #[test]
@@ -3174,6 +3175,23 @@ mod tests {
                 width(true, columns, said),
                 wide,
                 "COLUMNS {columns:?}, the terminal saying {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_room_is_a_terminal_s_width_and_none_into_a_pipe() {
+        for (terminal, columns, size, room) in [
+            (false, Some("60"), Some(100), None),
+            (true, Some("60"), Some(100), Some(60)),
+            (true, Some("200"), Some(100), Some(100)),
+            (true, Some("wide"), Some(100), Some(100)),
+            (true, None, None, Some(80)),
+        ] {
+            assert_eq!(
+                room_of(terminal, columns, size),
+                room,
+                "a terminal {terminal}, COLUMNS {columns:?}, its size {size:?}"
             );
         }
     }

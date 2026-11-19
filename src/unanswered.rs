@@ -663,15 +663,51 @@ mod tests {
 
     /// Half an hour past noon, as the drawing tests read it.
     fn look() -> Look {
+        look_at(30)
+    }
+
+    /// `minutes` past noon, as the drawing tests read it.
+    fn look_at(minutes: i64) -> Look {
         Look {
             width: 80,
             colour: false,
             // UTC as jiff holds it, since a build has no zone database.
-            now: jiff::Timestamp::from_millisecond(noon() + 30 * 60_000)
+            now: jiff::Timestamp::from_millisecond(noon() + minutes * 60_000)
                 .expect("a time")
                 .to_zoned(jiff::tz::TimeZone::UTC),
             shapes: crate::swarm::Shapes::default(),
         }
+    }
+
+    /// A question from TERN01 to `waiting_on`, sent `minutes` past noon,
+    /// its id's tail `tail`.
+    fn asked_of(waiting_on: &[&str], minutes: i64, tail: &str) -> Value {
+        Open {
+            message: Message {
+                text: "Can you merge?".to_owned(),
+                ..said(
+                    &format!("1795122095010-TERN01-1-{tail}"),
+                    "TERN01",
+                    &["@SKIFF1"],
+                    Intent::Question,
+                    minutes,
+                )
+            },
+            waiting_on: waiting_on.iter().map(|&peer| peer.to_owned()).collect(),
+        }
+        .fields()
+        .1
+    }
+
+    /// The lines under the heading line holding `heading`, up to the next
+    /// heading line.
+    fn said_under<'a>(drawn: &'a str, heading: &str) -> Vec<&'a str> {
+        drawn
+            .lines()
+            .skip_while(|line| !line.contains(heading))
+            .skip(1)
+            .take_while(|line| line.starts_with(SAYS))
+            .collect()
     }
 
     /// What the question says: a first line too long for a narrow
@@ -718,7 +754,7 @@ mod tests {
             "1 question waits on an answer",
             "  12:05  TERN01 asks SKIFF1 and KESTRL, 25 min so far  [c0cd280e]",
             "    TERN01, keeper of the wish list: these asks of his are marked landed under",
-            "    you, but none carries a try-line he could follow in a minute.",
+            "    you, but none carries a try-line he could follow in a minute. …",
         ] {
             assert!(
                 drawn.lines().any(|each| each == line),
@@ -762,7 +798,105 @@ mod tests {
             );
         }
         let narrow = drawn(&records(ASKED), &look(), Some(40));
-        assert!(narrow.contains('…'), "nothing says it was cut:\n{narrow}");
+        let said = said_under(&narrow, "12:05  TERN01 asks");
+        assert_eq!(said.len(), 2, "the opening isn't two lines:\n{narrow}");
+        assert!(
+            said[0] == "    TERN01, keeper of the wish list:"
+                && said[1].starts_with("    these asks of his")
+                && said[1].ends_with('…'),
+            "its last line doesn't run on from the first and say it was cut:\n{narrow}"
+        );
+    }
+
+    #[test]
+    fn a_hold_lapsing_tomorrow_says_the_time_it_lapses() {
+        let hold = Open {
+            message: said(
+                "1795122000000-OSPREY-1-647648e1",
+                "OSPREY",
+                &["#all"],
+                Intent::Hold,
+                11 * 60 + 30,
+            ),
+            waiting_on: Vec::new(),
+        };
+        let drawn = drawn(&[hold.fields().1], &look_at(11 * 60 + 40), Some(80));
+        let line = "  23:30  OSPREY holds #all, until Mon 01:30  [647648e1]";
+        assert!(
+            drawn.lines().any(|each| each == line),
+            "no line {line:?} in:\n{drawn}"
+        );
+    }
+
+    #[test]
+    fn the_id_stays_whole_when_the_names_are_cut() {
+        let many = ["SKIFF1", "KESTRL", "OSPREY", "TERN02", "ABCDEF", "GHIJKL"];
+        for (asked, width) in [
+            (vec![asked_of(&many, 5, "c0cd280e")], 80),
+            (vec![asked_of(&many, 5, "c0cd280e")], 60),
+            (vec![asked_of(&["SKIFF1", "KESTRL"], 5, "c0cd280e")], 60),
+        ] {
+            let drawn = drawn(&asked, &look(), Some(width));
+            let heading = drawn
+                .lines()
+                .find(|line| line.starts_with("  12:05"))
+                .expect("the question's line");
+            assert!(
+                heading.ends_with(", 25 min so far  [c0cd280e]")
+                    && heading.chars().count() <= width,
+                "the wait or the id was cut at {width}:\n{drawn}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_block_is_oldest_first() {
+        let records = [
+            asked_of(&["SKIFF1"], 10, "bbbb2222"),
+            asked_of(&["SKIFF1"], 3, "aaaa1111"),
+        ];
+        let drawn = drawn(&records, &look(), Some(80));
+        let older = drawn.find("[aaaa1111]").expect("the older");
+        let newer = drawn.find("[bbbb2222]").expect("the newer");
+        assert!(older < newer, "the newer came first:\n{drawn}");
+    }
+
+    #[test]
+    fn a_wait_is_said_as_a_person_says_it() {
+        for (millis, said) in [
+            (-5, "under a minute"),
+            (59_999, "under a minute"),
+            (60_000, "1 min"),
+            (3_600_000, "1 h"),
+            (3_900_000, "1 h 5 min"),
+        ] {
+            assert_eq!(waited(millis), said, "{millis} ms");
+        }
+    }
+
+    #[test]
+    fn what_is_left_after_the_first_line_is_marked() {
+        let first = ASKED.lines().next().expect("a first line");
+        let piped = drawn(&records(ASKED), &look(), None);
+        assert!(
+            piped.lines().any(|line| line == format!("    {first} …")),
+            "no mark that more follows:\n{piped}"
+        );
+        let alone = drawn(&records(first), &look(), None);
+        assert!(!alone.contains('…'), "a whole line was marked:\n{alone}");
+    }
+
+    #[test]
+    fn nothing_said_draws_no_line() {
+        for width in [None, Some(80)] {
+            let drawn = drawn(&records(""), &look(), width);
+            assert!(
+                !drawn
+                    .lines()
+                    .any(|line| !line.is_empty() && line.trim().is_empty()),
+                "a blank line was drawn at {width:?}: {drawn:?}"
+            );
+        }
     }
 
     #[test]
@@ -770,10 +904,9 @@ mod tests {
         let drawn = drawn(&records(ASKED), &look(), None);
         let first = ASKED.lines().next().expect("a first line");
         assert!(
-            drawn.lines().any(|line| line == format!("    {first}")),
+            drawn.lines().any(|line| line.starts_with(&format!("    {first}"))),
             "the first line wasn't whole:\n{drawn}"
         );
-        assert!(!drawn.contains('…'), "a pipe was cut:\n{drawn}");
     }
 
     #[test]
@@ -785,11 +918,18 @@ mod tests {
     }
 
     #[test]
-    fn what_one_says_draws_no_control() {
-        let drawn = drawn(&records("held \u{1b}]0;owned\u{7} here"), &look(), Some(80));
-        assert!(
-            !drawn.contains('\u{1b}') && !drawn.contains('\u{7}'),
-            "a control was drawn: {drawn:?}"
-        );
+    fn nothing_a_peer_wrote_draws_a_control() {
+        let mut records = records("held \u{1b}]0;owned\u{7} here");
+        records[0]["groups"] = json!(["#all\u{1b}[2J"]);
+        records[1]["id"] = json!("1795122095010-TERN01-1-\u{1b}]52;c;b3du\u{7}");
+        records[1]["from"] = json!("TERN\u{1b}[2J01");
+        records[1]["waiting_on"] = json!(["SKIFF\u{1b}[2J1"]);
+        for width in [None, Some(80)] {
+            let drawn = drawn(&records, &look(), width);
+            assert!(
+                !drawn.contains('\u{1b}') && !drawn.contains('\u{7}'),
+                "a control was drawn at {width:?}: {drawn:?}"
+            );
+        }
     }
 }
