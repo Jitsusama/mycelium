@@ -1291,9 +1291,9 @@ impl<S: Store> End<S> {
             let _ = answering.send((ask, refused));
             return;
         };
-        let here = self.here.clone();
+        let (here, from) = (self.here.clone(), self.other.clone());
         tokio::spawn(async move {
-            let reply = starts::answer(node, here, start).await;
+            let reply = starts::answer(node, here, from, start).await;
             // A link that dropped meanwhile has nobody to answer.
             let _ = answering.send((ask, reply));
         });

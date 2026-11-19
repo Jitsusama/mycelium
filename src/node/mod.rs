@@ -3156,6 +3156,7 @@ impl<S: Store> Shared<S> {
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
             Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
+            Request::Relayed { .. } => Err("a relayed start is answered by `relayed`".to_owned()),
             Request::Sprout(_) => Err("a sprout is answered by `sprout`".to_owned()),
             Request::Run(_) => Err("a run is answered by `run`".to_owned()),
             Request::Offers => Err("offers are answered by `offers`".to_owned()),
@@ -4364,6 +4365,40 @@ impl<S: Store> Shared<S> {
         started
     }
 
+    /// Starts a program the node of the linked machine `from` relayed
+    /// here, as [`Self::placed`] does, where this node's own process, as
+    /// only its link does, asked it. That node already judged it, counted
+    /// it toward its limits and booked it, so this one does none again.
+    /// One that carries a session from `from` is noted, so the session is
+    /// read for the cell it left as once it runs here.
+    async fn relayed(&self, from: &str, asked: Start) -> Reply {
+        let own = self
+            .client
+            .is_some_and(|pid| u32::try_from(pid).is_ok_and(|pid| pid == std::process::id()));
+        if !own {
+            return Err("only a linked node relays a start here".to_owned());
+        }
+        if asked.command.is_empty() {
+            return Err("nothing to start: name a program".to_owned());
+        }
+        // Noted before it is placed, since one that fails to start never
+        // runs here, and its note is let go within the hour.
+        let carried = crate::carry::arrives(&asked.command)
+            .filter(|arrives| arrives.from.eq_ignore_ascii_case(from));
+        if let Some(arrives) = carried {
+            self.arrivals.carried(
+                arrives.session,
+                arrival::Carried {
+                    quest: arrives.quest.to_owned(),
+                    from: from.to_owned(),
+                    at: jiff::Timestamp::now().as_millisecond(),
+                },
+            );
+        }
+        let (by, _) = self.judged().await?;
+        self.placed(asked, fence_of(by)).await
+    }
+
     /// Starts a program held on the machine placement chooses, answering
     /// where and how to join it, or why it didn't start. Where none of the
     /// realm's machines takes it, on a machine made for it: one that costs
@@ -5147,6 +5182,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
         }
         let reply: Answer = match request {
             Ok(Request::Start(asked)) => shared.start(asked).await.into(),
+            Ok(Request::Relayed { from, start }) => shared.relayed(&from, start).await.into(),
             Ok(Request::Sprout(asked)) => shared.sprout(asked).await.into(),
             Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
             Ok(Request::End { held }) => shared.end(&held).await.into(),
@@ -12074,6 +12110,57 @@ esac
         ));
     }
 
+    #[tokio::test]
+    async fn a_start_relayed_here_is_neither_limited_nor_booked_again() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        // As in the limit's test, each start stays here.
+        declares_runs(&socket, true);
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        let start = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+        };
+        let relayed = || Request::Relayed {
+            from: "tern".to_owned(),
+            start: start.clone(),
+        };
+        let unstarted = || Err("skiff's node starts no sessions".to_owned());
+        // This test runs in the node's own process, as its link does.
+        asks_below(&socket, 7001);
+        for _ in 0..=starts::CELL_AN_HOUR {
+            assert_eq!(
+                ask(socket.clone(), relayed()).await,
+                unstarted(),
+                "tern's node counted it, so none is refused here"
+            );
+        }
+        let book = socket.with_file_name("starts.jsonl");
+        assert!(
+            fs::read_to_string(&book).unwrap_or_default().is_empty(),
+            "and tern's node booked it"
+        );
+        assert_eq!(
+            ask(socket.clone(), Request::Start(start.clone())).await,
+            unstarted()
+        );
+        assert_eq!(
+            fs::read_to_string(&book)
+                .expect("a start is booked")
+                .lines()
+                .count(),
+            1,
+            "only the start asked here is booked here"
+        );
+    }
+
     // Our council on #304 (2026-11-17): an agent's start could make, and
     // pay for, a machine whose fence would refuse it once it linked.
     #[test]
@@ -14197,30 +14284,58 @@ esac
             given,
             to_dial,
         );
-        // Only a session tern's node asked this one to start as a carry
-        // is read for.
-        shared.arrivals.carried(
-            "s-harbour",
-            arrival::Carried {
-                quest: quest.to_owned(),
-                from: "tern".to_owned(),
-                at: jiff::Timestamp::now().as_millisecond(),
-            },
-        );
         shared.read_sessions();
-
-        shared.each_minute(&mut Awake::by(None));
-
+        let stands = |shared: &Shared<Memory>| {
+            shared.each_minute(&mut Awake::by(None));
+            let cells = shared.cell_records();
+            if cells.contains_key("cell:HARBOR") {
+                "HARBOR"
+            } else if cells.contains_key("cell:STAND1") {
+                "STAND1"
+            } else {
+                "neither"
+            }
+        };
+        assert_eq!(stands(&shared), "STAND1", "a file alone proves no carry");
+        // Only a session a linked node asked this one to start, as a carry
+        // from that node's machine, is read for.
+        let carrying = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            command: [
+                "sh",
+                "-c",
+                r#"pi-carry arrive "$1" --from "$2" --session "$3"; exec pi --session "$3""#,
+                crate::carry::PI_CARRY,
+                quest,
+                "tern",
+                "s-harbour",
+                "carry on",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            may_cost: false,
+        };
+        let mut asker = shared.clone();
+        asker.client = Some(1);
+        assert_eq!(
+            asker.relayed("tern", carrying.clone()).await,
+            Err("only a linked node relays a start here".to_owned()),
+            "no process but the node's own relays a start"
+        );
+        asker.client = i32::try_from(std::process::id()).ok();
+        let _ = asker.relayed("osprey", carrying.clone()).await;
+        assert_eq!(stands(&shared), "STAND1", "nor another's carry");
+        let _ = asker.relayed("tern", carrying).await;
+        assert_eq!(stands(&shared), "HARBOR", "as the cell it left");
         assert_eq!(
             shared.tie_records()["tie:HARBOR~KELP01"].value()["strength"],
             json!(2.0),
             "the tie it brought is kept"
         );
-        let cells = shared.cell_records();
         assert!(
-            cells.contains_key("cell:HARBOR") && !cells.contains_key("cell:STAND1"),
-            "it stands as the cell it left as: {:?}",
-            cells.keys().collect::<Vec<_>>()
+            !shared.cell_records().contains_key("cell:STAND1"),
+            "and not as its new address"
         );
     }
 

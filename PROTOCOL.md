@@ -156,8 +156,12 @@ same code, each line a JSON value:
    before its machine slept gives way to its dialler's new one.
 8. `{"Start": {"ask", "start"}}`: start a session held on the other
    end's machine, as a `"Start"` request says it. The other end hands it
-   to its own node's socket, with a need for its own machine added, so
+   to its own node's socket as `{"Relayed": {"from", "start"}}`, `from`
+   the machine that asked, with a need for its own machine added, so
    that node admits or refuses it on its own facts as they are then.
+   That node takes `"Relayed"` only from its own process, as only its
+   link asks it, and neither counts nor books it, since the asking
+   node did.
    The end doesn't start it itself, since a process SSH started sits
    outside its person's login session.
 9. `{"Started": {"ask", "reply"}}`: the other end's reply to the ask
@@ -1584,7 +1588,9 @@ dated up to an hour ahead of an ask counts, as a clock set back leaves
 it; one further ahead doesn't. `mycelium starts` prints whether
 starts are stopped and the newest 100. A start counts on the node an
 agent asks, wherever it is placed, and only that node's book says who
-started it, so each machine's node is stopped on its own.
+started it, so each machine's node is stopped on its own. A start
+relayed from another machine's node is that node's to count, book and
+stop, so the machine it runs on does none of these again.
 
 `"Sprout"` starts a session of new work, as `mycelium sprout` asks, held
 in no window: the node makes the `"Start"` and starts it as above, under

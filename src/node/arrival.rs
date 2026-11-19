@@ -66,14 +66,14 @@ pub(super) struct Arrivals {
 
 impl Arrivals {
     /// Notes that a linked node asked this one to start the session
-    /// `session` as `carried`, so its cell is read once it runs here.
-    pub(super) fn carried(&self, session: &str, carried: Carried) {
+    /// `session` as `carry`, so its cell is read once it runs here.
+    pub(super) fn carried(&self, session: &str, carry: Carried) {
         let mut carries = self.carries.lock().unwrap_or_else(PoisonError::into_inner);
-        carries.insert(session.to_owned(), carried);
+        carries.insert(session.to_owned(), carry);
         while carries.len() > CARRIES_MOST {
             let earliest = carries
                 .iter()
-                .min_by_key(|(_, carried)| carried.at)
+                .min_by_key(|(_, carry)| carry.at)
                 .map(|(session, _)| session.clone());
             if let Some(earliest) = earliest {
                 carries.remove(&earliest);
@@ -100,7 +100,7 @@ impl Arrivals {
             .collect();
         let runs = |id: &str| here.iter().any(|session| session.id == id);
         let mut carries = self.carries.lock().unwrap_or_else(PoisonError::into_inner);
-        carries.retain(|id, carried| runs(id) || now.saturating_sub(carried.at) < WAITED);
+        carries.retain(|id, carry| runs(id) || now.saturating_sub(carry.at) < WAITED);
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         let before = kept.clone();
         kept.retain(|id, _| runs(id));
@@ -108,10 +108,10 @@ impl Arrivals {
             if kept.contains_key(&session.id) {
                 continue;
             }
-            let Some(carried) = carries.get(&session.id) else {
+            let Some(carry) = carries.get(&session.id) else {
                 continue;
             };
-            if let Some(brought) = left_for(scratch, carried, &session.id) {
+            if let Some(brought) = left_for(scratch, carry, &session.id) {
                 kept.insert(session.id.clone(), settled(brought, now));
             }
         }

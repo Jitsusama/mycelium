@@ -43,6 +43,16 @@ pub enum Request {
     PlaceToStart(Work),
     /// Start a program held where placement chooses.
     Start(Start),
+    /// Start a program here that the node of the linked machine `from`
+    /// was asked to start, has judged, counted and booked, and placed
+    /// here. Only this node's own link asks it: from any other asker it
+    /// is refused.
+    Relayed {
+        /// The machine whose node was asked.
+        from: String,
+        /// What it was asked to start.
+        start: Start,
+    },
     /// Start a session of new work, held in no window, as `mycelium
     /// sprout` says: the node finds its folder as the asker would see it,
     /// and starts it there as a [`Start`] would.
