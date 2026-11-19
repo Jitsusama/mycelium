@@ -1016,7 +1016,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Offers"` | `{"Offers": {"offers", "unanswered"}}`, asked of each provider now |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
-| `{"Start": {"work", "folder", "command", "may_cost"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
+| `{"Start": {"work", "folder", "command", "may_cost", "once"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
@@ -1633,6 +1633,29 @@ relayed from another machine's node through the person's link is that
 node's to count, book and stop, so the machine it runs on does none of
 these again; one relayed by an agent is counted, booked and stopped
 there as that agent's own start.
+
+A start may carry `once`, the asker's own name for it, 1 to 64 bytes,
+as `mycelium start --once NAME` gives it. An asker that heard no answer
+can't tell a start that never came from one still landing, so it asks
+again under the same name: the node answers that start, landing or
+landed, rather than starting and counting another. The name is held
+for who the node judged asked and the cell the start counts toward, so
+another asker's same name starts its own. A start under it that
+landed is answered for an hour, as long as it counts; one that failed
+or was refused lets the name go, so asking again tries afresh, and
+those who joined it hear how it failed. A joined ask is kept on the
+start's own line, `"once"` and `"joined"`, the count of asks it
+answered, and `mycelium starts` lists the starts still landing after
+those that ended. Names are held in the node's memory, at most 4,096;
+after a restart, one its book says landed within the hour is refused,
+saying which machine holds what it started, since what joins it there
+can't be made again. A start placed on another machine goes under a
+name of this node's own, from its name and the asker's, so a far node
+joins an ask again from here after the link stopped waiting. A carry
+names each session's start from the quest, the machine and the
+session's last start from here, so one taken again after a start went
+unanswered joins it, and one carried since starts it again. A node
+older than `once` starts each ask.
 
 `"Sprout"` starts a session of new work, as `mycelium sprout` asks, held
 in no window: the node makes the `"Start"` and starts it as above, under
