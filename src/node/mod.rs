@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
+use std::ops::ControlFlow;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -4363,6 +4364,53 @@ impl<S: Store> Shared<S> {
         self.started(asked, START_WAITS_MOST).await
     }
 
+    /// Asks under the name `said`, as `by` for the cell `started_by`, at
+    /// `at`: the answer of the start under it, landing or landed, or this
+    /// ask's lead of it and the machine it goes to again, if any. Where
+    /// it goes on, `asked` goes under a name of this node's, so the far
+    /// node joins an ask again from here alone.
+    async fn named(
+        &self,
+        by: By,
+        started_by: Option<&str>,
+        said: &str,
+        asked: &mut Start,
+        at: i64,
+    ) -> ControlFlow<Reply, (Option<once::Lead>, Option<String>)> {
+        let name = match once::Name::of(by, started_by, said) {
+            Ok(name) => name,
+            Err(why) => return ControlFlow::Break(Err(why)),
+        };
+        asked.once = Some(name.there(&self.machine));
+        match self.onces.join(name, &self.machine, at) {
+            once::Joined::Landed(started) => {
+                eprintln!(
+                    "a start asked again under its name is answered the one that landed on {} \
+                     as {}",
+                    started.machine, started.held
+                );
+                ControlFlow::Break(Ok(Response::Started(started)))
+            }
+            once::Joined::Landing(joining) => {
+                self.starts.joined(by, started_by, said);
+                ControlFlow::Break(joining.outcome().await.map(Response::Started))
+            }
+            once::Joined::Leads(lead) => {
+                if let Some((machine, held)) = self.starts.landed(by, started_by, said, at) {
+                    drop(lead);
+                    return ControlFlow::Break(Err(format!(
+                        "it started already under that name, before this node last started: \
+                         {machine} holds it as {held}"
+                    )));
+                }
+                ControlFlow::Continue((Some(lead), None))
+            }
+            once::Joined::Resends { machine, lead } => {
+                ControlFlow::Continue((Some(lead), Some(machine)))
+            }
+        }
+    }
+
     /// Starts `asked` as [`Self::start`] does, waiting for room up to
     /// `waits` milliseconds.
     async fn started(&self, asked: Start, waits: i64) -> Reply {
@@ -4403,36 +4451,12 @@ impl<S: Store> Shared<S> {
         let once = asked.once.take();
         let (lead, again) = match &once {
             Some(said) => {
-                let name = once::Name::of(by, started_by.as_deref(), said)?;
-                // Where it goes on, it goes under a name of this node's,
-                // so the far node joins an ask again from here alone.
-                asked.once = Some(name.there(&self.machine));
-                match self.onces.join(name, &self.machine, at) {
-                    once::Joined::Landed(started) => {
-                        eprintln!(
-                            "a start asked again under its name is answered the one that \
-                             landed on {} as {}",
-                            started.machine, started.held
-                        );
-                        return Ok(Response::Started(started));
-                    }
-                    once::Joined::Landing(joining) => {
-                        self.starts.joined(by, started_by.as_deref(), said);
-                        return joining.outcome().await.map(Response::Started);
-                    }
-                    once::Joined::Leads(lead) => {
-                        if let Some((machine, held)) =
-                            self.starts.landed(by, started_by.as_deref(), said, at)
-                        {
-                            drop(lead);
-                            return Err(format!(
-                                "it started already under that name, before this node last \
-                                 started: {machine} holds it as {held}"
-                            ));
-                        }
-                        (Some(lead), None)
-                    }
-                    once::Joined::Resends { machine, lead } => (Some(lead), Some(machine)),
+                match self
+                    .named(by, started_by.as_deref(), said, &mut asked, at)
+                    .await
+                {
+                    ControlFlow::Break(answered) => return answered,
+                    ControlFlow::Continue(led) => led,
                 }
             }
             None => (None, None),
