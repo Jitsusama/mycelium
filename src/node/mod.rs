@@ -3748,9 +3748,9 @@ impl<S: Store> Shared<S> {
     /// end, that its child `spawner` serves `session`, as
     /// [`asker::Spawners::register`] takes it. A refusal is said on the
     /// node's stderr too, since a host refused may be a command trying:
-    /// once for each reason, its digits aside, until so many reasons are
-    /// kept that they are forgotten and may be said again, so new speakers
-    /// say nothing more. The session the host named leads the line, cut
+    /// once for each reason, its digits aside, and again an hour on, as
+    /// [`asker::Spawners::first_refusal`] keeps them, so new speakers say
+    /// nothing more. The session the host named leads the line, cut
     /// short and escaped, since anyone may name one; a reason may name a
     /// session too, the one a process was said to serve before.
     async fn spawned(&self, spawner: (i32, u64), session: String) -> Reply {
@@ -3776,17 +3776,19 @@ impl<S: Store> Shared<S> {
             .flat_map(char::escape_debug)
             .collect();
         let registered = tokio::task::spawn_blocking(move || {
-            let owners = asker::proved(&claims, &processes, &hosts, &logs)?;
+            // What it says names sessions any presence may name, so it
+            // is left out of the reason.
+            let owners = asker::proved(&claims, &processes, &hosts, &logs).map_err(|_| {
+                "who owns the sessions here can't be told, so no spawner is told".to_owned()
+            })?;
             spawners.register(host, spawner, &session, &processes, &owners, &claims)
         })
         .await
         .map_err(|error| format!("the spawner couldn't be told: {error}"))?;
         if let Err(why) = &registered {
-            // Said once for each reason, whichever processes it names; no
-            // reason names the session asked for, which a speaker chooses,
-            // so speakers that come and go each say no more.
-            let kind: String = why.chars().filter(|c| !c.is_ascii_digit()).collect();
-            if self.spawners.first_refusal(&kind) {
+            // No reason names the session asked for, which a speaker
+            // chooses, so speakers that come and go each say no more.
+            if self.spawners.first_refusal(why, std::time::Instant::now()) {
                 let why: String = why.chars().flat_map(char::escape_debug).collect();
                 eprintln!("mycelium: a spawner for {said} isn't taken: {why}");
             }

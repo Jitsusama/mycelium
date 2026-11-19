@@ -2019,9 +2019,9 @@ and only of that process's own child, named `pi-spawner` by the
 kernel and started when it says. It answers `"Spawned"`, or refuses,
 saying why there and, once for each reason, in its log. A session is
 named in at most 256 bytes. A spawner serves one session, and a
-session's spawners are one host's at a time: another host's word for
-it is taken once the first's have all ended, the first host has, or
-the first host no longer proves the session.
+session's spawners are one host's at a time, since a session proves
+under one host at a time: once it proves under another, that host's
+word is taken, though the first's spawners run on.
 Of 4096 kept at most, those ended, or whose host has, are let go
 first, and none more is taken until some end.
 
@@ -2031,7 +2031,10 @@ answered as the first time was, so a node that restarts knows them
 all again within 30 seconds; until then a command below one is told
 no session.
 
-The host says it before the spawner runs anything. A command below
+The host says it before the spawner runs anything, waiting up to about
+four seconds for the answer and then going ahead; a command run meanwhile
+is told no session, and so is every one where the node is older and
+refuses the ask. A command below
 that spawner, each process between them started no earlier than the
 one above it, and the host and the asker unchanged from when it connected, is
 then proved as that session. Nothing a

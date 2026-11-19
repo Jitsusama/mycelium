@@ -25,6 +25,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -595,6 +596,14 @@ const SPAWNER: &str = "pi-spawner";
 /// grow the node without end: those gone are let go first.
 const SPAWNERS_KEPT: usize = 4096;
 
+/// How long a reason a host's word was refused for goes unsaid once said,
+/// so a host refused again later, after its unit was mended, is said again.
+const REFUSAL_SAID_AGAIN: Duration = Duration::from_secs(60 * 60);
+
+/// How many reasons a host's word was refused for are kept, all forgotten
+/// once that many are.
+const REFUSALS_KEPT: usize = 256;
+
 /// Where the kernel says who may trace a process of the same user.
 const PTRACE_SCOPE: &str = "sys/kernel/yama/ptrace_scope";
 
@@ -675,7 +684,7 @@ fn inspector_open(procs: &Path, pid: i32) -> Option<String> {
     }
     let Ok(environ) = fs::read(process.join("environ")) else {
         return Some(format!(
-            "process {pid}'s environment can't be read, so its NODE_OPTIONS can't be told"
+            "process {pid}'s environment can't be read, so what it loads can't be told"
         ));
     };
     for name in LOADS_CODE {
@@ -690,8 +699,7 @@ fn inspector_open(procs: &Path, pid: i32) -> Option<String> {
             .any(|value| name != "NODE_OPTIONS" || !value.iter().all(u8::is_ascii_whitespace));
         if given {
             return Some(format!(
-                "process {pid} is given {name}, which could open its inspector or run code \
-                 in it"
+                "process {pid} is given {name}, which could run code in it"
             ));
         }
     }
@@ -718,10 +726,10 @@ pub struct Spawners {
     kept: Mutex<HashMap<(i32, u64), Registered>>,
     /// How many it keeps at most.
     room: usize,
-    /// Why a host's word for a spawner was refused, said once for each
-    /// host and reason, kept apart from the runs' reasons so that no
-    /// flood of these forgets those.
-    refused: crate::run::Untold,
+    /// Why a host's word for a spawner was refused, by the reason with its
+    /// digits aside, and when it was last said, kept apart from the runs'
+    /// reasons so that no flood of these forgets those.
+    refused: Mutex<HashMap<String, Instant>>,
 }
 
 impl Default for Spawners {
@@ -736,14 +744,28 @@ impl Spawners {
         Self {
             kept: Mutex::default(),
             room,
-            refused: crate::run::Untold::default(),
+            refused: Mutex::default(),
         }
     }
 
-    /// Whether a host's word for a spawner is refused for `why` for the
-    /// first time, so the node says it once.
-    pub fn first_refusal(&self, why: &str) -> bool {
-        self.refused.first(why)
+    /// Whether a host's word for a spawner refused for `why` at `now` is
+    /// to be said: once for each reason, whichever processes it names, so
+    /// speakers that come and go each say no more, and again once
+    /// [`REFUSAL_SAID_AGAIN`] has passed, so a host refused again later
+    /// is heard.
+    pub fn first_refusal(&self, why: &str, now: Instant) -> bool {
+        let kind: String = why.chars().filter(|c| !c.is_ascii_digit()).collect();
+        let mut said = self.refused.lock().unwrap_or_else(PoisonError::into_inner);
+        if said.len() >= REFUSALS_KEPT && !said.contains_key(&kind) {
+            said.clear();
+        }
+        let due = said
+            .get(&kind)
+            .is_none_or(|at| now.saturating_duration_since(*at) >= REFUSAL_SAID_AGAIN);
+        if due {
+            said.insert(kind, now);
+        }
+        due
     }
 
     /// Takes the word of `host`, the process at the other end of the
@@ -759,8 +781,9 @@ impl Spawners {
     /// another could open. The host must prove `session` as its own, and
     /// the spawner must be its child, named pi-spawner, started when the
     /// host says. A spawner serves one session, and a session's spawners
-    /// are one host's: another host's are taken only once the first's have
-    /// all gone, or the first host no longer proves the session.
+    /// are one host's at a time, since a session proves under one host at
+    /// a time: once it proves under another, that host's word is taken,
+    /// though the first's spawners run on.
     ///
     /// That holds only while no command can change the host's code: one
     /// that can rewrite the harness a host loads, then end the host, has
@@ -798,9 +821,12 @@ impl Spawners {
                 "{why}, so a host's word can't be told from a command's"
             ));
         }
-        let (Some(pid), Some(ticks)) = host else {
-            return Err("nothing names the process that says it, so no spawner is told".into());
-        };
+        let pid = host
+            .0
+            .ok_or("nothing names the process that says it, so no spawner is told")?;
+        let ticks = host.1.ok_or_else(|| {
+            format!("process {pid}'s start couldn't be read, so its spawner isn't told")
+        })?;
         let hosts_it = owners
             .iter()
             .any(|(owned, owner)| owned == session && *owner == pid)
@@ -818,8 +844,12 @@ impl Spawners {
         if let Some(why) = inspector_open(procs, pid) {
             return Err(format!("{why}, so its word can't be told from a command's"));
         }
-        let status = fs::read_to_string(procs.join(spawner.0.to_string()).join("status"))
-            .map_err(|_| format!("process {} has gone", spawner.0))?;
+        let status = fs::read_to_string(procs.join(spawner.0.to_string()).join("status")).map_err(
+            |error| match error.kind() {
+                std::io::ErrorKind::NotFound => format!("process {} has gone", spawner.0),
+                kind => format!("process {} can't be read: {kind}", spawner.0),
+            },
+        )?;
         let child = named(&status).is_some_and(|(name, parent)| name == SPAWNER && parent == pid);
         if !child {
             return Err(format!(
@@ -853,22 +883,6 @@ impl Spawners {
                     spawner.0, said.session
                 ))
             };
-        }
-        // Only while the other host still proves the session, so one it
-        // moved to takes it though the old host's spawner runs on.
-        let elsewhere = kept.iter().find(|(other, said)| {
-            said.session == session
-                && said.host != asked.host
-                && live(other, said)
-                && owners
-                    .iter()
-                    .any(|(owned, owner)| owned == session && *owner == said.host.0)
-        });
-        if let Some((other, _)) = elsewhere {
-            return Err(format!(
-                "the session keeps its spawner, process {}, under another host",
-                other.0
-            ));
         }
         if kept.len() >= self.room {
             kept.retain(|spawner, said| live(spawner, said));
@@ -2248,13 +2262,8 @@ mod tests {
         let claims = [
             claim("s-one", 78, Some(1), Some("work")),
             claim("s-two", 78, Some(1), Some("work")),
-            claim("s-one", 79, Some(1), Some("other")),
         ];
-        let owners = [
-            ("s-one".to_owned(), 78),
-            ("s-two".to_owned(), 78),
-            ("s-one".to_owned(), 79),
-        ];
+        let owners = [("s-one".to_owned(), 78), ("s-two".to_owned(), 78)];
         let processes = folder(procs.path());
         let spawners = Spawners::default();
         let says = |host: i32, started: u64, spawner: i32, ticks: u64, session: &str| {
@@ -2301,20 +2310,88 @@ mod tests {
         started(procs.path(), 78, "node", 1);
         assert_eq!(says(78, 1, 87, 87, "s-one"), Ok(()), "a spawner for s-one");
         assert!(
-            refused(says(79, 1, 98, 98, "s-one"), "under another host"),
-            "another host's word for a session is refused while the first's spawner runs"
+            refused(says(79, 1, 98, 98, "s-one"), "no pi host"),
+            "another host's word for a session it doesn't prove is refused"
         );
-        started(procs.path(), 87, "pi-spawner", 93);
-        assert_eq!(
-            says(79, 1, 98, 98, "s-one"),
-            Ok(()),
-            "and taken once the first's have all ended"
+        fs::remove_dir_all(procs.path().join("90")).ok();
+        assert!(
+            refused(says(78, 1, 90, 90, "s-one"), "has gone"),
+            "nor a spawner that has gone"
         );
-        started(procs.path(), 79, "node", 5);
-        assert_eq!(
-            says(78, 1, 82, 82, "s-one"),
-            Ok(()),
-            "or once the host that said them has, though its spawner still runs"
+    }
+
+    #[test]
+    fn a_host_is_heard_only_where_the_kernel_names_it_and_shows_its_processes() {
+        let procs = a_host_and_its_spawners();
+        let claims = [claim("s-one", 78, Some(1), Some("work"))];
+        let owners = [("s-one".to_owned(), 78)];
+        let processes = folder(procs.path());
+        let spawners = Spawners::default();
+        assert!(
+            spawners
+                .register(
+                    (Some(78), None),
+                    (82, 82),
+                    "s-one",
+                    &processes,
+                    &owners,
+                    &claims
+                )
+                .is_err_and(|why| why.contains("process 78's start couldn't be read")),
+            "nor a host whose start the kernel named it without"
+        );
+        assert!(
+            spawners
+                .register(
+                    (None, None),
+                    (82, 82),
+                    "s-one",
+                    &processes,
+                    &owners,
+                    &claims
+                )
+                .is_err_and(|why| why.contains("nothing names the process")),
+            "nor a speaker the kernel names not at all"
+        );
+        for (machine, why) in [
+            (processes.clone().unattended(), "runs unattended"),
+            (Processes::Listed, "can't show its processes"),
+        ] {
+            assert!(
+                spawners
+                    .register(
+                        (Some(78), Some(1)),
+                        (82, 82),
+                        "s-one",
+                        &machine,
+                        &owners,
+                        &claims
+                    )
+                    .is_err_and(|it| it.contains(why)),
+                "nor any host on a machine that {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refusal_is_said_once_for_each_reason_until_an_hour_passes() {
+        let spawners = Spawners::default();
+        let now = Instant::now();
+        assert!(
+            spawners.first_refusal("process 78 is given NODE_PATH", now),
+            "said the first time"
+        );
+        assert!(
+            !spawners.first_refusal("process 4021 is given NODE_PATH", now),
+            "not again for another process, so speakers that come and go say no more"
+        );
+        assert!(
+            spawners.first_refusal("process 78 is given LD_AUDIT", now),
+            "another reason is said"
+        );
+        assert!(
+            spawners.first_refusal("process 91 is given NODE_PATH", now + REFUSAL_SAID_AGAIN),
+            "and the first again an hour on, so a host refused later is heard"
         );
     }
 
@@ -2429,7 +2506,7 @@ mod tests {
             )
             .expect("its environment is written");
             assert!(
-                refused("which could open its inspector or run code"),
+                refused("which could run code in it"),
                 "nor one given {loads}, which loads code into it as it starts"
             );
         }
@@ -2488,6 +2565,33 @@ mod tests {
         );
         started(procs.path(), 88, "pi-spawner", 92);
         assert_eq!(says(82, "s-one"), Ok(()), "and taken once one has ended");
+        let moved = [claim("s-two", 79, Some(1), Some("other"))];
+        let moved_owners = [("s-two".to_owned(), 79)];
+        assert_eq!(
+            spawners.register(
+                (Some(79), Some(1)),
+                (98, 98),
+                "s-two",
+                &processes,
+                &moved_owners,
+                &moved,
+            ),
+            Err("this node keeps as many spawners as it can".to_owned()),
+            "a full node takes no more while each kept spawner and its host run"
+        );
+        started(procs.path(), 78, "node", 5);
+        assert_eq!(
+            spawners.register(
+                (Some(79), Some(1)),
+                (98, 98),
+                "s-two",
+                &processes,
+                &moved_owners,
+                &moved,
+            ),
+            Ok(()),
+            "and makes room once the host that said them has ended, though its spawners run"
+        );
     }
 
     /// Writes, in `procs`, who the kernel lets trace a process of the same
