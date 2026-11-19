@@ -11961,6 +11961,9 @@ esac
         let store = Memory::default();
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        // Here runs an agent's command in its fence, so each start stays
+        // here rather than going to tern, whose node no link reaches.
+        declares_runs(&socket, true);
         let start = || {
             Request::Start(Start {
                 work: work(Vec::new()),
