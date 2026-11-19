@@ -85,14 +85,14 @@ pub fn arrived(path: &Path, session: &str) -> Option<Brought> {
                 })
             })
         })
-        .map(tie_fields)
+        .map(|tie| tie_fields(Shape::Pair, tie))
         .collect();
     let ties = strongest(ties);
     let talk = said
         .talk
         .as_ref()
         .filter(|talk| tie_keyed(talk).is_some_and(|key| key == cell))
-        .map(tie_fields);
+        .map(|talk| tie_fields(Shape::Talk, talk));
     let mut formed: Vec<Value> = said
         .formed
         .into_iter()
@@ -141,41 +141,46 @@ fn a_strength(value: &Value) -> Option<f64> {
         .filter(|strength| strength.is_finite() && *strength >= 0.0)
 }
 
-/// `value` as the tie kind writes its field `field`, in a tie's record
-/// or a cell's talk, or none where it reads as nothing the tie kind
-/// writes: so a cell's file brings no other field under the tie kind's
-/// name, nor one of its fields holding what no tie could, and a list
-/// keeps only the entries that read, each once, at most as many as a
-/// tie could say.
-fn typed(field: &str, value: &Value) -> Option<Value> {
+/// Which of the tie kind's two records a brought one is: a tie between
+/// two cells, or a cell's own talk.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// A tie between two cells: each end's counts in a pair, its intents,
+    /// its groups and its strength.
+    Pair,
+    /// A cell's own talk: its counts, and how many ties it has.
+    Talk,
+}
+
+/// `value` as the tie kind writes its field `field` in a record of
+/// `shape`, or none where it reads as nothing the tie kind writes
+/// there: so a cell's file brings no other field under the tie kind's
+/// name, nor a field of the other record's, nor one holding what no tie
+/// could, and a list keeps only the entries that read, each once, at
+/// most as many as a tie could say.
+fn typed(shape: Shape, field: &str, value: &Value) -> Option<Value> {
     let count = |value: &Value| {
         value
             .as_u64()
             .filter(|count| u32::try_from(*count).is_ok())
             .map(Value::from)
     };
-    match field {
-        "key" | "kind" => value.is_string().then(|| value.clone()),
-        "heard" => value.as_i64().map(Value::from),
-        "strength" => a_strength(value).map(Value::from),
-        "ties" => count(value),
-        // A tie says each end's count, and a cell's talk its own.
-        "hour" | "today" => match value.as_array() {
-            Some(pair) if pair.len() == 2 => pair
-                .iter()
-                .map(count)
-                .collect::<Option<Vec<Value>>>()
-                .map(Value::from),
-            Some(_) => None,
-            None => count(value),
+    match (shape, field) {
+        (_, "key" | "kind") => value.is_string().then(|| value.clone()),
+        (_, "heard") => value.as_i64().map(Value::from),
+        (Shape::Pair, "strength") => a_strength(value).map(Value::from),
+        (Shape::Pair, "hour" | "today") => match value.as_array()?.as_slice() {
+            [one, other] => Some(Value::from(vec![count(one)?, count(other)?])),
+            _ => None,
         },
-        "intents" => Some(listed(value, INTENTS_MOST, |one| {
+        (Shape::Pair, "intents") => Some(listed(value, INTENTS_MOST, |one| {
             serde_json::from_value::<crate::record::Intent>(one.clone()).is_ok()
         })),
-        "groups" => Some(listed(value, GROUPS_MOST, |one| {
+        (Shape::Pair, "groups") => Some(listed(value, GROUPS_MOST, |one| {
             one.as_str()
                 .is_some_and(|name| crate::group::Group::new(name).is_ok())
         })),
+        (Shape::Talk, "hour" | "today" | "ties") => count(value),
         _ => None,
     }
 }
@@ -218,13 +223,13 @@ fn tie_keyed(record: &Value) -> Option<String> {
     keyed(record, "tie:")
 }
 
-/// `record` with only the fields the tie kind writes, each as it
-/// writes it, as [`typed`] reads them.
-fn tie_fields(record: &Value) -> Value {
+/// `record`, of `shape`, with only the fields the tie kind writes
+/// there, each as it writes it, as [`typed`] reads them.
+fn tie_fields(shape: Shape, record: &Value) -> Value {
     let fields = record.as_object().into_iter().flatten();
     Value::Object(
         fields
-            .filter_map(|(field, value)| Some((field.clone(), typed(field, value)?)))
+            .filter_map(|(field, value)| Some((field.clone(), typed(shape, field, value)?)))
             .collect(),
     )
 }
@@ -407,9 +412,12 @@ mod tests {
                     {"key": "tie:HARBOR~REEF01", "kind": "tie", "heard": "soon",
                      "hour": [1, 2, 3], "today": [-1, 4], "strength": -2.0,
                      "intents": "fyi", "groups": groups},
+                    {"key": "tie:HARBOR~TIDE01", "kind": "tie", "heard": 5,
+                     "hour": 2, "today": [3], "ties": 3, "strength": 0.0},
                 ],
                 "talk": {"key": "tie:HARBOR", "kind": "tie", "hour": 2,
-                         "today": 4_294_967_296_u64, "ties": [2]},
+                         "today": 4_294_967_296_u64, "ties": [2], "strength": 9.0,
+                         "intents": ["fyi"], "groups": ["crew"]},
             }),
         );
         let cell = arrived(&path, "s-harbour").expect("its cell");
@@ -437,9 +445,15 @@ mod tests {
             "a field holding what no tie could is passed over alone"
         );
         assert_eq!(
+            cell.ties[2],
+            json!({"key": "tie:HARBOR~TIDE01", "kind": "tie", "heard": 5,
+                   "strength": 0.0}),
+            "a tie brings no field only a cell's talk has, nor one count for a pair"
+        );
+        assert_eq!(
             cell.talk,
             Some(json!({"key": "tie:HARBOR", "kind": "tie", "hour": 2})),
-            "a talk's counts only as counts a cell could have"
+            "a talk's counts only as counts a cell could have, and none of a tie's fields"
         );
     }
 
@@ -590,7 +604,9 @@ mod tests {
     fn a_cell_brings_and_arrives_with_at_most_its_strongest_ties() {
         let ties: Vec<serde_json::Value> = (0..500)
             .map(|n| {
-                let strength = if n == 7 { 2e9 } else { 1e9 };
+                // The strongest past the first 128 written, so cutting
+                // before choosing loses it.
+                let strength = if n == 407 { 2e9 } else { 1e9 };
                 json!({"key": format!("tie:C{n:05}~HARBOR"), "kind": "tie",
                        "strength": strength})
             })
@@ -602,7 +618,7 @@ mod tests {
             "it brings at most {TIES_MOST}"
         );
         assert_eq!(
-            leaving.ties[0]["key"], "tie:C00007~HARBOR",
+            leaving.ties[0]["key"], "tie:C00407~HARBOR",
             "strongest first"
         );
 
@@ -619,7 +635,7 @@ mod tests {
             "and a file saying more arrives with at most {TIES_MOST}"
         );
         assert_eq!(
-            arriving.ties[0]["key"], "tie:C00007~HARBOR",
+            arriving.ties[0]["key"], "tie:C00407~HARBOR",
             "its strongest"
         );
     }
