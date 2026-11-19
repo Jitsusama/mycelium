@@ -197,12 +197,22 @@ fn listed(value: &Value, most: usize, reads: impl Fn(&Value) -> bool) -> Value {
     Value::from(kept)
 }
 
-/// `ties`, strongest first, those as strong by key, one saying no
-/// strength a tie could have as none, and at most [`TIES_MOST`].
+/// `ties`, strongest first as every reader fades them from when each
+/// was heard, those as strong by key, one saying no strength a tie
+/// could have as none, and at most [`TIES_MOST`]. Two ties fade alike,
+/// so which is stronger is the same at any time: the base-two log of a
+/// strength, with the half-lives since the epoch it was heard after,
+/// orders them as their strengths now do.
 fn strongest(mut ties: Vec<Value>) -> Vec<Value> {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a time in milliseconds is well within what an f64 holds to the half-life"
+    )]
     let order = |tie: &Value| {
+        let heard = tie["heard"].as_i64().unwrap_or_default() as f64;
+        let lives = heard / crate::node::TIE_HALF_LIFE as f64;
         (
-            strength(tie).unwrap_or_default(),
+            strength(tie).unwrap_or_default().log2() + lives,
             tie["key"].as_str().map(str::to_owned),
         )
     };
@@ -637,6 +647,38 @@ mod tests {
         assert_eq!(
             arriving.ties[0]["key"], "tie:C00407~HARBOR",
             "its strongest"
+        );
+    }
+
+    #[test]
+    fn the_strongest_ties_a_cell_brings_are_the_strongest_now() {
+        let now: i64 = 1_763_400_000_000;
+        let hour = 3_600_000;
+        let ties: Vec<serde_json::Value> = (0..=TIES_MOST)
+            .map(|n| {
+                // Strongest as heard, but heard twenty hours ago, ten
+                // half-lives, so a thousandth as strong now as then.
+                let (strength, heard) = if n == 0 {
+                    (10.0, now - 20 * hour)
+                } else {
+                    (3.0, now - 60_000)
+                };
+                json!({"key": format!("tie:C{n:05}~HARBOR"), "kind": "tie",
+                       "strength": strength, "heard": heard})
+            })
+            .collect();
+        let leaving = brought("s-harbour", "harbor", &ties);
+        assert_eq!(
+            leaving.ties.len(),
+            TIES_MOST,
+            "it brings at most {TIES_MOST}"
+        );
+        assert!(
+            leaving
+                .ties
+                .iter()
+                .all(|tie| tie["key"] != "tie:C00000~HARBOR"),
+            "the one weakest now is left out, however strong it was heard"
         );
     }
 
