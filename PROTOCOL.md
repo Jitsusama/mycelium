@@ -1785,7 +1785,8 @@ when the process asking runs as one of the machine's agents: on Linux,
 in a unit of the person's service manager whose name begins
 `agents.slice/pi-host-` or `agents.slice/mycelium-pi-`, or in one under
 `jobs.slice/` or `offload.slice/`; on Linux or a Mac, below a process
-named `pi`, as `/proc` or `ps` tells it. It is refused too when the
+named `pi`, or `pi-host` as a Mac's pi host must be, as `/proc` or `ps`
+tells it. It is refused too when the
 kernel names no process at the client's end. Where the process can be
 told and is the person's, the node says so to a link carrying the steer
 to another machine; where it can't be read, the steer goes here but

@@ -47,6 +47,11 @@ const AGENTS_UNITS: [&str; 4] = [
 /// The name pi's own process goes by.
 const PI: &str = "pi";
 
+/// The name a pi host's process goes by where no agent's unit tells it,
+/// as on a Mac, whose host launchd runs as the person's account, so its
+/// conversations' commands are told by it as an agent's.
+const PI_HOST: &str = "pi-host";
+
 /// How many forebears are looked through at most, so a chain the kernel
 /// tells wrong can't hold a steer up for long.
 const FOREBEARS: usize = 64;
@@ -769,6 +774,9 @@ fn forebears(pid: i32, process: impl Fn(i32) -> Option<(String, i32)>) -> Told {
         if name == PI {
             return Told::Agent(format!("pi's process {at}"));
         }
+        if name == PI_HOST {
+            return Told::Agent(format!("pi's host {at}"));
+        }
         if parent <= 1 {
             return Told::Person;
         }
@@ -1054,7 +1062,12 @@ mod tests {
              \x20 703   702 /bin/bash\n\
              \x20 704   703 /Users/joel/.nix-profile/bin/mycelium\n\
              \x20 705   701 /Users/joel/.nix-profile/bin/mycelium\n\
-             \x20 706     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n",
+             \x20 706     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n\
+             \x20 710     1 /nix/store/abc-pi-host/bin/pi-host\n\
+             \x20 711   710 /bin/zsh\n\
+             \x20 712   711 /Users/joel/.nix-profile/bin/mycelium\n\
+             \x20 713     1 /nix/store/abc-node/bin/node\n\
+             \x20 714   713 /Users/joel/.nix-profile/bin/mycelium\n",
         );
         let process = |pid: i32| listed.get(&pid).cloned();
         assert_eq!(
@@ -1066,6 +1079,16 @@ mod tests {
             forebears(705, process),
             Told::Person,
             "the person's own command in that terminal is theirs"
+        );
+        assert_eq!(
+            forebears(712, process),
+            Told::Agent("pi's host 710".to_owned()),
+            "a command a pi host's conversation ran is an agent's"
+        );
+        assert_eq!(
+            forebears(714, process),
+            Told::Person,
+            "a host is known only by its own name, never as any node program"
         );
         assert_eq!(
             listed.get(&706).map(|(name, _)| name.as_str()),
