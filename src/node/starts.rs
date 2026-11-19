@@ -77,7 +77,8 @@ pub struct Kept {
     /// Its held id there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
-    /// Why it was asked but didn't start.
+    /// Why it was asked but didn't start, as [`failure`] tells it, so
+    /// naming no argument.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<String>,
     /// Why the node refused it.
@@ -301,7 +302,8 @@ impl Starts {
         })
     }
 
-    /// Keeps how `admitted` ended: where it started, or why it didn't.
+    /// Keeps how `admitted` ended: where it started, or why it didn't,
+    /// given as [`failure`] tells it and cut to [`FAILED_MOST`].
     pub fn keep(&self, admitted: Admitted, ended: Result<(String, String), String>) {
         let Admitted { id, mut asked } = admitted;
         match ended {
@@ -346,8 +348,10 @@ impl Starts {
                 }
                 Err(error) => {
                     // Tried again only once it doubles again, so a full
-                    // disk isn't rewritten on every ask.
+                    // disk isn't rewritten on every ask, and no copy is
+                    // left beside it.
                     book.whole = book.written;
+                    let _ = std::fs::remove_file(self.file.with_extension("jsonl.new"));
                     eprintln!(
                         "the starts in {} aren't written again: {error}",
                         self.file.display()
@@ -410,12 +414,78 @@ pub fn beside(runs: &Path) -> PathBuf {
     runs.with_file_name("starts.jsonl")
 }
 
+/// Why a start of a program given `arguments` failed, as the book keeps
+/// it: the node's own reason, before the first `: ` that goes on to name
+/// the command, any argument of three or more characters still in it
+/// put as `<argument>`, and no more than [`FAILED_MOST`] characters, so
+/// no argument is kept however the failure was worded.
+#[must_use]
+pub fn failure(why: &str, arguments: &[String]) -> String {
+    let mut reason = why.split(": ").next().unwrap_or_default().to_owned();
+    for argument in arguments.iter().filter(|one| one.chars().count() >= 3) {
+        reason = reason.replace(argument.as_str(), "<argument>");
+    }
+    reason.chars().take(FAILED_MOST).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::declared::Kind;
 
     const NOW: i64 = 1_800_000_000_000;
+
+    #[test]
+    fn a_failure_keeps_the_nodes_reason_and_no_argument() {
+        let arguments = ["--said-once".to_owned(), "-c".to_owned()];
+        assert_eq!(
+            failure(
+                "it didn't start: couldn't hold pi --said-once: gone",
+                &arguments
+            ),
+            "it didn't start"
+        );
+        assert_eq!(
+            failure("osprey took pi --said-once and lost it", &arguments),
+            "osprey took pi <argument> and lost it"
+        );
+        let long = "x".repeat(FAILED_MOST * 2);
+        assert_eq!(failure(&long, &[]).chars().count(), FAILED_MOST);
+    }
+
+    #[test]
+    fn a_failed_rewrite_waits_for_the_next_doubling_and_leaves_no_copy() {
+        let (dir, starts) = book();
+        let beside = dir.path().join("starts.jsonl.new");
+        // A folder where the book goes takes no copy renamed onto it.
+        std::fs::create_dir(dir.path().join("starts.jsonl")).expect("a folder");
+        started(&starts, agent("OSPREY", NOW), "h-1");
+        starts.lock().written = WRITTEN_MOST + 1;
+        started(&starts, agent("OSPREY", NOW), "h-2");
+        let book = starts.lock();
+        assert_eq!(
+            book.whole, book.written,
+            "the next try waits for a doubling"
+        );
+        drop(book);
+        assert!(!beside.exists(), "no copy is left beside the book");
+    }
+
+    #[test]
+    fn a_start_dated_far_ahead_is_let_go_before_one_that_counts() {
+        let (_dir, starts) = book();
+        let mut book = starts.lock();
+        book.hold(agent("OSPREY", NOW + 2 * HOUR));
+        for one in 1..KEPT_MOST {
+            book.hold(agent("OSPREY", NOW + i64::try_from(one).expect("few")));
+        }
+        book.hold(agent("TERN", NOW + 5_000));
+        assert_eq!(book.kept.len(), KEPT_MOST);
+        assert!(
+            book.kept.iter().all(|one| one.at < NOW + HOUR),
+            "the far one went"
+        );
+    }
 
     fn asked(by: By, cell: Option<&str>, at: i64) -> Kept {
         Kept {
@@ -545,6 +615,12 @@ mod tests {
         starts.lock().written = 2 * WRITTEN_MOST + 1;
         started(&starts, agent("OSPREY", NOW), "h-3");
         assert!(!read().contains("left over"), "doubled, so written whole");
+        let book = starts.lock();
+        assert_eq!(
+            book.whole, book.written,
+            "the next bound reads from this one"
+        );
+        drop(book);
         assert_eq!(read().lines().count(), 3, "{}", read());
     }
 

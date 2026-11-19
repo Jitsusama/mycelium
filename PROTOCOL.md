@@ -1515,11 +1515,12 @@ node. Every start, refused ones too, is kept in
 `starts.jsonl` beside `runs.jsonl` as a JSON line, `{"at", "by",
 "started_by", "folder", "program", "machine", "held", "failed",
 "refused"}`: `at` in milliseconds, `started_by` null for the person's,
-`program` the command's first word alone, so no argument is kept, and
-the rest only where they apply. The node reads it again as it starts,
-passing over a line it can't read, and holds the newest 2,048, never
-letting one go that counts within the hour; once the file has grown
-by 8 MiB and doubled since, it writes it again from those. A start
+`program` the command's first word alone, so no argument is kept,
+`failed` the node's reason alone, before the words naming the command,
+and the rest only where they apply. The node reads it again as it
+starts, passing over a line it can't read, and holds the newest 2,048,
+never letting one go that counts within the hour; once the file has
+grown by 8 MiB and doubled since, it writes it again from those. A start
 dated up to an hour ahead of an ask counts, as a clock set back leaves
 it; one further ahead doesn't. `mycelium starts` prints whether
 starts are stopped and the newest 100. A start counts on the node an
