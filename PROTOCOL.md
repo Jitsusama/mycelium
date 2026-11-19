@@ -561,30 +561,44 @@ in order and says each step:
    cell each minute while the session runs there until it stands, and
    keeps it, its file gone or not, for a day after the session last ran
    there, so one resumed within the day stands as it again; a new carry
-   of the session reads its cell afresh. The session stands as that
+   of the session reads its cell afresh. It keeps them in memory
+   alone, so a restart forgets them, and keeps at most 256, letting go
+   the one whose session ran longest ago past that, but never one whose
+   session runs. The session stands as that
    cell, its address an alias of it, unless another live session goes
    by the name, as any address, in any case, or two running there say
-   it. Each field a tie brings is kept only as the tie kind writes it:
-   counts that fit 32 bits, a strength never below none, intents the
-   mesh has and groups' names, each once, at most 64 groups. The
+   it. Each field a tie brings is kept only as the tie kind writes it
+   for the record it is, a pair's or a cell's talk: a pair's strength,
+   never below none, its hour and today as two counts that fit 32
+   bits, intents the mesh has and groups' names, each once, at most 64
+   groups; a talk's hour, today and ties as counts. The
    folder a cell is read in is the short name of the machine the carry
    came from as its link names it, and the leaving machine writes the
    folder by its hostname, so a cell arrives only where the two agree;
-   the node logs each carry it lets go with no cell having stood. On a
+   the node logs each carry it lets go whose session ran there with no
+   cell standing, naming the folder it read. On a
    machine nobody works at, every link's end is judged an agent's, so a
    person's carry there is started as an agent's start: counted among
    the 8 an hour and 32 its asker and the node may start, arriving as
-   a new cell, and refused, where the limits refuse it, with no word of
-   an orchestrator. Where a person works, a carry relayed by a link end
+   a new cell, and refused, where the limits or the person's stop
+   refuse it, with no word of an orchestrator: it tells the person to
+   carry to a machine a person works at, or, stopped, to resume starts
+   there. Where a person works, a carry relayed by a link end
    judged an agent's is refused, saying the session whose claim made
-   it one where one did, and logged there too. A tie it brought said
+   it one where one did, and otherwise what of its process did: no
+   process the kernel names, an agent's unit or pi above it, none that
+   can be read, a bar on gaining privileges or mounts of its own; and
+   it is logged there too. A tie it brought said
    heard after it arrived counts as heard then, and stands for a day
    from when it was heard. A cell brings
    at most its 128 strongest ties, and where its strongest is past
    the strongest tie between two cells the arriving node holds, or a
    message's where it holds none, each is made weaker alike, so none
-   is stronger and they keep their order. It is weighed as a hub by
-   its cell's talk. Carried on again, it brings that cell.
+   is stronger and they keep their order. Each strength is weighed as
+   it stands now, faded by the two hours' half-life from when it was
+   heard, so an old strong tie counts for what it is now. It is
+   weighed as a hub by its cell's talk. Carried on again, it brings
+   that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share
    --scratch handover` does.
 4. `start`: each carried session starts again on the machine, held, as

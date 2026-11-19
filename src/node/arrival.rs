@@ -10,7 +10,9 @@
 //! again, and makes the session stand as its cell again: named
 //! by it in the networks, its new address an alias of it, and the ties
 //! it brought kept beside those this node makes, each for a day from
-//! when it was heard, as long as a tie is told of.
+//! when it was heard, as long as a tie is told of. What is kept is held
+//! in memory alone, so a node that restarts forgets it, and a session
+//! resumed after stands under its own address.
 //!
 //! The handover is its sessions' to write, so a file there proves no
 //! carry: only a session a linked node asked this one to start as a
@@ -24,6 +26,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::Value;
 
+use super::tie;
 use crate::carry::cell::{self, Brought};
 use crate::carry::through;
 use crate::daemon;
@@ -42,7 +45,8 @@ const WAITED: i64 = 60 * 60 * 1000;
 const CARRIES_MOST: usize = 256;
 
 /// How many cells sessions arrived with are kept at once, those whose
-/// sessions ran here longest ago let go first, as carries are.
+/// sessions ran here longest ago let go first, as carries are, and
+/// never one whose session runs here.
 const KEPT_MOST: usize = CARRIES_MOST;
 
 /// The strength a brought tie may have where this node holds none as
@@ -73,6 +77,18 @@ struct Kept {
     ran: i64,
 }
 
+/// A carry started here, waited on for its session to run here, and
+/// what came of it so far.
+#[derive(Debug)]
+struct Waited {
+    /// The carry.
+    carry: Carried,
+    /// Whether its session has run here.
+    ran: bool,
+    /// Whether a cell has stood for it.
+    stood: bool,
+}
+
 /// The cells sessions that ran here arrived with, by session id, and
 /// the carries started here they may arrive by.
 #[derive(Debug, Default)]
@@ -80,7 +96,7 @@ pub(super) struct Arrivals {
     /// The cell each session arrived with.
     kept: Mutex<BTreeMap<String, Kept>>,
     /// The carry each session was started here by.
-    carries: Mutex<BTreeMap<String, Carried>>,
+    carries: Mutex<BTreeMap<String, Waited>>,
 }
 
 impl Arrivals {
@@ -93,11 +109,16 @@ impl Arrivals {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(session);
         let mut carries = self.carries.lock().unwrap_or_else(PoisonError::into_inner);
-        carries.insert(session.to_owned(), carry);
+        let waited = Waited {
+            carry,
+            ran: false,
+            stood: false,
+        };
+        carries.insert(session.to_owned(), waited);
         while carries.len() > CARRIES_MOST {
             let earliest = carries
                 .iter()
-                .min_by_key(|(_, carry)| carry.at)
+                .min_by_key(|(_, waited)| waited.carry.at)
                 .map(|(session, _)| session.clone());
             if let Some(earliest) = earliest {
                 carries.remove(&earliest);
@@ -125,19 +146,20 @@ impl Arrivals {
         let runs = |id: &str| here.iter().any(|session| session.id == id);
         let mut carries = self.carries.lock().unwrap_or_else(PoisonError::into_inner);
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
-        carries.retain(|id, carry| {
-            let held = runs(id) || now.saturating_sub(carry.at) < WAITED;
+        carries.retain(|id, waited| {
+            let running = runs(id);
+            waited.ran |= running;
+            let held = running || now.saturating_sub(waited.carry.at) < WAITED;
             // A leaving machine names its folder by its hostname, and
             // this node reads the one its link names, so where the two
-            // differ a carry arrives without its cell, and only this
-            // says so. Quoted, since a linked node said them.
-            if !held && !kept.contains_key(id) {
+            // differ a carry's session runs without its cell, and only
+            // this says so. Quoted, since a linked node said them.
+            if !held && waited.ran && !waited.stood {
+                let Carried { from, quest, .. } = &waited.carry;
                 eprintln!(
-                    "session {id:?}, carried from {:?} in {:?}, arrived as no cell: none stood \
-                     in its handover's folder {:?}",
-                    carry.from,
-                    carry.quest,
-                    through::short_host(&carry.from)
+                    "session {id:?}, carried from {from:?} in {quest:?}, ran here as no cell: \
+                     none stood in its handover's folder {:?} while it ran",
+                    through::short_host(from)
                 );
             }
             held
@@ -149,23 +171,29 @@ impl Arrivals {
                 one.ran = now;
                 continue;
             }
-            let Some(carry) = carries.get(&session.id) else {
+            let Some(waited) = carries.get_mut(&session.id) else {
                 continue;
             };
-            if let Some(brought) = left_for(scratch, carry, &session.id) {
+            if let Some(brought) = left_for(scratch, &waited.carry, &session.id) {
+                waited.stood = true;
                 let brought = settled(brought, now);
                 kept.insert(session.id.clone(), Kept { brought, ran: now });
             }
         }
         drop(carries);
+        // Only a cell whose session no longer runs here is let go, so
+        // none that runs is read again each minute; those running are
+        // bounded by the starts a node takes.
         while kept.len() > KEPT_MOST {
             let earliest = kept
                 .iter()
+                .filter(|(id, _)| !runs(id))
                 .min_by_key(|(_, one)| one.ran)
                 .map(|(id, _)| id.clone());
-            if let Some(earliest) = earliest {
-                kept.remove(&earliest);
-            }
+            let Some(earliest) = earliest else {
+                break;
+            };
+            kept.remove(&earliest);
         }
         // A cell that another live session goes by, as its address or
         // any other, or that two sessions running here say, stands as
@@ -264,11 +292,14 @@ impl Arrivals {
     /// its session's to write, so the ties each cell brought are held
     /// to [`bounded`]'s strength.
     pub(super) fn ties(&self, made: &mut BTreeMap<String, daemon::Record>, now: i64) {
-        let most = strongest_held(made);
         let kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        if kept.is_empty() {
+            return;
+        }
+        let most = strongest_held(made, now);
         let brought = kept.values().flat_map(|one| {
             let Brought { ties, talk, .. } = &one.brought;
-            bounded(ties, most).chain(talk.iter().cloned())
+            bounded(ties, most, now).chain(talk.iter().cloned())
         });
         for record in brought {
             let (Some(key), Some(heard)) = (record["key"].as_str(), record["heard"].as_i64())
@@ -295,21 +326,36 @@ fn cells_of(kept: &BTreeMap<String, Kept>) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The strength of the strongest tie between two cells in `made`, as
-/// heard, or [`STRONGEST_ALONE`] where that is stronger.
-fn strongest_held(made: &BTreeMap<String, daemon::Record>) -> f64 {
+/// What strength `tie`, saying `strength` heard at `heard`, has at
+/// `now`, faded as every reader of ties fades it.
+fn at_now(strength: f64, heard: i64, now: i64) -> f64 {
+    strength * tie::faded(now.saturating_sub(heard).max(0))
+}
+
+/// The strength of the strongest tie between two cells in `made`, at
+/// `now`, or [`STRONGEST_ALONE`] where that is stronger.
+fn strongest_held(made: &BTreeMap<String, daemon::Record>, now: i64) -> f64 {
     made.iter()
         .filter(|(key, _)| key.contains('~'))
-        .filter_map(|(_, record)| cell::strength(&record.value()))
+        .filter_map(|(_, record)| {
+            cell::strength(&record.value()).map(|one| at_now(one, record.heard(), now))
+        })
         .fold(STRONGEST_ALONE, f64::max)
 }
 
 /// `ties`, the ties a cell brought, each saying a strength no tie could
-/// have saying none, and all made weaker alike where its strongest is
-/// past `most`, so it is `most`: no file makes a brought tie stronger
-/// than any this node holds, and its ties keep their order.
-fn bounded(ties: &[Value], most: f64) -> impl Iterator<Item = Value> + '_ {
-    let strongest = ties.iter().filter_map(cell::strength).fold(0.0, f64::max);
+/// have saying none, and all made weaker alike where its strongest at
+/// `now` is past `most`, so it is `most`: no file makes a brought tie
+/// stronger, as read at any time, than any this node holds, and its
+/// ties keep their order.
+fn bounded(ties: &[Value], most: f64, now: i64) -> impl Iterator<Item = Value> + '_ {
+    let strongest = ties
+        .iter()
+        .filter_map(|tie| {
+            let heard = tie["heard"].as_i64()?;
+            Some(at_now(cell::strength(tie)?, heard, now))
+        })
+        .fold(0.0, f64::max);
     let scale = if strongest > most {
         most / strongest
     } else {
@@ -393,7 +439,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{Arrivals, CARRIES_MOST, Carried, KEPT, WAITED};
+    use super::{Arrivals, CARRIES_MOST, Carried, KEPT, KEPT_MOST, WAITED};
     use crate::daemon;
     use crate::record::{Session, State};
 
@@ -610,15 +656,6 @@ mod tests {
         arrivals.carried("s-harbour", from("tern"));
         let mut sessions = vec![session("s-harbour", "stand1", "skiff")];
         assert!(arrivals.read(scratch.path(), "skiff", &sessions, NOW));
-        sessions[0].state = State::Ended;
-        arrivals.carried("s-twin", from("tern"));
-        sessions.push(session("s-twin", "twin01", "skiff"));
-        assert!(arrivals.read(scratch.path(), "skiff", &sessions, NOW + 1));
-        assert_eq!(
-            arrivals.cells(),
-            BTreeMap::from([("s-twin".to_owned(), "HARBOR".to_owned())]),
-            "a cell kept for an ended session gives way to a live session's"
-        );
         left(
             scratch.path(),
             "tern",
@@ -626,12 +663,62 @@ mod tests {
             &json!({"session": "s-harbour", "cell": "LATER1"}),
         );
         arrivals.carried("s-harbour", from("tern"));
-        sessions[0].state = State::Idle;
+        assert!(arrivals.read(scratch.path(), "skiff", &sessions, NOW + 1));
+        assert_eq!(
+            arrivals.cells(),
+            BTreeMap::from([("s-harbour".to_owned(), "LATER1".to_owned())]),
+            "carried here again while its cell is kept, it arrives with the cell it brings now"
+        );
+        sessions[0].state = State::Ended;
+        left(
+            scratch.path(),
+            "tern",
+            "s-twin",
+            &json!({"session": "s-twin", "cell": "LATER1"}),
+        );
+        arrivals.carried("s-twin", from("tern"));
+        sessions.push(session("s-twin", "twin01", "skiff"));
         assert!(arrivals.read(scratch.path(), "skiff", &sessions, NOW + 2));
         assert_eq!(
-            arrivals.cells().get("s-harbour").map(String::as_str),
-            Some("LATER1"),
-            "carried here again, it arrives with the cell it brings now"
+            arrivals.cells(),
+            BTreeMap::from([("s-twin".to_owned(), "LATER1".to_owned())]),
+            "a cell kept for an ended session gives way to a live session's"
+        );
+    }
+
+    #[test]
+    fn past_as_many_as_are_kept_the_cell_whose_session_ran_longest_ago_goes() {
+        let scratch = tempfile::tempdir().expect("a scratch folder");
+        let arrivals = Arrivals::default();
+        let mut sessions = Vec::new();
+        for at in 0..=KEPT_MOST {
+            let id = format!("s-{at}");
+            left(
+                scratch.path(),
+                "tern",
+                &id,
+                &json!({"session": id, "cell": format!("C{at:05}")}),
+            );
+            let when = NOW + i64::try_from(at).expect("a small count");
+            let mut carried = from("tern");
+            carried.at = when;
+            arrivals.carried(&id, carried);
+            sessions.push(session(&id, &format!("a{at:05}"), "skiff"));
+            arrivals.read(scratch.path(), "skiff", &sessions, when);
+            // Each ends once it stands, but the first runs on.
+            if at > 0 {
+                sessions[at].state = State::Ended;
+            }
+        }
+        let cells = arrivals.cells();
+        assert_eq!(cells.len(), KEPT_MOST, "at most {KEPT_MOST}");
+        assert!(
+            cells.contains_key("s-0"),
+            "one whose session runs is never let go, however long ago it was read"
+        );
+        assert!(
+            !cells.contains_key("s-1"),
+            "the one whose session ran here longest ago goes"
         );
     }
 
@@ -712,6 +799,12 @@ mod tests {
             daemon::Record::from(json!({"key": "tie:HARBOR~KELP01", "kind": "tie",
                                         "heard": heard, "strength": 0.5}))
         };
+        // As every reader of ties reads them: faded to now.
+        let brought_now = |made: &BTreeMap<String, daemon::Record>| {
+            let record = &made["tie:HARBOR~KELP01"];
+            let strength = record.value()["strength"].as_f64().expect("a strength");
+            super::at_now(strength, record.heard(), NOW)
+        };
 
         let mut made = BTreeMap::new();
         arrivals.ties(&mut made, NOW);
@@ -720,10 +813,10 @@ mod tests {
             ["tie:HARBOR~KELP01"],
             "its tie, and not its talk heard a day ago"
         );
-        assert_eq!(
-            made["tie:HARBOR~KELP01"].value()["strength"],
-            json!(1.0),
-            "as strong as a message, since this node holds none stronger"
+        assert!(
+            (brought_now(&made) - 1.0).abs() < 1e-9,
+            "as strong now as a message, since this node holds none stronger: {}",
+            brought_now(&made)
         );
 
         let mut made = BTreeMap::from([("tie:HARBOR~KELP01".to_owned(), tie(NOW))]);
@@ -736,10 +829,10 @@ mod tests {
 
         let mut made = BTreeMap::from([("tie:HARBOR~KELP01".to_owned(), tie(NOW - KEPT))]);
         arrivals.ties(&mut made, NOW);
-        assert_eq!(
-            made["tie:HARBOR~KELP01"].value()["strength"],
-            json!(1.0),
-            "the one brought, heard later, stands"
+        assert!(
+            (brought_now(&made) - 1.0).abs() < 1e-9,
+            "the one brought, heard later, stands: {}",
+            brought_now(&made)
         );
     }
 
@@ -763,21 +856,52 @@ mod tests {
         let mut made =
             BTreeMap::from([("tie:OSPREY~TERN01".to_owned(), daemon::Record::from(held))]);
         arrivals.ties(&mut made, NOW);
-        let strength = |key: &str| made[key].value()["strength"].clone();
-        assert_eq!(
-            strength("tie:HARBOR~KELP01"),
-            json!(8.0),
-            "its strongest is as strong as the strongest here"
+        // As every reader of ties reads them: faded to now.
+        let at_now = |key: &str| {
+            let record = &made[key];
+            record.value()["strength"].as_f64().unwrap_or_default()
+                * super::tie::faded(NOW - record.heard())
+        };
+        assert!(
+            (at_now("tie:HARBOR~KELP01") - 8.0).abs() < 1e-9,
+            "its strongest is as strong now as the strongest here: {}",
+            at_now("tie:HARBOR~KELP01")
         );
-        assert_eq!(
-            strength("tie:HARBOR~REEF01"),
-            json!(4.0),
-            "and the rest weaker alike, so they keep their order"
+        assert!(
+            (at_now("tie:HARBOR~REEF01") - 4.0).abs() < 1e-9,
+            "and the rest weaker alike, so they keep their order: {}",
+            at_now("tie:HARBOR~REEF01")
         );
         assert_eq!(
             made["tie:HARBOR~TIDE01"].value().get("strength"),
             None,
             "one saying a strength no tie could have says none"
+        );
+    }
+
+    #[test]
+    fn no_tie_a_cell_brought_is_stronger_now_than_one_held_here_since_faded() {
+        let scratch = tempfile::tempdir().expect("a scratch folder");
+        let mut fresh = harbour();
+        fresh["ties"] = json!([{"key": "tie:HARBOR~KELP01", "kind": "tie",
+                                "heard": NOW, "strength": 8.0}]);
+        left(scratch.path(), "tern", "s-harbour", &fresh);
+        let arrivals = Arrivals::default();
+        arrivals.carried("s-harbour", from("tern"));
+        let sessions = [session("s-harbour", "stand1", "skiff")];
+        arrivals.read(scratch.path(), "skiff", &sessions, NOW);
+
+        // As strong as heard, but heard two half-lives ago, so a quarter
+        // as strong now.
+        let held = json!({"key": "tie:OSPREY~TERN01", "kind": "tie",
+                          "heard": NOW - 2 * super::tie::HALF_LIFE, "strength": 8.0});
+        let mut made =
+            BTreeMap::from([("tie:OSPREY~TERN01".to_owned(), daemon::Record::from(held))]);
+        arrivals.ties(&mut made, NOW);
+        assert_eq!(
+            made["tie:HARBOR~KELP01"].value()["strength"],
+            json!(2.0),
+            "weighed as it stands now, as the strongest here does"
         );
     }
 

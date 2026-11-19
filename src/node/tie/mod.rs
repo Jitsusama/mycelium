@@ -155,7 +155,7 @@ struct Cell {
 
 /// What strength is left of one after `since` milliseconds: none past
 /// the 24 days an `i32` counts, a fade of thousands of halvings.
-fn faded(since: i64) -> f64 {
+pub(super) fn faded(since: i64) -> f64 {
     let half_life = f64::from(i32::try_from(HALF_LIFE).unwrap_or(i32::MAX));
     i32::try_from(since).map_or(0.0, |since| (-f64::from(since) / half_life).exp2())
 }

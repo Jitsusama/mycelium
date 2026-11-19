@@ -890,6 +890,30 @@ pub fn judge(asker: Option<i32>, processes: &Processes, above: &[Option<Kind>]) 
     By::Person
 }
 
+/// Why [`judge`] tells process `asker` an agent's where no session
+/// claims it, as `processes` tell it, in words a refusal can say: the
+/// step of the judgement that made it one.
+#[must_use]
+pub fn unclaimed_because(asker: Option<i32>, processes: &Processes) -> &'static str {
+    let Some(pid) = asker else {
+        return "the kernel names no process at it";
+    };
+    match processes.tell(pid) {
+        Told::Agent(_) => return "an agent's unit or a pi above it runs it",
+        Told::Untold => return "nothing can be read of it or a forebear, so it can't be told",
+        Told::Person => {}
+    }
+    if let Processes::Folder(procs) = processes.kernel() {
+        if gains_less(procs, pid) {
+            return "it is barred from gaining privileges, as a fence bars it";
+        }
+        if mounts_otherwise(procs, pid) {
+            return "it sees mounts of its own, as a fence's process does";
+        }
+    }
+    "nothing marks it an agent's"
+}
+
 /// Whether process `pid` may gain no privileges, as a fence sets, while
 /// the node itself may.
 fn gains_less(procs: &Path, pid: i32) -> bool {
@@ -1733,6 +1757,10 @@ mod tests {
             By::Agent(Kind::Strict),
             "one an agent's unit holds, below no session, runs strictly fenced"
         );
+        assert_eq!(
+            unclaimed_because(Some(40), &processes),
+            "an agent's unit or a pi above it runs it"
+        );
         let status = procs.path().join("41").join("status");
         let said = fs::read_to_string(&status).expect("its status");
         fs::write(&status, format!("{said}NoNewPrivs:\t1\n")).expect("it is barred");
@@ -1740,6 +1768,10 @@ mod tests {
             judge(Some(41), &processes, &[]),
             By::Agent(Kind::Strict),
             "one barred from gaining privileges, as a fence bars it, runs strictly fenced"
+        );
+        assert_eq!(
+            unclaimed_because(Some(41), &processes),
+            "it is barred from gaining privileges, as a fence bars it"
         );
         assert_eq!(
             judge(Some(42), &processes, &[Some(Kind::None), Some(Kind::Fence)]),
@@ -1758,9 +1790,17 @@ mod tests {
             "one the kernel doesn't name"
         );
         assert_eq!(
+            unclaimed_because(None, &processes),
+            "the kernel names no process at it"
+        );
+        assert_eq!(
             judge(Some(44), &processes, &[]),
             By::Agent(Kind::Strict),
             "one nothing can be read of"
+        );
+        assert_eq!(
+            unclaimed_because(Some(44), &processes),
+            "nothing can be read of it or a forebear, so it can't be told"
         );
     }
 

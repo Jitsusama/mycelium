@@ -1863,14 +1863,11 @@ fn fence_of(by: By) -> Option<crate::declared::Kind> {
 /// Why a link's end was judged `by`, for a refusal to say: the session
 /// whose claim above it made it an agent's, the nearest of `claims`,
 /// where one did, and otherwise what the kernel says of it.
-fn judged_as(by: By, claims: &[String]) -> String {
+fn judged_as(by: By, claims: &[String], unclaimed: &str) -> String {
     match claims.first() {
         // Quoted, since a presence may say anything as its session.
         Some(session) => format!("its link's end is judged {by}, as session {session:?} claims it"),
-        None => format!(
-            "its link's end is judged {by}, as an agent's unit, a pi above it, or a fence's \
-             bar on privileges or mounts of its own says"
-        ),
+        None => format!("its link's end is judged {by}, as {unclaimed}"),
     }
 }
 
@@ -4809,7 +4806,8 @@ impl<S: Store> Shared<S> {
             if asked.carries && !unattended {
                 // Said here too, since the person reads the carry's
                 // failure on the machine it left.
-                let why = judged_as(by, &judged.1);
+                let unclaimed = asker::unclaimed_because(self.client, &self.processes);
+                let why = judged_as(by, &judged.1, unclaimed);
                 eprintln!("a carry relayed from {from:?} is refused: {why}");
                 return Err(format!(
                     "{} takes no carry from {from:?} here, so the carried session couldn't \
@@ -4845,8 +4843,13 @@ impl<S: Store> Shared<S> {
                          start, arriving as a new cell, and refused it: {}",
                         self.machine,
                         why.replace(
-                            starts::FOR_AN_AGENT,
-                            "carry to a machine a person works at instead"
+                            starts::STOPPED_FOR_AN_AGENT,
+                            "so resume it there to take the carry, or carry to a machine a \
+                             person works at instead"
+                        )
+                        .replace(
+                            starts::PACED_FOR_AN_AGENT,
+                            "Or carry to a machine a person works at instead."
                         )
                     )
                 } else {
@@ -10460,6 +10463,68 @@ esac
         .await;
     }
 
+    // H2VYOB's lineage (2026-11-18): a cell this node started is told its
+    // starter by the node's own book, over the orchestrator its presence
+    // names, and its forage says the book said so.
+    #[tokio::test]
+    async fn a_cell_this_node_started_is_told_its_starter_by_the_nodes_book() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let quests = dir.path().join("quests");
+        let quest = quests.join("QEST-20261115-HARBOR");
+        fs::create_dir_all(&quest).expect("its folder");
+        fs::write(
+            quest.join("README.md"),
+            "---\nid: QEST-20261115-HARBOR\nstatus: active\n---\n# Harbour\n\n## Summary\n\nHarbour holds.\n",
+        )
+        .expect("its README");
+        // Made as the node makes it, open to nobody else, so its socket goes
+        // there.
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir.path().join("skiff"))
+            .expect("the node's folder");
+        // The book says OAR001's session asked for the hold HARBOR runs in.
+        let started = json!({
+            "at": jiff::Timestamp::now().as_millisecond(), "by": {"Agent": "fence"},
+            "started_by": "OAR001", "machine": "skiff", "held": "e0d4",
+        });
+        fs::write(
+            socket.with_file_name("starts.jsonl"),
+            format!("{started}\n"),
+        )
+        .expect("a book");
+        let places = Places {
+            quests,
+            scratch: dir.path().join("scratch"),
+            home: dir.path().to_owned(),
+            state: dir.path().join("state"),
+        };
+        let store = Memory::default();
+        let (_stop, _node) = node_sharing(
+            &store,
+            "skiff",
+            Vec::<Piped>::new(),
+            None,
+            &socket,
+            Some(places),
+        );
+        let (mut client, _hello) = Speaking::hello(&socket).await;
+        client
+            .ask(json!({"id": 2, "ask": "watch", "kind": "forage"}))
+            .await;
+        harbour_held(&store, &socket).await;
+        let forage = watched_until(&mut client, "forage:HARBOR", |one| {
+            one["lineage"]["started_by_from"] == "book"
+        })
+        .await;
+        assert_eq!(
+            forage["lineage"]["started_by"], "OAR001",
+            "the book's starter, not WCJQSG, the orchestrator its presence names: {forage}"
+        );
+    }
+
     /// Waits on `client`'s watch until a record keyed `key` comes, as
     /// `holds` says it must be, and gives it.
     async fn watched_until(
@@ -15854,6 +15919,29 @@ esac
         );
     }
 
+    /// The strength tie `record` has now, faded as every reader of ties
+    /// fades it.
+    fn strength_now(record: &daemon::Record) -> f64 {
+        let now = jiff::Timestamp::now().as_millisecond();
+        let strength = record.value()["strength"].as_f64().expect("a strength");
+        strength * tie::faded(now.saturating_sub(record.heard()).max(0))
+    }
+
+    /// Checks that `refused`, a carry relayed by a process nothing can be
+    /// read of, says skiff takes no carry, what of its process made it an
+    /// agent's, and that the carry can be taken again.
+    fn refused_as_unreadable(refused: &str) {
+        assert!(refused.starts_with("skiff takes no carry"), "{refused}");
+        assert!(
+            refused.contains(
+                "as nothing can be read of it or a forebear, so it can't be told. Its files \
+                 stay in the handover, so the carry can be taken again"
+            ),
+            "it says what made its link's end an agent's, and that the carry can be taken \
+             again: {refused}"
+        );
+    }
+
     /// Skiff's node in the work realm, sharing as `sharing` says, judging
     /// its askers by `processes`, and holding what it starts with a
     /// stand-in holder in `dir`.
@@ -15977,7 +16065,7 @@ esac
             .relayed("tern", carrying.clone())
             .await
             .expect_err("a carry relayed from a process judged an agent's is refused");
-        assert!(refused.starts_with("skiff takes no carry"), "{refused}");
+        refused_as_unreadable(&refused);
         shared.read_sessions();
         assert_eq!(stands(&shared), "STAND1", "and is never read for one");
         asker.client = i32::try_from(std::process::id()).ok();
@@ -16000,10 +16088,10 @@ esac
             .await
             .expect("the person's carry starts");
         assert_eq!(stands(&shared), "HARBOR", "as the cell it left");
-        assert_eq!(
-            shared.tie_records()["tie:HARBOR~KELP01"].value()["strength"],
-            json!(1.0),
-            "the tie it brought is kept, as strong as a message, since none here is stronger"
+        let brought = strength_now(&shared.tie_records()["tie:HARBOR~KELP01"]);
+        assert!(
+            (brought - 1.0).abs() < 1e-3,
+            "the tie it brought is kept, as strong now as a message here: {brought}"
         );
         assert!(
             !shared.cell_records().contains_key("cell:STAND1"),

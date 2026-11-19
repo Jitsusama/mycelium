@@ -47,9 +47,16 @@ pub const NODE_AN_HOUR: usize = 32;
 /// so no one cell spends the node's whole hour bringing back old work.
 pub const RESUMES_A_CELL_AN_HOUR: usize = 9;
 
-/// What a refusal of an agent's start ends by telling it to do: the
-/// limits pace agents, so the person is no one to ask.
-pub const FOR_AN_AGENT: &str = "tell your orchestrator, as a finding";
+/// What a refusal of an agent's start, while the person's stop stands,
+/// ends by telling it to do: only the person lifts it, and an agent is
+/// to ask no one but its orchestrator.
+pub const STOPPED_FOR_AN_AGENT: &str =
+    "don't ask them to, but tell your orchestrator, as a finding";
+
+/// What a refusal of an agent's start past the limits ends by telling
+/// it to do: the limits pace agents, so the person is no one to ask.
+pub const PACED_FOR_AN_AGENT: &str =
+    "It paces agents and isn't the person's to lift: tell your orchestrator, as a finding";
 
 /// An hour, in milliseconds.
 const HOUR: i64 = 3_600_000;
@@ -421,8 +428,7 @@ impl Starts {
                 return Some((
                     format!(
                         "the person stopped agents starting sessions, and only they resume \
-                         it, with `mycelium starts resume`; don't ask them to, but \
-                         {FOR_AN_AGENT}"
+                         it, with `mycelium starts resume`; {STOPPED_FOR_AN_AGENT}"
                     ),
                     None,
                 ));
@@ -680,7 +686,7 @@ fn paced(why: &str, room: i64, at: i64) -> String {
         .unwrap_or_default();
     format!(
         "{why}; there is room again in {minutes}, at {clock}, so ask again then. \
-         It paces agents and isn't the person's to lift: {FOR_AN_AGENT}"
+         {PACED_FOR_AN_AGENT}"
     )
 }
 
