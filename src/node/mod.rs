@@ -15009,6 +15009,47 @@ esac
         );
     }
 
+    // An agent's start relayed here under a name another machine hasn't
+    // answered may still land there, so it starts nowhere here and the
+    // name stays held for asking there again.
+    #[tokio::test]
+    async fn a_relay_from_an_agent_under_a_name_held_elsewhere_starts_nowhere() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        link.client = Some(1);
+        let (by, _) = link.judged().await.expect("the asker is judged");
+        let name = once::Name::of(by, None, "01J-retry").expect("a name");
+        let now = jiff::Timestamp::now().as_millisecond();
+        let once::Joined::Leads(lead) = link.onces.join(name.clone(), "skiff", now) else {
+            panic!("the first ask under it leads");
+        };
+        link.onces.unanswered(&name.there("skiff"), "tern", true);
+        lead.ends(now, &Err("tern didn't answer within 30s".to_owned()));
+        let start = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: Some("01J-retry".to_owned()),
+        };
+        let refused = link
+            .relayed("tern", start)
+            .await
+            .expect_err("it starts nowhere here");
+        assert!(
+            refused.starts_with(
+                "a start relayed here starts here or nowhere, and it was asked of tern"
+            ),
+            "{refused}"
+        );
+        let once::Joined::Resends { machine, .. } = link.onces.join(name, "skiff", now + 1) else {
+            panic!("the name is still held for tern");
+        };
+        assert_eq!(machine, "tern");
+    }
+
     #[test]
     fn only_the_persons_start_of_a_carrys_shape_is_marked_as_a_carry() {
         let carry = [
