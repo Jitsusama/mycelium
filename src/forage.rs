@@ -432,8 +432,10 @@ pub fn addresses(said: &Value) -> Vec<String> {
 }
 
 /// The joins `said` lists, as a presence's `serves` or `relies` does,
-/// passing over each entry that names no cell by address, says no need,
-/// or dates it at no ISO time, and keeping at most [`LISTED_MOST`].
+/// passing over each entry that names no cell by address, says no need
+/// but blanks, or dates it at no ISO time, and keeping at most
+/// [`LISTED_MOST`]. Each need is kept trimmed, and each time as the node
+/// reads it, so two presences dating a join alike say it alike.
 #[must_use]
 pub fn joins(said: &Value) -> Vec<Join> {
     said.as_array()
@@ -441,13 +443,15 @@ pub fn joins(said: &Value) -> Vec<Join> {
         .flatten()
         .filter_map(|join| {
             let cell = join["cell"].as_str().filter(|cell| is_address(cell))?;
-            let need = join["need"].as_str()?;
-            let since = join["since"].as_str()?;
-            since.parse::<jiff::Timestamp>().ok()?;
+            let need = join["need"]
+                .as_str()
+                .map(str::trim)
+                .filter(|need| !need.is_empty())?;
+            let since = join["since"].as_str()?.parse::<jiff::Timestamp>().ok()?;
             Some(Join {
                 cell: cell.to_owned(),
                 need: need.chars().take(LONGEST_PURPOSE).collect(),
-                since: since.to_owned(),
+                since: since.to_string(),
             })
         })
         .take(LISTED_MOST)
@@ -2132,8 +2136,9 @@ mod tests {
             {"cell": "no one", "need": "a field", "since": "2026-11-16T09:00:00Z"},
             {"cell": "TERNSS", "need": "a field", "since": "yesterday"},
             {"cell": "TERNSS", "since": "2026-11-16T09:00:00Z"},
+            {"cell": "TERNSS", "need": "  \t ", "since": "2026-11-16T09:00:00Z"},
             "TERNSS",
-            {"cell": "TERNSS", "need": "a field", "since": "2026-11-16T10:00:00Z"},
+            {"cell": "TERNSS", "need": " a field ", "since": "2026-11-16T10:00:00.000+00:00"},
         ]));
         assert_eq!(
             joins
@@ -2147,6 +2152,11 @@ mod tests {
             joins[0].need.chars().count(),
             LONGEST_PURPOSE,
             "a need is cut"
+        );
+        assert_eq!(joins[1].need, "a field", "a need is kept trimmed");
+        assert_eq!(
+            joins[1].since, "2026-11-16T10:00:00Z",
+            "a join's time is kept as the node reads it"
         );
         let many: Vec<Value> = (0..LISTED_MOST + 5)
             .map(|n| json!(format!("CELL{n}")))
