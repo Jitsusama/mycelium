@@ -1091,6 +1091,14 @@ impl Exchange {
         if !is_quest(id) || ledgers.shares(id) {
             return Ok(true);
         }
+        // A quest ended at both ends, which this end has stopped sharing,
+        // is never taken up again, by whatever the other end says of it.
+        // What it said before it too stopped still crosses after this end
+        // stopped, and taking it up would move the whole record aside,
+        // with nothing left to share to bring it back.
+        if self.places.ended(id) && self.has_ended_there(id) {
+            return Ok(false);
+        }
         let above = self
             .theirs
             .as_ref()
@@ -3337,6 +3345,55 @@ mod tests {
             !shares(&skiff) && !shares(&kestrel),
             "nor is the quest taken up again"
         );
+    }
+
+    // WM4KSZ (2026-11-19): 31 quests' records left optimus and 16 the
+    // Mac, each moved aside when what one end said before it stopped
+    // sharing reached the other after it had.
+    #[test]
+    fn what_an_end_said_before_it_stopped_moves_no_ended_record_aside() {
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        let readme = |status: &str| format!("---\nid: {QUEST}\nstatus: {status}\n---\n# Shared\n");
+        let shares = |machine: &Machine| machine.places.ledgers().shares(QUEST);
+        skiff.write("README.md", &readme("active"));
+        skiff.write("attachments/map.md", "the map\n");
+        share(&skiff, QUEST);
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+        for _ in 0..2 {
+            talk(&mut near, &mut far);
+        }
+        assert_eq!(
+            kestrel.read("attachments/map.md"),
+            Some("the map\n".to_owned())
+        );
+
+        skiff.write("README.md", &readme("concluded"));
+        for _ in 0..3 {
+            talk(&mut near, &mut far);
+        }
+        assert!(
+            !shares(&skiff) && !shares(&kestrel),
+            "neither end shares it"
+        );
+
+        // What skiff said of the quest while it still shared it, heard late,
+        // and again as a link dialled anew says it.
+        let late = || Say::Holds {
+            quest: QUEST.to_owned(),
+            files: BTreeMap::new(),
+        };
+        far.hear(late()).expect("heard");
+        near.hear(late()).expect("heard");
+        for machine in [&skiff, &kestrel] {
+            assert_eq!(
+                machine.read("attachments/map.md"),
+                Some("the map\n".to_owned()),
+                "{} keeps the ended quest's record where it was",
+                machine.name
+            );
+            assert!(!shares(machine), "and doesn't take it up again");
+        }
     }
 
     /// What works inside a folder, as a test says.
