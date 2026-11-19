@@ -26,12 +26,15 @@ rustPlatform.buildRustPackage {
   # Nix's sandbox on a Mac lets a build start no FSEvents stream, which
   # notify watches files through there, and bind no listener, even on the
   # loopback. So these tests, which hear a file change or bind a listener
-  # of their own, fail in a Mac's sandboxed Nix build alone: they still
+  # of their own, fail in a Mac's sandboxed Nix build alone: 62 say they
+  # can't start an FSEvents stream, 7 that the bind wasn't permitted, and
+  # 14 wait on a change no stream reports until they time out. They still
   # run under cargo test on a Mac, in a Mac's Nix build outside the
   # sandbox, and in the Linux build, where notify uses inotify. Most of
   # tests/ starts a node, which watches its folders the same way, so a
   # sandboxed Mac build runs only the unit tests in src/. It knows the
-  # sandbox by /Users, which only a sandboxed build can't list. `--exact`
+  # sandbox by its refusal to list /Users, so any other reason `ls` fails
+  # runs every test, and a fault shows as a failure. `--exact`
   # makes each skip match a whole name, so a test added later is never
   # skipped unseen. Off a Mac the name is null, so no attribute is set
   # and Linux's derivation is as it was.
@@ -130,10 +133,10 @@ rustPlatform.buildRustPackage {
       );
     in
     ''
-      if ! ls /Users > /dev/null 2>&1; then
+      if ls /Users 2>&1 > /dev/null | grep -q 'Operation not permitted'; then
         echo "In a Mac's Nix sandbox: unit tests alone, skipping what it denies"
-        cargoTestFlags="''${cargoTestFlags-} --lib --bins"
-        checkFlags="''${checkFlags-} --exact ${toString skips}"
+        appendToVar cargoTestFlags --lib --bins
+        appendToVar checkFlags --exact ${toString skips}
       fi
     '';
   meta = {
