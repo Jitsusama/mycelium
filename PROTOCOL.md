@@ -2619,14 +2619,16 @@ cells', and a reader gathers them as `mycelium forage` does.
 The node works out `started_by` and `started_by_from` itself and never
 takes either from a presence's `lineage`. It finds a session's start in
 its book by the holder the session is held by, which it matches by the
-pid or wake file the session's own presence names, so `book` says the
-node started a session holding that holder, not that the session is
-the one it started. `book` is only the book of the node serving the
-forage: a start relayed from another machine is kept
-in the asking node's book alone, so here it reads `presence` or has no
-starter. Of `split_into`, `serves` and `relies`, an entry that names no
-cell by address, says no need or dates it at no ISO time is passed over
-alone, and at most 64 of each are kept.
+pid or wake file the session's own presence names, or, for a hosted
+session, by a holder whose command names its session or conversation
+after `--session`, so `book` says the node started a session holding
+that holder, not that the session is the one it started. `book` is
+only the book of the node serving the forage: a start relayed from
+another machine is kept in the asking node's book alone, so here it
+reads `presence` or has no starter. Of `split_into`, `serves` and
+`relies`, an entry that names no cell by address, says no need or
+dates it at no ISO time is passed over alone, and at most 64 of each
+are kept.
 
 A quest's id names a folder in the store, so one that isn't a plain
 name of letters, digits, `-` and `_` is read as nothing, and a file is

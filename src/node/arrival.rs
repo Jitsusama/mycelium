@@ -78,8 +78,9 @@ struct Kept {
     /// Whether its ties are held to [`bounded`]'s strength yet.
     bounded: bool,
     /// Whether it stands as its session's cell: one another session's
-    /// name takes stands as none, but is kept as it is, so it is never
-    /// read from its file again, and bounded afresh, once it can stand.
+    /// name takes stands as none, but is kept as it is, so once it can
+    /// stand again it keeps the bound it had rather than being read from
+    /// its file and bounded anew.
     stands: bool,
 }
 
@@ -110,11 +111,14 @@ impl Arrivals {
     /// `session` as `carry`, so its cell is read once it runs here, in
     /// place of any it arrived with before.
     pub(super) fn carried(&self, session: &str, carry: Carried) {
+        // Both held at once, in the order `read` takes them, so no read
+        // between the two finds the old cell gone and its carry still
+        // waited on, and keeps the old cell in place of the new.
+        let mut carries = self.carries.lock().unwrap_or_else(PoisonError::into_inner);
         self.kept
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(session);
-        let mut carries = self.carries.lock().unwrap_or_else(PoisonError::into_inner);
         let waited = Waited {
             carry,
             ran: false,
@@ -195,7 +199,7 @@ impl Arrivals {
         // Only a cell whose session no longer runs here is let go, so
         // none that runs is read again each minute; those running are
         // bounded by the starts a node takes. Its carry goes with it, so
-        // it is never read from its file again, and bounded afresh.
+        // it is never read from its file and bounded anew.
         while kept.len() > KEPT_MOST {
             let earliest = kept
                 .iter()
@@ -213,7 +217,7 @@ impl Arrivals {
         // any other, or that two sessions running here say, stands as
         // none of them, so no session takes the name, and the talk, of
         // another cell; one whose session ended never takes a live
-        // one's.
+        // one's, and two that ended stand as neither.
         let taken: Vec<String> = kept
             .iter()
             .map(|(id, one)| (id, &one.brought))
@@ -223,7 +227,7 @@ impl Arrivals {
                 });
                 let twice = kept.iter().any(|(other, said)| {
                     other != *id
-                        && runs(other)
+                        && (runs(other) || !runs(id))
                         && said.brought.cell.eq_ignore_ascii_case(&brought.cell)
                 });
                 other_is || twice
@@ -661,6 +665,14 @@ mod tests {
             BTreeMap::from([("s-harbour".to_owned(), "HARBOR".to_owned())]),
             "once the cell's own session has ended, it arrives"
         );
+        sessions[1].state = State::Ended;
+        sessions[2].state = State::Ended;
+        arrivals.read(scratch.path(), "skiff", &sessions, NOW + 1);
+        assert_eq!(
+            arrivals.cells(),
+            BTreeMap::from([("s-harbour".to_owned(), "HARBOR".to_owned())]),
+            "two that said one name stand as neither once both have ended"
+        );
     }
 
     #[test]
@@ -740,6 +752,15 @@ mod tests {
         assert!(
             !cells.contains_key("s-1"),
             "the one whose session ran here longest ago goes"
+        );
+        // Its session back within the hour its carry is waited on: the
+        // carry went with the cell, so its file is never read again.
+        sessions[1].state = State::Idle;
+        let later = NOW + i64::try_from(KEPT_MOST).expect("a small count") + 1;
+        arrivals.read(scratch.path(), "skiff", &sessions, later);
+        assert!(
+            !arrivals.cells().contains_key("s-1"),
+            "a cell let go takes its carry with it"
         );
     }
 
@@ -976,28 +997,51 @@ mod tests {
             (faded - 0.5).abs() < 1e-9,
             "so it fades as any tie held here: {faded}"
         );
+    }
 
-        // Its name taken a while by another live session, then free
-        // again: kept as it was, never read from its file and bounded
-        // afresh beside a strong tie held here.
-        let mut clash = vec![
-            session("s-harbour", "stand1", "skiff"),
-            session("s-real", "harbor", "tern"),
-        ];
-        arrivals.read(scratch.path(), "skiff", &clash, later);
-        assert!(arrivals.cells().is_empty(), "its name is taken");
-        clash[1].state = State::Ended;
-        assert!(arrivals.read(scratch.path(), "skiff", &clash, later));
-        assert_eq!(arrivals.cells().len(), 1, "it stands again");
-        let held = json!({"key": "tie:OSPREY~TERN01", "kind": "tie", "heard": later,
-                          "strength": 8.0});
-        let mut made =
-            BTreeMap::from([("tie:OSPREY~TERN01".to_owned(), daemon::Record::from(held))]);
-        arrivals.ties(&mut made, later);
+    #[test]
+    fn a_cell_whose_name_was_taken_a_while_brings_no_tie_then_and_keeps_its_bound() {
+        let scratch = tempfile::tempdir().expect("a scratch folder");
+        let mut fresh = harbour();
+        fresh["ties"] = json!([{"key": "tie:HARBOR~KELP01", "kind": "tie",
+                                "heard": NOW, "strength": 8.0}]);
+        left(scratch.path(), "tern", "s-harbour", &fresh);
+        let arrivals = Arrivals::default();
+        arrivals.carried("s-harbour", from("tern"));
+        let mut sessions = vec![session("s-harbour", "stand1", "skiff")];
+        arrivals.read(scratch.path(), "skiff", &sessions, NOW);
+        let held = |strength: f64| {
+            let tie = json!({"key": "tie:OSPREY~TERN01", "kind": "tie", "heard": NOW,
+                             "strength": strength});
+            BTreeMap::from([("tie:OSPREY~TERN01".to_owned(), daemon::Record::from(tie))])
+        };
+        let mut made = held(2.0);
+        arrivals.ties(&mut made, NOW);
         assert_eq!(
             made["tie:HARBOR~KELP01"].value()["strength"],
             json!(2.0),
-            "a cell whose name was taken a while keeps the bound it had"
+            "bounded by the strongest held here when first weighed"
+        );
+
+        sessions.push(session("s-real", "harbor", "tern"));
+        arrivals.read(scratch.path(), "skiff", &sessions, NOW);
+        assert!(arrivals.cells().is_empty(), "its name is taken");
+        let mut made = held(2.0);
+        arrivals.ties(&mut made, NOW);
+        assert!(
+            !made.contains_key("tie:HARBOR~KELP01"),
+            "while its name is another's, it brings none of its ties"
+        );
+
+        sessions[1].state = State::Ended;
+        assert!(arrivals.read(scratch.path(), "skiff", &sessions, NOW));
+        assert_eq!(arrivals.cells().len(), 1, "it stands again");
+        let mut made = held(8.0);
+        arrivals.ties(&mut made, NOW);
+        assert_eq!(
+            made["tie:HARBOR~KELP01"].value()["strength"],
+            json!(2.0),
+            "free again, it keeps the bound it had, never read and bounded anew"
         );
     }
 
