@@ -1622,12 +1622,12 @@ it is told the work would go is where the work may run, though a start
 placed (`"PlaceToStart"`, `"Start"`) needs no `runs`. An agent's run
 naming no machine that every machine refuses, this one for its
 launcher, is told this one's reason and then every other's; one a
-link carried here is told this machine by name, not as here. Each machine so refused still counts for
-what the person's lasting machines reach, and a placement's record
-keeps it as `refused`, so a replay refuses it too.
-There it runs as its
-fence's declared `runs`, then the login shell, then `command`; a
-machine declaring no `runs` for it refuses it, as does one whose
+link carried here is told this machine by name, not as here. Each
+machine so refused still counts for what the person's lasting machines
+reach, and a placement's record keeps it as `refused`, so a replay
+refuses it too. There it runs as its fence's declared `runs`, then the
+login shell, then `command`; a machine declaring no `runs` for it
+refuses it, as does one whose
 `runs` doesn't end with `--`, so nothing `command` says is read as
 `runs`' own options. `runs` saying `--shared-tree`, or a shortening
 of it, as a word of its own refuses every run, so pi-fence refuses a
