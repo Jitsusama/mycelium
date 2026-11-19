@@ -1640,7 +1640,10 @@ can't tell a start that never came from one still landing, so it asks
 again under the same name: the node answers that start, landing or
 landed, rather than starting and counting another. The name is held
 for who the node judged asked and the cell the start counts toward, so
-another asker's same name starts its own. A start under it that
+another asker's same name starts its own; agents of no known cell
+share one, so a name is best made unguessable, as the harness makes
+it, since one that names another's start is answered it, attach words
+and all. A start under it that
 landed is answered for an hour, as long as it counts; one that failed
 or was refused lets the name go, so asking again tries afresh, and
 those who joined it hear how it failed. A joined ask is kept on the
@@ -1653,7 +1656,9 @@ can't be made again. A start placed on another machine goes under a
 name of this node's own, from its name and the asker's, so a far node
 joins an ask again from here after the link stopped waiting, relayed
 as it is: the far node answers a relay under a name it holds with
-that start, landing or landed, and starts nothing more. One whose
+that start, landing or landed, and starts nothing more, though only
+from memory: a relay isn't booked there, so a far node restarted
+between a relay and its retry starts a second. One whose
 far machine answered nothing after it was asked may still land there,
 so for an hour an ask again under its name goes back to that machine,
 not placed afresh; its line says `"again": true` and counts nothing,
@@ -1662,7 +1667,9 @@ far machine that answers it didn't start lets the name go. A carry
 names each session's start from the quest, the machine and the
 session's last start from here, so one taken again after a start went
 unanswered joins it, and one carried since starts it again. A node
-older than `once` starts each ask.
+older than `once` starts each ask; asked again where it went, one far
+node that old starts it again, and that start counts nothing here,
+as the first counted.
 
 `"Sprout"` starts a session of new work, as `mycelium sprout` asks, held
 in no window: the node makes the `"Start"` and starts it as above, under

@@ -4645,7 +4645,7 @@ impl<S: Store> Shared<S> {
             Err(why) => Err(why),
         };
         if let Some(lead) = lead {
-            lead.ends(now, &started);
+            lead.ends(jiff::Timestamp::now().as_millisecond(), &started);
         }
         let started = started.map(Response::Started);
         // Noted only once it started, so a carry refused here leaves no
