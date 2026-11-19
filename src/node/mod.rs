@@ -4253,8 +4253,6 @@ impl<S: Store> Shared<S> {
             failed: None,
             refused: None,
         })?;
-        // The book keeps no argument, and a failure's words may name them.
-        let arguments = asked.command.get(1..).unwrap_or_default().to_vec();
         let started = self.placed(asked, fence_of(by)).await;
         self.starts.keep(
             admitted,
@@ -4263,7 +4261,7 @@ impl<S: Store> Shared<S> {
                     Ok((started.machine.clone(), started.held.clone()))
                 }
                 Ok(_) => Err("it answered with no session".to_owned()),
-                Err(why) => Err(starts::failure(why, &arguments)),
+                Err(why) => Err(why.clone()),
             },
         );
         started

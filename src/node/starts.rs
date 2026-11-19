@@ -77,8 +77,8 @@ pub struct Kept {
     /// Its held id there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
-    /// Why it was asked but didn't start, as [`failure`] tells it, so
-    /// naming no argument.
+    /// Why it was asked but didn't start: the node's own reason, naming no
+    /// argument.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<String>,
     /// Why the node refused it.
@@ -302,8 +302,8 @@ impl Starts {
         })
     }
 
-    /// Keeps how `admitted` ended: where it started, or why it didn't,
-    /// given as [`failure`] tells it and cut to [`FAILED_MOST`].
+    /// Keeps how `admitted` ended: where it started, or why it didn't, as
+    /// [`failure`] tells it.
     pub fn keep(&self, admitted: Admitted, ended: Result<(String, String), String>) {
         let Admitted { id, mut asked } = admitted;
         match ended {
@@ -311,7 +311,7 @@ impl Starts {
                 asked.machine = Some(machine);
                 asked.held = Some(held);
             }
-            Err(why) => asked.failed = Some(why.chars().take(FAILED_MOST).collect()),
+            Err(why) => asked.failed = Some(failure(&why)),
         }
         // Going and kept under one lock, so a start asked meanwhile never
         // sees it in neither.
@@ -414,18 +414,17 @@ pub fn beside(runs: &Path) -> PathBuf {
     runs.with_file_name("starts.jsonl")
 }
 
-/// Why a start of a program given `arguments` failed, as the book keeps
-/// it: the node's own reason, before the first `: ` that goes on to name
-/// the command, any argument of three or more characters still in it
-/// put as `<argument>`, and no more than [`FAILED_MOST`] characters, so
-/// no argument is kept however the failure was worded.
-#[must_use]
-pub fn failure(why: &str, arguments: &[String]) -> String {
-    let mut reason = why.split(": ").next().unwrap_or_default().to_owned();
-    for argument in arguments.iter().filter(|one| one.chars().count() >= 3) {
-        reason = reason.replace(argument.as_str(), "<argument>");
-    }
-    reason.chars().take(FAILED_MOST).collect()
+/// Why a start failed, as the book keeps it: the node's own reason alone,
+/// before the first `: `, past which a holder's words name the whole
+/// command, and no more than [`FAILED_MOST`] characters. The asker is
+/// told the whole of it; the book keeps no argument rather than more.
+fn failure(why: &str) -> String {
+    why.split(": ")
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(FAILED_MOST)
+        .collect()
 }
 
 #[cfg(test)]
@@ -437,20 +436,15 @@ mod tests {
 
     #[test]
     fn a_failure_keeps_the_nodes_reason_and_no_argument() {
-        let arguments = ["--said-once".to_owned(), "-c".to_owned()];
-        assert_eq!(
-            failure(
-                "it didn't start: couldn't hold pi --said-once: gone",
-                &arguments
-            ),
-            "it didn't start"
-        );
-        assert_eq!(
-            failure("osprey took pi --said-once and lost it", &arguments),
-            "osprey took pi <argument> and lost it"
-        );
+        let (dir, starts) = book();
+        let admitted = starts.admit(agent("OSPREY", NOW)).expect("within");
+        let why = "it didn't start: couldn't hold pi --said-once: gone";
+        starts.keep(admitted, Err(why.to_owned()));
+        let book = std::fs::read_to_string(dir.path().join("starts.jsonl")).expect("kept");
+        assert!(book.contains(r#""failed":"it didn't start""#), "{book}");
+        assert!(!book.contains("--said-once"), "{book}");
         let long = "x".repeat(FAILED_MOST * 2);
-        assert_eq!(failure(&long, &[]).chars().count(), FAILED_MOST);
+        assert_eq!(failure(&long).chars().count(), FAILED_MOST);
     }
 
     #[test]
