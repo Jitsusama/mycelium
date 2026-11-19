@@ -434,8 +434,9 @@ pub fn addresses(said: &Value) -> Vec<String> {
 /// The joins `said` lists, as a presence's `serves` or `relies` does,
 /// passing over each entry that names no cell by address, says no need
 /// but blanks, or dates it at no ISO time, and keeping at most
-/// [`LISTED_MOST`]. Each need is kept trimmed, and each time as the node
-/// reads it, so two presences dating a join alike say it alike.
+/// [`LISTED_MOST`]. Each need is kept as [`one_line`] says it, trimmed,
+/// and each time as the node reads it, so two presences dating a join
+/// alike say it alike.
 #[must_use]
 pub fn joins(said: &Value) -> Vec<Join> {
     said.as_array()
@@ -443,10 +444,8 @@ pub fn joins(said: &Value) -> Vec<Join> {
         .flatten()
         .filter_map(|join| {
             let cell = join["cell"].as_str().filter(|cell| is_address(cell))?;
-            let need = join["need"]
-                .as_str()
-                .map(str::trim)
-                .filter(|need| !need.is_empty())?;
+            let need = one_line(join["need"].as_str()?);
+            let need = Some(need.trim()).filter(|need| !need.is_empty())?;
             let since = join["since"].as_str()?.parse::<jiff::Timestamp>().ok()?;
             Some(Join {
                 cell: cell.to_owned(),
@@ -2138,7 +2137,7 @@ mod tests {
             {"cell": "TERNSS", "since": "2026-11-16T09:00:00Z"},
             {"cell": "TERNSS", "need": "  \t ", "since": "2026-11-16T09:00:00Z"},
             "TERNSS",
-            {"cell": "TERNSS", "need": " a field ", "since": "2026-11-16T10:00:00.000+00:00"},
+            {"cell": "TERNSS", "need": " a\u{202E}\nfield\u{1b} ", "since": "2026-11-16T10:00:00.000+00:00"},
         ]));
         assert_eq!(
             joins
@@ -2153,7 +2152,10 @@ mod tests {
             LONGEST_PURPOSE,
             "a need is cut"
         );
-        assert_eq!(joins[1].need, "a field", "a need is kept trimmed");
+        assert_eq!(
+            joins[1].need, "a field",
+            "a need is kept trimmed, on one line, turning no text"
+        );
         assert_eq!(
             joins[1].since, "2026-11-16T10:00:00Z",
             "a join's time is kept as the node reads it"
