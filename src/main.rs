@@ -236,10 +236,12 @@ enum Action {
     ///
     /// A receptor senses one outside source, intake only, and says how it
     /// stands in a file the node serves: counts and times alone, never what
-    /// it read. GitHub and calls may also name the changes or events that
-    /// ask the person, in a file of their own the node feeds from, and only
-    /// as `owner/name#N` or an event's id. `mycelium cells` lists each
-    /// beside the sessions.
+    /// it read. In a file of their own, GitHub may also name the changes
+    /// asking the person's review, as `owner/name#N`, and calls the events
+    /// whose summary is written, by id alone. Where the stimuli table names
+    /// that source, the node tells each to the live sessions here whose
+    /// quest claims it. A name refused refuses the whole say. `mycelium
+    /// cells` lists each beside the sessions.
     #[command(
         alias = "receptor",
         after_help = "Example:\n  mycelium receptors say slack --state quiet \\\n    --every 300 --pid 4242"
@@ -1066,8 +1068,8 @@ enum ReceptorAct {
     /// Says how this receptor stands now.
     ///
     /// Written whole over what it said before, its counts and times
-    /// alone, with the changes or events Feeding takes kept apart: any
-    /// other word is refused.
+    /// alone. GitHub's changes and calls' events, when given, are written
+    /// whole to a file of their own beside it. Any other word is refused.
     #[command(
         override_usage = "mycelium receptors say [OPTIONS] --state <STATE>\n       --every <EVERY> --pid <PID> <SOURCE>",
         after_help = "Example:\n  mycelium receptors say slack --state reading \\\n    --today 4 --addressed 2 --every 300 --pid 4242"
@@ -1075,7 +1077,8 @@ enum ReceptorAct {
     Say(ReceptorSaid),
 }
 
-/// How a receptor says it stands: counts and times alone.
+/// How a receptor says it stands: counts and times, and for GitHub and
+/// calls the changes or events it names.
 #[derive(clap::Args)]
 struct ReceptorSaid {
     /// What it senses.
