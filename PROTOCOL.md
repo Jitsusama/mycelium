@@ -157,16 +157,18 @@ same code, each line a JSON value:
 8. `{"Start": {"ask", "start"}}`: start a session held on the other
    end's machine, as a `"Start"` request says it. The other end hands it
    to its own node's socket as `{"Relayed": {"from", "start"}}`, `from`
-   the machine that asked, with a need for its own machine added, so
-   that node admits or refuses it on its own facts as they are then.
+   the machine that asked, with a need for its own machine added.
    That node takes `"Relayed"` only from its own process or one it
    judges the person's, as a link's end is: none in an agent's unit,
-   below a pi, or barred or mounted apart as a fence's. It starts it
-   on its own machine alone, never placing it again, and neither
-   counts nor books it, since the asking node did. Where no person
-   works, the kernel is judged alone, so there it fences habit alone.
-   The end doesn't start it itself, since a process SSH started sits
-   outside its person's login session.
+   below a pi or a session's claim, or barred or mounted apart as a
+   fence's. Where no person works it takes it from its own process
+   alone, since an agent's SSH login can't be told from a link's end
+   there, and logs why it refused. It places it pinned to its own
+   machine, so its facts as they are then still refuse it and count it
+   as load, and starts it there or nowhere, never elsewhere and never
+   on a machine made for it. It neither counts nor books it, since the
+   asking node did. The end doesn't start it itself, since a process
+   SSH started sits outside its person's login session.
 9. `{"Started": {"ask", "reply"}}`: the other end's reply to the ask
    of that number: its node's, as its socket answered, for a start, and
    its own for a steer.
@@ -538,7 +540,9 @@ in order and says each step:
    carry. The node a session arrives on reads a cell only for a
    session a linked node asked it to start as a carry, within the
    hour, and only in the handover folder that start names, never
-   through a link. It reads it once, as the session runs there, and
+   through a link. The asking node marks a start `"carries": true`
+   only where the person asked a carry's command, whatever the asker
+   said of it, so no agent's start is read for a carry. It reads it once, as the session runs there, and
    keeps it while it runs, its file gone or not. The session stands
    as that cell, its address an alias of it, unless another live
    session goes by the name, as any address, in any case, or two say
@@ -1571,14 +1575,16 @@ a cell's fair share, and the 32 the bound no agent gets round. A
 start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
 once can't pass the limit; a refused one doesn't. The person's own
-starts are never counted or refused, and nor is an agent's first in
-the hour that brings back a session the node knows has ended: pi
-itself, named bare or under `/run/current-system/sw/bin/` or
-`/etc/profiles/per-user/`, given the session after `--session` or
-`--session-id`, by its id or by a file whose name ends in `_` and the
-id. A second
-bringing back the same one within the hour counts, and one running or
-on a machine out of reach is never brought back. A start past the limits
+starts are never counted or refused. An agent's first start in the
+hour that brings back a session the node knows has ended counts toward
+the 32 but not its cell's 8, so a wave brought back starts whole and
+no agent brings back more than 32 an hour. It is pi itself, named bare
+or under `/run/current-system/sw/bin/` or `/etc/profiles/per-user/`,
+given one session after `--session` or `--session-id`, by its id or by
+a file whose name ends in `_` and the id. A bare `pi` is the one the
+login finds, so it fences habit alone. A second bringing back the same
+one within the hour counts toward both, and one running or on a
+machine out of reach is never brought back. A start past the limits
 with room again within a minute waits for it and goes through; one
 further off is refused, saying in how many minutes and at what time
 there is room, and that it goes to the agent's orchestrator as a
@@ -1592,7 +1598,8 @@ node. Every start, refused ones too, is kept in
 `starts.jsonl` beside `runs.jsonl` as a JSON line, `{"at", "by",
 "started_by", "folder", "program", "resumes", "machine", "held",
 "failed", "refused"}`: `at` in milliseconds, `started_by` null for the
-person's, `resumes` the id of the session it brings back uncounted,
+person's, `resumes` the id of the session it brings back, spared its
+cell's 8,
 `program` the command's first word alone, so no argument is kept,
 `failed` the node's reason alone, before the words naming the command,
 and the rest only where they apply. The node reads it again as it

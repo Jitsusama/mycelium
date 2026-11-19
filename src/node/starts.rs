@@ -88,9 +88,11 @@ pub struct Kept {
     pub program: Option<String>,
     /// The session it brings back, one the node knew had ended, as
     /// [`brings_back`] tells: the first such start in the hour counts
-    /// toward no limit, since it begins no new work, though the person's
-    /// stop still holds it. A second within the hour counts, so bringing
-    /// one back again and again is bounded.
+    /// toward agents' number through the node but not its cell's, since
+    /// it begins no new work, so a wave brought back starts whole and no
+    /// agent brings back more than the node's number uncounted. The
+    /// person's stop still holds it. A second within the hour counts
+    /// toward both, so bringing one back again and again is bounded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes: Option<String>,
     /// The machine it started on.
@@ -109,22 +111,31 @@ pub struct Kept {
 }
 
 impl Kept {
-    /// Whether it counts toward an agent's limits: an agent's start of new
-    /// work the node let go ahead, started or not, since a start that
-    /// fails can still have spent.
+    /// Whether it counts toward agents' number through the node: an
+    /// agent's start the node let go ahead, started or not, since a start
+    /// that fails can still have spent.
     fn counts(&self) -> bool {
-        matches!(self.by, By::Agent(_)) && self.resumes.is_none() && self.refused.is_none()
+        matches!(self.by, By::Agent(_)) && self.refused.is_none()
+    }
+
+    /// Whether it counts toward its cell's number too: one that counts
+    /// and begins new work, rather than bringing a session back.
+    fn counts_for_cell(&self) -> bool {
+        self.counts() && self.resumes.is_none()
     }
 }
 
 /// The session of `sessions` that `command` brings back, if it is pi's
 /// and names one that ended after `--session` or `--session-id`, by its
 /// id or by a file whose name ends in `_` and it, as pi names a session's
-/// file. Only pi itself is read, named bare, as the person's login finds
-/// it, or by a path in [`PIS_FOLDERS`], so no shell, nor a program an
-/// agent wrote and named `pi`, hides other work behind the words; and
-/// only an ended session, so one running, or on a machine out of reach,
-/// where it may still run, is never brought back uncounted.
+/// file, and names no other. Only pi itself is read, named bare, as the
+/// person's login finds it, or by a path in [`PIS_FOLDERS`], so no shell,
+/// nor a program an agent wrote and named `pi` elsewhere, hides other
+/// work behind the words; and only an ended session, so one running, or
+/// on a machine out of reach, where it may still run, is never brought
+/// back uncounted. A bare `pi` is fenced by habit alone, since the login
+/// finds it on a path an agent may write: the node's number still bounds
+/// what that hides.
 #[must_use]
 pub fn brings_back(command: &[String], sessions: &[Session]) -> Option<String> {
     let program = command.first()?;
@@ -138,32 +149,41 @@ pub fn brings_back(command: &[String], sessions: &[Session]) -> Option<String> {
     if !(named_pi && persons) {
         return None;
     }
-    let mut named = command
-        .windows(2)
-        .filter(|pair| RESUMING.contains(&pair[0].as_str()))
-        .map(|pair| pair[1].as_str())
-        .chain(command.iter().filter_map(|word| {
-            let (flag, named) = word.split_once('=')?;
-            RESUMING.contains(&flag).then_some(named)
-        }));
-    named.find_map(|named| {
-        let stem = Path::new(named)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or_default();
-        sessions
-            .iter()
-            .find(|session| {
-                let id = session.id.as_str();
-                let is_it = !id.is_empty()
-                    && (named == id
-                        || stem
-                            .strip_suffix(id)
-                            .is_some_and(|before| before.ends_with('_')));
-                is_it && session.state == State::Ended
-            })
-            .map(|session| session.id.clone())
-    })
+    // In the command's order, as pi reads them; naming two is no resume,
+    // since which pi opens can't be told here.
+    let mut named: Vec<&str> = Vec::new();
+    for (at, word) in command.iter().enumerate() {
+        let said = if RESUMING.contains(&word.as_str()) {
+            command.get(at + 1).map(String::as_str)
+        } else {
+            word.split_once('=')
+                .and_then(|(flag, named)| RESUMING.contains(&flag).then_some(named))
+        };
+        if let Some(said) = said
+            && !named.contains(&said)
+        {
+            named.push(said);
+        }
+    }
+    let [named] = named[..] else {
+        return None;
+    };
+    let stem = Path::new(named)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default();
+    sessions
+        .iter()
+        .find(|session| {
+            let id = session.id.as_str();
+            let is_it = !id.is_empty()
+                && (named == id
+                    || stem
+                        .strip_suffix(id)
+                        .is_some_and(|before| before.ends_with('_')));
+            is_it && session.state == State::Ended
+        })
+        .map(|session| session.id.clone())
 }
 
 /// A start let go ahead, held as counted till it is kept.
@@ -212,14 +232,10 @@ impl Book {
                     self.kept
                         .iter()
                         // As the count reads them: one more than an hour
-                        // ahead counts no more than one long gone.
-                        // A free resume in the hour is kept as a counted
-                        // one is, since a second of its session counts.
-                        .position(|one| {
-                            (!one.counts() && one.resumes.is_none())
-                                || one.at <= since
-                                || one.at > ahead
-                        })
+                        // ahead counts no more than one long gone. An
+                        // agent's resume in the hour counts, and is kept,
+                        // since a second of its session counts more.
+                        .position(|one| !one.counts() || one.at <= since || one.at > ahead)
                 });
             match oldest {
                 Some(at) => drop(self.kept.remove(at)),
@@ -407,13 +423,15 @@ impl Starts {
             .collect();
         let of_cell: Vec<i64> = counted
             .iter()
-            .filter(|one| one.started_by == asked.started_by)
+            .filter(|one| one.counts_for_cell() && one.started_by == asked.started_by)
             .map(|one| one.at)
             .collect();
         let all: Vec<i64> = counted.iter().map(|one| one.at).collect();
         // Room comes once enough of the oldest have passed the hour, the
-        // later of the cell's and the node's where both are past.
-        let cell_room = room_after(of_cell.clone(), CELL_AN_HOUR);
+        // later of the cell's and the node's where both are past; a
+        // session brought back is held to the node's alone.
+        let cell_room =
+            room_after(of_cell.clone(), CELL_AN_HOUR).filter(|_| asked.counts_for_cell());
         let node_room = room_after(all.clone(), NODE_AN_HOUR);
         let room = cell_room.max(node_room)?;
         let cell = asked
@@ -702,6 +720,69 @@ mod tests {
     }
 
     #[test]
+    fn the_book_keeps_an_agents_resume_in_the_hour_and_lets_the_persons_go() {
+        let (_dir, starts) = book();
+        let persons = Kept {
+            resumes: Some("s-1".to_owned()),
+            ..asked(By::Person, None, NOW)
+        };
+        {
+            let mut book = starts.lock();
+            book.hold(resuming("OSPREY", "s-0", NOW));
+            book.hold(persons.clone());
+            for _ in 1..KEPT_MOST {
+                book.hold(asked(By::Person, None, NOW + 1));
+            }
+            assert!(!book.kept.contains(&persons), "the person's went first");
+        }
+        for _ in 0..CELL_AN_HOUR {
+            started(&starts, agent("OSPREY", NOW + 2), "h");
+        }
+        starts
+            .admit(resuming("OSPREY", "s-0", NOW + 3))
+            .expect_err("the agent's was kept, so a second counts");
+    }
+
+    #[test]
+    fn a_resume_the_persons_stop_held_leaves_the_next_free() {
+        let (_dir, starts) = book();
+        starts.stop().expect("stopped");
+        starts
+            .admit(resuming("OSPREY", "s-0", NOW))
+            .expect_err("held");
+        starts.resume().expect("resumed");
+        for _ in 0..CELL_AN_HOUR {
+            started(&starts, agent("OSPREY", NOW + 1), "h");
+        }
+        started(&starts, resuming("OSPREY", "s-0", NOW + 2), "h");
+    }
+
+    #[test]
+    fn sessions_brought_back_count_toward_the_nodes_number_but_not_their_cells() {
+        let (_dir, starts) = book();
+        for one in 0..NODE_AN_HOUR {
+            let at = NOW + i64::try_from(one).expect("few");
+            started(&starts, resuming("OSPREY", &format!("s-{one}"), at), "h");
+        }
+        let refused = starts
+            .admit(resuming("OSPREY", "s-last", NOW + 100))
+            .expect_err("past the node's number");
+        assert!(refused.contains("through this node"), "{refused}");
+        assert!(
+            refused.ends_with("tell your orchestrator, as a finding"),
+            "{refused}"
+        );
+        assert_eq!(
+            starts.room(&resuming("OSPREY", "s-last", NOW + 100)),
+            Some(NOW + HOUR),
+            "room comes as the first brought back passes the hour"
+        );
+        starts
+            .admit(agent("SKIFFS", NOW + 100))
+            .expect_err("and new work of another cell waits with them");
+    }
+
+    #[test]
     fn a_start_names_a_session_brought_back_by_its_id_or_its_file_while_it_doesnt_run() {
         let words = |words: &[&str]| {
             words
@@ -734,6 +815,8 @@ mod tests {
             words(&["pi", "--session", "0193-unknown"]),
             words(&["pi", "--session", "x0193-ended"]),
             words(&["pi", "0193-ended"]),
+            words(&["pi", "--session", "0193-busy", "--session", "0193-ended"]),
+            words(&["pi", "--session=0193-new", "--session-id", "0193-ended"]),
             words(&["sh", "-c", "new work", "--session", "0193-ended"]),
             words(&["pip", "--session", "0193-ended"]),
             words(&["/home/x/work/pi", "--session", "0193-ended"]),

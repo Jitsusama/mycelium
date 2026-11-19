@@ -45,9 +45,11 @@ pub enum Request {
     Start(Start),
     /// Start a program here that the node of the linked machine `from`
     /// was asked to start, has judged, counted and booked, and placed
-    /// here, so it starts here alone. Only this node's own process, or
-    /// one judged the person's, as a link's end is, asks it: from any
-    /// other asker it is refused.
+    /// here, so it starts here alone, where this machine's facts as they
+    /// are now still take it. Only this node's own process, or one judged
+    /// the person's, as a link's end is, asks it: from any other asker,
+    /// and from any but the node's own where no person works, it is
+    /// refused.
     Relayed {
         /// The machine whose node was asked.
         from: String,
@@ -187,6 +189,12 @@ pub struct Start {
     /// may cost money, where no machine of the realm takes it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub may_cost: bool,
+    /// Whether it brings in a session the person carried: set by the node
+    /// first asked, which judged who asked, only for the person's start
+    /// of a carry's command, and passed on as it relays it. What an asker
+    /// says of it is never taken, so no agent's start is taken for a carry.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub carries: bool,
 }
 
 /// New work to start a session on: the session's first words come from

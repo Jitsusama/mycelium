@@ -585,20 +585,18 @@ pub fn persons_own(asker: Option<i32>, processes: &Processes, does: &str) -> Res
     }
 }
 
-/// Whether process `asker` may relay a start as a linked node's: the
-/// node's own, or one the kernel judges the person's, as [`judge`] does,
-/// with no session claiming it, as a link's far end, a `mycelium link` an
-/// ssh login runs, is. An agent's unit, a pi above it, a fence's bar on
-/// gaining privileges or mounts of its own each refuse it. On a machine
-/// no person works on the kernel is judged alone, since there every
-/// process is taken for an agent's, a link's end too, so there this
-/// fences an agent no fence holds by habit alone.
+/// Whether process `asker`, judged `by` as [`judge`] judges any asker,
+/// claims and all, may relay a start as a linked node's: the node's own,
+/// or one judged the person's, as a link's far end, a `mycelium link` an
+/// ssh login runs, is. An agent's unit, a pi or a session's claim above
+/// it, a fence's bar on gaining privileges or mounts of its own each
+/// refuse it. On a machine no person works on every asker is judged an
+/// agent's, since an agent's ssh login lands in a login's unit as the
+/// person's does, so there the node's own process alone relays.
 #[must_use]
-pub fn relays(asker: Option<i32>, processes: &Processes) -> bool {
-    asker.is_some_and(|pid| {
-        u32::try_from(pid).is_ok_and(|pid| pid == std::process::id())
-            || judge(Some(pid), processes.kernel(), &[]) == By::Person
-    })
+pub fn relays(asker: Option<i32>, by: By) -> bool {
+    by == By::Person
+        || asker.is_some_and(|pid| u32::try_from(pid).is_ok_and(|pid| pid == std::process::id()))
 }
 
 /// The session that asks, by its own id, among `owners`, each session of
@@ -1764,16 +1762,26 @@ mod tests {
         fs::write(&status, format!("{said}NoNewPrivs:\t1\n")).expect("it is barred");
         let kernel = folder(procs.path());
         let own = i32::try_from(std::process::id()).expect("a pid");
+        let judged =
+            |pid: Option<i32>, processes: &Processes| relays(pid, judge(pid, processes, &[]));
+        assert!(
+            judged(Some(40), &kernel),
+            "a link's end an ssh login runs relays"
+        );
+        assert!(
+            !judged(Some(40), &kernel.clone().unattended()),
+            "but not where no person works, since an agent's ssh login lands so too"
+        );
+        assert!(
+            !relays(Some(40), judge(Some(40), &kernel, &[None])),
+            "nor one a session claims"
+        );
         for processes in [kernel.clone(), kernel.unattended()] {
-            assert!(relays(Some(own), &processes), "the node's own relays");
-            assert!(
-                relays(Some(40), &processes),
-                "a link's end an ssh login runs relays"
-            );
-            assert!(!relays(Some(41), &processes), "an agent's unit doesn't");
-            assert!(!relays(Some(42), &processes), "nor one pi runs");
-            assert!(!relays(Some(43), &processes), "nor one a fence bars");
-            assert!(!relays(None, &processes), "nor one nothing names");
+            assert!(judged(Some(own), &processes), "the node's own relays");
+            assert!(!judged(Some(41), &processes), "an agent's unit doesn't");
+            assert!(!judged(Some(42), &processes), "nor one pi runs");
+            assert!(!judged(Some(43), &processes), "nor one a fence bars");
+            assert!(!judged(None, &processes), "nor one nothing names");
         }
     }
 

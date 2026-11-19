@@ -506,6 +506,7 @@ mod tests {
             folder: None,
             command: vec!["true".to_owned()],
             may_cost: false,
+            carries: false,
         };
         let run = Run {
             work: wanting_gcloud(),
