@@ -2020,7 +2020,8 @@ kernel and started when it says. It answers `"Spawned"`, or refuses,
 saying why there and, once for each reason, in its log. A session is
 named in at most 256 bytes. A spawner serves one session, and a
 session's spawners are one host's at a time: another host's word for
-it is taken once the first's have all ended, or the first host has.
+it is taken once the first's have all ended, the first host has, or
+the first host no longer proves the session.
 Of 4096 kept at most, those ended, or whose host has, are let go
 first, and none more is taken until some end.
 
@@ -2039,7 +2040,9 @@ connection, which the host opens closed on exec, and the node knows
 the speaker from the kernel, not from what it says. A command below
 a pi-spawner the host started but the node holds no word for is told
 no session, even where the host holds only one, since that spawner
-may serve a session gone since. A command the host starts as its own
+may serve a session gone since, and so is one whose forebears, read
+again, no longer reach the host or name the child below it. A
+command the host starts as its own
 child, as it does once a spawner is lost, runs below no spawner: it
 is told the host's session where the host proves just one, and none
 where it holds more. A spawner a command starts below a said one

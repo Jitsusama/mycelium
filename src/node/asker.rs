@@ -210,23 +210,22 @@ impl Processes {
 
     /// Whether process `asker` runs below a `pi-spawner` that is a child of
     /// process `host`, read from the kernel, where only a process's own
-    /// threads may change its name. Nothing says so where the kernel's
-    /// folder can't be read, as on a Mac, which proves no spawner either.
-    fn below_a_spawner(&self, asker: i32, host: i32) -> bool {
+    /// threads may change its name. None where it can't be told: the
+    /// lineage, read again, no longer reaches the host, or that child's
+    /// name can't be read. Where the kernel's folder can't be read, as on a
+    /// Mac, it is below none, since no spawner is proved there either.
+    fn below_a_spawner(&self, asker: i32, host: i32) -> Option<bool> {
         let Self::Folder(procs) = self.kernel() else {
-            return false;
+            return Some(false);
         };
         let lineage = self.lineage(asker);
-        let Some(child) = lineage
-            .iter()
-            .position(|process| *process == host)
-            .and_then(|at| at.checked_sub(1))
-            .and_then(|at| lineage.get(at))
-        else {
-            return false;
+        let at = lineage.iter().position(|process| *process == host)?;
+        let Some(child) = at.checked_sub(1).and_then(|below| lineage.get(below)) else {
+            // The host asks for itself.
+            return Some(false);
         };
-        fs::read_to_string(procs.join(child.to_string()).join("status"))
-            .is_ok_and(|status| named(&status).is_some_and(|(name, _)| name == "pi-spawner"))
+        let status = fs::read_to_string(procs.join(child.to_string()).join("status")).ok()?;
+        named(&status).map(|(name, _)| name == SPAWNER)
     }
 
     /// What is told of process `pid`.
@@ -1078,12 +1077,24 @@ pub fn session_alone(
     }
     // One below a spawner whose word this node doesn't hold, as until the
     // host says it again once this node starts, is told none, though the
-    // host holds only one: the spawner may serve a session gone since.
-    if !keys.is_empty() && processes.below_a_spawner(pid, process) {
-        return Err(format!(
-            "this asks below pi host process {process} through no pi-spawner this node \
-             took its word for as serving a session it proves"
-        ));
+    // host holds only one: the spawner may serve a session gone since. So
+    // is one whose lineage, read again, can't say whether it is below one.
+    if !keys.is_empty() {
+        match processes.below_a_spawner(pid, process) {
+            Some(false) => {}
+            Some(true) => {
+                return Err(format!(
+                    "this asks below pi host process {process} through no pi-spawner this \
+                     node took its word for as serving a session it proves"
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "this asks below pi host process {process} by a lineage that, read \
+                     again, can't say which of its pi-spawners it runs below"
+                ));
+            }
+        }
     }
     let shared = sharing.max(proved.len());
     match proved.as_slice() {
@@ -2084,6 +2095,17 @@ mod tests {
             alone(85),
             Ok("s-one".to_owned()),
             "the host's own child, as it starts once a spawner is lost, is told its one session"
+        );
+        assert_eq!(
+            processes.below_a_spawner(83, 999),
+            None,
+            "a lineage that no longer reaches the host, as when it changed since it was first \
+             read, says nothing of a spawner, rather than that there is none"
+        );
+        assert_eq!(
+            processes.below_a_spawner(85, 78),
+            Some(false),
+            "the host's own child is below no spawner"
         );
     }
 

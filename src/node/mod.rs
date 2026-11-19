@@ -3748,9 +3748,10 @@ impl<S: Store> Shared<S> {
     /// end, that its child `spawner` serves `session`, as
     /// [`asker::Spawners::register`] takes it. A refusal is said on the
     /// node's stderr too, since a host refused may be a command trying:
-    /// once for each process and reason, whatever session it named, so
-    /// naming new ones says nothing more, and with the session it named
-    /// cut short and escaped, since anyone may name one.
+    /// once for each reason, its digits aside, for as long as the node
+    /// runs, whatever process or session it names, so new speakers and
+    /// new names say nothing more, and with the session it named cut short
+    /// and escaped, since anyone may name one.
     async fn spawned(&self, spawner: (i32, u64), session: String) -> Reply {
         // A session's id is far shorter; one longer is refused before
         // anything is weighed.
@@ -14770,8 +14771,8 @@ esac
         assert!(
             kept_start(&socket, 2)["untold"]
                 .as_str()
-                .is_some_and(|why| why.contains("through no pi-spawner")),
-            "and its record says it asked through no spawner its host said"
+                .is_some_and(|why| why.contains("as serving a session it proves")),
+            "its record says why: no spawner its host said, before its sessions are counted"
         );
         let (stop, node) = running;
         drop(stop);
