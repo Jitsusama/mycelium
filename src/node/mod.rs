@@ -12954,6 +12954,46 @@ esac
     }
 
     #[tokio::test]
+    async fn a_strict_start_naming_a_folder_this_machine_hasnt_is_refused_naming_both() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let starter = Starter {
+            // Nothing is held here: the start is refused before it.
+            program: PathBuf::from("/bin/false"),
+            scope: start::Scope::None,
+            kit: None,
+        };
+        let running = node(&store, "skiff", Vec::<Piped>::new(), Some(starter), &socket);
+        asks_as_person(&socket);
+        let missing = dir.path().join("no-checkout-here");
+        let refused = ask(
+            socket,
+            Request::Start(Start {
+                work: work(vec![Need::Machine("skiff".to_owned())]),
+                folder: Some(missing.clone()),
+                strict: true,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+            }),
+        )
+        .await;
+        assert_eq!(
+            refused.err(),
+            Some(format!(
+                "skiff has no folder {}, which the start names",
+                missing.display()
+            )),
+            "it's refused rather than begun at home"
+        );
+        let (stop, node) = running;
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    #[tokio::test]
     async fn a_run_on_another_machine_streams_back_over_a_link_its_key_proved_and_only_then() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (near_socket, nodes) = linked_to_kestrel(dir.path(), true).await;

@@ -131,8 +131,10 @@ pub(crate) fn lexical(path: &Path) -> PathBuf {
 /// one here is refused rather than begun in home. Started on another
 /// machine, the link's checkout and the folder it was asked from are
 /// judged by this machine's disk, since a person's machines keep their
-/// repositories at the same places; the command's guard ends it there
-/// where they don't.
+/// repositories at the same places. Where they don't, its start is
+/// strict, so that machine's node refuses it; a node or link end too old
+/// to know strict begins it in home, and the command's guard ends it
+/// there.
 ///
 /// # Errors
 ///
@@ -283,7 +285,8 @@ pub fn first_words(seed: &Seed, from: Option<&str>) -> String {
 
 /// What a guard says, and ends with, where a session started elsewhere
 /// would begin in that machine's home, as a start does when the folder it
-/// asked for isn't there.
+/// asked for isn't there and a node too old to refuse it, or a link end
+/// between, drops its strictness.
 const IN_HOME: &str = "mycelium sprout: that machine has no such folder, so this session would begin in its home; nothing was started";
 
 /// How long, in seconds, a guard that ends a session keeps it up, so the

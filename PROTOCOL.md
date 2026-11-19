@@ -1575,11 +1575,15 @@ on that machine, or a path within its home, such as `src/core.nix`,
 since each machine's home is its own; `mycelium start --folder` says a
 folder under home that way. It begins in its home when `folder` is
 none or names no folder there, unless `strict` is true: then a `folder`
-that machine hasn't is refused, as `tern has no folder src/elsewhere,
-which the start names`, since the work it's for is there and home
-won't do. A sprout's start is strict. `strict` is false where it isn't
-said and isn't written when false, so a node from before it reads the
-start as ever and begins in its home. The answer is the `machine`, the `held`
+that machine hasn't, or can't look at, is refused, as `tern has no
+folder src/elsewhere, which the start names` (a path within tern's
+home), since the work it's for is there and home won't do. A sprout's
+start is strict; any asker may make one so. `strict` is false where it
+isn't said and isn't written when false, so a node, or a link's end,
+from before it reads the start as ever, dropping `strict`, and it
+begins in that machine's home; a sprout's command then ends itself
+there ten seconds on, saying that machine has no such folder. The
+answer is the `machine`, the `held`
 id, the `folder` it began in, and `attach`, the words that join it from
 a terminal on the asking machine, to be run as given. A start that
 isn't placed, or doesn't start, is an error saying why, such as
@@ -1834,7 +1838,8 @@ that path a moment later, so a folder the asker can write could be
 swapped for a link in between. On another machine, the folder is that
 machine's, and its node starts it as a strict `"Start"`, which judges
 only that the folder is there, so one it can't enter or write still
-starts; a `"Start"` asked for directly judges none. A `"Sprout"` is the
+starts; a `"Start"` asked for directly judges none, beyond that where
+it's strict. A `"Sprout"` is the
 bound only for an asker that says one. The asker's start ticks are read
 when the node begins serving its connection, not at the accept itself,
 so an id taken again in that moment would pass; that is out of reach in

@@ -228,7 +228,9 @@ pub fn begins_in(folder: Option<&Path>, home: &Path) -> PathBuf {
 
 /// The folder a start begins in on `machine`, as [`begins_in`] finds it,
 /// or, where it's `strict`, why it's refused: it names a folder there is
-/// none of there, which the work it's for is in, so home won't do.
+/// none of there, which the work it's for is in, so home won't do. The
+/// folder is looked at once, so one gone in between can't send a strict
+/// start home; one it can't look at counts as none.
 ///
 /// # Errors
 ///
@@ -239,12 +241,14 @@ pub fn begins_strictly(
     home: &Path,
     machine: &str,
 ) -> Result<PathBuf, String> {
-    match folder {
-        Some(named) if strict && !home.join(named).is_dir() => Err(format!(
+    // Joining a full path gives that path, as in begins_in.
+    match folder.map(|named| (named, home.join(named))) {
+        Some((_, wanted)) if wanted.is_dir() => Ok(wanted),
+        Some((named, _)) if strict => Err(format!(
             "{machine} has no folder {}, which the start names",
             named.display()
         )),
-        _ => Ok(begins_in(folder, home)),
+        _ => Ok(home.to_owned()),
     }
 }
 
@@ -678,10 +682,24 @@ mod tests {
             Ok(home.to_owned()),
             "one not strict begins at home"
         );
-        let refused = begun(Some(Path::new("src/elsewhere")), true).expect_err("it's refused");
-        assert!(
-            refused.contains("tern") && refused.contains("src/elsewhere"),
-            "the refusal names the machine and the folder: {refused}"
+        assert_eq!(
+            begun(Some(&src), true),
+            Ok(src.clone()),
+            "a full path is that path"
+        );
+        assert_eq!(
+            begun(Some(Path::new("src/elsewhere")), true),
+            Err("tern has no folder src/elsewhere, which the start names".to_owned()),
+            "the refusal names the machine and the folder"
+        );
+        let gone = home.join("gone");
+        assert_eq!(
+            begun(Some(&gone), true),
+            Err(format!(
+                "tern has no folder {}, which the start names",
+                gone.display()
+            )),
+            "a full path it hasn't, too"
         );
     }
 }
