@@ -47,9 +47,10 @@ pub enum Request {
     /// was asked to start, has judged, counted and booked, and placed
     /// here, so it starts here alone, where this machine's facts as they
     /// are now still take it. Only this node's own process, or one judged
-    /// the person's, as a link's end is, asks it: from any other asker,
-    /// and from any but the node's own where no person works, it is
-    /// refused.
+    /// the person's, as a link's end is, relays it. From any other asker
+    /// it is refused, except where no person works: there it is taken as
+    /// an agent's start, counted and limited here, pinned here, and never
+    /// read for a carry.
     Relayed {
         /// The machine whose node was asked.
         from: String,

@@ -4338,8 +4338,15 @@ impl<S: Store> Shared<S> {
     /// starts is the bound none gets round. Pi's first start in the hour
     /// bringing back a session the node knows has ended counts toward
     /// the node's limit but not its cell's, which instead allows it
-    /// [`starts::RESUMES_A_CELL_AN_HOUR`] of them.
-    async fn start(&self, mut asked: Start) -> Reply {
+    /// [`starts::RESUMES_A_CELL_AN_HOUR`] of them. One short of room waits
+    /// for it up to [`START_WAITS_MOST`].
+    async fn start(&self, asked: Start) -> Reply {
+        self.started(asked, START_WAITS_MOST).await
+    }
+
+    /// Starts `asked` as [`Self::start`] does, waiting for room up to
+    /// `waits` milliseconds.
+    async fn started(&self, mut asked: Start, waits: i64) -> Reply {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
@@ -4359,18 +4366,21 @@ impl<S: Store> Shared<S> {
             (started_by, starts::brings_back(&asked.command, &all))
         };
         let admitted = self
-            .admitted(starts::Kept {
-                at: jiff::Timestamp::now().as_millisecond(),
-                by,
-                started_by: started_by.filter(|_| by != By::Person),
-                folder: asked.folder.clone(),
-                program: asked.command.first().cloned(),
-                resumes,
-                machine: None,
-                held: None,
-                failed: None,
-                refused: None,
-            })
+            .admitted(
+                starts::Kept {
+                    at: jiff::Timestamp::now().as_millisecond(),
+                    by,
+                    started_by: started_by.filter(|_| by != By::Person),
+                    folder: asked.folder.clone(),
+                    program: asked.command.first().cloned(),
+                    resumes,
+                    machine: None,
+                    held: None,
+                    failed: None,
+                    refused: None,
+                },
+                waits,
+            )
             .await?;
         let started = self.placed(asked, fence_of(by)).await;
         self.starts.keep(
@@ -4387,19 +4397,23 @@ impl<S: Store> Shared<S> {
     }
 
     /// Lets `asked` go ahead as the book of starts does, waiting for room
-    /// where the limits refuse it and there is room again within
-    /// [`START_WAITS_MOST`], so a start a little early goes through by
+    /// where the limits refuse it and there is room again within `waits`
+    /// milliseconds, so a start a little early goes through by
     /// itself; one refused later is told when. Waking, it asks again, so
     /// one whose room another took waits on for the next, within the same
     /// minute.
-    async fn admitted(&self, mut asked: starts::Kept) -> Result<starts::Admitted, String> {
-        let until = asked.at + START_WAITS_MOST;
+    async fn admitted(
+        &self,
+        mut asked: starts::Kept,
+        waits: i64,
+    ) -> Result<starts::Admitted, String> {
+        let until = asked.at + waits;
         // The minute is kept by a clock that never steps back, so the
         // wall clock set back meanwhile holds no start past it.
         let began = tokio::time::Instant::now();
         while let Some(room) = self.starts.room(&asked).filter(|room| *room <= until) {
             let waited = i64::try_from(began.elapsed().as_millis()).unwrap_or(i64::MAX);
-            let left = START_WAITS_MOST.saturating_sub(waited);
+            let left = waits.saturating_sub(waited);
             if left <= 0 {
                 break;
             }
@@ -4425,9 +4439,11 @@ impl<S: Store> Shared<S> {
     /// Where no person works, a link's end can't be told from an agent's
     /// login, so a relay from any process but this node's own is taken as
     /// an agent's start instead: counted, limited and booked here, as
-    /// [`Self::start`] takes one, and never read for a carry. A machine
-    /// made from a basin takes the starts placed on it that way, as its
-    /// maker's link is never its node's own process.
+    /// [`Self::start`] takes one, and never read for a carry. It is pinned
+    /// here and never made a machine for, and waits for no room, since the
+    /// asking node stops waiting on its answer within half a minute. A
+    /// machine made from a basin takes the starts placed on it that way,
+    /// as its maker's link is never its node's own process.
     async fn relayed(&self, from: &str, asked: Start) -> Reply {
         let (by, _) = self.judged().await?;
         if !asker::relays(self.client, by) {
@@ -4436,12 +4452,13 @@ impl<S: Store> Shared<S> {
                     "a start relayed from {from} is taken as an agent's: no person works on this \
                      machine, so its link's end can't be told from an agent's login"
                 );
-                return self
-                    .start(Start {
-                        carries: false,
-                        ..asked
-                    })
-                    .await;
+                let mut pinned = Start {
+                    carries: false,
+                    may_cost: false,
+                    ..asked
+                };
+                pinned.work.needs.push(Need::Machine(self.machine.clone()));
+                return self.started(pinned, 0).await;
             }
             let why = "only a linked node relays a start here, and this asker is judged an \
                        agent's: an agent starts a session with `mycelium start`";
@@ -12280,9 +12297,10 @@ esac
             .mode(0o700)
             .create(socket.parent().expect("its folder"))
             .expect("made");
-        // WCJQSG's eight in the hour, the oldest leaving it in five seconds
-        // and the next two minutes after.
-        let leaves = jiff::Timestamp::now().as_millisecond() - 3_600_000 + 5_000;
+        // WCJQSG's eight in the hour, the oldest leaving it in fifteen
+        // seconds, time enough to start a node on a loaded builder, and the
+        // next two minutes after.
+        let leaves = jiff::Timestamp::now().as_millisecond() - 3_600_000 + 15_000;
         let room = leaves + 3_600_000;
         let mut book = (0..starts::CELL_AN_HOUR)
             .map(|one| {
@@ -14554,8 +14572,6 @@ esac
         );
     }
 
-    /// The cell the carried session `s-harbour` stands as, once a minute
-    /// has passed: the one it left as, its new address, or neither.
     /// Skiff's node in the work realm, sharing as `sharing` says, judging
     /// its askers by `processes`, and holding what it starts with a
     /// stand-in holder in `dir`.
@@ -14590,6 +14606,8 @@ esac
         shared
     }
 
+    /// The cell the carried session `s-harbour` stands as, once a minute
+    /// has passed: the one it left as, its new address, or neither.
     fn stands(shared: &Shared<Memory>) -> &'static str {
         shared.each_minute(&mut Awake::by(None));
         let cells = shared.cell_records();
