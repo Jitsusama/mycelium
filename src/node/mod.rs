@@ -4356,7 +4356,9 @@ impl<S: Store> Shared<S> {
     /// for it up to [`START_WAITS_MOST`].
     ///
     /// A start asked under a name its asker gave one before joins that
-    /// one, as [`once`] says, landing or landed, and counts nothing more.
+    /// one, as [`once`] says, landing or landed, and counts nothing more;
+    /// one whose first went to a machine that answered nothing is asked
+    /// there again, counting nothing more.
     async fn start(&self, asked: Start) -> Reply {
         self.started(asked, START_WAITS_MOST).await
     }
@@ -4399,14 +4401,21 @@ impl<S: Store> Shared<S> {
         let started_by = started_by.filter(|_| by != By::Person);
         let at = jiff::Timestamp::now().as_millisecond();
         let once = asked.once.take();
-        let lead = match &once {
+        let (lead, again) = match &once {
             Some(said) => {
                 let name = once::Name::of(by, started_by.as_deref(), said)?;
                 // Where it goes on, it goes under a name of this node's,
                 // so the far node joins an ask again from here alone.
                 asked.once = Some(name.there(&self.machine));
-                match self.onces.join(name, at) {
-                    once::Joined::Landed(started) => return Ok(Response::Started(started)),
+                match self.onces.join(name, &self.machine, at) {
+                    once::Joined::Landed(started) => {
+                        eprintln!(
+                            "a start asked again under its name is answered the one that \
+                             landed on {} as {}",
+                            started.machine, started.held
+                        );
+                        return Ok(Response::Started(started));
+                    }
                     once::Joined::Landing(joining) => {
                         self.starts.joined(by, started_by.as_deref(), said);
                         return joining.outcome().await.map(Response::Started);
@@ -4421,11 +4430,12 @@ impl<S: Store> Shared<S> {
                                  started: {machine} holds it as {held}"
                             ));
                         }
-                        Some(lead)
+                        (Some(lead), None)
                     }
+                    once::Joined::Resends { machine, lead } => (Some(lead), Some(machine)),
                 }
             }
-            None => None,
+            None => (None, None),
         };
         let admitted = self
             .admitted(
@@ -4442,6 +4452,7 @@ impl<S: Store> Shared<S> {
                     refused: None,
                     once,
                     joined: 0,
+                    again: again.is_some(),
                 },
                 waits,
             )
@@ -4455,25 +4466,40 @@ impl<S: Store> Shared<S> {
                 return Err(refused);
             }
         };
-        let answered = match whither {
-            Whither::Placed => self.placed(asked, fence_of(by)).await,
-            Whither::Here => self.here(asked, fence_of(by)).await,
+        let answered = match (whither, again) {
+            (Whither::Placed, Some(machine)) => self.start_on(machine, asked).await,
+            (Whither::Placed, None) => self.placed(asked, fence_of(by)).await,
+            // One relayed here starts here or nowhere, so a name another
+            // machine hasn't answered under stays held for asking there.
+            (Whither::Here, Some(machine)) if machine != self.machine => {
+                if let Some(there) = &asked.once {
+                    self.onces.unanswered(there, &machine, true);
+                }
+                Err(format!(
+                    "a start relayed here starts here or nowhere, and it was asked of \
+                     {machine} under that name, which hasn't answered"
+                ))
+            }
+            (Whither::Here, _) => self.here(asked, fence_of(by)).await,
         };
         let started = match answered {
             Ok(Response::Started(started)) => Ok(started),
             Ok(_) => Err("it answered with no session".to_owned()),
             Err(why) => Err(why),
         };
+        // Its lead ends first, so the joins counted till then are kept
+        // on its line, those asked before it was admitted among them.
+        let joined = lead.map_or(0, |lead| {
+            lead.ends(jiff::Timestamp::now().as_millisecond(), &started)
+        });
         self.starts.keep(
             admitted,
             started
                 .as_ref()
                 .map(|started| (started.machine.clone(), started.held.clone()))
                 .map_err(Clone::clone),
+            joined,
         );
-        if let Some(lead) = lead {
-            lead.ends(jiff::Timestamp::now().as_millisecond(), &started);
-        }
         started.map(Response::Started)
     }
 
@@ -4834,7 +4860,19 @@ impl<S: Store> Shared<S> {
     /// through the link reaching it.
     async fn start_on(&self, machine: String, asked: Start) -> Reply {
         if machine != self.machine {
-            return self.asks.ask(&machine, asked).await;
+            let there = asked.once.clone();
+            return self
+                .asks
+                .ask(&machine, asked)
+                .await
+                .unwrap_or_else(|unsent| {
+                    // One under a name that may have landed there is asked
+                    // there again, as its lead holds it.
+                    if let Some(there) = there {
+                        self.onces.unanswered(&there, &machine, unsent.sent);
+                    }
+                    Err(unsent.why)
+                });
         }
         let Some(starter) = self.starter.clone() else {
             return Err(format!("{machine}'s node starts no sessions"));

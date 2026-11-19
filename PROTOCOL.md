@@ -1651,7 +1651,12 @@ after a restart, one its book says landed within the hour is refused,
 saying which machine holds what it started, since what joins it there
 can't be made again. A start placed on another machine goes under a
 name of this node's own, from its name and the asker's, so a far node
-joins an ask again from here after the link stopped waiting. A carry
+joins an ask again from here after the link stopped waiting. One whose
+far machine answered nothing after it was asked may still land there,
+so for an hour an ask again under its name goes back to that machine,
+not placed afresh; its line says `"again": true` and counts nothing,
+the first having counted, though the person's stop still holds it. A
+far machine that answers it didn't start lets the name go. A carry
 names each session's start from the quest, the machine and the
 session's last start from here, so one taken again after a start went
 unanswered joins it, and one carried since starts it again. A node

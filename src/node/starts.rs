@@ -120,6 +120,11 @@ pub struct Kept {
     /// none of which started or counted another.
     #[serde(default, skip_serializing_if = "is_none_joined")]
     pub joined: u32,
+    /// Whether it asks again, of the machine it went to under the same
+    /// name, a start that machine answered nothing to: that start counted
+    /// already, so this one doesn't.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub again: bool,
 }
 
 /// Whether no ask joined a start, so its line says nothing of it.
@@ -134,9 +139,10 @@ fn is_none_joined(joined: &u32) -> bool {
 impl Kept {
     /// Whether it counts toward agents' number through the node: an
     /// agent's start the node let go ahead, started or not, since a start
-    /// that fails can still have spent.
+    /// that fails can still have spent; one asked again where it went
+    /// counted as the first.
     fn counts(&self) -> bool {
-        matches!(self.by, By::Agent(_)) && self.refused.is_none()
+        matches!(self.by, By::Agent(_)) && self.refused.is_none() && !self.again
     }
 
     /// Whether it counts toward its cell's number too: one that counts
@@ -500,9 +506,10 @@ impl Starts {
     }
 
     /// Keeps how `admitted` ended: where it started, or why it didn't, as
-    /// [`failure`] tells it.
-    pub fn keep(&self, admitted: Admitted, ended: Result<(String, String), String>) {
+    /// [`failure`] tells it, and how many asks under its name `joined` it.
+    pub fn keep(&self, admitted: Admitted, ended: Result<(String, String), String>, joined: u32) {
         let Admitted { id, mut asked } = admitted;
+        asked.joined = joined;
         match ended {
             Ok((machine, held)) => {
                 asked.machine = Some(machine);
@@ -587,7 +594,8 @@ impl Starts {
     }
 
     /// Counts one more ask under the name `once`, by `by` for the cell
-    /// `cell`, as joining the start still landing under it.
+    /// `cell`, as joining the start still landing under it, as the list
+    /// of starts shows it; the count its line keeps is its lead's.
     pub fn joined(&self, by: By, cell: Option<&str>, once: &str) {
         let mut book = self.lock();
         if let Some((_, going)) = book
@@ -703,7 +711,7 @@ mod tests {
         let (dir, starts) = book();
         let admitted = starts.admit(agent("OSPREY", NOW)).expect("within");
         let why = "it didn't start: couldn't hold pi --said-once: gone";
-        starts.keep(admitted, Err(why.to_owned()));
+        starts.keep(admitted, Err(why.to_owned()), 0);
         let book = std::fs::read_to_string(dir.path().join("starts.jsonl")).expect("kept");
         assert!(book.contains(r#""failed":"it didn't start""#), "{book}");
         assert!(!book.contains("--said-once"), "{book}");
@@ -759,6 +767,7 @@ mod tests {
             refused: None,
             once: None,
             joined: 0,
+            again: false,
         }
     }
 
@@ -966,7 +975,7 @@ mod tests {
             None,
             "another session is still free"
         );
-        starts.keep(first, Ok(("kestrel".to_owned(), "h".to_owned())));
+        starts.keep(first, Ok(("kestrel".to_owned(), "h".to_owned())), 0);
         starts
             .admit(resuming("OSPREY", "s-0", NOW + 3))
             .expect_err("and counts once the first has started");
@@ -1022,7 +1031,73 @@ mod tests {
 
     fn started(starts: &Starts, asked: Kept, held: &str) {
         let admitted = starts.admit(asked).expect("it may start");
-        starts.keep(admitted, Ok(("kestrel".to_owned(), held.to_owned())));
+        starts.keep(admitted, Ok(("kestrel".to_owned(), held.to_owned())), 0);
+    }
+
+    fn named(cell: &str, at: i64, once: &str) -> Kept {
+        Kept {
+            once: Some(once.to_owned()),
+            ..agent(cell, at)
+        }
+    }
+
+    // One asked again of the machine that answered nothing to it counted
+    // as the first, so a cell at its number may still ask it there; the
+    // person's stop still holds it.
+    #[test]
+    fn a_start_asked_again_where_it_went_counts_nothing_but_still_heeds_a_stop() {
+        let (dir, starts) = book();
+        for one in 0..CELL_AN_HOUR {
+            let failed = starts
+                .admit(agent("OSPREY", NOW + i64::try_from(one).expect("few")))
+                .expect("within");
+            starts.keep(
+                failed,
+                Err("kestrel didn't answer within 30s".to_owned()),
+                0,
+            );
+        }
+        let again = Kept {
+            again: true,
+            ..named("OSPREY", NOW + 100, "01J")
+        };
+        let admitted = starts.admit(again.clone()).expect("it counted already");
+        starts.keep(admitted, Ok(("kestrel".to_owned(), "h-1".to_owned())), 2);
+        let book = std::fs::read_to_string(dir.path().join("starts.jsonl")).expect("kept");
+        let line = book.lines().last().expect("its line");
+        assert!(line.contains(r#""again":true"#), "{line}");
+        assert!(
+            line.contains(r#""joined":2"#),
+            "the joins its lead counted: {line}"
+        );
+        starts.stop().expect("stopped");
+        starts
+            .admit(again)
+            .expect_err("the person's stop holds it too");
+    }
+
+    // After the node starts again, a start under a name within the hour
+    // is found in the book read back, by its asker's name alone.
+    #[test]
+    fn a_start_under_a_name_is_found_again_in_the_book_read_back_for_an_hour() {
+        let (dir, starts) = book();
+        started(&starts, named("OSPREY", NOW, "01J"), "h-1");
+        let failed = starts.admit(named("OSPREY", NOW, "01K")).expect("within");
+        starts.keep(failed, Err("it didn't start".to_owned()), 0);
+        drop(starts);
+        let again = Starts::at(dir.path().join("starts.jsonl"));
+        let by = By::Agent(Kind::Fence);
+        assert_eq!(
+            again.landed(by, Some("OSPREY"), "01J", NOW + 1),
+            Some(("kestrel".to_owned(), "h-1".to_owned()))
+        );
+        assert_eq!(again.landed(by, Some("OSPREY"), "01K", NOW + 1), None);
+        assert_eq!(again.landed(by, Some("KESTRL"), "01J", NOW + 1), None);
+        assert_eq!(again.landed(By::Person, None, "01J", NOW + 1), None);
+        assert_eq!(
+            again.landed(by, Some("OSPREY"), "01J", NOW + HOUR + 1),
+            None
+        );
     }
 
     #[test]
@@ -1067,7 +1142,7 @@ mod tests {
             .admit(agent("OSPREY", NOW))
             .expect_err("those going count");
         for one in going {
-            starts.keep(one, Err("it didn't start".to_owned()));
+            starts.keep(one, Err("it didn't start".to_owned()), 0);
         }
         starts
             .admit(agent("OSPREY", NOW))

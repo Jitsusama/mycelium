@@ -34,7 +34,6 @@ pub mod settle;
 pub mod through;
 
 use std::collections::BTreeSet;
-use std::hash::{DefaultHasher, Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -723,11 +722,19 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done, ordered: Option<&Orde
 /// The name `one`'s start on `to` is asked under: the same for a carry
 /// taken again before it started, so the node answers that start where
 /// it landed unanswered, and another once it has started, so a later
-/// carry starts it again.
+/// carry starts it again. Its hash is blake3's, the same from every
+/// build, so a carry taken again after an update names the same start.
 fn arrival_name(quest: &str, to: &str, one: &Done) -> String {
-    let mut hasher = DefaultHasher::new();
-    (quest, to, &one.session, &one.started_before).hash(&mut hasher);
-    format!("carry-{:016x}", hasher.finish())
+    let mut hasher = blake3::Hasher::new();
+    for part in [quest, to, &one.session] {
+        hasher.update(&part.len().to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    if let Some(before) = &one.started_before {
+        hasher.update(b"started");
+        hasher.update(before.as_bytes());
+    }
+    format!("carry-{}", &hasher.finalize().to_hex()[..16])
 }
 
 /// A session's arrival, as a start's command says it: the quest it was

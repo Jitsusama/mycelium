@@ -134,28 +134,51 @@ struct Reaches {
     there: There,
 }
 
+/// Why a machine asked through its link answered nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unsent {
+    /// Why, in words.
+    pub why: String,
+    /// Whether the ask went to the link first, so it may still have been
+    /// done there.
+    pub sent: bool,
+}
+
+impl From<Unsent> for String {
+    fn from(unsent: Unsent) -> Self {
+        unsent.why
+    }
+}
+
 impl Asks {
     /// Asks `machine` to start `start`, through the link reaching it,
     /// answering as its node does, with words that join it from here, or
     /// why no answer came. It goes without the tools it would rather have,
     /// as [`Work::asked_there`] says.
     ///
+    /// # Errors
+    ///
+    /// When `machine` answered nothing, and whether it was asked first.
+    ///
     /// [`Work::asked_there`]: crate::placement::Work::asked_there
-    pub async fn ask(&self, machine: &str, mut start: Start) -> Reply {
-        let there = self
-            .there(machine)
-            .ok_or_else(|| format!("no link reaches {machine} now"))?;
+    pub async fn ask(&self, machine: &str, mut start: Start) -> Result<Reply, Unsent> {
+        let there = self.there(machine).ok_or_else(|| Unsent {
+            why: format!("no link reaches {machine} now"),
+            sent: false,
+        })?;
         start.work = start.work.asked_there();
-        match self
-            .send(machine, Asked::Start(start), Some(ANSWERED_WITHIN))
-            .await?
-        {
-            Ok(Response::Started(started)) => Ok(Response::Started(Started {
-                attach: there(machine, &started.attach),
-                ..started
-            })),
-            other => other,
-        }
+        Ok(
+            match self
+                .send(machine, Asked::Start(start), Some(ANSWERED_WITHIN))
+                .await?
+            {
+                Ok(Response::Started(started)) => Ok(Response::Started(Started {
+                    attach: there(machine, &started.attach),
+                    ..started
+                })),
+                other => other,
+            },
+        )
     }
 
     /// Asks `machine` to run `run`, through the link reaching it, answering
@@ -221,23 +244,26 @@ impl Asks {
         machine: &str,
         asked: Asked,
         within: Option<Duration>,
-    ) -> Result<Reply, String> {
+    ) -> Result<Reply, Unsent> {
+        let unsent = |why: String| Unsent { why, sent: false };
+        let unanswered = |why: String| Unsent { why, sent: true };
         let asks = self
             .lock()
             .by_machine
             .get(machine)
             .map(|reaches| reaches.asks.clone())
-            .ok_or_else(|| format!("no link reaches {machine} now"))?;
+            .ok_or_else(|| unsent(format!("no link reaches {machine} now")))?;
         let (answer, answered) = oneshot::channel();
         asks.send(Ask { asked, answer })
-            .map_err(|_| format!("the link to {machine} has just dropped"))?;
+            .map_err(|_| unsent(format!("the link to {machine} has just dropped")))?;
         let answered = match within {
             Some(within) => tokio::time::timeout(within, answered)
                 .await
-                .map_err(|_| format!("{machine} didn't answer within {within:?}"))?,
+                .map_err(|_| unanswered(format!("{machine} didn't answer within {within:?}")))?,
             None => answered.await,
         };
-        answered.map_err(|_| format!("the link to {machine} dropped before it answered"))
+        answered
+            .map_err(|_| unanswered(format!("the link to {machine} dropped before it answered")))
     }
 
     /// How a command runs on `machine` from here, while a link reaches it.
