@@ -455,7 +455,7 @@ pub async fn hold(
         title: Mutex::new(Title::default()),
         output,
         over: watch::Sender::new(false),
-        waiting: watch::Sender::new(false),
+        said: Mutex::new(None),
     });
     let mut reader = tokio::spawn(read_output(reading, shown.clone(), starts));
     let mut joined = JoinSet::new();
@@ -553,16 +553,14 @@ pub async fn hold(
 /// in a joined window starts it now, each window joining meanwhile told
 /// that it waits, and every window told once it is reopening.
 async fn its_turn(node: &Path, session: &str, terminal: &Terminal, shown: &Shown, files: &Files) {
-    shown.waiting.send_replace(true);
-    shown.show(WAITING_LINE);
+    shown.says(WAITING_LINE);
     tokio::select! {
         () = turn::wait(node, session) => {}
         () = woken(terminal, &files.waking, &files.steering) => {}
     }
     // Its turn may have come while it watched for a key.
     terminal.parked.send_replace(false);
-    shown.waiting.send_replace(false);
-    shown.show(REOPENING_LINE);
+    shown.says(REOPENING_LINE);
 }
 
 /// Says to the holding's journal that the run of `command` as `pid` ended
@@ -598,9 +596,10 @@ const WAITING_LINE: &[u8] =
     b"\r\nWaiting its turn: sessions come back a few at a time. A key starts it now.\r\n";
 
 /// What every joined window shows once its program's turn comes, or a key
-/// starts it, below [`WAITING_LINE`]: a program may draw nothing for a
-/// while as it comes back, as an attach waiting on a busy pi host does,
-/// and a key would otherwise look unheard (19 November).
+/// starts it, below [`WAITING_LINE`], and what a window joining is shown
+/// until the program draws: a program may draw nothing for a while as it
+/// comes back, as an attach waiting on a busy pi host does, and a key
+/// would otherwise look unheard (19 November).
 const REOPENING_LINE: &[u8] =
     b"\r\nReopening it now: it shows itself once it is back, which can take a minute.\r\n";
 
@@ -786,9 +785,11 @@ struct Shown {
     output: broadcast::Sender<Arc<[u8]>>,
     /// Whether the program has shown all it will, its last output read.
     over: watch::Sender<bool>,
-    /// Whether the program waits for its turn, so a window joining is
-    /// told, as nothing else it is shown says so.
-    waiting: watch::Sender<bool>,
+    /// What the holder said that nothing has been shown over since, as
+    /// that the program waits for its turn, so a window joining is told,
+    /// as nothing else it is shown says so. Only ever taken while `modes`
+    /// is held, so a window joining is never told it once drawn over.
+    said: Mutex<Option<&'static [u8]>>,
 }
 
 impl Shown {
@@ -801,12 +802,25 @@ impl Shown {
     /// Passes `bytes` to every joined terminal, reading them for modes
     /// and a title.
     fn show(&self, bytes: &[u8]) {
+        self.passes(bytes, None);
+    }
+
+    /// Passes the holder's own `line` to every joined terminal, and to
+    /// each joining until anything else is shown.
+    fn says(&self, line: &'static [u8]) {
+        self.passes(line, Some(line));
+    }
+
+    /// Passes `bytes` to every joined terminal, reading them for modes
+    /// and a title, with what a terminal joining is told after them.
+    fn passes(&self, bytes: &[u8], standing: Option<&'static [u8]>) {
         let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         modes.saw(bytes);
         self.title
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .saw(bytes);
+        *self.said.lock().unwrap_or_else(PoisonError::into_inner) = standing;
         // With nobody joined there is nobody to show it to.
         let _ = self.output.send(Arc::from(bytes));
     }
@@ -833,8 +847,8 @@ impl Shown {
                 .unwrap_or_else(PoisonError::into_inner)
                 .restored(),
         );
-        if *self.waiting.borrow() {
-            first.extend_from_slice(WAITING_LINE);
+        if let Some(line) = *self.said.lock().unwrap_or_else(PoisonError::into_inner) {
+            first.extend_from_slice(line);
         }
         (first, self.output.subscribe())
     }
@@ -1926,6 +1940,11 @@ mod tests {
         // a machine's busy pi host, so the window says it is under way.
         window.sees(REOPENING_SAYS).await;
         window.sees("resumed-01a1-ab").await;
+        assert!(
+            window.seen.find(REOPENING_SAYS) < window.seen.find("resumed-"),
+            "it says so before its program draws: {:?}",
+            window.seen
+        );
         let asked = asked.await.expect("the node was asked");
         assert_eq!(
             serde_json::from_str::<crate::wire::Request>(&asked).ok(),
@@ -1956,9 +1975,63 @@ mod tests {
         // The key was heard, though its program may not draw for a while.
         window.sees(REOPENING_SAYS).await;
         window.sees("resumed-01a1-ab").await;
+        assert!(
+            window.seen.find(REOPENING_SAYS) < window.seen.find("resumed-"),
+            "it says so before its program draws: {:?}",
+            window.seen
+        );
         // The key that started it is spent, as a parked program's wake is.
         window.types("echo typed $((6 * 7))\r").await;
         window.sees("typed 42").await;
+    }
+
+    #[tokio::test]
+    async fn a_window_joining_before_its_program_draws_is_told_it_is_reopening() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let node = root.path().join("work.sock");
+        let (go, _asked) = stand_in_node(&node);
+        // It draws nothing until a line is typed, as an attach waiting on a
+        // busy pi host draws nothing until the host answers.
+        let silent = [
+            "sh",
+            "-c",
+            "read -r go; echo resumed-$1; exec sh",
+            "--session",
+            "01a1-ab",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let (dir, held, _holder) = holding_in(
+            root.path(),
+            Vec::new(),
+            Given(Vec::new()),
+            silent,
+            Some(node),
+        )
+        .await;
+        let mut first = Joined::join(socket(&dir, &held.id), FIRST_SIZE, None);
+        first.sees("Waiting its turn").await;
+        let _ = go.send(());
+        first.sees(REOPENING_SAYS).await;
+        let mut second = Joined::join(socket(&dir, &held.id), FIRST_SIZE, None);
+        second.sees(REOPENING_SAYS).await;
+        assert!(
+            !second.seen.contains("Waiting its turn"),
+            "it isn't told it waits once its turn came: {:?}",
+            second.seen
+        );
+        first.types("now\r").await;
+        first.sees("resumed-01a1-ab").await;
+        second.sees("resumed-01a1-ab").await;
+        // One joining once it drew is told nothing it drew over.
+        let mut third = Joined::join(socket(&dir, &held.id), FIRST_SIZE, None);
+        third.types("echo late $((2 * 3))\r").await;
+        third.sees("late 6").await;
+        assert!(
+            !third.seen.contains(REOPENING_SAYS),
+            "its program has drawn over it: {:?}",
+            third.seen
+        );
     }
 
     #[test]
