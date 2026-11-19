@@ -14,10 +14,12 @@
 # make lays each head, in the order named, onto main as GitHub's merge
 # button would: a merge commit, with main, then each rider before it, as
 # its first parent. A head main or the train already holds, or one that
-# doesn't merge cleanly onto those before it, is left off, saying why. Its
-# commits are dated as main's tip is, so making the same train again on
-# the same main gives the same tip, and the checks already built there
-# still count. The tip is pushed as train/<its first twelve>, so a builder
+# doesn't merge cleanly onto those before it, is left off, saying why.
+# Each merge is dated as the newest commit it holds, main's tip or a
+# rider's head, so making the same train again on the same main gives the
+# same tip, and the checks already built there still count, while main's
+# date still moves on with each train, for whatever tells a landing by
+# it. The tip is pushed as train/<its first twelve>, so a builder
 # can fetch it, and said on the last line. Build every check the gate asks
 # for there:
 #
@@ -79,9 +81,10 @@ make_train() {
   local -a riding=() off=()
   main=$(git rev-parse origin/main)
   tip=${main}
-  # Dated as main is, so the same train made again is the same commits.
-  GIT_AUTHOR_DATE=$(git log -1 --format=%cI "${main}")
-  export GIT_AUTHOR_DATE GIT_COMMITTER_DATE=${GIT_AUTHOR_DATE}
+  # Dated as the newest commit each merge holds, so the same train made
+  # again is the same commits, and main's date moves on with each train.
+  local newest each_date
+  newest=$(git log -1 --format=%ct "${main}")
   for head in "$@"; do
     sha=$(known "${head}")
     if git merge-base --is-ancestor "${sha}" "${tip}"; then
@@ -98,8 +101,11 @@ make_train() {
       fi
       continue
     fi
+    each_date=$(git log -1 --format=%ct "${sha}")
+    ((each_date <= newest)) || newest=${each_date}
     tip=$(git log -1 --format=%s "${sha}" |
-      git commit-tree "${tree}" -p "${tip}" -p "${sha}" \
+      GIT_AUTHOR_DATE="${newest} +0000" GIT_COMMITTER_DATE="${newest} +0000" \
+        git commit-tree "${tree}" -p "${tip}" -p "${sha}" \
         -m "Merge ${sha:0:12} on the merge train" -F -)
     riding+=("${sha:0:12}")
   done

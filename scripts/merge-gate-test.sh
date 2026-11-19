@@ -169,7 +169,8 @@ git clone -q "${work}/origin.git" "${work}/peer" 2> /dev/null
 git -C "${work}/peer" checkout -q -b peer origin/main
 echo peer > "${work}/peer/peer"
 git -C "${work}/peer" add peer
-git -C "${work}/peer" commit -q -m peer
+# Dated after main and every other rider, as a change made later is.
+GIT_COMMITTER_DATE="2524608000 +0000" git -C "${work}/peer" commit -q -m peer
 peer=$(git -C "${work}/peer" rev-parse HEAD)
 git -C "${work}/peer" push -q origin HEAD:peer
 
@@ -189,6 +190,11 @@ parents=$(git rev-parse "${tip}^1^1^1" "${tip}^1^1^2" "${tip}^1^2" "${tip}^2")
 if [[ ${parents} != "${base}"$'\n'"${north}"$'\n'"${south}"$'\n'"${peer}" ]]; then
   echo "FAIL the train is main's merge of north, then south, then peer's:" \
     "${parents}" >&2
+  failed=1
+fi
+dated=$(git log -1 --format=%ct "${tip}")
+if [[ ${dated} != 2524608000 ]]; then
+  echo "FAIL the train is dated as the newest commit it brings, peer's: ${dated}" >&2
   failed=1
 fi
 held=$(git show "${tip}:north" "${tip}:south" "${tip}:peer")
