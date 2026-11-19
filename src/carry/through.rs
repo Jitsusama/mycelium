@@ -130,6 +130,11 @@ impl Hands for Through {
             .map_err(|error| error.to_string())
     }
 
+    fn cells(&mut self) -> Result<Vec<Value>, String> {
+        crate::swarm::records(&self.socket, crate::node::CELL_KIND, TIES_WITHIN)
+            .map_err(|error| error.to_string())
+    }
+
     fn formed(&mut self) -> Result<Vec<Value>, String> {
         crate::swarm::records(&self.socket, crate::networks::FORMED, TIES_WITHIN)
             .map_err(|error| error.to_string())
