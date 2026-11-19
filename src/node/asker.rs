@@ -603,7 +603,8 @@ const PTRACE_SCOPE: &str = "sys/kernel/yama/ptrace_scope";
 const NO_SIGUSR1: &str = "--disable-sigusr1";
 
 /// The variables that would run code inside a pi host as its node
-/// starts, so a host given any of them but blank is refused: node's own
+/// starts, so a host given any of them is refused, but for a blank
+/// `NODE_OPTIONS`, which gives no option: node's own
 /// options, where a require that finds nothing beside it looks (as a
 /// library's optional require does), the compile cache whose code node
 /// runs as the host's modules, the loader's libraries, and the modules
@@ -682,7 +683,11 @@ fn inspector_open(procs: &Path, pid: i32) -> Option<String> {
         let given = environ
             .split(|byte| *byte == 0)
             .filter_map(|pair| pair.strip_prefix(prefix.as_bytes()))
-            .any(|value| !value.iter().all(u8::is_ascii_whitespace));
+            // A blank NODE_OPTIONS gives node no option. A blank path is
+            // another matter: node and the loader take " " as a folder
+            // beside them, and the loader an empty entry as the working
+            // folder.
+            .any(|value| name != "NODE_OPTIONS" || !value.iter().all(u8::is_ascii_whitespace));
         if given {
             return Some(format!(
                 "process {pid} is given {name}, which could open its inspector or run code \
@@ -2414,6 +2419,9 @@ mod tests {
             "LD_LIBRARY_PATH=/tmp",
             "OPENSSL_CONF=/tmp/x.cnf",
             "OPENSSL_MODULES=/tmp",
+            "NODE_PATH= ",
+            "LD_LIBRARY_PATH=",
+            "OPENSSL_CONF= ",
         ] {
             fs::write(
                 procs.path().join("78").join("environ"),
