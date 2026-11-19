@@ -11961,17 +11961,26 @@ esac
         let store = Memory::default();
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
-        // Here runs an agent's command in its fence, so each start stays
-        // here rather than going to tern, whose node no link reaches.
+        // Here runs an agent's command in its fence, and tern's ground is
+        // looser, so each start stays here whatever placement measures of
+        // this machine, rather than going to tern, whose node no link
+        // reaches.
         declares_runs(&socket, true);
-        let start = || {
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        let start_in = |needs: Vec<Need>| {
             Request::Start(Start {
-                work: work(Vec::new()),
+                work: work(needs),
                 folder: None,
                 command: vec!["pi".to_owned(), "--said-once".to_owned()],
                 may_cost: false,
             })
         };
+        let start = || start_in(Vec::new());
+        // The person isn't held to an agent's ground, so theirs names this
+        // machine, or placement may rank tern above it.
+        let persons = || start_in(vec![Need::Machine("skiff".to_owned())]);
         let unstarted = || Err("skiff's node starts no sessions".to_owned());
         let starts = |act| ask(socket.clone(), Request::Starts { act });
         asks_below(&socket, 7001);
@@ -12003,7 +12012,7 @@ esac
         );
         asks_as_person(&socket);
         assert_eq!(
-            ask(socket.clone(), start()).await,
+            ask(socket.clone(), persons()).await,
             unstarted(),
             "the person's starts are never limited"
         );
