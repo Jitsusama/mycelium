@@ -2928,17 +2928,8 @@ impl<S: Store> Shared<S> {
             return;
         };
         let sessions = self.lock().state.sessions();
-        // Only the realm's machines hand over here, by their short names, as
-        // a leaving machine names its handover's folder.
-        let machines: std::collections::BTreeSet<String> = self
-            .known_machines()
-            .iter()
-            .map(|machine| through::short_host(&machine.name).to_owned())
-            .collect();
-        if self
-            .arrivals
-            .read(scratch, &self.hostname, &self.machine, &machines, &sessions)
-        {
+        let now = jiff::Timestamp::now().as_millisecond();
+        if self.arrivals.read(scratch, &self.machine, &sessions, now) {
             // A cell's name and its ties both change with what arrived, and
             // the networks are drawn from the cells.
             self.said.cells.send_modify(|told| *told += 1);
@@ -14172,17 +14163,8 @@ esac
             state: places.join("state"),
         };
         let quest = "QEST-20261112-HARBOR";
-        // As the machine the session was carried from left it: tern, unless
-        // the machine running the test goes by tern, since a node never
-        // reads its own machine's folder.
-        let uname = rustix::system::uname();
-        let own = uname.nodename().to_string_lossy();
-        let from = if through::short_host(&own) == "tern" {
-            "osprey"
-        } else {
-            "tern"
-        };
-        let handover = sharing.scratch.join(quest).join("handover").join(from);
+        // As tern, the machine the session was carried from, left it.
+        let handover = sharing.scratch.join(quest).join("handover").join("tern");
         fs::create_dir_all(&handover).expect("its handover");
         let heard = jiff::Timestamp::now().as_millisecond() - 60_000;
         let brought = json!({
@@ -14215,10 +14197,16 @@ esac
             given,
             to_dial,
         );
-        // Only the realm's machines' folders are read.
-        store
-            .put_machine(&fenced(from, &["remote"]))
-            .expect("what it said is kept");
+        // Only a session tern's node asked this one to start as a carry
+        // is read for.
+        shared.arrivals.carried(
+            "s-harbour",
+            arrival::Carried {
+                quest: quest.to_owned(),
+                from: "tern".to_owned(),
+                at: jiff::Timestamp::now().as_millisecond(),
+            },
+        );
         shared.read_sessions();
 
         shared.each_minute(&mut Awake::by(None));

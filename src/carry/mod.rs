@@ -710,6 +710,38 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done, ordered: Option<&Orde
     }
 }
 
+/// A session's arrival, as a start's command says it: the quest it was
+/// carried in, the machine it left, as its done file's folder is named,
+/// and its session.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Arrives<'a> {
+    /// The quest it was carried in.
+    pub(crate) quest: &'a str,
+    /// The machine it left.
+    pub(crate) from: &'a str,
+    /// The session that arrives.
+    pub(crate) session: &'a str,
+}
+
+/// The arrival `command` starts, when it has the shape [`arriving`]
+/// gives a carried session's start, or none: none for a quest's own
+/// trees, since no session arrives with them.
+pub(crate) fn arrives(command: &[String]) -> Option<Arrives<'_>> {
+    let [sh, c, script, name, quest, from, session, ..] = command else {
+        return None;
+    };
+    let shaped = sh == "sh"
+        && c == "-c"
+        && name == PI_CARRY
+        && script.starts_with(r#"pi-carry arrive "$1" --from "$2" --session "$3""#)
+        && script.contains("exec pi --session \"$3\"");
+    (shaped && session != quest).then_some(Arrives {
+        quest,
+        from,
+        session,
+    })
+}
+
 /// What a session carried from `from` is told as it starts, in the
 /// words the harness opens its own turns with, so it reads as one.
 fn carry_on(from: &str) -> String {
@@ -1389,6 +1421,7 @@ mod tests {
             "and no session starts for them: {}",
             trees.command[2]
         );
+        assert_eq!(super::arrives(&trees.command), None, "so none arrives");
         let first = &realm.started[0];
         assert!(
             matches!(first.work.needs.as_slice(), [Need::Machine(on)] if on == "tern"),
@@ -1409,6 +1442,15 @@ mod tests {
         assert!(
             first.command[2].starts_with("pi-carry arrive"),
             "arrives before pi starts"
+        );
+        assert_eq!(
+            super::arrives(&first.command),
+            Some(super::Arrives {
+                quest: QUEST,
+                from: "skiff",
+                session: "s-busy01",
+            }),
+            "its start says which session arrives, from where"
         );
         assert_eq!(done.machine, "tern", "said where it went");
         let addresses: Vec<&str> = done
