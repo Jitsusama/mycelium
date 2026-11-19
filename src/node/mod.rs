@@ -89,6 +89,10 @@ mod turns;
 /// The most of its newest starts a node lists when asked.
 const STARTS_LISTED: usize = 100;
 
+/// The longest an agent's start waits for room under its limits, in
+/// milliseconds, before it is refused and told when to ask again.
+const START_WAITS_MOST: i64 = 60_000;
+
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
 const REDIAL_FIRST: Duration = Duration::from_secs(2);
@@ -4322,35 +4326,40 @@ impl<S: Store> Shared<S> {
     /// An agent's start counts toward its cell's limit by the address of
     /// the nearest session claiming the asker's process. A claim proves
     /// nothing, so that limit is a fair share; the limit on every agent's
-    /// starts is the bound none gets round.
+    /// starts is the bound none gets round. One that brings back a session
+    /// the node knows counts toward neither.
     async fn start(&self, asked: Start) -> Reply {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
         let (by, sessions) = self.judged().await?;
-        let started_by = {
+        let (started_by, resumes) = {
             let inner = self.lock();
             let all = inner.state.sessions();
             // The nearest claim alone, and only as an address: one the
             // node doesn't hold, or that isn't one, is no cell's, rather
             // than passing to a farther one.
-            sessions
+            let started_by = sessions
                 .first()
                 .and_then(|id| all.iter().find(|session| session.id == *id))
                 .map(|session| session.address.clone())
-                .filter(|address| forage::is_address(address))
+                .filter(|address| forage::is_address(address));
+            (started_by, starts::brings_back(&asked.command, &all))
         };
-        let admitted = self.starts.admit(starts::Kept {
-            at: jiff::Timestamp::now().as_millisecond(),
-            by,
-            started_by: started_by.filter(|_| by != By::Person),
-            folder: asked.folder.clone(),
-            program: asked.command.first().cloned(),
-            machine: None,
-            held: None,
-            failed: None,
-            refused: None,
-        })?;
+        let admitted = self
+            .admitted(starts::Kept {
+                at: jiff::Timestamp::now().as_millisecond(),
+                by,
+                started_by: started_by.filter(|_| by != By::Person),
+                folder: asked.folder.clone(),
+                program: asked.command.first().cloned(),
+                resumes,
+                machine: None,
+                held: None,
+                failed: None,
+                refused: None,
+            })
+            .await?;
         let started = self.placed(asked, fence_of(by)).await;
         self.starts.keep(
             admitted,
@@ -4363,6 +4372,20 @@ impl<S: Store> Shared<S> {
             },
         );
         started
+    }
+
+    /// Lets `asked` go ahead as the book of starts does, waiting for room
+    /// where the limits refuse it and there is room again within
+    /// [`START_WAITS_MOST`], so a start a little early goes through by
+    /// itself; one refused later is told when.
+    async fn admitted(&self, mut asked: starts::Kept) -> Result<starts::Admitted, String> {
+        let until = asked.at + START_WAITS_MOST;
+        while let Some(room) = self.starts.room(&asked).filter(|room| *room <= until) {
+            let wait = u64::try_from(room - asked.at).unwrap_or(0) + 1;
+            tokio::time::sleep(Duration::from_millis(wait)).await;
+            asked.at = jiff::Timestamp::now().as_millisecond();
+        }
+        self.starts.admit(asked)
     }
 
     /// Starts a program the node of the linked machine `from` relayed
@@ -12055,8 +12078,10 @@ esac
         // Charged to WCJQSG, the nearest claim, rather than to agents of no
         // known cell, whose refusal ends the same way.
         assert!(
-            refused.starts_with("WCJQSG started 8 sessions")
-                && refused.ends_with("a cell starts at most 8 an hour"),
+            refused.starts_with(
+                "WCJQSG started 8 sessions in the last hour, and a cell starts at most 8 an hour; \
+                 there is room again in 60 minutes"
+            ) && refused.ends_with("tell your orchestrator, as a finding"),
             "a failed start counts toward the nearest claim, so the ninth is refused: {refused}"
         );
         let book = fs::read_to_string(socket.with_file_name("starts.jsonl"))
@@ -12087,8 +12112,9 @@ esac
         assert_eq!(
             ask(socket.clone(), start()).await,
             Err(
-                "the person stopped agents starting sessions; only they resume it, \
-                 with `mycelium starts resume`"
+                "the person stopped agents starting sessions, and only they resume it, \
+                 with `mycelium starts resume`; don't ask them to, but tell your \
+                 orchestrator, as a finding"
                     .to_owned()
             )
         );
@@ -12108,6 +12134,105 @@ esac
             starts(StartsAct::Resume).await,
             Ok(Response::Starts { stopped: false, .. })
         ));
+    }
+
+    // WCJQSG (2026-11-18): the Mac waves brought back held sessions on
+    // their own files, and a wave of nine from one cell must all start.
+    #[tokio::test]
+    async fn a_wave_bringing_back_sessions_ended_here_counts_toward_no_limit() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let at = jiff::Timestamp::now().to_string();
+        store.start_here(
+            "s-gone",
+            json!({"session": "s-gone", "addresses": ["GONE01"], "groups": [],
+                   "busy": false, "state": "listening", "at": at}),
+            false,
+        );
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        // As in the limit's test, each start stays here.
+        declares_runs(&socket, true);
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        let start = |command: &[&str]| {
+            Request::Start(Start {
+                work: work(Vec::new()),
+                folder: None,
+                command: command.iter().map(|&word| word.to_owned()).collect(),
+                may_cost: false,
+            })
+        };
+        asks_below(&socket, 7001);
+        for _ in 0..=starts::CELL_AN_HOUR {
+            assert_eq!(
+                ask(socket.clone(), start(&["pi", "--session", "s-gone"])).await,
+                Err("skiff's node starts no sessions".to_owned()),
+                "none is refused"
+            );
+        }
+        // One running isn't brought back, so it counts.
+        for _ in 0..starts::CELL_AN_HOUR {
+            let _ = ask(socket.clone(), start(&["pi", "--session", "s-steward"])).await;
+        }
+        let refused = ask(socket, start(&["pi"]))
+            .await
+            .expect_err("new work counts");
+        assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
+    }
+
+    // WCJQSG (2026-11-18): a refused start must never wait on the person,
+    // so one with room again within a minute waits and goes through.
+    #[tokio::test]
+    async fn an_agents_start_a_little_early_waits_for_room_and_goes_through() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        // Made as the node makes it, open to nobody else, so its socket goes
+        // there.
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(socket.parent().expect("its folder"))
+            .expect("made");
+        // WCJQSG's eight in the hour, the oldest leaving it in a second
+        // and the next two minutes after.
+        let leaves = jiff::Timestamp::now().as_millisecond() - 3_600_000 + 1_000;
+        let mut book = (0..starts::CELL_AN_HOUR)
+            .map(|one| {
+                let at = leaves + i64::try_from(one).expect("few") * 120_000;
+                json!({"at": at, "by": {"Agent": "fence"}, "started_by": "WCJQSG"}).to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        book.push('\n');
+        fs::write(socket.with_file_name("starts.jsonl"), book).expect("a book");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        let start = || {
+            Request::Start(Start {
+                work: work(Vec::new()),
+                folder: None,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+            })
+        };
+        asks_below(&socket, 7001);
+        assert_eq!(
+            ask(socket.clone(), start()).await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "it waited for the oldest to leave the hour, and went through"
+        );
+        let refused = ask(socket, start())
+            .await
+            .expect_err("the next is two minutes off");
+        assert!(refused.contains("room again in 2 minutes"), "{refused}");
     }
 
     #[tokio::test]

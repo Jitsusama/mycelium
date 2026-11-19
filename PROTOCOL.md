@@ -1568,16 +1568,24 @@ a cell's fair share, and the 32 the bound no agent gets round. A
 start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
 once can't pass the limit; a refused one doesn't. The person's own
-starts are never counted or refused. The person stops the agents'
-starts asked of a node in one act, `mycelium starts stop`, which
+starts are never counted or refused, and nor is an agent's that brings
+back a session the node knows and that isn't running: one the command
+names after `--session`, by its id or by a file whose name ends in
+`_` and the id, or the session a carry brings. A start past the limits
+with room again within a minute waits for it and goes through; one
+further off is refused, saying in how many minutes and at what time
+there is room, and that it goes to the agent's orchestrator as a
+finding, since pacing is never the person's to lift. The person stops
+the agents' starts asked of a node in one act, `mycelium starts stop`, which
 holds through a restart till `mycelium starts resume`, and while
 whether it stands can't be told; an agent asking either, or the list,
 is refused. The stop is `starts.stopped` in the node's state folder,
 so an agent able to write there could lift it, as it could stop the
 node. Every start, refused ones too, is kept in
 `starts.jsonl` beside `runs.jsonl` as a JSON line, `{"at", "by",
-"started_by", "folder", "program", "machine", "held", "failed",
-"refused"}`: `at` in milliseconds, `started_by` null for the person's,
+"started_by", "folder", "program", "resumes", "machine", "held",
+"failed", "refused"}`: `at` in milliseconds, `started_by` null for the
+person's, `resumes` true for one bringing a session back,
 `program` the command's first word alone, so no argument is kept,
 `failed` the node's reason alone, before the words naming the command,
 and the rest only where they apply. The node reads it again as it
