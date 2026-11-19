@@ -1860,6 +1860,20 @@ fn fence_of(by: By) -> Option<crate::declared::Kind> {
     }
 }
 
+/// Why a link's end was judged `by`, for a refusal to say: the session
+/// whose claim above it made it an agent's, the nearest of `claims`,
+/// where one did, and otherwise what the kernel says of it.
+fn judged_as(by: By, claims: &[String]) -> String {
+    match claims.first() {
+        // Quoted, since a presence may say anything as its session.
+        Some(session) => format!("its link's end is judged {by}, as session {session:?} claims it"),
+        None => format!(
+            "its link's end is judged {by}, as an agent's unit, a pi above it, or a fence's \
+             bar on privileges or mounts of its own says"
+        ),
+    }
+}
+
 /// The cells of `machine` that work on a quest, each with what its forage
 /// is made of, ordered by address. A cell was started by the cell this
 /// node's book of `starts` says asked for its hold, by the session that
@@ -4793,12 +4807,19 @@ impl<S: Store> Shared<S> {
         if !asker::relays(self.client, by) {
             let unattended = self.processes.is_unattended();
             if asked.carries && !unattended {
+                // Said here too, since the person reads the carry's
+                // failure on the machine it left.
+                let why = judged_as(by, &judged.1);
+                eprintln!("a carry relayed from {from:?} is refused: {why}");
                 return Err(format!(
-                    "{} takes no carry from {from:?} here: its link's end is judged {by}, \
-                     so the carried session couldn't stand as its cell",
+                    "{} takes no carry from {from:?} here, so the carried session couldn't \
+                     stand as its cell: {why}. Its files stay in the handover, so the carry \
+                     can be taken again once this machine's end of the link runs outside \
+                     every agent's session",
                     self.machine
                 ));
             }
+            let persons_carry = asked.carries;
             let why = if unattended {
                 "no person works on this machine, so its link's end can't be told from an \
                  agent's login"
@@ -4813,7 +4834,25 @@ impl<S: Store> Shared<S> {
                 may_cost: false,
                 ..asked
             };
-            return self.counted(judged, pinned, 0, Whither::Here).await;
+            let started = self.counted(judged, pinned, 0, Whither::Here).await;
+            // The person's carry, taken as an agent's start where no
+            // person works, is the person's to read: no orchestrator of
+            // theirs paces it.
+            return started.map_err(|why| {
+                if persons_carry {
+                    format!(
+                        "no person works on {}, so it takes the person's carry as an agent's \
+                         start, arriving as a new cell, and refused it: {}",
+                        self.machine,
+                        why.replace(
+                            starts::FOR_AN_AGENT,
+                            "carry to a machine a person works at instead"
+                        )
+                    )
+                } else {
+                    why
+                }
+            });
         }
         let carried = crate::carry::arrives(&asked.command)
             .filter(|arrives| asked.carries && arrives.from.eq_ignore_ascii_case(from))
@@ -15605,9 +15644,20 @@ esac
             carries: false,
             once: None,
         };
+        // The person's carry is such a start too: it starts, counted, and
+        // is never read for a carry.
+        let carrying = Start {
+            command: carried_in("QEST-20261112-HARBOR"),
+            carries: true,
+            ..start.clone()
+        };
+        link.relayed("tern", carrying.clone())
+            .await
+            .expect("the person's carry starts, as an agent's start");
+        assert_eq!(link.arrivals.carrying(), 0, "and is never read for one");
         // No session claims the link's end, so its starts share the
         // limit of agents of no known cell, as on main.
-        for _ in 0..starts::CELL_AN_HOUR {
+        for _ in 1..starts::CELL_AN_HOUR {
             link.relayed("tern", start.clone())
                 .await
                 .expect("the start its maker placed here starts");
@@ -15620,6 +15670,71 @@ esac
             refused.starts_with("agents of no known cell started 8 sessions"),
             "{refused}"
         );
+        let refused = link
+            .relayed("tern", carrying)
+            .await
+            .expect_err("the person's carry is counted the same");
+        assert!(
+            refused.starts_with("no person works on skiff, so it takes the person's carry")
+                && refused.contains("agents of no known cell started 8 sessions")
+                && !refused.contains("orchestrator"),
+            "the person reads why, and isn't sent to an orchestrator: {refused}"
+        );
+    }
+
+    // The asking node stops waiting on a relay's answer within half a
+    // minute, so a relayed start never waits for room, however soon it
+    // comes, where a person works or not.
+    #[tokio::test]
+    async fn a_relayed_start_is_refused_rather_than_waiting_for_room() {
+        for processes in [
+            Processes::Folder("/nowhere/proc".into()),
+            Processes::Folder("/nowhere/proc".into()).unattended(),
+        ] {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            // Agents' eight of the hour, the oldest leaving it in half a
+            // minute and the next two minutes after, so a start that
+            // waited would go through.
+            let leaves = jiff::Timestamp::now().as_millisecond() - 3_600_000 + 30_000;
+            let book: String = (0..starts::CELL_AN_HOUR)
+                .map(|one| {
+                    let at = leaves + i64::try_from(one).expect("few") * 120_000;
+                    json!({"at": at, "by": {"Agent": "fence"}}).to_string() + "\n"
+                })
+                .collect();
+            fs::write(dir.path().join("starts.jsonl"), book).expect("a book");
+            let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+            link.client = Some(1);
+            let start = Start {
+                work: work(vec![Need::Machine("skiff".to_owned())]),
+                folder: None,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+            };
+            let refused = link
+                .relayed("tern", start)
+                .await
+                .expect_err("refused at once, rather than going through once there is room");
+            assert!(refused.contains("room again in 1 minute"), "{refused}");
+        }
+    }
+
+    /// The command a carry starts the session `s-harbour` carried from
+    /// tern in `quest` with.
+    fn carried_in(quest: &str) -> Vec<String> {
+        [
+            "sh",
+            "-c",
+            r#"pi-carry arrive "$1" --from "$2" --session "$3"; exec pi --session "$3""#,
+            crate::carry::PI_CARRY,
+            quest,
+            "tern",
+            "s-harbour",
+            "carry on",
+        ]
+        .map(str::to_owned)
+        .to_vec()
     }
 
     // Where a person works, a relay from an asker judged an agent's, as
@@ -15754,9 +15869,11 @@ esac
             scope: start::Scope::None,
             kit: None,
         };
+        // Its book of starts in `dir`, so a test may fill it first.
         let given = Given {
             sharing,
             processes,
+            runs: run::Given::at(dir),
             ..bare("/nowhere/steer".into(), Some(holds))
         };
         let (to_dial, _) = mpsc::unbounded_channel();
