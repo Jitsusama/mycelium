@@ -559,11 +559,27 @@ in order and says each step:
    only where the person asked a carry's command, whatever the asker
    said of it, so no agent's start is read for a carry. It reads the
    cell each minute while the session runs there until it stands, and
-   keeps it while it runs, its file gone or not. The session stands
-   as that cell, its address an alias of it, unless another live
-   session goes by the name, as any address, in any case, or two say
-   it. A tie it brought said heard after it arrived counts as heard
-   then, and stands for a day from when it was heard. A cell brings
+   keeps it, its file gone or not, for a day after the session last ran
+   there, so one resumed within the day stands as it again; a new carry
+   of the session reads its cell afresh. The session stands as that
+   cell, its address an alias of it, unless another live session goes
+   by the name, as any address, in any case, or two running there say
+   it. Each field a tie brings is kept only as the tie kind writes it:
+   counts that fit 32 bits, a strength never below none, intents the
+   mesh has and groups' names, each once, at most 64 groups. The
+   folder a cell is read in is the short name of the machine the carry
+   came from as its link names it, and the leaving machine writes the
+   folder by its hostname, so a cell arrives only where the two agree;
+   the node logs each carry it lets go with no cell having stood. On a
+   machine nobody works at, every link's end is judged an agent's, so a
+   person's carry there is started as an agent's start: counted among
+   the 8 an hour and 32 its asker and the node may start, arriving as
+   a new cell, and refused, where the limits refuse it, with no word of
+   an orchestrator. Where a person works, a carry relayed by a link end
+   judged an agent's is refused, saying the session whose claim made
+   it one where one did, and logged there too. A tie it brought said
+   heard after it arrived counts as heard then, and stands for a day
+   from when it was heard. A cell brings
    at most its 128 strongest ties, and where its strongest is past
    the strongest tie between two cells the arriving node holds, or a
    message's where it holds none, each is made weaker alike, so none

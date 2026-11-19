@@ -5,8 +5,9 @@
 //! done file in the quest's handover ([`crate::carry::cell`]), and its
 //! node asks this one, over their link, to start the session here. This
 //! node notes each carry it so starts, reads the cell left for that
-//! session in the folder the carry names, once, keeps it while the
-//! session runs, and makes the session stand as its cell again: named
+//! session in the folder the carry names, once, keeps it for a day
+//! after the session last ran here, so one resumed later stands as it
+//! again, and makes the session stand as its cell again: named
 //! by it in the networks, its new address an alias of it, and the ties
 //! it brought kept beside those this node makes, each for a day from
 //! when it was heard, as long as a tie is told of.
@@ -40,6 +41,10 @@ const WAITED: i64 = 60 * 60 * 1000;
 /// first, so no linked node's starts grow what is held without bound.
 const CARRIES_MOST: usize = 256;
 
+/// How many cells sessions arrived with are kept at once, those whose
+/// sessions ran here longest ago let go first, as carries are.
+const KEPT_MOST: usize = CARRIES_MOST;
+
 /// The strength a brought tie may have where this node holds none as
 /// strong: a message's, heard as it arrived.
 const STRONGEST_ALONE: f64 = 1.0;
@@ -58,20 +63,35 @@ pub(super) struct Carried {
     pub(super) at: i64,
 }
 
-/// The cells sessions running here arrived with, by session id, and the
-/// carries started here they may arrive by.
+/// A cell a session arrived with, and when its session last ran here,
+/// in milliseconds since the epoch.
+#[derive(Debug, Clone, PartialEq)]
+struct Kept {
+    /// The cell.
+    brought: Brought,
+    /// When its session last ran here.
+    ran: i64,
+}
+
+/// The cells sessions that ran here arrived with, by session id, and
+/// the carries started here they may arrive by.
 #[derive(Debug, Default)]
 pub(super) struct Arrivals {
     /// The cell each session arrived with.
-    kept: Mutex<BTreeMap<String, Brought>>,
+    kept: Mutex<BTreeMap<String, Kept>>,
     /// The carry each session was started here by.
     carries: Mutex<BTreeMap<String, Carried>>,
 }
 
 impl Arrivals {
     /// Notes that a linked node asked this one to start the session
-    /// `session` as `carry`, so its cell is read once it runs here.
+    /// `session` as `carry`, so its cell is read once it runs here, in
+    /// place of any it arrived with before.
     pub(super) fn carried(&self, session: &str, carry: Carried) {
+        self.kept
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(session);
         let mut carries = self.carries.lock().unwrap_or_else(PoisonError::into_inner);
         carries.insert(session.to_owned(), carry);
         while carries.len() > CARRIES_MOST {
@@ -88,7 +108,7 @@ impl Arrivals {
     /// Reads, once, the cell each of `sessions` running on `machine`
     /// that a carry started here arrived with, in the folder of its
     /// quest's handover in `scratch` the carry named, and forgets each
-    /// whose session no longer runs here. Each tie it brought said heard
+    /// whose session hasn't run here for a day. Each tie it brought said heard
     /// after `now` is kept as heard `now`. Answers whether what is kept
     /// changed.
     pub(super) fn read(
@@ -104,34 +124,65 @@ impl Arrivals {
             .collect();
         let runs = |id: &str| here.iter().any(|session| session.id == id);
         let mut carries = self.carries.lock().unwrap_or_else(PoisonError::into_inner);
-        carries.retain(|id, carry| runs(id) || now.saturating_sub(carry.at) < WAITED);
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
-        let before = kept.clone();
-        kept.retain(|id, _| runs(id));
+        carries.retain(|id, carry| {
+            let held = runs(id) || now.saturating_sub(carry.at) < WAITED;
+            // A leaving machine names its folder by its hostname, and
+            // this node reads the one its link names, so where the two
+            // differ a carry arrives without its cell, and only this
+            // says so. Quoted, since a linked node said them.
+            if !held && !kept.contains_key(id) {
+                eprintln!(
+                    "session {id:?}, carried from {:?} in {:?}, arrived as no cell: none stood \
+                     in its handover's folder {:?}",
+                    carry.from,
+                    carry.quest,
+                    through::short_host(&carry.from)
+                );
+            }
+            held
+        });
+        let before = cells_of(&kept);
+        kept.retain(|id, one| runs(id) || now.saturating_sub(one.ran) < KEPT);
         for session in &here {
-            if kept.contains_key(&session.id) {
+            if let Some(one) = kept.get_mut(&session.id) {
+                one.ran = now;
                 continue;
             }
             let Some(carry) = carries.get(&session.id) else {
                 continue;
             };
             if let Some(brought) = left_for(scratch, carry, &session.id) {
-                kept.insert(session.id.clone(), settled(brought, now));
+                let brought = settled(brought, now);
+                kept.insert(session.id.clone(), Kept { brought, ran: now });
             }
         }
         drop(carries);
+        while kept.len() > KEPT_MOST {
+            let earliest = kept
+                .iter()
+                .min_by_key(|(_, one)| one.ran)
+                .map(|(id, _)| id.clone());
+            if let Some(earliest) = earliest {
+                kept.remove(&earliest);
+            }
+        }
         // A cell that another live session goes by, as its address or
-        // any other, or that two sessions here say, stands as none of
-        // them, so no session takes the name, and the talk, of another
-        // cell.
+        // any other, or that two sessions running here say, stands as
+        // none of them, so no session takes the name, and the talk, of
+        // another cell; one whose session ended never takes a live
+        // one's.
         let taken: Vec<String> = kept
             .iter()
+            .map(|(id, one)| (id, &one.brought))
             .filter(|(id, brought)| {
                 let other_is = sessions.iter().any(|other| {
                     other.id != **id && other.state != State::Ended && goes_by(other, &brought.cell)
                 });
                 let twice = kept.iter().any(|(other, said)| {
-                    other != *id && said.cell.eq_ignore_ascii_case(&brought.cell)
+                    other != *id
+                        && runs(other)
+                        && said.brought.cell.eq_ignore_ascii_case(&brought.cell)
                 });
                 other_is || twice
             })
@@ -140,17 +191,21 @@ impl Arrivals {
         for id in &taken {
             kept.remove(id);
         }
-        *kept != before
+        cells_of(&kept) != before
+    }
+
+    /// How many carries started here are waited on.
+    #[cfg(test)]
+    pub(super) fn carrying(&self) -> usize {
+        self.carries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     /// Each session's cell, by session id.
     fn cells(&self) -> BTreeMap<String, String> {
-        self.kept
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .map(|(session, brought)| (session.clone(), brought.cell.clone()))
-            .collect()
+        cells_of(&self.kept.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// `sessions` as they stand as cells: each that arrived named by the
@@ -211,8 +266,8 @@ impl Arrivals {
     pub(super) fn ties(&self, made: &mut BTreeMap<String, daemon::Record>, now: i64) {
         let most = strongest_held(made);
         let kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
-        let brought = kept.values().flat_map(|brought| {
-            let Brought { ties, talk, .. } = brought;
+        let brought = kept.values().flat_map(|one| {
+            let Brought { ties, talk, .. } = &one.brought;
             bounded(ties, most).chain(talk.iter().cloned())
         });
         for record in brought {
@@ -230,6 +285,14 @@ impl Arrivals {
             }
         }
     }
+}
+
+/// Each session's cell in `kept`, by session id: what changes what the
+/// networks say, as when a session last ran doesn't.
+fn cells_of(kept: &BTreeMap<String, Kept>) -> BTreeMap<String, String> {
+    kept.iter()
+        .map(|(session, one)| (session.clone(), one.brought.cell.clone()))
+        .collect()
 }
 
 /// The strength of the strongest tie between two cells in `made`, as
@@ -432,8 +495,23 @@ mod tests {
         assert!(!arrivals.read(scratch.path(), "skiff", &sessions, NOW));
         assert_eq!(arrivals.cells().len(), 1, "kept once its file is gone");
         sessions[0].state = State::Ended;
-        assert!(arrivals.read(scratch.path(), "skiff", &sessions, NOW));
-        assert!(arrivals.cells().is_empty(), "while its session runs here");
+        let later = NOW + KEPT - 1;
+        assert!(!arrivals.read(scratch.path(), "skiff", &sessions, later));
+        assert_eq!(arrivals.cells().len(), 1, "kept for a day after it ended");
+        sessions[0].state = State::Idle;
+        assert!(!arrivals.read(scratch.path(), "skiff", &sessions, later));
+        assert_eq!(
+            arrivals.cells().len(),
+            1,
+            "resumed within the day, it stands as its cell again"
+        );
+        sessions[0].state = State::Ended;
+        assert!(!arrivals.read(scratch.path(), "skiff", &sessions, later + KEPT - 1));
+        assert!(arrivals.read(scratch.path(), "skiff", &sessions, later + KEPT));
+        assert!(
+            arrivals.cells().is_empty(),
+            "let go a day after its session last ran here"
+        );
     }
 
     #[test]
@@ -515,6 +593,45 @@ mod tests {
             arrivals.cells(),
             BTreeMap::from([("s-harbour".to_owned(), "HARBOR".to_owned())]),
             "once the cell's own session has ended, it arrives"
+        );
+    }
+
+    #[test]
+    fn a_cell_kept_past_its_session_gives_way_to_a_live_one_and_a_new_carry() {
+        let scratch = tempfile::tempdir().expect("a scratch folder");
+        left(scratch.path(), "tern", "s-harbour", &harbour());
+        left(
+            scratch.path(),
+            "tern",
+            "s-twin",
+            &json!({"session": "s-twin", "cell": "HARBOR"}),
+        );
+        let arrivals = Arrivals::default();
+        arrivals.carried("s-harbour", from("tern"));
+        let mut sessions = vec![session("s-harbour", "stand1", "skiff")];
+        assert!(arrivals.read(scratch.path(), "skiff", &sessions, NOW));
+        sessions[0].state = State::Ended;
+        arrivals.carried("s-twin", from("tern"));
+        sessions.push(session("s-twin", "twin01", "skiff"));
+        assert!(arrivals.read(scratch.path(), "skiff", &sessions, NOW + 1));
+        assert_eq!(
+            arrivals.cells(),
+            BTreeMap::from([("s-twin".to_owned(), "HARBOR".to_owned())]),
+            "a cell kept for an ended session gives way to a live session's"
+        );
+        left(
+            scratch.path(),
+            "tern",
+            "s-harbour",
+            &json!({"session": "s-harbour", "cell": "LATER1"}),
+        );
+        arrivals.carried("s-harbour", from("tern"));
+        sessions[0].state = State::Idle;
+        assert!(arrivals.read(scratch.path(), "skiff", &sessions, NOW + 2));
+        assert_eq!(
+            arrivals.cells().get("s-harbour").map(String::as_str),
+            Some("LATER1"),
+            "carried here again, it arrives with the cell it brings now"
         );
     }
 
@@ -658,9 +775,9 @@ mod tests {
             "and the rest weaker alike, so they keep their order"
         );
         assert_eq!(
-            strength("tie:HARBOR~TIDE01"),
-            json!(0.0),
-            "one no tie could be is none"
+            made["tie:HARBOR~TIDE01"].value().get("strength"),
+            None,
+            "one saying a strength no tie could have says none"
         );
     }
 
