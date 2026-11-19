@@ -212,10 +212,11 @@ impl Processes {
     /// process `host`, read from the kernel, where only a process's own
     /// threads may change its name. None where it can't be told: the
     /// lineage, read again, no longer reaches the host, or that child's
-    /// name can't be read. Where the kernel's folder can't be read, as on a
-    /// Mac, it is below none, since no spawner is proved there either.
+    /// name can't be read. Where this node never takes a spawner's word, as
+    /// on a Mac or a machine run unattended, it is below none, so the host's
+    /// one session is told as it was before spawners were said.
     fn below_a_spawner(&self, asker: i32, host: i32) -> Option<bool> {
-        let Self::Folder(procs) = self.kernel() else {
+        let Self::Folder(procs) = self else {
             return Some(false);
         };
         let lineage = self.lineage(asker);
@@ -1084,8 +1085,8 @@ pub fn session_alone(
             Some(false) => {}
             Some(true) => {
                 return Err(format!(
-                    "this asks below pi host process {process} through no pi-spawner this \
-                     node took its word for as serving a session it proves"
+                    "this asks below pi host process {process} through a pi-spawner this \
+                     node can't tie to a session it proves"
                 ));
             }
             None => {
@@ -1104,8 +1105,7 @@ pub fn session_alone(
         )),
         _ if !keys.is_empty() => Err(format!(
             "this asks below pi host process {process}, which {shared} sessions share, \
-             through no pi-spawner this node took its word for as serving one it \
-             proves"
+             through a pi-spawner this node can't tie to a session it proves"
         )),
         _ => Err(format!(
             "this asks from process {process}, which {shared} sessions share, so none is \
@@ -1910,7 +1910,8 @@ mod tests {
             connected(asker, super::started(procs.path(), asker), owners, claims)
         };
         let refused = |asker, owners: &[(String, i32)], claims: &[Claim]| {
-            alone(asker, owners, claims).is_err_and(|why| why.contains("through no pi-spawner"))
+            alone(asker, owners, claims)
+                .is_err_and(|why| why.contains("pi-spawner this node can't tie"))
         };
         assert_eq!(
             alone(90, &owners, &claims),
@@ -1934,7 +1935,7 @@ mod tests {
         );
         assert!(
             connected(90, Some(89), &owners, &claims)
-                .is_err_and(|why| why.contains("through no pi-spawner")),
+                .is_err_and(|why| why.contains("pi-spawner this node can't tie")),
             "a connection held open past its process's end proves nothing once another takes \
              its id below a spawner"
         );
@@ -1988,7 +1989,7 @@ mod tests {
                 hosts.path(),
                 &spawners,
             );
-            alone.is_err_and(|why| why.contains("through no pi-spawner"))
+            alone.is_err_and(|why| why.contains("pi-spawner this node can't tie"))
         };
         assert!(
             !refused(90, &owners, &claims),
@@ -2087,7 +2088,7 @@ mod tests {
             )
         };
         assert!(
-            alone(83).is_err_and(|why| why.contains("through no pi-spawner")),
+            alone(83).is_err_and(|why| why.contains("pi-spawner this node can't tie")),
             "a command below a spawner never said, as after this node restarts, is told no \
              session, though the host holds only one"
         );
@@ -2095,6 +2096,20 @@ mod tests {
             alone(85),
             Ok("s-one".to_owned()),
             "the host's own child, as it starts once a spawner is lost, is told its one session"
+        );
+        assert_eq!(
+            session_alone(
+                (Some(83), super::started(procs.path(), 83)),
+                &processes.clone().unattended(),
+                &owners,
+                &claims,
+                hosts.path(),
+                &Spawners::default(),
+            ),
+            Ok("s-one".to_owned()),
+            "on a machine whose node takes no spawner's word, as one run unattended, a \
+             command below a spawner is told its host's one session, as before spawners \
+             were said"
         );
         assert_eq!(
             processes.below_a_spawner(83, 999),

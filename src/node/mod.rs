@@ -3748,10 +3748,11 @@ impl<S: Store> Shared<S> {
     /// end, that its child `spawner` serves `session`, as
     /// [`asker::Spawners::register`] takes it. A refusal is said on the
     /// node's stderr too, since a host refused may be a command trying:
-    /// once for each reason, its digits aside, for as long as the node
-    /// runs, whatever process or session it names, so new speakers and
-    /// new names say nothing more, and with the session it named cut short
-    /// and escaped, since anyone may name one.
+    /// once for each reason, its digits aside, until so many reasons are
+    /// kept that they are forgotten and may be said again, so new speakers
+    /// say nothing more. The session the host named leads the line, cut
+    /// short and escaped, since anyone may name one; a reason may name a
+    /// session too, the one a process was said to serve before.
     async fn spawned(&self, spawner: (i32, u64), session: String) -> Reply {
         // A session's id is far shorter; one longer is refused before
         // anything is weighed.
@@ -5658,7 +5659,9 @@ impl<S: Store> Shared<S> {
                     .await
                     .inspect_err(|why| {
                         if self.untold.first(why) {
-                            eprintln!("a run here is told no session: {why}");
+                            // A reason may hold what a record says, so
+                            // it is escaped, as the spawner's is.
+                            eprintln!("a run here is told no session: {}", why.escape_debug());
                         }
                         started["untold"] = serde_json::Value::from(why.as_str());
                     })
@@ -14771,7 +14774,7 @@ esac
         assert!(
             kept_start(&socket, 2)["untold"]
                 .as_str()
-                .is_some_and(|why| why.contains("as serving a session it proves")),
+                .is_some_and(|why| why.ends_with("can't tie to a session it proves")),
             "its record says why: no spawner its host said, before its sessions are counted"
         );
         let (stop, node) = running;
