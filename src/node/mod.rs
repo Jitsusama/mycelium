@@ -4564,13 +4564,13 @@ impl<S: Store> Shared<S> {
     /// does, once the node's book of starts lets who asks start one more,
     /// keeping it in the book whether it started, failed or was refused.
     /// An agent's start counts toward its cell's limit by the address of
-    /// the nearest session claiming the asker's process. A claim proves
-    /// nothing, so that limit is a fair share; the limit on every agent's
-    /// starts is the bound none gets round. Pi's first start in the hour
-    /// bringing back a session the node knows has ended counts toward
-    /// the node's limit but not its cell's, which instead allows it
-    /// [`starts::RESUMES_A_CELL_AN_HOUR`] of them. One short of room waits
-    /// for it up to [`START_WAITS_MOST`].
+    /// the session [`asker::charged`] tells. A claim proves nothing, so
+    /// that limit is a fair share; the limit on every agent's starts is
+    /// the bound none gets round. Pi's first start in the hour bringing
+    /// back a session the node knows has ended, on the machine it ran
+    /// on, counts toward neither, and goes there, in its folder where it
+    /// names none. One short of room waits for it up to
+    /// [`START_WAITS_MOST`].
     ///
     /// A start asked under a name its asker gave one before joins that
     /// one, as [`once`] says, landing or landed, and counts nothing more;
@@ -4633,34 +4633,36 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let judged = self.judged().await?;
-        self.counted(judged, asked, waits, Whither::Placed).await
+        let (by, _, charged) = self.judged_charging().await?;
+        self.counted((by, charged), asked, waits, Whither::Placed)
+            .await
     }
 
-    /// Starts `asked`, from the asker judged `by` below `sessions`'
-    /// claims, as [`Self::started`] does, where `whither` says: counted,
-    /// limited and booked, and waiting for room up to `waits`
-    /// milliseconds.
+    /// Starts `asked`, from the asker judged `by` whose start counts
+    /// toward `charged`'s cell, as [`Self::started`] does, where
+    /// `whither` says: counted, limited and booked, and waiting for room
+    /// up to `waits` milliseconds.
     async fn counted(
         &self,
-        (by, sessions): (By, Vec<String>),
+        (by, charged): (By, Option<String>),
         mut asked: Start,
         waits: i64,
         whither: Whither,
     ) -> Reply {
         asked.carries = marks_a_carry(by, &asked.command);
-        let (started_by, resumes) = {
+        let (started_by, reopened) = {
             let inner = self.lock();
             let all = inner.state.sessions();
-            // The nearest claim alone, and only as an address: one the
-            // node doesn't hold, or that isn't one, is no cell's, rather
-            // than passing to a farther one.
-            let started_by = sessions
-                .first()
-                .and_then(|id| all.iter().find(|session| session.id == *id))
+            // Only as an address: one the node doesn't hold, or that
+            // isn't one, is no cell's, rather than passing to another.
+            let started_by = charged
+                .and_then(|id| all.iter().find(|session| session.id == id))
                 .map(|session| session.address.clone())
                 .filter(|address| forage::is_address(address));
-            (started_by, starts::brings_back(&asked.command, &all))
+            let reopened = starts::brings_back(&asked.command, &all)
+                .filter(|session| self.reopens_where(session, &asked.work, whither))
+                .map(|session| (session.id.clone(), session.machine.clone()));
+            (started_by, reopened)
         };
         let started_by = started_by.filter(|_| by != By::Person);
         let at = jiff::Timestamp::now().as_millisecond();
@@ -4677,6 +4679,10 @@ impl<S: Store> Shared<S> {
             }
             None => (None, None),
         };
+        let resumes = reopened.map(|(id, machine)| {
+            self.reopen_there(&id, machine, &mut asked, whither);
+            id
+        });
         let admitted = self
             .admitted(
                 starts::Kept {
@@ -4741,6 +4747,44 @@ impl<S: Store> Shared<S> {
             joined,
         );
         started.map(Response::Started)
+    }
+
+    /// Whether a start of `work`, going where `whither` says, would bring
+    /// `session` back on the machine it ran on: here, for one relayed
+    /// here; or wherever placement chooses, for one that names no other
+    /// machine. One naming another is new work there, and counts.
+    fn reopens_where(&self, session: &Session, work: &Work, whither: Whither) -> bool {
+        match whither {
+            Whither::Here => session.machine == self.machine,
+            Whither::Placed => work
+                .needs
+                .iter()
+                .all(|need| !matches!(need, Need::Machine(name) if *name != session.machine)),
+        }
+    }
+
+    /// Pins `asked`, which brings back session `id` that ran on
+    /// `machine`, to that machine, and where it names no folder, to the
+    /// one the session's last presence says it ran in, so pi opens it in
+    /// its own project rather than asking to fork it into home.
+    fn reopen_there(&self, id: &str, machine: String, asked: &mut Start, whither: Whither) {
+        let named = asked
+            .work
+            .needs
+            .iter()
+            .any(|need| matches!(need, Need::Machine(_)));
+        if whither == Whither::Placed && !named {
+            asked.work.needs.push(Need::Machine(machine));
+        }
+        if asked.folder.is_none() {
+            asked.folder = self
+                .store
+                .presences()
+                .into_iter()
+                .find(|presence| presence.session == id)
+                .and_then(|presence| presence.body.get("cwd")?.as_str().map(PathBuf::from))
+                .filter(|cwd| cwd.is_absolute());
+        }
     }
 
     /// Lets `asked` go ahead as the book of starts does, waiting for room
@@ -4822,19 +4866,18 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let judged = self.judged().await?;
-        let by = judged.0;
+        let (by, claims, charged) = self.judged_charging().await?;
         if !asker::relays(self.client, by) {
             let unattended = self.processes.is_unattended();
             if asked.carries && !unattended {
                 // Said here too, since the person reads the carry's
                 // failure on the machine it left.
                 let unclaimed = asker::unclaimed_because(self.client, &self.processes);
-                let why = judged_as(by, &judged.1, unclaimed);
+                let why = judged_as(by, &claims, unclaimed);
                 eprintln!("a carry relayed from {from:?} is refused: {why}");
                 // Where the node couldn't read the link's end, running it
                 // elsewhere changes nothing; reading it does.
-                let when = if judged.1.is_empty()
+                let when = if claims.is_empty()
                     && [asker::UNNAMED, asker::UNTOLD].contains(&unclaimed)
                 {
                     "its node can read the process at this machine's end of the link"
@@ -4863,7 +4906,7 @@ impl<S: Store> Shared<S> {
                 may_cost: false,
                 ..asked
             };
-            let started = self.counted(judged, pinned, 0, Whither::Here).await;
+            let started = self.counted((by, charged), pinned, 0, Whither::Here).await;
             // The person's carry, taken as an agent's start where no
             // person works, is the person's to read: no orchestrator of
             // theirs paces it.
@@ -5575,6 +5618,14 @@ impl<S: Store> Shared<S> {
     /// claiming the process that asks, nearest first, each of whose
     /// presence says which fence it runs in.
     async fn judged(&self) -> Result<(By, Vec<String>), String> {
+        let (by, above, _) = self.judged_charging().await?;
+        Ok((by, above))
+    }
+
+    /// Who asks a run and the sessions claiming it, as [`Self::judged`]
+    /// tells them, and the session a start it asks counts toward, as
+    /// [`asker::charged`] tells it, all from one reading.
+    async fn judged_charging(&self) -> Result<(By, Vec<String>, Option<String>), String> {
         let standing = self.standing();
         let claims: Vec<asker::Claim> = standing
             .iter()
@@ -5598,7 +5649,8 @@ impl<S: Store> Shared<S> {
                 .iter()
                 .map(|session| fences.get(session).copied().flatten())
                 .collect();
-            (asker::judge(client, &processes, &kinds), above)
+            let charged = asker::charged(client, &processes, &claims);
+            (asker::judge(client, &processes, &kinds), above, charged)
         })
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))
@@ -13203,23 +13255,25 @@ esac
         ));
     }
 
-    // WCJQSG (2026-11-18): the Mac waves brought back held sessions on
-    // their own files, and a wave of nine from one cell must all start.
+    // WCJQSG (2026-11-19): the Mac waves brought back held sessions on
+    // their own files, and a restarted machine's every session must come
+    // back, in its own folder, whatever the cell or the node has started.
     #[tokio::test]
-    async fn a_wave_bringing_back_sessions_ended_here_is_spared_its_cells_new_work_limit() {
+    async fn a_wave_bringing_back_sessions_ended_here_counts_toward_no_limit() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let at = jiff::Timestamp::now().to_string();
-        // Nine sessions ended here, one for each start of the wave.
-        let wave = (0..=starts::CELL_AN_HOUR)
+        // More sessions ended here than the node starts in an hour.
+        let wave = (0..=starts::NODE_AN_HOUR)
             .map(|one| format!("s-gone-{one}"))
             .collect::<Vec<_>>();
         for (one, session) in wave.iter().enumerate() {
             store.start_here(
                 session,
-                json!({"session": session, "addresses": [format!("GONE0{one}")],
-                       "groups": [], "busy": false, "state": "listening", "at": at}),
+                json!({"session": session, "addresses": [format!("GONE{one:02}")],
+                       "groups": [], "busy": false, "state": "listening", "at": at,
+                       "cwd": format!("/home/someone/project-{one}")}),
                 false,
             );
         }
@@ -13256,10 +13310,30 @@ esac
             );
         }
         // Bringing one back a second time in the hour counts, as new work.
-        let refused = ask(socket, start(&["pi", "--session", &wave[0]]))
+        let refused = ask(socket.clone(), start(&["pi", "--session", &wave[0]]))
             .await
             .expect_err("a second time counts");
         assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
+        asks_as_person(&socket);
+        let Ok(Response::Starts { newest, .. }) = ask(
+            socket,
+            Request::Starts {
+                act: crate::wire::StartsAct::List,
+            },
+        )
+        .await
+        else {
+            panic!("the person lists the starts");
+        };
+        let first = newest
+            .iter()
+            .find(|kept| kept["resumes"] == wave[0].as_str())
+            .expect("the first brought back is kept");
+        assert_eq!(
+            first["folder"], "/home/someone/project-0",
+            "it begins in its own folder"
+        );
+        assert_eq!(first["started_by"], "WCJQSG", "{first}");
     }
 
     // WCJQSG (2026-11-18): a refused start must never wait on the person,

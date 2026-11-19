@@ -863,6 +863,34 @@ pub fn claimed_above(asker: Option<i32>, processes: &Processes, claims: &[Claim]
         .collect()
 }
 
+/// The session whose cell a start `asker` asks counts toward: the one
+/// claiming the nearest of the asker and its forebears that any claim
+/// names, where only one does. A pi host's sessions all claim its one
+/// process, so there the one the asker names its own (`PI_SESSION_ID`)
+/// counts, if it is among them, and otherwise none, so no other cell of
+/// the host is charged; the node's number still bounds them all. A claim
+/// proves nothing, so this is a fair share, never a fence.
+#[must_use]
+pub fn charged(asker: Option<i32>, processes: &Processes, claims: &[Claim]) -> Option<String> {
+    let pid = asker?;
+    let mut nearest: Vec<&str> = processes.lineage(pid).into_iter().find_map(|process| {
+        let named: Vec<&str> = claims
+            .iter()
+            .filter(|claim| claim.pid == Some(process))
+            .map(|claim| claim.session.as_str())
+            .collect();
+        (!named.is_empty()).then_some(named)
+    })?;
+    nearest.sort_unstable();
+    nearest.dedup();
+    if let [one] = nearest.as_slice() {
+        return Some((*one).to_owned());
+    }
+    processes
+        .named_session(pid)
+        .filter(|named| nearest.contains(&named.as_str()))
+}
+
 /// Who process `asker` is, for a command it asks to run, as `processes`
 /// tell it, where `above` is the fence each session claiming it says it
 /// runs in, or none where that can't be read. It is an agent when it
@@ -1204,6 +1232,52 @@ mod tests {
             told().is_err(),
             "never a session of another process, whatever it names"
         );
+    }
+
+    #[test]
+    fn a_hosts_start_counts_toward_the_session_it_names_and_no_other() {
+        let procs = procs(&[
+            (80, "mycelium", 79, "jobs.slice/jobs.service"),
+            (79, "bash", 78, "jobs.slice/jobs.service"),
+            (
+                78,
+                "node",
+                1,
+                "agents.slice/pi-host-work-background.service",
+            ),
+            (70, "mycelium", 69, "agents.slice/pi-a.scope"),
+            (69, "pi", 1, "agents.slice/pi-a.scope"),
+        ]);
+        let claims = [
+            claim("s-first", 78, Some(1), Some("work")),
+            claim("s-two", 78, Some(1), Some("work")),
+            claim("s-alone", 69, Some(1), None),
+        ];
+        let processes = folder(procs.path());
+        let environ = procs.path().join("80").join("environ");
+        assert_eq!(
+            charged(Some(80), &processes, &claims),
+            None,
+            "a host's command naming none counts toward none of its sessions"
+        );
+        fs::write(&environ, "PI_SESSION_ID=s-two\0").expect("written");
+        assert_eq!(
+            charged(Some(80), &processes, &claims).as_deref(),
+            Some("s-two"),
+            "the one it names, not the first claimed"
+        );
+        fs::write(&environ, "PI_SESSION_ID=s-alone\0").expect("written");
+        assert_eq!(
+            charged(Some(80), &processes, &claims),
+            None,
+            "never a session of another process, whatever it names"
+        );
+        assert_eq!(
+            charged(Some(70), &processes, &claims).as_deref(),
+            Some("s-alone"),
+            "a session alone in its process counts as ever"
+        );
+        assert_eq!(charged(None, &processes, &claims), None);
     }
 
     #[test]
