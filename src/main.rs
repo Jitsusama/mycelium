@@ -2749,6 +2749,9 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
             tell!("mycelium: the pi host {host} let the conversation go back to plain pi");
         }
         hosted_attach::Left::Gone => tell!("mycelium: the pi host {host} has gone"),
+        hosted_attach::Left::Unanswered(within) => {
+            tell!("mycelium: the pi host {host} didn't answer the join in {within:?}");
+        }
         // Joining here comes back from a suspend or a restart by itself.
         hosted_attach::Left::Suspended | hosted_attach::Left::Restarting => {}
     }
