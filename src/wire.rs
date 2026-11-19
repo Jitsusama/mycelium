@@ -45,8 +45,9 @@ pub enum Request {
     Start(Start),
     /// Start a program here that the node of the linked machine `from`
     /// was asked to start, has judged, counted and booked, and placed
-    /// here. Only this node's own link asks it: from any other asker it
-    /// is refused.
+    /// here, so it starts here alone. Only this node's own process, or
+    /// one judged the person's, as a link's end is, asks it: from any
+    /// other asker it is refused.
     Relayed {
         /// The machine whose node was asked.
         from: String,

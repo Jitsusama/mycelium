@@ -160,9 +160,11 @@ same code, each line a JSON value:
    the machine that asked, with a need for its own machine added, so
    that node admits or refuses it on its own facts as they are then.
    That node takes `"Relayed"` only from its own process or one it
-   tells as no agent's, as a link's end is, and neither counts nor
-   books it, since the asking node did. Where no person works, the
-   kernel tells no agent apart, so there this fences habit alone.
+   judges the person's, as a link's end is: none in an agent's unit,
+   below a pi, or barred or mounted apart as a fence's. It starts it
+   on its own machine alone, never placing it again, and neither
+   counts nor books it, since the asking node did. Where no person
+   works, the kernel is judged alone, so there it fences habit alone.
    The end doesn't start it itself, since a process SSH started sits
    outside its person's login session.
 9. `{"Started": {"ask", "reply"}}`: the other end's reply to the ask
@@ -1571,8 +1573,10 @@ still have spent, and so does one still starting, so starts asked at
 once can't pass the limit; a refused one doesn't. The person's own
 starts are never counted or refused, and nor is an agent's first in
 the hour that brings back a session the node knows has ended: pi
-itself, its program named `pi`, given the session after `--session`,
-by its id or by a file whose name ends in `_` and the id. A second
+itself, named bare or under `/run/current-system/sw/bin/` or
+`/etc/profiles/per-user/`, given the session after `--session` or
+`--session-id`, by its id or by a file whose name ends in `_` and the
+id. A second
 bringing back the same one within the hour counts, and one running or
 on a machine out of reach is never brought back. A start past the limits
 with room again within a minute waits for it and goes through; one

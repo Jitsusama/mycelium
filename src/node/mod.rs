@@ -4383,10 +4383,16 @@ impl<S: Store> Shared<S> {
     /// minute.
     async fn admitted(&self, mut asked: starts::Kept) -> Result<starts::Admitted, String> {
         let until = asked.at + START_WAITS_MOST;
+        // The minute is kept by a clock that never steps back, so the
+        // wall clock set back meanwhile holds no start past it.
+        let began = tokio::time::Instant::now();
         while let Some(room) = self.starts.room(&asked).filter(|room| *room <= until) {
-            // Never past the minute, though the clock steps back meanwhile.
-            let wait = (room - asked.at).clamp(0, START_WAITS_MOST);
-            let wait = u64::try_from(wait).unwrap_or(0) + 1;
+            let waited = i64::try_from(began.elapsed().as_millis()).unwrap_or(i64::MAX);
+            let left = START_WAITS_MOST.saturating_sub(waited);
+            if left <= 0 {
+                break;
+            }
+            let wait = u64::try_from((room - asked.at).clamp(0, left)).unwrap_or(0) + 1;
             tokio::time::sleep(Duration::from_millis(wait)).await;
             asked.at = jiff::Timestamp::now().as_millisecond();
         }
@@ -4394,10 +4400,11 @@ impl<S: Store> Shared<S> {
     }
 
     /// Starts a program the node of the linked machine `from` relayed
-    /// here, as [`Self::placed`] does, where a link asked it: this node's
-    /// own process, or one no agent's, as [`asker::relays`] tells. That
-    /// node already judged it, counted
-    /// it toward its limits and booked it, so this one does none again.
+    /// here, on this machine alone, where a link asked it: this node's
+    /// own process, or one judged the person's, as [`asker::relays`]
+    /// tells. That node already placed it here, judged it, counted it
+    /// toward its limits and booked it, so this one does none again: it
+    /// is never placed elsewhere or made a machine for, whatever it says.
     /// One that carries a session from `from` is noted, so the session is
     /// read for the cell it left as once it runs here.
     async fn relayed(&self, from: &str, asked: Start) -> Reply {
@@ -4421,8 +4428,7 @@ impl<S: Store> Shared<S> {
                 },
             );
         }
-        let (by, _) = self.judged().await?;
-        self.placed(asked, fence_of(by)).await
+        self.start_on(self.machine.clone(), asked).await
     }
 
     /// Starts a program held on the machine placement chooses, answering
@@ -12280,7 +12286,8 @@ esac
             start: start.clone(),
         };
         let unstarted = || Err("skiff's node starts no sessions".to_owned());
-        // This test runs in the node's own process, as its link does.
+        // This test runs in the node's own process, which relays as a
+        // link's end, its own process, does when judged the person's.
         asks_below(&socket, 7001);
         for _ in 0..=starts::CELL_AN_HOUR {
             assert_eq!(
@@ -12289,6 +12296,21 @@ esac
                 "tern's node counted it, so none is refused here"
             );
         }
+        // tern's node placed it here, so here is where it starts, whatever
+        // its work names, and no paid machine is made for it.
+        let elsewhere = Request::Relayed {
+            from: "tern".to_owned(),
+            start: Start {
+                work: work(vec![Need::Machine("tern".to_owned())]),
+                may_cost: true,
+                ..start.clone()
+            },
+        };
+        assert_eq!(
+            ask(socket.clone(), elsewhere).await,
+            unstarted(),
+            "a relayed start is never placed again"
+        );
         let book = socket.with_file_name("starts.jsonl");
         assert!(
             fs::read_to_string(&book).unwrap_or_default().is_empty(),

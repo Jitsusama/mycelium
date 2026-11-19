@@ -22,10 +22,18 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use serde::{Deserialize, Serialize};
 
 use crate::record::{Session, State};
+use crate::wire::By;
 
 /// The program whose sessions a start may bring back.
 const PI: &str = "pi";
-use crate::wire::By;
+
+/// Where a pi named by its path is the person's own: folders only the
+/// system's own build points, so no agent can put a program of its own
+/// there named `pi`. The store is not one, since anyone may build into it.
+const PIS_FOLDERS: [&str; 2] = ["/run/current-system/sw/bin/", "/etc/profiles/per-user/"];
+
+/// The words before the session pi is to bring back.
+const RESUMING: [&str; 2] = ["--session", "--session-id"];
 
 /// The most sessions one cell may start in an hour.
 pub const CELL_AN_HOUR: usize = 8;
@@ -110,26 +118,34 @@ impl Kept {
 }
 
 /// The session of `sessions` that `command` brings back, if it is pi's
-/// and names one that ended after `--session`, by its id or by a file
-/// whose name ends in `_` and it, as pi names a session's file. Only pi
-/// itself, not a shell, is read, so no other work hides behind the words;
-/// and only an ended session, so one running, or on a machine out of
-/// reach, where it may still run, is never brought back uncounted.
+/// and names one that ended after `--session` or `--session-id`, by its
+/// id or by a file whose name ends in `_` and it, as pi names a session's
+/// file. Only pi itself is read, named bare, as the person's login finds
+/// it, or by a path in [`PIS_FOLDERS`], so no shell, nor a program an
+/// agent wrote and named `pi`, hides other work behind the words; and
+/// only an ended session, so one running, or on a machine out of reach,
+/// where it may still run, is never brought back uncounted.
 #[must_use]
 pub fn brings_back(command: &[String], sessions: &[Session]) -> Option<String> {
-    let program = command.first().map(Path::new)?;
-    if program.file_name().and_then(|name| name.to_str()) != Some(PI) {
+    let program = command.first()?;
+    let named_pi = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some(PI);
+    let persons = program == PI
+        || (PIS_FOLDERS.iter().any(|folder| program.starts_with(folder))
+            && !program.contains("/../"));
+    if !(named_pi && persons) {
         return None;
     }
     let mut named = command
         .windows(2)
-        .filter(|pair| pair[0] == "--session")
+        .filter(|pair| RESUMING.contains(&pair[0].as_str()))
         .map(|pair| pair[1].as_str())
-        .chain(
-            command
-                .iter()
-                .filter_map(|word| word.strip_prefix("--session=")),
-        );
+        .chain(command.iter().filter_map(|word| {
+            let (flag, named) = word.split_once('=')?;
+            RESUMING.contains(&flag).then_some(named)
+        }));
     named.find_map(|named| {
         let stem = Path::new(named)
             .file_stem()
@@ -197,7 +213,13 @@ impl Book {
                         .iter()
                         // As the count reads them: one more than an hour
                         // ahead counts no more than one long gone.
-                        .position(|one| !one.counts() || one.at <= since || one.at > ahead)
+                        // A free resume in the hour is kept as a counted
+                        // one is, since a second of its session counts.
+                        .position(|one| {
+                            (!one.counts() && one.resumes.is_none())
+                                || one.at <= since
+                                || one.at > ahead
+                        })
                 });
             match oldest {
                 Some(at) => drop(self.kept.remove(at)),
@@ -324,7 +346,10 @@ impl Starts {
                 .iter()
                 .chain(book.going.iter().map(|(_, going)| going))
                 .any(|one| {
-                    one.refused.is_none() && one.at > since && one.resumes.as_ref() == Some(session)
+                    matches!(one.by, By::Agent(_))
+                        && one.refused.is_none()
+                        && one.at > since
+                        && one.resumes.as_ref() == Some(session)
                 })
         });
         if again {
@@ -694,6 +719,8 @@ mod tests {
             words(&["pi", "--session", "0193-ended"]),
             words(&["/run/current-system/sw/bin/pi", "--session", file]),
             words(&["pi", "--session=0193-ended"]),
+            words(&["pi", "--session-id", "0193-ended"]),
+            words(&["/etc/profiles/per-user/x/bin/pi", "--session-id=0193-ended"]),
         ] {
             assert_eq!(
                 brings_back(&brought, &sessions).as_deref(),
@@ -709,9 +736,52 @@ mod tests {
             words(&["pi", "0193-ended"]),
             words(&["sh", "-c", "new work", "--session", "0193-ended"]),
             words(&["pip", "--session", "0193-ended"]),
+            words(&["/home/x/work/pi", "--session", "0193-ended"]),
+            words(&["./pi", "--session", "0193-ended"]),
+            words(&["/nix/store/0000-not-pi/bin/pi", "--session", "0193-ended"]),
+            words(&[
+                "/run/current-system/sw/bin/../../../../tmp/pi",
+                "--session",
+                "0193-ended",
+            ]),
         ] {
             assert_eq!(brings_back(&new, &sessions), None, "{new:?}");
         }
+    }
+
+    #[test]
+    fn a_session_brought_back_twice_at_once_counts_the_second_and_its_room_says_so() {
+        let (_dir, starts) = book();
+        for _ in 0..CELL_AN_HOUR {
+            started(&starts, agent("OSPREY", NOW), "h");
+        }
+        // The first still going, as a burst of the same one is.
+        let first = starts
+            .admit(resuming("OSPREY", "s-0", NOW + 1))
+            .expect("the first is free");
+        assert_eq!(
+            starts.room(&resuming("OSPREY", "s-0", NOW + 2)),
+            Some(NOW + HOUR),
+            "the second waits for a counted start's room"
+        );
+        starts
+            .admit(resuming("OSPREY", "s-0", NOW + 2))
+            .expect_err("the second counts");
+        assert_eq!(
+            starts.room(&resuming("OSPREY", "s-1", NOW + 2)),
+            None,
+            "another session is still free"
+        );
+        starts.keep(first, Ok(("kestrel".to_owned(), "h".to_owned())));
+        starts
+            .admit(resuming("OSPREY", "s-0", NOW + 3))
+            .expect_err("and counts once the first has started");
+        let person = Kept {
+            resumes: Some("s-2".to_owned()),
+            ..asked(By::Person, None, NOW + 3)
+        };
+        started(&starts, person, "h");
+        started(&starts, resuming("OSPREY", "s-2", NOW + 4), "h");
     }
 
     #[test]

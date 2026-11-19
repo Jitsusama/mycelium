@@ -586,16 +586,18 @@ pub fn persons_own(asker: Option<i32>, processes: &Processes, does: &str) -> Res
 }
 
 /// Whether process `asker` may relay a start as a linked node's: the
-/// node's own, or one the kernel tells as no agent's, as a link's far end,
-/// a `mycelium link` an ssh login runs, is. On a machine no person works
-/// on the kernel tells no agent from anyone else, as [`Processes`] says,
-/// so there this fences habit, not an agent set on it, as [`may_say`]
-/// does.
+/// node's own, or one the kernel judges the person's, as [`judge`] does,
+/// with no session claiming it, as a link's far end, a `mycelium link` an
+/// ssh login runs, is. An agent's unit, a pi above it, a fence's bar on
+/// gaining privileges or mounts of its own each refuse it. On a machine
+/// no person works on the kernel is judged alone, since there every
+/// process is taken for an agent's, a link's end too, so there this
+/// fences an agent no fence holds by habit alone.
 #[must_use]
 pub fn relays(asker: Option<i32>, processes: &Processes) -> bool {
     asker.is_some_and(|pid| {
         u32::try_from(pid).is_ok_and(|pid| pid == std::process::id())
-            || processes.kernel().tell(pid) == Told::Person
+            || judge(Some(pid), processes.kernel(), &[]) == By::Person
     })
 }
 
@@ -1739,6 +1741,40 @@ mod tests {
             By::Agent(Kind::Strict),
             "one nothing can be read of"
         );
+    }
+
+    #[test]
+    fn a_start_is_relayed_only_from_the_node_or_a_process_judged_the_persons() {
+        let procs = procs(&[
+            (40, "mycelium", 39, "session.slice/sshd-login.scope"),
+            (39, "sshd", 1, "session.slice/sshd-login.scope"),
+            (
+                41,
+                "mycelium",
+                2,
+                "agents.slice/pi-host-work-attended.service",
+            ),
+            (42, "mycelium", 48, "session.slice/kitty-2830-4.scope"),
+            (48, "pi", 1, "session.slice/kitty-2830-4.scope"),
+            (43, "mycelium", 1, "session.slice/quickshell.service"),
+        ]);
+        fs::create_dir(procs.path().join("self")).expect("the node's folder is made");
+        let status = procs.path().join("43").join("status");
+        let said = fs::read_to_string(&status).unwrap_or_default();
+        fs::write(&status, format!("{said}NoNewPrivs:\t1\n")).expect("it is barred");
+        let kernel = folder(procs.path());
+        let own = i32::try_from(std::process::id()).expect("a pid");
+        for processes in [kernel.clone(), kernel.unattended()] {
+            assert!(relays(Some(own), &processes), "the node's own relays");
+            assert!(
+                relays(Some(40), &processes),
+                "a link's end an ssh login runs relays"
+            );
+            assert!(!relays(Some(41), &processes), "an agent's unit doesn't");
+            assert!(!relays(Some(42), &processes), "nor one pi runs");
+            assert!(!relays(Some(43), &processes), "nor one a fence bars");
+            assert!(!relays(None, &processes), "nor one nothing names");
+        }
     }
 
     #[test]
