@@ -19,8 +19,11 @@
 # so main's date moves on with each train past every landing before it,
 # for whatever tells a landing by it, as core's agents daemon does; a
 # rider's own date, which its author sets, plays no part. Making the same
-# train again on the same main gives the tip already pushed for it, so
-# the checks built there still count. The tip is pushed as train/<its
+# train again on the same main, in the same checkout, gives the tip
+# already pushed for it, so the checks built there still count; the
+# checkout keeps each tip it pushed in merge-trains in its git folder,
+# and takes no other, since anyone who can push a branch could push a
+# train dated as no landing allows, or under another's name. The tip is pushed as train/<its
 # first twelve>, so a builder can fetch it, and said on the last line.
 # Build every check the gate asks for there:
 #
@@ -128,6 +131,7 @@ make_train() {
       "the checks built there count." >&2
   else
     git push -q origin "${tip}:refs/heads/train/${tip:0:12}"
+    echo "${tip}" >> "${trains_made}"
   fi
   echo "merge-train: the train is ${tip:0:12} on main ${main:0:12}, riding" \
     "${riding[*]}; ${#off[@]} left off. It's pushed as train/${tip:0:12}:" \
@@ -151,16 +155,21 @@ sweep() {
   done <<< "${trains}"
 }
 
-# The tip of a train already pushed on `main`, dated `main_date` or later,
-# that is the train `made` but for its dates, or nothing. Anyone who can
-# push a branch can push one, so only one whose every merge is the one
-# just made is taken: what rides, and every tree main's history gains,
-# is still what was reviewed.
+# Each train's tip this checkout pushed, one a line, shared by its trees.
+trains_made="$(git rev-parse --path-format=absolute --git-common-dir)/merge-trains"
+
+# The tip of a train this checkout pushed on `main`, dated `main_date` or
+# later, that is the train `made` but for its date, or nothing. Only one
+# it pushed itself is taken, and only where every merge is the one just
+# made, so what rides, every tree main's history gains, who made it and
+# when are still what this checkout said.
 pushed() {
   local main=$1 main_date=$2 sha ref
   shift 2
+  [[ -f ${trains_made} ]] || return 0
   while read -r sha ref; do
     [[ -n ${sha} ]] || continue
+    grep -qxF "${sha}" "${trains_made}" || continue
     if same_train "${sha}" "${main}" "${main_date}" "$@"; then
       echo "${sha}"
       return
@@ -170,23 +179,27 @@ pushed() {
 
 # Whether the train whose tip is `at` is, merge by merge from its tip
 # back to `main`, each of `made`: two parents, the same rider, tree and
-# words, and authored and committed at one time, from `main_date` to
-# now, so it neither carries what wasn't merged nor steps main's date
-# back or past now.
+# words, and all authored and committed at the tip's one time, from
+# `main_date` to now, so it neither carries what wasn't merged nor steps
+# main's date back or past now.
 same_train() {
-  local at=$1 main=$2 main_date=$3 i ours authored committed now
+  local at=$1 main=$2 main_date=$3 i ours authored committed now dated
   shift 3
   local -a made=("$@") parents
   now=$(date +%s)
+  dated=$(git log -1 --format=%ct "${at}" 2> /dev/null) || return 1
   for ((i = ${#made[@]} - 1; i >= 0; i--)); do
     ours=${made[i]}
     read -ra parents <<< "$(git rev-list --parents -n 1 "${at}" 2> /dev/null)"
     ((${#parents[@]} == 3)) || return 1
-    [[ ${parents[2]} == $(git rev-parse "${ours}^2") ]] || return 1
-    [[ $(git rev-parse "${at}^{tree}") == $(git rev-parse "${ours}^{tree}") ]] || return 1
-    [[ $(git log -1 --format=%B "${at}") == $(git log -1 --format=%B "${ours}") ]] || return 1
+    # Quoted, so a rider's subject is matched as it is, never as a glob.
+    [[ ${parents[2]} == "$(git rev-parse "${ours}^2")" ]] || return 1
+    [[ $(git rev-parse "${at}^{tree}") == "$(git rev-parse "${ours}^{tree}")" ]] || return 1
+    [[ $(git log -1 --format=%B "${at}") == "$(git log -1 --format=%B "${ours}")" ]] ||
+      return 1
     read -r authored committed <<< "$(git log -1 --format='%at %ct' "${at}")"
-    ((authored == committed && committed >= main_date && committed <= now)) || return 1
+    ((authored == dated && committed == dated)) || return 1
+    ((dated >= main_date && dated <= now)) || return 1
     at=${parents[1]}
   done
   [[ ${at} == "${main}" ]]
