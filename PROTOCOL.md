@@ -2617,8 +2617,12 @@ cells', and a reader gathers them as `mycelium forage` does.
 | `serves`, `relies` | only when there are any, the needs its presence says it took from other cells, and handed them: each `cell`, by address, `need`, what it was about, at most 280 characters, and `since`, an ISO time |
 
 The node works out `started_by` and `started_by_from` itself and never
-takes either from a presence's `lineage`. `book` is only the book of the
-node serving the forage: a start relayed from another machine is kept
+takes either from a presence's `lineage`. It finds a session's start in
+its book by the holder the session is held by, which it matches by the
+pid or wake file the session's own presence names, so `book` says the
+node started a session holding that holder, not that the session is
+the one it started. `book` is only the book of the node serving the
+forage: a start relayed from another machine is kept
 in the asking node's book alone, so here it reads `presence` or has no
 starter. Of `split_into`, `serves` and `relies`, an entry that names no
 cell by address, says no need or dates it at no ISO time is passed over

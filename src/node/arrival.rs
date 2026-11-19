@@ -77,6 +77,10 @@ struct Kept {
     ran: i64,
     /// Whether its ties are held to [`bounded`]'s strength yet.
     bounded: bool,
+    /// Whether it stands as its session's cell: one another session's
+    /// name takes stands as none, but is kept as it is, so it is never
+    /// read from its file again, and bounded afresh, once it can stand.
+    stands: bool,
 }
 
 /// A carry started here, waited on for its session to run here, and
@@ -183,14 +187,15 @@ impl Arrivals {
                     brought,
                     ran: now,
                     bounded: false,
+                    stands: true,
                 };
                 kept.insert(session.id.clone(), one);
             }
         }
-        drop(carries);
         // Only a cell whose session no longer runs here is let go, so
         // none that runs is read again each minute; those running are
-        // bounded by the starts a node takes.
+        // bounded by the starts a node takes. Its carry goes with it, so
+        // it is never read from its file again, and bounded afresh.
         while kept.len() > KEPT_MOST {
             let earliest = kept
                 .iter()
@@ -201,7 +206,9 @@ impl Arrivals {
                 break;
             };
             kept.remove(&earliest);
+            carries.remove(&earliest);
         }
+        drop(carries);
         // A cell that another live session goes by, as its address or
         // any other, or that two sessions running here say, stands as
         // none of them, so no session takes the name, and the talk, of
@@ -223,8 +230,8 @@ impl Arrivals {
             })
             .map(|(id, _)| id.clone())
             .collect();
-        for id in &taken {
-            kept.remove(id);
+        for (id, one) in kept.iter_mut() {
+            one.stands = !taken.contains(id);
         }
         cells_of(&kept) != before
     }
@@ -306,11 +313,11 @@ impl Arrivals {
             return;
         }
         let most = strongest_held(made, now);
-        for one in kept.values_mut().filter(|one| !one.bounded) {
+        for one in kept.values_mut().filter(|one| one.stands && !one.bounded) {
             one.brought.ties = bounded(&one.brought.ties, most, now).collect();
             one.bounded = true;
         }
-        let brought = kept.values().flat_map(|one| {
+        let brought = kept.values().filter(|one| one.stands).flat_map(|one| {
             let Brought { ties, talk, .. } = &one.brought;
             ties.iter().chain(talk.iter()).cloned()
         });
@@ -331,10 +338,11 @@ impl Arrivals {
     }
 }
 
-/// Each session's cell in `kept`, by session id: what changes what the
-/// networks say, as when a session last ran doesn't.
+/// Each session's cell in `kept` that stands, by session id: what
+/// changes what the networks say, as when a session last ran doesn't.
 fn cells_of(kept: &BTreeMap<String, Kept>) -> BTreeMap<String, String> {
     kept.iter()
+        .filter(|(_, one)| one.stands)
         .map(|(session, one)| (session.clone(), one.brought.cell.clone()))
         .collect()
 }
@@ -967,6 +975,29 @@ mod tests {
         assert!(
             (faded - 0.5).abs() < 1e-9,
             "so it fades as any tie held here: {faded}"
+        );
+
+        // Its name taken a while by another live session, then free
+        // again: kept as it was, never read from its file and bounded
+        // afresh beside a strong tie held here.
+        let mut clash = vec![
+            session("s-harbour", "stand1", "skiff"),
+            session("s-real", "harbor", "tern"),
+        ];
+        arrivals.read(scratch.path(), "skiff", &clash, later);
+        assert!(arrivals.cells().is_empty(), "its name is taken");
+        clash[1].state = State::Ended;
+        assert!(arrivals.read(scratch.path(), "skiff", &clash, later));
+        assert_eq!(arrivals.cells().len(), 1, "it stands again");
+        let held = json!({"key": "tie:OSPREY~TERN01", "kind": "tie", "heard": later,
+                          "strength": 8.0});
+        let mut made =
+            BTreeMap::from([("tie:OSPREY~TERN01".to_owned(), daemon::Record::from(held))]);
+        arrivals.ties(&mut made, later);
+        assert_eq!(
+            made["tie:HARBOR~KELP01"].value()["strength"],
+            json!(2.0),
+            "a cell whose name was taken a while keeps the bound it had"
         );
     }
 
