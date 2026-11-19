@@ -300,7 +300,7 @@ pub async fn join(
 }
 
 /// Joins `session` as [`join`] does, leaving as though the host had gone
-/// when it hasn't answered within `within`.
+/// when it hasn't answered within `within`, its last row saying so.
 ///
 /// # Errors
 ///
@@ -311,15 +311,29 @@ pub async fn join_within(
     session: &str,
     size: Size,
     here: &mut impl Here,
-    output: impl AsyncWrite + Unpin,
+    mut output: impl AsyncWrite + Unpin,
     sizes: &mut mpsc::UnboundedReceiver<Size>,
     within: Duration,
 ) -> io::Result<Left> {
-    let _ = within;
-    let Some(joined) = connect(socket, session, size, &*here).await? else {
+    let Ok(answered) = tokio::time::timeout(within, connect(socket, session, size, &*here)).await
+    else {
+        output.write_all(unanswered(within).as_bytes()).await?;
+        output.flush().await?;
+        return Ok(Left::Gone);
+    };
+    let Some(joined) = answered? else {
         return Ok(Left::Gone);
     };
     show(joined, here, output, sizes, RESTART_PATIENCE.hold).await
+}
+
+/// What a terminal shows on its last row as it leaves a host that didn't
+/// answer its join within `within`, the rest of the screen kept.
+fn unanswered(within: Duration) -> String {
+    format!(
+        "\x1b7\x1b[999;1H\x1b[2K pi didn't answer in {} s; looking again\x1b8",
+        within.as_secs()
+    )
 }
 
 /// A connection the host accepted a terminal on.
@@ -1187,7 +1201,11 @@ mod tests {
             .await
             .expect("ended with its patience, not waiting for ever on the answer")
             .expect("waited");
-            assert_eq!(left, Left::Gone, "an unanswered join leaves as a gone host does");
+            assert_eq!(
+                left,
+                Left::Gone,
+                "an unanswered join leaves as a gone host does"
+            );
             assert!(
                 String::from_utf8_lossy(&shown).contains("pi didn't answer"),
                 "its last row says why it left: {:?}",
