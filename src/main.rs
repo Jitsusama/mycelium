@@ -336,8 +336,7 @@ enum Action {
         /// The machine, such as `tern`.
         machine: String,
     },
-    /// Says the sessions this node started lately, or stops or resumes
-    /// agents starting more.
+    /// Lists recent starts here, or stops or resumes agents' starts.
     ///
     /// Stopping holds till resumed, through a restart, and only on this
     /// machine's node, so each machine's is stopped on its own. Only the
