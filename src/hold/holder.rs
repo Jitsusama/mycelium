@@ -56,7 +56,8 @@ pub const PARKED: i32 = 75;
 pub const RELEASED: u8 = 3;
 
 /// The exit code `mycelium attach --host` ends with when its host stayed
-/// gone past its patience for a restart: sysexits' `EX_UNAVAILABLE`, so
+/// gone past its patience for a restart, or never answered a first join
+/// within its patience for an answer: sysexits' `EX_UNAVAILABLE`, so
 /// whatever runs in the window next waits for the host to come back,
 /// rather than closing the window as it does for a person leaving.
 pub const GONE: u8 = 69;

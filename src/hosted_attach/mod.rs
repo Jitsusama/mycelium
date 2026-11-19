@@ -1187,18 +1187,15 @@ mod tests {
             let (_tell, mut sizes) = mpsc::unbounded_channel();
             let mut here = Script::typing(b"");
             let mut shown = Vec::new();
+            // The patience covers connecting and sending too, so it is long
+            // enough that a loaded machine still sends the attach inside it.
+            let patience = Duration::from_millis(500);
             // Bounded far past its patience, so a join that waits for ever
             // fails here rather than holding up the whole run.
             let left = tokio::time::timeout(
                 Duration::from_secs(10),
                 join_within(
-                    &path,
-                    "s-1",
-                    SIZE,
-                    &mut here,
-                    &mut shown,
-                    &mut sizes,
-                    Duration::from_millis(50),
+                    &path, "s-1", SIZE, &mut here, &mut shown, &mut sizes, patience,
                 ),
             )
             .await
@@ -1206,7 +1203,7 @@ mod tests {
             .expect("waited");
             assert_eq!(
                 left,
-                Left::Unanswered(Duration::from_millis(50)),
+                Left::Unanswered(patience),
                 "an unanswered join leaves with its patience"
             );
             assert!(
