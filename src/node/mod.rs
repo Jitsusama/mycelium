@@ -258,6 +258,21 @@ fn gone(pid: u32) -> bool {
         .is_some_and(|pid| rustix::process::test_kill_process(pid) == Err(rustix::io::Errno::SRCH))
 }
 
+/// Whether `quest` is an id a folder may be named by: letters, digits,
+/// dashes and underscores, never a path.
+fn plain_quest(quest: &str) -> bool {
+    !quest.is_empty()
+        && quest
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+/// Whether `session` stands where a carry reaches it: running, or parked
+/// to read its inbox as it wakes.
+fn stands(session: &Session) -> bool {
+    matches!(session.state, SessionState::Busy | SessionState::Idle) || parked_presence(session)
+}
+
 /// Whether `session` has ended parked, which reads its inbox as it wakes.
 fn parked_presence(session: &Session) -> bool {
     session.state == SessionState::Ended
@@ -1171,6 +1186,9 @@ struct Shared<S> {
     /// Held while the record of orchestrations is read and kept again, so
     /// two claims at once never undo each other.
     claiming: Arc<Mutex<()>>,
+    /// Held while a carry from here is judged and kept, so an ordered
+    /// carry and the node's own never both pass for one session.
+    carrying: Arc<tokio::sync::Mutex<()>>,
     /// The socket its machine's updater takes asks on.
     updater: PathBuf,
     starter: Option<Arc<Starter>>,
@@ -1350,6 +1368,7 @@ impl<S: Clone> Clone for Shared<S> {
             node: self.node.clone(),
             shares: self.shares.clone(),
             claiming: self.claiming.clone(),
+            carrying: self.carrying.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
             asks: self.asks.clone(),
@@ -2014,6 +2033,7 @@ impl<S: Store> Shared<S> {
             node,
             shares: sharing.clone().map(Arc::new),
             claiming: Arc::default(),
+            carrying: Arc::default(),
             client: None,
             client_started: None,
             served: Arc::new(Served::start(serves)),
@@ -3678,8 +3698,9 @@ impl<S: Store> Shared<S> {
     }
 
     /// Looks each `eases.every` at what this machine would do to ease
-    /// itself (`carry::easing`), keeping each choice in `eases.folder`,
-    /// and does none of it. It begins once the carries kept here, which
+    /// itself (`carry::easing`), keeping each choice in `eases.folder`;
+    /// it makes the carries it chooses where `eases.carries` says so,
+    /// and otherwise does none of it. It begins once the carries kept here, which
     /// say what moved lately, and its own lines of the last two days can
     /// be read, saying why while they can't.
     async fn ease(self, eases: Eases) {
@@ -3723,9 +3744,21 @@ impl<S: Store> Shared<S> {
                 .await;
             sampler = back;
             if let Some(line) = line {
+                let line = self.act_to_ease(eases.carries, line).await;
                 self.keep_easing(&eases.folder, now, line).await;
             }
         }
+    }
+
+    /// `line`, a look's choice, once its carry is made where `carries`
+    /// says to, saying how that went; a carry refused still counts as
+    /// made, as the look counted it.
+    async fn act_to_ease(&self, carries: bool, mut line: serde_json::Value) -> serde_json::Value {
+        if carries && let Some(chosen) = easing::chosen(&line) {
+            let done = self.carry_to_ease(&chosen, line.get("reading")).await;
+            easing::acted(&mut line, &done);
+        }
+        line
     }
 
     /// The carries kept here within a day of `now`, or why they can't be
@@ -3739,6 +3772,23 @@ impl<S: Store> Shared<S> {
             .map_err(|error| {
                 format!("the carries kept here can't be read ({error}), so what moved lately can't be told")
             })
+    }
+
+    /// The fence each of `here` runs in, as a carry would judge it, so a
+    /// look never chooses one the carry refuses for its fence: one
+    /// claiming none, or looser than it was seen in, has none.
+    fn fences_as_carried(&self, here: &[&Session]) -> BTreeMap<String, crate::declared::Kind> {
+        here.iter()
+            .filter_map(|session| {
+                let id = easing::id(session);
+                let claimed = session
+                    .presence
+                    .get("fence")
+                    .and_then(|kind| serde_json::from_value(kind.clone()).ok());
+                let shown = self.fences.strictest(id).ok()?;
+                Some((id.to_owned(), ground::judged_as_carried(claimed, shown)?))
+            })
+            .collect()
     }
 
     /// What this machine would do now to ease itself, as `easing` says
@@ -3767,13 +3817,7 @@ impl<S: Store> Shared<S> {
             .iter()
             .filter(|session| session.machine == self.machine)
             .collect();
-        let fences: BTreeMap<String, crate::declared::Kind> = here
-            .iter()
-            .filter_map(|session| {
-                let id = easing::id(session);
-                Some((id.to_owned(), self.fences.strictest(id).ok()?))
-            })
-            .collect();
+        let fences = self.fences_as_carried(&here);
         let ids: std::collections::BTreeSet<String> = here
             .iter()
             .map(|session| easing::id(session).to_owned())
@@ -4137,33 +4181,12 @@ impl<S: Store> Shared<S> {
     /// proved only where both sessions run, so a session on another
     /// machine is refused.
     async fn ordered_carry(&self, address: &str, said: &serde_json::Value) -> Reply {
-        let runs =
-            |session: &Session| matches!(session.state, SessionState::Busy | SessionState::Idle);
         let address = Steer::new(address, said)?.address;
+        let _carrying = self.carrying.lock().await;
         let sessions = self.lock().state.sessions();
-        let carried: Vec<&Session> = sessions
-            .iter()
-            .filter(|session| session.address.eq_ignore_ascii_case(&address))
-            .filter(|session| runs(session) || parked_presence(session))
-            .collect();
-        let target = match carried.as_slice() {
-            [one] if one.machine == self.machine => *one,
-            [one] => {
-                return Err(format!(
-                    "{address} runs on {}, and a carry is ordered only on the machine its \
-                     session runs on",
-                    one.machine
-                ));
-            }
-            [] => return Err(format!("no session goes by {address} now")),
-            _ => return Err(format!("{address} runs twice, so it isn't carried")),
-        };
+        let target = self.alone_here(&sessions, &address)?;
         let asker = self.asking_session().await?;
-        let session = target
-            .presence
-            .get("session")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(&target.id);
+        let session = easing::id(target);
         let asking = ordered::Known {
             session: &asker,
             address: self.address_of(&sessions, &asker),
@@ -4173,6 +4196,62 @@ impl<S: Store> Shared<S> {
             address: &address,
         };
         let order = self.ordered_by(asking, carried, &sessions)?;
+        let extra = serde_json::json!({
+            "asker": asker,
+            "quest": order.quest,
+            "chain": order.chain.iter().map(|link| serde_json::json!({
+                "quest": link.quest,
+                "orchestrator": link.orchestrator,
+            })).collect::<Vec<_>>(),
+            "source": chain::SOURCE,
+        });
+        self.carry_from_here(target, &address, said, &order.by, extra)
+            .await?;
+        Ok(Response::Steered {
+            machine: self.machine.clone(),
+            by: Some(order.by),
+        })
+    }
+
+    /// The one session among `sessions` standing by `address`, in capitals,
+    /// where it runs here; refused where it runs elsewhere, nowhere or
+    /// twice, since its inbox is the address's.
+    fn alone_here<'a>(
+        &self,
+        sessions: &'a [Session],
+        address: &str,
+    ) -> Result<&'a Session, String> {
+        let carried: Vec<&Session> = sessions
+            .iter()
+            .filter(|session| session.address.eq_ignore_ascii_case(address))
+            .filter(|session| stands(session))
+            .collect();
+        match carried.as_slice() {
+            [one] if one.machine == self.machine => Ok(*one),
+            [one] => Err(format!(
+                "{address} runs on {}, and a carry is ordered only on the machine its session \
+                 runs on",
+                one.machine
+            )),
+            [] => Err(format!("no session goes by {address} now")),
+            _ => Err(format!("{address} runs twice, so it isn't carried")),
+        }
+    }
+
+    /// Carries `target`, a session standing here by `address` in capitals,
+    /// as `said` asks, under the name `by`, to ground as firm as it stands
+    /// on: kept first with `extra` in the record of carries, which settles
+    /// it, then told.
+    async fn carry_from_here(
+        &self,
+        target: &Session,
+        address: &str,
+        said: &serde_json::Value,
+        by: &str,
+        extra: serde_json::Value,
+    ) -> Result<(), String> {
+        let address = address.to_owned();
+        let session = easing::id(target);
         let to = said
             .get("to")
             .and_then(serde_json::Value::as_str)
@@ -4206,34 +4285,142 @@ impl<S: Store> Shared<S> {
             there.as_ref(),
         )?;
         let mut body = said.as_object().cloned().unwrap_or_default();
-        body.insert("by".to_owned(), order.by.clone().into());
-        body.insert("from".to_owned(), order.by.clone().into());
+        body.insert("by".to_owned(), by.into());
+        body.insert("from".to_owned(), by.into());
         let steer = Steer::new(&address, &serde_json::Value::Object(body))?;
-        let kept = serde_json::json!({
+        let mut kept = serde_json::json!({
             "at": jiff::Timestamp::now().to_string(),
-            "by": order.by.clone(),
-            "asker": asker,
+            "by": by,
             "session": session,
             "address": address,
-            "quest": order.quest,
-            "chain": order.chain.iter().map(|link| serde_json::json!({
-                "quest": link.quest,
-                "orchestrator": link.orchestrator,
-            })).collect::<Vec<_>>(),
-            "source": chain::SOURCE,
             "from": self.machine,
             "to": steer.body.get("to"),
             "why": steer.body.get("why"),
         });
+        if let (Some(kept), serde_json::Value::Object(extra)) = (kept.as_object_mut(), extra) {
+            kept.extend(extra);
+        }
         ordered::keep(&self.carries, &kept)
             .map_err(|error| format!("the carry couldn't be kept, so it isn't ordered: {error}"))?;
         self.said.sessions.send_modify(|said| *said += 1);
         self.tell_carries();
-        self.steer_here(&steer, std::slice::from_ref(target))?;
-        Ok(Response::Steered {
-            machine: self.machine.clone(),
-            by: Some(order.by),
-        })
+        self.steer_here(&steer, std::slice::from_ref(target))
+    }
+
+    /// Carries the session a look `chosen` to ease this machine, under
+    /// this node's own name, keeping the `reading` it was chosen by. It is
+    /// found as an order finds its session, and judged again as it is now:
+    /// one in a turn since, or carried since by anyone, stays, and its
+    /// quest is the one the quests' record holds it in, never its claim.
+    async fn carry_to_ease(
+        &self,
+        chosen: &easing::Chosen,
+        reading: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        // Its sessions are read once the lock is held, so one carried or
+        // in a turn since is seen.
+        let _carrying = self.carrying.lock().await;
+        let sessions = self.lock().state.sessions();
+        let session = &chosen.session;
+        let found = sessions
+            .iter()
+            .filter(|one| one.machine == self.machine && stands(one))
+            .find(|one| easing::id(one) == session)
+            .ok_or_else(|| format!("{session} no longer runs here, so it isn't carried"))?;
+        let said = serde_json::json!({
+            "act": "ordered-carry", "to": chosen.to, "why": chosen.why,
+        });
+        let address = Steer::new(&found.address, &said)?.address;
+        let target = self.alone_here(&sessions, &address)?;
+        if target.state == SessionState::Busy {
+            return Err(format!("{address} is in a turn, so it isn't carried"));
+        }
+        let quest = self.quest_holding(session, &address)?;
+        // The look judged whether its quest runs only here by the quest it
+        // claims, so it is carried only where it claims the record's quest.
+        if target.quest.as_deref() != Some(quest.as_str()) {
+            let claimed = target.quest.as_deref().unwrap_or("no quest");
+            return Err(format!(
+                "{address} says it is on {claimed}, but the quests' record holds it in \
+                 {quest}, so it isn't carried"
+            ));
+        }
+        let now = jiff::Timestamp::now();
+        let lately = self.carried_lately(now).await?;
+        // Another machine's node tells of the carries it made, so one that
+        // carried the session here keeps it here as one kept here does.
+        let told: Vec<kept::Kept> = self
+            .store
+            .told_carries()
+            .into_iter()
+            .filter(|(machine, _)| *machine != self.machine)
+            .flat_map(|(_, told)| {
+                told.iter()
+                    .filter_map(kept::heard)
+                    .map(|(carry, _)| carry)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|carry| carry.at >= now - ease::PIN)
+            .collect();
+        if let Some(earlier) = lately
+            .iter()
+            .chain(&told)
+            .find(|kept| kept.said("session") == session)
+        {
+            return Err(format!(
+                "{address} was carried at {}, so it isn't carried again within the day",
+                earlier.said("at")
+            ));
+        }
+        let by = ease::by(&self.machine);
+        let extra = serde_json::json!({
+            "asker": by,
+            "quest": quest,
+            "source": easing::SOURCE,
+            "reading": reading,
+        });
+        self.carry_from_here(target, &address, &said, &by, extra)
+            .await
+    }
+
+    /// The one open quest the quests' record this node serves holds
+    /// `session` in, read whole; refused, naming `address`, where none or
+    /// several do, or the record can't be read.
+    fn quest_holding(&self, session: &str, address: &str) -> Result<String, String> {
+        let quests = match self.served.records_whole("quest") {
+            Some(Ok(quests)) => quests,
+            Some(Err(why)) => {
+                return Err(format!(
+                    "the quests' record can't be read ({why}), so {address} isn't carried"
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "this node serves no quests' record, so {address} isn't carried"
+                ));
+            }
+        };
+        let holding: Vec<&str> = quests
+            .values()
+            .filter(|quest| ordered::open(quest) && ordered::attached(quest, session))
+            .map(ordered::id)
+            .collect();
+        match holding.as_slice() {
+            [] => Err(format!(
+                "no open quest holds {session} in the quests' record, so {address} isn't carried"
+            )),
+            // Its id names its scratch's folder, so it is a plain name.
+            [quest] if plain_quest(quest) => Ok((*quest).to_owned()),
+            [quest] => Err(format!(
+                "the quests' record names {session}'s quest {quest}, which isn't a plain \
+                 name, so {address} isn't carried"
+            )),
+            several => Err(format!(
+                "{} open quests hold {session} in the quests' record, so {address} isn't \
+                 carried",
+                several.len()
+            )),
+        }
     }
 
     /// Puts `steer` in its session's inbox here, unless it only wakes,
@@ -5704,25 +5891,9 @@ mod tests {
         (stop, node)
     }
 
-    /// Runs a node as [`node`] does, sharing the quests of `sharing`.
-    fn node_sharing<D: Dial + Clone>(
-        store: &Memory,
-        machine: &str,
-        dials: Vec<D>,
-        starter: Option<Starter>,
-        socket: &Path,
-        sharing: Option<Places>,
-    ) -> (
-        tokio::sync::oneshot::Sender<()>,
-        tokio::task::JoinHandle<io::Result<()>>,
-    ) {
-        let membership = Realm {
-            name: "work".to_owned(),
-            machine: machine.to_owned(),
-        };
-        let bound = bind(socket).expect("the socket binds");
-        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let store = store.clone();
+    /// What a node of the test's machine is given, its places beside
+    /// `socket`, sharing the quests of `sharing`.
+    fn given_beside(socket: &Path, starter: Option<Starter>, sharing: Option<Places>) -> Given {
         let steers = inboxes(socket);
         let updater = updater_of(socket);
         let serves = BTreeMap::from([
@@ -5759,38 +5930,60 @@ mod tests {
             realm: "work".to_owned(),
             answers_within: PATIENCE,
         });
+        Given {
+            sharing,
+            starter,
+            refusals: Refusals::default(),
+            steers,
+            waiting: "/nowhere/waiting".into(),
+            awake: Awake::by(None),
+            updater,
+            serves,
+            providers,
+            book,
+            flows: Flows::default(),
+            parked,
+            held,
+            processes,
+            carries,
+            runs,
+            hosts,
+            orchestrations,
+            logs,
+            words,
+            declared,
+            receptors,
+            stimuli,
+            builders,
+            placements: None,
+            health: None,
+            scratch,
+            eases: None,
+            settles,
+        }
+    }
+
+    /// Runs a node as [`node`] does, sharing the quests of `sharing`.
+    fn node_sharing<D: Dial + Clone>(
+        store: &Memory,
+        machine: &str,
+        dials: Vec<D>,
+        starter: Option<Starter>,
+        socket: &Path,
+        sharing: Option<Places>,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: machine.to_owned(),
+        };
+        let bound = bind(socket).expect("the socket binds");
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let store = store.clone();
+        let given = given_beside(socket, starter, sharing);
         let node = tokio::spawn(async move {
-            let given = Given {
-                sharing,
-                starter,
-                refusals: Refusals::default(),
-                steers,
-                waiting: "/nowhere/waiting".into(),
-                awake: Awake::by(None),
-                updater,
-                serves,
-                providers,
-                book,
-                flows: Flows::default(),
-                parked,
-                held,
-                processes,
-                carries,
-                runs,
-                hosts,
-                orchestrations,
-                logs,
-                words,
-                declared,
-                receptors,
-                stimuli,
-                builders,
-                placements: None,
-                health: None,
-                scratch,
-                eases: None,
-                settles,
-            };
             let stopped = async {
                 // A dropped sender stops the node as surely as a sent stop.
                 let _ = stopped.await;
@@ -8141,6 +8334,456 @@ esac
             ),
             "a fence seen once still counts once its command has ended"
         );
+    }
+
+    /// A node of skiff, not running, its places beside `socket`, where
+    /// HARBOR's session, strictly fenced as its pi shows, stands idle, and
+    /// tern, building on `builders`, is the realm's only other machine.
+    async fn easing_skiff(socket: &Path, builders: &[&str]) -> Shared<Memory> {
+        easing_skiff_with(socket, builders, &json!({}), &harbour_quests()).await
+    }
+
+    /// The quests' record a node easing skiff serves: HARBOR's quest,
+    /// open, holding its session.
+    fn harbour_quests() -> Value {
+        json!({"quests": [{"id": "QEST-20261115-HARBOR", "address": "HARBOR",
+                           "orchestrator": null, "status": "active",
+                           "sessions": ["s-harbour"]}]})
+    }
+
+    /// A node on skiff easing itself, its one session s-harbour, going by
+    /// harbor in its own letters, strictly fenced, its presence holding
+    /// `also` too; tern beside it fenced with `builders`, and `quests`
+    /// its quests' record, read before it is handed back.
+    async fn easing_skiff_with(
+        socket: &Path,
+        builders: &[&str],
+        also: &Value,
+        quests: &Value,
+    ) -> Shared<Memory> {
+        let store = Memory::default();
+        let at = jiff::Timestamp::now().to_string();
+        let mut presence = json!({
+            "session": "s-harbour", "addresses": ["harbor"], "groups": [],
+            "busy": false, "state": "listening", "at": at,
+            "quest": "QEST-20261115-HARBOR", "fence": "strict",
+            "owner": {"pid": 7003, "startTicks": started_at(7003)},
+        });
+        if let (Some(presence), Some(also)) = (presence.as_object_mut(), also.as_object()) {
+            presence.extend(also.clone());
+        }
+        store.start_here("s-harbour", presence, true);
+        store
+            .put_machine(&fenced("tern", builders))
+            .expect("what it said is kept");
+        fs::create_dir_all(socket.parent().expect("its folder")).expect("made");
+        pi_runs(socket, 7003, STRICT);
+        holds_log(socket, 7003, "s-harbour");
+        fs::write(
+            socket.with_file_name("declared.json"),
+            serde_json::to_vec(&fenced("skiff", &["remote", "big"]).declared).expect("it is JSON"),
+        )
+        .expect("this machine's declaration is written");
+        serve_quests(socket, quests);
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let (shared, _) = Shared::of(
+            store,
+            (membership.hello(), socket.with_file_name("node")),
+            given_beside(socket, None, None),
+            to_dial,
+        );
+        shared.read_sessions();
+        let mut told = shared.served.told("quest").expect("it serves quests");
+        while matches!(
+            shared.served.records_whole("quest"),
+            Some(Err(ref why)) if why.ends_with("have not been read yet")
+        ) {
+            tokio::time::timeout(PATIENCE, told.changed())
+                .await
+                .expect("its quests are read in time")
+                .expect("its quests are read");
+        }
+        shared
+    }
+
+    #[tokio::test]
+    async fn a_look_judges_each_fence_as_a_carry_would() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let cases = [
+            ("claimed", json!({}), Some(crate::declared::Kind::Strict)),
+            ("unclaimed", json!({"fence": null}), None),
+            ("unread", json!({"fence": "sideways"}), None),
+        ];
+        for (case, also, judged) in cases {
+            let socket = dir.path().join(case).join("work.sock");
+            let shared = easing_skiff_with(&socket, &["remote"], &also, &harbour_quests()).await;
+            let sessions = shared.lock().state.sessions();
+            let here: Vec<&Session> = sessions.iter().collect();
+            assert_eq!(
+                shared.fences_as_carried(&here).get("s-harbour").copied(),
+                judged,
+                "{case}"
+            );
+        }
+    }
+
+    /// What a look chose: HARBOR's session carried to `to`.
+    fn chose(session: &str, to: &str) -> easing::Chosen {
+        easing::Chosen {
+            session: session.to_owned(),
+            to: to.to_owned(),
+            why: "skiff has been over its processor for 10 minutes".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_node_carries_what_it_chose_only_as_an_order_would_find_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let other = json!({"quests": [{"id": "QEST-20261115-OTHERS", "address": "OTHERS",
+                                        "orchestrator": null, "status": "active",
+                                        "sessions": ["s-other"]}]});
+        let quest = |id: &str| {
+            json!({"id": id, "orchestrator": null, "status": "active",
+                   "sessions": ["s-harbour"]})
+        };
+        let twice =
+            json!({"quests": [quest("QEST-20261115-HARBOR"), quest("QEST-20261115-AGAIN")]});
+        let crooked = json!({"quests": [quest("../../elsewhere")]});
+        let cases: [(&str, Value, Value, &str); 7] = [
+            (
+                "busy",
+                json!({"busy": true, "state": "working"}),
+                harbour_quests(),
+                "HARBOR is in a turn, so it isn't carried",
+            ),
+            (
+                "elsewhere",
+                json!({}),
+                other,
+                "no open quest holds s-harbour in the quests' record, so HARBOR isn't carried",
+            ),
+            (
+                "unread",
+                json!({}),
+                json!({"quests": "not a list"}),
+                "the quests' record can't be read (WHY), so HARBOR isn't carried",
+            ),
+            (
+                "several",
+                json!({}),
+                twice,
+                "2 open quests hold s-harbour in the quests' record, so HARBOR isn't carried",
+            ),
+            (
+                "crooked",
+                json!({"quest": "../../elsewhere"}),
+                crooked,
+                "the quests' record names s-harbour's quest ../../elsewhere, which isn't a \
+                 plain name, so HARBOR isn't carried",
+            ),
+            (
+                "claimed",
+                json!({"quest": "QEST-20261115-LONELY"}),
+                harbour_quests(),
+                "HARBOR says it is on QEST-20261115-LONELY, but the quests' record holds it \
+                 in QEST-20261115-HARBOR, so it isn't carried",
+            ),
+            (
+                "unclaimed",
+                json!({"quest": null}),
+                harbour_quests(),
+                "HARBOR says it is on no quest, but the quests' record holds it in \
+                 QEST-20261115-HARBOR, so it isn't carried",
+            ),
+        ];
+        for (case, also, quests, refused) in cases {
+            let socket = dir.path().join(case).join("work.sock");
+            let shared = easing_skiff_with(&socket, &["remote"], &also, &quests).await;
+            let why = match shared.served.records_whole("quest") {
+                Some(Err(why)) => why,
+                _ => String::new(),
+            };
+            assert_eq!(
+                shared
+                    .carry_to_ease(&chose("s-harbour", "tern"), None)
+                    .await,
+                Err(refused.replace("WHY", &why)),
+                "{case}"
+            );
+            assert!(
+                !socket.with_file_name("carries.jsonl").exists(),
+                "{case}: nothing is kept"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_node_carries_no_session_two_run_as_or_another_carry_moved() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("twice").join("work.sock");
+        let shared = easing_skiff(&socket, &["remote"]).await;
+        shared.store.start_here(
+            "s-harbour-2",
+            json!({"session": "s-harbour-2", "addresses": ["HARBOR"], "groups": [],
+                   "busy": false, "state": "listening",
+                   "at": jiff::Timestamp::now().to_string()}),
+            true,
+        );
+        shared.read_sessions();
+        assert_eq!(
+            shared
+                .carry_to_ease(&chose("s-harbour", "tern"), None)
+                .await,
+            Err("HARBOR runs twice, so it isn't carried".to_owned()),
+            "an inbox two sessions read takes no carry"
+        );
+
+        let socket = dir.path().join("carried").join("work.sock");
+        let shared = easing_skiff(&socket, &["remote"]).await;
+        let at = (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1)).to_string();
+        ordered::keep(
+            &socket.with_file_name("carries.jsonl"),
+            &json!({"at": at, "by": "WCJQSG", "session": "s-harbour", "address": "HARBOR",
+                    "from": "skiff", "to": "tern", "why": "it needs the camera"}),
+        )
+        .expect("an orchestrator's carry is kept");
+        assert_eq!(
+            shared
+                .carry_to_ease(&chose("s-harbour", "tern"), None)
+                .await,
+            Err(format!(
+                "HARBOR was carried at {at}, so it isn't carried again within the day"
+            )),
+            "a session another carry moved since the look stays put"
+        );
+
+        let socket = dir.path().join("arrived").join("work.sock");
+        let shared = easing_skiff(&socket, &["remote"]).await;
+        shared
+            .store
+            .put_told_carries(
+                "tern",
+                &[json!({"at": at, "by": "node@tern", "session": "s-harbour",
+                         "address": "HARBOR", "from": "tern", "to": "skiff",
+                         "why": "tern was over", "left": true})],
+            )
+            .expect("tern's carries are kept");
+        assert_eq!(
+            shared
+                .carry_to_ease(&chose("s-harbour", "tern"), None)
+                .await,
+            Err(format!(
+                "HARBOR was carried at {at}, so it isn't carried again within the day"
+            )),
+            "a session another machine's node carried here stays, never sent straight back"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_keeps_a_carry_its_sessions_inbox_refused() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let shared = easing_skiff(&socket, &["remote"]).await;
+        fs::create_dir_all(inboxes(&socket)).expect("its inboxes");
+        fs::write(inboxes(&socket).join("HARBOR"), "not a folder").expect("in its way");
+        let refused = shared
+            .carry_to_ease(&chose("s-harbour", "tern"), None)
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.starts_with("its inbox refused it: ")),
+            "{refused:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(socket.with_file_name("carries.jsonl"))
+                .expect("the carry is kept")
+                .lines()
+                .count(),
+            1,
+            "kept, so it counts"
+        );
+        assert!(
+            shared
+                .carry_to_ease(&chose("s-harbour", "tern"), None)
+                .await
+                .is_err_and(|why| why.ends_with("so it isn't carried again within the day")),
+            "and, kept, its session stays put within the day"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_carries_what_it_chose_under_its_own_name() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let shared = easing_skiff(&socket, &["remote"]).await;
+        let reading = json!({"cpu": 0.97});
+
+        assert_eq!(
+            shared
+                .carry_to_ease(&chose("s-harbour", "tern"), Some(&reading))
+                .await,
+            Ok(()),
+            "a carry to ground as firm is made"
+        );
+
+        assert_eq!(
+            held_in(&inboxes(&socket).join("HARBOR")),
+            [json!({"act": "ordered-carry", "to": "tern",
+                    "why": "skiff has been over its processor for 10 minutes",
+                    "by": "node@skiff", "from": "node@skiff"})],
+            "under the node's own name, never the person's or an orchestrator's"
+        );
+        let line: Value = serde_json::from_str(
+            fs::read_to_string(socket.with_file_name("carries.jsonl"))
+                .expect("the carry is kept")
+                .trim_end(),
+        )
+        .expect("one JSON line");
+        assert_eq!(
+            (
+                &line["by"],
+                &line["asker"],
+                &line["session"],
+                &line["address"],
+                &line["quest"],
+                &line["from"],
+                &line["to"],
+                &line["source"],
+                &line["reading"],
+            ),
+            (
+                &json!("node@skiff"),
+                &json!("node@skiff"),
+                &json!("s-harbour"),
+                &json!("HARBOR"),
+                &json!("QEST-20261115-HARBOR"),
+                &json!("skiff"),
+                &json!("tern"),
+                &json!(easing::SOURCE),
+                &reading,
+            ),
+            "kept with what settles it and the reading it was chosen by"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_makes_what_it_chose_only_where_it_is_run_to() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let line = |to: &str| {
+            json!({"at": "2026-11-19T07:00:00Z", "would": true, "choice": "carry",
+                   "session": "s-harbour", "to": to, "why": "skiff is over",
+                   "reading": {"cpu": 0.97}})
+        };
+        let saying = dir.path().join("says").join("work.sock");
+        let shared = easing_skiff(&saying, &["remote"]).await;
+        assert_eq!(
+            shared.act_to_ease(false, line("tern")).await,
+            line("tern"),
+            "a node run only to say its choices says them"
+        );
+        assert_eq!(
+            held_in(&inboxes(&saying).join("HARBOR")),
+            Vec::<Value>::new(),
+            "and carries nothing"
+        );
+        let sleep = json!({"at": "2026-11-19T07:00:00Z", "would": true,
+                           "choice": "sleep", "sessions": ["s-harbour"]});
+        assert_eq!(
+            shared.act_to_ease(true, sleep.clone()).await,
+            sleep,
+            "nor does one run to carry put a session to sleep"
+        );
+
+        let making = dir.path().join("makes").join("work.sock");
+        let shared = easing_skiff(&making, &["remote"]).await;
+        let mut refused = line("osprey");
+        refused["would"] = json!(false);
+        refused["refused"] =
+            json!("osprey isn't one of this realm's machines, so nothing is carried there");
+        assert_eq!(
+            shared.act_to_ease(true, line("osprey")).await,
+            refused,
+            "one run to carry says why where its carry is refused"
+        );
+        let mut made = line("tern");
+        made["would"] = json!(false);
+        assert_eq!(
+            shared.act_to_ease(true, line("tern")).await,
+            made,
+            "and makes the carry and says so"
+        );
+        assert_eq!(
+            held_in(&inboxes(&making).join("HARBOR")).len(),
+            1,
+            "the session is told"
+        );
+        let kept: Value = serde_json::from_str(
+            fs::read_to_string(making.with_file_name("carries.jsonl"))
+                .expect("the carry is kept")
+                .trim_end(),
+        )
+        .expect("one JSON line");
+        assert_eq!(
+            kept["reading"],
+            json!({"cpu": 0.97}),
+            "with the reading its look chose it by"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_carries_nothing_it_chose_where_an_order_would_be_refused() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        for (builders, chosen, refused) in [
+            (
+                &["remote", "cloud"][..],
+                chose("s-harbour", "tern"),
+                "tern's strictly fenced session opens builders cloud, which here's doesn't, so \
+                 the session would land looser there",
+            ),
+            (
+                &["remote"][..],
+                chose("s-harbour", "osprey"),
+                "osprey isn't one of this realm's machines, so nothing is carried there",
+            ),
+            (
+                &["remote"][..],
+                chose("s-harbour", "skiff"),
+                "HARBOR already runs on skiff",
+            ),
+            (
+                &["remote"][..],
+                chose("s-gone", "tern"),
+                "s-gone no longer runs here, so it isn't carried",
+            ),
+        ] {
+            let socket = dir
+                .path()
+                .join(&chosen.to)
+                .join(&chosen.session)
+                .join("work.sock");
+            let shared = easing_skiff(&socket, builders).await;
+
+            assert_eq!(
+                shared.carry_to_ease(&chosen, None).await,
+                Err(refused.to_owned()),
+                "{chosen:?} is refused"
+            );
+
+            assert_eq!(
+                held_in(&inboxes(&socket).join("HARBOR")),
+                Vec::<Value>::new(),
+                "nothing refused reaches the inbox"
+            );
+            assert!(
+                !socket.with_file_name("carries.jsonl").exists(),
+                "and nothing refused is kept as carried"
+            );
+        }
     }
 
     #[tokio::test]
@@ -13720,6 +14363,7 @@ esac
         let eases = Eases {
             folder: folder.clone(),
             every: Duration::from_millis(10),
+            carries: false,
         };
         let given = Given {
             eases: Some(eases),
@@ -13820,6 +14464,7 @@ esac
             eases: Some(Eases {
                 folder: folder.clone(),
                 every: Duration::from_millis(10),
+                carries: false,
             }),
             carries: dir.path().join("carries.jsonl"),
             processes: Processes::Folder(procs),
@@ -13844,6 +14489,7 @@ esac
             eases: Some(Eases {
                 folder: folder.clone(),
                 every: Duration::from_millis(10),
+                carries: false,
             }),
             carries: dir.path().join("carries.jsonl"),
             ..bare(dir.path().join("steer"), None)
