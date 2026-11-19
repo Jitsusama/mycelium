@@ -1579,7 +1579,17 @@ missed as `looser-ground`, `never`, naming the machine and the fence
 it lacks, and a start naming one is told only that, as `this asks as a
 strictly fenced agent, so it starts nothing on looser ground: ...`. A
 machine made for it is held to the same once it links, and let go
-where it is looser. The person's starts aren't. A start relayed from
+where it is looser. The person's starts aren't, nor is an agent's
+reopening: the person's `pi` given `--session` and a bare id, with at
+most `--model` and a model after them, and nothing more, naming one
+machine alone. That one goes to the machine it names without its
+asker's fence, and makes no machine, since it brings back a session as
+it was rather than starting the asker's work there. Only the session's
+own node knows it ended, so a start relayed from another machine's
+node in that shape, a carry aside, is taken only for a session that
+ended on this machine, and otherwise refused as `no session <id> ended
+on <machine>, so nothing is reopened here`, whoever asked. A node too
+old to judge it takes it as any relayed start. A start relayed from
 another machine's node is pinned to this one, which is never looser
 than itself. A node run as a systemd unit
 starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in

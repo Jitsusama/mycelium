@@ -181,15 +181,7 @@ impl Kept {
 /// what that hides.
 #[must_use]
 pub fn brings_back(command: &[String], sessions: &[Session]) -> Option<String> {
-    let program = command.first()?;
-    let named_pi = Path::new(program)
-        .file_name()
-        .and_then(|name| name.to_str())
-        == Some(PI);
-    let persons = program == PI
-        || (PIS_FOLDERS.iter().any(|folder| program.starts_with(folder))
-            && !program.contains("/../"));
-    if !(named_pi && persons) {
+    if !persons_pi(command.first()?) {
         return None;
     }
     // In the command's order, as pi reads them; naming two is no resume,
@@ -227,6 +219,48 @@ pub fn brings_back(command: &[String], sessions: &[Session]) -> Option<String> {
             is_it && session.state == State::Ended
         })
         .map(|session| session.id.clone())
+}
+
+/// Whether `program` is the person's pi: named bare, as the person's
+/// login finds it, or by a path in [`PIS_FOLDERS`].
+fn persons_pi(program: &str) -> bool {
+    let named_pi = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some(PI);
+    let persons = program == PI
+        || (PIS_FOLDERS.iter().any(|folder| program.starts_with(folder))
+            && !program.contains("/../"));
+    named_pi && persons
+}
+
+/// The session `command` reopens and does nothing more: the person's pi,
+/// as [`brings_back`] reads it, given `--session` and the session's bare
+/// id, with at most `--model` and a model after them, so no first words,
+/// other flags, file or shell ride into it. Whether such a session ended
+/// is for its own machine's node to say, since another keeps none.
+#[must_use]
+pub fn reopens(command: &[String]) -> Option<&str> {
+    let bare = |word: &str| {
+        !word.is_empty()
+            && !word.starts_with('-')
+            && word
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':'))
+    };
+    let [program, flag, session, rest @ ..] = command else {
+        return None;
+    };
+    let model = match rest {
+        [] => true,
+        [model_flag, model] => model_flag == "--model" && bare(model),
+        _ => false,
+    };
+    let id = session
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+    (persons_pi(program) && flag == "--session" && bare(session) && id && model)
+        .then_some(session.as_str())
 }
 
 /// A start let go ahead, held as counted till it is kept.
@@ -716,6 +750,57 @@ mod tests {
     use crate::declared::Kind;
 
     const NOW: i64 = 1_800_000_000_000;
+
+    // WCJQSG's ruling (2026-11-19): a strict cell may reopen a session
+    // homed on looser ground with nothing carried into it.
+    #[test]
+    fn a_reopening_is_the_persons_pi_given_a_bare_session_and_nothing_more() {
+        let read = |words: &[&str]| {
+            let command: Vec<String> = words.iter().map(|&word| word.to_owned()).collect();
+            reopens(&command).map(str::to_owned)
+        };
+        let gone = Some("s-gone_1".to_owned());
+        assert_eq!(read(&["pi", "--session", "s-gone_1"]), gone);
+        assert_eq!(
+            read(&[
+                "pi",
+                "--session",
+                "s-gone_1",
+                "--model",
+                "anthropic/opus-4.5:high"
+            ]),
+            gone,
+            "a model may be named"
+        );
+        assert_eq!(
+            read(&[
+                "/etc/profiles/per-user/joel/bin/pi",
+                "--session",
+                "s-gone_1"
+            ]),
+            gone,
+            "and pi by the person's own path"
+        );
+        for (words, why) in [
+            (&["pi", "--session", "s-gone_1", "go on"][..], "first words"),
+            (&["pi", "--session", "s-gone_1", "-p", "x"], "another flag"),
+            (
+                &["pi", "--session", "s-gone_1", "--model", "-p"],
+                "a flag as model",
+            ),
+            (&["pi", "--session", "/tmp/x_s-gone_1.jsonl"], "a file"),
+            (&["pi", "--session-id", "s-gone_1"], "another resuming flag"),
+            (&["pi", "--session", "-x"], "a flag as session"),
+            (
+                &["/home/x/bin/pi", "--session", "s-gone_1"],
+                "an agent's pi",
+            ),
+            (&["sh", "-c", "pi --session s-gone_1"], "a shell"),
+            (&["pi", "--session"], "no session"),
+        ] {
+            assert_eq!(read(words), None, "none with {why}");
+        }
+    }
 
     #[test]
     fn a_failure_keeps_the_nodes_reason_and_no_argument() {
