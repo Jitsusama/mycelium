@@ -119,19 +119,77 @@ fn named(cell: &str) -> bool {
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || b"-_".contains(&byte))
 }
 
-/// The fields a tie kind's record says, a tie's or a cell's talk: so a
-/// cell brings nothing else under the tie kind's name.
-const TIE_FIELDS: [&str; 9] = [
-    "key", "kind", "heard", "hour", "today", "intents", "groups", "strength", "ties",
-];
+/// The most groups a brought tie may say its messages went to, far past
+/// what a day's talk between two cells reaches, so no file fills a tie
+/// with names.
+const GROUPS_MOST: usize = 64;
+
+/// The most intents a brought tie may say, one for each the mesh has.
+const INTENTS_MOST: usize = 5;
 
 /// The strength `tie` says it was heard at, where it says one a tie
 /// could have: a number, never below none.
 #[must_use]
 pub fn strength(tie: &Value) -> Option<f64> {
-    tie.get("strength")?
+    a_strength(tie.get("strength")?)
+}
+
+/// `value` as a strength a tie could have: a number, never below none.
+fn a_strength(value: &Value) -> Option<f64> {
+    value
         .as_f64()
         .filter(|strength| strength.is_finite() && *strength >= 0.0)
+}
+
+/// `value` as the tie kind writes its field `field`, in a tie's record
+/// or a cell's talk, or none where it reads as nothing the tie kind
+/// writes: so a cell's file brings no other field under the tie kind's
+/// name, nor one of its fields holding what no tie could, and a list
+/// keeps only the entries that read, each once, at most as many as a
+/// tie could say.
+fn typed(field: &str, value: &Value) -> Option<Value> {
+    let count = |value: &Value| {
+        value
+            .as_u64()
+            .filter(|count| u32::try_from(*count).is_ok())
+            .map(Value::from)
+    };
+    match field {
+        "key" | "kind" => value.is_string().then(|| value.clone()),
+        "heard" => value.as_i64().map(Value::from),
+        "strength" => a_strength(value).map(Value::from),
+        "ties" => count(value),
+        // A tie says each end's count, and a cell's talk its own.
+        "hour" | "today" => match value.as_array() {
+            Some(pair) if pair.len() == 2 => pair
+                .iter()
+                .map(count)
+                .collect::<Option<Vec<Value>>>()
+                .map(Value::from),
+            Some(_) => None,
+            None => count(value),
+        },
+        "intents" => Some(listed(value, INTENTS_MOST, |one| {
+            serde_json::from_value::<crate::record::Intent>(one.clone()).is_ok()
+        })),
+        "groups" => Some(listed(value, GROUPS_MOST, |one| {
+            one.as_str()
+                .is_some_and(|name| crate::group::Group::new(name).is_ok())
+        })),
+        _ => None,
+    }
+}
+
+/// The entries of `value`, a list, that `reads` takes, each once, at
+/// most `most`: none where it is no list.
+fn listed(value: &Value, most: usize, reads: impl Fn(&Value) -> bool) -> Value {
+    let mut kept: Vec<Value> = Vec::new();
+    for one in value.as_array().into_iter().flatten() {
+        if kept.len() < most && reads(one) && !kept.contains(one) {
+            kept.push(one.clone());
+        }
+    }
+    Value::from(kept)
 }
 
 /// `ties`, strongest first, those as strong by key, one saying no
@@ -160,13 +218,13 @@ fn tie_keyed(record: &Value) -> Option<String> {
     keyed(record, "tie:")
 }
 
-/// `record` with only the fields of [`TIE_FIELDS`].
+/// `record` with only the fields the tie kind writes, each as it
+/// writes it, as [`typed`] reads them.
 fn tie_fields(record: &Value) -> Value {
     let fields = record.as_object().into_iter().flatten();
     Value::Object(
         fields
-            .filter(|(field, _)| TIE_FIELDS.contains(&field.as_str()))
-            .map(|(field, value)| (field.clone(), value.clone()))
+            .filter_map(|(field, value)| Some((field.clone(), typed(field, value)?)))
             .collect(),
     )
 }
@@ -328,6 +386,60 @@ mod tests {
             (cell.ties.len(), cell.talk, cell.formed.len()),
             (0, None, 0),
             "no ties or formed networks said is none; another's talk isn't its own"
+        );
+    }
+
+    #[test]
+    fn a_cell_brings_each_field_only_as_the_tie_kind_writes_it() {
+        let folder = tempfile::tempdir().expect("a handover");
+        let groups: Vec<String> = (0..70).map(|one| format!("crew.{one}")).collect();
+        let path = file(
+            folder.path(),
+            "s-harbour.cell.json",
+            &json!({
+                "session": "s-harbour",
+                "cell": "HARBOR",
+                "ties": [
+                    {"key": "tie:HARBOR~KELP01", "kind": "tie", "heard": 5,
+                     "hour": [1, 2], "today": [3, 4], "strength": 1.5,
+                     "intents": ["fyi", "question", "fyi", "shout", 7],
+                     "groups": ["crew", "Crew", "a..b", "crew"]},
+                    {"key": "tie:HARBOR~REEF01", "kind": "tie", "heard": "soon",
+                     "hour": [1, 2, 3], "today": [-1, 4], "strength": -2.0,
+                     "intents": "fyi", "groups": groups},
+                ],
+                "talk": {"key": "tie:HARBOR", "kind": "tie", "hour": 2,
+                         "today": 4_294_967_296_u64, "ties": [2]},
+            }),
+        );
+        let cell = arrived(&path, "s-harbour").expect("its cell");
+        assert_eq!(
+            cell.ties[0],
+            json!({"key": "tie:HARBOR~KELP01", "kind": "tie", "heard": 5,
+                   "hour": [1, 2], "today": [3, 4], "strength": 1.5,
+                   "intents": ["fyi", "question"], "groups": ["crew"]}),
+            "each intent and group a tie could say, once"
+        );
+        assert_eq!(
+            cell.ties[1]["groups"].as_array().map(Vec::len),
+            Some(super::GROUPS_MOST),
+            "at most as many groups as a tie could say"
+        );
+        assert_eq!(
+            (
+                cell.ties[1].get("heard"),
+                cell.ties[1].get("hour"),
+                cell.ties[1].get("today"),
+                cell.ties[1].get("strength"),
+                &cell.ties[1]["intents"],
+            ),
+            (None, None, None, None, &json!([])),
+            "a field holding what no tie could is passed over alone"
+        );
+        assert_eq!(
+            cell.talk,
+            Some(json!({"key": "tie:HARBOR", "kind": "tie", "hour": 2})),
+            "a talk's counts only as counts a cell could have"
         );
     }
 
