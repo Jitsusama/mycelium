@@ -129,7 +129,9 @@ The harness mesh's messages and presence, carried between machines:
   each question of the last two hours still waiting on a peer it was
   put to, with who asks whom and how long it has waited, and each hold
   still standing, with until when, each with its id and how it opens.
-  `-o json` prints each whole as a JSON line instead. `mycelium said`
+  It draws text into a pipe too, as `swarm` and `forage` do, so a
+  script reading the JSON lines it once printed asks for them with
+  `-o json`, which prints each whole as a JSON line. `mycelium said`
   prints what you said to sessions through this machine, with when each
   was taken up and answered.
 - `mycelium swarm` shows the realm's teams in a terminal, nested as

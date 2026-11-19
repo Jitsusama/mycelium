@@ -275,9 +275,10 @@ const SAYS_LINES: usize = 2;
 /// as [`Open::fields`] writes them: the questions, then the holds, each
 /// oldest first. A question says who asks whom, since when and how long
 /// it has waited; a hold, who holds whom and until when; each its id as
-/// the mesh's tools take it, then the opening of what it says. In
-/// `width` columns, a terminal's; with none, into a pipe, nothing is cut
-/// and each says its first line whole.
+/// the mesh's tools take it, then the opening of what it says, an
+/// ellipsis after it where more lines follow. In `width` columns, a
+/// terminal's; with none, into a pipe, nothing is cut and each says its
+/// first line whole.
 #[must_use]
 pub fn drawn(records: &[Value], look: &Look, width: Option<usize>) -> String {
     let mut records: Vec<&Value> = records.iter().collect();
@@ -316,9 +317,12 @@ pub fn drawn(records: &[Value], look: &Look, width: Option<usize>) -> String {
 fn block(heading: &str, records: &[&Value], look: &Look, width: Option<usize>) -> String {
     let mut out = format!("{}\n", cut(heading, width));
     for record in records {
-        out.push_str(&cut(&format!("  {}", headed(record, look)), width));
+        out.push_str(&headed(record, look, width));
         out.push('\n');
         let opening = says(record);
+        if opening.is_empty() {
+            continue;
+        }
         match width {
             None => {
                 out.push_str(SAYS);
@@ -331,28 +335,63 @@ fn block(heading: &str, records: &[&Value], look: &Look, width: Option<usize>) -
     out
 }
 
+/// The fewest columns the names are cut to before the whole line is
+/// cut instead.
+const NAMES_LEAST: usize = 4;
+
 /// A record's line: when, who, of whom, how long or until when, its id.
-fn headed(record: &Value, look: &Look) -> String {
+/// In `width` columns the names give way first, so the wait and the id
+/// a person answers by stay whole; only where even they don't fit is the
+/// line cut from its end.
+fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     let since = record["since"].as_str().unwrap_or_default();
     let when = look.when(since).unwrap_or_default();
     let from = one_line(record["from"].as_str().unwrap_or_default());
-    let short = short_id(record["id"].as_str().unwrap_or_default());
-    if record["intent"] == "hold" {
-        let held = names(&record["groups"]);
+    let short = one_line(short_id(record["id"].as_str().unwrap_or_default()));
+    let (verb, named, after) = if record["intent"] == "hold" {
         let until = record["until"]
             .as_str()
-            .and_then(|until| look.when(until))
+            .and_then(|until| lapses(look, until))
             .map_or_else(String::new, |until| format!(", until {until}"));
-        return format!("{when}  {from} holds {held}{until}  [{short}]");
-    }
-    let waited = millis(since).map_or_else(String::new, |at| {
-        format!(
-            ", {} so far",
-            waited(look.now.timestamp().as_millisecond() - at)
-        )
-    });
-    let asked = names(&record["waiting_on"]);
-    format!("{when}  {from} asks {asked}{waited}  [{short}]")
+        ("holds", names(&record["groups"]), until)
+    } else {
+        let waited = millis(since).map_or_else(String::new, |at| {
+            format!(
+                ", {} so far",
+                waited(look.now.timestamp().as_millisecond() - at)
+            )
+        });
+        ("asks", names(&record["waiting_on"]), waited)
+    };
+    let lead = format!("  {when}  {from} {verb} ");
+    let tail = format!("{after}  [{short}]");
+    let named = match width {
+        Some(width) => {
+            let room = width.saturating_sub(lead.chars().count() + tail.chars().count());
+            if room < NAMES_LEAST {
+                named
+            } else {
+                crate::swarm::fit(&named, room)
+            }
+        }
+        None => named,
+    };
+    cut(&format!("{lead}{named}{tail}"), width)
+}
+
+/// When a hold lapses, `until`: its time, and its weekday when that
+/// isn't today, as a hold put late in the evening lapses after midnight.
+fn lapses(look: &Look, until: &str) -> Option<String> {
+    let until = until
+        .parse::<jiff::Timestamp>()
+        .ok()?
+        .to_zoned(look.now.time_zone().clone());
+    let format = if until.date() == look.now.date() {
+        "%H:%M"
+    } else {
+        "%a %H:%M"
+    };
+    Some(until.strftime(format).to_string())
 }
 
 /// The names in `list`, a sentence's way, each drawn safe.
@@ -379,15 +418,17 @@ fn short_id(id: &str) -> &str {
     id.rsplit('-').next().unwrap_or(id)
 }
 
-/// The first line of what a record says, drawn safe.
+/// The first line of what a record says, drawn safe, with an ellipsis
+/// after it where more lines follow.
 fn says(record: &Value) -> String {
     let text = record["text"].as_str().unwrap_or_default();
-    one_line(
-        text.lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .unwrap_or_default(),
-    )
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let first = one_line(lines.next().unwrap_or_default());
+    if lines.next().is_some() {
+        format!("{first} …")
+    } else {
+        first
+    }
 }
 
 /// `opening` wrapped under its heading to `width` columns, at most
@@ -904,7 +945,9 @@ mod tests {
         let drawn = drawn(&records(ASKED), &look(), None);
         let first = ASKED.lines().next().expect("a first line");
         assert!(
-            drawn.lines().any(|line| line.starts_with(&format!("    {first}"))),
+            drawn
+                .lines()
+                .any(|line| line.starts_with(&format!("    {first}"))),
             "the first line wasn't whole:\n{drawn}"
         );
     }
