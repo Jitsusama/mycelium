@@ -20,6 +20,12 @@ pub const FILE: &str = ".cell.json";
 /// left out forms afresh where the session arrives.
 pub const FORMED_MOST: usize = 64;
 
+/// The most ties a cell brings, its strongest, as the node it leaves
+/// writes them and the node it arrives on reads them: so a file its
+/// session wrote can't fill the node it arrives on with ties, and a tie
+/// left out forms afresh as the cell talks there.
+pub const TIES_MOST: usize = 128;
+
 /// The most a cell's file read where its session arrives may hold, in
 /// bytes: far past what a cell brings, so only a file grown by
 /// something else is passed over.
@@ -81,6 +87,7 @@ pub fn arrived(path: &Path, session: &str) -> Option<Brought> {
         })
         .map(tie_fields)
         .collect();
+    let ties = strongest(ties);
     let talk = said
         .talk
         .as_ref()
@@ -117,6 +124,34 @@ fn named(cell: &str) -> bool {
 const TIE_FIELDS: [&str; 9] = [
     "key", "kind", "heard", "hour", "today", "intents", "groups", "strength", "ties",
 ];
+
+/// The strength `tie` says it was heard at, where it says one a tie
+/// could have: a number, never below none.
+#[must_use]
+pub fn strength(tie: &Value) -> Option<f64> {
+    tie.get("strength")?
+        .as_f64()
+        .filter(|strength| strength.is_finite() && *strength >= 0.0)
+}
+
+/// `ties`, strongest first, those as strong by key, one saying no
+/// strength a tie could have as none, and at most [`TIES_MOST`].
+fn strongest(mut ties: Vec<Value>) -> Vec<Value> {
+    let order = |tie: &Value| {
+        (
+            strength(tie).unwrap_or_default(),
+            tie["key"].as_str().map(str::to_owned),
+        )
+    };
+    ties.sort_by(|one, other| {
+        let ((one_strength, one_key), (other_strength, other_key)) = (order(one), order(other));
+        other_strength
+            .total_cmp(&one_strength)
+            .then_with(|| one_key.cmp(&other_key))
+    });
+    ties.truncate(TIES_MOST);
+    ties
+}
 
 /// What follows `tie:` in the key of `record`, where it is of the tie
 /// kind, or none.
@@ -198,7 +233,7 @@ pub fn brought(session: &str, address: &str, ties: &[Value]) -> Brought {
     };
     Brought {
         session: session.to_owned(),
-        ties: ties.iter().filter(at_an_end).cloned().collect(),
+        ties: strongest(ties.iter().filter(at_an_end).cloned().collect()),
         talk: ties
             .iter()
             .find(|tie| key(tie).is_some_and(|key| key == cell))
@@ -215,7 +250,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::{FILE_MOST, FORMED_MOST, arrived, brought, formed_of};
+    use super::{FILE_MOST, FORMED_MOST, TIES_MOST, arrived, brought, formed_of};
 
     /// `said`, written whole at `name` in `folder`.
     fn file(folder: &Path, name: &str, said: &serde_json::Value) -> std::path::PathBuf {
@@ -437,6 +472,44 @@ mod tests {
         let unsorted = ats.clone();
         ats.sort_unstable();
         assert_eq!(unsorted, ats, "earliest first");
+    }
+
+    #[test]
+    fn a_cell_brings_and_arrives_with_at_most_its_strongest_ties() {
+        let ties: Vec<serde_json::Value> = (0..500)
+            .map(|n| {
+                let strength = if n == 7 { 2e9 } else { 1e9 };
+                json!({"key": format!("tie:C{n:05}~HARBOR"), "kind": "tie",
+                       "strength": strength})
+            })
+            .collect();
+        let leaving = brought("s-harbour", "harbor", &ties);
+        assert_eq!(
+            leaving.ties.len(),
+            TIES_MOST,
+            "it brings at most {TIES_MOST}"
+        );
+        assert_eq!(
+            leaving.ties[0]["key"], "tie:C00007~HARBOR",
+            "strongest first"
+        );
+
+        let folder = tempfile::tempdir().expect("a handover");
+        let path = file(
+            folder.path(),
+            "s-harbour.cell.json",
+            &json!({"session": "s-harbour", "cell": "HARBOR", "ties": ties}),
+        );
+        let arriving = arrived(&path, "s-harbour").expect("its cell reads");
+        assert_eq!(
+            arriving.ties.len(),
+            TIES_MOST,
+            "and a file saying more arrives with at most {TIES_MOST}"
+        );
+        assert_eq!(
+            arriving.ties[0]["key"], "tie:C00007~HARBOR",
+            "its strongest"
+        );
     }
 
     #[test]

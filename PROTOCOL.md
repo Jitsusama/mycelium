@@ -563,8 +563,12 @@ in order and says each step:
    as that cell, its address an alias of it, unless another live
    session goes by the name, as any address, in any case, or two say
    it. A tie it brought said heard after it arrived counts as heard
-   then, and stands for a day from when it was heard. Carried on
-   again, it brings that cell.
+   then, and stands for a day from when it was heard. A cell brings
+   at most its 128 strongest ties, and where its strongest is past
+   the strongest tie between two cells the arriving node holds, or a
+   message's where it holds none, each is made weaker alike, so none
+   is stronger and they keep their order. It is weighed as a hub by
+   its cell's talk. Carried on again, it brings that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share
    --scratch handover` does.
 4. `start`: each carried session starts again on the machine, held, as

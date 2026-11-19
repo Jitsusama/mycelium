@@ -2668,10 +2668,11 @@ impl<S: Store> Shared<S> {
             .into_values()
             .filter_map(|record| hub::heard(&serde_json::from_str(record.as_str()).ok()?))
             .collect();
-        let holders: Vec<hub::Holder> = self
-            .lock()
-            .state
-            .sessions()
+        let mut sessions = self.lock().state.sessions();
+        // A session that arrived stands as its cell, whose name its talk
+        // is heard under.
+        self.arrivals.named(&mut sessions);
+        let holders: Vec<hub::Holder> = sessions
             .into_iter()
             // One ended, or out of reach, takes no need.
             .filter(|session| matches!(session.state, SessionState::Busy | SessionState::Idle))
@@ -15804,6 +15805,7 @@ esac
             "s-harbour",
             json!({"session": "s-harbour", "addresses": ["STAND1"], "groups": [],
                    "busy": true, "state": "working", "quest": quest,
+                   "subjects": ["mycelium:hubs"],
                    "at": jiff::Timestamp::now().to_string()}),
             true,
         );
@@ -15864,12 +15866,17 @@ esac
         assert_eq!(stands(&shared), "HARBOR", "as the cell it left");
         assert_eq!(
             shared.tie_records()["tie:HARBOR~KELP01"].value()["strength"],
-            json!(2.0),
-            "the tie it brought is kept"
+            json!(1.0),
+            "the tie it brought is kept, as strong as a message, since none here is stronger"
         );
         assert!(
             !shared.cell_records().contains_key("cell:STAND1"),
             "and not as its new address"
+        );
+        let hubs = serde_json::to_string(&shared.hub_records()).expect("the hubs");
+        assert!(
+            hubs.contains("HARBOR") && !hubs.contains("STAND1"),
+            "it hubs as its cell, whose talk it is heard by: {hubs}"
         );
     }
 

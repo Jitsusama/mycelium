@@ -40,6 +40,10 @@ const WAITED: i64 = 60 * 60 * 1000;
 /// first, so no linked node's starts grow what is held without bound.
 const CARRIES_MOST: usize = 256;
 
+/// The strength a brought tie may have where this node holds none as
+/// strong: a message's, heard as it arrived.
+const STRONGEST_ALONE: f64 = 1.0;
+
 /// A carry a linked node asked this one to start: the quest the session
 /// was carried in, the folder of the quest's handover its machine left
 /// it in, and when it was started, in milliseconds since the epoch.
@@ -201,12 +205,15 @@ impl Arrivals {
 
     /// `made`, the tie records this node makes, with each tie and talk
     /// the cells that arrived brought heard within a day of `now`,
-    /// where this node holds none of it heard later.
+    /// where this node holds none of it heard later. A cell's file is
+    /// its session's to write, so the ties each cell brought are held
+    /// to [`bounded`]'s strength.
     pub(super) fn ties(&self, made: &mut BTreeMap<String, daemon::Record>, now: i64) {
+        let most = strongest_held(made);
         let kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         let brought = kept.values().flat_map(|brought| {
             let Brought { ties, talk, .. } = brought;
-            ties.iter().chain(talk)
+            bounded(ties, most).chain(talk.iter().cloned())
         });
         for record in brought {
             let (Some(key), Some(heard)) = (record["key"].as_str(), record["heard"].as_i64())
@@ -216,12 +223,42 @@ impl Arrivals {
             if now.saturating_sub(heard) >= KEPT {
                 continue;
             }
-            let later = made.get(key).is_some_and(|held| held.heard() >= heard);
+            let key = key.to_owned();
+            let later = made.get(&key).is_some_and(|held| held.heard() >= heard);
             if !later {
-                made.insert(key.to_owned(), daemon::Record::from(record.clone()));
+                made.insert(key, daemon::Record::from(record));
             }
         }
     }
+}
+
+/// The strength of the strongest tie between two cells in `made`, as
+/// heard, or [`STRONGEST_ALONE`] where that is stronger.
+fn strongest_held(made: &BTreeMap<String, daemon::Record>) -> f64 {
+    made.iter()
+        .filter(|(key, _)| key.contains('~'))
+        .filter_map(|(_, record)| cell::strength(&record.value()))
+        .fold(STRONGEST_ALONE, f64::max)
+}
+
+/// `ties`, the ties a cell brought, each saying a strength no tie could
+/// have saying none, and all made weaker alike where its strongest is
+/// past `most`, so it is `most`: no file makes a brought tie stronger
+/// than any this node holds, and its ties keep their order.
+fn bounded(ties: &[Value], most: f64) -> impl Iterator<Item = Value> + '_ {
+    let strongest = ties.iter().filter_map(cell::strength).fold(0.0, f64::max);
+    let scale = if strongest > most {
+        most / strongest
+    } else {
+        1.0
+    };
+    ties.iter().map(move |tie| {
+        let mut tie = tie.clone();
+        if tie.get("strength").is_some() {
+            tie["strength"] = (cell::strength(&tie).unwrap_or_default() * scale).into();
+        }
+        tie
+    })
 }
 
 /// `brought` with each tie and its talk said heard after `now`, when it
@@ -566,7 +603,11 @@ mod tests {
             ["tie:HARBOR~KELP01"],
             "its tie, and not its talk heard a day ago"
         );
-        assert_eq!(made["tie:HARBOR~KELP01"].value()["strength"], json!(2.0));
+        assert_eq!(
+            made["tie:HARBOR~KELP01"].value()["strength"],
+            json!(1.0),
+            "as strong as a message, since this node holds none stronger"
+        );
 
         let mut made = BTreeMap::from([("tie:HARBOR~KELP01".to_owned(), tie(NOW))]);
         arrivals.ties(&mut made, NOW);
@@ -580,8 +621,46 @@ mod tests {
         arrivals.ties(&mut made, NOW);
         assert_eq!(
             made["tie:HARBOR~KELP01"].value()["strength"],
-            json!(2.0),
+            json!(1.0),
             "the one brought, heard later, stands"
+        );
+    }
+
+    #[test]
+    fn no_tie_a_cell_brought_is_stronger_than_the_strongest_held_here() {
+        let scratch = tempfile::tempdir().expect("a scratch folder");
+        let tie = |other: &str, strength: f64| {
+            json!({"key": format!("tie:HARBOR~{other}"), "kind": "tie",
+                   "heard": NOW - 60_000, "strength": strength})
+        };
+        let mut boasting = harbour();
+        boasting["ties"] = json!([tie("KELP01", 1e9), tie("REEF01", 5e8), tie("TIDE01", -4.0)]);
+        left(scratch.path(), "tern", "s-harbour", &boasting);
+        let arrivals = Arrivals::default();
+        arrivals.carried("s-harbour", from("tern"));
+        let sessions = [session("s-harbour", "stand1", "skiff")];
+        arrivals.read(scratch.path(), "skiff", &sessions, NOW);
+
+        let held = json!({"key": "tie:OSPREY~TERN01", "kind": "tie", "heard": NOW,
+                          "strength": 8.0});
+        let mut made =
+            BTreeMap::from([("tie:OSPREY~TERN01".to_owned(), daemon::Record::from(held))]);
+        arrivals.ties(&mut made, NOW);
+        let strength = |key: &str| made[key].value()["strength"].clone();
+        assert_eq!(
+            strength("tie:HARBOR~KELP01"),
+            json!(8.0),
+            "its strongest is as strong as the strongest here"
+        );
+        assert_eq!(
+            strength("tie:HARBOR~REEF01"),
+            json!(4.0),
+            "and the rest weaker alike, so they keep their order"
+        );
+        assert_eq!(
+            strength("tie:HARBOR~TIDE01"),
+            json!(0.0),
+            "one no tie could be is none"
         );
     }
 
