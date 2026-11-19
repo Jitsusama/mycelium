@@ -236,7 +236,10 @@ enum Action {
     ///
     /// A receptor senses one outside source, intake only, and says how it
     /// stands in a file the node serves: counts and times alone, never what
-    /// it read. `mycelium cells` lists each beside the sessions.
+    /// it read. GitHub and calls may also name the changes or events that
+    /// ask the person, in a file of their own the node feeds from, and only
+    /// as `owner/name#N` or an event's id. `mycelium cells` lists each
+    /// beside the sessions.
     #[command(
         alias = "receptor",
         after_help = "Example:\n  mycelium receptors say slack --state quiet \\\n    --every 300 --pid 4242"
@@ -1063,7 +1066,8 @@ enum ReceptorAct {
     /// Says how this receptor stands now.
     ///
     /// Written whole over what it said before, its counts and times
-    /// alone: any other word is refused.
+    /// alone, with the changes or events Feeding takes kept apart: any
+    /// other word is refused.
     #[command(
         override_usage = "mycelium receptors say [OPTIONS] --state <STATE>\n       --every <EVERY> --pid <PID> <SOURCE>",
         after_help = "Example:\n  mycelium receptors say slack --state reading \\\n    --today 4 --addressed 2 --every 300 --pid 4242"

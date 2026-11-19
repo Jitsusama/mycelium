@@ -160,7 +160,10 @@ The harness mesh's messages and presence, carried between machines:
   marking one whose process is gone `off` and one fallen late
   `failing`, and the networks draw it as a cell of its source's
   `outside` network, beyond the machines; `mycelium cells` lists each
-  with what it brought in today.
+  with what it brought in today. GitHub and calls may also name the
+  changes or events that ask the person, as `owner/name#N` or an
+  event's id alone, and the node feeds each to the cell whose quest
+  claims it.
 - `mycelium forage` says what each cell is for: its purpose, the first
   sentence of its quest's Summary, and each of its plans, research and
   reports with its stage and how many steps are ticked. Named by its
