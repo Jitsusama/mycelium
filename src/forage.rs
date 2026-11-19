@@ -1362,7 +1362,7 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// turns text's direction left out, so words read from a file can't draw
 /// lines of their own, steer the terminal, or read backwards past their
 /// own end.
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.chars()
         .filter(|each| !turns_direction(*each))
         .map(|each| {

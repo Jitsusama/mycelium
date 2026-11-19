@@ -20,8 +20,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde_json::{Value, json};
 
+use crate::forage::one_line;
 use crate::mesh;
 use crate::record::{Intent, Message};
+use crate::swarm::Look;
 
 /// The kind the daemon interface holds these as.
 pub const KIND: &str = "unanswered";
@@ -262,6 +264,165 @@ impl Open {
     }
 }
 
+/// How far what a question or a hold says sits in under its heading.
+const SAYS: &str = "    ";
+
+/// How many lines of what one says are drawn in a terminal, before the
+/// rest is left to its whole text in `-o json`.
+const SAYS_LINES: usize = 2;
+
+/// What waits on the mesh drawn for a person, from the node's `records`
+/// as [`Open::fields`] writes them: the questions, then the holds, each
+/// oldest first. A question says who asks whom, since when and how long
+/// it has waited; a hold, who holds whom and until when; each its id as
+/// the mesh's tools take it, then the opening of what it says. In
+/// `width` columns, a terminal's; with none, into a pipe, nothing is cut
+/// and each says its first line whole.
+#[must_use]
+pub fn drawn(records: &[Value], look: &Look, width: Option<usize>) -> String {
+    if records.len() < 1000 {
+        return String::new();
+    }
+    let mut records: Vec<&Value> = records.iter().collect();
+    records.sort_by_key(|record| millis(record["since"].as_str().unwrap_or_default()));
+    let (questions, holds): (Vec<&Value>, Vec<&Value>) = records
+        .into_iter()
+        .partition(|record| record["intent"] != "hold");
+    if questions.is_empty() && holds.is_empty() {
+        return "Nothing waits: no question is open and no hold stands.\n".to_owned();
+    }
+    let mut blocks = Vec::new();
+    if !questions.is_empty() {
+        blocks.push(block(
+            &counted(
+                questions.len(),
+                "question waits on an answer",
+                "questions wait on an answer",
+            ),
+            &questions,
+            look,
+            width,
+        ));
+    }
+    if !holds.is_empty() {
+        blocks.push(block(
+            &counted(holds.len(), "hold stands", "holds stand"),
+            &holds,
+            look,
+            width,
+        ));
+    }
+    blocks.join("\n")
+}
+
+/// A heading and each of `records` under it.
+fn block(heading: &str, records: &[&Value], look: &Look, width: Option<usize>) -> String {
+    let mut out = format!("{}\n", cut(heading, width));
+    for record in records {
+        out.push_str(&cut(&format!("  {}", headed(record, look)), width));
+        out.push('\n');
+        let opening = says(record);
+        match width {
+            None => out.push_str(&format!("{SAYS}{opening}\n")),
+            Some(width) => out.push_str(&opening_in(&opening, width)),
+        }
+    }
+    out
+}
+
+/// A record's line: when, who, of whom, how long or until when, its id.
+fn headed(record: &Value, look: &Look) -> String {
+    let since = record["since"].as_str().unwrap_or_default();
+    let when = look.when(since).unwrap_or_default();
+    let from = one_line(record["from"].as_str().unwrap_or_default());
+    let short = short_id(record["id"].as_str().unwrap_or_default());
+    if record["intent"] == "hold" {
+        let held = names(&record["groups"]);
+        let until = record["until"]
+            .as_str()
+            .and_then(|until| look.when(until))
+            .map_or_else(String::new, |until| format!(", until {until}"));
+        return format!("{when}  {from} holds {held}{until}  [{short}]");
+    }
+    let waited = millis(since).map_or_else(String::new, |at| {
+        format!(", {} so far", waited(look.now.timestamp().as_millisecond() - at))
+    });
+    let asked = names(&record["waiting_on"]);
+    format!("{when}  {from} asks {asked}{waited}  [{short}]")
+}
+
+/// The names in `list`, a sentence's way, each drawn safe.
+fn names(list: &Value) -> String {
+    let names: Vec<String> = list
+        .as_array()
+        .map(|names| names.iter().filter_map(Value::as_str).map(one_line).collect())
+        .unwrap_or_default();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    match crate::swarm::listed(&names) {
+        none if none.is_empty() => "nobody named".to_owned(),
+        some => some,
+    }
+}
+
+/// A message's id as the mesh's tools show and take it: its random tail.
+fn short_id(id: &str) -> &str {
+    id.rsplit('-').next().unwrap_or(id)
+}
+
+/// The first line of what a record says, drawn safe.
+fn says(record: &Value) -> String {
+    let text = record["text"].as_str().unwrap_or_default();
+    one_line(text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default())
+}
+
+/// `opening` wrapped under its heading to `width` columns, at most
+/// [`SAYS_LINES`] lines, the last cut with an ellipsis where more is
+/// left.
+fn opening_in(opening: &str, width: usize) -> String {
+    let wrapped = crate::swarm::wrapped(opening, SAYS, SAYS, width);
+    let lines: Vec<&str> = wrapped.lines().collect();
+    if lines.len() <= SAYS_LINES {
+        return wrapped;
+    }
+    let mut out: String = lines[..SAYS_LINES - 1]
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect();
+    // The last line shown takes the rest, cut to the room it has, so an
+    // ellipsis says there is more.
+    let shown: usize = lines[..SAYS_LINES - 1]
+        .iter()
+        .map(|line| line.trim_start().chars().count() + 1)
+        .sum();
+    let rest: String = opening.chars().skip(shown).collect();
+    out.push_str(&format!(
+        "{SAYS}{}\n",
+        crate::swarm::fit(rest.trim_start(), width.saturating_sub(SAYS.len()))
+    ));
+    out
+}
+
+/// `line` cut to `width`, where there is one.
+fn cut(line: &str, width: Option<usize>) -> String {
+    width.map_or_else(|| line.to_owned(), |width| crate::swarm::fit(line, width))
+}
+
+/// How many there are, with the words that agree with it.
+fn counted(count: usize, one: &str, more: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { more })
+}
+
+/// How long `millis` is, as a person says a wait.
+fn waited(millis: i64) -> String {
+    let minutes = millis.max(0) / 60_000;
+    match (minutes / 60, minutes % 60) {
+        (0, 0) => "under a minute".to_owned(),
+        (0, minutes) => format!("{minutes} min"),
+        (hours, 0) => format!("{hours} h"),
+        (hours, minutes) => format!("{hours} h {minutes} min"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,5 +644,136 @@ mod tests {
             noon() + 130 * 60_000,
         );
         assert_eq!(index.heard.len(), 1, "one heard too late is never kept");
+    }
+
+    /// Half an hour past noon, as the drawing tests read it.
+    fn look() -> Look {
+        Look {
+            width: 80,
+            colour: false,
+            // UTC as jiff holds it, since a build has no zone database.
+            now: jiff::Timestamp::from_millisecond(noon() + 30 * 60_000)
+                .expect("a time")
+                .to_zoned(jiff::tz::TimeZone::UTC),
+            shapes: crate::swarm::Shapes::default(),
+        }
+    }
+
+    /// What the question says: a first line too long for a narrow
+    /// terminal, and a second.
+    const ASKED: &str = "TERN01, keeper of the wish list: these asks of his are marked \
+        landed under you, but none carries a try-line he could follow in a minute.\n\
+        The second line.";
+
+    /// A hold and a question as the node holds them, the hold first.
+    fn records(asked: &str) -> Vec<Value> {
+        let question = Open {
+            message: Message {
+                text: asked.to_owned(),
+                ..said(
+                    "1795122095010-TERN01-2347120-c0cd280e",
+                    "TERN01",
+                    &["@SKIFF1", "@KESTRL"],
+                    Intent::Question,
+                    5,
+                )
+            },
+            waiting_on: vec!["SKIFF1".to_owned(), "KESTRL".to_owned()],
+        };
+        let hold = Open {
+            message: Message {
+                text: "merge nothing until I end this hold".to_owned(),
+                ..said(
+                    "1795122000000-OSPREY-1-647648e1",
+                    "OSPREY",
+                    &["#all"],
+                    Intent::Hold,
+                    2,
+                )
+            },
+            waiting_on: Vec::new(),
+        };
+        vec![hold.fields().1, question.fields().1]
+    }
+
+    #[test]
+    fn a_question_says_who_asks_whom_how_long_and_how_it_opens() {
+        let drawn = drawn(&records(ASKED), &look(), Some(80));
+        for line in [
+            "1 question waits on an answer",
+            "  12:05  TERN01 asks SKIFF1 and KESTRL, 25 min so far  [c0cd280e]",
+            "    TERN01, keeper of the wish list: these asks of his are marked landed",
+        ] {
+            assert!(
+                drawn.lines().any(|each| each == line),
+                "no line {line:?} in:\n{drawn}"
+            );
+        }
+        assert!(
+            !drawn.contains("The second line"),
+            "only its first line is drawn:\n{drawn}"
+        );
+    }
+
+    #[test]
+    fn a_hold_says_whom_it_holds_and_until_when_after_the_questions() {
+        let drawn = drawn(&records(ASKED), &look(), Some(80));
+        let hold = "  12:02  OSPREY holds #all, until 14:02  [647648e1]";
+        assert!(
+            drawn.lines().any(|each| each == hold),
+            "no line {hold:?} in:\n{drawn}"
+        );
+        let questions = drawn.find("question waits").expect("the questions");
+        let holds = drawn.find("1 hold stands").expect("the holds");
+        assert!(questions < holds, "the holds came first:\n{drawn}");
+    }
+
+    #[test]
+    fn no_line_passes_the_terminal_and_a_long_opening_is_cut_at_two_lines() {
+        for width in [40, 60, 80] {
+            let drawn = drawn(&records(ASKED), &look(), Some(width));
+            assert!(
+                drawn.lines().all(|line| line.chars().count() <= width),
+                "a line passes {width} columns:\n{drawn}"
+            );
+            let said: Vec<&str> = drawn
+                .lines()
+                .filter(|line| line.starts_with("    "))
+                .collect();
+            assert!(
+                said.len() <= 3,
+                "more than two lines of what each says at {width}:\n{drawn}"
+            );
+        }
+        let narrow = drawn(&records(ASKED), &look(), Some(40));
+        assert!(narrow.contains('…'), "nothing says it was cut:\n{narrow}");
+    }
+
+    #[test]
+    fn into_a_pipe_each_says_its_first_line_whole() {
+        let drawn = drawn(&records(ASKED), &look(), None);
+        let first = ASKED.lines().next().expect("a first line");
+        assert!(
+            drawn.lines().any(|line| line == format!("    {first}")),
+            "the first line wasn't whole:\n{drawn}"
+        );
+        assert!(!drawn.contains('…'), "a pipe was cut:\n{drawn}");
+    }
+
+    #[test]
+    fn nothing_waiting_says_so() {
+        assert_eq!(
+            drawn(&[], &look(), Some(80)),
+            "Nothing waits: no question is open and no hold stands.\n"
+        );
+    }
+
+    #[test]
+    fn what_one_says_draws_no_control() {
+        let drawn = drawn(&records("held \u{1b}]0;owned\u{7} here"), &look(), Some(80));
+        assert!(
+            !drawn.contains('\u{1b}') && !drawn.contains('\u{7}'),
+            "a control was drawn: {drawn:?}"
+        );
     }
 }
