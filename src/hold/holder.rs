@@ -596,6 +596,10 @@ fn restarting(waking: &Path, record: &Record, shown: &Shown) -> bool {
 const WAITING_LINE: &[u8] =
     b"\r\nWaiting its turn: sessions come back a few at a time. A key starts it now.\r\n";
 
+/// What a window says once its program's turn comes, or a key starts it.
+#[cfg(test)]
+const REOPENING_SAYS: &str = "Reopening it now";
+
 /// What a parked program's windows say when it couldn't start again.
 fn unstarted(error: &io::Error) -> Vec<u8> {
     format!("\r\nIt couldn't start again: {error}. {PARKED_WAKES}\r\n").into_bytes()
@@ -1910,6 +1914,9 @@ mod tests {
             window.seen
         );
         let _ = go.send(());
+        // Its program may draw nothing for a while, as an attach waiting on
+        // a machine's busy pi host, so the window says it is under way.
+        window.sees(REOPENING_SAYS).await;
         window.sees("resumed-01a1-ab").await;
         let asked = asked.await.expect("the node was asked");
         assert_eq!(
@@ -1938,6 +1945,8 @@ mod tests {
         let mut window = Joined::join(socket(&dir, &held.id), FIRST_SIZE, None);
         window.sees("Waiting its turn").await;
         window.types("x").await;
+        // The key was heard, though its program may not draw for a while.
+        window.sees(REOPENING_SAYS).await;
         window.sees("resumed-01a1-ab").await;
         // The key that started it is spent, as a parked program's wake is.
         window.types("echo typed $((6 * 7))\r").await;
