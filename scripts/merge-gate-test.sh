@@ -169,11 +169,13 @@ git clone -q "${work}/origin.git" "${work}/peer" 2> /dev/null
 git -C "${work}/peer" checkout -q -b peer origin/main
 echo peer > "${work}/peer/peer"
 git -C "${work}/peer" add peer
-# Dated after main and every other rider, as a change made later is.
+# Dated far ahead, as an author's clock may be, which the train mustn't
+# take for its own.
 GIT_COMMITTER_DATE="2524608000 +0000" git -C "${work}/peer" commit -q -m peer
 peer=$(git -C "${work}/peer" rev-parse HEAD)
 git -C "${work}/peer" push -q origin HEAD:peer
 
+before=$(date +%s)
 rode goes "${clash:0:12}, which clashes with a rider before it" \
   "a head that clashes with one before it is left off, saying so" \
   make "${north}" "${clash}" "${stale}" "${south}" "${north}" "${peer}"
@@ -193,8 +195,15 @@ if [[ ${parents} != "${base}"$'\n'"${north}"$'\n'"${south}"$'\n'"${peer}" ]]; th
   failed=1
 fi
 dated=$(git log -1 --format=%ct "${tip}")
-if [[ ${dated} != 2524608000 ]]; then
-  echo "FAIL the train is dated as the newest commit it brings, peer's: ${dated}" >&2
+after=$(date +%s)
+if ((dated < before || dated > after)); then
+  echo "FAIL the train is dated when it's made, ${before} to ${after}, not as" \
+    "a rider says: ${dated}" >&2
+  failed=1
+fi
+earliest=$(git log -1 --format=%ct "${tip}^1^1")
+if ((earliest != dated)); then
+  echo "FAIL each of the train's merges is dated alike: ${earliest} and ${dated}" >&2
   failed=1
 fi
 held=$(git show "${tip}:north" "${tip}:south" "${tip}:peer")
@@ -204,7 +213,8 @@ if [[ ${held} != north$'\n'south$'\n'peer ]]; then
 fi
 points "refs/heads/train/${tip:0:12}" "${tip}" \
   "the train's tip is pushed for a builder to fetch"
-rode goes "" "the same train made again" make "${north}" "${south}" "${peer}"
+rode goes "already made as train/${tip:0:12}" "the same train made again" \
+  make "${north}" "${south}" "${peer}"
 again=$(made)
 if [[ ${again} != "${tip}" ]]; then
   echo "FAIL the same train made again on the same main is the same tip," \

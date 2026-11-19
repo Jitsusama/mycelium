@@ -15,13 +15,14 @@
 # button would: a merge commit, with main, then each rider before it, as
 # its first parent. A head main or the train already holds, or one that
 # doesn't merge cleanly onto those before it, is left off, saying why.
-# Each merge is dated as the newest commit it holds, main's tip or a
-# rider's head, so making the same train again on the same main gives the
-# same tip, and the checks already built there still count, while main's
-# date still moves on with each train, for whatever tells a landing by
-# it. The tip is pushed as train/<its first twelve>, so a builder
-# can fetch it, and said on the last line. Build every check the gate asks
-# for there:
+# Each merge is dated when the train is made, never before main's tip,
+# so main's date moves on with each train past every landing before it,
+# for whatever tells a landing by it, as core's agents daemon does; a
+# rider's own date, which its author sets, plays no part. Making the same
+# train again on the same main gives the tip already pushed for it, so
+# the checks built there still count. The tip is pushed as train/<its
+# first twelve>, so a builder can fetch it, and said on the last line.
+# Build every check the gate asks for there:
 #
 #   nix-offload there github:Jitsusama/mycelium/TIP checks.x86_64-linux.mycelium ...
 #
@@ -78,13 +79,15 @@ make_train() {
   }
   git fetch -q origin main
   local main tip head sha tree onto
-  local -a riding=() off=()
+  local -a riding=() riders=() off=()
   main=$(git rev-parse origin/main)
   tip=${main}
-  # Dated as the newest commit each merge holds, so the same train made
-  # again is the same commits, and main's date moves on with each train.
-  local newest each_date
-  newest=$(git log -1 --format=%ct "${main}")
+  # Dated now, or as main's tip where its clock is ahead, so main's date
+  # never steps back.
+  local stamp main_date
+  stamp=$(date +%s)
+  main_date=$(git log -1 --format=%ct "${main}")
+  ((stamp >= main_date)) || stamp=${main_date}
   for head in "$@"; do
     sha=$(known "${head}")
     if git merge-base --is-ancestor "${sha}" "${tip}"; then
@@ -101,13 +104,12 @@ make_train() {
       fi
       continue
     fi
-    each_date=$(git log -1 --format=%ct "${sha}")
-    ((each_date <= newest)) || newest=${each_date}
     tip=$(git log -1 --format=%s "${sha}" |
-      GIT_AUTHOR_DATE="${newest} +0000" GIT_COMMITTER_DATE="${newest} +0000" \
+      GIT_AUTHOR_DATE="${stamp} +0000" GIT_COMMITTER_DATE="${stamp} +0000" \
         git commit-tree "${tree}" -p "${tip}" -p "${sha}" \
         -m "Merge ${sha:0:12} on the merge train" -F -)
     riding+=("${sha:0:12}")
+    riders+=("${sha}")
   done
   local each
   for each in "${off[@]}"; do
@@ -118,7 +120,15 @@ make_train() {
     exit 1
   fi
   sweep "${main}"
-  git push -q origin "${tip}:refs/heads/train/${tip:0:12}"
+  local made_before
+  made_before=$(pushed "${main}" "${riders[@]}")
+  if [[ -n ${made_before} ]]; then
+    tip=${made_before}
+    echo "merge-train: this train was already made as train/${tip:0:12}, so" \
+      "the checks built there count." >&2
+  else
+    git push -q origin "${tip}:refs/heads/train/${tip:0:12}"
+  fi
   echo "merge-train: the train is ${tip:0:12} on main ${main:0:12}, riding" \
     "${riding[*]}; ${#off[@]} left off. It's pushed as train/${tip:0:12}:" \
     "build the checks there, then land it."
@@ -139,6 +149,29 @@ sweep() {
         echo "merge-train: couldn't delete the spent ${ref#refs/heads/}." >&2
     fi
   done <<< "${trains}"
+}
+
+# The tip of a train already pushed on `main` with these riders, in this
+# order, or nothing. Each merge's first parent is the one before it, so
+# walking them back from a tip names its riders, last first.
+pushed() {
+  local main=$1 sha ref at rider
+  shift
+  local -a wanted=("$@")
+  while read -r sha ref; do
+    [[ -n ${sha} ]] || continue
+    at=${sha}
+    local -a found=()
+    while [[ ${at} != "${main}" && ${#found[@]} -le ${#wanted[@]} ]]; do
+      rider=$(git rev-parse -q --verify "${at}^2") || break
+      found=("${rider}" "${found[@]}")
+      at=$(git rev-parse "${at}^1")
+    done
+    if [[ ${at} == "${main}" && ${found[*]} == "${wanted[*]}" ]]; then
+      echo "${sha}"
+      return
+    fi
+  done <<< "$(git ls-remote origin 'refs/heads/train/*')"
 }
 
 land_train() {
