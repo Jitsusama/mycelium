@@ -71,6 +71,12 @@ pub const RESTART_PATIENCE: Patience = Patience {
     hold: Duration::from_secs(30),
 };
 
+/// How long a terminal's first join waits for the host to answer it before
+/// leaving as though the host had gone, so whatever started it looks again.
+/// A host that takes the connection and never answers would otherwise hold
+/// the window blank for good, as six were for over two hours.
+pub const ANSWER_PATIENCE: Duration = Duration::from_secs(20);
+
 /// What the host says as it lets a viewer go because the conversation went
 /// back to plain pi, as a release sends it: its words exactly, as the
 /// harness's viewer terminal says them, since nothing else marks a release.
@@ -290,6 +296,26 @@ pub async fn join(
     output: impl AsyncWrite + Unpin,
     sizes: &mut mpsc::UnboundedReceiver<Size>,
 ) -> io::Result<Left> {
+    join_within(socket, session, size, here, output, sizes, ANSWER_PATIENCE).await
+}
+
+/// Joins `session` as [`join`] does, leaving as though the host had gone
+/// when it hasn't answered within `within`.
+///
+/// # Errors
+///
+/// When the host can't be reached, refuses the session, or breaks its
+/// frames.
+pub async fn join_within(
+    socket: &Path,
+    session: &str,
+    size: Size,
+    here: &mut impl Here,
+    output: impl AsyncWrite + Unpin,
+    sizes: &mut mpsc::UnboundedReceiver<Size>,
+    within: Duration,
+) -> io::Result<Left> {
+    let _ = within;
     let Some(joined) = connect(socket, session, size, &*here).await? else {
         return Ok(Left::Gone);
     };
@@ -1124,6 +1150,49 @@ mod tests {
             .expect("ended with its patience, not waiting for ever on the answer")
             .expect("waited");
             assert_eq!(left, Left::Gone, "an unanswered try ends with its patience");
+            holding.abort();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_first_join_the_host_never_answers_says_so_and_has_gone() {
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            // A host that takes the connection and never answers it, as one
+            // left a window's attach unanswered for over two hours.
+            let listener = UnixListener::bind(&path).expect("a socket");
+            let holding = tokio::spawn(async move {
+                let (_held, _) = listener.accept().await.expect("a connection");
+                std::future::pending::<()>().await;
+            });
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"");
+            let mut shown = Vec::new();
+            // Bounded far past its patience, so a join that waits for ever
+            // fails here rather than holding up the whole run.
+            let left = tokio::time::timeout(
+                Duration::from_secs(10),
+                join_within(
+                    &path,
+                    "s-1",
+                    SIZE,
+                    &mut here,
+                    &mut shown,
+                    &mut sizes,
+                    Duration::from_millis(50),
+                ),
+            )
+            .await
+            .expect("ended with its patience, not waiting for ever on the answer")
+            .expect("waited");
+            assert_eq!(left, Left::Gone, "an unanswered join leaves as a gone host does");
+            assert!(
+                String::from_utf8_lossy(&shown).contains("pi didn't answer"),
+                "its last row says why it left: {:?}",
+                String::from_utf8_lossy(&shown)
+            );
             holding.abort();
         })
         .await;
