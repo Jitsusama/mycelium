@@ -386,8 +386,72 @@ pub struct Cell {
     pub quest: String,
     /// The cell it answers to, which started it, by address.
     pub started_by: Option<String>,
+    /// Whether the serving node's own book of starts holds that start,
+    /// rather than the cell's presence naming its starter.
+    pub started_by_book: bool,
     /// The cell it split from, by address, as its presence says.
     pub split_from: Option<String>,
+    /// The cells it split into as it ended, by address, as its presence
+    /// says.
+    pub split_into: Vec<String>,
+    /// The needs it took from other cells, as its presence says.
+    pub serves: Vec<Join>,
+    /// The needs it handed other cells, as its presence says.
+    pub relies: Vec<Join>,
+}
+
+/// One need joining a cell to another: the cell at its other end, what
+/// the need was about, and since when, as an ISO time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Join {
+    /// The cell at its other end, by address.
+    pub cell: String,
+    /// What the need was about, cut at [`LONGEST_PURPOSE`] characters.
+    pub need: String,
+    /// Since when, as the presence wrote it.
+    pub since: String,
+}
+
+/// The most a presence's list of joins or of cells split into puts on a
+/// forage, so a presence can't make its record weigh on the node.
+const LISTED_MOST: usize = 64;
+
+/// The cells `said` lists by address, as a presence's `split_into` does,
+/// passing over each entry that isn't one, and keeping at most
+/// [`LISTED_MOST`].
+#[must_use]
+pub fn addresses(said: &Value) -> Vec<String> {
+    said.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|address| is_address(address))
+        .take(LISTED_MOST)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The joins `said` lists, as a presence's `serves` or `relies` does,
+/// passing over each entry that names no cell by address, says no need,
+/// or dates it at no ISO time, and keeping at most [`LISTED_MOST`].
+#[must_use]
+pub fn joins(said: &Value) -> Vec<Join> {
+    said.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|join| {
+            let cell = join["cell"].as_str().filter(|cell| is_address(cell))?;
+            let need = join["need"].as_str()?;
+            let since = join["since"].as_str()?;
+            since.parse::<jiff::Timestamp>().ok()?;
+            Some(Join {
+                cell: cell.to_owned(),
+                need: need.chars().take(LONGEST_PURPOSE).collect(),
+                since: since.to_owned(),
+            })
+        })
+        .take(LISTED_MOST)
+        .collect()
 }
 
 /// The most characters a cell's address holds.
@@ -906,6 +970,25 @@ pub fn records(
                     "parent": quest.parent,
                 },
             });
+            // Where its starter was read from is said only beside one.
+            if cell.started_by.is_some() {
+                fields["lineage"]["started_by_from"] = json!(if cell.started_by_book {
+                    "book"
+                } else {
+                    "presence"
+                });
+            }
+            // Most cells split into none and join no other by a need, and
+            // ten thousand empty lists would weigh on the node too.
+            if !cell.split_into.is_empty() {
+                fields["lineage"]["split_into"] = json!(cell.split_into);
+            }
+            if !cell.serves.is_empty() {
+                fields["serves"] = json!(cell.serves);
+            }
+            if !cell.relies.is_empty() {
+                fields["relies"] = json!(cell.relies);
+            }
             // Most quests wait on nobody, and ten thousand empty lists
             // would weigh on the node for nothing.
             if !quest.waits.is_empty() {
@@ -1425,7 +1508,15 @@ mod tests {
             session: "0001".to_owned(),
             quest: quest.to_owned(),
             started_by: Some("OSPREY".to_owned()),
+            started_by_book: true,
             split_from: Some("TERNSS".to_owned()),
+            split_into: vec!["OSPREY".to_owned()],
+            serves: vec![Join {
+                cell: "OSPREY".to_owned(),
+                need: "a calm field".to_owned(),
+                since: "2026-11-16T09:00:00Z".to_owned(),
+            }],
+            relies: Vec::new(),
         }
     }
 
@@ -1992,8 +2083,75 @@ mod tests {
         assert_eq!(forage["quest"], "QEST-20261116-KESTRL");
         assert_eq!(forage["machine"], "kestrel");
         assert_eq!(forage["lineage"]["started_by"], "OSPREY");
+        assert_eq!(forage["lineage"]["started_by_from"], "book");
         assert_eq!(forage["lineage"]["split_from"], "TERNSS");
+        assert_eq!(forage["lineage"]["split_into"], json!(["OSPREY"]));
         assert_eq!(forage["lineage"]["parent"], "QEST-20261101-OSPREY");
+        assert_eq!(
+            forage["serves"],
+            json!([{"cell": "OSPREY", "need": "a calm field", "since": "2026-11-16T09:00:00Z"}])
+        );
+        assert!(forage.get("relies").is_none(), "an empty list isn't sent");
+    }
+
+    #[test]
+    fn a_forage_says_its_starter_came_from_the_presence_only_beside_one() {
+        let store = Store::new("claimed");
+        store.write("QEST-20261116-KESTRL/README.md", README);
+        let mut shelf = Shelf::default();
+        shelf.read(&store.0, "QEST-20261116-KESTRL");
+        let claimed = Cell {
+            started_by_book: false,
+            ..cell("QEST-20261116-KESTRL")
+        };
+        let (claimed_by, _) = records(&mut shelf, std::slice::from_ref(&claimed), "kestrel");
+        assert_eq!(
+            claimed_by["forage:KESTRL"]["lineage"]["started_by_from"],
+            "presence"
+        );
+        let unstarted = Cell {
+            started_by: None,
+            ..claimed
+        };
+        let (unclaimed, _) = records(&mut shelf, &[unstarted], "kestrel");
+        assert!(
+            unclaimed["forage:KESTRL"]["lineage"]
+                .get("started_by_from")
+                .is_none(),
+            "with no starter, nothing is said of where it came from"
+        );
+    }
+
+    #[test]
+    fn a_presences_lists_pass_over_each_entry_they_cant_read_alone() {
+        let listed = json!(["OSPREY", "not an address", 7, "TERNSS"]);
+        assert_eq!(addresses(&listed), vec!["OSPREY", "TERNSS"]);
+        assert_eq!(addresses(&json!("OSPREY")), Vec::<String>::new());
+        let joins = joins(&json!([
+            {"cell": "OSPREY", "need": "x".repeat(LONGEST_PURPOSE + 9), "since": "2026-11-16T09:00:00Z"},
+            {"cell": "no one", "need": "a field", "since": "2026-11-16T09:00:00Z"},
+            {"cell": "TERNSS", "need": "a field", "since": "yesterday"},
+            {"cell": "TERNSS", "since": "2026-11-16T09:00:00Z"},
+            "TERNSS",
+            {"cell": "TERNSS", "need": "a field", "since": "2026-11-16T10:00:00Z"},
+        ]));
+        assert_eq!(
+            joins
+                .iter()
+                .map(|join| join.cell.as_str())
+                .collect::<Vec<_>>(),
+            vec!["OSPREY", "TERNSS"],
+            "{joins:?}"
+        );
+        assert_eq!(
+            joins[0].need.chars().count(),
+            LONGEST_PURPOSE,
+            "a need is cut"
+        );
+        let many: Vec<Value> = (0..LISTED_MOST + 5)
+            .map(|n| json!(format!("CELL{n}")))
+            .collect();
+        assert_eq!(addresses(&Value::Array(many)).len(), LISTED_MOST);
     }
 
     #[test]
@@ -2377,7 +2535,11 @@ mod tests {
             session: "0000-kestrel".to_owned(),
             quest: "QEST-20261116-KESTRL".to_owned(),
             started_by: None,
+            started_by_book: false,
             split_from: None,
+            split_into: Vec::new(),
+            serves: Vec::new(),
+            relies: Vec::new(),
         };
         let cells = Arc::new(Mutex::new(vec![kestrel.clone()]));
         let now = Arc::clone(&cells);

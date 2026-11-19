@@ -140,7 +140,11 @@ fn cell(n: usize) -> Cell {
         session: format!("0000-{n:08}"),
         quest: quest(n / SHARING),
         started_by: Some(format!("K{:05}", n / SHARING * SHARING)),
+        started_by_book: true,
         split_from: None,
+        split_into: Vec::new(),
+        serves: Vec::new(),
+        relies: Vec::new(),
     }
 }
 

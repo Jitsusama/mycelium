@@ -2581,7 +2581,16 @@ cells', and a reader gathers them as `mycelium forage` does.
 | `status` | the quest's status, such as `active` |
 | `documents` | each of its documents: `id`, `kind`, `title`, `stage`, and how many steps are `ticked` and `open` |
 | `waits` | only when there are any, what the quest waits on its person for: `id`, `title`, `why`, `minutes`, `when`, whether it's `ready`, and when it was `raised` |
-| `lineage` | `started_by`, the cell that asked this node to start it, else the orchestrator its presence names; `split_from`, the cell its presence says it split from, kept only as an address; and `parent`, the quest its own sits under |
+| `lineage` | `started_by`, the cell that asked this node to start it, else the orchestrator its presence names; beside one, `started_by_from`, `book` when this node's book of starts holds that start, else `presence`; `split_from`, the cell its presence says it split from, kept only as an address; only when there are any, `split_into`, the cells its presence says it split into; and `parent`, the quest its own sits under |
+| `serves`, `relies` | only when there are any, the needs its presence says it took from other cells, and handed them: each `cell`, by address, `need`, what it was about, at most 280 characters, and `since`, an ISO time |
+
+The node works out `started_by` and `started_by_from` itself and never
+takes either from a presence's `lineage`. `book` is only the book of the
+node serving the forage: a start relayed from another machine is kept
+in the asking node's book alone, so here it reads `presence` or has no
+starter. Of `split_into`, `serves` and `relies`, an entry that names no
+cell by address, says no need or dates it at no ISO time is passed over
+alone, and at most 64 of each are kept.
 
 A quest's id names a folder in the store, so one that isn't a plain
 name of letters, digits, `-` and `_` is read as nothing, and a file is

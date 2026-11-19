@@ -1481,7 +1481,15 @@ impl<S: Store + Clone + Send + Sync + 'static> daemon::Holds for Shared<S> {
             (carries, vec!["state", "refused"]),
             (
                 forages,
-                vec!["purpose", "status", "documents", "waits", "lineage"],
+                vec![
+                    "purpose",
+                    "status",
+                    "documents",
+                    "waits",
+                    "lineage",
+                    "serves",
+                    "relies",
+                ],
             ),
             (murmurs, vec!["text", "tied_to", "purpose", "settled"]),
             (ties, tie::LIVE.to_vec()),
@@ -1856,8 +1864,9 @@ fn fence_of(by: By) -> Option<crate::declared::Kind> {
 /// is made of, ordered by address. A cell was started by the cell this
 /// node's book of `starts` says asked for its hold, by the session that
 /// claimed the asker as it started it, else by the orchestrator its
-/// presence names; it
-/// split from the cell its presence names, if that is an address.
+/// presence names, and the forage says which. It split from and into the
+/// cells its presence names, and serves and relies on the needs it lists,
+/// each kept only where it reads.
 fn forage_cells(inner: &Inner, machine: &str, starts: &starts::Starts) -> Vec<forage::Cell> {
     let mut cells: Vec<forage::Cell> = inner
         .state
@@ -1869,7 +1878,8 @@ fn forage_cells(inner: &Inner, machine: &str, starts: &starts::Starts) -> Vec<fo
                 .held
                 .as_deref()
                 .and_then(|held| starts.started_by(machine, held));
-            let split_from = session.presence["lineage"]["split_from"]
+            let lineage = &session.presence["lineage"];
+            let split_from = lineage["split_from"]
                 .as_str()
                 .filter(|address| forage::is_address(address))
                 .map(str::to_owned);
@@ -1877,12 +1887,16 @@ fn forage_cells(inner: &Inner, machine: &str, starts: &starts::Starts) -> Vec<fo
                 quest: session.quest?,
                 address: session.address,
                 session: session.id,
+                started_by_book: started.is_some(),
                 started_by: started.or_else(|| {
                     session
                         .orchestrated_by
                         .filter(|address| forage::is_address(address))
                 }),
                 split_from,
+                split_into: forage::addresses(&lineage["split_into"]),
+                serves: forage::joins(&session.presence["serves"]),
+                relies: forage::joins(&session.presence["relies"]),
             })
         })
         .collect();
@@ -10360,20 +10374,16 @@ esac
             "session": "rower", "addresses": ["ROWER1"], "groups": [],
             "state": "busy", "at": jiff::Timestamp::now().to_string(),
             "quest": "QEST-20261116-SKIFFS", "orchestratedBy": "TERN01",
+            // A presence can't vouch for its own starter.
+            "lineage": {"started_by": "FORGED", "started_by_from": "book",
+                        "split_into": ["OAR001", "not an address"]},
+            "serves": [{"cell": "TERN01", "need": "a tow", "since": "2026-11-16T09:00:00Z"}],
+            "relies": "nothing",
         });
         store
             .put_presence("rower", "skiff", &presence)
             .expect("the presence is kept");
-        let forage = loop {
-            let arrived = client.next().await;
-            let changed = arrived["changed"].as_array().cloned().unwrap_or_default();
-            if let Some(forage) = changed
-                .into_iter()
-                .find(|one| one["key"] == "forage:ROWER1")
-            {
-                break forage;
-            }
-        };
+        let forage = watched_until(&mut client, "forage:ROWER1", |_| true).await;
         assert_eq!(
             (
                 &forage["quest"],
@@ -10389,17 +10399,26 @@ esac
             ),
             "the cell's forage is read from its quest: {forage}"
         );
+        assert_eq!(
+            (
+                &forage["lineage"]["started_by_from"],
+                &forage["lineage"]["split_into"],
+                &forage["serves"][0]["need"],
+                forage.get("relies"),
+            ),
+            (
+                &json!("presence"),
+                &json!(["OAR001"]),
+                &json!("a tow"),
+                None
+            ),
+            "its starter is the node's word, and its joins only what reads: {forage}"
+        );
         written("- [x] push off\n- [x] row\n");
-        loop {
-            let arrived = client.next().await;
-            let changed = arrived["changed"].as_array().cloned().unwrap_or_default();
-            if changed
-                .iter()
-                .any(|one| one["key"] == "forage:ROWER1" && one["documents"][0]["ticked"] == 2)
-            {
-                break;
-            }
-        }
+        watched_until(&mut client, "forage:ROWER1", |one| {
+            one["documents"][0]["ticked"] == 2
+        })
+        .await;
     }
 
     /// Waits on `client`'s watch until a record keyed `key` comes, as
