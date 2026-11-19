@@ -100,12 +100,14 @@ pub struct Quest {
 }
 
 /// What a quest's README says of the outside changes that are its own:
-/// the changes it claims, the sessions that are its, and its realm. Only
-/// the node's feeding reads it.
+/// the changes and calendar events it claims, the sessions that are its,
+/// and its realm. Only the node's feeding reads it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Claims {
     /// The changes its `github-pr` aliases name, as `owner/name#N`.
     pub changes: Vec<String>,
+    /// The calendar events its `calendar-event` aliases name, by id.
+    pub events: Vec<String>,
     /// The sessions it lists as active, by id.
     pub sessions: Vec<String>,
     /// Its realm.
@@ -174,11 +176,16 @@ fn read_claims(path: &Path) -> Claims {
         return Claims::default();
     }
     let front: Vec<String> = lines.take_while(|line| line.trim_end() != "---").collect();
-    let changes = listed(&front, "aliases")
-        .into_iter()
-        .filter(|alias| alias.get("type").map(String::as_str) == Some("github-pr"))
-        .filter_map(|mut alias| alias.remove("value"))
-        .collect();
+    let aliases = listed(&front, "aliases");
+    let of = |kind: &str| -> Vec<String> {
+        aliases
+            .iter()
+            .filter(|alias| alias.get("type").map(String::as_str) == Some(kind))
+            .filter_map(|alias| alias.get("value").cloned())
+            .collect()
+    };
+    let changes = of("github-pr");
+    let events = of("calendar-event");
     let sessions = listed(&front, "sessions")
         .into_iter()
         .filter(|session| session.get("status").map(String::as_str) == Some("active"))
@@ -192,6 +199,7 @@ fn read_claims(path: &Path) -> Claims {
     .remove("realm");
     Claims {
         changes,
+        events,
         sessions,
         realm,
     }
@@ -1481,7 +1489,8 @@ mod tests {
         let store = Store::new("claims");
         let front = "---\nid: QEST-20261116-KESTRL\nrealm: work\naliases:\n  - type: \
             github-pr\n    value: jsama/tern#12\n  - type: slack-message\n    value: \
-            C0/1\n  - type: github-pr\n    value: \"jsama/tern#13\"\nsessions:\n  - id: \
+            C0/1\n  - type: github-pr\n    value: \"jsama/tern#13\"\n  - type: \
+            calendar-event\n    value: abcde_20261118T150000Z\nsessions:\n  - id: \
             s-live\n    status: active\n    process:\n      status: ended\n  - id: \
             s-gone\n    status: ended\nparent: QEST-20261101-OSPREY\n";
         let readme = README.replacen("---\n", front, 1);
@@ -1493,13 +1502,16 @@ mod tests {
             quest.claims,
             Claims {
                 changes: vec!["jsama/tern#12".to_owned(), "jsama/tern#13".to_owned()],
+                events: vec!["abcde_20261118T150000Z".to_owned()],
                 sessions: vec!["s-live".to_owned()],
                 realm: Some("work".to_owned()),
             }
         );
         let served = serde_json::to_string(quest).expect("json");
         assert!(
-            !served.contains("tern") && !served.contains("s-live"),
+            !served.contains("tern")
+                && !served.contains("s-live")
+                && !served.contains("abcde_2026"),
             "a forage served what feeds its quest: {served}"
         );
     }

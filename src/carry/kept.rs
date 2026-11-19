@@ -68,6 +68,32 @@ impl Kept {
     }
 }
 
+/// The lines of `bytes` that are whole text, in order: one torn part way
+/// into a letter, or holding a byte no letter has, is passed over, so it
+/// is never read as some other line.
+pub fn lines_of(bytes: &[u8]) -> impl Iterator<Item = &str> {
+    bytes
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| std::str::from_utf8(line).ok())
+}
+
+/// Whether `file`, open to read, ends part way into a line, as a write
+/// cut short leaves it; the next line kept then starts a line of its own.
+///
+/// # Errors
+///
+/// When the file can't be read.
+pub fn cut_short(file: &mut fs::File) -> io::Result<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+    if file.metadata()?.len() == 0 {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0];
+    file.read_exact(&mut last)?;
+    Ok(last != *b"\n")
+}
+
 /// The carries `file` keeps that were ordered since `since`, newest
 /// first.
 ///
@@ -75,15 +101,14 @@ impl Kept {
 ///
 /// When the file is there but can't be read.
 pub fn read(file: &Path, since: jiff::Timestamp) -> io::Result<Vec<Kept>> {
-    let lines = match fs::read_to_string(file) {
-        Ok(lines) => lines,
+    let bytes = match fs::read(file) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
-    // A line torn by a write cut short is passed over, as is one ordered
-    // before `since`.
-    let mut kept: Vec<Kept> = lines
-        .lines()
+    // A line torn by a write cut short is passed over, though it end part
+    // way into a letter, as is one ordered before `since`.
+    let mut kept: Vec<Kept> = lines_of(&bytes)
         .filter_map(|line| {
             let line: Value = serde_json::from_str(line).ok()?;
             let said = line.get("at").and_then(Value::as_str)?;
@@ -397,6 +422,43 @@ mod tests {
             "newest first, the day before gone, a torn line passed over"
         );
         assert_eq!(read[0], harbour(), "each whole");
+    }
+
+    #[test]
+    fn a_line_torn_part_way_into_a_letter_is_passed_over_too() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let file = dir.path().join("carries.jsonl");
+        let since: jiff::Timestamp = "2026-11-14T20:00:00Z".parse().expect("a time");
+        let mut text = ordered_at("2026-11-15T20:00:00Z").to_string().into_bytes();
+        text.extend_from_slice(b"\n{\"session\": \"s-\xc3");
+        fs::write(&file, text).expect("written");
+        assert_eq!(
+            read(&file, since)
+                .map(|read| read.len())
+                .map_err(|error| error.to_string()),
+            Ok(1),
+            "a write cut short in a letter leaves the file no longer UTF-8, and the whole \
+             lines still read"
+        );
+    }
+
+    #[test]
+    fn a_whole_line_holding_a_byte_no_letter_has_counts_for_none() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let file = dir.path().join("carries.jsonl");
+        let since: jiff::Timestamp = "2026-11-14T20:00:00Z".parse().expect("a time");
+        let mut text = ordered_at("2026-11-15T20:00:00Z").to_string().into_bytes();
+        text.extend_from_slice(
+            b"\n{\"session\": \"s-caf\xe9\", \"at\": \"2026-11-15T21:00:00Z\"}\n",
+        );
+        fs::write(&file, text).expect("written");
+        assert_eq!(
+            read(&file, since)
+                .map(|read| read.iter().map(|one| one.id.clone()).collect::<Vec<_>>())
+                .map_err(|error| error.to_string()),
+            Ok(vec!["s-harbour:2026-11-15T20:00:00Z".to_owned()]),
+            "a line with a byte no letter has is never read as some other session's"
+        );
     }
 
     #[test]

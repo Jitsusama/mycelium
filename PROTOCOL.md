@@ -830,26 +830,29 @@ has been held over for ten minutes while another has room, it would
 put its sessions that wait to sleep where they are. If the readings
 five minutes on still say over, it would carry one session to a peer
 with room: the smallest log first, placed as any work is and onto
-ground as firm. A session in a turn, on the person's screen, holding a
-lease or a heavy run, or whose quest runs elsewhere too stays. So does
-one it can't tell any of these of. What a session is part way through
-is told only once its presence says `"leases": {"background": true}`,
-its harness keeping a lease for each background run. After a carry it
-would carry none for half an hour. A session moved by anyone stays put
-for a day, by the carries kept here, and nothing goes to a machine a
-session came from within the hour.
+ground as firm. A session in a turn, on the person's screen,
+orchestrating other sessions, holding a lease or a heavy run, or whose
+quest runs elsewhere too stays. So does one it can't tell any of these
+of. A session waiting on a secret's release or a password prompt waits
+inside its turn, so it stays as one in a turn. What a session is part
+way through is told only once its presence says `"leases":
+{"background": true}`, its harness keeping a lease for each background
+run. After a carry it would carry none for half an hour, and it would
+carry at most six in a day. A session moved by anyone stays put for a
+day, by the carries kept here, and nothing goes to a machine a session
+came from within the hour.
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at
-most 8 MiB, the folder its owner's alone. Each line holds `at`, `would:
-true`, `choice` (`nothing` with `why`, `sleep` with `sessions`, or
-`carry` with `session`, `to` and `why`) and the `reading` it was chosen
-by. A carry's line adds `holds`, what the session's own process holds
-where it has one: `memory` resident in bytes, and `cpu` in cores over
-the last ten minutes. What it would have done counts in its memory
-alone, so a session it would have put to sleep counts as asleep, and
-one it would have carried as gone. Nothing reaches the record of
-carries.
+most 8 MiB but for carries, the folder its owner's alone. Each line
+holds `at`, `would: true`, `choice` (`nothing` with `why`, `sleep`
+with `sessions`, or `carry` with `session`, `to` and `why`) and the
+`reading` it was chosen by. A carry's line adds `holds`, what the
+session's own process holds where it has one: `memory` resident in
+bytes, and `cpu` in cores over the last ten minutes. What it would
+have done counts in its memory, and a carry in its lines too, so a
+session it would have put to sleep counts as asleep, and one it would
+have carried as gone. Nothing reaches the record of carries.
 
 Whether its own machine is over it judges only from what the kernel
 says, read afresh each look and kept in memory: the `some` `avg10`
@@ -866,6 +869,47 @@ whether it has room to take a session, is as its own node said it over
 the link, from that machine's queue. The queue's record also still
 names the sessions holding a heavy run, which can only keep a session
 here.
+
+A session orchestrates others where this node's record of
+orchestrations holds a claim of its naming a quest, or where the
+quests' record names its quest as another quest's `orchestrator`. A
+claim naming none orchestrates nobody, since any session may make one.
+An orchestrator is never put to sleep either, since asleep it steers
+nothing. While the node's record can't be read, or the node serves no
+quests' record, hasn't read it whole or finds its file or folder not
+there as it was last read, though it be there since, whether any
+session orchestrates can't be told, so none is put to sleep or
+carried, and the line says why as `orchestrators_unknown`. A line is
+kept whenever that why comes, changes or clears, though nothing else
+changed, until the day's file is full. A node with no quests' record
+served therefore never eases.
+
+The six a day are counted twice, and the larger counts. One count is
+what the node remembers: what it did since it began, and from when it
+began, each carry its own lines in `eases` say it made, or would have,
+within the day, and each carry the record of carries keeps `by`
+`node@<machine>` and `from` here, a session in both counted once.
+Nothing writes such a carry yet; only a node that acts on its choices
+will. Its own lines are read from each day's file from yesterday's on,
+a name that isn't a day's passed over, and a line it can't read, torn
+by a stop part way, counting for none; a line kept after a torn one
+starts a line of its own, and a carry is kept however full its day's
+file is. A torn line in the record of carries counts for none too,
+though it end part way into a letter, and the carry kept after it
+starts a line of its own. In either file, a line holding a byte no
+letter has counts for none, never as some other session's. While a
+day's file, or the folder's list of them, is there but can't be read,
+easing doesn't begin, saying why in
+its lines, or on its standard error where those can't be written
+either. The other count is the record's lines by `node@<machine>`
+from here within the day, read at each look. That
+record is the person's file to edit, so one cut short lifts no limit,
+even across a restart while the node's own lines stand; one that can't
+be read stops every carry, saying why. A carry kept by
+`node@<machine>`, or said in its own lines, also starts the half hour
+after a carry and pins its session, across a restart. A line dated
+ahead counts until a day past its time, which can only hold carries
+back.
 
 ## Realm Flows
 
@@ -933,7 +977,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Builders"` | `{"Builders": [builder]}`, the builders it sends Nix builds to |
 | `"Offers"` | `{"Offers": {"offers", "unanswered"}}`, asked of each provider now |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
-| `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"`, counted here as a start |
+| `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
 | `{"Start": {"work", "folder", "command", "may_cost"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
@@ -1202,7 +1246,10 @@ kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,
 each door by the name the machine's configuration gives it, and with
 `runs`, the words that start a command as that fence runs its
-sessions, such as its launcher and the fence's rules. A fence
+sessions, such as its launcher and the fence's rules. A node says a
+fence's `runs` in its `Machine` only where its own launcher takes them
+(below), and none where it refuses them, so another machine judges it
+as a run there is judged. A fence
 missing a door, or of a kind this build doesn't know, is read as no
 fence, spoiling nothing else declared; a carry an orchestrator orders
 lands only where it says one (A Carry an Orchestrator Orders). Only
@@ -1398,7 +1445,8 @@ the log holds about two weeks.
 A processor reading that isn't a number counts as none, so every
 `headroom` is a number.
 
-`"Start"` places `work` as `"Place"` does and starts `command` held
+`"Start"` places `work` as `"PlaceToStart"` does (as `"Place"`,
+though an agent's start needs no `runs`) and starts `command` held
 there through the person's login shell (`$SHELL -lic`), so it has their
 environment rather than the node's, and the realm's kit's tools first on
 its path where its node is given a kit (`--kit`) and carries it, having
@@ -1654,14 +1702,26 @@ since a file can fail to be read. A
 fenced at least. An agent's run goes only where an ordered carry could
 land it (A Carry an Orchestrator Orders): placement is offered only
 this machine and those, each other one missed as `looser-ground`,
-`never`, saying why, which no `tolerates` lifts, and a `"Place"` an
-agent asks is judged the same way, so where it is told the work would
-go is where the work may run. Each machine so refused still counts for
-what the person's lasting machines reach, and a placement's record
-keeps it as `refused`, so a replay refuses it too.
-There it runs as its
-fence's declared `runs`, then the login shell, then `command`; a
-machine declaring no `runs` for it refuses it, as does one whose
+`never`, saying why, which no `tolerates` lifts. Nor is it offered a
+machine whose launcher for its fence would refuse it: this one where
+its own launcher, as below, refuses it, and another where the fence it
+last said names no `runs`, a `runs` saying `--shared-tree`, or one
+not ending with `--`, each missed as `runs-nothing`, `never`, saying
+why. That key so covers any reason a launcher refuses, a declaration
+not sealed or a program missing or outside the store among them; this
+machine logs each refusal of its own. A machine whose node is too old
+to say its `runs` says none, so it is refused so until it is upgraded.
+A `"Place"` an agent asks is judged the same way, as a run, so where
+it is told the work would go is where the work may run, though a start
+placed (`"PlaceToStart"`, `"Start"`) needs no `runs`. An agent's run
+naming no machine that every machine refuses, this one for its
+launcher, is told this one's reason and then every other's; one a
+link carried here is told this machine by name, not as here. Each
+machine so refused still counts for what the person's lasting machines
+reach, and a placement's record keeps it as `refused`, so a replay
+refuses it too. There it runs as its fence's declared `runs`, then the
+login shell, then `command`; a machine declaring no `runs` for it
+refuses it, as does one whose
 `runs` doesn't end with `--`, so nothing `command` says is read as
 `runs`' own options. `runs` saying `--shared-tree`, or a shortening
 of it, as a word of its own refuses every run, so pi-fence refuses a
@@ -2204,7 +2264,7 @@ written whole through a dot-file renamed into place, the folder `0700`
 and the file `0600`. `mycelium receptors say SOURCE --state STATE
 --every SECS --pid PID` writes it, with `--hour`, `--today` and
 `--addressed` for its counts, and takes nothing else but the changes
-under Feeding. It holds counts and times alone, never what was read:
+and events under Feeding. It holds counts and times alone, never what was read:
 
 | Field | What it is |
 | --- | --- |
@@ -2280,11 +2340,16 @@ receptor's record does.
 
 #### Feeding
 
-A receptor may also keep the outside changes that ask something of its
+A receptor may also keep the outside things that ask something of its
 person, so the node can feed each to the cell whose quest owns it.
-GitHub's alone does, with the reviews asked of the person. It keeps them
-in `receptors/<source>.items.json`, beside its record and written the
+GitHub's keeps the changes whose review is asked of the person, and
+calls' the calls a summary is written of. Each keeps them in
+`receptors/<source>.items.json`, beside its record and written the
 same way, `0600`, which the node never serves and no link carries.
+What a source may name is one rule, held as items are written and as
+they are read: GitHub's a change, as `review-asked`, and calls' a
+calendar event, as `summary-written`, and no other source anything. A
+file holding an item of another source's kind is unsound.
 `mycelium receptors say github ... --owner OWNER --item OWNER/NAME#N`
 writes it whole, `--owner` and `--item` each repeated, so naming the
 owners with no item clears it. An item whose owner isn't one named
@@ -2298,14 +2363,36 @@ were written leaves them for the next round to write whole again. Each
 item is its change, `reason`
 (`review-asked`) and `since`, when it was first kept and never later
 than the writer's clock, never a title, body, author, branch or comment.
+
+`mycelium receptors say calls ... --event ID` writes calls' file
+whole each time it says `reading` or `quiet`, `--event` repeated, so a
+call not named again is gone; a say `failing` or `off` leaves the file
+as it stood, since a receptor that couldn't read can't say which calls
+stand, though its events are judged all the same. No other source may
+name an event. An event's id is as Google's calendar gives one, at
+most 1024 long: its own id of at least 5 lowercase `a` to `v` and
+digits, after a `_` when an outside invitation made it, then any `_`
+parts of digits and `R`, `T` or `Z` a recurring event's splits and
+instances add, as `_20261118T150000Z`. Any other is refused, and so
+is the whole say.
+A write whose file would pass the 64 KiB the node reads is refused
+too, leaving the file before it. Its item is `event`, `reason`
+(`summary-written`) and `since`, never a title, a person, a quote or a
+path. An item names a change or an event and never both: one naming
+both, or neither, is unsound.
+
 One gone from the file is gone, and none is kept past 30 days. One
 still named at 30 days is let go for a round, then kept as new, so its
-cell hears it once more each 30 days while its review is asked.
+cell hears it once more each 30 days while it stands.
 
 Which cell owns a change is its quest's word, never a session's: the
 quest's README names the change as a `github-pr` alias, exactly
 `owner/name#N` and never by prefix, and lists the session as `active`,
-and the quest's `realm` is the node's. Exactly means in the same case:
+and the quest's `realm` is the node's. A call is owned the same way, by
+a `calendar-event` alias naming its event's id exactly, and a claim of
+one kind never draws an item of the other. A claim is a notice and
+grants no read: the cell hears that a summary is written, and of which
+event, and nothing of where it is or what it says. Exactly means in the same case:
 GitHub's names are blind to case, but a receptor names a change as
 GitHub's own link spells it, so an alias copied from GitHub claims it,
 and one typed in another case claims nothing rather than too much. Each
@@ -2321,7 +2408,8 @@ reading as no items.
 A fed cell hears an `fyi` from `<source>@<machine>`, as a signal is
 said, but to the cell alone (`@ADDRESS`, held as `peer.<address>`),
 worded from the item's fields alone: `github: your person's review is
-asked on owner/name#N`. Each cell hears an item once while it stands,
+asked on owner/name#N`, or `calls: a summary is written of your
+person's call for calendar event ID`. Each cell hears an item once while it stands,
 and again only once it went and came back; a restarted node may say one
 again. A feeding counts only once it was said, so one the node couldn't
 say is tried again on its next look. The node serves what it fed for
@@ -2333,9 +2421,9 @@ map can draw the line:
 | `receptor` | the receptor's cell, `<source>@<machine>` |
 | `cell` | the fed cell's address |
 | `at` | when it was fed |
-| `kind` | what fed it, in a word: `review` |
+| `kind` | what fed it, in a word: `review` or `summary` |
 
-The `fed` record never names the change, so the map shows who fed
+The `fed` record never names the change or the event, so the map shows who fed
 whom. The fyi itself is stored and served as any message is, addressed
 to the one cell it fed. Like a signal, it grants nothing: a fact for
 the cell to weigh, never an order. A feeding fades at ten minutes even

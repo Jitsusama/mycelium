@@ -20,9 +20,9 @@ use crate::stimuli::{self, Table};
 use crate::store::Store;
 use crate::wire::Draft;
 
-/// The sources whose receptors keep items to feed: GitHub's alone, for
-/// now, the reviews asked of the person.
-const FED_BY: [Source; 1] = [Source::Github];
+/// The sources whose receptors keep items to feed: GitHub's, the reviews
+/// asked of the person, and calls', the calls a summary is written of.
+const FED_BY: [Source; 2] = [Source::Github, Source::Calls];
 
 /// The sources fed from: those that keep items, of those the person's
 /// table `says`, so a source the table leaves out feeds no cell either.
@@ -131,7 +131,8 @@ impl<S: Store + Clone + Send + Sync + 'static> Shared<S> {
                         session: session.id,
                         live: matches!(session.state, SessionState::Busy | SessionState::Idle),
                         realm: claims.realm,
-                        claims: claims.changes,
+                        changes: claims.changes,
+                        events: claims.events,
                         sessions: claims.sessions,
                     })
                 })
@@ -237,10 +238,15 @@ mod tests {
 
     #[test]
     fn only_a_source_the_table_says_is_fed_from() {
-        assert_eq!(feeding_sources(|_| true), [Source::Github]);
+        assert_eq!(feeding_sources(|_| true), [Source::Github, Source::Calls]);
+        assert_eq!(
+            feeding_sources(|source| source != Source::Github),
+            [Source::Calls],
+            "a table leaving GitHub out still fed from it"
+        );
         assert!(
-            feeding_sources(|source| source != Source::Github).is_empty(),
-            "a table leaving GitHub out feeds nothing"
+            feeding_sources(|source| !matches!(source, Source::Github | Source::Calls)).is_empty(),
+            "a table leaving both out feeds"
         );
         assert!(
             feeding_sources(|_| false).is_empty(),
@@ -253,7 +259,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let folder = dir.path().join("receptors");
         let now = Timestamp::now();
-        let asked = [("jsama/tern".to_owned(), 12, feed::Reason::ReviewAsked)];
+        let asked = [(
+            feed::Named::Change("jsama/tern".to_owned(), 12),
+            feed::Reason::ReviewAsked,
+        )];
         feed::write(&folder, Source::Github, "work", &asked, now).expect("kept");
         let read = || read_items(folder.clone(), vec![Source::Github], "work".to_owned(), now);
         assert!(
@@ -303,12 +312,11 @@ mod tests {
 
     #[test]
     fn a_fed_item_goes_to_its_one_cell_from_the_receptor_alone() {
-        let item = Item {
-            repo: "jsama/tern".to_owned(),
-            number: 12,
-            reason: feed::Reason::ReviewAsked,
-            since: "2026-11-18T08:00:00Z".parse().expect("a time"),
-        };
+        let item = Item::new(
+            feed::Named::Change("jsama/tern".to_owned(), 12),
+            feed::Reason::ReviewAsked,
+            "2026-11-18T08:00:00Z".parse().expect("a time"),
+        );
         let draft = fed_draft(Source::Github, "kestrel", "7M6JKG", &item).expect("a draft");
         assert_eq!(draft.from, "github@kestrel");
         assert_eq!(

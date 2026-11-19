@@ -2826,6 +2826,18 @@ impl<S: Store> Shared<S> {
             ..facts::Sources::here()
         };
         let mut here = facts::measure_in(&self.machine, &self.realm, &sources);
+        // A fence's `runs` is said only where this machine's launcher takes
+        // it, so a machine judging this one by its words judges it as a run
+        // here is judged, sealing and the store among them.
+        let fences = here
+            .declared
+            .as_mut()
+            .and_then(|declared| declared.fence.as_mut());
+        for (kind, doors) in fences.into_iter().flatten() {
+            if crate::declared::launcher(&self.declared, *kind, &self.runs.declarers).is_err() {
+                doors.runs.clear();
+            }
+        }
         self.saturation.say(here.room.as_mut());
         here.health.clone_from(&self.health.borrow());
         here.kit = self.given_kit().and_then(start::Kit::said);
@@ -3009,7 +3021,10 @@ impl<S: Store> Shared<S> {
     /// on whichever led. Each placement is kept in its log, where it keeps
     /// one, once the lock is let go. Work an agent asks, running in the fence `fence`, is refused
     /// every machine whose ground is looser than here, so nothing is carried
-    /// to a machine that would refuse to run it once it got there. Those
+    /// to a machine that would refuse to run it once it got there; and an
+    /// agent's run, where `runs` says it is one, every machine whose fence
+    /// runs no command, this one's as its launcher judges it and another's
+    /// as it last said its fence, which refuses that run there. Those
     /// machines still count for what the realm reaches, and the record
     /// keeps why each was refused, so a replay refuses them too. A machine
     /// booked for one asker ([`Inner::booked`]) is weighed only where
@@ -3019,6 +3034,7 @@ impl<S: Store> Shared<S> {
         work: &Work,
         counts: Counts,
         fence: Option<crate::declared::Kind>,
+        runs: bool,
         admits: &Admits,
     ) -> Placement {
         // Measured before the lock is taken, since measuring reads this
@@ -3032,7 +3048,27 @@ impl<S: Store> Shared<S> {
         let refused = fence
             .map(|kind| {
                 let here = crate::declared::read(&self.declared);
-                ground::looser(kind, here.as_ref(), &self.machine, &machines)
+                let mut refused = ground::looser(kind, here.as_ref(), &self.machine, &machines);
+                if runs {
+                    // Told in the log, since a broken launcher sends an
+                    // agent's runs elsewhere that would have run here.
+                    let launches =
+                        crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
+                            .map(drop)
+                            .inspect_err(|why| {
+                                eprintln!(
+                                    "an agent's run isn't placed here: {}",
+                                    why.escape_debug()
+                                );
+                            });
+                    refused.extend(ground::runs_nothing(
+                        kind,
+                        &self.machine,
+                        launches,
+                        &machines,
+                    ));
+                }
+                refused
             })
             .unwrap_or_default();
         // This machine is measured first, so work asked on a worker stays
@@ -3595,7 +3631,8 @@ impl<S: Store> Shared<S> {
     /// Looks each `eases.every` at what this machine would do to ease
     /// itself (`carry::easing`), keeping each choice in `eases.folder`,
     /// and does none of it. It begins once the carries kept here, which
-    /// say what moved lately, can be read, saying why while they can't.
+    /// say what moved lately, and its own lines of the last two days can
+    /// be read, saying why while they can't.
     async fn ease(self, eases: Eases) {
         let mut easing = None;
         let mut sampler = easing::Sampler::default();
@@ -3606,8 +3643,18 @@ impl<S: Store> Shared<S> {
             every.tick().await;
             let now = jiff::Timestamp::now();
             if easing.is_none() {
-                match self.carried_lately(now).await {
-                    Ok(kept) => easing = Some(Easing::after(&kept)),
+                let (folder, machine) = (eases.folder.clone(), self.machine.clone());
+                let own_lines = tokio::task::spawn_blocking(move || {
+                    easing::eased_lately(&folder, &machine, now)
+                })
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()));
+                match self
+                    .carried_lately(now)
+                    .await
+                    .and_then(|kept| Ok((kept, own_lines?)))
+                {
+                    Ok((kept, own_lines)) => easing = Some(Easing::after(&kept, own_lines)),
                     Err(why) if unread.as_ref() == Some(&why) => continue,
                     Err(why) => {
                         let line = serde_json::json!({
@@ -3697,7 +3744,26 @@ impl<S: Store> Shared<S> {
             Processes::Listed | Processes::Unattended(_) => None,
         };
         let (store, logs) = (self.store.clone(), self.logs.clone());
+        let (orchestrations, carries) = (self.orchestrations.clone(), self.carries.clone());
+        // A node serving no quests' record, or one it hasn't read whole,
+        // can't tell who orchestrates.
+        let quests: Result<Vec<serde_json::Value>, String> = self
+            .served
+            .records_whole("quest")
+            .unwrap_or_else(|| Err("this node serves no quests' record".to_owned()))
+            .map(|quests| quests.into_values().collect());
+        let machine = self.machine.clone();
         let read = tokio::task::spawn_blocking(move || {
+            let easing::Records {
+                orchestrators,
+                kept_eases,
+            } = easing::records(
+                &orchestrations,
+                quests.as_deref().map_err(Clone::clone),
+                &carries,
+                &machine,
+                now,
+            );
             let holdings = store.holdings();
             let queued = place::queue()
                 .map(|queue| room::queued_by(&queue, now.as_second()))
@@ -3706,10 +3772,12 @@ impl<S: Store> Shared<S> {
             let holds = procs
                 .map(|procs| sampler.take(&procs, &pids, now))
                 .unwrap_or_default();
-            (holdings, queued, sizes, holds, sampler)
+            let looked = (holdings, queued, sizes, orchestrators);
+            (looked, holds, kept_eases, sampler)
         })
         .await;
-        let Ok((holdings, queued, sizes, holds, sampler)) = read else {
+        let Ok(((holdings, queued, sizes, orchestrators), holds, kept_eases, sampler)) = read
+        else {
             return (None, easing::Sampler::default());
         };
         let boot = store::folders::boot_id();
@@ -3719,13 +3787,16 @@ impl<S: Store> Shared<S> {
             holdings: &holdings,
             queued: &queued,
             sizes: &sizes,
+            orchestrators: orchestrators.as_ref().ok(),
             boot: boot.as_deref(),
             now,
         };
         let cells = easing::cells(&self.machine, &looked);
         let here = ease::Here::of(&self.machine, &machines, &loads);
         let reading = crate::balance::read(&machines, &sessions, now);
-        (easing.look(&here, reading, cells, &holds, now), sampler)
+        easing.doubt(orchestrators.err());
+        let line = easing.look(&here, reading, cells, &holds, kept_eases, now);
+        (line, sampler)
     }
 
     /// Keeps `line`, said `now`, in `folder`, saying so where it can't.
@@ -4276,7 +4347,8 @@ impl<S: Store> Shared<S> {
     /// looser than the one asking.
     async fn placed(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
         let admits = self.admits().await;
-        let (misses, nowhere) = match self.place(&asked.work, Counts::Always, fence, &admits) {
+        let (misses, nowhere) = match self.place(&asked.work, Counts::Always, fence, false, &admits)
+        {
             Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
             Placement::Pending { misses } => {
                 let nowhere = format!(
@@ -4286,7 +4358,10 @@ impl<S: Store> Shared<S> {
                 (misses, nowhere)
             }
             Placement::Refused { misses } => {
-                if let (Some(kind), Some(why)) = (fence, looser_named(&asked.work, &misses)) {
+                if let (Some(kind), Some(why)) = (
+                    fence,
+                    refused_named(&asked.work, &misses, placement::LOOSER_GROUND),
+                ) {
                     return Err(format!(
                         "this asks as {}, so it starts nothing on looser ground: {why}",
                         By::Agent(kind)
@@ -4472,7 +4547,7 @@ impl<S: Store> Shared<S> {
         let mut there = asked.work.clone();
         there.needs.push(Need::Machine(made.machine.clone()));
         // Pinned to the machine made for it, which is booked for its asker.
-        match self.place(&there, Counts::Always, fence, &Admits::All) {
+        match self.place(&there, Counts::Always, fence, false, &Admits::All) {
             Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 let its: Vec<Miss> = misses
@@ -4546,6 +4621,58 @@ impl<S: Store> Shared<S> {
         Ok((folder, Some(ground)))
     }
 
+    /// Why the run `asked`, asking as `by`, goes nowhere, every machine
+    /// missed for `misses`: plainly for a machine it names that refused it
+    /// for looser ground or a fence that runs nothing, and otherwise among
+    /// every machine's reasons.
+    fn run_refused(&self, asked: &Run, by: By, misses: &[Miss]) -> String {
+        if let Some(why) = refused_named(&asked.work, misses, placement::LOOSER_GROUND) {
+            return format!("this asks as {by}, so it runs nothing on looser ground: {why}");
+        }
+        // Here, where the run names no other machine, is judged by its own
+        // launcher, saying so as a run here would. A run naming none was
+        // weighed everywhere, so it is told every other machine's reasons
+        // too.
+        let named =
+            |here: bool| {
+                asked.work.needs.iter().any(
+                    |need| matches!(need, Need::Machine(name) if (*name == self.machine) == here),
+                )
+            };
+        if let Some(why) =
+            refused_on(misses, &self.machine, placement::RUNS_NOTHING).filter(|_| !named(false))
+        {
+            let others: Vec<Miss> = misses
+                .iter()
+                .filter(|miss| miss.machine != self.machine)
+                .cloned()
+                .collect();
+            let rest = if named(true) || others.is_empty() {
+                String::new()
+            } else {
+                format!("; nor elsewhere: {}", placement::said(&others))
+            };
+            let here = self.here_to(asked.from.as_deref());
+            return format!("this asks as {by}, so it runs {here} only in that fence: {why}{rest}");
+        }
+        if let Some(why) = refused_named(&asked.work, misses, placement::RUNS_NOTHING) {
+            return format!(
+                "this asks as {by}, so it runs only where that fence runs a command: {why}"
+            );
+        }
+        format!("nowhere: {}", placement::said(misses))
+    }
+
+    /// This machine, as a refusal names it to the machine `from` that asked:
+    /// here, where that is this one, and by its name to another, which
+    /// passes the refusal on as its own.
+    fn here_to(&self, from: Option<&str>) -> String {
+        match from {
+            Some(from) if from != self.machine => format!("on {}", self.machine),
+            _ => "here".to_owned(),
+        }
+    }
+
     /// The launcher a run `by` asks goes through here, standing on
     /// `ground` where it was judged, from machine `from`; it keeps in
     /// `started` the folder a judged run entered and what it was spared.
@@ -4561,7 +4688,8 @@ impl<S: Store> Shared<S> {
             By::Agent(kind) => {
                 crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
                     .map_err(|why| {
-                        format!("this asks as {by}, so it runs here only in that fence: {why}")
+                        let here = self.here_to(Some(from));
+                        format!("this asks as {by}, so it runs {here} only in that fence: {why}")
                     })
                     .inspect_err(|why| {
                         if ground.is_some() {
@@ -4639,7 +4767,7 @@ impl<S: Store> Shared<S> {
         // only on ground as firm as here, where it stands in the fence its
         // launcher sets.
         let admits = self.admits().await;
-        let machine = match self.place(&asked.work, Counts::Never, fence, &admits) {
+        let machine = match self.place(&asked.work, Counts::Never, fence, true, &admits) {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } => {
                 return Err(format!(
@@ -4647,14 +4775,7 @@ impl<S: Store> Shared<S> {
                     placement::said(&misses)
                 ));
             }
-            Placement::Refused { misses } => {
-                if let Some(why) = looser_named(&asked.work, &misses) {
-                    return Err(format!(
-                        "this asks as {by}, so it runs nothing on looser ground: {why}"
-                    ));
-                }
-                return Err(format!("nowhere: {}", placement::said(&misses)));
-            }
+            Placement::Refused { misses } => return Err(self.run_refused(&asked, by, &misses)),
         };
         let from = asked.from.clone().unwrap_or_else(|| self.machine.clone());
         let id = format!(
@@ -4811,14 +4932,20 @@ impl<S: Store> Shared<S> {
 
     /// Places `work` as [`Node::place`] does for whoever asks, held to an
     /// agent's ground where an agent asks, as a run of its would be, so
-    /// what it is told would take the work is where the work can run.
+    /// what it is told would take the work is where the work can run. Work
+    /// placed to start (`counts` other than [`Counts::Never`]) starts a
+    /// session, which needs no way to run a command in its fence there.
     async fn place_asked(&self, work: &Work, counts: Counts) -> Reply {
         let fence = self.fence_asked().await?;
         // Held to the machines booked for whoever asks, as its run is.
         let admits = self.admits().await;
-        Ok(Response::Placement(
-            self.place(work, counts, fence, &admits),
-        ))
+        Ok(Response::Placement(self.place(
+            work,
+            counts,
+            fence,
+            counts == Counts::Never,
+            &admits,
+        )))
     }
 
     /// The fence whoever asks runs in, as [`Self::judged`] tells it and
@@ -5041,18 +5168,29 @@ fn refused(why: &str) {
     eprintln!("a run is refused: {}", why.escape_debug());
 }
 
-/// Why the machine `work` names refused it for its looser ground, where
-/// one did, so an agent naming such a machine is told so plainly rather
-/// than among every other machine's reasons.
-fn looser_named(work: &Work, misses: &[Miss]) -> Option<String> {
+/// Why `machine` refused the work with the refusal `key`, where it did.
+fn refused_on(misses: &[Miss], machine: &str, key: &str) -> Option<String> {
+    misses
+        .iter()
+        .filter(|miss| miss.machine == machine)
+        .flat_map(|miss| &miss.because)
+        .find_map(|because| match because {
+            placement::Because::Refuses(taint) if taint.key == key => Some(taint.why.clone()),
+            _ => None,
+        })
+}
+
+/// Why the machine `work` names refused it with the refusal `key` (its
+/// looser ground, or a fence that runs nothing), where one did, so an
+/// agent naming such a machine is told so plainly rather than among every
+/// other machine's reasons.
+fn refused_named(work: &Work, misses: &[Miss], key: &str) -> Option<String> {
     misses
         .iter()
         .filter(|miss| work.needs.contains(&Need::Machine(miss.machine.clone())))
         .flat_map(|miss| &miss.because)
         .find_map(|because| match because {
-            placement::Because::Refuses(taint) if taint.key == placement::LOOSER_GROUND => {
-                Some(taint.why.clone())
-            }
+            placement::Because::Refuses(taint) if taint.key == key => Some(taint.why.clone()),
             _ => None,
         })
 }
@@ -7098,13 +7236,19 @@ esac
 
     /// What `name` says of itself, running its sessions strictly fenced,
     /// building only on `builders`, reaching no forge and released no
-    /// secret.
+    /// secret. Its `runs` pass [`crate::declared::unrunnable`], but name a
+    /// program that isn't there, so no launcher takes them: written as
+    /// here's declaration (as [`harbour_claiming`] does), here runs no
+    /// agent's command until a test says [`declares_runs`].
     fn fenced(name: &str, builders: &[&str]) -> facts::Machine {
         let strict = crate::declared::Doors {
             builders: builders.iter().map(|&one| one.to_owned()).collect(),
             forges: std::collections::BTreeSet::new(),
             secrets: std::collections::BTreeSet::new(),
-            runs: Vec::new(),
+            runs: vec![
+                "/nix/store/0000-fence/bin/fence".to_owned(),
+                "--".to_owned(),
+            ],
         };
         facts::Machine {
             declared: Some(crate::declared::Declared {
@@ -11203,6 +11347,24 @@ esac
             .expect("the client asks")
     }
 
+    /// Where the node at `socket` would place what `request` asks.
+    async fn placement_through(socket: PathBuf, request: Request) -> Placement {
+        let asked = tokio::task::spawn_blocking(move || {
+            Client::connect(&socket)
+                .expect("the client connects")
+                .ask(&request)
+                .expect("the node answers")
+        });
+        match tokio::time::timeout(PATIENCE, asked)
+            .await
+            .expect("the node answers in time")
+            .expect("the client asks")
+        {
+            Ok(Response::Placement(placement)) => placement,
+            other => panic!("a placement: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn a_run_here_hands_back_what_it_writes_and_its_own_exit_code() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -11472,6 +11634,202 @@ esac
         );
     }
 
+    // S99IA2 (2026-11-17): a machine whose fence names no way to run a
+    // command refuses an agent's run there, so placement never sends one
+    // to it, as the basin's cell, declared fenced with no runs, would.
+    #[tokio::test]
+    async fn an_agents_run_goes_nowhere_its_fence_runs_no_command() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let mut tern = fenced("tern", &["remote"]);
+        let declared = tern.declared.as_mut().expect("declared");
+        let fences = declared.fence.as_mut().expect("a fence");
+        fences
+            .get_mut(&crate::declared::Kind::Strict)
+            .expect("its strict fence")
+            .runs
+            .clear();
+        store.put_machine(&tern).expect("what it said is kept");
+        // Here runs a command in its fence, so only tern's runs nothing.
+        declares_runs(&socket, true);
+        asks_below(&socket, 7001);
+
+        assert_eq!(
+            run_through(socket.clone(), run_of("tern", "true"))
+                .await
+                .err(),
+            Some(
+                "this asks as a strictly fenced agent, so it runs only where that fence runs a \
+                 command: tern declares no way to run a command as its strictly fenced \
+                 sessions run that its launcher accepts, or its node is too old to say one"
+                    .to_owned()
+            ),
+            "tern's ground is as firm as here's, but its fence runs nothing"
+        );
+        let toward_tern = Work {
+            prefers: vec![Need::Machine("tern".to_owned())],
+            ..work(Vec::new())
+        };
+        let placed = |request: Request| {
+            let socket = socket.clone();
+            async move {
+                match placement_through(socket, request).await {
+                    Placement::Placed { machine, .. } => machine,
+                    other => panic!("placed: {other:?}"),
+                }
+            }
+        };
+        assert_eq!(
+            placed(Request::Place(toward_tern)).await,
+            "skiff",
+            "where a run would go is never where its fence runs nothing"
+        );
+        // A start weighs the sessions here, so it is pinned to tern to be
+        // judged there alone.
+        let on_tern = work(vec![Need::Machine("tern".to_owned())]);
+        assert_eq!(
+            placed(Request::PlaceToStart(on_tern)).await,
+            "tern",
+            "a session started there needs no way to run a command"
+        );
+        asks_as_person(&socket);
+        assert_eq!(
+            run_through(socket, run_of("tern", "true")).await.err(),
+            Some("no link reaches tern now".to_owned()),
+            "the person's run needs no fence, so it goes as far as the link"
+        );
+    }
+
+    // Here is judged by its own launcher, as a run here would be, so an
+    // agent's run goes nowhere once neither here nor tern runs a command.
+    #[tokio::test]
+    async fn an_agents_run_goes_nowhere_here_when_here_runs_no_command() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let mut tern = fenced("tern", &["remote"]);
+        let declared = tern.declared.as_mut().expect("declared");
+        let fences = declared.fence.as_mut().expect("a fence");
+        fences
+            .get_mut(&crate::declared::Kind::Strict)
+            .expect("its strict fence")
+            .runs
+            .clear();
+        store.put_machine(&tern).expect("what it said is kept");
+        declares_runs(&socket, false);
+        asks_below(&socket, 7001);
+
+        assert_eq!(
+            run_through(socket.clone(), run_of("skiff", "true"))
+                .await
+                .err(),
+            Some(
+                "this asks as a strictly fenced agent, so it runs here only in that fence: \
+                 this machine declares no way to run a command as its strictly fenced \
+                 sessions run"
+                    .to_owned()
+            ),
+            "here's launcher judges here, as a run here would be judged"
+        );
+        assert_eq!(
+            run_through(socket.clone(), run_of("tern", "true"))
+                .await
+                .err(),
+            Some(
+                "this asks as a strictly fenced agent, so it runs only where that fence runs a \
+                 command: tern declares no way to run a command as its strictly fenced \
+                 sessions run that its launcher accepts, or its node is too old to say one"
+                    .to_owned()
+            ),
+            "a run naming tern is told why not tern, never why not here"
+        );
+        let unnamed = Run {
+            work: work(Vec::new()),
+            ..run_of("skiff", "true")
+        };
+        assert_eq!(
+            run_through(socket.clone(), unnamed).await.err(),
+            Some(
+                "this asks as a strictly fenced agent, so it runs here only in that fence: \
+                 this machine declares no way to run a command as its strictly fenced \
+                 sessions run; nor elsewhere: tern refuses: tern declares no way to run a \
+                 command as its strictly fenced sessions run that its launcher accepts, or \
+                 its node is too old to say one"
+                    .to_owned()
+            ),
+            "a run naming no machine is told why not here, and why nowhere else"
+        );
+        let toward_tern = Work {
+            prefers: vec![Need::Machine("tern".to_owned())],
+            ..work(Vec::new())
+        };
+        let answer = placement_through(socket, Request::Place(toward_tern)).await;
+        let Placement::Refused { misses } = answer else {
+            panic!("no machine takes it: {answer:?}");
+        };
+        assert_eq!(
+            misses
+                .iter()
+                .map(|miss| miss.machine.as_str())
+                .collect::<Vec<_>>(),
+            ["skiff", "tern"],
+            "neither here nor tern runs it: {}",
+            placement::said(&misses)
+        );
+    }
+
+    // Here's words run a command, but the program they name isn't there,
+    // which only here's launcher sees: placement refuses here for it, and
+    // what this machine says of itself names no runs, so no other machine
+    // offers it the run either.
+    #[tokio::test]
+    async fn a_launcher_here_that_isnt_there_runs_nothing_here_and_says_none() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        asks_below(&socket, 7001);
+        let says = |socket: PathBuf| async move {
+            let Ok(Response::Machine(machine)) = ask(socket, Request::Machine).await else {
+                panic!("the node says its machine")
+            };
+            machine
+                .declared
+                .and_then(|declared| declared.fence)
+                .and_then(|mut fences| fences.remove(&crate::declared::Kind::Strict))
+                .map(|doors| doors.runs)
+        };
+        assert_eq!(
+            says(socket.clone()).await,
+            Some(Vec::new()),
+            "a launcher that isn't there is said as none"
+        );
+        let here = work(vec![Need::Machine("skiff".to_owned())]);
+        let answer = placement_through(socket.clone(), Request::Place(here)).await;
+        let Placement::Refused { misses } = answer else {
+            panic!("here doesn't take it: {answer:?}");
+        };
+        let why = refused_on(&misses, "skiff", placement::RUNS_NOTHING).unwrap_or_default();
+        assert!(
+            why.contains("launcher /nix/store/0000-fence/bin/fence isn't there"),
+            "here's launcher, not its words, refuses it: {}",
+            placement::said(&misses)
+        );
+        declares_runs(&socket, true);
+        assert!(
+            says(socket)
+                .await
+                .is_some_and(|runs| runs.last().map(String::as_str) == Some("--")),
+            "a launcher it takes is said whole"
+        );
+    }
+
     #[tokio::test]
     async fn a_fenced_agent_is_never_offered_looser_ground() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -11482,6 +11840,8 @@ esac
         store
             .put_machine(&fenced("tern", &["remote", "cloud"]))
             .expect("what it said is kept");
+        // Here runs a command in its fence, so only tern's ground is judged.
+        declares_runs(&socket, true);
         let looser = "tern refuses: tern's strictly fenced session opens builders cloud, which \
                       here's doesn't, so the session would land looser there";
         // Work that would rather go to tern, so ranking alone would send it
@@ -11524,17 +11884,16 @@ esac
         );
         let unnamed = Run {
             work: work(Vec::new()),
-            ..run_of("skiff", "true")
+            ..run_of("skiff", SAYS_ITS_FENCE)
         };
         assert_eq!(
-            run_through(socket.clone(), unnamed).await.err(),
-            Some(
-                "this asks as a strictly fenced agent, so it runs here only in that fence: \
-                 this machine declares no way to run a command as its strictly fenced \
-                 sessions run"
-                    .to_owned()
-            ),
-            "an agent's run naming no machine stays here, on its own ground"
+            run_through(socket.clone(), unnamed)
+                .await
+                .expect("it runs here")
+                .out,
+            b"strict\n",
+            "an agent's run naming no machine stays here, on its own ground, in its own \
+             launcher"
         );
         asks_as_person(&socket);
         let Placement::Placed { passed, .. } = place(socket).await else {
@@ -12444,8 +12803,8 @@ esac
         assert_eq!(
             refused.ended,
             Some(Ran::Failed(
-                "this asks as a strictly fenced agent, so it runs here only in that fence: \
-                 this machine declares no way to run a command as its strictly fenced \
+                "this asks as a strictly fenced agent, so it runs on kestrel only in that \
+                 fence: this machine declares no way to run a command as its strictly fenced \
                  sessions run"
                     .to_owned()
             )),
@@ -12943,6 +13302,10 @@ esac
             "a lone machine has nowhere to ease to: {line}"
         );
         assert!(line["reading"]["held"].is_array(), "{line}");
+        assert_eq!(
+            line["orchestrators_unknown"], "this node serves no quests' record",
+            "a node serving no quests' record can't tell who orchestrates: {line}"
+        );
         stop.send(()).expect("the node still runs");
         node.await.expect("the node ends").expect("the node ran");
         assert!(
@@ -13467,6 +13830,7 @@ esac
             &basin,
             Counts::Always,
             None,
+            false,
             &Admits::Asker(told.to_owned()),
         ) {
             Placement::Placed { machine, .. } => Some(machine),
@@ -13508,6 +13872,7 @@ esac
                 &anywhere,
                 Counts::Always,
                 None,
+                false,
                 &Admits::Asker("P9R1KI".to_owned()),
             ) {
                 Placement::Placed { machine, .. } => Some(machine),
@@ -13827,6 +14192,42 @@ esac
         );
     }
 
+    #[tokio::test]
+    async fn the_links_a_node_keeps_hold_its_machine_saturated_as_it_does() {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            bare("/nowhere/steer".into(), None),
+            to_dial,
+        );
+        let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+        let dial = shared.book_for(&made_by("/nowhere/lend", "kestrel", later));
+        // What the node shares is cloned into each task that says its
+        // verdict, so the start is taken from a clone: one band must hold
+        // across them.
+        let kept = shared.clone().starting(&dial, Path::new("/nowhere/node"));
+        // The node's band saturates only after the link is given its start,
+        // so a band copied at the start is caught as well as a fresh one.
+        assert!(
+            shared.saturation.judge(placement::SATURATES_AT + 5.0),
+            "the node's own measure saturates its machine"
+        );
+        let band = kept
+            .saturation
+            .expect("a link the node keeps is given a band");
+        let inside = f64::midpoint(placement::UNSATURATES_UNDER, placement::SATURATES_AT);
+        assert!(
+            band.judge(inside),
+            "and the link holds it saturated still inside the band, as the node's own \
+             band does, rather than judging afresh by a band of its own"
+        );
+    }
+
     #[test]
     fn a_provider_is_still_asked_by_its_path_or_as_built_again() {
         let at =
@@ -13911,12 +14312,28 @@ esac
         assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
     }
 
-    /// The README of quest `id` of `realm`, claiming `changes` for its
+    /// The README of quest `id` of `realm`, making `claims` for its
     /// active `sessions`.
-    fn claiming(id: &str, realm: &str, changes: &[&str], sessions: &[&str]) -> String {
-        let aliases: String = changes
+    fn claiming(id: &str, realm: &str, claims: &[&str], sessions: &[&str]) -> String {
+        // A claim says its kind, `github-pr:` or `calendar-event:`,
+        // before what it claims, or is a change's, `owner/name#N`; so no
+        // claim's kind is guessed from how it's spelled.
+        fn kind(claim: &str) -> (&'static str, &str) {
+            if let Some(spelled) = claim.strip_prefix("github-pr:") {
+                ("github-pr", spelled)
+            } else if let Some(spelled) = claim.strip_prefix("calendar-event:") {
+                ("calendar-event", spelled)
+            } else {
+                assert!(claim.contains('#'), "{claim} says no kind");
+                ("github-pr", claim)
+            }
+        }
+        let aliases: String = claims
             .iter()
-            .map(|change| format!("  - type: github-pr\n    value: {change}\n"))
+            .map(|claim| {
+                let (kind, value) = kind(claim);
+                format!("  - type: {kind}\n    value: {value}\n")
+            })
             .collect::<Vec<_>>()
             .concat();
         let listed: String = sessions
@@ -14059,7 +14476,10 @@ esac
             &receptors,
             receptor::Source::Github,
             "work",
-            &[("jsama/tern".to_owned(), 12, feed::Reason::ReviewAsked)],
+            &[(
+                feed::Named::Change("jsama/tern".to_owned(), 12),
+                feed::Reason::ReviewAsked,
+            )],
             jiff::Timestamp::now(),
         )
         .expect("its items are kept");
@@ -14108,5 +14528,144 @@ esac
         );
         let served = serde_json::to_string(&records).expect("json");
         assert!(!served.contains("tern"), "never what: {served}");
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one machine's quests and cells, each kept from the feed for its own reason"
+    )]
+    async fn a_summarized_call_feeds_only_the_work_cell_whose_quest_claims_its_event() {
+        const EVENT: &str = "6kq3ehb1c4p0bt2oq1i5u4tq4c_20261118T150000Z";
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let receptors = dir.path().join("receptors");
+        fs::create_dir_all(&receptors).expect("its folder");
+        fs::set_permissions(&receptors, fs::Permissions::from_mode(0o700)).expect("kept");
+        let quests = dir.path().join("quests");
+        let claims: [(&str, &str, &[&str], &[&str]); 3] = [
+            (
+                "QEST-20261118-KESTRL",
+                "work",
+                &["calendar-event:6kq3ehb1c4p0bt2oq1i5u4tq4c_20261118T150000Z"],
+                &["s-claims"],
+            ),
+            // A change claim spelled as the event itself, so only the
+            // claims' kinds keep it from drawing the summary.
+            (
+                "QEST-20261118-OSPREY",
+                "work",
+                &[
+                    "jsama/tern#12",
+                    "github-pr:6kq3ehb1c4p0bt2oq1i5u4tq4c_20261118T150000Z",
+                ],
+                &["s-other"],
+            ),
+            (
+                "QEST-20261118-TERNSS",
+                "personal",
+                &["calendar-event:6kq3ehb1c4p0bt2oq1i5u4tq4c_20261118T150000Z"],
+                &["s-personal"],
+            ),
+        ];
+        for (id, realm, claimed, sessions) in claims {
+            let readme = quests.join(id).join("README.md");
+            fs::create_dir_all(readme.parent().expect("a folder")).expect("its folder");
+            fs::write(readme, claiming(id, realm, claimed, sessions)).expect("written");
+        }
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            Given {
+                receptors: Some(receptors.clone()),
+                ..bare("/nowhere/steer".into(), None)
+            },
+            to_dial,
+        );
+        shared.lock().state.set_sessions(vec![
+            on_quest(
+                "s-claims",
+                "KESTRL1",
+                "skiff",
+                "idle",
+                "QEST-20261118-KESTRL",
+            ),
+            on_quest(
+                "s-other",
+                "OSPREY1",
+                "skiff",
+                "idle",
+                "QEST-20261118-OSPREY",
+            ),
+            on_quest(
+                "s-personal",
+                "TERNSS1",
+                "skiff",
+                "idle",
+                "QEST-20261118-TERNSS",
+            ),
+        ]);
+        {
+            let mut shelf = shared
+                .forages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (id, ..) in claims {
+                assert!(shelf.read(&quests, id), "{id} is read");
+            }
+        }
+        feed::write(
+            &receptors,
+            receptor::Source::Calls,
+            "work",
+            &[(
+                feed::Named::Event(EVENT.to_owned()),
+                feed::Reason::SummaryWritten,
+            )],
+            jiff::Timestamp::now(),
+        )
+        .expect("its items are kept");
+        feeding::reading(&receptors, receptor::Source::Calls, "work");
+
+        for _ in 0..2 {
+            shared
+                .feed_once(&receptors, &[receptor::Source::Calls])
+                .await;
+        }
+
+        let spoken: Vec<String> = shared
+            .spoken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(spoken.len(), 1, "one cell fed, once: {spoken:?}");
+        let said = shared
+            .store
+            .message(&spoken[0])
+            .expect("it is in the store");
+        assert_eq!(said["from"], "calls@skiff");
+        assert_eq!(
+            said["to"],
+            json!(["@KESTRL1"]),
+            "to the claiming work cell alone"
+        );
+        assert_eq!(
+            said["text"],
+            format!("calls: a summary is written of your person's call for calendar event {EVENT}")
+        );
+        let records = shared.fed_records();
+        assert_eq!(
+            records.keys().collect::<Vec<_>>(),
+            vec![&daemon::key(feed::KIND, "calls@skiff~KESTRL1")],
+            "who fed whom"
+        );
+        let served = serde_json::to_string(&records).expect("json");
+        assert!(!served.contains(EVENT), "never what: {served}");
     }
 }

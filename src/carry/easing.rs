@@ -20,7 +20,9 @@ use jiff::{SignedDuration, Timestamp};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use super::chain::Orchestrations;
 use super::ease::{self, Busy, Cell, Choice, Here, History, Moved};
+use super::kept;
 use super::kept::Kept;
 use crate::balance::{Reading, Watch};
 use crate::declared::Kind;
@@ -66,6 +68,9 @@ pub struct Looked<'a> {
     pub queued: &'a BTreeSet<String>,
     /// The size of each session's log, by its id.
     pub sizes: &'a BTreeMap<String, u64>,
+    /// The sessions that orchestrate others, by id, as [`orchestrators`]
+    /// tells them; none where that can't be told.
+    pub orchestrators: Option<&'a BTreeSet<String>>,
     /// The machine's boot, which a session parked in another can't be
     /// started again from.
     pub boot: Option<&'a str>,
@@ -91,6 +96,9 @@ pub fn cells(here: &str, looked: &Looked) -> Vec<Cell> {
             alone: alone(here, looked.sessions, session),
             on_screen: on_screen(session),
             asleep: super::parked(session, looked.boot),
+            orchestrates: looked
+                .orchestrators
+                .map(|named| named.contains(id(session)) || named.contains(&session.id)),
             busy: busy(session, looked),
             size: looked.sizes.get(id(session)).copied(),
         })
@@ -121,6 +129,156 @@ pub fn felt_here(mut machines: Vec<Machine>, here: &str, felt: Option<Room>) -> 
         machine.room = felt.filter(|_| !within);
     }
     machines
+}
+
+/// The sessions, by id, that orchestrate others: each that this node's
+/// `record` of orchestrations holds a claim for, and each the quests'
+/// records, `quests`, name over another quest.
+///
+/// # Errors
+///
+/// Why, where the node's record or the quests' can't be read, since then
+/// who orchestrates can't be told.
+pub fn orchestrators(
+    record: Result<&Orchestrations, String>,
+    quests: Result<&[Value], String>,
+) -> Result<BTreeSet<String>, String> {
+    let mut named = super::ordered::orchestrating(quests?);
+    // A claim naming no quest orchestrates nobody: any session may make
+    // one, and would stay put by it for good.
+    named.extend(
+        record?
+            .sessions
+            .iter()
+            .filter(|(_, claim)| !claim.quests.is_empty())
+            .map(|(session, _)| session.clone()),
+    );
+    Ok(named)
+}
+
+/// What a look reads of the node's own records, to tell who orchestrates
+/// and how many sessions it carried.
+#[derive(Debug)]
+pub struct Records {
+    /// The sessions that orchestrate others, as [`orchestrators`] tells
+    /// them, or why that can't be told.
+    pub orchestrators: Result<BTreeSet<String>, String>,
+    /// How many carries the record of carries holds as this node's within
+    /// the day, as [`eased`] counts them, or why that can't be told.
+    pub kept_eases: Result<usize, String>,
+}
+
+/// The [`Records`] `here`'s node reads at `now`: its record of
+/// orchestrations at `orchestrations`, the quests' records it serves,
+/// `quests` (or why it has none read whole), and its record of carries
+/// at `carries`.
+#[must_use]
+pub fn records(
+    orchestrations: &Path,
+    quests: Result<&[Value], String>,
+    carries: &Path,
+    here: &str,
+    now: Timestamp,
+) -> Records {
+    let record = Orchestrations::read(orchestrations)
+        .map_err(|error| format!("the node's record of orchestrations can't be read ({error})"));
+    let kept_eases = kept::read(carries, now - ease::DAY)
+        .map(|kept| eased(&kept, here, now))
+        .map_err(|error| {
+            format!(
+                "the carries kept here can't be read ({error}), so how many {here} carried \
+                 within the day can't be told"
+            )
+        });
+    Records {
+        orchestrators: orchestrators(record.as_ref().map_err(Clone::clone), quests),
+        kept_eases,
+    }
+}
+
+/// The carries `here`'s node said in its own lines in `folder`, its
+/// [`keep`]ing, that it made or would have made within the day before
+/// `now`, so a restart forgets none of them though the record of
+/// carries be cut short. Each day's file from yesterday's on is read, a
+/// day ahead's too, since a clock set back leaves one; a day with no
+/// file holds none, and a line it can't read, torn part way into a
+/// letter or not, counts for none.
+///
+/// # Errors
+///
+/// Why, while the folder or a day's file is there but can't be read,
+/// since a restart that took it for none could carry past
+/// [`ease::DAILY`].
+pub fn eased_lately(folder: &Path, here: &str, now: Timestamp) -> Result<Vec<Moved>, String> {
+    let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
+    let from = today.yesterday().unwrap_or(today);
+    let cant = |path: &Path, error: &io::Error| {
+        format!(
+            "{} can't be read ({error}), so how many {here} carried within the day can't be told",
+            path.display()
+        )
+    };
+    let mut days = BTreeSet::new();
+    match fs::read_dir(folder) {
+        Ok(entries) => {
+            for entry in entries {
+                // An entry that can't be read may be a day's file.
+                let entry = entry.map_err(|error| cant(folder, &error))?;
+                let Ok(name) = entry.file_name().into_string() else {
+                    continue;
+                };
+                if name
+                    .strip_suffix(".jsonl")
+                    .and_then(|day| day.parse::<jiff::civil::Date>().ok())
+                    .is_some_and(|day| day >= from)
+                {
+                    days.insert(name);
+                }
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(cant(folder, &error)),
+    }
+    let mut texts = Vec::new();
+    for day in days {
+        let file = folder.join(day);
+        match fs::read(&file) {
+            Ok(bytes) => texts.push(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(cant(&file, &error)),
+        }
+    }
+    Ok(texts
+        .into_iter()
+        .flat_map(|text| {
+            kept::lines_of(&text)
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .collect::<Vec<_>>()
+        })
+        .filter(|line| line["choice"] == "carry")
+        .filter_map(|line| {
+            let at = line["at"].as_str()?.parse::<Timestamp>().ok()?;
+            Some(Moved {
+                session: line["session"].as_str()?.to_owned(),
+                from: here.to_owned(),
+                to: line["to"].as_str()?.to_owned(),
+                at,
+                eases: true,
+            })
+        })
+        .filter(|moved| now.duration_since(moved.at) < ease::DAY)
+        .collect())
+}
+
+/// How many of the carries `kept` within the day before `now` this
+/// machine's node, `here`'s, made to ease it.
+#[must_use]
+pub fn eased(kept: &[Kept], here: &str, now: Timestamp) -> usize {
+    let by = ease::by(here);
+    kept.iter()
+        .filter(|one| one.said("by") == by && one.said("from") == here)
+        .filter(|one| now.duration_since(one.at) < ease::DAY)
+        .count()
 }
 
 /// Whether the session's quest runs only `here`; none without a quest.
@@ -290,28 +448,48 @@ pub struct Easing {
     history: History,
     asleep: BTreeSet<String>,
     gone: BTreeSet<String>,
-    said: Option<String>,
+    /// The reason of the last line kept for doing nothing, with the doubt
+    /// it said.
+    said: Option<(String, Option<String>)>,
+    /// Why who orchestrates can't be told, while it can't.
+    doubt: Option<String>,
 }
 
 impl Easing {
     /// One remembering each carry `kept`, so that a session moved stays
-    /// put, and none goes back where one came from, across the node's
-    /// restarts.
+    /// put, none goes back where one came from, and the carries a node
+    /// made to ease its machine count, across the node's restarts; and
+    /// each carry its own lines say it made, `eased`
+    /// ([`eased_lately`]), but those the record already holds as its
+    /// node's: a session is carried to ease at most once within the day
+    /// it stays pinned, so one session is one carry.
     #[must_use]
-    pub fn after(kept: &[Kept]) -> Self {
+    pub fn after(kept: &[Kept], eased: Vec<Moved>) -> Self {
         let mut history = History::default();
+        // By the machine it left, so one about another machine's node
+        // hides none of this one's; and only one remembered, so one the
+        // record can't say whole hides none either.
+        let mut recorded: BTreeSet<(&str, &str)> = BTreeSet::new();
         for one in kept {
             let (session, from, to) = (one.said("session"), one.said("from"), one.said("to"));
             if [session, from, to].iter().any(|said| said.is_empty()) {
                 continue;
+            }
+            if one.said("by") == ease::by(from) {
+                recorded.insert((session, from));
             }
             history.moved(Moved {
                 session: session.to_owned(),
                 from: from.to_owned(),
                 to: to.to_owned(),
                 at: one.at,
-                eases: false,
+                eases: one.said("by") == ease::by(from),
             });
+        }
+        for moved in eased {
+            if !recorded.contains(&(moved.session.as_str(), moved.from.as_str())) {
+                history.moved(moved);
+            }
         }
         Self {
             history,
@@ -319,20 +497,32 @@ impl Easing {
         }
     }
 
+    /// Takes `why` who orchestrates can't be told, or none once it can,
+    /// for the lines that follow to say.
+    pub fn doubt(&mut self, why: Option<String>) {
+        self.doubt = why;
+    }
+
     /// What `here` would do now of its `cells`, by `reading`, as the line
     /// to keep for it; none where it would do nothing for the same reason
     /// as last. A carry's line says what the session `holds` of the
-    /// machine, where that can be told.
+    /// machine, where that can be told. `kept_eases` is how many carries
+    /// the record of carries says `here`'s node made within the day, as
+    /// [`eased`] counts them, or why that can't be told; the larger of
+    /// it and what the node remembers is what counts against
+    /// [`ease::DAILY`], so a record cut short lifts nothing.
     pub fn look(
         &mut self,
         here: &Here,
         mut reading: Reading,
         cells: Vec<Cell>,
         holds: &BTreeMap<String, Holds>,
+        kept_eases: Result<usize, String>,
         now: Timestamp,
     ) -> Option<Value> {
         reading.held = Some(self.watch.take(&reading));
         self.history.read(here.name, &reading);
+        self.history.kept_eases(kept_eases);
         // A session in a turn is awake, whatever it would have been put
         // to sleep for.
         for cell in &cells {
@@ -352,10 +542,11 @@ impl Easing {
         let mut line = json!({"at": now.to_string(), "would": true});
         match &choice {
             Choice::Nothing { why } => {
-                if self.said.as_deref() == Some(why) {
+                let said = (why.clone(), self.doubt.clone());
+                if self.said.as_ref() == Some(&said) {
                     return None;
                 }
-                self.said = Some(why.clone());
+                self.said = Some(said);
             }
             Choice::Sleep { sessions } => {
                 self.said = None;
@@ -383,13 +574,20 @@ impl Easing {
             line.extend(chose);
             line.entry("reading").or_insert_with(|| json!(reading));
         }
+        // A cell says only that who orchestrates can't be told; the line
+        // says why, for whoever reads it to put right.
+        if let Some(why) = &self.doubt {
+            line["orchestrators_unknown"] = json!(why);
+        }
         Some(line)
     }
 }
 
 /// Keeps `line`, said `at`, in `folder`'s file for its day, the folder
 /// and file each its owner's alone; let go, answering false, where the
-/// day's file would hold more than `holds` bytes with it. A new day's
+/// day's file would hold more than `holds` bytes with it, unless the line
+/// carries a session, which a restart counts by ([`eased_lately`]). A
+/// line kept after one cut short starts a line of its own. A new day's
 /// file lets go of the days a fortnight before it, as placements do.
 ///
 /// # Errors
@@ -409,15 +607,19 @@ pub fn keep(folder: &Path, at: Timestamp, line: &Value, holds: u64) -> io::Resul
     let mut text = serde_json::to_string(line)?;
     text.push('\n');
     let had = fs::metadata(&file).map_or(0, |meta| meta.len());
-    if had.saturating_add(text.len() as u64) > holds {
+    if line["choice"] != "carry" && had.saturating_add(text.len() as u64) > holds {
         return Ok(false);
     }
-    OpenOptions::new()
+    let mut kept = OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .mode(0o600)
-        .open(&file)?
-        .write_all(text.as_bytes())?;
+        .open(&file)?;
+    if kept::cut_short(&mut kept)? {
+        text.insert(0, '\n');
+    }
+    kept.write_all(text.as_bytes())?;
     Ok(true)
 }
 
@@ -428,6 +630,7 @@ mod tests {
     use super::*;
     use crate::balance;
     use crate::balance::Flag;
+    use crate::carry::chain;
     use crate::carry::ease::tests::{NOW, ago, cell, declaring, now, realm};
     use crate::placement::Loads;
     use crate::room::{Limit, Pressure, Takes};
@@ -576,6 +779,7 @@ mod tests {
             holdings: &holdings,
             queued: &["s6".to_owned()].into(),
             sizes: &[("s2".to_owned(), 512)].into(),
+            orchestrators: None,
             boot: None,
             now: now(),
         };
@@ -620,6 +824,595 @@ mod tests {
             ],
             "only this machine's running or parked sessions, each unknown left none: \
              busy only once its harness marks background runs, an expired lease let go"
+        );
+    }
+
+    #[test]
+    fn a_cell_orchestrates_where_its_session_is_named_by_either_id() {
+        let sessions = [
+            session("s1", "skiff", &json!({})),
+            session("s2", "skiff", &json!({"presence": {"session": "pi-s2"}})),
+            session("s3", "skiff", &json!({"presence": {"session": "pi-s3"}})),
+        ];
+        let orchestrating = |orchestrators: Option<&BTreeSet<String>>| {
+            let looked = Looked {
+                sessions: &sessions,
+                fences: &BTreeMap::new(),
+                holdings: &[],
+                queued: &BTreeSet::new(),
+                sizes: &BTreeMap::new(),
+                orchestrators,
+                boot: None,
+                now: now(),
+            };
+            cells("skiff", &looked)
+                .iter()
+                .map(|cell| cell.orchestrates)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            orchestrating(Some(&["pi-s2".to_owned(), "s3".to_owned()].into())),
+            [Some(false), Some(true), Some(true)],
+            "s2 by its session's own id, s3 by the mesh's"
+        );
+        assert_eq!(
+            orchestrating(None),
+            [None, None, None],
+            "where who orchestrates can't be told, of none"
+        );
+    }
+
+    #[test]
+    fn the_nodes_record_and_the_quests_each_name_orchestrators() {
+        let claim = |quests: &[&str]| chain::Claim {
+            address: "STEWARD".to_owned(),
+            heads: "QEST-20261007-WCJQSG".to_owned(),
+            quests: quests.iter().map(|quest| (*quest).to_owned()).collect(),
+            at: now(),
+        };
+        // A claim naming no quest orchestrates none: any session may make
+        // one, and would stay put by it for good.
+        let record = Orchestrations {
+            sessions: [
+                ("s-told".to_owned(), claim(&["QEST-20261115-HARBOR"])),
+                ("s-idle".to_owned(), claim(&[])),
+            ]
+            .into(),
+        };
+        let quests = [
+            json!({"id": "QEST-20261007-WCJQSG", "address": "WCJQSG", "sessions": ["s-named"]}),
+            json!({"id": "QEST-20261115-HARBOR", "orchestrator": "WCJQSG",
+                   "sessions": ["s-harbour"]}),
+        ];
+        assert_eq!(
+            orchestrators(Ok(&record), Ok(&quests)),
+            Ok(["s-named".to_owned(), "s-told".to_owned()].into()),
+            "the node's claim to a quest and the quests' orchestrator each"
+        );
+        assert_eq!(
+            orchestrators(Err("its record is cut short".to_owned()), Ok(&quests)),
+            Err("its record is cut short".to_owned()),
+            "the node's record unread tells nothing, saying why"
+        );
+        assert_eq!(
+            orchestrators(Ok(&record), Err("no quests' record".to_owned())),
+            Err("no quests' record".to_owned()),
+            "no quests' record read tells nothing, saying why"
+        );
+    }
+
+    #[test]
+    fn a_look_reads_the_nodes_records_and_says_why_one_cant_be_read() {
+        let state = tempfile::tempdir().expect("the node's state");
+        let (orchestrations, carries) = (
+            state.path().join("orchestrations.json"),
+            state.path().join("carries.jsonl"),
+        );
+        let none = records(&orchestrations, Ok(&[]), &carries, "skiff", now());
+        assert_eq!(
+            (none.orchestrators, none.kept_eases),
+            (Ok(BTreeSet::new()), Ok(0)),
+            "neither kept yet: none orchestrates, none was carried"
+        );
+        fs::write(
+            &orchestrations,
+            serde_json::to_string(&json!({"sessions": {"s-told": {
+                "address": "STEWARD", "heads": "QEST-20261007-WCJQSG",
+                "quests": ["QEST-20261115-HARBOR"], "at": NOW,
+            }}}))
+            .expect("json"),
+        )
+        .expect("kept");
+        let carry = |by: &str, hours: i64| {
+            json!({"id": format!("s-{hours}:then"), "at": ago(hours * 60).to_string(),
+                   "by": by, "session": format!("s-{hours}"), "from": "skiff", "to": "tern"})
+        };
+        let lines = [
+            carry("node@skiff", 1),
+            carry("node@skiff", 25),
+            carry("WCJQSG", 2),
+        ];
+        let text = lines.iter().fold(String::new(), |mut text, line| {
+            text.push_str(&line.to_string());
+            text.push('\n');
+            text
+        });
+        fs::write(&carries, text).expect("kept");
+        let read = records(&orchestrations, Ok(&[]), &carries, "skiff", now());
+        assert_eq!(
+            (read.orchestrators, read.kept_eases),
+            (Ok(["s-told".to_owned()].into()), Ok(1)),
+            "the claim, and skiff's node's one carry within the day"
+        );
+        assert_eq!(
+            records(
+                &orchestrations,
+                Err("unserved".to_owned()),
+                &carries,
+                "skiff",
+                now()
+            )
+            .orchestrators,
+            Err("unserved".to_owned())
+        );
+        fs::write(&orchestrations, "{").expect("kept");
+        fs::remove_file(&carries).expect("gone");
+        fs::create_dir(&carries).expect("a folder where the record was");
+        let unread = records(&orchestrations, Ok(&[]), &carries, "skiff", now());
+        assert!(
+            unread.orchestrators.as_ref().is_err_and(
+                |why| why.starts_with("the node's record of orchestrations can't be read (")
+            ),
+            "a record half kept tells nothing, saying why: {:?}",
+            unread.orchestrators
+        );
+        assert!(
+            unread.kept_eases.as_ref().is_err_and(|why| {
+                why.starts_with("the carries kept here can't be read (")
+                    && why.ends_with("so how many skiff carried within the day can't be told")
+            }),
+            "{:?}",
+            unread.kept_eases
+        );
+    }
+
+    #[test]
+    fn a_nodes_own_lines_say_what_it_carried_within_the_day() {
+        let state = tempfile::tempdir().expect("the node's state");
+        let folder = state.path().join("eases");
+        fs::create_dir_all(&folder).expect("the folder");
+        let carry = |mins: i64, session: &str| {
+            json!({"at": ago(mins).to_string(), "would": true, "choice": "carry",
+                   "session": session, "to": "tern", "why": "over"})
+            .to_string()
+        };
+        let today = [
+            carry(60, "s-today"),
+            json!({"at": NOW, "choice": "nothing", "why": "cool"}).to_string(),
+            "not a line".to_owned(),
+        ];
+        fs::write(folder.join("2026-11-16.jsonl"), today.join("\n")).expect("kept");
+        let yesterday = [carry(20 * 60, "s-yesterday"), carry(25 * 60, "s-older")];
+        fs::write(folder.join("2026-11-15.jsonl"), yesterday.join("\n")).expect("kept");
+        fs::write(folder.join("2026-11-14.jsonl"), carry(30 * 60, "s-gone")).expect("kept");
+        let eased = eased_lately(&folder, "skiff", now()).expect("its lines read");
+        let said: Vec<(&str, &str, &str, bool)> = eased
+            .iter()
+            .map(|moved| {
+                let Moved {
+                    session,
+                    from,
+                    to,
+                    eases,
+                    ..
+                } = moved;
+                (session.as_str(), from.as_str(), to.as_str(), *eases)
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ("s-yesterday", "skiff", "tern", true),
+                ("s-today", "skiff", "tern", true)
+            ],
+            "its carries within the day, whatever day's file holds them"
+        );
+        assert_eq!(
+            eased_lately(&state.path().join("nowhere"), "skiff", now()),
+            Ok(Vec::<Moved>::new()),
+            "no lines kept yet are no carries"
+        );
+    }
+
+    #[test]
+    fn a_torn_line_counts_for_none_and_a_day_ahead_still_counts() {
+        let state = tempfile::tempdir().expect("the node's state");
+        let folder = state.path().join("eases");
+        fs::create_dir_all(&folder).expect("the folder");
+        let carry = |at: Timestamp, session: &str| {
+            json!({"at": at.to_string(), "would": true, "choice": "carry",
+                   "session": session, "to": "tern", "why": "over"})
+            .to_string()
+        };
+        // A line half written as the node stopped can end part way into a
+        // letter, leaving the file no longer UTF-8.
+        let mut today = carry(ago(60), "s-whole").into_bytes();
+        today.extend_from_slice(b"\n{\"choice\": \"carry\", \"session\": \"s-\xc3");
+        fs::write(folder.join("2026-11-16.jsonl"), today).expect("kept");
+        // Kept while the clock ran a day ahead, then set back.
+        fs::write(
+            folder.join("2026-11-17.jsonl"),
+            carry(ago(-20 * 60), "s-ahead"),
+        )
+        .expect("kept");
+        let eased = eased_lately(&folder, "skiff", now()).expect("its lines read");
+        let sessions: Vec<&str> = eased.iter().map(|moved| moved.session.as_str()).collect();
+        assert_eq!(
+            sessions,
+            ["s-whole", "s-ahead"],
+            "the torn line counts for none, the rest of its day counts, and a day ahead holds \
+             carries back"
+        );
+    }
+
+    #[test]
+    fn a_line_that_acts_is_kept_past_its_days_room_and_a_line_that_doesnt_is_let_go() {
+        let state = tempfile::tempdir().expect("the node's state");
+        let folder = state.path().join("eases");
+        let line = |choice: &str| json!({"at": NOW, "would": true, "choice": choice});
+        assert_eq!(
+            keep(&folder, now(), &line("nothing"), 1).ok(),
+            Some(false),
+            "a look that does nothing is let go once the day is full"
+        );
+        assert_eq!(
+            keep(&folder, now(), &line("sleep"), 1).ok(),
+            Some(false),
+            "nor is a sleep kept then, since nothing reads one back"
+        );
+        assert_eq!(
+            keep(&folder, now(), &line("carry"), 1).ok(),
+            Some(true),
+            "a carry counts after a restart, so it is kept however full"
+        );
+    }
+
+    #[test]
+    fn a_line_kept_after_a_torn_one_starts_a_line_of_its_own() {
+        let state = tempfile::tempdir().expect("the node's state");
+        let folder = state.path().join("eases");
+        fs::create_dir_all(&folder).expect("the folder");
+        fs::write(
+            folder.join("2026-11-16.jsonl"),
+            b"{\"choice\": \"carry\", \"session\": \"s-\xc3",
+        )
+        .expect("a line cut short");
+        let line = json!({"at": ago(5).to_string(), "would": true, "choice": "carry",
+                          "session": "s-after", "to": "tern", "why": "over"});
+        assert_eq!(keep(&folder, now(), &line, DAY_HOLDS).ok(), Some(true));
+        let eased = eased_lately(&folder, "skiff", now()).expect("its lines read");
+        assert_eq!(
+            eased
+                .iter()
+                .map(|moved| moved.session.as_str())
+                .collect::<Vec<_>>(),
+            ["s-after"],
+            "the carry kept after a torn line is read, not joined to it"
+        );
+    }
+
+    #[test]
+    fn only_the_days_from_yesterday_on_are_read() {
+        let state = tempfile::tempdir().expect("the node's state");
+        let folder = state.path().join("eases");
+        // Neither can be read as a day's file, so either one read would
+        // stop easing.
+        fs::create_dir_all(folder.join("notes.jsonl")).expect("a stray name");
+        fs::create_dir_all(folder.join("2026-11-14.jsonl")).expect("a day gone by");
+        fs::write(
+            folder.join("2026-11-15.jsonl"),
+            json!({"at": ago(60).to_string(), "would": true, "choice": "carry",
+                   "session": "s-yesterday", "to": "tern", "why": "over"})
+            .to_string(),
+        )
+        .expect("kept");
+        let eased = eased_lately(&folder, "skiff", now());
+        assert_eq!(
+            eased.map(|eased| eased
+                .into_iter()
+                .map(|moved| moved.session)
+                .collect::<Vec<_>>()),
+            Ok(vec!["s-yesterday".to_owned()]),
+            "a name that isn't a day, and a day before yesterday, are passed over"
+        );
+    }
+
+    #[test]
+    fn a_new_doubt_of_who_orchestrates_or_its_clearing_is_said() {
+        let machines: Vec<Machine> = realm();
+        let declared = declaring(&[Kind::Fence]);
+        let here = Here {
+            name: "skiff",
+            declared: Some(&declared),
+            machines: &machines,
+            loads: &Loads::new(),
+        };
+        let look = |easing: &mut Easing| {
+            let reading = balance::read(&machines, &[], now());
+            easing
+                .look(&here, reading, Vec::new(), &BTreeMap::new(), Ok(0), now())
+                .map(|line| line.get("orchestrators_unknown").cloned())
+        };
+        let mut easing = Easing::default();
+        assert_eq!(look(&mut easing), Some(None), "the first look is said");
+        assert_eq!(look(&mut easing), None, "looked again the same, nothing is");
+        let why = "the quest records have not been read yet";
+        easing.doubt(Some(why.to_owned()));
+        assert_eq!(
+            look(&mut easing),
+            Some(Some(json!(why))),
+            "a doubt arising is said, though nothing else changed"
+        );
+        assert_eq!(look(&mut easing), None, "once");
+        easing.doubt(None);
+        assert_eq!(look(&mut easing), Some(None), "and so is its clearing");
+    }
+
+    #[test]
+    fn its_own_lines_seed_the_half_hour_and_pin_their_session() {
+        let moved = |session: &str, mins: i64| Moved {
+            session: session.to_owned(),
+            from: "skiff".to_owned(),
+            to: "osprey".to_owned(),
+            at: ago(mins),
+            eases: true,
+        };
+        let carried = |eased: Vec<Moved>| {
+            looks(&mut Easing::after(&[], eased), &[cell("s1")])
+                .iter()
+                .any(|line| line["choice"] == "carry")
+        };
+        assert!(carried(Vec::new()), "with nothing seeded, s1 is carried");
+        assert!(
+            !carried(vec![moved("s0", 10)]),
+            "a carry its lines say ten minutes ago holds the half hour"
+        );
+        assert!(
+            !carried(vec![moved("s1", 3 * 60)]),
+            "a session its lines say it carried here stays pinned"
+        );
+    }
+
+    #[test]
+    fn a_carry_the_record_holds_and_another_only_its_own_lines_say_both_count() {
+        let carry = |session: &str, hours: i64| Moved {
+            session: session.to_owned(),
+            from: "skiff".to_owned(),
+            to: "osprey".to_owned(),
+            at: ago(hours * 60),
+            eases: true,
+        };
+        let kept: Vec<Kept> = (2..7)
+            .map(|hour| Kept {
+                id: format!("s-{hour}:then"),
+                at: ago(hour * 60),
+                line: json!({"by": "node@skiff", "session": format!("s-{hour}"),
+                             "from": "skiff", "to": "osprey"}),
+            })
+            .collect();
+        let eased: Vec<Moved> = (2..8)
+            .map(|hour| carry(&format!("s-{hour}"), hour))
+            .collect();
+        let lines = looks_kept(&mut Easing::after(&kept, eased), &[cell("s1")], &Ok(5));
+        assert_eq!(
+            lines.last().expect("a line")["why"],
+            json!("it carried 6 sessions within the day, and carries at most 6 a day"),
+            "five in both and one in its lines alone are six"
+        );
+
+        // The same five, recorded as another machine's node's, hide none.
+        let elsewhere: Vec<Kept> = kept
+            .iter()
+            .map(|one| {
+                let mut line = one.line.clone();
+                line["by"] = json!("node@tern");
+                line["from"] = json!("tern");
+                Kept {
+                    line,
+                    ..one.clone()
+                }
+            })
+            .collect();
+        let eased: Vec<Moved> = (2..8)
+            .map(|hour| carry(&format!("s-{hour}"), hour))
+            .collect();
+        let lines = looks_kept(&mut Easing::after(&elsewhere, eased), &[cell("s1")], &Ok(0));
+        assert_eq!(
+            lines.last().expect("a line")["why"],
+            json!("it carried 6 sessions within the day, and carries at most 6 a day"),
+            "tern's node's carries of the same sessions leave skiff's six"
+        );
+
+        // The same five, each with no `to`, are none the record remembers,
+        // so they hide none of its own lines either.
+        let unsaid: Vec<Kept> = kept
+            .iter()
+            .map(|one| {
+                let mut line = one.line.clone();
+                line.as_object_mut().expect("an object").remove("to");
+                Kept {
+                    line,
+                    ..one.clone()
+                }
+            })
+            .collect();
+        let eased: Vec<Moved> = (2..8)
+            .map(|hour| carry(&format!("s-{hour}"), hour))
+            .collect();
+        let lines = looks_kept(&mut Easing::after(&unsaid, eased), &[cell("s1")], &Ok(0));
+        assert_eq!(
+            lines.last().expect("a line")["why"],
+            json!("it carried 6 sessions within the day, and carries at most 6 a day"),
+            "record lines saying no `to` leave its own six"
+        );
+    }
+
+    #[test]
+    fn a_carry_the_record_dates_ahead_counts() {
+        let kept = [Kept {
+            id: "s1:ahead".to_owned(),
+            at: ago(-120),
+            line: json!({"by": "node@skiff", "session": "s1", "from": "skiff", "to": "tern"}),
+        }];
+        assert_eq!(
+            eased(&kept, "skiff", now()),
+            1,
+            "which can only hold carries back"
+        );
+    }
+
+    #[test]
+    fn a_day_of_its_own_lines_it_cant_read_says_why_rather_than_none() {
+        let state = tempfile::tempdir().expect("the node's state");
+        let folder = state.path().join("eases");
+        // A folder where today's file goes can't be read as one.
+        fs::create_dir_all(folder.join("2026-11-16.jsonl")).expect("made");
+        let read = eased_lately(&folder, "skiff", now());
+        assert!(
+            matches!(&read, Err(why) if why.contains("2026-11-16.jsonl")),
+            "{read:?}"
+        );
+    }
+
+    #[test]
+    fn a_folder_of_its_own_lines_it_cant_list_says_why_rather_than_none() {
+        let state = tempfile::tempdir().expect("the node's state");
+        // A file where the folder goes can't be listed as one.
+        let folder = state.path().join("eases");
+        fs::write(&folder, "").expect("written");
+        let read = eased_lately(&folder, "skiff", now());
+        assert!(
+            matches!(&read, Err(why) if why.contains("eases")),
+            "{read:?}"
+        );
+    }
+
+    #[test]
+    fn a_carry_in_the_record_and_its_nodes_own_line_counts_once() {
+        let (sessions, hours) = (["s-0", "s-1", "s-2"], [2, 3, 4]);
+        let kept: Vec<Kept> = sessions
+            .iter()
+            .zip(hours)
+            .map(|(session, hour)| Kept {
+                id: format!("{session}:then"),
+                at: ago(hour * 60),
+                line: json!({"by": "node@skiff", "session": session,
+                             "from": "skiff", "to": "osprey"}),
+            })
+            .collect();
+        let eased: Vec<Moved> = sessions
+            .iter()
+            .zip(hours)
+            .map(|(session, hour)| Moved {
+                session: (*session).to_owned(),
+                from: "skiff".to_owned(),
+                to: "osprey".to_owned(),
+                at: ago(hour * 60 + 1),
+                eases: true,
+            })
+            .collect();
+        let lines = looks_kept(&mut Easing::after(&kept, eased), &[cell("s1")], &Ok(0));
+        assert!(
+            lines.iter().any(|line| line["choice"] == "carry"),
+            "three carries said twice are three, not six: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_restart_with_the_record_of_carries_cut_short_still_stops_the_seventh() {
+        let eased: Vec<Moved> = (0..6)
+            .map(|hour| Moved {
+                session: format!("s-{hour}"),
+                from: "skiff".to_owned(),
+                to: "osprey".to_owned(),
+                at: ago((hour + 2) * 60),
+                eases: true,
+            })
+            .collect();
+        let lines = looks_kept(&mut Easing::after(&[], eased), &[cell("s1")], &Ok(0));
+        assert!(
+            lines.iter().all(|line| line["choice"] != "carry"),
+            "its own lines remember six though the record holds none: {lines:?}"
+        );
+        assert_eq!(
+            lines.last().expect("a line")["why"],
+            json!("it carried 6 sessions within the day, and carries at most 6 a day")
+        );
+    }
+
+    #[test]
+    fn a_carry_kept_by_its_node_holds_the_half_hour_across_a_restart() {
+        let kept = |by: &str| {
+            [Kept {
+                id: "s0:then".to_owned(),
+                at: ago(10),
+                line: json!({"by": by, "session": "s0", "from": "skiff", "to": "osprey"}),
+            }]
+        };
+        let carried = |by: &str| {
+            let lines = looks(&mut Easing::after(&kept(by), Vec::new()), &[cell("s1")]);
+            lines.iter().any(|line| line["choice"] == "carry")
+        };
+        assert!(!carried("node@skiff"), "its node's carry ten minutes ago");
+        assert!(
+            carried("WCJQSG"),
+            "an orchestrator's carry starts no half hour"
+        );
+    }
+
+    #[test]
+    fn a_node_counts_only_the_carries_it_made_within_the_day() {
+        let carry = |by: &str, from: &str, hours: i64| Kept {
+            id: format!("{by}:{from}:{hours}"),
+            at: ago(hours * 60),
+            line: json!({"by": by, "session": "s1", "from": from, "to": "tern"}),
+        };
+        let kept = [
+            carry("node@skiff", "skiff", 1),
+            carry("node@skiff", "skiff", 23),
+            carry("node@skiff", "skiff", 24),
+            carry("node@skiff", "tern", 1),
+            carry("node@tern", "tern", 1),
+            carry("node@tern", "skiff", 1),
+            carry("WCJQSG", "skiff", 1),
+            carry("person", "skiff", 1),
+        ];
+        assert_eq!(
+            eased(&kept, "skiff", now()),
+            2,
+            "skiff's node's own, from skiff, within the day"
+        );
+    }
+
+    #[test]
+    fn a_record_of_carries_cut_short_still_stops_the_seventh() {
+        let kept: Vec<Kept> = (0..6)
+            .map(|hour| Kept {
+                id: format!("s-{hour}:then"),
+                at: ago((hour + 2) * 60),
+                line: json!({"by": "node@skiff", "session": format!("s-{hour}"),
+                             "from": "skiff", "to": "osprey"}),
+            })
+            .collect();
+        let lines = looks_kept(&mut Easing::after(&kept, Vec::new()), &[cell("s1")], &Ok(0));
+        assert!(
+            lines.iter().all(|line| line["choice"] != "carry"),
+            "six carries remembered stop a seventh though the record holds none now: \
+             {lines:?}"
+        );
+        assert_eq!(
+            lines.last().expect("a line")["why"],
+            json!("it carried 6 sessions within the day, and carries at most 6 a day")
         );
     }
 
@@ -685,8 +1478,19 @@ mod tests {
     }
 
     /// Each line `easing` would keep at skiff, looking each minute from 20
-    /// minutes ago, with skiff over and tern with room throughout.
+    /// minutes ago, with skiff over and tern with room throughout, and no
+    /// carry of its node's kept.
     fn looks(easing: &mut Easing, cells: &[Cell]) -> Vec<Value> {
+        looks_kept(easing, cells, &Ok(0))
+    }
+
+    /// As [`looks`], with the record of carries holding `kept_eases` of
+    /// skiff's node's.
+    fn looks_kept(
+        easing: &mut Easing,
+        cells: &[Cell],
+        kept_eases: &Result<usize, String>,
+    ) -> Vec<Value> {
         let machines: Vec<Machine> = realm();
         let declared = declaring(&[Kind::Fence]);
         let here = Here {
@@ -707,7 +1511,14 @@ mod tests {
             .filter_map(|minute| {
                 let at = ago(20 - minute);
                 let reading = balance::read(&machines, &[], at);
-                easing.look(&here, reading, cells.to_vec(), &holds, at)
+                easing.look(
+                    &here,
+                    reading,
+                    cells.to_vec(),
+                    &holds,
+                    kept_eases.clone(),
+                    at,
+                )
             })
             .collect()
     }
@@ -780,7 +1591,7 @@ mod tests {
             asleep: false,
             ..cell(id)
         });
-        let lines = looks(&mut Easing::after(&kept), &waiting);
+        let lines = looks(&mut Easing::after(&kept, Vec::new()), &waiting);
         let carried: Vec<&Value> = lines
             .iter()
             .filter(|line| line["choice"] == "carry")
