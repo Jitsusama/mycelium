@@ -1595,8 +1595,9 @@ the 32 but not its cell's 8, so a wave brought back starts whole and
 no agent brings back more than 32 an hour; a cell brings back at most
 9 an hour beside its 8, and the tenth is refused, saying which. It is
 pi itself, named bare or under `/run/current-system/sw/bin/` or
-`/etc/profiles/per-user/`, given one session after `--session` or `--session-id`, by its id or by
-a file whose name ends in `_` and the id. A bare `pi` is the one the
+`/etc/profiles/per-user/`, given one session after `--session` or
+`--session-id`, by its id or by a file whose name ends in `_` and
+the id. A bare `pi` is the one the
 login finds, so it fences habit alone. A second bringing back the same
 one within the hour counts toward both, and one running or on a
 machine out of reach is never brought back. A start past the limits
