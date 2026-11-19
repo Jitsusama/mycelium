@@ -3786,8 +3786,15 @@ impl<S: Store> Shared<S> {
             } else {
                 why.replace(named.as_str(), "")
             };
-            if self.spawners.first_refusal(&format!("{host:?} {reason}")) {
-                let why: String = why.chars().flat_map(char::escape_debug).collect();
+            // Said once for each reason, whichever processes and session
+            // it names, so speakers that come and go each say no more.
+            let kind: String = reason.chars().filter(|c| !c.is_ascii_digit()).collect();
+            if self.spawners.first_refusal(&kind) {
+                let why: String = why
+                    .replace(named.as_str(), "the session")
+                    .chars()
+                    .flat_map(char::escape_debug)
+                    .collect();
                 eprintln!("mycelium: a spawner for {said} isn't taken: {why}");
             }
         }

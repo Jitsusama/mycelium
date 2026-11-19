@@ -2031,8 +2031,8 @@ all again within 30 seconds; until then a command below one is told
 no session.
 
 The host says it before the spawner runs anything. A command below
-that spawner, each process between them started after the one above
-it, and the host and the asker unchanged from when it connected, is
+that spawner, each process between them started no earlier than the
+one above it, and the host and the asker unchanged from when it connected, is
 then proved as that session. Nothing a
 command runs can say it for another: it holds none of the host's
 connection, which the host opens closed on exec, and the node knows
@@ -2050,11 +2050,12 @@ spawner. For the same reason it takes it only from a host whose
 node can't be opened from outside: its command line must give
 `--disable-sigusr1` as node's first option, since otherwise any
 process of its user may send SIGUSR1 and open node's inspector, and
-an option taking a value could take a later one as its own; and
-neither that line nor the `NODE_OPTIONS` its environment holds, its
-quotes dropped as node drops them, may name `--inspect` in any form
-or `--enable-sigusr1`. A host whose environment can't be read is
-refused. The kernel's word is read again at each proof, so a
+an option taking a value could take a later one as its own; that
+line, its quotes dropped as node drops them, may name neither
+`--inspect` in any form nor `--no-disable-sigusr1`, which undoes the
+first; and its environment may give no `NODE_OPTIONS` but a blank
+one, since `--require` or `--import` there runs code as the host. A
+host whose environment can't be read is refused. The kernel's word is read again at each proof, so a
 spawner taken while tracing was shut proves nothing once it opens.
 
 It can't tell the host's own code from code an agent brought into

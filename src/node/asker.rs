@@ -570,12 +570,11 @@ const PTRACE_SCOPE: &str = "sys/kernel/yama/ptrace_scope";
 const NO_SIGUSR1: &str = "--disable-sigusr1";
 
 /// Whether a node option, its underscores read as dashes and its quotes
-/// and escapes dropped, as node reads `NODE_OPTIONS`, opens node's
-/// inspector or lets SIGUSR1 open it. A word a quote split from its
-/// option is read on its own, so one that hides an option is refused.
+/// and escapes dropped, opens node's inspector or lets SIGUSR1 open it
+/// again, as `--no-disable-sigusr1` does after [`NO_SIGUSR1`].
 fn opens_inspector(option: &str) -> bool {
     let option = option.replace(['"', '\\'], "").replace('_', "-");
-    option.starts_with("--inspect") || option.starts_with("--enable-sigusr1")
+    option.starts_with("--inspect") || option.starts_with("--no-disable-sigusr1")
 }
 
 /// Why a process here might trace another of its user, if it might: a
@@ -595,10 +594,12 @@ fn tracing_open(procs: &Path) -> Option<&'static str> {
 /// Why another process of its user could run code inside the pi host at
 /// `pid` through node's inspector, if it could: unless node's first
 /// option is [`NO_SIGUSR1`], as a host's unit starts it, a SIGUSR1 opens
-/// it, and an option on its command line or in its `NODE_OPTIONS` may
-/// open it outright. The first, since an option taking a value would
-/// take one later as its own. An environment that can't be read is
-/// taken as one that might.
+/// it, and an option on its command line may open it outright. The
+/// first, since an option taking a value would take one later as its
+/// own. Any `NODE_OPTIONS` at all is refused, since besides opening the
+/// inspector, `--require` or `--import` there runs code as the host
+/// before it starts; a host's unit clears it. An environment that can't
+/// be read is taken as one that might hold some.
 fn inspector_open(procs: &Path, pid: i32) -> Option<String> {
     let process = procs.join(pid.to_string());
     let Ok(line) = fs::read(process.join("cmdline")) else {
@@ -623,17 +624,20 @@ fn inspector_open(procs: &Path, pid: i32) -> Option<String> {
             "process {pid}'s environment can't be read, so its NODE_OPTIONS can't be told"
         ));
     };
-    let options = environ
+    let given = environ
         .split(|byte| *byte == 0)
         .filter_map(|pair| pair.strip_prefix(b"NODE_OPTIONS="))
-        .map(|options| String::from_utf8_lossy(options).into_owned())
-        .collect::<Vec<_>>();
-    let named = words.iter().any(|word| opens_inspector(word))
-        || options
-            .iter()
-            .flat_map(|options| options.split_whitespace())
-            .any(opens_inspector);
-    named.then(|| format!("process {pid} runs node with an option that opens its inspector"))
+        .any(|options| !options.iter().all(u8::is_ascii_whitespace));
+    if given {
+        return Some(format!(
+            "process {pid} is given NODE_OPTIONS, which could open its inspector or run \
+             code in it"
+        ));
+    }
+    words
+        .iter()
+        .any(|word| opens_inspector(word))
+        .then(|| format!("process {pid} runs node with an option that opens its inspector"))
 }
 
 /// What a pi host said of a spawner it started: itself, by its id and
@@ -756,9 +760,15 @@ impl Spawners {
         let status = fs::read_to_string(procs.join(spawner.0.to_string()).join("status"))
             .map_err(|_| format!("process {} has gone", spawner.0))?;
         let child = named(&status).is_some_and(|(name, parent)| name == SPAWNER && parent == pid);
-        if !child || started(procs, spawner.0) != Some(spawner.1) {
+        if !child {
             return Err(format!(
-                "process {} is no pi-spawner the host started when it says",
+                "process {} is no pi-spawner of the host's own",
+                spawner.0
+            ));
+        }
+        if started(procs, spawner.0) != Some(spawner.1) {
+            return Err(format!(
+                "process {} started at another time than the host says",
                 spawner.0
             ));
         }
@@ -1038,7 +1048,8 @@ pub fn session_alone(
         )),
         _ if !keys.is_empty() => Err(format!(
             "this asks below pi host process {process}, which {shared} sessions share, \
-             through no pi-spawner this node took its word for, for one it proves"
+             through no pi-spawner this node took its word for as serving one it \
+             proves"
         )),
         _ => Err(format!(
             "this asks from process {process}, which {shared} sessions share, so none is \
@@ -1884,7 +1895,7 @@ mod tests {
     }
 
     #[test]
-    fn a_said_spawner_proves_nothing_once_it_its_line_or_its_session_is_gone() {
+    fn a_said_spawner_proves_nothing_once_it_or_its_line_or_its_session_is_gone() {
         let procs = a_host_and_its_spawners();
         let claims = [
             claim("s-one", 78, Some(1), Some("work")),
@@ -2022,7 +2033,7 @@ mod tests {
             "nor a child of its own that isn't named pi-spawner"
         );
         assert!(
-            refused(says(78, 1, 82, 81, "s-one"), "no pi-spawner"),
+            refused(says(78, 1, 82, 81, "s-one"), "started at another time"),
             "nor one started other than when the host read it, its id given again since"
         );
         assert!(
@@ -2097,20 +2108,34 @@ mod tests {
             refused("opens its inspector"),
             "nor one whose options open it outright"
         );
-        runs(&["--disable-sigusr1", "--enable-sigusr1"], None);
+        runs(&["--disable-sigusr1", "--no_disable_sigusr1"], None);
         assert!(
             refused("opens its inspector"),
-            "nor one whose options let SIGUSR1 open it again"
+            "nor one whose options let SIGUSR1 open it again, written as node reads it"
         );
-        runs(&HOST_NODE, Some("--inspect-brk"));
+        runs(&["--disable-sigusr1", "\"--inspect\\_brk\""], None);
         assert!(
             refused("opens its inspector"),
-            "nor one whose environment's NODE_OPTIONS open it"
+            "nor one whose option opening it is quoted or escaped"
         );
-        runs(&HOST_NODE, Some("--max-old-space-size=100 \"--inspect\""));
+        runs(&HOST_NODE, Some("--require /tmp/x.js"));
         assert!(
-            refused("opens its inspector"),
-            "nor one whose NODE_OPTIONS quote the option, as node reads them"
+            refused("given NODE_OPTIONS"),
+            "nor one given any NODE_OPTIONS, which could run code in it"
+        );
+        runs(&HOST_NODE, Some(" "));
+        assert!(
+            spawners
+                .register(
+                    (Some(78), Some(1)),
+                    (82, 82),
+                    "s-one",
+                    &processes,
+                    &owners,
+                    &claims,
+                )
+                .is_ok(),
+            "though one whose NODE_OPTIONS its unit cleared is heard"
         );
         fs::remove_file(procs.path().join("78").join("environ")).expect("it goes");
         assert!(
