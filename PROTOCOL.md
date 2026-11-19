@@ -2043,7 +2043,10 @@ connection, which the host opens closed on exec, and the node knows
 the speaker from the kernel, not from what it says. A command below
 a pi-spawner the host started but the node holds no word for is told
 no session, even where the host holds only one, since that spawner
-may serve a session gone since, and so is one whose forebears, read
+may serve a session gone since. So a harness that says no spawners,
+as one older than this rule, keeps none of its sessions' work trees
+where the node takes its host's word: the node and the harness land
+together and roll back together. So too is one whose forebears, read
 again, no longer reach the host or name the child below it. A
 command the host starts as its own
 child, as it does once a spawner is lost, runs below no spawner: it
@@ -2085,9 +2088,11 @@ It rests too on three things the node doesn't prove. It can't tell
 the host's own code from code an agent brought into
 the host's process, an extension a project carries or a reload onto
 another tree among it, which can say any spawner serves any session
-the host proves. And a command that can write the harness's files
-can change the code a host loads, then end the host, which runs that
-code when it starts again and may say any spawner. So the word
+the host proves. And a command that can write the harness's files,
+the folder the host caches its compiled code in, or the host's unit
+and environment through the user's service manager, can change the
+code a host loads, then end the host, which runs that code when it
+starts again and may say any spawner. So the word
 proves a session only where the host's sessions run their commands
 fenced from the harness and its extensions; where they don't, it
 tells a command apart from its host only by accident. So too a

@@ -14782,7 +14782,7 @@ esac
         assert!(
             kept_start(&socket, 2)["untold"]
                 .as_str()
-                .is_some_and(|why| why.ends_with("can't tie to a session it proves")),
+                .is_some_and(|why| why.ends_with("can't be tied to a session the host proves")),
             "its record says why: no spawner its host said, before its sessions are counted"
         );
         let (stop, node) = running;

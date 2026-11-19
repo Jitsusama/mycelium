@@ -1140,7 +1140,9 @@ pub fn session_alone(
             Some(true) => {
                 return Err(format!(
                     "this asks below pi host process {process} through a pi-spawner this \
-                     node can't tie to a session it proves"
+                     node holds no word for, as where the host's harness says none or \
+                     hasn't said it since this node started, so it can't be tied to a \
+                     session the host proves"
                 ));
             }
             None => {
@@ -1970,7 +1972,7 @@ mod tests {
         };
         let refused = |asker, owners: &[(String, i32)], claims: &[Claim]| {
             alone(asker, owners, claims)
-                .is_err_and(|why| why.contains("pi-spawner this node can't tie"))
+                .is_err_and(|why| why.contains("pi-spawner this node holds no word for"))
         };
         assert_eq!(
             alone(90, &owners, &claims),
@@ -1994,7 +1996,7 @@ mod tests {
         );
         assert!(
             connected(90, Some(89), &owners, &claims)
-                .is_err_and(|why| why.contains("pi-spawner this node can't tie")),
+                .is_err_and(|why| why.contains("pi-spawner this node holds no word for")),
             "a connection held open past its process's end proves nothing once another takes \
              its id below a spawner"
         );
@@ -2048,7 +2050,7 @@ mod tests {
                 hosts.path(),
                 &spawners,
             );
-            alone.is_err_and(|why| why.contains("pi-spawner this node can't tie"))
+            alone.is_err_and(|why| why.contains("pi-spawner this node holds no word for"))
         };
         assert!(
             !refused(90, &owners, &claims),
@@ -2156,7 +2158,7 @@ mod tests {
             )
         };
         assert!(
-            alone(83).is_err_and(|why| why.contains("pi-spawner this node can't tie")),
+            alone(83).is_err_and(|why| why.contains("pi-spawner this node holds no word for")),
             "a command below a spawner never said, as after this node restarts, is told no \
              session, though the host holds only one"
         );
