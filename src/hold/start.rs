@@ -226,6 +226,28 @@ pub fn begins_in(folder: Option<&Path>, home: &Path) -> PathBuf {
     }
 }
 
+/// The folder a start begins in on `machine`, as [`begins_in`] finds it,
+/// or, where it's `strict`, why it's refused: it names a folder there is
+/// none of there, which the work it's for is in, so home won't do.
+///
+/// # Errors
+///
+/// A strict start naming a folder `machine` hasn't.
+pub fn begins_strictly(
+    folder: Option<&Path>,
+    strict: bool,
+    home: &Path,
+    machine: &str,
+) -> Result<PathBuf, String> {
+    match folder {
+        Some(named) if strict && !home.join(named).is_dir() => Err(format!(
+            "{machine} has no folder {}, which the start names",
+            named.display()
+        )),
+        _ => Ok(begins_in(folder, home)),
+    }
+}
+
 /// The words that run a session on a Mac at Utility quality of service, so
 /// it yields the processor to what the person is doing, as the sessions
 /// mac-pi starts do. Linux has no such words: the node's service sits
@@ -633,5 +655,33 @@ mod tests {
         for (asked, begins) in cases {
             assert_eq!(begins_in(asked, home), begins, "asked for {asked:?}");
         }
+    }
+
+    #[test]
+    fn a_strict_start_refuses_a_folder_the_machine_hasnt_naming_both() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let home = home.path();
+        let src = home.join("src").join("core.nix");
+        fs::create_dir_all(&src).expect("a checkout is made");
+        let begun = |folder: Option<&Path>, strict| begins_strictly(folder, strict, home, "tern");
+        assert_eq!(
+            begun(Some(Path::new("src/core.nix")), true),
+            Ok(src.clone())
+        );
+        assert_eq!(
+            begun(None, true),
+            Ok(home.to_owned()),
+            "none named, it begins at home"
+        );
+        assert_eq!(
+            begun(Some(Path::new("src/elsewhere")), false),
+            Ok(home.to_owned()),
+            "one not strict begins at home"
+        );
+        let refused = begun(Some(Path::new("src/elsewhere")), true).expect_err("it's refused");
+        assert!(
+            refused.contains("tern") && refused.contains("src/elsewhere"),
+            "the refusal names the machine and the folder: {refused}"
+        );
     }
 }

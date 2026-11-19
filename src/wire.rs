@@ -196,9 +196,15 @@ pub struct Start {
     /// The folder it starts in on that machine: a full path, or a path
     /// within its home, since only that machine knows where its home is.
     /// It starts in its home when this names none or names no folder
-    /// there.
+    /// there, unless `strict`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<PathBuf>,
+    /// Whether a `folder` named that the machine hasn't refuses the start
+    /// rather than beginning it at home, as a sprout's must, its folder
+    /// being the work's. Left out when not, so an older node still reads
+    /// the start, and begins it at home.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
     /// The program and its arguments, run through the login shell there.
     pub command: Vec<String>,
     /// Whether a machine may be made for it from a provider's offer, which
@@ -560,6 +566,29 @@ mod tests {
             serde_json::to_string(&Response::Spawned).expect("its answer writes"),
             r#""Spawned""#,
             "the answer is the bare word"
+        );
+    }
+
+    #[test]
+    fn a_start_not_strict_says_nothing_of_it_so_an_older_node_reads_it() {
+        let said = r#"{"work":{},"folder":"src/skiff","command":["pi"]}"#;
+        let start = serde_json::from_str::<Start>(said).expect("a start reads");
+        assert!(!start.strict, "a start that doesn't say is not strict");
+        assert!(
+            !serde_json::to_string(&start)
+                .expect("a start writes")
+                .contains("strict"),
+            "one not strict is written as before it was said"
+        );
+        let strict = Start {
+            strict: true,
+            ..start
+        };
+        let written = serde_json::to_string(&strict).expect("a start writes");
+        assert!(written.contains(r#""strict":true"#), "{written}");
+        assert_eq!(
+            serde_json::from_str::<Start>(&written).expect("a strict start reads"),
+            strict
         );
     }
 }

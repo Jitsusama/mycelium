@@ -530,6 +530,7 @@ mod tests {
         let start = Start {
             work: wanting_gcloud(),
             folder: None,
+            strict: false,
             command: vec!["true".to_owned()],
             may_cost: false,
             carries: false,

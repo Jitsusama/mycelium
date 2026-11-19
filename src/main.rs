@@ -2587,6 +2587,7 @@ fn start(socket: &Path, asked: Starting) -> io::Result<()> {
     let start = Start {
         work: asked.work.into(),
         folder: said_within_home(asked.folder)?,
+        strict: false,
         command: asked.command,
         may_cost: asked.may_cost,
         carries: false,

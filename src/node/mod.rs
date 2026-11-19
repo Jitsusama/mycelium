@@ -5426,7 +5426,8 @@ impl<S: Store> Shared<S> {
         let Some(home) = std::env::home_dir() else {
             return Err(format!("{machine} has no home to start it in"));
         };
-        let folder = start::begins_in(asked.folder.as_deref(), &home);
+        let folder =
+            start::begins_strictly(asked.folder.as_deref(), asked.strict, &home, &machine)?;
         let realm = self.realm.clone();
         let command = asked.command;
         let begins = folder.clone();
@@ -7123,6 +7124,7 @@ esac
         let asked = Request::Start(Start {
             work: work(vec![Need::Reach("basin".to_owned())]),
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -12094,6 +12096,7 @@ esac
         let asked = Request::Start(Start {
             work: work(vec![there]),
             folder: Some(dir.path().to_owned()),
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -12186,6 +12189,7 @@ esac
         let asked = Request::Start(Start {
             work: work(vec![Need::Machine("kestrel".to_owned())]),
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -12364,6 +12368,7 @@ esac
         let asked = Request::Start(Start {
             work: work(vec![there]),
             folder: Some(dir.path().to_owned()),
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -13426,6 +13431,7 @@ esac
                 ..work(needs)
             },
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -13479,6 +13485,7 @@ esac
             Request::Start(Start {
                 work: work(needs),
                 folder: None,
+                strict: false,
                 command: vec!["pi".to_owned(), "--said-once".to_owned()],
                 may_cost: false,
                 carries: false,
@@ -13634,6 +13641,7 @@ esac
             Request::Start(Start {
                 work: work(needs),
                 folder: None,
+                strict: false,
                 command: command.iter().map(|&word| word.to_owned()).collect(),
                 may_cost: false,
                 carries: false,
@@ -14093,6 +14101,7 @@ esac
             Request::Start(Start {
                 work: work(Vec::new()),
                 folder: None,
+                strict: false,
                 command: vec!["pi".to_owned()],
                 may_cost: false,
                 carries: false,
@@ -14134,6 +14143,7 @@ esac
         let start = Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -15814,6 +15824,7 @@ esac
                 let asked = Request::Start(Start {
                     work: work(needs),
                     folder,
+                    strict: false,
                     command,
                     may_cost: false,
                     carries: false,
@@ -16549,6 +16560,7 @@ esac
         let start = Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -16660,6 +16672,7 @@ esac
         let start = Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -16845,6 +16858,7 @@ esac
         Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
             folder: None,
+            strict: false,
             command: [
                 "sh",
                 "-c",

@@ -369,7 +369,8 @@ pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
 }
 
 /// What a sprout asks the node to start: its session on `machine` and
-/// nowhere else, in `folder`, never on a machine that costs money.
+/// nowhere else, in `folder` and never at home where that machine hasn't
+/// it (`strict`), never on a machine that costs money.
 #[must_use]
 pub fn start(machine: &str, folder: Option<PathBuf>, seed: &Seed, from: Option<&str>) -> Start {
     Start {
@@ -381,6 +382,7 @@ pub fn start(machine: &str, folder: Option<PathBuf>, seed: &Seed, from: Option<&
             lasts: None,
         },
         folder,
+        strict: true,
         command: command(&first_words(seed, from)),
         may_cost: false,
         carries: false,
@@ -666,6 +668,10 @@ mod tests {
         assert!(asked.work.prefers.is_empty() && !asked.work.may_wait);
         assert!(!asked.may_cost);
         assert_eq!(asked.folder, Some(PathBuf::from("src/skiff")));
+        assert!(
+            asked.strict,
+            "its folder is the work's, so never home instead"
+        );
         assert_eq!(&asked.command[3..5], ["sprout", "env"]);
         assert!(asked.command[5].starts_with("QUEST_WORKFLOW_FIRST_TEXT=The person"));
         assert_eq!(asked.command.last().map(String::as_str), Some("pi"));
