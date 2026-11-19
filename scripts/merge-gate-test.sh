@@ -221,6 +221,29 @@ if [[ ${again} != "${tip}" ]]; then
     "so its checks still count: ${again} against ${tip}" >&2
   failed=1
 fi
+# Pushed by anyone, with the train's parents but another tree, and named
+# to be found before it: it is never taken for the train.
+forged=$(git commit-tree "${base}^{tree}" -p "${tip}^1" -p "${peer}" -m forged)
+git push -q origin "${forged}:refs/heads/train/000000000000"
+rode goes "already made as train/${tip:0:12}" \
+  "a train is made again as the one holding its tree" \
+  make "${north}" "${south}" "${peer}"
+again=$(made)
+if [[ ${again} != "${tip}" ]]; then
+  echo "FAIL a pushed train whose tree differs is never the train made:" \
+    "${again} against ${tip}" >&2
+  failed=1
+fi
+git push -q origin --delete train/000000000000
+# Other riders on the same main make another train.
+rode goes "riding ${north:0:12} ${south:0:12};" "a train of other riders" \
+  make "${north}" "${south}"
+other=$(made)
+if [[ ${other} == "${tip}" || ${said} == *"already made"* ]]; then
+  echo "FAIL a train of other riders is made anew, not taken: ${said}" >&2
+  failed=1
+fi
+git push -q origin --delete "train/${other:0:12}"
 
 rode refuses "nothing kept says" "a train nothing passed at doesn't land" land "${tip}"
 points refs/heads/main "${base}" "a train refused leaves main where it was"

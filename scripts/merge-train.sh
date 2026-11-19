@@ -121,7 +121,7 @@ make_train() {
   fi
   sweep "${main}"
   local made_before
-  made_before=$(pushed "${main}" "${riders[@]}")
+  made_before=$(pushed "${main}" "$(git rev-parse "${tip}^{tree}")" "${riders[@]}")
   if [[ -n ${made_before} ]]; then
     tip=${made_before}
     echo "merge-train: this train was already made as train/${tip:0:12}, so" \
@@ -151,12 +151,15 @@ sweep() {
   done <<< "${trains}"
 }
 
-# The tip of a train already pushed on `main` with these riders, in this
-# order, or nothing. Each merge's first parent is the one before it, so
-# walking them back from a tip names its riders, last first.
+# The tip of a train already pushed on `main` holding `tree` with these
+# riders, in this order, or nothing. Each merge's first parent is the one
+# before it, so walking them back from a tip names its riders, last first.
+# Anyone who can push a branch can push one whose parents match, so only
+# one holding the tree just merged is taken, and what rides is still what
+# was reviewed.
 pushed() {
-  local main=$1 sha ref at rider
-  shift
+  local main=$1 tree=$2 sha ref at rider
+  shift 2
   local -a wanted=("$@")
   while read -r sha ref; do
     [[ -n ${sha} ]] || continue
@@ -167,7 +170,8 @@ pushed() {
       found=("${rider}" "${found[@]}")
       at=$(git rev-parse "${at}^1")
     done
-    if [[ ${at} == "${main}" && ${found[*]} == "${wanted[*]}" ]]; then
+    if [[ ${at} == "${main}" && ${found[*]} == "${wanted[*]}" ]] &&
+      [[ $(git rev-parse "${sha}^{tree}") == "${tree}" ]]; then
       echo "${sha}"
       return
     fi
