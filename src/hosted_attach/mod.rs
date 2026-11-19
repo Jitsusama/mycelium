@@ -1182,7 +1182,7 @@ mod tests {
                 let mut from = Frames::new(BufReader::new(from));
                 let heard = from.next().await.expect("a frame").expect("an attach");
                 let after = from.next().await;
-                (heard, after.is_none())
+                (heard, matches!(after, Ok(None)))
             });
             let (_tell, mut sizes) = mpsc::unbounded_channel();
             let mut here = Script::typing(b"");
