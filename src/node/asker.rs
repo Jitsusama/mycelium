@@ -890,17 +890,25 @@ pub fn judge(asker: Option<i32>, processes: &Processes, above: &[Option<Kind>]) 
     By::Person
 }
 
+/// Why [`unclaimed_because`] says an asker is an agent's where the
+/// kernel names no process at it.
+pub const UNNAMED: &str = "the kernel names no process at it";
+
+/// Why [`unclaimed_because`] says an asker is an agent's where nothing
+/// of its process can be read.
+pub const UNTOLD: &str = "nothing can be read of it or a forebear, so it can't be told";
+
 /// Why [`judge`] tells process `asker` an agent's where no session
 /// claims it, as `processes` tell it, in words a refusal can say: the
 /// step of the judgement that made it one.
 #[must_use]
 pub fn unclaimed_because(asker: Option<i32>, processes: &Processes) -> &'static str {
     let Some(pid) = asker else {
-        return "the kernel names no process at it";
+        return UNNAMED;
     };
     match processes.tell(pid) {
         Told::Agent(_) => return "an agent's unit or a pi above it runs it",
-        Told::Untold => return "nothing can be read of it or a forebear, so it can't be told",
+        Told::Untold => return UNTOLD,
         Told::Person => {}
     }
     if let Processes::Folder(procs) = processes.kernel() {

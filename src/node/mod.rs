@@ -85,7 +85,10 @@ mod standing;
 mod starts;
 mod team;
 mod tie;
-pub use tie::{KIND as TIE_KIND, Talk, aliases as tie_aliases, records as tie_records, talk};
+pub use tie::{
+    HALF_LIFE as TIE_HALF_LIFE, KIND as TIE_KIND, Talk, aliases as tie_aliases,
+    records as tie_records, talk,
+};
 mod turns;
 
 /// The most of its newest starts a node lists when asked.
@@ -4809,11 +4812,19 @@ impl<S: Store> Shared<S> {
                 let unclaimed = asker::unclaimed_because(self.client, &self.processes);
                 let why = judged_as(by, &judged.1, unclaimed);
                 eprintln!("a carry relayed from {from:?} is refused: {why}");
+                // Where the node couldn't read the link's end, running it
+                // elsewhere changes nothing; reading it does.
+                let when = if judged.1.is_empty()
+                    && [asker::UNNAMED, asker::UNTOLD].contains(&unclaimed)
+                {
+                    "its node can read the process at this machine's end of the link"
+                } else {
+                    "this machine's end of the link runs outside every agent's session"
+                };
                 return Err(format!(
                     "{} takes no carry from {from:?} here, so the carried session couldn't \
                      stand as its cell: {why}. Its files stay in the handover, so the carry \
-                     can be taken again once this machine's end of the link runs outside \
-                     every agent's session",
+                     can be taken again once {when}",
                     self.machine
                 ));
             }
@@ -15935,9 +15946,10 @@ esac
         assert!(
             refused.contains(
                 "as nothing can be read of it or a forebear, so it can't be told. Its files \
-                 stay in the handover, so the carry can be taken again"
+                 stay in the handover, so the carry can be taken again once its node can \
+                 read the process at this machine's end of the link"
             ),
-            "it says what made its link's end an agent's, and that the carry can be taken \
+            "it says what made its link's end an agent's, and when the carry can be taken \
              again: {refused}"
         );
     }
