@@ -75,6 +75,8 @@ struct Kept {
     brought: Brought,
     /// When its session last ran here.
     ran: i64,
+    /// Whether its ties are held to [`bounded`]'s strength yet.
+    bounded: bool,
 }
 
 /// A carry started here, waited on for its session to run here, and
@@ -177,7 +179,12 @@ impl Arrivals {
             if let Some(brought) = left_for(scratch, &waited.carry, &session.id) {
                 waited.stood = true;
                 let brought = settled(brought, now);
-                kept.insert(session.id.clone(), Kept { brought, ran: now });
+                let one = Kept {
+                    brought,
+                    ran: now,
+                    bounded: false,
+                };
+                kept.insert(session.id.clone(), one);
             }
         }
         drop(carries);
@@ -290,16 +297,22 @@ impl Arrivals {
     /// the cells that arrived brought heard within a day of `now`,
     /// where this node holds none of it heard later. A cell's file is
     /// its session's to write, so the ties each cell brought are held
-    /// to [`bounded`]'s strength.
+    /// to [`bounded`]'s strength, once, the first time they are weighed
+    /// here: from then on they fade from when each was heard, as every
+    /// tie held here does, and say the same strength each time.
     pub(super) fn ties(&self, made: &mut BTreeMap<String, daemon::Record>, now: i64) {
-        let kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         if kept.is_empty() {
             return;
         }
         let most = strongest_held(made, now);
+        for one in kept.values_mut().filter(|one| !one.bounded) {
+            one.brought.ties = bounded(&one.brought.ties, most, now).collect();
+            one.bounded = true;
+        }
         let brought = kept.values().flat_map(|one| {
             let Brought { ties, talk, .. } = &one.brought;
-            bounded(ties, most, now).chain(talk.iter().cloned())
+            ties.iter().chain(talk.iter()).cloned()
         });
         for record in brought {
             let (Some(key), Some(heard)) = (record["key"].as_str(), record["heard"].as_i64())
@@ -723,6 +736,40 @@ mod tests {
     }
 
     #[test]
+    fn past_as_many_as_are_kept_none_whose_session_runs_is_let_go() {
+        let scratch = tempfile::tempdir().expect("a scratch folder");
+        let arrivals = Arrivals::default();
+        let mut sessions = Vec::new();
+        for at in 0..=KEPT_MOST {
+            let id = format!("s-{at}");
+            left(
+                scratch.path(),
+                "tern",
+                &id,
+                &json!({"session": id, "cell": format!("C{at:05}")}),
+            );
+            // The first stand before the last are carried, so the
+            // carries waited on, as many as are kept too, let go only
+            // those already standing.
+            let mut carried = from("tern");
+            carried.at = if at < KEPT_MOST { NOW - 1 } else { NOW };
+            arrivals.carried(&id, carried);
+            sessions.push(session(&id, &format!("a{at:05}"), "skiff"));
+            if at + 1 == KEPT_MOST {
+                arrivals.read(scratch.path(), "skiff", &sessions, NOW - 1);
+            }
+        }
+        // Every one runs, so a cell is let go only for want of one
+        // whose session has stopped.
+        arrivals.read(scratch.path(), "skiff", &sessions, NOW);
+        assert_eq!(
+            arrivals.cells().len(),
+            KEPT_MOST + 1,
+            "none whose session runs is let go, past {KEPT_MOST} too"
+        );
+    }
+
+    #[test]
     fn a_folder_reached_through_a_link_is_never_read() {
         let scratch = tempfile::tempdir().expect("a scratch folder");
         let elsewhere = tempfile::tempdir().expect("another folder");
@@ -902,6 +949,24 @@ mod tests {
             made["tie:HARBOR~KELP01"].value()["strength"],
             json!(2.0),
             "weighed as it stands now, as the strongest here does"
+        );
+
+        // Weighed again two half-lives on, with nothing held stronger
+        // than a message: bounded once, it says the same and so fades,
+        // as a quarter of what it was.
+        let later = NOW + 2 * super::tie::HALF_LIFE;
+        let mut made = BTreeMap::new();
+        arrivals.ties(&mut made, later);
+        let record = &made["tie:HARBOR~KELP01"];
+        assert_eq!(
+            record.value()["strength"],
+            json!(2.0),
+            "bounded when first weighed, never again"
+        );
+        let faded = 2.0 * super::tie::faded(later - record.heard());
+        assert!(
+            (faded - 0.5).abs() < 1e-9,
+            "so it fades as any tie held here: {faded}"
         );
     }
 

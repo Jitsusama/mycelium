@@ -593,10 +593,12 @@ in order and says each step:
    from when it was heard. A cell brings
    at most its 128 strongest ties, and where its strongest is past
    the strongest tie between two cells the arriving node holds, or a
-   message's where it holds none, each is made weaker alike, so none
-   is stronger and they keep their order. Each strength is weighed as
-   it stands now, faded by the two hours' half-life from when it was
-   heard, so an old strong tie counts for what it is now. It is
+   message's where that is stronger, each is made weaker alike, so
+   none is stronger and they keep their order. Each strength is
+   weighed as it stands now, faded by the two hours' half-life from
+   when it was heard, so an old strong tie counts for what it is now,
+   and is weighed once, the first time the node weighs it: from then
+   on it fades as a tie held there does. It is
    weighed as a hub by its cell's talk. Carried on again, it brings
    that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share
