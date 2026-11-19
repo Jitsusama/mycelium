@@ -11981,13 +11981,21 @@ esac
         let refused = ask(socket.clone(), start())
             .await
             .expect_err("one past the limit");
+        // Charged to WCJQSG, the nearest claim, rather than to agents of no
+        // known cell, whose refusal ends the same way.
         assert!(
-            refused.ends_with("a cell starts at most 8 an hour"),
-            "a failed start counts, so the ninth is refused: {refused}"
+            refused.starts_with("WCJQSG started 8 sessions")
+                && refused.ends_with("a cell starts at most 8 an hour"),
+            "a failed start counts toward the nearest claim, so the ninth is refused: {refused}"
         );
         let book = fs::read_to_string(socket.with_file_name("starts.jsonl"))
             .expect("every start is written down");
         assert_eq!(book.lines().count(), starts::CELL_AN_HOUR + 1);
+        assert!(
+            book.lines()
+                .all(|line| line.contains(r#""started_by":"WCJQSG""#)),
+            "each start is kept as the nearest claim's: {book}"
+        );
         assert!(!book.contains("--said-once"), "no argument is kept: {book}");
         assert!(
             starts(StartsAct::Stop).await.is_err(),
