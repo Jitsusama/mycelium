@@ -208,6 +208,27 @@ impl Processes {
         (started(procs, spawner) == Some(starts[at - 1]) && unchanged()).then_some(session)
     }
 
+    /// Whether process `asker` runs below a `pi-spawner` that is a child of
+    /// process `host`, read from the kernel, where only a process's own
+    /// threads may change its name. Nothing says so where the kernel's
+    /// folder can't be read, as on a Mac, which proves no spawner either.
+    fn below_a_spawner(&self, asker: i32, host: i32) -> bool {
+        let Self::Folder(procs) = self.kernel() else {
+            return false;
+        };
+        let lineage = self.lineage(asker);
+        let Some(child) = lineage
+            .iter()
+            .position(|process| *process == host)
+            .and_then(|at| at.checked_sub(1))
+            .and_then(|at| lineage.get(at))
+        else {
+            return false;
+        };
+        fs::read_to_string(procs.join(child.to_string()).join("status"))
+            .is_ok_and(|status| named(&status).is_some_and(|(name, _)| name == "pi-spawner"))
+    }
+
     /// What is told of process `pid`.
     fn tell(&self, pid: i32) -> Told {
         match self {
@@ -1054,6 +1075,15 @@ pub fn session_alone(
                  proves"
             ))
         };
+    }
+    // One below a spawner whose word this node doesn't hold, as until the
+    // host says it again once this node starts, is told none, though the
+    // host holds only one: the spawner may serve a session gone since.
+    if !keys.is_empty() && processes.below_a_spawner(pid, process) {
+        return Err(format!(
+            "this asks below pi host process {process} through no pi-spawner this node \
+             took its word for as serving a session it proves"
+        ));
     }
     let shared = sharing.max(proved.len());
     match proved.as_slice() {
@@ -2025,6 +2055,35 @@ mod tests {
             unproved(&[claims[1].clone()]),
             "nor is a command below it told the host's one other session, once that alone \
              proves"
+        );
+    }
+
+    #[test]
+    fn a_spawner_the_node_holds_no_word_for_proves_no_session_though_its_host_holds_one() {
+        let procs = a_host_and_its_spawners();
+        let claims = [claim("s-one", 78, Some(1), Some("work"))];
+        let owners = vec![("s-one".to_owned(), 78)];
+        let processes = folder(procs.path());
+        let hosts = tempfile::tempdir().expect("a folder for hosts' records");
+        let alone = |asker: i32| {
+            session_alone(
+                (Some(asker), super::started(procs.path(), asker)),
+                &processes,
+                &owners,
+                &claims,
+                hosts.path(),
+                &Spawners::default(),
+            )
+        };
+        assert!(
+            alone(83).is_err_and(|why| why.contains("through no pi-spawner")),
+            "a command below a spawner never said, as after this node restarts, is told no \
+             session, though the host holds only one"
+        );
+        assert_eq!(
+            alone(85),
+            Ok("s-one".to_owned()),
+            "the host's own child, as it starts once a spawner is lost, is told its one session"
         );
     }
 

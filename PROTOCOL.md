@@ -2036,10 +2036,14 @@ one above it, and the host and the asker unchanged from when it connected, is
 then proved as that session. Nothing a
 command runs can say it for another: it holds none of the host's
 connection, which the host opens closed on exec, and the node knows
-the speaker from the kernel, not from what it says. A command the
-host starts as its own child, as it does once a spawner is lost, runs
-below no spawner the host said, and is told none; so is one below a
-spawner a command started itself.
+the speaker from the kernel, not from what it says. A command below
+a pi-spawner the host started but the node holds no word for is told
+no session, even where the host holds only one, since that spawner
+may serve a session gone since. A command the host starts as its own
+child, as it does once a spawner is lost, runs below no spawner: it
+is told the host's session where the host proves just one, and none
+where it holds more. A spawner a command starts below a said one
+changes nothing: what runs below it is told the said one's session.
 
 This rests on three things the node doesn't prove. It takes the
 word only where the kernel lets a process trace no more than its own
