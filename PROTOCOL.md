@@ -2055,8 +2055,9 @@ line, its quotes dropped as node drops them, may name neither
 `--inspect` in any form nor `--no-disable-sigusr1`, which undoes the
 first; and its environment may give no `NODE_OPTIONS` but a blank
 one, since `--require` or `--import` there runs code as the host. A
-host whose environment can't be read is refused. The kernel's word is read again at each proof, so a
-spawner taken while tracing was shut proves nothing once it opens.
+host whose environment can't be read is refused. The kernel's word
+is read again at each proof, so a spawner taken while tracing was
+shut proves nothing once it opens.
 
 It can't tell the host's own code from code an agent brought into
 the host's process, an extension a project carries or a reload onto
