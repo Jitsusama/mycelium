@@ -602,6 +602,19 @@ const PTRACE_SCOPE: &str = "sys/kernel/yama/ptrace_scope";
 /// send, from opening node's inspector.
 const NO_SIGUSR1: &str = "--disable-sigusr1";
 
+/// The variables that would run code inside a pi host as its node
+/// starts, so a host given any of them but blank is refused: node's own
+/// options, the loader's libraries, and the modules OpenSSL's
+/// configuration loads. A host's unit clears each.
+const LOADS_CODE: [&str; 6] = [
+    "NODE_OPTIONS",
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "OPENSSL_CONF",
+    "OPENSSL_MODULES",
+];
+
 /// Whether a node option, its underscores read as dashes and its quotes
 /// and escapes dropped, opens node's inspector or lets SIGUSR1 open it
 /// again, as `--no-disable-sigusr1` does after [`NO_SIGUSR1`].
@@ -631,8 +644,11 @@ fn tracing_open(procs: &Path) -> Option<&'static str> {
 /// first, since an option taking a value would take one later as its
 /// own. Any `NODE_OPTIONS` at all is refused, since besides opening the
 /// inspector, `--require` or `--import` there runs code as the host
-/// before it starts; a host's unit clears it. An environment that can't
-/// be read is taken as one that might hold some.
+/// before it starts; a host's unit clears it. So is any [`LOADS_CODE`]
+/// variable, which loads a library's or a module's code into the host as
+/// it starts.
+/// An environment that can't be read is taken as one that might hold
+/// some.
 fn inspector_open(procs: &Path, pid: i32) -> Option<String> {
     let process = procs.join(pid.to_string());
     let Ok(line) = fs::read(process.join("cmdline")) else {
@@ -657,15 +673,18 @@ fn inspector_open(procs: &Path, pid: i32) -> Option<String> {
             "process {pid}'s environment can't be read, so its NODE_OPTIONS can't be told"
         ));
     };
-    let given = environ
-        .split(|byte| *byte == 0)
-        .filter_map(|pair| pair.strip_prefix(b"NODE_OPTIONS="))
-        .any(|options| !options.iter().all(u8::is_ascii_whitespace));
-    if given {
-        return Some(format!(
-            "process {pid} is given NODE_OPTIONS, which could open its inspector or run \
-             code in it"
-        ));
+    for name in LOADS_CODE {
+        let prefix = format!("{name}=");
+        let given = environ
+            .split(|byte| *byte == 0)
+            .filter_map(|pair| pair.strip_prefix(prefix.as_bytes()))
+            .any(|value| !value.iter().all(u8::is_ascii_whitespace));
+        if given {
+            return Some(format!(
+                "process {pid} is given {name}, which could open its inspector or run code \
+                 in it"
+            ));
+        }
     }
     words
         .iter()
@@ -732,7 +751,7 @@ impl Spawners {
     /// the spawner must be its child, named pi-spawner, started when the
     /// host says. A spawner serves one session, and a session's spawners
     /// are one host's: another host's are taken only once the first's have
-    /// all gone, or the first host has.
+    /// all gone, or the first host no longer proves the session.
     ///
     /// That holds only while no command can change the host's code: one
     /// that can rewrite the harness a host loads, then end the host, has
@@ -1115,9 +1134,14 @@ pub fn session_alone(
         [] => Err(format!(
             "this asks below process {process}, whose session none proves"
         )),
-        _ if !keys.is_empty() => Err(format!(
+        _ if !keys.is_empty() && processes.takes_word_of(process) => Err(format!(
             "this asks below pi host process {process}, which {shared} sessions share, \
              and below no pi-spawner this node ties to one of them"
+        )),
+        _ if !keys.is_empty() => Err(format!(
+            "this asks below pi host process {process}, which {shared} sessions share, \
+             and whose word for its pi-spawners this node can't take on this \
+             machine"
         )),
         _ => Err(format!(
             "this asks from process {process}, which {shared} sessions share, so none is \
@@ -2057,7 +2081,8 @@ mod tests {
                 hosts.path(),
                 &spawners,
             )
-            .is_err_and(|why| why.contains("2 sessions share")),
+            .is_err_and(|why| why.contains("2 sessions share")
+                && why.contains("whose word for its pi-spawners this node can't take")),
             "nor once any process may trace another of its user, though it was said \
              while none could: the host's sessions are told apart by nothing then"
         );
@@ -2111,6 +2136,20 @@ mod tests {
             alone(83).is_err_and(|why| why.contains("pi-spawner this node can't tie")),
             "a command below a spawner never said, as after this node restarts, is told no \
              session, though the host holds only one"
+        );
+        let plain = [claim("s-one", 78, Some(1), None)];
+        assert_eq!(
+            session_alone(
+                (Some(83), super::started(procs.path(), 83)),
+                &processes,
+                &owners,
+                &plain,
+                hosts.path(),
+                &Spawners::default(),
+            ),
+            Ok("s-one".to_owned()),
+            "a pi that is no host, below the pi-spawner it runs its own commands through, is \
+             told its session, since no host says a spawner for it"
         );
         assert_eq!(
             alone(85),
@@ -2319,30 +2358,6 @@ mod tests {
             refused("opens its inspector"),
             "nor one whose option opening it is quoted or escaped"
         );
-        runs(&HOST_NODE, Some("--require /tmp/x.js"));
-        assert!(
-            refused("given NODE_OPTIONS"),
-            "nor one given any NODE_OPTIONS, which could run code in it"
-        );
-        runs(&HOST_NODE, Some(" "));
-        assert!(
-            spawners
-                .register(
-                    (Some(78), Some(1)),
-                    (82, 82),
-                    "s-one",
-                    &processes,
-                    &owners,
-                    &claims,
-                )
-                .is_ok(),
-            "though one whose NODE_OPTIONS its unit cleared is heard"
-        );
-        fs::remove_file(procs.path().join("78").join("environ")).expect("it goes");
-        assert!(
-            refused("environment can't be read"),
-            "nor one whose environment can't be read"
-        );
         runs(&HOST_NODE, None);
         traced_by_forebears(procs.path(), "0");
         assert!(
@@ -2361,6 +2376,68 @@ mod tests {
         );
         traced_by_forebears(procs.path(), "1");
         assert!(!refused(""), "and heard once it runs as core starts it");
+    }
+
+    #[test]
+    fn a_host_is_heard_only_where_its_environment_loads_no_code() {
+        let procs = a_host_and_its_spawners();
+        let claims = [claim("s-one", 78, Some(1), Some("work"))];
+        let owners = [("s-one".to_owned(), 78)];
+        let processes = folder(procs.path());
+        let spawners = Spawners::default();
+        let refused = |why: &str| {
+            spawners
+                .register(
+                    (Some(78), Some(1)),
+                    (82, 82),
+                    "s-one",
+                    &processes,
+                    &owners,
+                    &claims,
+                )
+                .is_err_and(|it| it.contains(why))
+        };
+        runs_node(procs.path(), 78, &HOST_NODE, Some("--require /tmp/x.js"));
+        assert!(
+            refused("given NODE_OPTIONS"),
+            "nor one given any NODE_OPTIONS, which could run code in it"
+        );
+        for loads in [
+            "LD_PRELOAD=/tmp/x.so",
+            "LD_AUDIT=/tmp/x.so",
+            "LD_LIBRARY_PATH=/tmp",
+            "OPENSSL_CONF=/tmp/x.cnf",
+            "OPENSSL_MODULES=/tmp",
+        ] {
+            fs::write(
+                procs.path().join("78").join("environ"),
+                format!("PATH=/bin\0{loads}\0"),
+            )
+            .expect("its environment is written");
+            assert!(
+                refused("which could open its inspector or run code"),
+                "nor one given {loads}, which loads code into it as it starts"
+            );
+        }
+        runs_node(procs.path(), 78, &HOST_NODE, Some(" "));
+        assert!(
+            spawners
+                .register(
+                    (Some(78), Some(1)),
+                    (82, 82),
+                    "s-one",
+                    &processes,
+                    &owners,
+                    &claims,
+                )
+                .is_ok(),
+            "though one whose NODE_OPTIONS its unit cleared is heard"
+        );
+        fs::remove_file(procs.path().join("78").join("environ")).expect("it goes");
+        assert!(
+            refused("environment can't be read"),
+            "nor one whose environment can't be read"
+        );
     }
 
     #[test]

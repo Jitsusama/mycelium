@@ -543,4 +543,23 @@ mod tests {
             "a pattern is one string, never a list"
         );
     }
+
+    #[test]
+    fn a_spawner_is_said_and_answered_as_the_protocol_writes_it() {
+        let said = r#"{"Spawned":{"pid":82,"started":5,"session":"s-one"}}"#;
+        assert_eq!(
+            serde_json::from_str::<Request>(said).expect("a spawner's word reads"),
+            Request::Spawned {
+                pid: 82,
+                started: 5,
+                session: "s-one".to_owned(),
+            },
+            "{said}"
+        );
+        assert_eq!(
+            serde_json::to_string(&Response::Spawned).expect("its answer writes"),
+            r#""Spawned""#,
+            "the answer is the bare word"
+        );
+    }
 }

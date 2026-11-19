@@ -2051,7 +2051,8 @@ Where the node would take no host's word, as below, no spawner is
 ever said, so what runs below one is told as the host's own child
 is, as before spawners were said.
 
-This rests on three things the node doesn't prove. It takes the
+The node checks for itself that no other process can speak as the
+host. It takes the
 word only where the kernel lets a process trace no more than its own
 descendants, Yama's `ptrace_scope` at 1 or more, since otherwise a
 command could write the host's memory and speak as the host;
@@ -2064,13 +2065,17 @@ an option taking a value could take a later one as its own; that
 line, its quotes dropped as node drops them, may name neither
 `--inspect` in any form nor `--no-disable-sigusr1`, which undoes the
 first; and its environment may give no `NODE_OPTIONS` but a blank
-one, since `--require` or `--import` there runs code as the host. A
-host whose environment can't be read is refused. The kernel's word
-is read again at each proof, so a spawner taken while tracing was
-shut proves nothing once it opens, and its commands are told as
+one, since `--require` or `--import` there runs code as the host,
+nor any `LD_PRELOAD`, `LD_AUDIT` or `LD_LIBRARY_PATH`, which load a
+library's code into it as it starts, or `OPENSSL_CONF` or
+`OPENSSL_MODULES`, whose configuration has OpenSSL load a module.
+A host whose environment can't be read is refused. The kernel's
+word is read again at each proof, so a spawner taken while tracing
+was shut proves nothing once it opens, and its commands are told as
 the host's own child is.
 
-It can't tell the host's own code from code an agent brought into
+It rests too on three things the node doesn't prove. It can't tell
+the host's own code from code an agent brought into
 the host's process, an extension a project carries or a reload onto
 another tree among it, which can say any spawner serves any session
 the host proves. And a command that can write the harness's files
