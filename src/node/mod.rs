@@ -4436,34 +4436,33 @@ impl<S: Store> Shared<S> {
     /// noted once it starts, so the session is read for the cell it left
     /// as once it runs here.
     ///
-    /// Where no person works, a link's end can't be told from an agent's
-    /// login, so a relay from any process but this node's own is taken as
-    /// an agent's start instead: counted, limited and booked here, as
-    /// [`Self::start`] takes one, and never read for a carry. It is pinned
-    /// here and never made a machine for, and waits for no room, since the
-    /// asking node stops waiting on its answer within half a minute. A
-    /// machine made from a basin takes the starts placed on it that way,
-    /// as its maker's link is never its node's own process.
+    /// A relay from any other process is taken as an agent's start
+    /// instead: counted, limited and booked here, as [`Self::start`] takes
+    /// one, and never read for a carry, so it gains an agent nothing its
+    /// own start wouldn't. It is pinned here and never made a machine
+    /// for, and waits for no room, since the asking node stops waiting on
+    /// its answer within half a minute. Where no person works, every
+    /// link's end is told so, and a machine made from a basin takes the
+    /// starts placed on it that way; elsewhere, so is a link's end an
+    /// agent ran, or one where the kernel can't say whose it is.
     async fn relayed(&self, from: &str, asked: Start) -> Reply {
         let (by, _) = self.judged().await?;
         if !asker::relays(self.client, by) {
-            if self.processes.is_unattended() {
-                eprintln!(
-                    "a start relayed from {from} is taken as an agent's: no person works on this \
-                     machine, so its link's end can't be told from an agent's login"
-                );
-                let mut pinned = Start {
-                    carries: false,
-                    may_cost: false,
-                    ..asked
-                };
-                pinned.work.needs.push(Need::Machine(self.machine.clone()));
-                return self.started(pinned, 0).await;
-            }
-            let why = "only a linked node relays a start here, and this asker is judged an \
-                       agent's: an agent starts a session with `mycelium start`";
-            eprintln!("a start relayed from {from} is refused: {why}");
-            return Err(why.to_owned());
+            let why = if self.processes.is_unattended() {
+                "no person works on this machine, so its link's end can't be told from an \
+                 agent's login"
+                    .to_owned()
+            } else {
+                format!("this asker is judged {by}, so it relays nothing as the person's")
+            };
+            eprintln!("a start relayed from {from} is taken as an agent's: {why}");
+            let mut pinned = Start {
+                carries: false,
+                may_cost: false,
+                ..asked
+            };
+            pinned.work.needs.push(Need::Machine(self.machine.clone()));
+            return self.started(pinned, 0).await;
         }
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
@@ -14687,16 +14686,15 @@ esac
         };
         let mut asker = shared.clone();
         asker.client = Some(1);
-        let refused = asker
+        asker
             .relayed("tern", carrying.clone())
             .await
-            .expect_err("no process judged an agent's relays a start");
-        assert!(
-            refused.starts_with(
-                "only a linked node relays a start here, and this asker is \
-                 judged an agent's"
-            ),
-            "{refused}"
+            .expect("a relay from a process judged an agent's starts as an agent's");
+        shared.read_sessions();
+        assert_eq!(
+            stands(&shared),
+            "STAND1",
+            "and is never read for a carry, whatever its mark"
         );
         asker.client = i32::try_from(std::process::id()).ok();
         let _ = asker.relayed("osprey", carrying.clone()).await;

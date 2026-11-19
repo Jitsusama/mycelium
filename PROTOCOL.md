@@ -158,16 +158,20 @@ same code, each line a JSON value:
    end's machine, as a `"Start"` request says it. The other end hands it
    to its own node's socket as `{"Relayed": {"from", "start"}}`, `from`
    the machine that asked, with a need for its own machine added.
-   That node takes `"Relayed"` only from its own process or one it
-   judges the person's, as a link's end is: none in an agent's unit,
-   below a pi or a session's claim, or barred or mounted apart as a
-   fence's. Where no person works, an agent's SSH login can't be told
-   from a link's end, so a relay from any process but its own is taken
-   as an agent's start: counted, limited and booked here as any agent's
-   is, never read for a carry, and logged; it is pinned there, never
-   made a machine for, and waits for no room, since the asking node
-   stops waiting on its answer within 30 seconds. A machine made from
-   a basin so still takes the starts placed on it. The end passes a
+   That node takes `"Relayed"` as a linked node's only from its own
+   process or one it judges the person's, as a link's end is: none in
+   an agent's unit, below a pi or a session's claim, or barred or
+   mounted apart as a fence's. A relay from any other process is taken
+   as an agent's start, so it gains an agent nothing its own start
+   wouldn't: counted, limited and booked here as any agent's is, never
+   read for a carry, and logged; it is pinned there, never made a
+   machine for, and waits for no room, since the asking node stops
+   waiting on its answer within 30 seconds. Where no person works, an
+   agent's SSH login can't be told from a link's end, so every relay
+   but its own process's is taken so, and a machine made from a basin
+   still takes the starts placed on it. Elsewhere, a link's end an
+   agent ran is taken so too, as is one whose owner the kernel can't
+   tell. The end passes a
    start's `"carries"` mark only once its link is proven, and clears
    it otherwise, so a carry arrives as its cell only where the leaving
    machine dialled the arriving one, whose end its key proves. The
