@@ -748,12 +748,7 @@ mod tests {
     #[test]
     fn a_node_refuses_a_kit_it_cant_find_or_an_agent_could_point_elsewhere() {
         let temporary = tempfile::tempdir().expect("a temporary folder");
-        // Resolved, since a temporary folder reached through a link names
-        // the link's target as the folder others may write.
-        let folder = temporary
-            .path()
-            .canonicalize()
-            .expect("the folder resolves");
+        let folder = temporary.path();
         let kit = folder.join("kit");
         let missing = kit_checked(&kit, &declarers());
         assert!(
@@ -780,7 +775,7 @@ mod tests {
             "and says so as it starts, and how it mends"
         );
         fs::remove_dir(&kit).expect("the bare kit is taken away");
-        let (kit, resolved) = kit_of_three(&folder);
+        let (kit, resolved) = kit_of_three(folder);
         // Given through a link, as a profile is.
         let profile = folder.join("profile");
         std::os::unix::fs::symlink(&kit, &profile).expect("a link to the kit");
@@ -804,7 +799,12 @@ mod tests {
                 why: format!(
                     "an agent could change which kit it is: {} may be written by others than \
                      its owner",
-                    open.display()
+                    // The check names the folder as it resolves, which
+                    // differs where the temporary folder is reached
+                    // through a link.
+                    fs::canonicalize(&open)
+                        .expect("the open folder resolves")
+                        .display()
                 ),
             },
             "a kit reached through a link an agent could repoint is refused"
