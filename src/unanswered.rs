@@ -280,9 +280,6 @@ const SAYS_LINES: usize = 2;
 /// and each says its first line whole.
 #[must_use]
 pub fn drawn(records: &[Value], look: &Look, width: Option<usize>) -> String {
-    if records.len() < 1000 {
-        return String::new();
-    }
     let mut records: Vec<&Value> = records.iter().collect();
     records.sort_by_key(|record| millis(record["since"].as_str().unwrap_or_default()));
     let (questions, holds): (Vec<&Value>, Vec<&Value>) = records
@@ -323,7 +320,11 @@ fn block(heading: &str, records: &[&Value], look: &Look, width: Option<usize>) -
         out.push('\n');
         let opening = says(record);
         match width {
-            None => out.push_str(&format!("{SAYS}{opening}\n")),
+            None => {
+                out.push_str(SAYS);
+                out.push_str(&opening);
+                out.push('\n');
+            }
             Some(width) => out.push_str(&opening_in(&opening, width)),
         }
     }
@@ -345,7 +346,10 @@ fn headed(record: &Value, look: &Look) -> String {
         return format!("{when}  {from} holds {held}{until}  [{short}]");
     }
     let waited = millis(since).map_or_else(String::new, |at| {
-        format!(", {} so far", waited(look.now.timestamp().as_millisecond() - at))
+        format!(
+            ", {} so far",
+            waited(look.now.timestamp().as_millisecond() - at)
+        )
     });
     let asked = names(&record["waiting_on"]);
     format!("{when}  {from} asks {asked}{waited}  [{short}]")
@@ -355,7 +359,13 @@ fn headed(record: &Value, look: &Look) -> String {
 fn names(list: &Value) -> String {
     let names: Vec<String> = list
         .as_array()
-        .map(|names| names.iter().filter_map(Value::as_str).map(one_line).collect())
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(one_line)
+                .collect()
+        })
         .unwrap_or_default();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     match crate::swarm::listed(&names) {
@@ -372,7 +382,12 @@ fn short_id(id: &str) -> &str {
 /// The first line of what a record says, drawn safe.
 fn says(record: &Value) -> String {
     let text = record["text"].as_str().unwrap_or_default();
-    one_line(text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default())
+    one_line(
+        text.lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default(),
+    )
 }
 
 /// `opening` wrapped under its heading to `width` columns, at most
@@ -384,21 +399,21 @@ fn opening_in(opening: &str, width: usize) -> String {
     if lines.len() <= SAYS_LINES {
         return wrapped;
     }
-    let mut out: String = lines[..SAYS_LINES - 1]
-        .iter()
-        .map(|line| format!("{line}\n"))
-        .collect();
-    // The last line shown takes the rest, cut to the room it has, so an
-    // ellipsis says there is more.
-    let shown: usize = lines[..SAYS_LINES - 1]
-        .iter()
-        .map(|line| line.trim_start().chars().count() + 1)
-        .sum();
-    let rest: String = opening.chars().skip(shown).collect();
-    out.push_str(&format!(
-        "{SAYS}{}\n",
-        crate::swarm::fit(rest.trim_start(), width.saturating_sub(SAYS.len()))
+    let (shown, left) = lines.split_at(SAYS_LINES - 1);
+    let mut out = String::new();
+    for line in shown {
+        out.push_str(line);
+        out.push('\n');
+    }
+    // The last line shown takes the lines left, joined again, cut to the
+    // room it has, so an ellipsis says there is more.
+    let rest: Vec<&str> = left.iter().map(|line| line.trim_start()).collect();
+    out.push_str(SAYS);
+    out.push_str(&crate::swarm::fit(
+        &rest.join(" "),
+        width.saturating_sub(SAYS.len()),
     ));
+    out.push('\n');
     out
 }
 
@@ -702,7 +717,8 @@ mod tests {
         for line in [
             "1 question waits on an answer",
             "  12:05  TERN01 asks SKIFF1 and KESTRL, 25 min so far  [c0cd280e]",
-            "    TERN01, keeper of the wish list: these asks of his are marked landed",
+            "    TERN01, keeper of the wish list: these asks of his are marked landed under",
+            "    you, but none carries a try-line he could follow in a minute.",
         ] {
             assert!(
                 drawn.lines().any(|each| each == line),

@@ -171,10 +171,12 @@ enum Action {
     /// Prints the questions and holds the mesh waits on.
     ///
     /// Each question of the last two hours still waiting on a peer it
-    /// was put to, and each hold still standing, oldest first, a JSON
-    /// line each, as the node holds it.
+    /// was put to, and each hold still standing, oldest first: who asks
+    /// whom and how long it has waited, or who holds whom and until
+    /// when, its id, and how it opens. `-o json` prints each whole, a
+    /// JSON line as the node holds it.
     #[command(after_help = "Example:\n  mycelium unanswered")]
-    Unanswered,
+    Unanswered(Output),
     /// Prints what you said to sessions through this machine.
     ///
     /// Oldest first, with when each was taken up and answered, a JSON
@@ -1493,7 +1495,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             carry(&socket, shares, carrying, why.as_deref())
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
-        Action::Unanswered => print_records(&socket, mycelium::unanswered::KIND),
+        Action::Unanswered(output) => unanswered(&socket, &output),
         Action::Said => print_records(&socket, mycelium::words::KIND),
         Action::Health { here } => health(&socket, here, realm),
         Action::Balance(asked) => balance(&socket, &realm, asked),
@@ -3048,6 +3050,38 @@ fn forage(socket: &Path, asked: &ForageAsked) -> io::Result<()> {
         forage::draw_for_a_pipe(&chosen, asked.cell.as_deref())
     };
     write!(io::stdout().lock(), "{drawn}")
+}
+
+/// Draws what waits on the mesh for a person, to the terminal's width,
+/// or whole into a pipe; or, asked for JSON, prints each record as the
+/// node holds it.
+fn unanswered(socket: &Path, output: &Output) -> io::Result<()> {
+    if output.json() {
+        return print_records(socket, mycelium::unanswered::KIND);
+    }
+    let records = mycelium::swarm::records(socket, mycelium::unanswered::KIND, SWARM_WITHIN)?;
+    let drawn = mycelium::unanswered::drawn(&records, &look(), room());
+    io::stdout().lock().write_all(drawn.as_bytes())
+}
+
+/// The columns stdout has, as core.nix's commands find them: `COLUMNS`,
+/// then its terminal's, then eighty; into a pipe, none, so nothing is
+/// cut.
+fn room() -> Option<usize> {
+    use std::io::IsTerminal as _;
+    let stdout = io::stdout();
+    if !stdout.is_terminal() {
+        return None;
+    }
+    let columns = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|columns| columns.parse().ok())
+        .filter(|columns: &usize| *columns > 0);
+    let terminal = rustix::termios::tcgetwinsize(&stdout)
+        .ok()
+        .filter(|size| size.ws_col > 0)
+        .map(|size| usize::from(size.ws_col));
+    Some(columns.or(terminal).unwrap_or(80))
 }
 
 /// Prints each record of `kind` the node holds, a JSON line each, oldest
