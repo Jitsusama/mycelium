@@ -2047,6 +2047,9 @@ child, as it does once a spawner is lost, runs below no spawner: it
 is told the host's session where the host proves just one, and none
 where it holds more. A spawner a command starts below a said one
 changes nothing: what runs below it is told the said one's session.
+Where the node would take no host's word, as below, no spawner is
+ever said, so what runs below one is told as the host's own child
+is, as before spawners were said.
 
 This rests on three things the node doesn't prove. It takes the
 word only where the kernel lets a process trace no more than its own
@@ -2064,7 +2067,8 @@ first; and its environment may give no `NODE_OPTIONS` but a blank
 one, since `--require` or `--import` there runs code as the host. A
 host whose environment can't be read is refused. The kernel's word
 is read again at each proof, so a spawner taken while tracing was
-shut proves nothing once it opens.
+shut proves nothing once it opens, and its commands are told as
+the host's own child is.
 
 It can't tell the host's own code from code an agent brought into
 the host's process, an extension a project carries or a reload onto

@@ -208,6 +208,18 @@ impl Processes {
         (started(procs, spawner) == Some(starts[at - 1]) && unchanged()).then_some(session)
     }
 
+    /// Whether this node would take pi host `host`'s word for a spawner: on
+    /// a machine whose processes it reads, where none may trace another of
+    /// its user and the host's inspector can't be opened. Where it
+    /// wouldn't, no spawner is ever said for the host, so what runs below
+    /// one is told the host's one session, as before spawners were said.
+    fn takes_word_of(&self, host: i32) -> bool {
+        let Self::Folder(procs) = self else {
+            return false;
+        };
+        tracing_open(procs).is_none() && inspector_open(procs, host).is_none()
+    }
+
     /// Whether process `asker` runs below a `pi-spawner` that is a child of
     /// process `host`, read from the kernel, where only a process's own
     /// threads may change its name. None where it can't be told: the
@@ -1080,7 +1092,7 @@ pub fn session_alone(
     // host says it again once this node starts, is told none, though the
     // host holds only one: the spawner may serve a session gone since. So
     // is one whose lineage, read again, can't say whether it is below one.
-    if !keys.is_empty() {
+    if !keys.is_empty() && processes.takes_word_of(process) {
         match processes.below_a_spawner(pid, process) {
             Some(false) => {}
             Some(true) => {
@@ -1105,7 +1117,7 @@ pub fn session_alone(
         )),
         _ if !keys.is_empty() => Err(format!(
             "this asks below pi host process {process}, which {shared} sessions share, \
-             through a pi-spawner this node can't tie to a session it proves"
+             and below no pi-spawner this node ties to one of them"
         )),
         _ => Err(format!(
             "this asks from process {process}, which {shared} sessions share, so none is \
@@ -2037,9 +2049,17 @@ mod tests {
         assert!(!refused(90, &owners, &claims), "and proves again as it was");
         traced_by_forebears(procs.path(), "0");
         assert!(
-            refused(90, &owners, &claims),
+            session_alone(
+                (Some(90), super::started(procs.path(), 90)),
+                &processes,
+                &owners,
+                &claims,
+                hosts.path(),
+                &spawners,
+            )
+            .is_err_and(|why| why.contains("2 sessions share")),
             "nor once any process may trace another of its user, though it was said \
-             while none could"
+             while none could: the host's sessions are told apart by nothing then"
         );
         traced_by_forebears(procs.path(), "1");
         assert_eq!(
@@ -2121,6 +2141,20 @@ mod tests {
             processes.below_a_spawner(85, 78),
             Some(false),
             "the host's own child is below no spawner"
+        );
+        runs_node(procs.path(), 78, &["--max-old-space-size=8192"], None);
+        assert_eq!(
+            alone(83),
+            Ok("s-one".to_owned()),
+            "below a host whose inspector may be opened, whose word this node never takes, \
+             a command is told its host's one session, as before spawners were said"
+        );
+        runs_node(procs.path(), 78, &HOST_NODE, None);
+        traced_by_forebears(procs.path(), "0");
+        assert_eq!(
+            alone(83),
+            Ok("s-one".to_owned()),
+            "nor where any process may trace another, where no host's word is taken"
         );
     }
 

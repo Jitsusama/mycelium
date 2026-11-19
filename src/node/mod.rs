@@ -7965,10 +7965,16 @@ esac
 
     /// Tells the stand-in for /proc beside `socket` that this test asks
     /// from below pi-spawner `spawner`, which the host `host` started,
-    /// each started after its parent, and that the kernel lets a process
-    /// be traced only by its forebears.
+    /// each started after its parent, that the kernel lets a process be
+    /// traced only by its forebears, and that the host's node shuts its
+    /// inspector, as a host's unit starts it.
     fn asks_below_spawner(socket: &Path, spawner: i32, host: i32) {
         let procs = procs_of(socket);
+        fs::write(
+            procs.join(host.to_string()).join("cmdline"),
+            "node\0--disable-sigusr1\0/x/scripts/pi-host.ts\0background\0",
+        )
+        .expect("the host's command line is written");
         let zeros = "0 ".repeat(17);
         let asker = i32::try_from(std::process::id()).expect("a pid");
         for (pid, name, parent, ticks) in [
