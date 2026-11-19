@@ -4541,7 +4541,10 @@ impl<S: Store> Shared<S> {
     /// placed elsewhere or made a machine for, whatever it says. One its
     /// node marked as the person's carry of a session from `from` is
     /// noted once it starts, so the session is read for the cell it left
-    /// as once it runs here.
+    /// as once it runs here. One relayed under a name is answered the
+    /// start under it, landing or landed, as [`once`] says, so an ask the
+    /// asking node sends again after its link stopped waiting starts
+    /// nothing more.
     ///
     /// A relay from any other process is taken as an agent's start
     /// instead: counted, limited and booked here, as [`Self::start`] takes
@@ -4598,7 +4601,29 @@ impl<S: Store> Shared<S> {
                     },
                 )
             });
-        let started = self.here(asked, None).await;
+        let now = jiff::Timestamp::now().as_millisecond();
+        let lead = match asked.once.as_deref() {
+            Some(said) => match self
+                .onces
+                .join(once::Name::of(by, None, said)?, &self.machine, now)
+            {
+                once::Joined::Landed(started) => return Ok(Response::Started(started)),
+                once::Joined::Landing(joining) => {
+                    return joining.outcome().await.map(Response::Started);
+                }
+                once::Joined::Leads(lead) | once::Joined::Resends { lead, .. } => Some(lead),
+            },
+            None => None,
+        };
+        let started = match self.here(asked, None).await {
+            Ok(Response::Started(started)) => Ok(started),
+            Ok(_) => Err("it answered with no session".to_owned()),
+            Err(why) => Err(why),
+        };
+        if let Some(lead) = lead {
+            lead.ends(now, &started);
+        }
+        let started = started.map(Response::Started);
         // Noted only once it started, so a carry refused here leaves no
         // note for a later start of the session to be read by. Cells are
         // read each minute, so one that registered first is read at the
@@ -14307,6 +14332,55 @@ esac
             "a start under no name starts each time it is asked, as before"
         );
         assert_eq!(began(&began_in), 4);
+
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    // A start the asking node sends on goes as a relay, under the name
+    // it gives it there; asked again after its link stopped waiting, the
+    // node that started it answers that start rather than another.
+    #[tokio::test]
+    async fn a_start_relayed_again_under_its_name_is_the_one_that_landed() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (holder, began_in, gate) = gated_holder(dir.path());
+        fs::write(&gate, "").expect("each start may land at once");
+        let holds = Starter {
+            program: holder,
+            scope: start::Scope::None,
+            kit: None,
+        };
+        let store = Memory::default();
+        let (stop, node) = node(&store, "skiff", Vec::<Piped>::new(), Some(holds), &socket);
+        asks_as_person(&socket);
+        let relayed = |once: &str| Request::Relayed {
+            from: "tern".to_owned(),
+            start: Start {
+                work: work(Vec::new()),
+                folder: None,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+                once: Some(once.to_owned()),
+            },
+        };
+
+        let first = ask(socket.clone(), relayed("tern-01JRELAY")).await;
+        let again = ask(socket.clone(), relayed("tern-01JRELAY")).await;
+        assert!(first.is_ok(), "it starts: {first:?}");
+        assert_eq!(
+            again, first,
+            "relayed again, it answers the start that landed"
+        );
+        assert_eq!(began(&began_in), 1, "and starts nothing more");
+        let other = ask(socket.clone(), relayed("tern-01JOTHER")).await;
+        assert_ne!(
+            held_by(&other),
+            held_by(&first),
+            "another name is another start"
+        );
 
         drop(stop);
         let stopped = node.await.expect("the node runs to its end");
