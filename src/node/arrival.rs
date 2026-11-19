@@ -3,94 +3,87 @@
 //! brought it would stand as a cell nobody has heard of, its ties and
 //! its name left behind. The machine it left puts its cell beside its
 //! done file in the quest's handover ([`crate::carry::cell`]); this node
-//! reads it for each session running here, keeps it a day, as long as a
-//! tie is told of, and makes the session stand as its cell again:
-//! named by it in the networks, its new address an alias of it, and the
-//! ties it brought kept beside those this node makes.
+//! reads it for each session running here, keeps it while the session
+//! runs, and makes the session stand as its cell again: named by it in
+//! the networks, its new address an alias of it, and the ties it
+//! brought kept beside those this node makes, each for a day from when
+//! it was heard, as long as a tie is told of.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::SystemTime;
 
 use serde_json::Value;
 
 use crate::carry::cell::{self, Brought};
 use crate::carry::through;
 use crate::daemon;
-use crate::record::Session;
+use crate::record::{Session, State};
 
-/// How long a cell that arrived is kept, in milliseconds: a day, as a
-/// tie is told of, so the file going from the handover, as the machine
-/// it left takes it away once its carry has started, loses nothing.
+/// How long a tie a cell brought is kept from when it was heard, in
+/// milliseconds: a day, as a tie is told of.
 const KEPT: i64 = 24 * 60 * 60 * 1000;
-
-/// A cell a session arrived with, and when it was first read here.
-#[derive(Debug, Clone, PartialEq)]
-struct Arrival {
-    /// What it brought.
-    brought: Brought,
-    /// When it was first read, in milliseconds since the epoch.
-    at: i64,
-}
 
 /// The cells sessions running here arrived with, by session id.
 #[derive(Debug, Default)]
-pub(super) struct Arrivals(Mutex<BTreeMap<String, Arrival>>);
+pub(super) struct Arrivals(Mutex<BTreeMap<String, Brought>>);
 
 impl Arrivals {
     /// Reads the cell each of `sessions` running on `machine` with a
-    /// quest arrived with, in any of `scratch`'s handovers for its quest
-    /// but this machine's own, `hostname`'s, and forgets each kept past
-    /// [`KEPT`] before `now`. Answers whether what is kept changed.
+    /// quest arrived with, in its quest's handover in `scratch` from any
+    /// of `machines`, by short name, but this one, `hostname`, and
+    /// forgets each whose session no longer runs here. One whose file
+    /// has gone is kept while its session runs. Answers whether what is
+    /// kept changed.
     pub(super) fn read(
         &self,
         scratch: &Path,
         hostname: &str,
         machine: &str,
+        machines: &BTreeSet<String>,
         sessions: &[Session],
-        now: i64,
     ) -> bool {
-        let own = OsStr::new(through::short_host(hostname));
-        let mut found = BTreeMap::new();
-        for session in sessions.iter().filter(|session| session.machine == machine) {
-            let Some(quest) = session.quest.as_deref() else {
-                continue;
-            };
-            if !one_name(quest) || !one_name(&session.id) {
-                continue;
-            }
-            let Ok(handovers) = fs::read_dir(scratch.join(quest).join("handover")) else {
-                continue;
-            };
-            let file = format!("{}{}", session.id, cell::FILE);
-            // By name, so which of two machines' cells is read never
-            // turns on the order the folder lists them in.
-            let mut left: Vec<_> = handovers
-                .flatten()
-                .filter(|from| from.file_name() != own)
-                .map(|from| from.path())
-                .collect();
-            left.sort();
-            if let Some(brought) = left
-                .iter()
-                .find_map(|from| cell::arrived(&from.join(&file), &session.id))
-            {
-                found.insert(session.id.clone(), brought);
-            }
-        }
+        let own = through::short_host(hostname);
+        let from: Vec<&str> = machines
+            .iter()
+            .map(String::as_str)
+            .filter(|one| *one != own && one_name(one))
+            .collect();
+        let here: Vec<&Session> = sessions
+            .iter()
+            .filter(|session| session.machine == machine && session.state != State::Ended)
+            .collect();
         let mut kept = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let before = kept.clone();
-        kept.retain(|_, arrival| now - arrival.at < KEPT);
-        for (session, brought) in found {
-            match kept.get_mut(&session) {
-                Some(arrival) if arrival.brought == brought => {}
-                Some(arrival) => arrival.brought = brought,
-                None => {
-                    kept.insert(session, Arrival { brought, at: now });
-                }
+        kept.retain(|id, _| here.iter().any(|session| session.id == *id));
+        for session in &here {
+            if let Some(brought) = left_for(scratch, &from, session) {
+                kept.insert(session.id.clone(), brought);
             }
+        }
+        // A cell that is another live session's name, or that two
+        // sessions here say, stands as none of them, so no session takes
+        // the name, and the talk, of another cell.
+        let taken: Vec<String> = kept
+            .iter()
+            .filter(|(id, brought)| {
+                let other_is = sessions.iter().any(|other| {
+                    other.id != **id
+                        && other.state != State::Ended
+                        && other.address.eq_ignore_ascii_case(&brought.cell)
+                });
+                let twice = kept
+                    .iter()
+                    .any(|(other, said)| other != *id && said.cell == brought.cell);
+                other_is || twice
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &taken {
+            kept.remove(id);
         }
         *kept != before
     }
@@ -101,7 +94,7 @@ impl Arrivals {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .map(|(session, arrival)| (session.clone(), arrival.brought.cell.clone()))
+            .map(|(session, brought)| (session.clone(), brought.cell.clone()))
             .collect()
     }
 
@@ -157,27 +150,68 @@ impl Arrivals {
 
     /// `made`, the tie records this node makes, with each tie and talk
     /// the cells that arrived brought heard within a day of `now`,
-    /// where this node holds none of it heard later.
+    /// where this node holds none of it heard later. One said heard
+    /// after `now` counts as heard `now`, so no time a file says puts a
+    /// brought tie past this node's own for good.
     pub(super) fn ties(&self, made: &mut BTreeMap<String, daemon::Record>, now: i64) {
         let kept = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let brought = kept.values().flat_map(|arrival| {
-            let Brought { ties, talk, .. } = &arrival.brought;
+        let brought = kept.values().flat_map(|brought| {
+            let Brought { ties, talk, .. } = brought;
             ties.iter().chain(talk)
         });
         for record in brought {
-            let (Some(key), Some(heard)) = (record["key"].as_str(), record["heard"].as_i64())
-            else {
+            let (Some(key), Some(said)) = (record["key"].as_str(), record["heard"].as_i64()) else {
                 continue;
             };
-            if now - heard >= KEPT {
+            let heard = said.min(now);
+            if now.saturating_sub(heard) >= KEPT {
                 continue;
             }
             let later = made.get(key).is_some_and(|held| held.heard() >= heard);
             if !later {
-                made.insert(key.to_owned(), daemon::Record::from(record.clone()));
+                let mut record = record.clone();
+                record["heard"] = heard.into();
+                made.insert(key.to_owned(), daemon::Record::from(record));
             }
         }
     }
+}
+
+/// The cell `session` arrived with, as the newest of its files in its
+/// quest's handover from any of `machines` says, or none. The handover
+/// is its sessions' to write, so no folder of it is read through a
+/// link, and of two machines' files the one written last, the latest
+/// carry's, is read.
+fn left_for(scratch: &Path, machines: &[&str], session: &Session) -> Option<Brought> {
+    let quest = session.quest.as_deref()?;
+    if !one_name(quest) || !one_name(&session.id) {
+        return None;
+    }
+    let handover = scratch.join(quest).join("handover");
+    if !folder(&scratch.join(quest)) || !folder(&handover) {
+        return None;
+    }
+    let file = format!("{}{}", session.id, cell::FILE);
+    let mut left: Vec<(SystemTime, PathBuf)> = machines
+        .iter()
+        .map(|machine| handover.join(machine))
+        .filter(|from| folder(from))
+        .filter_map(|from| {
+            let path = from.join(&file);
+            let written = fs::symlink_metadata(&path).ok()?.modified().ok()?;
+            Some((written, path))
+        })
+        .collect();
+    // Newest first, and of two written at once by name, so which is
+    // read never turns on the order the folder lists them in.
+    left.sort_by(|one, other| other.0.cmp(&one.0).then_with(|| one.1.cmp(&other.1)));
+    left.iter()
+        .find_map(|(_, path)| cell::arrived(path, &session.id))
+}
+
+/// Whether `path` is a folder itself, never a link to one.
+fn folder(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|met| met.is_dir())
 }
 
 /// Whether `name` names one entry of a folder, never a path.
@@ -187,19 +221,25 @@ fn one_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::fs;
     use std::path::Path;
     use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
 
     use serde_json::{Value, json};
 
     use super::{Arrivals, KEPT};
     use crate::daemon;
-    use crate::record::Session;
+    use crate::record::{Session, State};
 
     const QUEST: &str = "QEST-20261112-HARBOR";
     const NOW: i64 = 1_763_400_000_000;
+
+    /// The realm's machines, by short name.
+    fn realm() -> BTreeSet<String> {
+        ["osprey", "skiff", "tern"].map(str::to_owned).into()
+    }
 
     /// The session `id` going by `address` on `machine`, in [`QUEST`].
     fn session(id: &str, address: &str, machine: &str) -> Session {
@@ -213,15 +253,14 @@ mod tests {
         session
     }
 
-    /// Puts `said` as the cell `session` brought from `from`'s handover.
-    fn left(scratch: &Path, from: &str, session: &str, said: &Value) {
+    /// Puts `said` as the cell `session` brought from `from`'s handover,
+    /// answering where.
+    fn left(scratch: &Path, from: &str, session: &str, said: &Value) -> std::path::PathBuf {
         let handover = scratch.join(QUEST).join("handover").join(from);
         fs::create_dir_all(&handover).expect("a handover");
-        fs::write(
-            handover.join(format!("{session}.cell.json")),
-            serde_json::to_vec(said).expect("said"),
-        )
-        .expect("written");
+        let path = handover.join(format!("{session}.cell.json"));
+        fs::write(&path, serde_json::to_vec(said).expect("said")).expect("written");
+        path
     }
 
     fn harbour() -> Value {
@@ -244,27 +283,120 @@ mod tests {
             "s-kelp",
             &json!({"session": "s-kelp", "cell": "KELP01"}),
         );
+        left(
+            scratch.path(),
+            "osprey",
+            "s-elsewhere",
+            &json!({"session": "s-elsewhere", "cell": "FARAWY"}),
+        );
+        left(
+            scratch.path(),
+            "kestrel",
+            "s-outside",
+            &json!({"session": "s-outside", "cell": "OUTSDE"}),
+        );
         let arrivals = Arrivals::default();
-        let sessions = [
+        let mut sessions = [
             session("s-harbour", "stand1", "skiff"),
             session("s-kelp", "kelp01", "skiff"),
             session("s-elsewhere", "far001", "tern"),
+            session("s-outside", "out001", "skiff"),
         ];
-        assert!(arrivals.read(scratch.path(), "skiff.local", "skiff", &sessions, NOW));
+        assert!(arrivals.read(scratch.path(), "skiff.local", "skiff", &realm(), &sessions));
         assert_eq!(
             arrivals.cells(),
             BTreeMap::from([("s-harbour".to_owned(), "HARBOR".to_owned())]),
-            "only what another machine left, for a session running here"
+            "only what another of the realm's machines left, for a session running here"
         );
         assert!(
-            !arrivals.read(scratch.path(), "skiff", "skiff", &sessions, NOW + 60_000),
+            !arrivals.read(scratch.path(), "skiff", "skiff", &realm(), &sessions),
             "read again unchanged, nothing changed"
         );
         fs::remove_dir_all(scratch.path().join(QUEST)).expect("taken away");
-        assert!(!arrivals.read(scratch.path(), "skiff", "skiff", &sessions, NOW + KEPT - 1));
+        assert!(!arrivals.read(scratch.path(), "skiff", "skiff", &realm(), &sessions));
         assert_eq!(arrivals.cells().len(), 1, "kept once its file is gone");
-        assert!(arrivals.read(scratch.path(), "skiff", "skiff", &sessions, NOW + KEPT));
-        assert!(arrivals.cells().is_empty(), "for a day");
+        sessions[0].state = State::Ended;
+        assert!(arrivals.read(scratch.path(), "skiff", "skiff", &realm(), &sessions));
+        assert!(arrivals.cells().is_empty(), "while its session runs here");
+    }
+
+    #[test]
+    fn a_cell_another_live_session_goes_by_or_two_say_stands_as_none() {
+        let scratch = tempfile::tempdir().expect("a scratch folder");
+        left(scratch.path(), "tern", "s-harbour", &harbour());
+        left(
+            scratch.path(),
+            "tern",
+            "s-kelp",
+            &json!({"session": "s-kelp", "cell": "REEF01"}),
+        );
+        left(
+            scratch.path(),
+            "tern",
+            "s-twin",
+            &json!({"session": "s-twin", "cell": "REEF01"}),
+        );
+        let arrivals = Arrivals::default();
+        let mut sessions = [
+            session("s-harbour", "stand1", "skiff"),
+            session("s-kelp", "kelp01", "skiff"),
+            session("s-twin", "twin01", "skiff"),
+            session("s-real", "harbor", "tern"),
+        ];
+        arrivals.read(scratch.path(), "skiff", "skiff", &realm(), &sessions);
+        assert!(
+            arrivals.cells().is_empty(),
+            "a live session's own name, in any case, and a name two say, are taken by none"
+        );
+        sessions[3].state = State::Ended;
+        assert!(arrivals.read(scratch.path(), "skiff", "skiff", &realm(), &sessions));
+        assert_eq!(
+            arrivals.cells(),
+            BTreeMap::from([("s-harbour".to_owned(), "HARBOR".to_owned())]),
+            "once the cell's own session has ended, it arrives"
+        );
+    }
+
+    #[test]
+    fn the_newest_file_left_is_read_and_never_one_through_a_link() {
+        let scratch = tempfile::tempdir().expect("a scratch folder");
+        let older = left(
+            scratch.path(),
+            "osprey",
+            "s-harbour",
+            &json!({"session": "s-harbour", "cell": "OLDER1"}),
+        );
+        left(scratch.path(), "tern", "s-harbour", &harbour());
+        let an_hour_ago = SystemTime::now() - Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(&older)
+            .and_then(|file| file.set_modified(an_hour_ago))
+            .expect("dated");
+        let arrivals = Arrivals::default();
+        let sessions = [session("s-harbour", "stand1", "skiff")];
+        arrivals.read(scratch.path(), "skiff", "skiff", &realm(), &sessions);
+        assert_eq!(
+            arrivals.cells(),
+            BTreeMap::from([("s-harbour".to_owned(), "HARBOR".to_owned())]),
+            "the latest carry's"
+        );
+
+        let linked = tempfile::tempdir().expect("a scratch folder");
+        let elsewhere = tempfile::tempdir().expect("another folder");
+        left(elsewhere.path(), "tern", "s-harbour", &harbour());
+        let handover = linked.path().join(QUEST).join("handover");
+        fs::create_dir_all(&handover).expect("a handover");
+        std::os::unix::fs::symlink(
+            elsewhere.path().join(QUEST).join("handover").join("tern"),
+            handover.join("tern"),
+        )
+        .expect("linked");
+        let arrivals = Arrivals::default();
+        assert!(
+            !arrivals.read(linked.path(), "skiff", "skiff", &realm(), &sessions),
+            "a machine's folder that is a link is never read through"
+        );
     }
 
     #[test]
@@ -274,7 +406,7 @@ mod tests {
         let arrivals = Arrivals::default();
         let mut sessions = vec![session("s-harbour", "stand1", "skiff")];
         Arc::make_mut(&mut sessions[0].presence)["addresses"] = json!(["STAND2"]);
-        arrivals.read(scratch.path(), "skiff", "skiff", &sessions, NOW);
+        arrivals.read(scratch.path(), "skiff", "skiff", &realm(), &sessions);
 
         let mut aliases = HashMap::from([
             ("STAND1".to_owned(), "STAND1".to_owned()),
@@ -308,7 +440,7 @@ mod tests {
         left(scratch.path(), "tern", "s-harbour", &harbour());
         let arrivals = Arrivals::default();
         let sessions = [session("s-harbour", "stand1", "skiff")];
-        arrivals.read(scratch.path(), "skiff", "skiff", &sessions, NOW);
+        arrivals.read(scratch.path(), "skiff", "skiff", &realm(), &sessions);
         let tie = |heard: i64| {
             daemon::Record::from(json!({"key": "tie:HARBOR~KELP01", "kind": "tie",
                                         "heard": heard, "strength": 0.5}))
@@ -338,6 +470,14 @@ mod tests {
             json!(2.0),
             "the one brought, heard later, stands"
         );
+
+        let mut made = BTreeMap::new();
+        arrivals.ties(&mut made, NOW - 120_000);
+        assert_eq!(
+            made["tie:HARBOR~KELP01"].heard(),
+            NOW - 120_000,
+            "one said heard after now counts as heard now"
+        );
     }
 
     #[test]
@@ -345,11 +485,27 @@ mod tests {
         let scratch = tempfile::tempdir().expect("a scratch folder");
         left(scratch.path(), "tern", "s-harbour", &harbour());
         let arrivals = Arrivals::default();
-        let mut wandering = session("../s-harbour", "stand1", "skiff");
-        wandering.quest = Some(format!("{QUEST}/handover/tern/.."));
-        let pathed = session("s-harbour", "stand1", "skiff");
-        let mut pathed = pathed;
+        // A file where a session id naming a path would reach it, through
+        // osprey's folder.
+        left(
+            scratch.path(),
+            "tern",
+            "s-wander",
+            &json!({"session": "../tern/s-wander", "cell": "WANDER"}),
+        );
+        fs::create_dir_all(scratch.path().join(QUEST).join("handover").join("osprey"))
+            .expect("osprey's folder");
+        let wandering = session("../tern/s-wander", "stand1", "skiff");
+        let mut pathed = session("s-harbour", "stand1", "skiff");
         pathed.quest = Some(format!("{QUEST}/."));
-        assert!(!arrivals.read(scratch.path(), "skiff", "skiff", &[wandering, pathed], NOW));
+        let mut climbing = session("s-harbour", "stand1", "skiff");
+        climbing.quest = Some(format!("{QUEST}/handover/tern/.."));
+        assert!(!arrivals.read(
+            scratch.path(),
+            "skiff",
+            "skiff",
+            &realm(),
+            &[wandering, pathed, climbing]
+        ));
     }
 }

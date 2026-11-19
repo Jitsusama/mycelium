@@ -527,6 +527,14 @@ in order and says each step:
    as that session starts there. A carry taken again here takes away
    the cells of sessions an earlier attempt started, so the node there
    should read a cell as soon as it has the done file beside it.
+   The node a session arrives on looks each minute in the handover's
+   folders of the realm's other machines, never through a link, reads
+   the newest file for each session running there with a quest, and
+   keeps its cell while that session runs, its file gone or not. The
+   session stands as that cell, its address an alias of it, unless
+   another live session goes by the name, in any case, or two say it.
+   Each tie it brought stands for a day from when it was heard, a time
+   past now counting as now. Carried on again, it brings that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share
    --scratch handover` does.
 4. `start`: each carried session starts again on the machine, held, as

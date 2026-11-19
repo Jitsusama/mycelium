@@ -58,8 +58,9 @@ pub struct Brought {
 /// handover is its sessions' to write, so the file is read never
 /// through a link and at most [`FILE_MOST`] bytes of it, and only what
 /// a cell could bring of it is kept: each tie with the cell at an end,
-/// the cell's own talk, and records of formed networks, at most
-/// [`FORMED_MOST`].
+/// its ends in the order the tie kind keys them, the cell's own talk,
+/// each with only the fields the tie kind says, and records of formed
+/// networks, at most [`FORMED_MOST`].
 #[must_use]
 pub fn arrived(path: &Path, session: &str) -> Option<Brought> {
     let bytes = crate::forage::read_at_most(path, FILE_MOST)?;
@@ -70,18 +71,21 @@ pub fn arrived(path: &Path, session: &str) -> Option<Brought> {
     let cell = said.cell.as_str();
     let ties = said
         .ties
-        .into_iter()
+        .iter()
         .filter(|tie| {
-            keyed(tie, "tie:").is_some_and(|key| {
+            tie_keyed(tie).is_some_and(|key| {
                 key.split_once('~').is_some_and(|(one, other)| {
-                    (one == cell || other == cell) && named(one) && named(other)
+                    (one == cell || other == cell) && one < other && named(one) && named(other)
                 })
             })
         })
+        .map(tie_fields)
         .collect();
     let talk = said
         .talk
-        .filter(|talk| keyed(talk, "tie:").is_some_and(|key| key == cell));
+        .as_ref()
+        .filter(|talk| tie_keyed(talk).is_some_and(|key| key == cell))
+        .map(tie_fields);
     let mut formed: Vec<Value> = said
         .formed
         .into_iter()
@@ -106,6 +110,30 @@ fn named(cell: &str) -> bool {
         && cell
             .bytes()
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || b"-_".contains(&byte))
+}
+
+/// The fields a tie kind's record says, a tie's or a cell's talk: so a
+/// cell brings nothing else under the tie kind's name.
+const TIE_FIELDS: [&str; 9] = [
+    "key", "kind", "heard", "hour", "today", "intents", "groups", "strength", "ties",
+];
+
+/// What follows `tie:` in the key of `record`, where it is of the tie
+/// kind, or none.
+fn tie_keyed(record: &Value) -> Option<String> {
+    (record.get("kind")? == "tie").then_some(())?;
+    keyed(record, "tie:")
+}
+
+/// `record` with only the fields of [`TIE_FIELDS`].
+fn tie_fields(record: &Value) -> Value {
+    let fields = record.as_object().into_iter().flatten();
+    Value::Object(
+        fields
+            .filter(|(field, _)| TIE_FIELDS.contains(&field.as_str()))
+            .map(|(field, value)| (field.clone(), value.clone()))
+            .collect(),
+    )
 }
 
 /// What follows `prefix` in the key of `record`, an object, or none.
@@ -206,9 +234,13 @@ mod tests {
                 "session": "s-harbour",
                 "cell": "HARBOR",
                 "ties": [
-                    {"key": "tie:HARBOR~KELP01", "kind": "tie", "strength": 2.0},
+                    {"key": "tie:HARBOR~KELP01", "kind": "tie", "strength": 2.0,
+                     "said": "what was said"},
                     {"key": "tie:AAAAAA~HARBOR", "kind": "tie"},
                     {"key": "tie:KELP01~REEF01", "kind": "tie"},
+                    {"key": "tie:KELP01~HARBOR", "kind": "tie"},
+                    {"key": "tie:HARBOR~REEF01", "kind": "cell"},
+                    {"key": "tie:HARBOR~REEF02"},
                     {"key": "tie:HARBOR~kelp01", "kind": "tie"},
                     {"key": "tie:HARBOR~A~B", "kind": "tie"},
                     {"key": "cell:HARBOR~KELP01", "kind": "tie"},
@@ -231,8 +263,10 @@ mod tests {
                 json!({"key": "tie:HARBOR~KELP01", "kind": "tie", "strength": 2.0}),
                 json!({"key": "tie:AAAAAA~HARBOR", "kind": "tie"}),
             ],
-            "only ties with it at an end between two cells' names, never another pair's, \
-             one in lowercase, one of three, another kind's or one that isn't a record"
+            "only ties with it at an end between two cells' names, in order, and only \
+             the tie kind's fields; never another pair's, one out of order, another \
+             kind's, one saying no kind, one in lowercase, one of three, one keyed as \
+             another kind's or one that isn't a record"
         );
         assert_eq!(
             cell.talk,

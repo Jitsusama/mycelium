@@ -65,7 +65,7 @@ pub use asker::Processes;
 mod cell;
 #[cfg(target_os = "linux")]
 mod viewed;
-pub use cell::records as cell_records;
+pub use cell::{KIND as CELL_KIND, records as cell_records};
 mod crossing;
 mod ended;
 mod feeding;
@@ -1960,7 +1960,6 @@ impl<S: Store> Shared<S> {
             eases: _,
             settles,
         } = given;
-        let own = keep_own_health(health);
         let said = Arc::<Said>::default();
         let inner = Arc::new(Mutex::new(Inner::after(&flows, &hello.realm)));
         let forages: forage::Held = Arc::new(Mutex::new(forage::Shelf::with_waits(waiting)));
@@ -2016,7 +2015,7 @@ impl<S: Store> Shared<S> {
             flows: Arc::new(flows),
             measured: Arc::default(),
             saturation: Arc::default(),
-            health: own,
+            health: keep_own_health(health),
             built: Arc::default(),
             receptors: held,
             stimuli,
@@ -2929,11 +2928,20 @@ impl<S: Store> Shared<S> {
             return;
         };
         let sessions = self.lock().state.sessions();
-        let now = jiff::Timestamp::now().as_millisecond();
+        // Only the realm's machines hand over here, by their short names, as
+        // a leaving machine names its handover's folder.
+        let machines: std::collections::BTreeSet<String> = self
+            .known_machines()
+            .iter()
+            .map(|machine| through::short_host(&machine.name).to_owned())
+            .collect();
         if self
             .arrivals
-            .read(scratch, &self.hostname, &self.machine, &sessions, now)
+            .read(scratch, &self.hostname, &self.machine, &machines, &sessions)
         {
+            // A cell's name and its ties both change with what arrived, and
+            // the networks are drawn from the cells.
+            self.said.cells.send_modify(|told| *told += 1);
             self.said.ties.send_modify(|told| *told += 1);
         }
     }
@@ -14164,9 +14172,18 @@ esac
             state: places.join("state"),
         };
         let quest = "QEST-20261112-HARBOR";
-        // As tern left it, the machine the session was carried from.
-        let handover = sharing.scratch.join(quest).join("handover").join("tern");
-        fs::create_dir_all(&handover).expect("tern's handover");
+        // As the machine the session was carried from left it: tern, unless
+        // the machine running the test goes by tern, since a node never
+        // reads its own machine's folder.
+        let uname = rustix::system::uname();
+        let own = uname.nodename().to_string_lossy();
+        let from = if through::short_host(&own) == "tern" {
+            "osprey"
+        } else {
+            "tern"
+        };
+        let handover = sharing.scratch.join(quest).join("handover").join(from);
+        fs::create_dir_all(&handover).expect("its handover");
         let heard = jiff::Timestamp::now().as_millisecond() - 60_000;
         let brought = json!({
             "session": "s-harbour", "cell": "HARBOR",
@@ -14193,11 +14210,15 @@ esac
             ..bare("/nowhere/steer".into(), None)
         };
         let (shared, _) = Shared::of(
-            store,
+            store.clone(),
             (membership.hello(), dir.path().join("node.sock")),
             given,
             to_dial,
         );
+        // Only the realm's machines' folders are read.
+        store
+            .put_machine(&fenced(from, &["remote"]))
+            .expect("what it said is kept");
         shared.read_sessions();
 
         shared.each_minute(&mut Awake::by(None));
