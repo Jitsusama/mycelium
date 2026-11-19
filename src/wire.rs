@@ -590,5 +590,12 @@ mod tests {
             serde_json::from_str::<Start>(&written).expect("a strict start reads"),
             strict
         );
+        // A field this end doesn't know is passed over, as an older end
+        // passes over strict.
+        let later = r#"{"work":{},"folder":"src/skiff","command":["pi"],"said_later":true}"#;
+        assert!(
+            serde_json::from_str::<Start>(later).is_ok(),
+            "a start saying more than this end knows still reads"
+        );
     }
 }

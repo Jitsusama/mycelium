@@ -6562,6 +6562,33 @@ mod tests {
     /// Steers the session held on kestrel from the node at
     /// `near_socket`, and has its talk answered there, as its session would,
     /// until the answer is carried back to `near_steers`.
+    /// Asks kestrel, over the link from `near_socket`, for a strict start
+    /// in a folder under `dir` it hasn't, which its node refuses there
+    /// rather than beginning at home.
+    async fn refuses_a_strict_start_kestrel_cant_begin(near_socket: &Path, dir: &Path) {
+        let missing = dir.join("not-on-kestrel");
+        let refused = ask(
+            near_socket.to_owned(),
+            Request::Start(Start {
+                work: work(vec![Need::Machine("kestrel".to_owned())]),
+                folder: Some(missing.clone()),
+                strict: true,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+            }),
+        )
+        .await;
+        assert_eq!(
+            refused.err(),
+            Some(format!(
+                "kestrel has no folder {}, which the start names",
+                missing.display()
+            )),
+            "kestrel's node refuses it rather than beginning at home"
+        );
+    }
+
     async fn steers_the_session_on_kestrel(
         near_socket: &Path,
         near_steers: &Path,
@@ -12105,6 +12132,7 @@ esac
         // The person starts it, since kestrel declares no fence, so an
         // agent's start would be refused its looser ground.
         asks_as_person(&near_socket);
+        refuses_a_strict_start_kestrel_cant_begin(&near_socket, dir.path()).await;
         let started = ask(near_socket.clone(), asked).await;
         // Told of nobody again, as the steers below begin.
         fs::remove_dir_all(procs_of(&near_socket).join(std::process::id().to_string()))

@@ -219,11 +219,16 @@ impl Starter {
 /// place under each machine's home is found on either.
 #[must_use]
 pub fn begins_in(folder: Option<&Path>, home: &Path) -> PathBuf {
+    found(folder, home).unwrap_or_else(|| home.to_owned())
+}
+
+/// The folder `folder` names on a machine whose home is `home`, where it
+/// is one there; one that can't be looked at is none.
+fn found(folder: Option<&Path>, home: &Path) -> Option<PathBuf> {
     // Joining a full path gives that path, so both kinds read alike.
-    match folder.map(|folder| home.join(folder)) {
-        Some(wanted) if wanted.is_dir() => wanted,
-        _ => home.to_owned(),
-    }
+    folder
+        .map(|folder| home.join(folder))
+        .filter(|wanted| wanted.is_dir())
 }
 
 /// The folder a start begins in on `machine`, as [`begins_in`] finds it,
@@ -241,10 +246,9 @@ pub fn begins_strictly(
     home: &Path,
     machine: &str,
 ) -> Result<PathBuf, String> {
-    // Joining a full path gives that path, as in begins_in.
-    match folder.map(|named| (named, home.join(named))) {
-        Some((_, wanted)) if wanted.is_dir() => Ok(wanted),
-        Some((named, _)) if strict => Err(format!(
+    match (found(folder, home), folder) {
+        (Some(wanted), _) => Ok(wanted),
+        (None, Some(named)) if strict => Err(format!(
             "{machine} has no folder {}, which the start names",
             named.display()
         )),
@@ -681,6 +685,17 @@ mod tests {
             begun(Some(Path::new("src/elsewhere")), false),
             Ok(home.to_owned()),
             "one not strict begins at home"
+        );
+        assert_eq!(
+            begun(Some(Path::new("src/core.nix")), false),
+            Ok(src.clone()),
+            "one not strict begins in a folder that's there"
+        );
+        fs::write(home.join("notes"), "").expect("a file is made");
+        assert_eq!(
+            begun(Some(Path::new("notes")), true),
+            Err("tern has no folder notes, which the start names".to_owned()),
+            "a file is no folder"
         );
         assert_eq!(
             begun(Some(&src), true),
