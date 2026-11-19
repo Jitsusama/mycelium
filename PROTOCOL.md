@@ -164,25 +164,26 @@ same code, each line a JSON value:
    mounted apart as a fence's. A relay from any other process is taken
    as an agent's start, so it gains an agent nothing its own start
    wouldn't: counted, limited and booked here as any agent's is, never
-   read for a carry, and logged; it is pinned there, never made a
-   machine for, and waits for no room, since the asking node stops
-   waiting on its answer within 30 seconds. Where no person works, an
-   agent's SSH login can't be told from a link's end, so every relay
-   but its own process's is taken so, and a machine made from a basin
-   still takes the starts placed on it. Elsewhere, a link's end an
-   agent ran is taken so too, as is one whose owner the kernel can't
-   tell. The end passes a
-   start's `"carries"` mark only once its link is proven, and clears
-   it otherwise, so a carry arrives as its cell only where the leaving
+   read for a carry, and logged; it starts there or nowhere, never on
+   a machine made for it, and waits for no room, since the asking node
+   stops waiting on its answer within 30 seconds. Where no person
+   works, an agent's SSH login can't be told from a link's end, so
+   every relay but its own process's is taken so, and a machine made
+   from a basin still takes the starts placed on it. Elsewhere, a
+   link's end an agent ran is taken so too, as is one whose owner the
+   kernel can't tell, but one marked as the person's carry is refused,
+   so the person hears the carry failed rather than finding its
+   session standing as a cell nobody knows. The end passes a start's
+   `"carries"` mark only once its link is proven, and clears it
+   otherwise, so a carry arrives as its cell only where the leaving
    machine dialled the arriving one, whose end its key proves. The
    node places a relay from its own process or the person's pinned to
-   its own machine, so
-   its facts as they are then still refuse it and count it as load, and
-   starts it there or nowhere, never elsewhere and never on a machine
-   made for it. One it takes as the person's it neither counts nor
-   books, since the asking node did. The end doesn't start it itself,
-   since a process SSH started sits outside its person's login
-   session.
+   its own machine, so its facts as they are then still refuse it and
+   count it as load, and starts it there or nowhere, never elsewhere
+   and never on a machine made for it. One it takes as the person's it
+   neither counts nor books, since the asking node did. The end
+   doesn't start it itself, since a process SSH started sits outside
+   its person's login session.
 9. `{"Started": {"ask", "reply"}}`: the other end's reply to the ask
    of that number: its node's, as its socket answered, for a start, and
    its own for a steer.
@@ -1628,8 +1629,10 @@ it; one further ahead doesn't. `mycelium starts` prints whether
 starts are stopped and the newest 100. A start counts on the node an
 agent asks, wherever it is placed, and only that node's book says who
 started it, so each machine's node is stopped on its own. A start
-relayed from another machine's node is that node's to count, book and
-stop, so the machine it runs on does none of these again.
+relayed from another machine's node through the person's link is that
+node's to count, book and stop, so the machine it runs on does none of
+these again; one relayed by an agent is counted, booked and stopped
+there as that agent's own start.
 
 `"Sprout"` starts a session of new work, as `mycelium sprout` asks, held
 in no window: the node makes the `"Start"` and starts it as above, under

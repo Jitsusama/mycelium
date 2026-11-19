@@ -1809,6 +1809,15 @@ fn marks_a_carry(by: By, command: &[String]) -> bool {
     by == By::Person && crate::carry::arrives(command).is_some()
 }
 
+/// Where a start counted here goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Whither {
+    /// Wherever placement chooses, or a machine made for it.
+    Placed,
+    /// This machine alone, or nowhere, as a start relayed here.
+    Here,
+}
+
 /// The fence an asker `by` runs in: an agent's at least the agent fence,
 /// as its runs are, and none for the person, whose work goes wherever
 /// placement says.
@@ -4346,11 +4355,25 @@ impl<S: Store> Shared<S> {
 
     /// Starts `asked` as [`Self::start`] does, waiting for room up to
     /// `waits` milliseconds.
-    async fn started(&self, mut asked: Start, waits: i64) -> Reply {
+    async fn started(&self, asked: Start, waits: i64) -> Reply {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let (by, sessions) = self.judged().await?;
+        let judged = self.judged().await?;
+        self.counted(judged, asked, waits, Whither::Placed).await
+    }
+
+    /// Starts `asked`, from the asker judged `by` below `sessions`'
+    /// claims, as [`Self::started`] does, where `whither` says: counted,
+    /// limited and booked, and waiting for room up to `waits`
+    /// milliseconds.
+    async fn counted(
+        &self,
+        (by, sessions): (By, Vec<String>),
+        mut asked: Start,
+        waits: i64,
+        whither: Whither,
+    ) -> Reply {
         asked.carries = marks_a_carry(by, &asked.command);
         let (started_by, resumes) = {
             let inner = self.lock();
@@ -4382,7 +4405,10 @@ impl<S: Store> Shared<S> {
                 waits,
             )
             .await?;
-        let started = self.placed(asked, fence_of(by)).await;
+        let started = match whither {
+            Whither::Placed => self.placed(asked, fence_of(by)).await,
+            Whither::Here => self.here(asked, fence_of(by)).await,
+        };
         self.starts.keep(
             admitted,
             match &started {
@@ -4439,33 +4465,45 @@ impl<S: Store> Shared<S> {
     /// A relay from any other process is taken as an agent's start
     /// instead: counted, limited and booked here, as [`Self::start`] takes
     /// one, and never read for a carry, so it gains an agent nothing its
-    /// own start wouldn't. It is pinned here and never made a machine
-    /// for, and waits for no room, since the asking node stops waiting on
-    /// its answer within half a minute. Where no person works, every
-    /// link's end is told so, and a machine made from a basin takes the
-    /// starts placed on it that way; elsewhere, so is a link's end an
-    /// agent ran, or one where the kernel can't say whose it is.
+    /// own start wouldn't. It starts here or nowhere, never on a machine
+    /// made for it, and waits for no room, since the asking node stops
+    /// waiting on its answer within half a minute. Where no person works,
+    /// every link's end is told so, and a machine made from a basin takes
+    /// the starts placed on it that way; elsewhere, so is a link's end an
+    /// agent ran, or one where the kernel can't say whose it is. There,
+    /// one its node marked as the person's carry is refused instead, so
+    /// the person hears the carry failed rather than seeing its session
+    /// stand as a cell nobody knows.
     async fn relayed(&self, from: &str, asked: Start) -> Reply {
-        let (by, _) = self.judged().await?;
+        if asked.command.is_empty() {
+            return Err("nothing to start: name a program".to_owned());
+        }
+        let judged = self.judged().await?;
+        let by = judged.0;
         if !asker::relays(self.client, by) {
-            let why = if self.processes.is_unattended() {
+            let unattended = self.processes.is_unattended();
+            if asked.carries && !unattended {
+                return Err(format!(
+                    "{} takes no carry from {from:?} here: its link's end is judged {by}, \
+                     so the carried session couldn't stand as its cell",
+                    self.machine
+                ));
+            }
+            let why = if unattended {
                 "no person works on this machine, so its link's end can't be told from an \
                  agent's login"
                     .to_owned()
             } else {
                 format!("this asker is judged {by}, so it relays nothing as the person's")
             };
-            eprintln!("a start relayed from {from} is taken as an agent's: {why}");
-            let mut pinned = Start {
+            // Quoted, since an agent may have put anything in `from`.
+            eprintln!("a start relayed from {from:?} is taken as an agent's: {why}");
+            let pinned = Start {
                 carries: false,
                 may_cost: false,
                 ..asked
             };
-            pinned.work.needs.push(Need::Machine(self.machine.clone()));
-            return self.started(pinned, 0).await;
-        }
-        if asked.command.is_empty() {
-            return Err("nothing to start: name a program".to_owned());
+            return self.counted(judged, pinned, 0, Whither::Here).await;
         }
         let carried = crate::carry::arrives(&asked.command)
             .filter(|arrives| asked.carries && arrives.from.eq_ignore_ascii_case(from))
@@ -4479,20 +4517,27 @@ impl<S: Store> Shared<S> {
                     },
                 )
             });
+        let started = self.here(asked, None).await;
+        // Noted only once it started, so a carry refused here leaves no
+        // note for a later start of the session to be read by. Cells are
+        // read each minute, so one that registered first is read at the
+        // next.
+        if started.is_ok()
+            && let Some((session, carried)) = carried
+        {
+            self.arrivals.carried(&session, carried);
+        }
+        started
+    }
+
+    /// Starts `asked` on this machine alone, as placed in `fence`, where
+    /// its facts as they are now take it, and otherwise says why not,
+    /// asking no provider for a machine to make.
+    async fn here(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
         let admits = self.admits().await;
-        match self.place(&asked.work, Counts::Always, None, false, &admits) {
+        match self.place(&asked.work, Counts::Always, fence, false, &admits) {
             Placement::Placed { machine, .. } if machine == self.machine => {
-                let started = self.start_on(machine, asked).await;
-                // Noted only once it started, so a carry refused here
-                // leaves no note for a later start of the session to be
-                // read by. Cells are read each minute, so one that
-                // registered first is read at the next.
-                if started.is_ok()
-                    && let Some((session, carried)) = carried
-                {
-                    self.arrivals.carried(&session, carried);
-                }
-                started
+                self.start_on(machine, asked).await
             }
             Placement::Placed { machine, .. } => Err(format!(
                 "a start relayed here starts here or nowhere, and it would go to {machine}"
@@ -14548,6 +14593,58 @@ esac
         );
     }
 
+    // Where a person works, a relay from an asker judged an agent's, as
+    // every one is where the kernel can't say whose it is, is that agent's
+    // own start, and gains it nothing more.
+    #[tokio::test]
+    async fn a_relay_from_an_agent_is_counted_as_its_start_and_starts_here_or_nowhere() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        link.client = Some(1);
+        let start = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+        };
+        // Elsewhere, or on a machine made for it, as its own start may
+        // be, it never starts: here alone, or nowhere, asking no provider.
+        let elsewhere = Start {
+            work: work(vec![Need::Machine("tern".to_owned())]),
+            may_cost: true,
+            ..start.clone()
+        };
+        let refused = link
+            .relayed("tern", elsewhere)
+            .await
+            .expect_err("a relayed start never starts elsewhere");
+        assert!(
+            refused.starts_with("skiff doesn't take it now"),
+            "{refused}"
+        );
+        // That one counted, as any agent's start that failed does.
+        for _ in 1..starts::CELL_AN_HOUR {
+            link.relayed("tern", start.clone())
+                .await
+                .expect("the start placed here starts");
+        }
+        let began = std::time::Instant::now();
+        let refused = link
+            .relayed("tern", start)
+            .await
+            .expect_err("and is counted here, as an agent's");
+        assert!(
+            refused.starts_with("agents of no known cell started 8 sessions"),
+            "{refused}"
+        );
+        assert!(
+            began.elapsed() < Duration::from_millis(u64::try_from(START_WAITS_MOST).unwrap_or(0)),
+            "refused at once, never waiting for room"
+        );
+    }
+
     #[test]
     fn only_the_persons_start_of_a_carrys_shape_is_marked_as_a_carry() {
         let carry = [
@@ -14686,30 +14783,32 @@ esac
         };
         let mut asker = shared.clone();
         asker.client = Some(1);
-        asker
+        let refused = asker
             .relayed("tern", carrying.clone())
             .await
-            .expect("a relay from a process judged an agent's starts as an agent's");
+            .expect_err("a carry relayed from a process judged an agent's is refused");
+        assert!(refused.starts_with("skiff takes no carry"), "{refused}");
         shared.read_sessions();
-        assert_eq!(
-            stands(&shared),
-            "STAND1",
-            "and is never read for a carry, whatever its mark"
-        );
+        assert_eq!(stands(&shared), "STAND1", "and is never read for one");
         asker.client = i32::try_from(std::process::id()).ok();
-        let _ = asker.relayed("osprey", carrying.clone()).await;
-        assert_eq!(stands(&shared), "STAND1", "nor another's carry");
+        asker
+            .relayed("osprey", carrying.clone())
+            .await
+            .expect("a carry from elsewhere starts");
+        assert_eq!(stands(&shared), "STAND1", "but never as another's carry");
         let unmarked = Start {
             carries: false,
             ..carrying.clone()
         };
-        let _ = asker.relayed("tern", unmarked).await;
-        assert_eq!(
-            stands(&shared),
-            "STAND1",
-            "nor a start its node didn't mark as the person's carry"
-        );
-        let _ = asker.relayed("tern", carrying).await;
+        asker
+            .relayed("tern", unmarked)
+            .await
+            .expect("a start its node didn't mark starts");
+        assert_eq!(stands(&shared), "STAND1", "but never as the person's carry");
+        asker
+            .relayed("tern", carrying)
+            .await
+            .expect("the person's carry starts");
         assert_eq!(stands(&shared), "HARBOR", "as the cell it left");
         assert_eq!(
             shared.tie_records()["tie:HARBOR~KELP01"].value()["strength"],
