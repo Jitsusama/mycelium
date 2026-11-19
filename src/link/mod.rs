@@ -1282,8 +1282,12 @@ impl<S: Store> End<S> {
     }
 
     /// Hands a start the other end asks of this machine to its node, away
-    /// from the link's own work, since starting waits on the holder.
-    fn answer(&self, ask: u64, start: Start) {
+    /// from the link's own work, since starting waits on the holder. Its
+    /// mark as the person's carry passes only where the other end is
+    /// proven to be its machine, since the node reads the carry's cell as
+    /// that machine's word.
+    fn answer(&self, ask: u64, mut start: Start) {
+        start.carries &= self.proven;
         let answering = self.answering.clone();
         let Some(node) = self.node.clone() else {
             let refused = Err(format!("{} starts nothing over this link", self.here));

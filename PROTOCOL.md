@@ -161,13 +161,17 @@ same code, each line a JSON value:
    That node takes `"Relayed"` only from its own process or one it
    judges the person's, as a link's end is: none in an agent's unit,
    below a pi or a session's claim, or barred or mounted apart as a
-   fence's. Where no person works it takes it from its own process
-   alone, since an agent's SSH login can't be told from a link's end
-   there, and logs why it refused. It places it pinned to its own
-   machine, so its facts as they are then still refuse it and count it
-   as load, and starts it there or nowhere, never elsewhere and never
-   on a machine made for it. It neither counts nor books it, since the
-   asking node did. The end doesn't start it itself, since a process
+   fence's. Where no person works, an agent's SSH login can't be told
+   from a link's end, so a relay from any process but its own is taken
+   as an agent's start: counted, limited and booked here as any agent's
+   is, never read for a carry, and logged. A machine made from a basin
+   so still takes the starts placed on it. The end passes a start's
+   `"carries"` mark only once its link is proven, and clears it
+   otherwise. The node places a relay pinned to its own machine, so
+   its facts as they are then still refuse it and count it as load, and
+   starts it there or nowhere, never elsewhere and never on a machine
+   made for it. One it takes as the person's it neither counts nor
+   books, since the asking node did. The end doesn't start it itself, since a process
    SSH started sits outside its person's login session.
 9. `{"Started": {"ask", "reply"}}`: the other end's reply to the ask
    of that number: its node's, as its socket answered, for a start, and
@@ -542,8 +546,8 @@ in order and says each step:
    hour, and only in the handover folder that start names, never
    through a link. The asking node marks a start `"carries": true`
    only where the person asked a carry's command, whatever the asker
-   said of it, so no agent's start is read for a carry. It reads it once, as the session runs there, and
-   keeps it while it runs, its file gone or not. The session stands
+   said of it, so no agent's start is read for a carry. It reads it
+   once, as the session runs there, and keeps it while it runs, its file gone or not. The session stands
    as that cell, its address an alias of it, unless another live
    session goes by the name, as any address, in any case, or two say
    it. A tie it brought said heard after it arrived counts as heard
@@ -1578,8 +1582,9 @@ once can't pass the limit; a refused one doesn't. The person's own
 starts are never counted or refused. An agent's first start in the
 hour that brings back a session the node knows has ended counts toward
 the 32 but not its cell's 8, so a wave brought back starts whole and
-no agent brings back more than 32 an hour. It is pi itself, named bare
-or under `/run/current-system/sw/bin/` or `/etc/profiles/per-user/`,
+no agent brings back more than 32 an hour; a cell brings back at most
+9 an hour beside its 8, and the tenth is refused, saying which. It is
+pi itself, named bare or under `/run/current-system/sw/bin/` or `/etc/profiles/per-user/`,
 given one session after `--session` or `--session-id`, by its id or by
 a file whose name ends in `_` and the id. A bare `pi` is the one the
 login finds, so it fences habit alone. A second bringing back the same
