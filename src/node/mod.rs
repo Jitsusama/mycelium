@@ -3773,7 +3773,6 @@ impl<S: Store> Shared<S> {
             .take(SAID_SESSION_CHARS)
             .flat_map(char::escape_debug)
             .collect();
-        let named = session.clone();
         let registered = tokio::task::spawn_blocking(move || {
             let owners = asker::proved(&claims, &processes, &hosts, &logs)?;
             spawners.register(host, spawner, &session, &processes, &owners, &claims)
@@ -3781,20 +3780,12 @@ impl<S: Store> Shared<S> {
         .await
         .map_err(|error| format!("the spawner couldn't be told: {error}"))?;
         if let Err(why) = &registered {
-            let reason = if named.is_empty() {
-                why.clone()
-            } else {
-                why.replace(named.as_str(), "")
-            };
-            // Said once for each reason, whichever processes and session
-            // it names, so speakers that come and go each say no more.
-            let kind: String = reason.chars().filter(|c| !c.is_ascii_digit()).collect();
+            // Said once for each reason, whichever processes it names; no
+            // reason names the session asked for, which a speaker chooses,
+            // so speakers that come and go each say no more.
+            let kind: String = why.chars().filter(|c| !c.is_ascii_digit()).collect();
             if self.spawners.first_refusal(&kind) {
-                let why: String = why
-                    .replace(named.as_str(), "the session")
-                    .chars()
-                    .flat_map(char::escape_debug)
-                    .collect();
+                let why: String = why.chars().flat_map(char::escape_debug).collect();
                 eprintln!("mycelium: a spawner for {said} isn't taken: {why}");
             }
         }

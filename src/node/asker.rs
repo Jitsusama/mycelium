@@ -751,7 +751,7 @@ impl Spawners {
             });
         if !hosts_it || started(procs, pid) != Some(ticks) {
             return Err(format!(
-                "process {pid} is no pi host proving {session}, so it can't say its spawner"
+                "process {pid} is no pi host proving the session, so it can't say its spawner"
             ));
         }
         if let Some(why) = inspector_open(procs, pid) {
@@ -793,12 +793,19 @@ impl Spawners {
                 ))
             };
         }
+        // Only while the other host still proves the session, so one it
+        // moved to takes it though the old host's spawner runs on.
         let elsewhere = kept.iter().find(|(other, said)| {
-            said.session == session && said.host != asked.host && live(other, said)
+            said.session == session
+                && said.host != asked.host
+                && live(other, said)
+                && owners
+                    .iter()
+                    .any(|(owned, owner)| owned == session && *owner == said.host.0)
         });
         if let Some((other, _)) = elsewhere {
             return Err(format!(
-                "{session} keeps its spawner, process {}, under another host",
+                "the session keeps its spawner, process {}, under another host",
                 other.0
             ));
         }
@@ -1033,12 +1040,20 @@ pub fn session_alone(
         .filter(|claim| claim.pid == Some(process) && claim.host.is_some())
         .filter(|claim| proved.contains(&claim.session.as_str()))
         .find_map(|claim| claim.start_ticks);
+    // Below a spawner the host said, a command is told its session or
+    // none, never another the host holds that proves alone.
     let spawned = host_started
         .zip(asker_started)
-        .and_then(|(ticks, began)| processes.spawned_for((pid, began), (process, ticks), spawners))
-        .filter(|session| proved.contains(&session.as_str()));
+        .and_then(|(ticks, began)| processes.spawned_for((pid, began), (process, ticks), spawners));
     if let Some(session) = spawned {
-        return Ok(session);
+        return if proved.contains(&session.as_str()) {
+            Ok(session)
+        } else {
+            Err(format!(
+                "this asks through a pi-spawner said for a session process {process} no longer \
+                 proves"
+            ))
+        };
     }
     let shared = sharing.max(proved.len());
     match proved.as_slice() {
@@ -1895,6 +1910,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one said spawner's life, each step changing what the last left"
+    )]
     fn a_said_spawner_proves_nothing_once_it_or_its_line_or_its_session_is_gone() {
         let procs = a_host_and_its_spawners();
         let claims = [
@@ -1987,9 +2006,61 @@ mod tests {
             "a host may say another spawner for a session that has one, as for its next quest"
         );
         owners.retain(|(session, _)| session != "s-one");
+        let unproved = |claims: &[Claim]| {
+            session_alone(
+                (Some(86), super::started(procs.path(), 86)),
+                &processes,
+                &owners,
+                claims,
+                hosts.path(),
+                &spawners,
+            )
+            .is_err_and(|why| why.contains("no longer proves"))
+        };
         assert!(
-            refused(86, &owners, &claims),
+            unproved(&claims),
             "nor once the session it serves no longer proves"
+        );
+        assert!(
+            unproved(&[claims[1].clone()]),
+            "nor is a command below it told the host's one other session, once that alone \
+             proves"
+        );
+    }
+
+    #[test]
+    fn a_session_takes_its_new_hosts_spawner_though_its_old_hosts_runs() {
+        let procs = a_host_and_its_spawners();
+        let processes = folder(procs.path());
+        let spawners = Spawners::default();
+        let first = [claim("s-one", 78, Some(1), Some("work"))];
+        let first_owners = [("s-one".to_owned(), 78)];
+        assert_eq!(
+            spawners.register(
+                (Some(78), Some(1)),
+                (87, 87),
+                "s-one",
+                &processes,
+                &first_owners,
+                &first,
+            ),
+            Ok(()),
+            "the first host's spawner"
+        );
+        let moved = [claim("s-one", 79, Some(1), Some("other"))];
+        let moved_owners = [("s-one".to_owned(), 79)];
+        assert_eq!(
+            spawners.register(
+                (Some(79), Some(1)),
+                (98, 98),
+                "s-one",
+                &processes,
+                &moved_owners,
+                &moved,
+            ),
+            Ok(()),
+            "once the session proves under another host, the old host's spawner holds it no \
+             more"
         );
     }
 
