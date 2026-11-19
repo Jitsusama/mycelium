@@ -79,7 +79,7 @@ make_train() {
   }
   git fetch -q origin main
   local main tip head sha tree onto
-  local -a riding=() riders=() off=()
+  local -a riding=() made=() off=()
   main=$(git rev-parse origin/main)
   tip=${main}
   # Dated now, or as main's tip where its clock is ahead, so main's date
@@ -109,7 +109,7 @@ make_train() {
         git commit-tree "${tree}" -p "${tip}" -p "${sha}" \
         -m "Merge ${sha:0:12} on the merge train" -F -)
     riding+=("${sha:0:12}")
-    riders+=("${sha}")
+    made+=("${tip}")
   done
   local each
   for each in "${off[@]}"; do
@@ -121,7 +121,7 @@ make_train() {
   fi
   sweep "${main}"
   local made_before
-  made_before=$(pushed "${main}" "$(git rev-parse "${tip}^{tree}")" "${riders[@]}")
+  made_before=$(pushed "${main}" "${main_date}" "${made[@]}")
   if [[ -n ${made_before} ]]; then
     tip=${made_before}
     echo "merge-train: this train was already made as train/${tip:0:12}, so" \
@@ -151,31 +151,45 @@ sweep() {
   done <<< "${trains}"
 }
 
-# The tip of a train already pushed on `main` holding `tree` with these
-# riders, in this order, or nothing. Each merge's first parent is the one
-# before it, so walking them back from a tip names its riders, last first.
-# Anyone who can push a branch can push one whose parents match, so only
-# one holding the tree just merged is taken, and what rides is still what
-# was reviewed.
+# The tip of a train already pushed on `main`, dated `main_date` or later,
+# that is the train `made` but for its dates, or nothing. Anyone who can
+# push a branch can push one, so only one whose every merge is the one
+# just made is taken: what rides, and every tree main's history gains,
+# is still what was reviewed.
 pushed() {
-  local main=$1 tree=$2 sha ref at rider
+  local main=$1 main_date=$2 sha ref
   shift 2
-  local -a wanted=("$@")
   while read -r sha ref; do
     [[ -n ${sha} ]] || continue
-    at=${sha}
-    local -a found=()
-    while [[ ${at} != "${main}" && ${#found[@]} -le ${#wanted[@]} ]]; do
-      rider=$(git rev-parse -q --verify "${at}^2") || break
-      found=("${rider}" "${found[@]}")
-      at=$(git rev-parse "${at}^1")
-    done
-    if [[ ${at} == "${main}" && ${found[*]} == "${wanted[*]}" ]] &&
-      [[ $(git rev-parse "${sha}^{tree}") == "${tree}" ]]; then
+    if same_train "${sha}" "${main}" "${main_date}" "$@"; then
       echo "${sha}"
       return
     fi
   done <<< "$(git ls-remote origin 'refs/heads/train/*')"
+}
+
+# Whether the train whose tip is `at` is, merge by merge from its tip
+# back to `main`, each of `made`: two parents, the same rider, tree and
+# words, and authored and committed at one time, from `main_date` to
+# now, so it neither carries what wasn't merged nor steps main's date
+# back or past now.
+same_train() {
+  local at=$1 main=$2 main_date=$3 i ours authored committed now
+  shift 3
+  local -a made=("$@") parents
+  now=$(date +%s)
+  for ((i = ${#made[@]} - 1; i >= 0; i--)); do
+    ours=${made[i]}
+    read -ra parents <<< "$(git rev-list --parents -n 1 "${at}" 2> /dev/null)"
+    ((${#parents[@]} == 3)) || return 1
+    [[ ${parents[2]} == $(git rev-parse "${ours}^2") ]] || return 1
+    [[ $(git rev-parse "${at}^{tree}") == $(git rev-parse "${ours}^{tree}") ]] || return 1
+    [[ $(git log -1 --format=%B "${at}") == $(git log -1 --format=%B "${ours}") ]] || return 1
+    read -r authored committed <<< "$(git log -1 --format='%at %ct' "${at}")"
+    ((authored == committed && committed >= main_date && committed <= now)) || return 1
+    at=${parents[1]}
+  done
+  [[ ${at} == "${main}" ]]
 }
 
 land_train() {

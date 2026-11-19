@@ -235,6 +235,38 @@ if [[ ${again} != "${tip}" ]]; then
   failed=1
 fi
 git push -q origin --delete train/000000000000
+# Pushed by anyone, with the train's riders, words and tip's tree, dated
+# `$1` and holding the tree `$2` halfway.
+forge() {
+  local first second
+  first=$(git log -1 --format=%B "${tip}^1^1" |
+    GIT_AUTHOR_DATE="$1 +0000" GIT_COMMITTER_DATE="$1 +0000" \
+      git commit-tree "${tip}^1^1^{tree}" -p "${base}" -p "${north}" -F -)
+  second=$(git log -1 --format=%B "${tip}^1" |
+    GIT_AUTHOR_DATE="$1 +0000" GIT_COMMITTER_DATE="$1 +0000" \
+      git commit-tree "$2" -p "${first}" -p "${south}" -F -)
+  git log -1 --format=%B "${tip}" |
+    GIT_AUTHOR_DATE="$1 +0000" GIT_COMMITTER_DATE="$1 +0000" \
+      git commit-tree "${tip}^{tree}" -p "${second}" -p "${peer}" -F -
+}
+stamp=$(git log -1 --format=%ct "${tip}")
+before_main=$(($(git log -1 --format=%ct "${base}") - 1))
+for forged in \
+  "$(forge "${stamp}" "${base}^{tree}")" \
+  "$(forge "${before_main}" "${tip}^1^{tree}")" \
+  "$(forge 2524608000 "${tip}^1^{tree}")"; do
+  git push -q origin "${forged}:refs/heads/train/000000000000"
+  rode goes "already made as train/${tip:0:12}" \
+    "a train is made again as the one merged as it was" \
+    make "${north}" "${south}" "${peer}"
+  again=$(made)
+  if [[ ${again} != "${tip}" ]]; then
+    echo "FAIL a pushed train with another tree halfway, or dated before main or" \
+      "past now, is never the train made: ${again} against ${tip}" >&2
+    failed=1
+  fi
+  git push -q origin --delete train/000000000000
+done
 # Other riders on the same main make another train.
 rode goes "riding ${north:0:12} ${south:0:12};" "a train of other riders" \
   make "${north}" "${south}"
