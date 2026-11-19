@@ -551,7 +551,7 @@ pub async fn hold(
 
 /// Waits until the node at `node` gives `session` its turn, or a key typed
 /// in a joined window starts it now, each window joining meanwhile told
-/// that it waits.
+/// that it waits, and every window told once it is reopening.
 async fn its_turn(node: &Path, session: &str, terminal: &Terminal, shown: &Shown, files: &Files) {
     shown.waiting.send_replace(true);
     shown.show(WAITING_LINE);
@@ -562,6 +562,7 @@ async fn its_turn(node: &Path, session: &str, terminal: &Terminal, shown: &Shown
     // Its turn may have come while it watched for a key.
     terminal.parked.send_replace(false);
     shown.waiting.send_replace(false);
+    shown.show(REOPENING_LINE);
 }
 
 /// Says to the holding's journal that the run of `command` as `pid` ended
@@ -596,7 +597,14 @@ fn restarting(waking: &Path, record: &Record, shown: &Shown) -> bool {
 const WAITING_LINE: &[u8] =
     b"\r\nWaiting its turn: sessions come back a few at a time. A key starts it now.\r\n";
 
-/// What a window says once its program's turn comes, or a key starts it.
+/// What every joined window shows once its program's turn comes, or a key
+/// starts it, below [`WAITING_LINE`]: a program may draw nothing for a
+/// while as it comes back, as an attach waiting on a busy pi host does,
+/// and a key would otherwise look unheard (19 November).
+const REOPENING_LINE: &[u8] =
+    b"\r\nReopening it now: it shows itself once it is back, which can take a minute.\r\n";
+
+/// What tests look for in [`REOPENING_LINE`].
 #[cfg(test)]
 const REOPENING_SAYS: &str = "Reopening it now";
 
