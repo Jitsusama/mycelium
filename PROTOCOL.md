@@ -159,9 +159,10 @@ same code, each line a JSON value:
    to its own node's socket as `{"Relayed": {"from", "start"}}`, `from`
    the machine that asked, with a need for its own machine added, so
    that node admits or refuses it on its own facts as they are then.
-   That node takes `"Relayed"` only from its own process, as only its
-   link asks it, and neither counts nor books it, since the asking
-   node did.
+   That node takes `"Relayed"` only from its own process or one it
+   tells as no agent's, as a link's end is, and neither counts nor
+   books it, since the asking node did. Where no person works, the
+   kernel tells no agent apart, so there this fences habit alone.
    The end doesn't start it itself, since a process SSH started sits
    outside its person's login session.
 9. `{"Started": {"ask", "reply"}}`: the other end's reply to the ask
@@ -1568,10 +1569,12 @@ a cell's fair share, and the 32 the bound no agent gets round. A
 start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
 once can't pass the limit; a refused one doesn't. The person's own
-starts are never counted or refused, and nor is an agent's that brings
-back a session the node knows and that isn't running: one the command
-names after `--session`, by its id or by a file whose name ends in
-`_` and the id, or the session a carry brings. A start past the limits
+starts are never counted or refused, and nor is an agent's first in
+the hour that brings back a session the node knows has ended: pi
+itself, its program named `pi`, given the session after `--session`,
+by its id or by a file whose name ends in `_` and the id. A second
+bringing back the same one within the hour counts, and one running or
+on a machine out of reach is never brought back. A start past the limits
 with room again within a minute waits for it and goes through; one
 further off is refused, saying in how many minutes and at what time
 there is room, and that it goes to the agent's orchestrator as a
@@ -1585,7 +1588,7 @@ node. Every start, refused ones too, is kept in
 `starts.jsonl` beside `runs.jsonl` as a JSON line, `{"at", "by",
 "started_by", "folder", "program", "resumes", "machine", "held",
 "failed", "refused"}`: `at` in milliseconds, `started_by` null for the
-person's, `resumes` true for one bringing a session back,
+person's, `resumes` the id of the session it brings back uncounted,
 `program` the command's first word alone, so no argument is kept,
 `failed` the node's reason alone, before the words naming the command,
 and the rest only where they apply. The node reads it again as it

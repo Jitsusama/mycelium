@@ -4,14 +4,14 @@
 //! refuses an agent's start past what one cell, and all of them together,
 //! may start in an hour, and every one while the person has stopped them,
 //! which takes one act. The person's own starts are never held back, and
-//! nor is a start that brings back a session the node already knew,
-//! since it begins no new work.
+//! nor is pi's first start in the hour bringing back a session that
+//! ended, since it begins no new work.
 //!
 //! The book is kept in `starts.jsonl` beside the node's runs, a line a
 //! start: `{"at", "by", "started_by", "folder", "program"}`, `"resumes"`
-//! when it brings a session back, then where it started (`"machine"` and
-//! `"held"`), or why it didn't (`"failed"`), or why it was refused
-//! (`"refused"`). The person's stop is the file
+//! with the session's id when it brings one back uncounted, then where it
+//! started (`"machine"` and `"held"`), or why it didn't (`"failed"`), or
+//! why it was refused (`"refused"`). The person's stop is the file
 //! `starts.stopped` beside it, there for as long as starts are stopped.
 
 use std::collections::VecDeque;
@@ -22,6 +22,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use serde::{Deserialize, Serialize};
 
 use crate::record::{Session, State};
+
+/// The program whose sessions a start may bring back.
+const PI: &str = "pi";
 use crate::wire::By;
 
 /// The most sessions one cell may start in an hour.
@@ -75,11 +78,13 @@ pub struct Kept {
     /// given is kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<String>,
-    /// Whether it brings back a session the node already knew, not
-    /// running, as [`brings_back`] tells: it counts toward no limit, since
-    /// it begins no new work, though the person's stop still holds it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub resumes: bool,
+    /// The session it brings back, one the node knew had ended, as
+    /// [`brings_back`] tells: the first such start in the hour counts
+    /// toward no limit, since it begins no new work, though the person's
+    /// stop still holds it. A second within the hour counts, so bringing
+    /// one back again and again is bounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumes: Option<String>,
     /// The machine it started on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
@@ -100,18 +105,22 @@ impl Kept {
     /// work the node let go ahead, started or not, since a start that
     /// fails can still have spent.
     fn counts(&self) -> bool {
-        matches!(self.by, By::Agent(_)) && !self.resumes && self.refused.is_none()
+        matches!(self.by, By::Agent(_)) && self.resumes.is_none() && self.refused.is_none()
     }
 }
 
-/// Whether `command` brings back a session of `sessions` that isn't
-/// running: one it names after `--session`, by its id or by a file whose
-/// name ends in it, as pi names a session's file, or the one a carry
-/// brings. Only a session not running counts as brought back, so starting
-/// one again and again counts from the second start on.
+/// The session of `sessions` that `command` brings back, if it is pi's
+/// and names one that ended after `--session`, by its id or by a file
+/// whose name ends in `_` and it, as pi names a session's file. Only pi
+/// itself, not a shell, is read, so no other work hides behind the words;
+/// and only an ended session, so one running, or on a machine out of
+/// reach, where it may still run, is never brought back uncounted.
 #[must_use]
-pub fn brings_back(command: &[String], sessions: &[Session]) -> bool {
-    let carried = crate::carry::arrives(command).map(|arrives| arrives.session);
+pub fn brings_back(command: &[String], sessions: &[Session]) -> Option<String> {
+    let program = command.first().map(Path::new)?;
+    if program.file_name().and_then(|name| name.to_str()) != Some(PI) {
+        return None;
+    }
     let mut named = command
         .windows(2)
         .filter(|pair| pair[0] == "--session")
@@ -120,22 +129,24 @@ pub fn brings_back(command: &[String], sessions: &[Session]) -> bool {
             command
                 .iter()
                 .filter_map(|word| word.strip_prefix("--session=")),
-        )
-        .chain(carried);
-    named.any(|named| {
+        );
+    named.find_map(|named| {
         let stem = Path::new(named)
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or_default();
-        sessions.iter().any(|session| {
-            let id = session.id.as_str();
-            let is_it = !id.is_empty()
-                && (named == id
-                    || stem
-                        .strip_suffix(id)
-                        .is_some_and(|before| before.ends_with('_')));
-            is_it && !matches!(session.state, State::Busy | State::Idle)
-        })
+        sessions
+            .iter()
+            .find(|session| {
+                let id = session.id.as_str();
+                let is_it = !id.is_empty()
+                    && (named == id
+                        || stem
+                            .strip_suffix(id)
+                            .is_some_and(|before| before.ends_with('_')));
+                is_it && session.state == State::Ended
+            })
+            .map(|session| session.id.clone())
     })
 }
 
@@ -276,6 +287,7 @@ impl Starts {
             .map(|program| program.chars().take(PROGRAM_MOST).collect());
         let refused = {
             let mut book = self.lock();
+            Self::once_an_hour(&book, &mut asked);
             let refused = self.refusal(&book, &asked).map(|(why, _)| why);
             if refused.is_none() {
                 let id = book.next;
@@ -295,7 +307,29 @@ impl Starts {
     /// holds it.
     #[must_use]
     pub fn room(&self, asked: &Kept) -> Option<i64> {
-        self.refusal(&self.lock(), asked).and_then(|(_, room)| room)
+        let book = self.lock();
+        let mut asked = asked.clone();
+        Self::once_an_hour(&book, &mut asked);
+        self.refusal(&book, &asked).and_then(|(_, room)| room)
+    }
+
+    /// Counts `asked` after all where it brings back a session the book
+    /// already shows brought back uncounted in the hour before it, going
+    /// or kept, so a burst of starts of one ended session counts from the
+    /// second on, before the first has run long enough to say so.
+    fn once_an_hour(book: &Book, asked: &mut Kept) {
+        let since = asked.at - HOUR;
+        let again = asked.resumes.as_ref().is_some_and(|session| {
+            book.kept
+                .iter()
+                .chain(book.going.iter().map(|(_, going)| going))
+                .any(|one| {
+                    one.refused.is_none() && one.at > since && one.resumes.as_ref() == Some(session)
+                })
+        });
+        if again {
+            asked.resumes = None;
+        }
     }
 
     /// Why `asked` is refused, if it is, and when the limits that refuse
@@ -361,7 +395,8 @@ impl Starts {
             .started_by
             .as_deref()
             .map_or_else(|| "agents of no known cell".to_owned(), str::to_owned);
-        let why = if cell_room.is_some() {
+        // The limit said is the one whose room comes last.
+        let why = if cell_room >= node_room {
             format!(
                 "{cell} started {} sessions in the last hour, and a cell starts at most \
                  {CELL_AN_HOUR} an hour",
@@ -593,7 +628,7 @@ mod tests {
             started_by: cell.map(str::to_owned),
             folder: None,
             program: Some("pi".to_owned()),
-            resumes: false,
+            resumes: None,
             machine: None,
             held: None,
             failed: None,
@@ -601,9 +636,9 @@ mod tests {
         }
     }
 
-    fn resuming(cell: &str, at: i64) -> Kept {
+    fn resuming(cell: &str, session: &str, at: i64) -> Kept {
         Kept {
-            resumes: true,
+            resumes: Some(session.to_owned()),
             ..agent(cell, at)
         }
     }
@@ -620,22 +655,24 @@ mod tests {
     fn a_wave_of_sessions_brought_back_all_start_though_the_persons_stop_holds_them() {
         let (_dir, starts) = book();
         for one in 0..=CELL_AN_HOUR {
-            started(
-                &starts,
-                resuming("OSPREY", NOW + i64::try_from(one).expect("few")),
-                "h",
-            );
+            let at = NOW + i64::try_from(one).expect("few");
+            started(&starts, resuming("OSPREY", &format!("s-{one}"), at), "h");
         }
-        for _ in 0..CELL_AN_HOUR {
+        for _ in 1..CELL_AN_HOUR {
             started(&starts, agent("OSPREY", NOW + 10), "h");
         }
+        // Bringing one back again within the hour counts, as new work.
+        started(&starts, resuming("OSPREY", "s-0", NOW + 10), "h");
         starts
             .admit(agent("OSPREY", NOW + 10))
             .expect_err("new work still counts");
-        started(&starts, resuming("OSPREY", NOW + 10), "h");
+        starts
+            .admit(resuming("OSPREY", "s-1", NOW + 10))
+            .expect_err("and so does bringing one back again");
+        started(&starts, resuming("OSPREY", "s-new", NOW + 10), "h");
         starts.stop().expect("stopped");
         starts
-            .admit(resuming("OSPREY", NOW + 10))
+            .admit(resuming("OSPREY", "s-else", NOW + 10))
             .expect_err("the person's stop holds every agent's start");
     }
 
@@ -647,22 +684,33 @@ mod tests {
                 .map(|&word| word.to_owned())
                 .collect::<Vec<_>>()
         };
-        let sessions = [session("0193-ended", "ended"), session("0193-busy", "busy")];
+        let sessions = [
+            session("0193-ended", "ended"),
+            session("0193-busy", "busy"),
+            session("0193-away", "unreachable"),
+        ];
         let file = "/home/x/.pi/agent/sessions/--x--/2026-11-18T22-00-00_0193-ended.jsonl";
         for brought in [
             words(&["pi", "--session", "0193-ended"]),
-            words(&["pi", "--session", file]),
+            words(&["/run/current-system/sw/bin/pi", "--session", file]),
             words(&["pi", "--session=0193-ended"]),
         ] {
-            assert!(brings_back(&brought, &sessions), "{brought:?}");
+            assert_eq!(
+                brings_back(&brought, &sessions).as_deref(),
+                Some("0193-ended"),
+                "{brought:?}"
+            );
         }
         for new in [
             words(&["pi", "--session", "0193-busy"]),
+            words(&["pi", "--session", "0193-away"]),
             words(&["pi", "--session", "0193-unknown"]),
             words(&["pi", "--session", "x0193-ended"]),
             words(&["pi", "0193-ended"]),
+            words(&["sh", "-c", "new work", "--session", "0193-ended"]),
+            words(&["pip", "--session", "0193-ended"]),
         ] {
-            assert!(!brings_back(&new, &sessions), "{new:?}");
+            assert_eq!(brings_back(&new, &sessions), None, "{new:?}");
         }
     }
 

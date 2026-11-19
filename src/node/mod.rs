@@ -4326,8 +4326,9 @@ impl<S: Store> Shared<S> {
     /// An agent's start counts toward its cell's limit by the address of
     /// the nearest session claiming the asker's process. A claim proves
     /// nothing, so that limit is a fair share; the limit on every agent's
-    /// starts is the bound none gets round. One that brings back a session
-    /// the node knows counts toward neither.
+    /// starts is the bound none gets round. Pi's first start in the hour
+    /// bringing back a session the node knows has ended counts toward
+    /// neither.
     async fn start(&self, asked: Start) -> Reply {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
@@ -4377,11 +4378,15 @@ impl<S: Store> Shared<S> {
     /// Lets `asked` go ahead as the book of starts does, waiting for room
     /// where the limits refuse it and there is room again within
     /// [`START_WAITS_MOST`], so a start a little early goes through by
-    /// itself; one refused later is told when.
+    /// itself; one refused later is told when. Waking, it asks again, so
+    /// one whose room another took waits on for the next, within the same
+    /// minute.
     async fn admitted(&self, mut asked: starts::Kept) -> Result<starts::Admitted, String> {
         let until = asked.at + START_WAITS_MOST;
         while let Some(room) = self.starts.room(&asked).filter(|room| *room <= until) {
-            let wait = u64::try_from(room - asked.at).unwrap_or(0) + 1;
+            // Never past the minute, though the clock steps back meanwhile.
+            let wait = (room - asked.at).clamp(0, START_WAITS_MOST);
+            let wait = u64::try_from(wait).unwrap_or(0) + 1;
             tokio::time::sleep(Duration::from_millis(wait)).await;
             asked.at = jiff::Timestamp::now().as_millisecond();
         }
@@ -4389,16 +4394,14 @@ impl<S: Store> Shared<S> {
     }
 
     /// Starts a program the node of the linked machine `from` relayed
-    /// here, as [`Self::placed`] does, where this node's own process, as
-    /// only its link does, asked it. That node already judged it, counted
+    /// here, as [`Self::placed`] does, where a link asked it: this node's
+    /// own process, or one no agent's, as [`asker::relays`] tells. That
+    /// node already judged it, counted
     /// it toward its limits and booked it, so this one does none again.
     /// One that carries a session from `from` is noted, so the session is
     /// read for the cell it left as once it runs here.
     async fn relayed(&self, from: &str, asked: Start) -> Reply {
-        let own = self
-            .client
-            .is_some_and(|pid| u32::try_from(pid).is_ok_and(|pid| pid == std::process::id()));
-        if !own {
+        if !asker::relays(self.client, &self.processes) {
             return Err("only a linked node relays a start here".to_owned());
         }
         if asked.command.is_empty() {
@@ -12144,12 +12147,18 @@ esac
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let at = jiff::Timestamp::now().to_string();
-        store.start_here(
-            "s-gone",
-            json!({"session": "s-gone", "addresses": ["GONE01"], "groups": [],
-                   "busy": false, "state": "listening", "at": at}),
-            false,
-        );
+        // Nine sessions ended here, one for each start of the wave.
+        let wave = (0..=starts::CELL_AN_HOUR)
+            .map(|one| format!("s-gone-{one}"))
+            .collect::<Vec<_>>();
+        for (one, session) in wave.iter().enumerate() {
+            store.start_here(
+                session,
+                json!({"session": session, "addresses": [format!("GONE0{one}")],
+                       "groups": [], "busy": false, "state": "listening", "at": at}),
+                false,
+            );
+        }
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
         // As in the limit's test, each start stays here.
@@ -12166,20 +12175,24 @@ esac
             })
         };
         asks_below(&socket, 7001);
-        for _ in 0..=starts::CELL_AN_HOUR {
+        for session in &wave {
             assert_eq!(
-                ask(socket.clone(), start(&["pi", "--session", "s-gone"])).await,
+                ask(socket.clone(), start(&["pi", "--session", session])).await,
                 Err("skiff's node starts no sessions".to_owned()),
-                "none is refused"
+                "none of the wave is refused"
             );
         }
-        // One running isn't brought back, so it counts.
         for _ in 0..starts::CELL_AN_HOUR {
-            let _ = ask(socket.clone(), start(&["pi", "--session", "s-steward"])).await;
+            assert_eq!(
+                ask(socket.clone(), start(&["pi"])).await,
+                Err("skiff's node starts no sessions".to_owned()),
+                "the wave left the cell its eight"
+            );
         }
-        let refused = ask(socket, start(&["pi"]))
+        // Bringing one back a second time in the hour counts, as new work.
+        let refused = ask(socket, start(&["pi", "--session", &wave[0]]))
             .await
-            .expect_err("new work counts");
+            .expect_err("a second time counts");
         assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
     }
 
@@ -12196,9 +12209,10 @@ esac
             .mode(0o700)
             .create(socket.parent().expect("its folder"))
             .expect("made");
-        // WCJQSG's eight in the hour, the oldest leaving it in a second
+        // WCJQSG's eight in the hour, the oldest leaving it in five seconds
         // and the next two minutes after.
-        let leaves = jiff::Timestamp::now().as_millisecond() - 3_600_000 + 1_000;
+        let leaves = jiff::Timestamp::now().as_millisecond() - 3_600_000 + 5_000;
+        let room = leaves + 3_600_000;
         let mut book = (0..starts::CELL_AN_HOUR)
             .map(|one| {
                 let at = leaves + i64::try_from(one).expect("few") * 120_000;
@@ -12224,10 +12238,18 @@ esac
             })
         };
         asks_below(&socket, 7001);
+        assert!(
+            jiff::Timestamp::now().as_millisecond() < room,
+            "asked before there was room, or this proves no wait"
+        );
         assert_eq!(
             ask(socket.clone(), start()).await,
             Err("skiff's node starts no sessions".to_owned()),
             "it waited for the oldest to leave the hour, and went through"
+        );
+        assert!(
+            jiff::Timestamp::now().as_millisecond() >= room,
+            "it went no sooner than its room"
         );
         let refused = ask(socket, start())
             .await
@@ -14446,7 +14468,7 @@ esac
         assert_eq!(
             asker.relayed("tern", carrying.clone()).await,
             Err("only a linked node relays a start here".to_owned()),
-            "no process but the node's own relays a start"
+            "no process that can't be told from an agent's relays a start"
         );
         asker.client = i32::try_from(std::process::id()).ok();
         let _ = asker.relayed("osprey", carrying.clone()).await;

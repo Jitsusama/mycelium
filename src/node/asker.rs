@@ -585,6 +585,20 @@ pub fn persons_own(asker: Option<i32>, processes: &Processes, does: &str) -> Res
     }
 }
 
+/// Whether process `asker` may relay a start as a linked node's: the
+/// node's own, or one the kernel tells as no agent's, as a link's far end,
+/// a `mycelium link` an ssh login runs, is. On a machine no person works
+/// on the kernel tells no agent from anyone else, as [`Processes`] says,
+/// so there this fences habit, not an agent set on it, as [`may_say`]
+/// does.
+#[must_use]
+pub fn relays(asker: Option<i32>, processes: &Processes) -> bool {
+    asker.is_some_and(|pid| {
+        u32::try_from(pid).is_ok_and(|pid| pid == std::process::id())
+            || processes.kernel().tell(pid) == Told::Person
+    })
+}
+
 /// The session that asks, by its own id, among `owners`, each session of
 /// this machine's that runs and the process that owns it, as [`proved`]
 /// proves them: the one whose process the asker is, or runs below. A pi host owns
