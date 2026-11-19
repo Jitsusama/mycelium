@@ -708,6 +708,7 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done, ordered: Option<&Orde
         command,
         may_cost: false,
         carries: false,
+        once: None,
     }
 }
 

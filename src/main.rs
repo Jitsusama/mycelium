@@ -979,6 +979,11 @@ struct Starting {
     /// made without it.
     #[arg(long)]
     may_cost: bool,
+    /// A name for this one start, given again when asking again after no
+    /// answer came, so the start already landing is joined, not started
+    /// twice.
+    #[arg(long)]
+    once: Option<String>,
     /// The program and its arguments, after `--`.
     #[arg(last = true, required = true)]
     command: Vec<String>,
@@ -2544,6 +2549,7 @@ fn start(socket: &Path, asked: Starting) -> io::Result<()> {
         command: asked.command,
         may_cost: asked.may_cost,
         carries: false,
+        once: asked.once,
     };
     print_reply(socket, &Request::Start(start))
 }

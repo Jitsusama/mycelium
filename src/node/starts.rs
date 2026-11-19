@@ -113,6 +113,22 @@ pub struct Kept {
     /// Why the node refused it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refused: Option<String>,
+    /// The asker's name for it, under which an ask again joins it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub once: Option<String>,
+    /// How many asks again under its name joined it while it landed,
+    /// none of which started or counted another.
+    #[serde(default, skip_serializing_if = "is_none_joined")]
+    pub joined: u32,
+}
+
+/// Whether no ask joined a start, so its line says nothing of it.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_none_joined(joined: &u32) -> bool {
+    *joined == 0
 }
 
 impl Kept {
@@ -127,6 +143,11 @@ impl Kept {
     /// and begins new work, rather than bringing a session back.
     fn counts_for_cell(&self) -> bool {
         self.counts() && self.resumes.is_none()
+    }
+
+    /// Whether it was asked under the name `once`, by `by` for `cell`.
+    fn under(&self, by: By, cell: Option<&str>, once: &str) -> bool {
+        self.once.as_deref() == Some(once) && self.by == by && self.started_by.as_deref() == cell
     }
 }
 
@@ -565,14 +586,51 @@ impl Starts {
             .and_then(|one| one.started_by.clone())
     }
 
-    /// The newest `most` starts, newest last.
+    /// Counts one more ask under the name `once`, by `by` for the cell
+    /// `cell`, as joining the start still landing under it.
+    pub fn joined(&self, by: By, cell: Option<&str>, once: &str) {
+        let mut book = self.lock();
+        if let Some((_, going)) = book
+            .going
+            .iter_mut()
+            .find(|(_, one)| one.under(by, cell, once))
+        {
+            going.joined = going.joined.saturating_add(1);
+        }
+    }
+
+    /// Where the start under the name `once`, by `by` for the cell `cell`,
+    /// landed within the hour before `at`, as the book read back says:
+    /// its machine and held id.
+    #[must_use]
+    pub fn landed(
+        &self,
+        by: By,
+        cell: Option<&str>,
+        once: &str,
+        at: i64,
+    ) -> Option<(String, String)> {
+        self.lock()
+            .kept
+            .iter()
+            .rev()
+            .filter(|one| one.at > at - HOUR && one.under(by, cell, once))
+            .find_map(|one| one.machine.clone().zip(one.held.clone()))
+    }
+
+    /// The newest `most` starts, newest last, those still landing after
+    /// those that ended.
     #[must_use]
     pub fn newest(&self, most: usize) -> Vec<Kept> {
         let book = self.lock();
-        book.kept
+        let all: Vec<&Kept> = book
+            .kept
             .iter()
-            .skip(book.kept.len().saturating_sub(most))
-            .cloned()
+            .chain(book.going.iter().map(|(_, going)| going))
+            .collect();
+        all[all.len().saturating_sub(most)..]
+            .iter()
+            .map(|&one| one.clone())
             .collect()
     }
 
@@ -699,6 +757,8 @@ mod tests {
             held: None,
             failed: None,
             refused: None,
+            once: None,
+            joined: 0,
         }
     }
 

@@ -75,6 +75,7 @@ pub use formed::Formed;
 mod glyph;
 mod hub;
 mod network;
+mod once;
 pub use network::{Holding, Standing, records as network_records};
 mod signals;
 mod spares;
@@ -1142,6 +1143,8 @@ struct Shared<S> {
     runs: Arc<run::Given>,
     /// Each session it started or refused to, beside its runs.
     starts: Arc<starts::Starts>,
+    /// Each start asked under a name, so an ask again joins it.
+    onces: Arc<once::Onces>,
     /// Where pi's hosts keep their records of the sessions they hold.
     hosts: PathBuf,
     /// Where it keeps who orchestrates which quests.
@@ -1337,6 +1340,7 @@ impl<S: Clone> Clone for Shared<S> {
             unreadable: Arc::clone(&self.unreadable),
             runs: self.runs.clone(),
             starts: Arc::clone(&self.starts),
+            onces: Arc::clone(&self.onces),
             hosts: self.hosts.clone(),
             orchestrations: self.orchestrations.clone(),
             logs: self.logs.clone(),
@@ -2003,6 +2007,7 @@ impl<S: Store> Shared<S> {
             hostname: rustix::system::uname().nodename().to_string_lossy().into(),
             unreadable: Arc::default(),
             starts,
+            onces: Arc::default(),
             runs: Arc::new(runs),
             hosts,
             orchestrations,
@@ -4349,6 +4354,9 @@ impl<S: Store> Shared<S> {
     /// the node's limit but not its cell's, which instead allows it
     /// [`starts::RESUMES_A_CELL_AN_HOUR`] of them. One short of room waits
     /// for it up to [`START_WAITS_MOST`].
+    ///
+    /// A start asked under a name its asker gave one before joins that
+    /// one, as [`once`] says, landing or landed, and counts nothing more.
     async fn start(&self, asked: Start) -> Reply {
         self.started(asked, START_WAITS_MOST).await
     }
@@ -4388,12 +4396,43 @@ impl<S: Store> Shared<S> {
                 .filter(|address| forage::is_address(address));
             (started_by, starts::brings_back(&asked.command, &all))
         };
+        let started_by = started_by.filter(|_| by != By::Person);
+        let at = jiff::Timestamp::now().as_millisecond();
+        let once = asked.once.take();
+        let lead = match &once {
+            Some(said) => {
+                let name = once::Name::of(by, started_by.as_deref(), said)?;
+                // Where it goes on, it goes under a name of this node's,
+                // so the far node joins an ask again from here alone.
+                asked.once = Some(name.there(&self.machine));
+                match self.onces.join(name, at) {
+                    once::Joined::Landed(started) => return Ok(Response::Started(started)),
+                    once::Joined::Landing(joining) => {
+                        self.starts.joined(by, started_by.as_deref(), said);
+                        return joining.outcome().await.map(Response::Started);
+                    }
+                    once::Joined::Leads(lead) => {
+                        if let Some((machine, held)) =
+                            self.starts.landed(by, started_by.as_deref(), said, at)
+                        {
+                            drop(lead);
+                            return Err(format!(
+                                "it started already under that name, before this node last \
+                                 started: {machine} holds it as {held}"
+                            ));
+                        }
+                        Some(lead)
+                    }
+                }
+            }
+            None => None,
+        };
         let admitted = self
             .admitted(
                 starts::Kept {
-                    at: jiff::Timestamp::now().as_millisecond(),
+                    at,
                     by,
-                    started_by: started_by.filter(|_| by != By::Person),
+                    started_by,
                     folder: asked.folder.clone(),
                     program: asked.command.first().cloned(),
                     resumes,
@@ -4401,25 +4440,41 @@ impl<S: Store> Shared<S> {
                     held: None,
                     failed: None,
                     refused: None,
+                    once,
+                    joined: 0,
                 },
                 waits,
             )
-            .await?;
-        let started = match whither {
+            .await;
+        let admitted = match admitted {
+            Ok(admitted) => admitted,
+            Err(refused) => {
+                if let Some(lead) = lead {
+                    lead.ends(at, &Err(refused.clone()));
+                }
+                return Err(refused);
+            }
+        };
+        let answered = match whither {
             Whither::Placed => self.placed(asked, fence_of(by)).await,
             Whither::Here => self.here(asked, fence_of(by)).await,
         };
+        let started = match answered {
+            Ok(Response::Started(started)) => Ok(started),
+            Ok(_) => Err("it answered with no session".to_owned()),
+            Err(why) => Err(why),
+        };
         self.starts.keep(
             admitted,
-            match &started {
-                Ok(Response::Started(started)) => {
-                    Ok((started.machine.clone(), started.held.clone()))
-                }
-                Ok(_) => Err("it answered with no session".to_owned()),
-                Err(why) => Err(why.clone()),
-            },
+            started
+                .as_ref()
+                .map(|started| (started.machine.clone(), started.held.clone()))
+                .map_err(Clone::clone),
         );
-        started
+        if let Some(lead) = lead {
+            lead.ends(jiff::Timestamp::now().as_millisecond(), &started);
+        }
+        started.map(Response::Started)
     }
 
     /// Lets `asked` go ahead as the book of starts does, waiting for room
@@ -6447,6 +6502,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            once: None,
         });
         let started = ask(socket.to_owned(), asked).await;
         assert!(
@@ -10836,6 +10892,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            once: None,
         });
         // The person starts it, since kestrel declares no fence, so an
         // agent's start would be refused its looser ground.
@@ -10927,6 +10984,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            once: None,
         });
         let started = ask(near_socket.clone(), asked).await;
         let Ok(Response::Started(started)) = started else {
@@ -11104,6 +11162,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            once: None,
         });
         let started = tokio::time::timeout(PATIENCE, async {
             loop {
@@ -12142,6 +12201,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            once: None,
         };
         let tern = || vec![Need::Machine("tern".to_owned())];
         asks_below(&socket, 7001);
@@ -12194,6 +12254,7 @@ esac
                 command: vec!["pi".to_owned(), "--said-once".to_owned()],
                 may_cost: false,
                 carries: false,
+                once: None,
             })
         };
         let start = || start_in(Vec::new());
@@ -12304,6 +12365,7 @@ esac
                 command: command.iter().map(|&word| word.to_owned()).collect(),
                 may_cost: false,
                 carries: false,
+                once: None,
             })
         };
         asks_below(&socket, 7001);
@@ -12369,6 +12431,7 @@ esac
                 command: vec!["pi".to_owned()],
                 may_cost: false,
                 carries: false,
+                once: None,
             })
         };
         asks_below(&socket, 7001);
@@ -12409,6 +12472,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            once: None,
         };
         let relayed = || Request::Relayed {
             from: "tern".to_owned(),
@@ -14051,6 +14115,7 @@ esac
                     command,
                     may_cost: false,
                     carries: false,
+                    once: None,
                 });
                 client.ask(&asked).expect("the node answers")
             };
@@ -14106,6 +14171,167 @@ esac
             ],
             "each start of the program runs through the login shell, with the realm's kit"
         );
+
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    /// A stand-in holder in `dir` that writes a line to the file it
+    /// answers second each time it is started, then holds only once the
+    /// file it answers third is there: so a test sees how many starts
+    /// began, and says when each may land.
+    fn gated_holder(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let holder = dir.join("gated-holder");
+        let began = dir.join("began");
+        let gate = dir.join("gate");
+        crate::stand_in::program(
+            &holder,
+            &format!(
+                "#!/bin/sh\necho began >> {began}\n\
+                 while [ ! -e {gate} ]; do sleep 0.01; done\necho held\n",
+                began = began.display(),
+                gate = gate.display(),
+            ),
+        );
+        (holder, began, gate)
+    }
+
+    /// How many starts `began`, as [`gated_holder`] writes them.
+    fn began(began: &Path) -> usize {
+        fs::read_to_string(began).map_or(0, |began| began.lines().count())
+    }
+
+    /// A start of pi here, under the asker's name `once` for it.
+    fn once_here(once: Option<&str>) -> Request {
+        Request::Start(Start {
+            work: work(Vec::new()),
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: once.map(str::to_owned),
+        })
+    }
+
+    /// The held id a start answered, or why it didn't.
+    fn held_by(reply: &Reply) -> String {
+        match reply {
+            Ok(Response::Started(started)) => started.held.clone(),
+            other => panic!("it starts: {other:?}"),
+        }
+    }
+
+    // KP0L6A (19 Nov): a start the node answers after the harness's 45 s
+    // can still land, and the agent's retry then counted and started a
+    // second session. Asked again under the same name, it is the one.
+    #[tokio::test]
+    async fn a_start_asked_again_under_its_name_is_the_one_that_landed() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (holder, began_in, gate) = gated_holder(dir.path());
+        fs::write(&gate, "").expect("each start may land at once");
+        let holds = Starter {
+            program: holder,
+            scope: start::Scope::None,
+            kit: None,
+        };
+        let store = Memory::default();
+        let (stop, node) = node(&store, "skiff", Vec::<Piped>::new(), Some(holds), &socket);
+        asks_as_person(&socket);
+
+        let first = ask(socket.clone(), once_here(Some("01JRETRY"))).await;
+        let again = ask(socket.clone(), once_here(Some("01JRETRY"))).await;
+        assert_eq!(
+            again, first,
+            "asked again, it answers the start that landed"
+        );
+        assert_eq!(began(&began_in), 1, "and starts nothing more");
+        let book = fs::read_to_string(socket.with_file_name("starts.jsonl"))
+            .expect("every start is written down");
+        assert_eq!(
+            book.lines().count(),
+            1,
+            "nor writes or counts another: {book}"
+        );
+
+        let other = ask(socket.clone(), once_here(Some("01JOTHER"))).await;
+        assert_ne!(
+            held_by(&other),
+            held_by(&first),
+            "another name is another start"
+        );
+        let unnamed = ask(socket.clone(), once_here(None)).await;
+        let unnamed_again = ask(socket.clone(), once_here(None)).await;
+        assert_ne!(
+            held_by(&unnamed),
+            held_by(&unnamed_again),
+            "a start under no name starts each time it is asked, as before"
+        );
+        assert_eq!(began(&began_in), 4);
+
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    #[tokio::test]
+    async fn a_start_asked_again_while_it_lands_joins_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (holder, began_in, gate) = gated_holder(dir.path());
+        let holds = Starter {
+            program: holder,
+            scope: start::Scope::None,
+            kit: None,
+        };
+        let store = Memory::default();
+        let (stop, node) = node(&store, "skiff", Vec::<Piped>::new(), Some(holds), &socket);
+        asks_as_person(&socket);
+
+        let first = tokio::spawn(ask(socket.clone(), once_here(Some("01JLANDING"))));
+        let landing = tokio::time::timeout(PATIENCE, async {
+            while began(&began_in) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        landing.await.expect("the first start begins in time");
+        // Its holder holds only once the gate is there, so the first is
+        // still landing as the second is asked, and the gate opens only
+        // once the person's list says the second joined it.
+        let again = tokio::spawn(ask(socket.clone(), once_here(Some("01JLANDING"))));
+        let joined = tokio::time::timeout(PATIENCE, async {
+            loop {
+                let listed = ask(
+                    socket.clone(),
+                    Request::Starts {
+                        act: crate::wire::StartsAct::List,
+                    },
+                )
+                .await;
+                if let Ok(Response::Starts { newest, .. }) = &listed
+                    && newest.iter().any(|one| one["joined"] == 1)
+                {
+                    break;
+                }
+                assert!(
+                    began(&began_in) < 2,
+                    "the second ask began a start of its own: {listed:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        joined
+            .await
+            .expect("the list says the second ask joined the start landing");
+        fs::write(&gate, "").expect("the start may land");
+        let first = first.await.expect("the first asks");
+        let again = again.await.expect("the second asks");
+        assert_eq!(again, first, "both are answered the one start");
+        assert_eq!(began(&began_in), 1, "which began once");
+        let book = fs::read_to_string(socket.with_file_name("starts.jsonl"))
+            .expect("every start is written down");
+        assert_eq!(book.lines().count(), 1, "and counts once: {book}");
 
         drop(stop);
         let stopped = node.await.expect("the node runs to its end");
@@ -14575,6 +14801,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            once: None,
         };
         // No session claims the link's end, so its starts share the
         // limit of agents of no known cell, as on main.
@@ -14608,6 +14835,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            once: None,
         };
         // Elsewhere, or on a machine made for it, as its own start may
         // be, it never starts: here alone, or nowhere, asking no provider.
@@ -14780,6 +15008,7 @@ esac
             .to_vec(),
             may_cost: false,
             carries: true,
+            once: None,
         };
         let mut asker = shared.clone();
         asker.client = Some(1);
