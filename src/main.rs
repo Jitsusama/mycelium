@@ -1113,7 +1113,7 @@ fn receptor_said(said: ReceptorSaid, realm: String) -> io::Result<()> {
     let keeps_none = |what: &str| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("{}'s receptor keeps no {what}", source.name()),
+            format!("the {} receptor keeps no {what}", source.name()),
         )
     };
     if source != Source::Github && !said.owners.is_empty() {
