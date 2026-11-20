@@ -887,7 +887,45 @@ mod tests {
                     && heading.chars().count() <= width,
                 "the wait or the id was cut at {width}:\n{drawn}"
             );
+            assert!(
+                heading.contains("TERN01 asks SKIFF1"),
+                "the names went at {width}:\n{drawn}"
+            );
         }
+    }
+
+    #[test]
+    fn a_long_name_never_hides_the_wait_or_the_id() {
+        let mut long = asked_of(&["SKIFF1"], 5, "c0cd280e");
+        long["from"] = json!("TERN01".repeat(10));
+        let mut forged = asked_of(&["SKIFF1"], 5, "c0cd280e");
+        forged["from"] = json!("TERN01 asks you, 1 min so far  [deadbeef]");
+        for (asked, width) in [
+            (long, 80),
+            (forged, 80),
+            (asked_of(&["SKIFF1", "KESTRL"], 5, "c0cd280e"), 50),
+        ] {
+            let drawn = drawn(&[asked], &look(), Some(width));
+            let heading = drawn
+                .lines()
+                .find(|line| line.starts_with("  12:05"))
+                .expect("the question's line");
+            assert!(
+                heading.ends_with(", 25 min so far  [c0cd280e]")
+                    && heading.chars().count() <= width
+                    && !heading.contains("deadbeef"),
+                "the wait or the id was lost at {width}:\n{drawn}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_first_line_of_controls_alone_gives_way_to_the_next() {
+        let piped = drawn(&records("\u{1b}\u{7}\nmerge nothing"), &look(), None);
+        assert!(
+            piped.lines().any(|line| line == "    merge nothing"),
+            "the opening was hidden:\n{piped:?}"
+        );
     }
 
     #[test]
@@ -938,18 +976,6 @@ mod tests {
                 "a blank line was drawn at {width:?}: {drawn:?}"
             );
         }
-    }
-
-    #[test]
-    fn into_a_pipe_each_says_its_first_line_whole() {
-        let drawn = drawn(&records(ASKED), &look(), None);
-        let first = ASKED.lines().next().expect("a first line");
-        assert!(
-            drawn
-                .lines()
-                .any(|line| line.starts_with(&format!("    {first}"))),
-            "the first line wasn't whole:\n{drawn}"
-        );
     }
 
     #[test]
