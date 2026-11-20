@@ -1609,11 +1609,11 @@ that shape, whether or not it says it carries, is taken only for a
 session that ended on this machine, and otherwise refused as `no
 session <id> ended on <machine>, so nothing is reopened here`, whoever
 asked. Nor is one taken for a session that comes back by itself: one
-still live (`<id> is still live on <machine>`), parked this boot for
-its holder to wake (one parked before it has nothing to wake it, so
-is reopened as any ended session), held by a
-holder there, carried away or waiting for its turn, each refused with
-why, nor while the carries can't be read. Once taken, the session is
+still live (`<id> is still live on <machine>`), parked for its holder
+to wake as its `standing` says (one it doesn't has nothing to wake
+it, so is reopened as any ended session), held by a holder there,
+carried away or waiting for its turn, each refused with why, nor
+while the carries can't be read. Once taken, the session is
 held as being reopened while its start runs, and another reopening of
 it meanwhile is refused as `<id> is being reopened on <machine>
 already`; a start whose asker hung up holds it at most two minutes. A
@@ -2034,8 +2034,10 @@ interface's, beside the record's own `source` where it has one. A
 session also says
 whether it runs `here`, and how it stands, as `standing`: `running` while
 its process runs, here or on a machine heard of this boot; `parked` here,
-ended for its holder to start again, its park marked this boot; `closed`
-here, ended this boot unparked; and no `standing` for one passed over.
+ended for its holder to start again, its park marked this boot (where
+the machine names no boot, as a Mac doesn't, its session changed since
+the boot began); `closed` here, ended this boot unparked; and no
+`standing` for one passed over.
 Its `told` is a digest of the record without what only an open launcher
 shows (its step, usage and times), so a
 change whose records carry no new `told` tells a shut one nothing it

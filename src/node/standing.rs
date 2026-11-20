@@ -116,7 +116,7 @@ pub fn standing(
             .is_some_and(|began| changed(session).is_some_and(|at| at >= began))
     };
     match session.state {
-        State::Ended if here && parks(&session.presence, parked, boot) => Some("parked"),
+        State::Ended if here && parks(session, parked, boot) => Some("parked"),
         State::Ended if here && this_boot() => Some("closed"),
         State::Ended => None,
         _ if here || boot.began.is_none() || this_boot() => Some("running"),
@@ -137,20 +137,30 @@ fn changed(session: &Session) -> Option<i64> {
 /// Whether a presence is parked: it says so, its marker is there, and it
 /// was parked this boot. A park lasts only while its holder does, and no
 /// holder outlives the boot it began in, so one parked before has nothing
-/// left to wake it, whatever its marker says. A presence naming no boot,
-/// or a machine that names none of its own, as a Mac names none to this
-/// crate, takes the park as this boot's, as a steer's wake and a carry
-/// judge it, so a Mac's parked sessions show rather than vanish.
-fn parks(presence: &Value, parked: &HashSet<String>, boot: &Boot) -> bool {
-    presence.get("state").and_then(Value::as_str) == Some("parked")
+/// left to wake it, whatever its marker says. A presence naming no boot
+/// takes the park as this boot's, as a steer's wake and a carry judge it.
+/// A machine that names none of its own, as a Mac names none to this
+/// crate, judges it by when the session last changed, since its markers
+/// outlive a reboot; where nothing says when the boot began either, the
+/// park is taken as this boot's, so a parked session shows rather than
+/// vanishes.
+fn parks(session: &Session, parked: &HashSet<String>, boot: &Boot) -> bool {
+    let presence = &session.presence;
+    let this_boot = match boot.id.as_deref() {
+        Some(now) => presence
+            .pointer("/owner/bootId")
+            .and_then(Value::as_str)
+            .is_none_or(|began| now == began),
+        None => boot
+            .began
+            .is_none_or(|began| changed(session).is_none_or(|at| at >= began)),
+    };
+    this_boot
+        && presence.get("state").and_then(Value::as_str) == Some("parked")
         && presence
             .get("session")
             .and_then(Value::as_str)
             .is_some_and(|id| parked.contains(id))
-        && presence
-            .pointer("/owner/bootId")
-            .and_then(Value::as_str)
-            .is_none_or(|began| boot.id.as_deref().is_none_or(|now| now == began))
 }
 
 /// A presence's fields that only an open launcher shows, and that change
@@ -360,14 +370,29 @@ mod tests {
     }
 
     #[test]
-    fn a_park_is_taken_as_this_boots_where_the_machine_names_no_boot() {
+    fn a_park_is_judged_by_when_it_changed_where_the_machine_names_no_boot() {
         let marked = HashSet::from(["s-one".to_owned()]);
         let nameless = Boot { id: None, ..boot() };
-        let parked = session(State::Ended, BEFORE, napping("boot-now"));
+        let parked = session(State::Ended, SINCE, napping("boot-then"));
         assert_eq!(
             standing(&parked, true, &marked, &nameless),
             Some("parked"),
             "a boot the machine can't name can't refuse the park's own"
+        );
+        let earlier = session(State::Ended, BEFORE, napping("boot-then"));
+        assert_eq!(
+            standing(&earlier, true, &marked, &nameless),
+            None,
+            "one parked before the boot began has nothing to wake it"
+        );
+        let unknown = Boot {
+            id: None,
+            began: None,
+        };
+        assert_eq!(
+            standing(&earlier, true, &marked, &unknown),
+            Some("parked"),
+            "where nothing says when the boot began, the park shows"
         );
     }
 
