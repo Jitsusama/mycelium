@@ -4314,6 +4314,16 @@ mod tests {
             &format!("{QUEST}/notes/plan.md"),
             "the plan\n",
         );
+        put(
+            &kestrel.places.scratch,
+            &format!("{QUEST}/notes/ttc/.git/config"),
+            "[remote \"origin\"]\n\turl = https://nowhere.invalid/ttc.git\n",
+        );
+        put(
+            &kestrel.places.scratch,
+            &format!("{QUEST}/notes/ttc/.git/HEAD"),
+            "ref: refs/heads/main\n",
+        );
         share(&kestrel, QUEST);
         kestrel.places.name_scratch(QUEST, "notes").expect("named");
         for _ in 0..3 {
@@ -4325,6 +4335,12 @@ mod tests {
             Some("the plan\n".to_owned()),
             "and the scratch folder kestrel names of it"
         );
+        assert_eq!(
+            near.cloning.making(),
+            vec![skiff.places.scratch.join(QUEST).join("notes/ttc")],
+            "and makes the clone in it from its remote"
+        );
+        near.cloning.wait();
         assert_eq!(skiff.read("README.md"), Some(readme("active")));
         assert_eq!(
             skiff.read("attachments/map.md"),
