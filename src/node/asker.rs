@@ -226,8 +226,9 @@ impl Processes {
     /// process `host`, read from the kernel, where only a process's own
     /// threads may change its name. None where it can't be told: the
     /// lineage, read again, no longer reaches the host, or that child's
-    /// name can't be read. Where this node never takes a spawner's word, as
-    /// on a Mac or a machine run unattended, it is below none, so the host's
+    /// name can't be read. Where this node can't read processes, as on a
+    /// Mac or a machine run unattended, it is below none; and it is asked
+    /// only where this node takes the host's word, so elsewhere the host's
     /// one session is told as it was before spawners were said.
     fn below_a_spawner(&self, asker: i32, host: i32) -> Option<bool> {
         let Self::Folder(procs) = self else {
@@ -1060,8 +1061,10 @@ pub fn session_of(
 /// Below a spawner its host said, where tracing is shut when it asks and
 /// the host proves a session, the spawner decides alone: its session is
 /// told however many share the host. The host's command line and
-/// environment were read once, when it said the spawner. Elsewhere alone
-/// is counted over
+/// environment are read as it says the spawner, not as a command asks,
+/// and a saying refused leaves an earlier one standing; only code already
+/// inside the host could open its inspector between. Elsewhere alone is
+/// counted over
 /// every claim here, proved or not, since a session whose claim doesn't
 /// prove yet still shares its host's process: the nearest of the asker
 /// and its forebears that any claim or owner names must be named by
