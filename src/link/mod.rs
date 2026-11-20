@@ -2357,31 +2357,34 @@ mod tests {
             .to_string(),
         )
         .expect("declared");
-        let now = jiff::Timestamp::now();
-        let room = crate::room::Room {
-            said_at: now.to_string(),
-            memory_available: 8 << 30,
-            pressure: crate::room::Pressure {
-                cpu: 90.0,
-                memory: 0.0,
-                io: 0.0,
-            },
-            takes: crate::room::Takes {
-                builds: 1,
-                vm_tests: 1,
-            },
-            over: Some(Vec::new()),
-            saturated: None,
+        let measuring = |cpu: f64| {
+            let now = jiff::Timestamp::now();
+            let room = crate::room::Room {
+                said_at: now.to_string(),
+                memory_available: 8 << 30,
+                pressure: crate::room::Pressure {
+                    cpu,
+                    memory: 0.0,
+                    io: 0.0,
+                },
+                takes: crate::room::Takes {
+                    builds: 1,
+                    vm_tests: 1,
+                },
+                over: Some(Vec::new()),
+                saturated: None,
+            };
+            let said = crate::within::Said {
+                at: now,
+                power: None,
+                room: Some(room),
+            };
+            crate::within::tell(&host_says, &said).expect("told");
         };
-        let said = crate::within::Said {
-            at: now,
-            power: None,
-            room: Some(room),
-        };
-        crate::within::tell(&host_says, &said).expect("told");
+        measuring(crate::placement::SATURATES_AT + 5.0);
         let band = Arc::new(crate::placement::Saturation::default());
         assert_eq!(
-            saturated_heard(dir.path(), Some(band)).await,
+            saturated_heard(dir.path(), Some(band.clone())).await,
             Some(true),
             "a link its node keeps says the node's verdict"
         );
@@ -2389,6 +2392,24 @@ mod tests {
             saturated_heard(dir.path(), None).await,
             None,
             "where it holds no band, it says none"
+        );
+        measuring(f64::midpoint(
+            crate::placement::UNSATURATES_UNDER,
+            crate::placement::SATURATES_AT,
+        ));
+        assert_eq!(
+            saturated_heard(dir.path(), Some(band)).await,
+            Some(true),
+            "inside the band, the link holds the verdict the band last judged"
+        );
+        assert_eq!(
+            saturated_heard(
+                dir.path(),
+                Some(Arc::new(crate::placement::Saturation::default()))
+            )
+            .await,
+            Some(false),
+            "and a band that never saturated holds it free there"
         );
     }
 
