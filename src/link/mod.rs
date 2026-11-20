@@ -2345,8 +2345,9 @@ mod tests {
     #[tokio::test]
     async fn a_kept_end_says_its_nodes_verdict_in_the_room_it_measures() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        // Its host tells it a room at pressure 90 with no verdict, as a host
-        // older than the band does, so the room it measures is known here.
+        // Its host tells it a room, at a pressure each reading sets and
+        // mostly with no verdict, as a host older than the band does, so
+        // the room it measures is known here.
         let host_says = dir.path().join("osprey.json");
         std::fs::write(
             dir.path().join("declared.json"),
@@ -2357,7 +2358,7 @@ mod tests {
             .to_string(),
         )
         .expect("declared");
-        let measuring = |cpu: f64| {
+        let telling = |cpu: f64, saturated: Option<bool>| {
             let now = jiff::Timestamp::now();
             let room = crate::room::Room {
                 said_at: now.to_string(),
@@ -2372,7 +2373,7 @@ mod tests {
                     vm_tests: 1,
                 },
                 over: Some(Vec::new()),
-                saturated: None,
+                saturated,
             };
             let said = crate::within::Said {
                 at: now,
@@ -2381,7 +2382,7 @@ mod tests {
             };
             crate::within::tell(&host_says, &said).expect("told");
         };
-        measuring(crate::placement::SATURATES_AT + 5.0);
+        telling(crate::placement::SATURATES_AT + 5.0, None);
         let band = Arc::new(crate::placement::Saturation::default());
         assert_eq!(
             saturated_heard(dir.path(), Some(band.clone())).await,
@@ -2393,12 +2394,15 @@ mod tests {
             None,
             "where it holds no band, it says none"
         );
-        measuring(f64::midpoint(
-            crate::placement::UNSATURATES_UNDER,
-            crate::placement::SATURATES_AT,
-        ));
+        telling(
+            f64::midpoint(
+                crate::placement::UNSATURATES_UNDER,
+                crate::placement::SATURATES_AT,
+            ),
+            None,
+        );
         assert_eq!(
-            saturated_heard(dir.path(), Some(band)).await,
+            saturated_heard(dir.path(), Some(band.clone())).await,
             Some(true),
             "inside the band, the link holds the verdict the band last judged"
         );
@@ -2410,6 +2414,12 @@ mod tests {
             .await,
             Some(false),
             "and a band that never saturated holds it free there"
+        );
+        telling(crate::placement::SATURATES_AT + 5.0, Some(false));
+        assert_eq!(
+            saturated_heard(dir.path(), Some(band)).await,
+            Some(false),
+            "a host that says its own verdict is heard, not the band's"
         );
     }
 
