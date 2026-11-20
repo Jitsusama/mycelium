@@ -49,7 +49,9 @@ const PI: &str = "pi";
 
 /// The name a pi host's process goes by where no agent's unit tells it,
 /// as on a Mac, whose host launchd runs as the person's account, so its
-/// conversations' commands are told by it as an agent's.
+/// conversations' commands are told by it as an agent's. Its runtime runs
+/// it on a node of its own, kept in a folder of this name, so `ps` lists
+/// it as that folder's `node` ([`listing`]).
 const PI_HOST: &str = "pi-host";
 
 /// How many forebears are looked through at most, so a chain the kernel
@@ -818,7 +820,9 @@ fn named(status: &str) -> Option<(&str, i32)> {
 
 /// Each process's name and parent, by its id, as `ps -axo
 /// pid=,ppid=,comm=` lists them: a Mac's `comm` is the program's whole
-/// path, spaces and all, so its name is what follows the last slash.
+/// path, spaces and all, so its name is what follows the last slash. A
+/// `node` in a folder named [`PI_HOST`] is the pi host's own, and goes by
+/// that name, so it is told from every other node program.
 fn listing(listed: &str) -> HashMap<i32, (String, i32)> {
     listed
         .lines()
@@ -826,7 +830,13 @@ fn listing(listed: &str) -> HashMap<i32, (String, i32)> {
             let (pid, rest) = line.trim_start().split_once(char::is_whitespace)?;
             let (parent, command) = rest.trim_start().split_once(char::is_whitespace)?;
             let command = command.trim();
-            let name = command.rsplit('/').next().unwrap_or(command);
+            let mut path = command.rsplit('/');
+            let name = path.next().unwrap_or(command);
+            let name = if name == "node" && path.next() == Some(PI_HOST) {
+                PI_HOST
+            } else {
+                name
+            };
             Some((pid.parse().ok()?, (name.to_owned(), parent.parse().ok()?)))
         })
         .collect()
@@ -1095,7 +1105,7 @@ mod tests {
              \x20 704   703 /Users/joel/.nix-profile/bin/mycelium\n\
              \x20 705   701 /Users/joel/.nix-profile/bin/mycelium\n\
              \x20 706     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n\
-             \x20 710     1 /nix/store/abc-pi-host/bin/pi-host\n\
+             \x20 710     1 /nix/store/abc-pi-host-runtime-1.5.0/libexec/pi-host/node\n\
              \x20 711   710 /bin/zsh\n\
              \x20 712   711 /Users/joel/.nix-profile/bin/mycelium\n\
              \x20 713     1 /nix/store/abc-node/bin/node\n\
@@ -1120,7 +1130,7 @@ mod tests {
         assert_eq!(
             forebears(714, process),
             Told::Person,
-            "a host is known only by its own name, never as any node program"
+            "a host is known only by its own node, never as any node program"
         );
         assert_eq!(
             listed.get(&706).map(|(name, _)| name.as_str()),
