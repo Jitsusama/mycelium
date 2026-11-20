@@ -580,8 +580,8 @@ impl Settler {
             // nothing: one from before settling exits 2, and once pi-carry
             // keeps core.nix's exit table it gives 64 for that refusal.
             eprintln!(
-                "{PI_CARRY} here can't settle {}'s carry; it is asked again once the node \
-                 starts afresh",
+                "{PI_CARRY} here can't settle {}'s carry, exiting {code}; it is asked again \
+                 once the node starts afresh",
                 carry.said("address")
             );
             return None;
@@ -1424,19 +1424,42 @@ mod tests {
         // One that can't run, and two that refuse the form as asked
         // wrongly: with 2, as one from before settling does, and with 64,
         // as core.nix's exit table spells it. Each keeps a folder of its own.
-        let mut programs = vec![dir.path().join("no-such")];
+        let mut programs = vec![(dir.path().join("no-such"), None)];
         for code in [2, 64] {
             let own = dir.path().join(format!("exits-{code}"));
             fs::create_dir(&own).expect("the stand-in's folder is made");
-            programs.push(stand_in(&own, &format!("exit {code}")).0);
+            let (program, given) = stand_in(&own, &format!("exit {code}"));
+            programs.push((program, Some(given)));
         }
-        for program in programs {
+        for (program, given) in programs {
             let carry = ends_keeping_nothing(dir.path(), &program);
+            // A stand-in that never ran would end the same way as one
+            // that can't run, so each that refuses must have been asked.
+            if let Some(given) = given {
+                assert!(given.exists(), "{} ran", program.display());
+            }
             assert!(
                 settler(dir.path(), program, PATIENCE).settle(&carry, |_| ()),
                 "a node started afresh asks it again"
             );
         }
+    }
+
+    #[test]
+    fn a_settling_ending_with_another_code_is_held_saying_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (program, given) = stand_in(dir.path(), "exit 3");
+        let said = settled(&settler(dir.path(), program, PATIENCE), &carried(40));
+        assert!(given.exists(), "pi-carry is asked");
+        assert_eq!(
+            (&said["did"], &said["why"], &said["again"]),
+            (
+                &json!("kept"),
+                &json!("pi-carry settle ended with 3"),
+                &json!(true)
+            ),
+            "only 2 and 64 ask nothing: {said}"
+        );
     }
 
     #[test]
