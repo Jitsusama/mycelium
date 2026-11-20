@@ -1972,7 +1972,8 @@ record lists. A pi host's sessions share its process, so one of them
 is proved instead by the pi-spawner its command runs below, where
 the host said that spawner serves it (A Hosted Session's Spawner).
 Otherwise the sessions of a host holding more than one, the
-person's, one on a Mac, whose processes the node doesn't read, and
+person's, one on a Mac, where the node can't read when a process
+started, and
 one asked from another machine are told none. The node takes `runs`
 only from a declaration reached through folders and links root owns
 and no one else may write, each followed as written, with any part

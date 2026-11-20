@@ -211,7 +211,8 @@ impl Processes {
     }
 
     /// Whether this node would take pi host `host`'s word for a spawner: on
-    /// a machine whose processes it reads, where none may trace another of
+    /// a machine whose process folder it reads, not one run unattended or a
+    /// Mac, where none may trace another of
     /// its user and the host's inspector can't be opened. Where it
     /// wouldn't, no spawner is ever said for the host, so what runs below
     /// one is told the host's one session, as before spawners were said.
