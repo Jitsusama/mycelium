@@ -416,8 +416,10 @@ fn bounded(ties: &[Value], bar: f64, most: usize, now: i64) -> Vec<Value> {
             if tie.get("strength").is_some() {
                 let (strength, then) =
                     (cell::strength(&tie).unwrap_or_default(), strength_now(&tie));
+                // Scaled by the ratio, under one, so the strongest a file
+                // may say can't overflow to a strength JSON can't hold.
                 let held = if then > bar {
-                    strength * bar / then
+                    strength * (bar / then)
                 } else {
                     strength
                 };
@@ -1010,16 +1012,16 @@ mod tests {
     }
 
     #[test]
-    fn a_forged_handover_of_equal_ties_puts_its_cell_first_for_no_cell_named() {
+    fn a_forged_handover_of_equal_ties_brings_none_above_the_middle() {
         let scratch = tempfile::tempdir().expect("a scratch folder");
-        // As many ties as a cell may bring, each as strong as can be and
-        // heard just before the carry started.
+        // As many ties as a cell may bring, each as strong as a strength
+        // can be and heard just before the carry started.
         let named =
             std::iter::once("KELP01".to_owned()).chain((1..128).map(|at| format!("Z{at:05}")));
         let ties: Vec<Value> = named
             .map(|other| {
                 json!({"key": format!("tie:HARBOR~{other}"), "kind": "tie",
-                       "heard": NOW - 1, "strength": 1e9})
+                       "heard": NOW - 1, "strength": f64::MAX})
             })
             .collect();
         let mut forged = harbour();
@@ -1050,6 +1052,12 @@ mod tests {
                 .iter()
                 .all(|key| strength_now(&made, key) <= 2.0 + 1e-9),
             "none stronger than the middle tie here"
+        );
+        assert!(
+            brought.iter().all(|key| made[*key].value()["strength"]
+                .as_f64()
+                .is_some_and(f64::is_finite)),
+            "each saying a strength: {brought:?}"
         );
         let first = made
             .keys()
