@@ -1052,14 +1052,15 @@ pub fn session_of(
 /// who asks, but only where the process proved to
 /// own it owns no other: a pi host's sessions share one process, and
 /// which of them a command runs for is only what its environment says,
-/// which any command there may set. So a host's session is told to a
-/// fence only by the spawner the host said it started for it, which the
-/// asker runs below (`Processes::spawned_for`, [`Spawners`]), never by
-/// what its command names.
+/// which any command there may set. So where a host holds more than one
+/// session, one is told to a fence only by the spawner the host said it
+/// started for it, which the asker runs below (`Processes::spawned_for`,
+/// [`Spawners`]), never by what its command names.
 ///
-/// Below a spawner its host said, where the host proves a session and
-/// this node takes its word, the spawner decides alone: its session is
-/// told however many share the host. Elsewhere alone is counted over
+/// Below a spawner its host said, while tracing stays shut and the host
+/// proves a session, the spawner decides alone: its session is told
+/// however many share the host. The host's other words were checked once,
+/// when it said the spawner. Elsewhere alone is counted over
 /// every claim here, proved or not, since a session whose claim doesn't
 /// prove yet still shares its host's process: the nearest of the asker
 /// and its forebears that any claim or owner names must be named by
@@ -1070,10 +1071,11 @@ pub fn session_of(
 ///
 /// When nothing names the asker, no session here claims it or its
 /// forebears, the nearest claimed is claimed by more than one, or its
-/// claim doesn't prove; and, where the host proves a session and this
-/// node takes its word, when the asker is below a spawner it holds no
-/// word for, its lineage can't be read again, or the spawner's session
-/// no longer proves, though the host proves just one.
+/// claim doesn't prove; below a said spawner, when its session no longer
+/// proves; and, where the host proves a session and this node takes its
+/// word (`Processes::takes_word_of`), when the asker is below a spawner
+/// it holds no word for or its lineage can't be read again, though the
+/// host proves just one.
 pub fn session_alone(
     asker: (Option<i32>, Option<u64>),
     processes: &Processes,
