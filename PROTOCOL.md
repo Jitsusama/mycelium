@@ -1683,8 +1683,9 @@ still there, so pi opens it in its own project; one naming another
 machine or another folder is new work there, and counts, since pi
 takes its project from the folder. It is pi itself, named bare or under
 `/run/current-system/sw/bin/` or `/etc/profiles/per-user/`, with no
-word but `--session` or `--session-id` and the session's id, so no
-prompt or flag gives it new work, nor a file an agent wrote. A bare
+word but `--session` and the session's id, so no prompt or flag gives
+it new work, nor a file an agent wrote; never `--session-id`, with
+which pi begins a new session under an id it finds none of. A bare
 `pi` is the one the login finds, so it fences habit alone, and each
 ended session once an hour through each node, and the 128, bound what
 it hides. A second bringing back the same one within the hour counts
@@ -1693,14 +1694,17 @@ agent's start bringing back a session on its own machine while
 another start of it is going, or within two minutes of one that
 didn't fail, counted or not, is refused, and kept as refused, as is
 one parked with a holder a steer would wake, which wakes it instead,
-since either would open the session's log twice. This guards only
+and one whose holder waits for its turn to come back or runs it,
+since each would open the session's log twice. This guards only
 while the node holds the session as ended, only for a start asked
 of the session's own node, and only for a start in the form above
 naming the session's whole id: one relayed from another node isn't
 judged so, and one naming the session otherwise, with a prompt, a
 flag or its file, counts as new work and isn't refused for this.
-One whose id begins another known session's counts too, since pi
-may open that one instead, and is still judged by the one it names. Once its pi says it runs, nothing here refuses a second. A
+One whose id begins another session's known on its machine counts
+too, since pi may open that one instead, and is still judged by the
+one it names. Once its pi says it runs, nothing here refuses a
+second. A
 park is judged as a wake judges it: of this boot where both the
 machine and the presence name it, or where either names none, and
 with a holder here still running. One from an earlier boot, or whose

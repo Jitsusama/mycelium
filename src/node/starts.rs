@@ -34,8 +34,11 @@ const PI: &str = "pi";
 /// there named `pi`. The store is not one, since anyone may build into it.
 const PIS_FOLDERS: [&str; 2] = ["/run/current-system/sw/bin/", "/etc/profiles/per-user/"];
 
-/// The words before the session pi is to bring back.
-const RESUMING: [&str; 2] = ["--session", "--session-id"];
+/// The word before the session pi is to bring back. Never
+/// `--session-id`, with which pi, finding no session of that id, begins
+/// a new one under it, so a presence an agent wrote could make new work
+/// look like a session brought back.
+const RESUMING: [&str; 1] = ["--session"];
 
 /// The most sessions one cell may start in an hour.
 pub const CELL_AN_HOUR: usize = 8;
@@ -183,8 +186,8 @@ impl Kept {
 }
 
 /// The session of `sessions` that `command` brings back, if it is pi's
-/// and says only one that ended, by its id, after `--session` or
-/// `--session-id`: no other word, so no prompt or flag gives the
+/// and says only one that ended, by its id, after `--session`: no
+/// other word, so no prompt or flag gives the
 /// session new work as it comes back, and no file, which an agent may
 /// have written, nor an id that could name one: only letters, digits,
 /// `-` and `_`, never first `-`, which pi would read as a flag, since a
@@ -231,16 +234,20 @@ pub fn brings_back<'a>(command: &[String], sessions: &'a [Session]) -> Option<&'
         .filter(|session| session.state == State::Ended)
 }
 
-/// Whether `id` begins another of the `sessions` the node knows: pi
-/// opens a session by an id it begins when none has that id, so a
-/// resume of it may open that other instead, and counts. The session
-/// named is still the one [`brings_back`] finds, so a start of it is
-/// judged parked or coming back all the same.
+/// Whether the id of `session` begins another of the `sessions` the
+/// node knows on its machine: pi opens a session by an id it begins
+/// when none there has that id, so a resume of it may open that other
+/// instead, and counts. Only that machine's, since pi looks only at
+/// its own, so a presence another machine's agent wrote makes no resume
+/// here count. The session named is still the one [`brings_back`]
+/// finds, so a start of it is judged parked or coming back all the same.
 #[must_use]
-pub fn begins_another(id: &str, sessions: &[Session]) -> bool {
-    sessions
-        .iter()
-        .any(|other| other.id != id && other.id.starts_with(id))
+pub fn begins_another(session: &Session, sessions: &[Session]) -> bool {
+    sessions.iter().any(|other| {
+        other.machine == session.machine
+            && other.id != session.id
+            && other.id.starts_with(&session.id)
+    })
 }
 
 /// A start let go ahead, held as counted till it is kept.
@@ -1168,8 +1175,7 @@ mod tests {
             words(&["pi", "--session", "0193-ended"]),
             words(&["/run/current-system/sw/bin/pi", "--session", "0193-ended"]),
             words(&["pi", "--session=0193-ended"]),
-            words(&["pi", "--session-id", "0193-ended"]),
-            words(&["/etc/profiles/per-user/x/bin/pi", "--session-id=0193-ended"]),
+            words(&["/etc/profiles/per-user/x/bin/pi", "--session=0193-ended"]),
         ] {
             assert_eq!(
                 brings_back(&brought, &sessions).map(|session| session.id.as_str()),
@@ -1181,6 +1187,9 @@ mod tests {
             words(&["pi", "--session", "0193-busy"]),
             words(&["pi", "--session", "0193-away"]),
             words(&["pi", "--session", "0193-unknown"]),
+            // Pi begins a new session under an id it finds none of.
+            words(&["pi", "--session-id", "0193-ended"]),
+            words(&["pi", "--session-id=0193-ended"]),
             words(&["pi", "--session", "x0193-ended"]),
             words(&["pi", "0193-ended"]),
             words(&["pi", "--session", "0193-busy", "--session", "0193-ended"]),
@@ -1214,10 +1223,28 @@ mod tests {
             brings_back(&short, &sessions).map(|session| session.id.as_str()),
             Some("0193")
         );
-        assert!(begins_another("0193", &sessions), "0193 begins 0193-busy");
+        let named = |id: &str| {
+            sessions
+                .iter()
+                .find(|session| session.id == id)
+                .expect("a session")
+        };
         assert!(
-            !begins_another("0193-ended", &sessions),
+            begins_another(named("0193"), &sessions),
+            "0193 begins 0193-busy"
+        );
+        assert!(
+            !begins_another(named("0193-ended"), &sessions),
             "a whole id begins none"
+        );
+        let mut elsewhere = sessions.to_vec();
+        elsewhere.retain(|session| !session.id.starts_with("0193-"));
+        let mut far = session("0193-far", "busy");
+        far.machine = "tern".to_owned();
+        elsewhere.push(far);
+        assert!(
+            !begins_another(named("0193"), &elsewhere),
+            "nor one another machine's session begins, which pi here never opens"
         );
     }
 
