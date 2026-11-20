@@ -917,7 +917,7 @@ pub fn unclaimed_because(asker: Option<i32>, processes: &Processes) -> &'static 
         return UNNAMED;
     };
     match processes.tell(pid) {
-        Told::Agent(_) => return "an agent's unit or a pi above it runs it",
+        Told::Agent(_) => return "an agent's unit, or pi or a pi host above it, runs it",
         Told::Untold => return UNTOLD,
         Told::Person => {}
     }
@@ -1777,7 +1777,7 @@ mod tests {
         );
         assert_eq!(
             unclaimed_because(Some(40), &processes),
-            "an agent's unit or a pi above it runs it"
+            "an agent's unit, or pi or a pi host above it, runs it"
         );
         let status = procs.path().join("41").join("status");
         let said = fs::read_to_string(&status).expect("its status");
