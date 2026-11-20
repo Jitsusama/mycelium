@@ -216,8 +216,7 @@ impl Processes {
     /// its user and the host's inspector can't be opened. Where such a
     /// machine's node wouldn't, no spawner is ever said for the host, so
     /// what runs below one is told the host's one session, as before
-    /// spawners were said. An unattended machine tells each run its agent,
-    /// and a Mac tells none.
+    /// spawners were said; a Mac's sessions are told none.
     fn takes_word_of(&self, host: i32) -> bool {
         let Self::Folder(procs) = self else {
             return false;
@@ -2358,7 +2357,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_is_heard_only_where_the_kernel_names_it_and_shows_its_processes() {
+    fn a_host_is_heard_only_where_the_kernel_names_it_and_tells_when_it_started() {
         let procs = a_host_and_its_spawners();
         let claims = [claim("s-one", 78, Some(1), Some("work"))];
         let owners = [("s-one".to_owned(), 78)];
