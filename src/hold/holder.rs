@@ -2071,6 +2071,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_gone_file_keeps_only_a_69_and_a_release_or_an_end_still_ends_it() {
+        for code in [3, 0] {
+            let root = tempfile::tempdir().expect("a temporary folder");
+            let (dir, held, holder) = holding_sh(root.path()).await;
+            let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+            window
+                .types(&format!(": > \"$MYCELIUM_GONE\"; exit {code}\r"))
+                .await;
+            assert_eq!(
+                exited(holder).await,
+                Some(code),
+                "a gone file before exit {code} ends the holder all the same"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_window_joining_while_its_pi_host_is_away_is_told_so() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
