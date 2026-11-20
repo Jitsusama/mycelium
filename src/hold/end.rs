@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use rustix::process::{Pid, Signal};
 use serde::{Deserialize, Serialize};
 
-use super::{again, held, next, socket, steers, wake};
+use super::{again, gone, held, next, socket, steers, wake};
 
 /// How long a held program and its holder have, once told to end, to
 /// save what they hold and go before they are killed.
@@ -146,6 +146,7 @@ fn take_away(dir: &Path, id: &str) -> io::Result<()> {
         next(dir, id),
         dir.join(format!(".{id}.next")),
         steers(dir, id),
+        gone(dir, id),
     ]
     .iter()
     .filter_map(|left| match fs::remove_file(left) {
@@ -351,6 +352,7 @@ mod tests {
             again(dir.path(), "stale"),
             next(dir.path(), "stale"),
             steers(dir.path(), "stale"),
+            gone(dir.path(), "stale"),
         ];
         for file in &said {
             fs::write(file, b"[]").expect("it is written");
@@ -380,9 +382,9 @@ mod tests {
     #[test]
     fn a_hold_whose_holder_was_killed_outright_leaves_nothing_once_ended() {
         let dir = tempfile::tempdir().expect("a folder");
-        let mut gone = Command::new("true").spawn().expect("it starts");
-        let holder = gone.id();
-        gone.wait().expect("it ends");
+        let mut ran = Command::new("true").spawn().expect("it starts");
+        let holder = ran.id();
+        ran.wait().expect("it ends");
         drop(holds(dir.path(), "killed1", holder, 0));
         let left = [
             dir.path().join("killed1.json"),
@@ -391,6 +393,7 @@ mod tests {
             next(dir.path(), "killed1"),
             dir.path().join(".killed1.next"),
             steers(dir.path(), "killed1"),
+            gone(dir.path(), "killed1"),
         ];
         for file in &left[1..] {
             fs::write(file, b"[]").expect("it is written");
