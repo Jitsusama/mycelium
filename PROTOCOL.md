@@ -2033,8 +2033,9 @@ no session.
 
 The host says it before the spawner runs anything, waiting up to about
 four seconds for the answer and then going ahead; a command run meanwhile
-is told no session, and so is every one where the node is older and
-refuses the ask. A command below
+is told no session. Where the node is older and refuses the ask, a
+command is told what such a node tells: the host's session where the
+host proves just one, and none where it holds more. A command below
 that spawner, each process between them started no earlier than the
 one above it, and the host and the asker unchanged from when it connected, is
 then proved as that session. Nothing a
@@ -2043,11 +2044,12 @@ connection, which the host opens closed on exec, and the node knows
 the speaker from the kernel, not from what it says. A command below
 a pi-spawner the host started but the node holds no word for is told
 no session, even where the host holds only one, since that spawner
-may serve a session gone since. So a harness that says no spawners,
-as one older than this rule, keeps none of its sessions' work trees
-where the node takes its host's word: the node and the harness land
-together and roll back together. So too is one whose forebears, read
-again, no longer reach the host or name the child below it. A
+may serve a session gone since. So too is one whose forebears, read
+again, no longer reach the host or name the child below it. So a
+harness that says no spawners, as one older than this rule, keeps
+none of its sessions' work trees where the node takes its host's
+word: the node and the harness land together and roll back together.
+A
 command the host starts as its own
 child, as it does once a spawner is lost, runs below no spawner: it
 is told the host's session where the host proves just one, and none

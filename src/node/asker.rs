@@ -1140,9 +1140,10 @@ pub fn session_alone(
             Some(true) => {
                 return Err(format!(
                     "this asks below pi host process {process} through a pi-spawner this \
-                     node holds no word for, as where the host's harness says none or \
-                     hasn't said it since this node started, so it can't be tied to a \
-                     session the host proves"
+                     node can't tie to a session the host proves: it holds no word for \
+                     the spawner, as where the host hasn't said it since this node \
+                     started or its word was refused (the node's log says why), or a \
+                     process on the line has changed since"
                 ));
             }
             None => {
@@ -1972,7 +1973,7 @@ mod tests {
         };
         let refused = |asker, owners: &[(String, i32)], claims: &[Claim]| {
             alone(asker, owners, claims)
-                .is_err_and(|why| why.contains("pi-spawner this node holds no word for"))
+                .is_err_and(|why| why.contains("or a process on the line has changed"))
         };
         assert_eq!(
             alone(90, &owners, &claims),
@@ -1996,7 +1997,7 @@ mod tests {
         );
         assert!(
             connected(90, Some(89), &owners, &claims)
-                .is_err_and(|why| why.contains("pi-spawner this node holds no word for")),
+                .is_err_and(|why| why.contains("or a process on the line has changed")),
             "a connection held open past its process's end proves nothing once another takes \
              its id below a spawner"
         );
@@ -2050,7 +2051,7 @@ mod tests {
                 hosts.path(),
                 &spawners,
             );
-            alone.is_err_and(|why| why.contains("pi-spawner this node holds no word for"))
+            alone.is_err_and(|why| why.contains("or a process on the line has changed"))
         };
         assert!(
             !refused(90, &owners, &claims),
@@ -2158,7 +2159,7 @@ mod tests {
             )
         };
         assert!(
-            alone(83).is_err_and(|why| why.contains("pi-spawner this node holds no word for")),
+            alone(83).is_err_and(|why| why.contains("it holds no word for the spawner")),
             "a command below a spawner never said, as after this node restarts, is told no \
              session, though the host holds only one"
         );
