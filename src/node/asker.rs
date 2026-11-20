@@ -216,7 +216,8 @@ impl Processes {
     /// its user and the host's inspector can't be opened. Where such a
     /// machine's node wouldn't, no spawner is ever said for the host, so
     /// what runs below one is told the host's one session, as before
-    /// spawners were said; a Mac's sessions are told none.
+    /// spawners were said. An unattended machine tells each run its agent,
+    /// and a Mac tells none.
     fn takes_word_of(&self, host: i32) -> bool {
         let Self::Folder(procs) = self else {
             return false;
@@ -229,9 +230,9 @@ impl Processes {
     /// threads may change its name. None where it can't be told: the
     /// lineage, read again, no longer reaches the host, or that child's
     /// name can't be read. On a Mac or a machine run unattended, where no
-    /// spawner is ever said, it is below none; and it is asked only where
-    /// this node takes the host's word, so elsewhere the host's one session
-    /// is told as it was before spawners were said.
+    /// spawner is ever said, it is below none. It is asked only where this
+    /// node takes the host's word, as [`Self::takes_word_of`] says what is
+    /// told elsewhere.
     fn below_a_spawner(&self, asker: i32, host: i32) -> Option<bool> {
         let Self::Folder(procs) = self else {
             return Some(false);
