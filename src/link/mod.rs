@@ -2620,6 +2620,15 @@ mod tests {
             None,
             "it is still asked any other start"
         );
+        let startless = Hello {
+            starts: false,
+            ..realm("kestrel").hello()
+        };
+        assert_eq!(
+            cannot_carry(&Asked::Reopen(start()), &startless),
+            Some("judge a reopening"),
+            "an end whose node starts no sessions is asked no reopening, whatever it judges"
+        );
         assert!(
             serde_json::from_value::<Hello>(
                 json!({"machine": "tern", "realm": "work", "version": VERSION})

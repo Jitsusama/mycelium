@@ -1107,7 +1107,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Cross": {"message", "from_realm"}}` | `{"Sent": message}`, or refused |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
-| `{"Carry": {"machine"}}` | `"Carrying"`, then what it asks of `machine` |
+| `{"Carry": {"machine", "reopens"}}` | `"Carrying"`, then what it asks of `machine` |
 | `"Health"` | `{"Health": health}`, then another each time it moves |
 | `{"Turn": {"session"}}` | `"Turn"`, once a holder may resume `session` (A Held Session) |
 
@@ -1132,9 +1132,12 @@ refuses.
 
 A `Carry` connection is how the end of a link another machine dialled
 carries what its node asks of that machine. The node writes each ask as
-`{"ask", "asked"}`, where `asked` is `{"Start": start}`, `{"Steer":
-{"address", "steer", "checked"}}` or `"Update"`, and the link writes
-back `{"ask", "reply"}` with the other end's reply. A run isn't carried:
+`{"ask", "asked"}`, where `asked` is `{"Start": start}`, `{"Reopen":
+start}`, `{"Steer": {"address", "steer", "checked"}}` or `"Update"`,
+and the link writes back `{"ask", "reply"}` with the other end's reply.
+A link says `reopens` as it connects, since one older can't read a
+`Reopen`; to one that doesn't, the node hands none, and answers it
+itself as `<machine>'s link here is too old to carry a reopening`. A run isn't carried:
 it goes only where this machine dialled. It lasts until either
 hangs up, or until another link reaching the machine takes its place;
 an ask still waiting then hears that the link dropped.
@@ -1584,21 +1587,32 @@ machine made for it is held to the same once it links, and let go
 where it is looser. The person's starts aren't, nor is an agent's
 reopening: the person's `pi` given `--session` and a bare id, with at
 most `--model` and a model after them, and nothing more, in no folder
-of the asker's, naming one machine alone. That one goes to the machine
-it names without its asker's fence, and makes no machine, since it
-brings back a session where and as it was rather than starting the
-asker's work there. Only the session's own node knows it ended, so a
-start relayed from another machine's node in that shape, whether or
-not it says it carries, is taken only for a session that ended on this
-machine, and otherwise refused as `no session <id> ended on <machine>,
-so nothing is reopened here`, whoever asked. Once taken, the session
-is held as being reopened for two minutes, or until its start fails,
-and another reopening of it meanwhile is refused as `<id> is being
-reopened on <machine> already`. A start in that shape is asked only of
-a node whose link says `reopens`, since one older would take it as any
-relayed start, so a reopening asked of an older node is refused as
-`<machine>'s mycelium is too old to judge a reopening`, the person's
-too. A start relayed from
+of the asker's, naming one machine alone. It begins where a start in
+no folder begins, in the home folder. An unfenced agent may reopen
+any session so. A fenced one may reopen only a session of its own
+quest, or one this node's book says it or its orchestrator started;
+any other is held to its ground, and a refusal for looser ground then
+ends `; <id> is reopened from fenced ground only by an agent of
+<quest>, one its orchestrator started, or the person`. A reopening let
+through goes to the machine it names without its asker's fence, and
+makes no machine, since it brings back a session where and as it was
+rather than starting the asker's work there. Only the session's own
+node knows it ended, so a start relayed from another machine's node in
+that shape, whether or not it says it carries, is taken only for a
+session that ended on this machine, and otherwise refused as `no
+session <id> ended on <machine>, so nothing is reopened here`, whoever
+asked. Nor is one taken for a session that comes back by itself: one
+still live (`<id> is still live on <machine>`), parked, held by a
+holder there, carried away or waiting for its turn, each refused with
+why, nor while the carries can't be read. Once taken, the session is
+held as being reopened while its start runs, and another reopening of
+it meanwhile is refused as `<id> is being reopened on <machine>
+already`; a start whose asker hung up holds it at most two minutes. A
+reopening let through without its asker's fence is asked only of a
+node whose link says `reopens`, since one older would take it as any
+relayed start, so one asked of an older node is refused as
+`<machine>'s mycelium is too old to judge a reopening`. The person's,
+and one held to its asker's ground, go as any start. A start relayed from
 another machine's node is pinned to this one, which is never looser
 than itself. A node run as a systemd unit
 starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in

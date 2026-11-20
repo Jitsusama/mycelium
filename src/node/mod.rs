@@ -116,10 +116,10 @@ const LEAVING_EVERY: Duration = Duration::from_secs(60);
 /// every process's status, and presences change many times a second.
 const FENCES_SEEN_EVERY: Duration = Duration::from_secs(2);
 
-/// How long a session reopened here by a relayed start is held as being
-/// reopened, so another reopening asked meanwhile, as when the asking node
-/// gave up waiting after half a minute and asked again, starts no second
-/// pi on it before the first shows it live.
+/// The longest a session is held as being reopened by a relayed start
+/// whose answer was never waited for, as when its asker hung up mid-start.
+/// One answered is let go at once, since its holder's record then says it
+/// is held, or it failed and may be asked again.
 const REOPENING_HELD: Duration = Duration::from_secs(2 * 60);
 
 /// How many events a watch may fall behind by before the node lets it go;
@@ -1755,13 +1755,23 @@ struct Inner {
     /// there. The place tells two makes of one name apart, as the book
     /// does, so letting one go never unbooks the other.
     booked: HashMap<String, (String, Option<String>)>,
-    /// The sessions reopened here lately by a relayed start, and when,
-    /// kept only while the node runs (see [`REOPENING_HELD`]).
+    /// The sessions a relayed start is reopening here now, and since
+    /// when, kept only while the node runs (see [`Reopening`]).
     reopening: Reopening,
 }
 
-/// The sessions being reopened here by a relayed start, each held from
-/// when it was asked for [`REOPENING_HELD`], or until its start fails.
+/// What a node sees bringing its ended sessions back, for judging a
+/// reopening relayed to it.
+struct Seen<'a> {
+    /// The sessions its holders hold, starting or running.
+    held: &'a [hold::Held],
+    /// The sessions carried away lately or waiting for their turn.
+    coming_back: &'a HashSet<String>,
+}
+
+/// The sessions being reopened here by a relayed start, each held while
+/// its start runs, and at most [`REOPENING_HELD`] where that start was
+/// dropped before it answered, as when its asker hung up.
 #[derive(Default)]
 struct Reopening(HashMap<String, std::time::Instant>);
 
@@ -1898,6 +1908,59 @@ fn reopening(by: By, asked: &Start) -> Option<(String, String)> {
         return None;
     };
     Some((machine.clone(), session.to_owned()))
+}
+
+/// How an agent's start held to its own ground is refused, after who asks.
+const LOOSER_REFUSED: &str = "so it starts nothing on looser ground";
+
+/// Whether an agent asking `by`, as the session `asker`, may reopen
+/// `reopened` with its fence left behind (WCJQSG, 19 November): an
+/// unfenced one any session, as the person may, and a fenced one only a
+/// session of its own quest, or one this node's book of `starts` says it
+/// or its orchestrator started. Otherwise, says who may reopen it.
+fn reopens_within(
+    by: By,
+    asker: Option<&Session>,
+    reopened: Option<&Session>,
+    starts: &starts::Starts,
+) -> Result<(), String> {
+    if by == By::Agent(crate::declared::Kind::None) {
+        return Ok(());
+    }
+    let who = |reopened: &str, quest: Option<&str>| match quest {
+        Some(quest) => format!(
+            "{reopened} is reopened from fenced ground only by an agent of {quest}, one its \
+             orchestrator started, or the person"
+        ),
+        None => format!(
+            "{reopened} is reopened from fenced ground only by an agent its orchestrator \
+             started, or the person"
+        ),
+    };
+    let Some(reopened) = reopened else {
+        return Err(
+            "a session this node doesn't know is reopened from fenced ground only by \
+                    the person"
+                .to_owned(),
+        );
+    };
+    let shown = reopened.id.escape_debug().to_string();
+    let Some(asker) = asker else {
+        return Err(who(&shown, reopened.quest.as_deref()));
+    };
+    let same_quest = asker.quest.is_some() && asker.quest == reopened.quest;
+    let started_by = reopened
+        .held
+        .as_deref()
+        .and_then(|held| starts.started_by(&reopened.machine, held));
+    let started_within = started_by.is_some_and(|cell| {
+        cell == asker.address || asker.orchestrated_by.as_deref() == Some(cell.as_str())
+    });
+    if same_quest || started_within {
+        Ok(())
+    } else {
+        Err(who(&shown, reopened.quest.as_deref()))
+    }
 }
 
 /// Where a start counted here goes.
@@ -2568,6 +2631,31 @@ impl<S: Store> Shared<S> {
         self.said.sessions_moved();
     }
 
+    /// The sessions carried from here lately, as [`ended::carried`] says,
+    /// judged before the node's state is locked, as judging reads the
+    /// carries' handovers.
+    ///
+    /// # Errors
+    ///
+    /// Where the carries can't be read, saying so, since which session
+    /// is away can't be told then.
+    fn carried_away(&self) -> Result<HashSet<String>, String> {
+        let carries = kept::read(&self.carries, shown_since()).map_err(|error| {
+            format!(
+                "the carries in {} can't be read: {error}",
+                self.carries.display()
+            )
+        })?;
+        let now = jiff::Timestamp::now().as_millisecond();
+        let runs_on = self.runs_on();
+        let judge = |carry: &kept::Kept| {
+            let mut seen = self.handed(carry);
+            seen.runs_on = runs_on.get(carry.said("session")).cloned();
+            kept::judged(carry, &seen)
+        };
+        Ok(ended::carried(&carries, judge, now))
+    }
+
     /// The sessions here that ended while their quest goes on, as
     /// [`ended`] says, each standing as it does here, against the quests
     /// this node serves; none where it serves none.
@@ -2595,13 +2683,10 @@ impl<S: Store> Shared<S> {
         let parked = standing::parked(&self.parked);
         // Where the carries can't be read, which ended for one can't be
         // told, so none is.
-        let carries = match kept::read(&self.carries, shown_since()) {
-            Ok(carries) => carries,
+        let away = match self.carried_away() {
+            Ok(away) => away,
             Err(error) => {
-                let why = format!(
-                    "no end is told, as the carries in {} can't be read: {error}",
-                    self.carries.display()
-                );
+                let why = format!("no end is told, as {error}");
                 if self.unreadable.first(&why) {
                     eprintln!("{why}");
                 }
@@ -2609,17 +2694,9 @@ impl<S: Store> Shared<S> {
             }
         };
         let now = jiff::Timestamp::now().as_millisecond();
-        let runs_on = self.runs_on();
-        let judge = |carry: &kept::Kept| {
-            let mut seen = self.handed(carry);
-            seen.runs_on = runs_on.get(carry.said("session")).cloned();
-            kept::judged(carry, &seen)
-        };
-        // Judged before the node's state is locked, as judging reads the
-        // carries' handovers; the turns waiting are read with the
-        // sessions, under one lock, so a session that asks a turn is never
-        // told as ended for being read a moment apart.
-        let away = ended::carried(&carries, judge, now);
+        // The turns waiting are read with the sessions, under one lock, so
+        // a session that asks a turn is never told as ended for being read
+        // a moment apart.
         let standing = |session: &Session| {
             let here = session.machine == self.machine;
             standing::standing(session, here, &parked, &self.boot)
@@ -3731,22 +3808,54 @@ impl<S: Store> Shared<S> {
     }
 
     /// Refuses a reopening of `session` relayed here unless it ended on
-    /// this machine: an asking node lets an agent's reopening through
-    /// without its asker's fence ([`reopening`]), so this node, which
-    /// alone keeps its own ended sessions, must find it one of them, or an
-    /// agent could start a fresh session on looser ground.
-    fn reopened_here(&self, session: &str, sessions: &[Session]) -> Result<(), String> {
-        let ended_here = sessions.iter().any(|one| {
-            one.id == session && one.machine == self.machine && one.state == SessionState::Ended
+    /// this machine and nothing here brings it back already: an asking
+    /// node lets an agent's reopening through without its asker's fence
+    /// ([`reopening`]), so this node, which alone keeps its own ended
+    /// sessions, must find it one of them, or an agent could start a
+    /// fresh session on looser ground. One still live, parked, held by a
+    /// holder here, carried away or waiting for its turn is coming back
+    /// by itself, and a second pi on it would write over the first, so
+    /// each is refused too, with why.
+    fn reopened_here(
+        &self,
+        session: &str,
+        sessions: &[Session],
+        seen: &Seen<'_>,
+    ) -> Result<(), String> {
+        let shown = session.escape_debug();
+        let machine = &self.machine;
+        let Some(one) = sessions
+            .iter()
+            .find(|one| one.id == session && one.machine == *machine)
+        else {
+            return Err(format!(
+                "no session {shown} ended on {machine}, so nothing is reopened here"
+            ));
+        };
+        let held = seen.held.iter().any(|held| {
+            held.command
+                .windows(2)
+                .any(|words| words[0] == "--session" && words[1] == session)
         });
-        if ended_here {
-            Ok(())
-        } else {
+        if one.state != SessionState::Ended {
             Err(format!(
-                "no session {} ended on {}, so nothing is reopened here",
-                session.escape_debug(),
-                self.machine
+                "{shown} is still live on {machine}, so it isn't reopened"
             ))
+        } else if parked_presence(one) {
+            Err(format!(
+                "{shown} is parked on {machine}, and its holder wakes it, so it isn't reopened"
+            ))
+        } else if held {
+            Err(format!(
+                "{shown} is held on {machine} already, so it isn't reopened"
+            ))
+        } else if seen.coming_back.contains(session) {
+            Err(format!(
+                "{shown} is coming back on {machine}, carried or waiting for its turn, so it \
+                 isn't reopened"
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -4726,18 +4835,27 @@ impl<S: Store> Shared<S> {
     ) -> Reply {
         asked.carries = marks_a_carry(by, &asked.command);
         let reopening = reopening(by, &asked);
-        let (started_by, resumes) = {
+        let (started_by, resumes, within) = {
             let inner = self.lock();
             let all = inner.state.sessions();
+            let nearest = sessions
+                .first()
+                .and_then(|id| all.iter().find(|session| session.id == *id));
             // The nearest claim alone, and only as an address: one the
             // node doesn't hold, or that isn't one, is no cell's, rather
             // than passing to a farther one.
-            let started_by = sessions
-                .first()
-                .and_then(|id| all.iter().find(|session| session.id == *id))
+            let started_by = nearest
                 .map(|session| session.address.clone())
                 .filter(|address| forage::is_address(address));
-            (started_by, starts::brings_back(&asked.command, &all))
+            let within = reopening.as_ref().map(|(_, session)| {
+                let reopened = all.iter().find(|one| one.id == *session);
+                reopens_within(by, nearest, reopened, &self.starts)
+            });
+            (
+                started_by,
+                starts::brings_back(&asked.command, &all),
+                within,
+            )
         };
         let started_by = started_by.filter(|_| by != By::Person);
         let at = jiff::Timestamp::now().as_millisecond();
@@ -4754,14 +4872,20 @@ impl<S: Store> Shared<S> {
             }
             None => (None, None),
         };
-        // Asked here of another machine, it goes there unfenced, and costs
-        // nothing, for that machine's node to judge.
-        let fence = match &reopening {
-            Some((machine, _)) if whither == Whither::Placed && *machine != self.machine => {
-                asked.may_cost = false;
-                None
+        // Asked here of another machine, of a session the asker may
+        // reopen, it goes there unfenced, and costs nothing, for that
+        // machine's node to judge.
+        let dropped = match (&reopening, &within) {
+            (Some((machine, _)), Some(Ok(()))) => {
+                whither == Whither::Placed && *machine != self.machine
             }
-            _ => fence_of(by),
+            _ => false,
+        };
+        let fence = if dropped {
+            asked.may_cost = false;
+            None
+        } else {
+            fence_of(by)
         };
         let admitted = self
             .admitted(
@@ -4794,7 +4918,7 @@ impl<S: Store> Shared<S> {
         };
         let answered = match (whither, again) {
             (Whither::Placed, Some(machine)) => self.start_on(machine, asked).await,
-            (Whither::Placed, None) => self.placed(asked, fence).await,
+            (Whither::Placed, None) => self.placed(asked, fence, dropped).await,
             // One relayed here starts here or nowhere, so a name another
             // machine hasn't answered under stays held for asking there.
             (Whither::Here, Some(machine)) if machine != self.machine => {
@@ -4807,6 +4931,14 @@ impl<S: Store> Shared<S> {
                 ))
             }
             (Whither::Here, _) => self.here(asked, fence).await,
+        };
+        // A reopening held to its asker's ground for being another's says
+        // who may reopen it, rather than only that the ground is looser.
+        let answered = match (answered, within) {
+            (Err(why), Some(Err(who))) if why.contains(LOOSER_REFUSED) => {
+                Err(format!("{why}; {who}"))
+            }
+            (answered, _) => answered,
         };
         let started = match answered {
             Ok(Response::Started(started)) => Ok(started),
@@ -4917,10 +5049,21 @@ impl<S: Store> Shared<S> {
         let Some(session) = starts::reopens(&asked.command).map(str::to_owned) else {
             return self.relayed_start(from, asked).await;
         };
+        // Where the carries can't be read, which session is away can't be
+        // told, so none is reopened.
+        let away = self
+            .carried_away()
+            .map_err(|why| format!("nothing is reopened on {}, as {why}", self.machine))?;
+        let held = hold::held(&self.held);
         {
             let mut inner = self.lock();
             let sessions = inner.state.sessions();
-            self.reopened_here(&session, &sessions)?;
+            let coming_back = ended::coming_back(away, inner.turns.waiting());
+            let seen = Seen {
+                held: &held,
+                coming_back: &coming_back,
+            };
+            self.reopened_here(&session, &sessions, &seen)?;
             if !inner.reopening.hold(&session, std::time::Instant::now()) {
                 return Err(format!(
                     "{session} is being reopened on {} already",
@@ -4928,10 +5071,10 @@ impl<S: Store> Shared<S> {
                 ));
             }
         }
+        // Held only across its start: once that answers, its holder's
+        // record says it is held, or it failed and may be asked again.
         let started = self.relayed_start(from, asked).await;
-        if started.is_err() {
-            self.lock().reopening.let_go(&session);
-        }
+        self.lock().reopening.let_go(&session);
         started
     }
 
@@ -5065,10 +5208,22 @@ impl<S: Store> Shared<S> {
     /// says it may. An agent's, asked in `fence`, is held to its own
     /// ground, as a run of its is, so a session it starts never lands
     /// looser than the one asking.
-    async fn placed(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
+    ///
+    /// A reopening let through unfenced (`reopens`) is asked only of a
+    /// node that judges it, since one older takes it as any start, and
+    /// goes nowhere but the machine it names, never one made for it.
+    async fn placed(
+        &self,
+        asked: Start,
+        fence: Option<crate::declared::Kind>,
+        reopens: bool,
+    ) -> Reply {
         let admits = self.admits().await;
         let (misses, nowhere) = match self.place(&asked.work, Counts::Always, fence, false, &admits)
         {
+            Placement::Placed { machine, .. } if reopens && machine != self.machine => {
+                return self.asked_there(&machine, asked, true).await;
+            }
             Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
             Placement::Pending { misses } => {
                 let nowhere = format!(
@@ -5083,7 +5238,7 @@ impl<S: Store> Shared<S> {
                     refused_named(&asked.work, &misses, placement::LOOSER_GROUND),
                 ) {
                     return Err(format!(
-                        "this asks as {}, so it starts nothing on looser ground: {why}",
+                        "this asks as {}, {LOOSER_REFUSED}: {why}",
                         By::Agent(kind)
                     ));
                 }
@@ -5091,6 +5246,9 @@ impl<S: Store> Shared<S> {
                 (misses, nowhere)
             }
         };
+        if reopens {
+            return Err(nowhere);
+        }
         if asked.may_cost {
             return self.start_on_made(asked, &misses, fence).await;
         }
@@ -5283,26 +5441,30 @@ impl<S: Store> Shared<S> {
         }
     }
 
+    /// Asks `machine`, another, to start `asked` through the link reaching
+    /// it, as a bare reopening where `reopens` says, which only a node that
+    /// judges one is asked. One under a name that may have landed there is
+    /// asked there again, as its lead holds it.
+    async fn asked_there(&self, machine: &str, asked: Start, reopens: bool) -> Reply {
+        let there = asked.once.clone();
+        let answered = if reopens {
+            self.asks.reopen(machine, asked).await
+        } else {
+            self.asks.ask(machine, asked).await
+        };
+        answered.unwrap_or_else(|unsent| {
+            if let Some(there) = there {
+                self.onces.unanswered(&there, machine, unsent.sent);
+            }
+            Err(unsent.why)
+        })
+    }
+
     /// Starts `asked` on `machine`: this one by its own starter, another
     /// through the link reaching it.
     async fn start_on(&self, machine: String, asked: Start) -> Reply {
         if machine != self.machine {
-            let there = asked.once.clone();
-            // A bare reopening is asked only of a node that judges it,
-            // since one older takes it as any start.
-            let answered = if starts::reopens(&asked.command).is_some() {
-                self.asks.reopen(&machine, asked).await
-            } else {
-                self.asks.ask(&machine, asked).await
-            };
-            return answered.unwrap_or_else(|unsent| {
-                    // One under a name that may have landed there is asked
-                    // there again, as its lead holds it.
-                    if let Some(there) = there {
-                        self.onces.unanswered(&there, &machine, unsent.sent);
-                    }
-                    Err(unsent.why)
-                });
+            return self.asked_there(&machine, asked, false).await;
         }
         let Some(starter) = self.starter.clone() else {
             return Err(format!("{machine}'s node starts no sessions"));
@@ -5818,8 +5980,8 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             take_turn(&shared, &session, lines, writing).await;
             return;
         }
-        if let Ok(Request::Carry { machine }) = request {
-            link::carried::to_link(&shared.asks, &machine, lines, writing).await;
+        if let Ok(Request::Carry { machine, reopens }) = request {
+            link::carried::to_link(&shared.asks, (&machine, reopens), lines, writing).await;
             return;
         }
         if let Ok(Request::Health) = request {
@@ -13242,6 +13404,13 @@ esac
             })
         };
         let tern = || vec![Need::Machine("tern".to_owned())];
+        // A session of the asker's own quest, which it may reopen.
+        let gone = json!({"session": "s-gone", "addresses": ["GONE01"],
+                          "quest": "QEST-20261007-WCJQSG", "at": "2026-11-19T06:00:00Z"});
+        store
+            .put_presence("s-gone", "tern", &gone)
+            .expect("tern's session is kept");
+        listed(socket.clone(), "s-gone").await;
         asks_below(&socket, 7001);
         assert_eq!(
             ask(
@@ -13283,10 +13452,15 @@ esac
             Need::Machine("tern".to_owned()),
             Need::Machine("skiff".to_owned()),
         ];
-        assert_ne!(
+        assert_eq!(
             ask(socket.clone(), start(&["pi", "--session", "s-gone"], both)).await,
-            Err("no link reaches tern now".to_owned()),
-            "one naming two machines is no reopening"
+            Err(
+                "this asks as a strictly fenced agent, so it starts nothing on looser ground: \
+                 tern's strictly fenced session opens builders cloud, which here's doesn't, so \
+                 the session would land looser there"
+                    .to_owned()
+            ),
+            "one naming two machines is no reopening, so it is held to its asker's ground"
         );
         assert_eq!(
             ask(socket, start(&["pi", "--session", "s-gone"], Vec::new())).await,
@@ -13611,6 +13785,92 @@ esac
         );
     }
 
+    // WCJQSG's ruling (2026-11-19): from fenced ground, an agent reopens
+    // only a session of its own quest, or one it or its orchestrator
+    // started; another's is held to its ground, and told who may.
+    #[tokio::test]
+    async fn an_agent_reopens_on_looser_ground_only_its_quests_and_its_orchestrators() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(socket.with_file_name(""))
+            .expect("its folder is made, shut to others as the node's is");
+        let booked = |held: &str, by: &str| {
+            json!({"at": jiff::Timestamp::now().as_millisecond(), "by": {"Agent": "strict"},
+                   "started_by": by, "program": "pi", "machine": "tern", "held": held})
+        };
+        fs::write(
+            socket.with_file_name("starts.jsonl"),
+            format!(
+                "{}\n{}\n",
+                booked("h-led", "WCJQSG"),
+                booked("h-own", "HARBOR")
+            ),
+        )
+        .expect("the book is written");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        for (session, address, quest, held) in [
+            ("s-quest", "QUEST1", "QEST-20261115-HARBOR", "h-quest"),
+            ("s-led", "LED001", "QEST-20261108-OSPHT4", "h-led"),
+            ("s-own", "OWN001", "QEST-20261108-OSPHT4", "h-own"),
+            ("s-theirs", "THEIRS", "QEST-20261108-OSPHT4", "h-theirs"),
+        ] {
+            let presence = json!({"session": session, "addresses": [address], "quest": quest,
+                                  "heldAs": held, "at": "2026-11-19T06:00:00Z"});
+            store
+                .put_presence(session, "tern", &presence)
+                .expect("tern's session is kept");
+            listed(socket.clone(), session).await;
+        }
+        let reopen = |session: &str| {
+            Request::Start(Start {
+                work: work(vec![Need::Machine("tern".to_owned())]),
+                folder: None,
+                command: vec!["pi".to_owned(), "--session".to_owned(), session.to_owned()],
+                may_cost: false,
+                carries: false,
+            })
+        };
+        // HARBOR's session, which WCJQSG orchestrates.
+        asks_below(&socket, 7003);
+        for (session, why) in [
+            ("s-quest", "a session of its own quest"),
+            ("s-led", "one its orchestrator started"),
+            ("s-own", "one it started"),
+        ] {
+            assert_eq!(
+                ask(socket.clone(), reopen(session)).await,
+                Err("no link reaches tern now".to_owned()),
+                "{why} goes to tern, for its node to judge"
+            );
+        }
+        assert_eq!(
+            ask(socket.clone(), reopen("s-theirs")).await,
+            Err(
+                "this asks as a strictly fenced agent, so it starts nothing on looser ground: \
+                 tern's strictly fenced session opens builders cloud, which here's doesn't, \
+                 so the session would land looser there; s-theirs is reopened from fenced \
+                 ground only by an agent of QEST-20261108-OSPHT4, one its orchestrator \
+                 started, or the person"
+                    .to_owned()
+            ),
+            "another quest's session is held to its asker's ground, told who may reopen it"
+        );
+        asks_as_person(&socket);
+        assert_eq!(
+            ask(socket, reopen("s-theirs")).await,
+            Err("no link reaches tern now".to_owned()),
+            "the person reopens any"
+        );
+    }
+
     // An asking node lets a bare reopening through unfenced, so the node
     // it reaches takes one only for a session that ended there.
     #[tokio::test]
@@ -13646,14 +13906,49 @@ esac
             },
         };
         let relayed = |session: &str| relayed_as(session, false, false);
+        store.start_here(
+            "s-parked",
+            json!({"session": "s-parked", "addresses": ["PARKED"], "state": "parked",
+                   "at": "2026-11-19T06:00:00Z"}),
+            false,
+        );
+        store.start_here(
+            "s-held",
+            json!({"session": "s-held", "addresses": ["HELD01"], "at": "2026-11-19T06:00:00Z"}),
+            false,
+        );
+        // A holder here starting it, as a reopening asked a moment ago.
+        let holders = held_of(&socket);
+        fs::create_dir_all(&holders).expect("the holders' folder is made");
+        let holding = json!({"id": "h-held", "command": ["pi", "--session", "s-held"],
+                             "folder": "/", "holder": std::process::id(), "pid": 0,
+                             "parked": false, "since": "2026-11-19T06:00:00Z", "windows": []});
+        fs::write(holders.join("h-held.json"), holding.to_string()).expect("its record");
+        fs::write(hold::socket(&holders, "h-held"), b"").expect("its socket stands");
         asks_below(&socket, 7001);
-        for session in ["s-unknown", "s-live"] {
+        assert_eq!(
+            ask(socket.clone(), relayed("s-unknown")).await,
+            Err("no session s-unknown ended on skiff, so nothing is reopened here".to_owned()),
+            "s-unknown didn't end here"
+        );
+        for (session, refused) in [
+            (
+                "s-live",
+                "s-live is still live on skiff, so it isn't reopened",
+            ),
+            (
+                "s-parked",
+                "s-parked is parked on skiff, and its holder wakes it, so it isn't reopened",
+            ),
+            (
+                "s-held",
+                "s-held is held on skiff already, so it isn't reopened",
+            ),
+        ] {
             assert_eq!(
                 ask(socket.clone(), relayed(session)).await,
-                Err(format!(
-                    "no session {session} ended on skiff, so nothing is reopened here"
-                )),
-                "{session} didn't end here"
+                Err(refused.to_owned()),
+                "a session coming back by itself gets no second pi"
             );
         }
         assert_eq!(

@@ -146,6 +146,10 @@ pub enum Request {
     Carry {
         /// The machine the link reaches.
         machine: String,
+        /// Whether the link carries a reopening, which one older than
+        /// reopenings can't read; a link that doesn't say carries none.
+        #[serde(default)]
+        reopens: bool,
     },
     /// This machine's own health as its health daemon says it, now and
     /// then each time a word moves, for as long as the connection stays:
