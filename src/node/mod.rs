@@ -1955,8 +1955,8 @@ fn reopens_within(
     };
     let Some(reopened) = reopened else {
         return Err(
-            "a session this node hasn't known in the last week is reopened from fenced \
-             ground only by the person"
+            "a session this node keeps no record of from the last week is reopened from \
+             fenced ground only by the person"
                 .to_owned(),
         );
     };
@@ -4798,7 +4798,7 @@ impl<S: Store> Shared<S> {
         said: &str,
         asked: &mut Start,
         at: i64,
-    ) -> ControlFlow<Reply, (Option<once::Lead>, Option<String>)> {
+    ) -> ControlFlow<Reply, (Option<once::Lead>, Option<(String, bool)>)> {
         let name = match once::Name::of(by, started_by, said) {
             Ok(name) => name,
             Err(why) => return ControlFlow::Break(Err(why)),
@@ -4827,9 +4827,11 @@ impl<S: Store> Shared<S> {
                 }
                 ControlFlow::Continue((Some(lead), None))
             }
-            once::Joined::Resends { machine, lead } => {
-                ControlFlow::Continue((Some(lead), Some(machine)))
-            }
+            once::Joined::Resends {
+                machine,
+                reopens,
+                lead,
+            } => ControlFlow::Continue((Some(lead), Some((machine, reopens)))),
         }
     }
 
@@ -4889,12 +4891,8 @@ impl<S: Store> Shared<S> {
             None => (None, None),
         };
         let dropped = self.drops_fence(by, reopening.as_ref(), within.as_ref(), whither);
-        let fence = if dropped {
-            asked.may_cost = false;
-            None
-        } else {
-            fence_of(by)
-        };
+        asked.may_cost &= !dropped;
+        let fence = if dropped { None } else { fence_of(by) };
         let admitted = self
             .admitted(
                 starts::Kept {
@@ -4925,13 +4923,16 @@ impl<S: Store> Shared<S> {
             }
         };
         let answered = match (whither, again) {
-            (Whither::Placed, Some(machine)) => self.start_on(machine, asked).await,
+            (Whither::Placed, Some((machine, reopened))) => {
+                self.asked_again(machine, reopened, dropped, reopening.as_ref(), asked)
+                    .await
+            }
             (Whither::Placed, None) => self.placed(asked, fence, dropped).await,
             // One relayed here starts here or nowhere, so a name another
             // machine hasn't answered under stays held for asking there.
-            (Whither::Here, Some(machine)) if machine != self.machine => {
+            (Whither::Here, Some((machine, reopens))) if machine != self.machine => {
                 if let Some(there) = &asked.once {
-                    self.onces.unanswered(there, &machine, true);
+                    self.onces.unanswered(there, &machine, true, reopens);
                 }
                 Err(format!(
                     "a start relayed here starts here or nowhere, and it was asked of \
@@ -5516,10 +5517,41 @@ impl<S: Store> Shared<S> {
         };
         answered.unwrap_or_else(|unsent| {
             if let Some(there) = there {
-                self.onces.unanswered(&there, machine, unsent.sent);
+                self.onces.unanswered(&there, machine, unsent.sent, reopens);
             }
             Err(unsent.why)
         })
+    }
+
+    /// Asks `asked` again of `machine`, where a start under its name went
+    /// and wasn't answered, as a reopening there without its asker's
+    /// fence where `reopened` says. One that went so goes back only as
+    /// that reopening: one let through without its fence, as `dropped`
+    /// says, of a session on that machine, as `reopening` says, so no
+    /// other start under its name rides it onto looser ground.
+    async fn asked_again(
+        &self,
+        machine: String,
+        reopened: bool,
+        dropped: bool,
+        reopening: Option<&(String, String)>,
+        asked: Start,
+    ) -> Reply {
+        let reopens = dropped && reopening.is_some_and(|(at, _)| *at == machine);
+        match (reopened, reopens) {
+            (false, _) => self.start_on(machine, asked).await,
+            (true, true) => self.asked_there(&machine, asked, true).await,
+            (true, false) => {
+                if let Some(there) = &asked.once {
+                    self.onces.unanswered(there, &machine, true, true);
+                }
+                Err(format!(
+                    "it was asked of {machine} under that name as a reopening let through \
+                     without its asker's fence, which hasn't answered, so only that \
+                     reopening is asked there again under it"
+                ))
+            }
+        }
     }
 
     /// Starts `asked` on `machine`: this one by its own starter, another
@@ -16708,7 +16740,8 @@ esac
         let once::Joined::Leads(lead) = link.onces.join(name.clone(), "skiff", now) else {
             panic!("the first ask under it leads");
         };
-        link.onces.unanswered(&name.there("skiff"), "tern", true);
+        link.onces
+            .unanswered(&name.there("skiff"), "tern", true, false);
         lead.ends(now, &Err("tern didn't answer within 30s".to_owned()));
         let start = Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
@@ -16732,6 +16765,48 @@ esac
             panic!("the name is still held for tern");
         };
         assert_eq!(machine, "tern");
+    }
+
+    // Our council's round 13 on the reopen rule (2026-11-20): a name a
+    // reopening took to looser ground without its asker's fence, left
+    // unanswered there, sends no other start under it there.
+    #[tokio::test]
+    async fn a_name_a_reopening_took_unfenced_sends_no_other_start_there() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        link.client = Some(1);
+        let (by, _) = link.judged().await.expect("the asker is judged");
+        let name = once::Name::of(by, None, "01J-reopen").expect("a name");
+        let now = jiff::Timestamp::now().as_millisecond();
+        let once::Joined::Leads(lead) = link.onces.join(name.clone(), "skiff", now) else {
+            panic!("the first ask under it leads");
+        };
+        link.onces
+            .unanswered(&name.there("skiff"), "tern", true, true);
+        lead.ends(now, &Err("tern didn't answer within 30s".to_owned()));
+        for command in [&["pi"][..], &["pi", "--session", "s-gone"]] {
+            let start = Start {
+                work: work(vec![Need::Machine("tern".to_owned())]),
+                folder: None,
+                command: command.iter().map(|&word| word.to_owned()).collect(),
+                may_cost: false,
+                carries: false,
+                once: Some("01J-reopen".to_owned()),
+            };
+            let refused = link.started(start, 0).await.expect_err("it goes nowhere");
+            assert!(
+                refused.starts_with(
+                    "it was asked of tern under that name as a reopening let through \
+                     without its asker's fence, which hasn't answered"
+                ),
+                "{command:?}: {refused}"
+            );
+        }
+        let once::Joined::Resends { reopens, .. } = link.onces.join(name, "skiff", now + 1) else {
+            panic!("the name is still held for tern");
+        };
+        assert!(reopens, "and still held as that reopening");
     }
 
     #[test]

@@ -307,6 +307,11 @@ impl Store for Memory {
         let mut held = self.held();
         if held.carries(session, machine) {
             if let Some(presence) = held.presences.remove(session) {
+                // The latest of each session a machine ran, as Folders
+                // keeps it.
+                held.gone.retain(|one| {
+                    one.session != session || one.elsewhere.as_deref() != Some(machine)
+                });
                 held.gone.push(Presence {
                     lives: false,
                     unreachable_since: None,

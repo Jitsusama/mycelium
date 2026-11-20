@@ -1601,8 +1601,10 @@ agent of <quest>, one its orchestrator started, or the person`, with
 none is proved. A session whose node said it `Ended` is judged as it
 was last carried here, kept for a week once let go, in the node's own
 state rather than the mesh's folders, so no session here sees it; one
-this node hasn't known in the last week is reopened from fenced ground
-only by the person. A reopening let
+this node keeps no record of from the last week is reopened from fenced
+ground only by the person. A name a reopening took there without its
+asker's fence and that went unanswered is asked there again only by
+that reopening. A reopening let
 through to a machine on looser ground goes there without its asker's
 fence, and makes no machine, since it brings back a session where
 and as it was rather than starting the asker's work there; one whose

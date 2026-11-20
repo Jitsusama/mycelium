@@ -144,8 +144,6 @@ impl Folders {
         })
     }
 
-    /// When each link with `machine` kept here ended, oldest first; none
-    /// for a machine whose name isn't safe as a file's, or never ended.
     /// Keeps `body`, the presence of `session` that `machine` ran, among
     /// those gone, letting go of any kept past [`GONE_KEPT`]. Written
     /// whole: a machine ending a few hundred sessions a week keeps the
@@ -160,6 +158,8 @@ impl Folders {
         write_whole(&self.claims, &file, &body)
     }
 
+    /// When each link with `machine` kept here ended, oldest first; none
+    /// for a machine whose name isn't safe as a file's, or never ended.
     fn ended_at(&self, machine: &str) -> Vec<i64> {
         safe(machine)
             .ok()
@@ -785,8 +785,6 @@ fn read<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
-/// Writes `body` to `dir/file` whole: staged under a name no other write
-/// shares, then renamed into place.
 /// A session another machine ran, as kept once let go here.
 #[derive(Deserialize, serde::Serialize)]
 struct Gone {
@@ -801,6 +799,8 @@ fn now() -> i64 {
     jiff::Timestamp::now().as_millisecond()
 }
 
+/// Writes `body` to `dir/file` whole: staged under a name no other write
+/// shares, then renamed into place.
 fn write_whole(dir: &Path, file: &str, body: &Value) -> io::Result<()> {
     let staged = dir.join(format!(
         ".{file}.{}.{}.mycelium.tmp",
