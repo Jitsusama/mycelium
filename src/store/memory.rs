@@ -22,8 +22,9 @@ pub struct Memory(Arc<Mutex<Held>>);
 struct Held {
     messages: BTreeMap<String, Value>,
     presences: BTreeMap<String, Presence>,
-    /// The presences of sessions elsewhere let go, every one kept, since
-    /// memory holds no times to let them go by.
+    /// The presences of sessions elsewhere let go, the latest for each
+    /// session and machine kept for good, since memory holds no times to
+    /// let them go by.
     gone: Vec<Presence>,
     holdings: BTreeMap<String, Value>,
     claimed: BTreeSet<String>,

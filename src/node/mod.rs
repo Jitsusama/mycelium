@@ -5548,7 +5548,8 @@ impl<S: Store> Shared<S> {
                 Err(format!(
                     "it was asked of {machine} under that name as a reopening let through \
                      without its asker's fence, which hasn't answered, so only that \
-                     reopening is asked there again under it"
+                     reopening, let through without its fence again, is asked there \
+                     again under it"
                 ))
             }
         }
