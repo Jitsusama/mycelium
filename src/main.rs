@@ -2259,16 +2259,23 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
     writeln!(io::stdout().lock(), "{shown}")
 }
 
+/// How wide a terminal is drawn on.
+fn width(terminal: bool, _columns: Option<&str>, said: Option<u16>) -> usize {
+    said.filter(|cells| terminal && *cells > 0)
+        .map_or(SWARM_WIDTH, usize::from)
+}
+
 /// How a person's terminal is drawn on: as wide as it says, in colour
 /// unless it isn't one or `NO_COLOR` is set, with the theme's marks.
 fn look() -> mycelium::swarm::Look {
     use std::io::IsTerminal as _;
     let stdout = io::stdout();
     let terminal = stdout.is_terminal();
-    let width = rustix::termios::tcgetwinsize(&stdout)
+    let columns = std::env::var("COLUMNS").ok();
+    let said = rustix::termios::tcgetwinsize(&stdout)
         .ok()
-        .filter(|size| terminal && size.ws_col > 0)
-        .map_or(SWARM_WIDTH, |size| usize::from(size.ws_col));
+        .map(|size| size.ws_col);
+    let width = width(terminal, columns.as_deref(), said);
     mycelium::swarm::Look {
         width,
         colour: terminal && std::env::var_os("NO_COLOR").is_none(),
@@ -3077,9 +3084,31 @@ mod tests {
     use std::io;
 
     use super::{
-        Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, in_place, kit, processes_here,
-        reader_left, said_text, swarm_asked, tree, write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, in_place, kit,
+        processes_here, reader_left, said_text, swarm_asked, tree, width, write_line,
     };
+
+    #[test]
+    fn a_terminal_is_as_wide_as_columns_says_then_as_it_says_then_eighty() {
+        for (columns, said, wide) in [
+            (Some("60"), Some(120), 60),
+            (None, Some(120), 120),
+            (Some("wide"), Some(90), 90),
+            (Some("0"), Some(0), 80),
+            (None, None, 80),
+        ] {
+            assert_eq!(
+                width(true, columns, said),
+                wide,
+                "COLUMNS {columns:?}, the terminal saying {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn into_a_pipe_columns_is_not_read() {
+        assert_eq!(width(false, Some("60"), Some(120)), SWARM_WIDTH);
+    }
 
     #[test]
     fn a_message_is_read_from_input_so_its_words_sit_in_no_command_line() {
