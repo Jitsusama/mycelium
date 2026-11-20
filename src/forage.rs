@@ -2435,10 +2435,10 @@ mod tests {
 
     #[test]
     fn the_cells_that_wait_on_their_person_are_drawn_first() {
-        // Enough cells that an unstable sort partitions them rather than
-        // inserting each, and quests in no order of their own, so only a
-        // stable sort keeps each half as it came.
-        let quest = |at: usize| format!("QEST-{}", at * 7 % 30);
+        // More cells than the few an unstable sort leaves in their order,
+        // as one did when tried here, so only a stable sort keeps each
+        // half as it came.
+        let quest = |at: usize| format!("QEST-{at}");
         let forages: Vec<Value> = (0..30)
             .map(|at| {
                 let mut each = forage(&format!("CELL{at:02}"), "kestrel", &quest(at));
@@ -2517,6 +2517,75 @@ mod tests {
         }
     }
 
+    /// The words of `cell`'s purpose drawn with it `named` in `width`
+    /// columns, the mark among them.
+    fn purpose_words(cell: &Value, named: Option<&str>, width: usize) -> Vec<String> {
+        draw(std::slice::from_ref(cell), named, width)
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.starts_with("  plan"))
+            .flat_map(str::split_whitespace)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_purpose_is_read_as_cut_only_near_its_length() {
+        // As short as a cut one can be once its spaces are trimmed, and
+        // one shorter, whose dots are its author's.
+        for (kept, cut) in [
+            (LONGEST_PURPOSE - 3 - CUT_TRIMS, true),
+            (LONGEST_PURPOSE - 4 - CUT_TRIMS, false),
+        ] {
+            let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+            cell["purpose"] = json!(format!("{} hovers...", "K".repeat(kept - 7)));
+            let words = purpose_words(&cell, Some("KESTRL"), 400);
+            assert_eq!(
+                words.last().map(String::as_str),
+                Some(if cut { "\u{2026}" } else { "hovers..." }),
+                "{kept} characters before the dots read cut: {cut}, not as {words:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_purpose_is_read_cut_at_the_length_its_node_counted() {
+        // The node counted the marks one_line drops, so a purpose they
+        // bring to its length was cut there.
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        cell["purpose"] = json!(format!(
+            "\u{200f}\u{200f}\u{200f}{} hovers...",
+            "K".repeat(LONGEST_PURPOSE - 3 - CUT_TRIMS - 10)
+        ));
+        let words = purpose_words(&cell, Some("KESTRL"), 400);
+        assert_eq!(
+            words.last().map(String::as_str),
+            Some("\u{2026}"),
+            "{words:?}"
+        );
+    }
+
+    #[test]
+    fn a_purpose_cut_on_a_space_keeps_its_last_word() {
+        // Its 277th character is a space, so the word before it is whole.
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        cell["purpose"] = json!(first_sentence(&format!("abc {}", "abcdef ".repeat(45))));
+        let words = purpose_words(&cell, Some("KESTRL"), 80);
+        assert_eq!(words.len(), 41, "a whole word was lost: {words:?}");
+        assert_eq!(words[39], "abcdef");
+    }
+
+    #[test]
+    fn a_named_cell_keeps_every_word_read_when_its_last_line_is_full() {
+        // At 12 columns each line after the first holds two words and no
+        // room for the mark, so the mark takes a line of its own.
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        cell["purpose"] = json!(first_sentence(&format!("a {}", "abcd ".repeat(60))));
+        let words = purpose_words(&cell, Some("KESTRL"), 12);
+        assert_eq!(words.len(), 57, "a word was lost for the mark: {words:?}");
+        assert_eq!(words.last().map(String::as_str), Some("\u{2026}"));
+    }
+
     #[test]
     fn a_purpose_of_one_long_word_is_cut_within_it() {
         // Whether it was read whole or already cut within the word.
@@ -2582,13 +2651,19 @@ mod tests {
         );
         // A cell's address isn't checked, so one that isn't an address
         // is never offered as a command to run.
-        let mut odd = forage("K; rm -rf ~", "kestrel", "QEST-1");
-        odd["documents"] = kept["documents"].clone();
-        assert!(
-            draw(&[odd], None, 80)
-                .ends_with("  2 closed, none open, which its cell's forage lists\n"),
-            "a cell that isn't an address was offered as a command"
-        );
+        // Nor is one past an address's length, one with no name, or one
+        // whose marks would be dropped from the command offered, which
+        // then names another cell.
+        let long = "K".repeat(ADDRESS_MOST + 1);
+        for cell in ["K; rm -rf ~", &long, "", "KES\u{200f}TRL"] {
+            let mut odd = forage(cell, "kestrel", "QEST-1");
+            odd["documents"] = kept["documents"].clone();
+            assert!(
+                draw(&[odd], None, 200)
+                    .ends_with("  2 closed, none open, which its cell's forage lists\n"),
+                "{cell:?} isn't an address but was offered as a command"
+            );
+        }
     }
 
     #[test]
