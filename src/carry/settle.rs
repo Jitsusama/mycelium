@@ -580,8 +580,8 @@ impl Settler {
             // nothing: one from before settling exits 2, and once pi-carry
             // keeps core.nix's exit table it gives 64 for that refusal.
             eprintln!(
-                "{PI_CARRY} here can't settle {}'s carry, exiting {code}; it is asked again \
-                 once the node starts afresh",
+                "{PI_CARRY} here can't settle {}'s carry: it exited {code}, and is asked \
+                 again once the node starts afresh",
                 carry.said("address")
             );
             return None;
