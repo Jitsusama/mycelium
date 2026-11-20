@@ -1660,25 +1660,28 @@ the nearest session claiming the asker's process, by its address, and
 toward every agent's starts through the node. A pi host's sessions
 all claim its one process, so there it counts toward the one the
 asker names in `PI_SESSION_ID`, if it is among them, and otherwise
-toward no cell, only the node: in any hour a cell
-starts at most 8 and every agent together at most 32, and one past
-either is refused, saying which. A claim proves nothing, so the 8 are
-a cell's fair share, and the 32 the bound no agent gets round. A
-start counts whether it started or failed, since a failed one may
+toward the agents of no known cell, who share one cell's number, as
+on a Mac, whose `ps` won't say it: in any hour a cell starts at most 8
+and every agent together at most 32, and one past either is refused,
+saying which. A claim proves nothing, so the 8 are a cell's fair
+share, and the 32, with the ended sessions below, the bound no agent
+gets round. A start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
 once can't pass the limit; a refused one doesn't. The person's own
 starts are never counted or refused. An agent's first start in the
 hour that brings back a session the node knows has ended, on the
-machine it ran on, counts toward neither, so every session a
-restarted machine held comes back at once. One naming no machine goes
+machine it ran on, counts toward neither, up to 128 through the node
+in the hour, so every session a restarted machine held comes back at
+once; past that, each counts as new work. One naming no machine goes
 to the session's, and one naming no folder begins in the `cwd` its
-last presence said, so pi opens it in its own project; one naming
-another machine is new work there, and counts. It is pi itself,
-named bare or under `/run/current-system/sw/bin/` or
-`/etc/profiles/per-user/`, given one session after `--session` or
-`--session-id`, by its id or by a file whose name ends in `_` and
-the id. A bare `pi` is the one the login finds, so it fences habit
-alone, and each ended session once an hour bounds what it hides. A
+last presence said, where that folder is still there, so pi opens it
+in its own project; one naming another machine is new work there,
+and counts. It is pi itself, named bare or under
+`/run/current-system/sw/bin/` or `/etc/profiles/per-user/`, with no
+word but `--session` or `--session-id` and the session's id, so no
+prompt or flag gives it new work, nor a file an agent wrote. A bare
+`pi` is the one the login finds, so it fences habit alone, and each
+ended session once an hour, and the 128, bound what it hides. A
 second bringing back the same one within the hour counts as new work,
 and one running or on a machine out of reach is never brought back. A
 start past the limits with room again within a minute waits for it

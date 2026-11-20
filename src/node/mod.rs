@@ -4766,7 +4766,9 @@ impl<S: Store> Shared<S> {
     /// Pins `asked`, which brings back session `id` that ran on
     /// `machine`, to that machine, and where it names no folder, to the
     /// one the session's last presence says it ran in, so pi opens it in
-    /// its own project rather than asking to fork it into home.
+    /// its own project rather than asking to fork it into home. That is
+    /// a path from home, as `~/` or whole, of a folder still there; one
+    /// gone leaves it in home, as before.
     fn reopen_there(&self, id: &str, machine: String, asked: &mut Start, whither: Whither) {
         let named = asked
             .work
@@ -4782,8 +4784,14 @@ impl<S: Store> Shared<S> {
                 .presences()
                 .into_iter()
                 .find(|presence| presence.session == id)
-                .and_then(|presence| presence.body.get("cwd")?.as_str().map(PathBuf::from))
-                .filter(|cwd| cwd.is_absolute());
+                .and_then(|presence| {
+                    let cwd = presence.body.get("cwd")?.as_str()?;
+                    match cwd.strip_prefix("~/") {
+                        Some(under) => Some(std::env::home_dir()?.join(under)),
+                        None => Some(PathBuf::from(cwd)),
+                    }
+                })
+                .filter(|cwd| cwd.is_absolute() && cwd.is_dir());
         }
     }
 
@@ -13268,15 +13276,27 @@ esac
         let wave = (0..=starts::NODE_AN_HOUR)
             .map(|one| format!("s-gone-{one}"))
             .collect::<Vec<_>>();
+        let project = |one: usize| dir.path().join(format!("project-{one}"));
         for (one, session) in wave.iter().enumerate() {
+            // The last one's folder is gone, so it begins in home.
+            if one < wave.len() - 1 {
+                fs::create_dir(project(one)).expect("its folder is made");
+            }
             store.start_here(
                 session,
                 json!({"session": session, "addresses": [format!("GONE{one:02}")],
                        "groups": [], "busy": false, "state": "listening", "at": at,
-                       "cwd": format!("/home/someone/project-{one}")}),
+                       "cwd": project(one)}),
                 false,
             );
         }
+        // One more ended here, never brought back in the wave.
+        store.start_here(
+            "s-spare",
+            json!({"session": "s-spare", "addresses": ["SPARE1"], "groups": [],
+                   "busy": false, "state": "listening", "at": at}),
+            false,
+        );
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
         // As in the limit's test, each start stays here.
@@ -13284,9 +13304,9 @@ esac
         store
             .put_machine(&fenced("tern", &["remote", "cloud"]))
             .expect("what it said is kept");
-        let start = |command: &[&str]| {
+        let placed = |command: &[&str], needs: Vec<Need>| {
             Request::Start(Start {
-                work: work(Vec::new()),
+                work: work(needs),
                 folder: None,
                 command: command.iter().map(|&word| word.to_owned()).collect(),
                 may_cost: false,
@@ -13294,6 +13314,7 @@ esac
                 once: None,
             })
         };
+        let start = |command: &[&str]| placed(command, Vec::new());
         asks_below(&socket, 7001);
         for session in &wave {
             assert_eq!(
@@ -13314,6 +13335,15 @@ esac
             .await
             .expect_err("a second time counts");
         assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
+        // And so does bringing one back on another machine.
+        let elsewhere = vec![Need::Machine("tern".to_owned())];
+        let refused = ask(
+            socket.clone(),
+            placed(&["pi", "--session", "s-spare"], elsewhere),
+        )
+        .await
+        .expect_err("on another machine it counts");
+        assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
         asks_as_person(&socket);
         let Ok(Response::Starts { newest, .. }) = ask(
             socket,
@@ -13330,8 +13360,17 @@ esac
             .find(|kept| kept["resumes"] == wave[0].as_str())
             .expect("the first brought back is kept");
         assert_eq!(
-            first["folder"], "/home/someone/project-0",
+            first["folder"],
+            project(0).to_str().expect("a plain path"),
             "it begins in its own folder"
+        );
+        let last = newest
+            .iter()
+            .find(|kept| kept["resumes"] == wave[wave.len() - 1].as_str())
+            .expect("the last brought back is kept");
+        assert!(
+            last.get("folder").is_none_or(Value::is_null),
+            "one whose folder is gone begins in home: {last}"
         );
         assert_eq!(first["started_by"], "WCJQSG", "{first}");
     }
