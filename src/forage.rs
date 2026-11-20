@@ -2404,13 +2404,17 @@ mod tests {
 
     #[test]
     fn the_cells_that_wait_on_their_person_are_drawn_first() {
-        let mut waiting = forage("OSPREY", "kestrel", "QEST-3");
-        waiting["waits"] = json!([{"title": "Pick a field", "ready": true}]);
+        let mut osprey = forage("OSPREY", "kestrel", "QEST-3");
+        osprey["waits"] = json!([{"title": "Pick a field", "ready": true}]);
+        let mut tern = forage("TERN01", "tern", "QEST-4");
+        tern["waits"] = json!([{"title": "Name the hill"}]);
+        // Out of every other order, so only a stable sort keeps it.
         let drawn = draw(
             &[
-                forage("KESTRL", "kestrel", "QEST-1"),
-                waiting,
                 forage("SKIFFS", "skiff", "QEST-2"),
+                tern,
+                forage("KESTRL", "kestrel", "QEST-1"),
+                osprey,
             ],
             None,
             80,
@@ -2418,9 +2422,10 @@ mod tests {
         assert_eq!(
             headings(&drawn),
             [
+                "TERN01  on tern  QEST-4",
                 "OSPREY  on kestrel  QEST-3",
-                "KESTRL  on kestrel  QEST-1",
                 "SKIFFS  on skiff  QEST-2",
+                "KESTRL  on kestrel  QEST-1",
             ]
         );
     }
@@ -2439,12 +2444,49 @@ mod tests {
              plan  build  2 of 4 ticked     Hover…\n"
         );
         let mut cut = forage("KESTRL", "kestrel", "QEST-1");
-        cut["purpose"] = json!("Kestrel learns to hover...");
+        cut["purpose"] = json!("Kestrel learns to hov...");
+        assert_eq!(
+            draw(&[cut.clone()], None, 80),
+            "KESTRL  on kestrel  QEST-1\n  Kestrel learns to …\n  \
+             plan  build  2 of 4 ticked     Hover Over the Field\n",
+            "the three dots a purpose is cut with, mid-word, are drawn as the one mark \
+             after a whole word"
+        );
+        cut["purpose"] = json!("...");
         assert_eq!(
             draw(&[cut], None, 80),
-            "KESTRL  on kestrel  QEST-1\n  Kestrel learns to hover …\n  \
+            "KESTRL  on kestrel  QEST-1\n  …\n  \
              plan  build  2 of 4 ticked     Hover Over the Field\n",
-            "the three dots a purpose is cut with are drawn as the one mark"
+            "a purpose of the dots alone lost its line"
+        );
+    }
+
+    #[test]
+    fn a_purpose_of_one_long_word_is_cut_within_it() {
+        let mut long = forage("KESTRL", "kestrel", "QEST-1");
+        long["purpose"] = json!("K".repeat(100));
+        let drawn = draw(&[long], None, 40);
+        let purpose: Vec<&str> = drawn.lines().skip(1).take(2).collect();
+        assert!(
+            purpose[0] == format!("  {}", "K".repeat(38))
+                && purpose[1] == format!("  {} …", "K".repeat(36)),
+            "the word wasn't cut to make room for its mark:\n{drawn}"
+        );
+    }
+
+    #[test]
+    fn a_cell_named_says_its_whole_purpose() {
+        let mut long = forage("KESTRL", "kestrel", "QEST-1");
+        long["purpose"] = json!(
+            "Kestrel learns to hover over one field, then over the next, and the one \
+             after that, until every field in the valley is known."
+        );
+        assert_eq!(
+            draw(&[long], Some("KESTRL"), 40),
+            "KESTRL  on kestrel  QEST-1\n  Kestrel learns to hover over one\n  \
+             field, then over the next, and the one\n  \
+             after that, until every field in the\n  valley is known.\n  \
+             plan  build  2 of 4 ticked     Hover…\n"
         );
     }
 
@@ -2462,7 +2504,8 @@ mod tests {
         assert_eq!(
             draw(&[kept.clone()], None, 80),
             "KESTRL  on kestrel  QEST-1\n  Kestrel learns to hover over one field.\n  \
-             plan  build  2 of 4 ticked     Hover Over the Field\n  and 2 closed\n"
+             plan  build  2 of 4 ticked     Hover Over the Field\n  \
+             and 2 closed, which mycelium forage KESTRL lists\n"
         );
         assert_eq!(
             draw(&[kept.clone()], Some("KESTRL"), 80),
@@ -2476,7 +2519,7 @@ mod tests {
         assert_eq!(
             draw(&[kept], None, 80),
             "KESTRL  on kestrel  QEST-1\n  Kestrel learns to hover over one field.\n  \
-             2 closed, none open\n"
+             2 closed, none open, which mycelium forage KESTRL lists\n"
         );
     }
 
