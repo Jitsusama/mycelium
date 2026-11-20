@@ -297,13 +297,14 @@ struct Judged {
 /// brings it back: a `~/` path as one within home and a full path as it
 /// is, both for the machine that runs it to judge, whose home and disk
 /// they name; none for `~/` alone, another relative path, one climbing
-/// with `..`, so a `~/` path stays within home, or none said. This is no
-/// fence: an agent may name any folder itself, counted, and the folder
-/// said here only decides whether the start counts.
+/// with `..`, or a `~/` one going on as a full path, so a `~/` path stays
+/// within home, or none said. This is no fence: an agent may name any
+/// folder itself, counted, and the folder said here only decides whether
+/// the start counts.
 fn ran_in(session: &Session) -> Option<PathBuf> {
     let cwd = session.presence.get("cwd")?.as_str()?;
     match cwd.strip_prefix("~/") {
-        Some(under) => Some(PathBuf::from(under)),
+        Some(under) => Some(PathBuf::from(under)).filter(|under| under.is_relative()),
         None => Some(PathBuf::from(cwd)).filter(|cwd| cwd.is_absolute()),
     }
     .filter(|cwd| cwd.components().next().is_some())
@@ -12366,6 +12367,18 @@ esac
         (holder, program)
     }
 
+    /// Ends the stand-ins [`holds_for_real`] started, so none outlives
+    /// the test: the program is in a group of its own, out of reach of
+    /// whatever stops the run.
+    fn let_go(pids: impl IntoIterator<Item = u32>) {
+        for pid in pids {
+            let _ = rustix::process::kill_process(
+                rustix::process::Pid::from_raw(i32::try_from(pid).expect("a pid")).expect("a pid"),
+                rustix::process::Signal::KILL,
+            );
+        }
+    }
+
     // Joel (2026-11-16): a held session its owner couldn't end, KQL3KB,
     // is ended from here by the person, or by its orchestrator.
     #[tokio::test]
@@ -13359,6 +13372,7 @@ esac
             json!(""),
             json!(7),
             json!("~/../other/.ssh"),
+            json!("~//home/other/.ssh"),
             json!("/w/project/../../etc"),
         ] {
             assert_eq!(ran(none.clone()), None, "{none}");
@@ -13382,7 +13396,7 @@ esac
         let at = jiff::Timestamp::now().to_string();
         // More sessions ended here than the node starts in an hour.
         let wave = (0..=starts::NODE_AN_HOUR)
-            .map(|one| format!("s-gone-{one}"))
+            .map(|one| format!("s-gone-{one:02}"))
             .collect::<Vec<_>>();
         let project = |one: usize| dir.path().join(format!("project-{one}"));
         for (one, session) in wave.iter().enumerate() {
@@ -13621,9 +13635,11 @@ esac
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
         // Once the node has made its folder, private, as it must be.
+        let mut pids = Vec::new();
         for (_, _, _, hold, holds) in parked {
             if holds {
-                holds_for_real(&held, hold);
+                let (holder, program) = holds_for_real(&held, hold);
+                pids.extend([holder, program]);
             }
         }
         declares_runs(&socket, true);
@@ -13672,6 +13688,7 @@ esac
             2 + usize::from(boot.id.is_none()),
             "each parked refusal is booked: {newest:?}"
         );
+        let_go(pids);
     }
 
     // WCJQSG (2026-11-18): a refused start must never wait on the person,

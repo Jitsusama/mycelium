@@ -193,7 +193,8 @@ impl Kept {
 /// [`PIS_FOLDERS`], so no shell, nor a program an agent wrote and named
 /// `pi` elsewhere, hides other work behind the words; and only an ended
 /// session, so one running, or on a machine out of reach, where it may
-/// still run, is never brought back uncounted. A bare `pi` is fenced by
+/// still run, is never brought back uncounted; nor one whose id begins
+/// another's, which pi may open in its stead. A bare `pi` is fenced by
 /// habit alone, since the login finds it on a path an agent may write:
 /// each session the node knows ended, once an hour through each node,
 /// and [`RESUMED_AN_HOUR`] still bound what that hides. Where it runs,
@@ -225,10 +226,15 @@ pub fn brings_back<'a>(command: &[String], sessions: &'a [Session]) -> Option<&'
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     };
+    // pi opens a session by an id it begins when none has that id, so
+    // one that begins another the node knows may open that one instead.
+    let begins_another = sessions
+        .iter()
+        .any(|other| other.id != named && other.id.starts_with(named));
     sessions
         .iter()
         .find(|session| plain(&session.id) && session.id == named)
-        .filter(|session| session.state == State::Ended)
+        .filter(|session| session.state == State::Ended && !begins_another)
 }
 
 /// A start let go ahead, held as counted till it is kept.
@@ -1147,6 +1153,9 @@ mod tests {
             session("../new", "ended"),
             // One pi would read as a flag.
             session("--continue", "ended"),
+            // A short id an agent wrote, which pi with no session of that
+            // id opens as the first whose id it begins, here a busy one.
+            session("0193", "ended"),
         ];
         let file = "/home/x/.pi/agent/sessions/--x--/2026-11-18T22-00-00_0193-ended.jsonl";
         for brought in [
@@ -1167,6 +1176,7 @@ mod tests {
             words(&["pi", "--session", "0193-away"]),
             words(&["pi", "--session", "0193-unknown"]),
             words(&["pi", "--session", "x0193-ended"]),
+            words(&["pi", "--session", "0193"]),
             words(&["pi", "0193-ended"]),
             words(&["pi", "--session", "0193-busy", "--session", "0193-ended"]),
             words(&["pi", "--session=0193-new", "--session-id", "0193-ended"]),
