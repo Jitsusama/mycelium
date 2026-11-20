@@ -366,7 +366,12 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
         .chars()
         .filter(|each| each.is_ascii_alphanumeric() || ADDRESS_MARKS.contains(*each))
         .collect();
-    let from = capped(&from);
+    // A name with nothing an address holds still leaves an asker.
+    let from = if from.is_empty() {
+        "someone".to_owned()
+    } else {
+        capped(&from)
+    };
     // Only what an id holds, so a sender can't write another's into it.
     let short: String = short_id(record["id"].as_str().unwrap_or_default())
         .chars()
