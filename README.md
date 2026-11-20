@@ -173,7 +173,8 @@ The harness mesh's messages and presence, carried between machines:
   that wait on the person come first, each purpose takes two lines at
   most, and closed documents are counted rather than listed. Named by
   its address or its quest's id, it says one cell's, its purpose as
-  far as its node read it and every document listed; `-o json` prints a JSON line each, whole.
+  far as its node read it and every document listed, as it says every
+  cell's into a pipe; `-o json` prints a JSON line each, whole.
   Each node serves its own cells' forages as the `forage` kind, read
   from its quest store as it changes.
 - `mycelium swarm say <NAME> <WORDS>` says something as the person to

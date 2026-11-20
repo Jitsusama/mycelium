@@ -2997,16 +2997,20 @@ fn web(asked: WebAsked) -> io::Result<()> {
 /// names, drawn for a person or a JSON line each.
 fn forage(socket: &Path, asked: &ForageAsked) -> io::Result<()> {
     use mycelium::forage;
+    use std::io::IsTerminal as _;
     let records = mycelium::swarm::records(socket, forage::KIND, SWARM_WITHIN)?;
     let chosen = forage::chosen(records, asked.cell.as_deref());
     if asked.output.json() {
         return chosen.iter().try_for_each(print_line);
     }
-    write!(
-        io::stdout().lock(),
-        "{}",
+    // Into a pipe nothing gives way, so a reader that greps or saves it
+    // has every word and every document.
+    let drawn = if io::stdout().is_terminal() {
         forage::draw(&chosen, asked.cell.as_deref(), look().width)
-    )
+    } else {
+        forage::draw_for_a_pipe(&chosen, asked.cell.as_deref())
+    };
+    write!(io::stdout().lock(), "{drawn}")
 }
 
 /// Prints each record of `kind` the node holds, a JSON line each, oldest

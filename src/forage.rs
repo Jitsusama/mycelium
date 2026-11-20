@@ -1292,10 +1292,13 @@ pub(crate) const fn turns_direction(each: char) -> bool {
 /// paragraph.
 const PURPOSE_LINES: usize = 2;
 
-/// How many spaces [`first_sentence`] may trim from the end of what it
-/// keeps of a sentence it cuts, so a purpose that short of its length,
-/// before its three dots, was still cut there.
-const CUT_TRIMS: usize = 8;
+/// How many spaces [`first_sentence`] trims from the end of what it keeps
+/// of a sentence it cuts, so a purpose that short of its length, before
+/// its three dots, was still cut there. One, since a quest's lines are
+/// trimmed and joined by a space each. An author's sentence that ends in
+/// dots at that length can't be told from a cut, since the node marks
+/// none.
+const CUT_TRIMS: usize = 1;
 
 /// What [`first_sentence`] kept of a purpose it cut at its length, before
 /// the three dots it ends one with; a purpose shorter, its dots its
@@ -1319,7 +1322,7 @@ fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
         // word goes too and the mark comes after a whole one; a single
         // word is kept, to be cut within as one too long is.
         (Some(length), Some(kept)) if length >= LONGEST_PURPOSE - 3 => {
-            let kept = kept.trim_end();
+            let kept = kept.trim();
             (
                 kept.rsplit_once(' ')
                     .map_or(kept, |(before, _)| before.trim_end()),
@@ -1328,7 +1331,7 @@ fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
         }
         // A cut that fell on a space, its trim leaving it short, left
         // the word before it whole.
-        (Some(_), Some(kept)) => (kept.trim_end(), true),
+        (Some(_), Some(kept)) => (kept.trim(), true),
         _ => (cleaned.as_str(), false),
     };
     let most = if whole { usize::MAX } else { PURPOSE_LINES };
@@ -1337,15 +1340,13 @@ fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
         return drawn;
     }
     let mut kept: Vec<String> = drawn.lines().take(most).map(str::to_owned).collect();
+    let holds_the_mark = |line: &str| line.chars().count() + 2 <= width;
     // Drawn whole, every word read stays, so a mark with no room left on
     // the last line takes one of its own.
-    let full = kept
-        .last()
-        .is_some_and(|last| last.chars().count() + 2 > width);
-    if whole && full {
+    if whole && kept.last().is_some_and(|last| !holds_the_mark(last)) {
         kept.push("  \u{2026}".to_owned());
     } else if let Some(last) = kept.last_mut() {
-        while last.chars().count() + 2 > width {
+        while !holds_the_mark(last) {
             if let Some(at) = last.trim_end().rfind(' ').filter(|at| *at > 2) {
                 last.truncate(at);
             } else {
@@ -1363,15 +1364,19 @@ fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
 }
 
 /// Whether `document` is closed, concluded or retired, so a list of every
-/// cell counts it rather than giving it a row.
+/// cell counts it rather than giving it a row. Judged as its stage is
+/// drawn, so a row never reads closed among the open.
 fn closed(document: &Value) -> bool {
-    matches!(document["stage"].as_str(), Some("concluded" | "retired"))
+    matches!(
+        one_line(document["stage"].as_str().unwrap_or_default()).as_str(),
+        "concluded" | "retired"
+    )
 }
 
 /// A forage's `documents` as rows in `width` columns, each title cut where
-/// its row would pass `width`. Unless a cell is `named`, the closed ones
-/// are counted in a line of their own, saying how `cell`'s are listed.
-fn documents_drawn(documents: &[Value], cell: &str, named: Option<&str>, width: usize) -> String {
+/// its row would pass `width`. Unless drawn `whole`, the closed ones are
+/// counted in a line of their own, saying how `cell`'s are listed.
+fn documents_drawn(documents: &[Value], cell: &str, whole: bool, width: usize) -> String {
     use crate::swarm::{fit, wrapped};
     if documents.is_empty() {
         return wrapped("No research, plans or reports yet.", "  ", "  ", width);
@@ -1379,7 +1384,7 @@ fn documents_drawn(documents: &[Value], cell: &str, named: Option<&str>, width: 
     let text = |value: &Value| one_line(value.as_str().unwrap_or_default());
     let shown: Vec<&Value> = documents
         .iter()
-        .filter(|each| named.is_some() || !closed(each))
+        .filter(|each| whole || !closed(each))
         .collect();
     let kinds = shown
         .iter()
@@ -1430,18 +1435,26 @@ fn documents_drawn(documents: &[Value], cell: &str, named: Option<&str>, width: 
     drawn
 }
 
-/// `forages` drawn into a pipe.
+/// `forages` drawn into a pipe, where nothing gives way: as for a person,
+/// but each line whole, each purpose whole and every document listed.
 #[must_use]
 pub fn draw_for_a_pipe(forages: &[Value], named: Option<&str>) -> String {
-    draw(forages, named, usize::MAX)
+    drawn(forages, named, usize::MAX, true)
 }
 
 /// `forages` drawn for a person in `width` columns: a block each, those
 /// that wait on them first, its cell, machine and quest, its purpose in
 /// two lines at most, or whole for a cell `named`, a line for each thing
-/// it waits on them for, then its documents. Says so in words when there are none, or none `named` names.
+/// it waits on them for, then its documents. Says so in words when there
+/// are none, or none `named` names.
 #[must_use]
 pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
+    drawn(forages, named, width, named.is_some())
+}
+
+/// `forages` drawn in `width` columns, each purpose and every document
+/// `whole` or cut and counted.
+fn drawn(forages: &[Value], named: Option<&str>, width: usize, whole: bool) -> String {
     use crate::swarm::{fit, wrapped};
     if forages.is_empty() {
         let said = match named {
@@ -1468,7 +1481,7 @@ pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
             let purpose = forage["purpose"]
                 .as_str()
                 .unwrap_or("Its quest says no purpose yet.");
-            block.push_str(&purpose_drawn(purpose, width, named.is_some()));
+            block.push_str(&purpose_drawn(purpose, width, whole));
             for wait in forage["waits"].as_array().map_or(&[][..], Vec::as_slice) {
                 let when = wait["when"]
                     .as_str()
@@ -1489,7 +1502,7 @@ pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
             block.push_str(&documents_drawn(
                 documents,
                 forage["cell"].as_str().unwrap_or_default(),
-                named,
+                whole,
                 width,
             ));
             block
