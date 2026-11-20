@@ -4808,8 +4808,11 @@ impl<S: Store> Shared<S> {
         let brought = starts::brings_back(&asked.command, &all)
             .filter(|session| self.reopens_where(session, &asked.work, whither));
         // One naming a folder of its own is new work there, since pi takes
-        // its project from the folder it opens in.
+        // its project from the folder it opens in; so is one whose id
+        // begins another's, which pi may open instead. Either is still
+        // judged by the session it names, parked or coming back.
         let reopened = brought
+            .filter(|session| !starts::begins_another(&session.id, &all))
             .map(|session| (session.id.clone(), session.machine.clone(), ran_in(session)))
             .filter(|(_, _, folder)| asked.folder.is_none() || asked.folder == *folder);
         Judged {
@@ -13632,6 +13635,16 @@ esac
                 false,
             );
         }
+        // Ones whose ids the held and unheld ones begin, so a start of
+        // either counts, but is still judged by the session it names.
+        for (session, address) in [("s-held-again", "PARK05"), ("s-unheld-too", "PARK06")] {
+            store.start_here(
+                session,
+                json!({"session": session, "addresses": [address], "groups": [],
+                       "busy": false, "state": "listening", "at": now}),
+                false,
+            );
+        }
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
         // Once the node has made its folder, private, as it must be.
@@ -13688,6 +13701,11 @@ esac
             2 + usize::from(boot.id.is_none()),
             "each parked refusal is booked: {newest:?}"
         );
+        let unheld = newest
+            .iter()
+            .find(|kept| kept["reopens"] == "s-unheld")
+            .expect("the unheld one comes back");
+        assert!(unheld.get("resumes").is_none(), "it counts: {unheld}");
         let_go(pids);
     }
 

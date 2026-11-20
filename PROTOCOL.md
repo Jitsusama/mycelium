@@ -1694,9 +1694,13 @@ another start of it is going, or within two minutes of one that
 didn't fail, counted or not, is refused, and kept as refused, as is
 one parked with a holder a steer would wake, which wakes it instead,
 since either would open the session's log twice. This guards only
-while the node holds the session as ended, and only for a start asked
-of the session's own node: one relayed from another node isn't
-judged so. Once its pi says it runs, nothing here refuses a second. A
+while the node holds the session as ended, only for a start asked
+of the session's own node, and only for a start in the form above
+naming the session's whole id: one relayed from another node isn't
+judged so, and one naming the session otherwise, with a prompt, a
+flag or its file, counts as new work and isn't refused for this.
+One whose id begins another known session's counts too, since pi
+may open that one instead, and is still judged by the one it names. Once its pi says it runs, nothing here refuses a second. A
 park is judged as a wake judges it: of this boot where both the
 machine and the presence name it, or where either names none, and
 with a holder here still running. One from an earlier boot, or whose

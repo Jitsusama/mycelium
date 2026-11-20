@@ -193,8 +193,7 @@ impl Kept {
 /// [`PIS_FOLDERS`], so no shell, nor a program an agent wrote and named
 /// `pi` elsewhere, hides other work behind the words; and only an ended
 /// session, so one running, or on a machine out of reach, where it may
-/// still run, is never brought back uncounted; nor one whose id begins
-/// another's, which pi may open in its stead. A bare `pi` is fenced by
+/// still run, is never brought back uncounted. A bare `pi` is fenced by
 /// habit alone, since the login finds it on a path an agent may write:
 /// each session the node knows ended, once an hour through each node,
 /// and [`RESUMED_AN_HOUR`] still bound what that hides. Where it runs,
@@ -226,15 +225,22 @@ pub fn brings_back<'a>(command: &[String], sessions: &'a [Session]) -> Option<&'
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     };
-    // pi opens a session by an id it begins when none has that id, so
-    // one that begins another the node knows may open that one instead.
-    let begins_another = sessions
-        .iter()
-        .any(|other| other.id != named && other.id.starts_with(named));
     sessions
         .iter()
         .find(|session| plain(&session.id) && session.id == named)
-        .filter(|session| session.state == State::Ended && !begins_another)
+        .filter(|session| session.state == State::Ended)
+}
+
+/// Whether `id` begins another of the `sessions` the node knows: pi
+/// opens a session by an id it begins when none has that id, so a
+/// resume of it may open that other instead, and counts. The session
+/// named is still the one [`brings_back`] finds, so a start of it is
+/// judged parked or coming back all the same.
+#[must_use]
+pub fn begins_another(id: &str, sessions: &[Session]) -> bool {
+    sessions
+        .iter()
+        .any(|other| other.id != id && other.id.starts_with(id))
 }
 
 /// A start let go ahead, held as counted till it is kept.
@@ -1176,7 +1182,6 @@ mod tests {
             words(&["pi", "--session", "0193-away"]),
             words(&["pi", "--session", "0193-unknown"]),
             words(&["pi", "--session", "x0193-ended"]),
-            words(&["pi", "--session", "0193"]),
             words(&["pi", "0193-ended"]),
             words(&["pi", "--session", "0193-busy", "--session", "0193-ended"]),
             words(&["pi", "--session=0193-new", "--session-id", "0193-ended"]),
@@ -1202,6 +1207,18 @@ mod tests {
         ] {
             assert_eq!(brings_back(&new, &sessions), None, "{new:?}");
         }
+        // A short id still names its own session, to be judged parked or
+        // coming back, but begins another, which pi may open instead.
+        let short = words(&["pi", "--session", "0193"]);
+        assert_eq!(
+            brings_back(&short, &sessions).map(|session| session.id.as_str()),
+            Some("0193")
+        );
+        assert!(begins_another("0193", &sessions), "0193 begins 0193-busy");
+        assert!(
+            !begins_another("0193-ended", &sessions),
+            "a whole id begins none"
+        );
     }
 
     #[test]
