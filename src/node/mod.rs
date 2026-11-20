@@ -13368,9 +13368,9 @@ esac
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
         // As in the limit's test, each start stays here.
         declares_runs(&socket, true);
-        let start = |command: &[&str]| {
+        let start = |command: &[&str], needs: Vec<Need>| {
             Request::Start(Start {
-                work: work(Vec::new()),
+                work: work(needs),
                 folder: None,
                 command: command.iter().map(|&word| word.to_owned()).collect(),
                 may_cost: false,
@@ -13381,14 +13381,21 @@ esac
         asks_below(&socket, 7001);
         for session in &wave {
             assert_eq!(
-                ask(socket.clone(), start(&["pi", "--session", session])).await,
+                ask(
+                    socket.clone(),
+                    start(&["pi", "--session", session], Vec::new())
+                )
+                .await,
                 Err("skiff's node starts no sessions".to_owned()),
                 "none of the wave is refused"
             );
         }
+        // Asked here, as placement would send new work to a machine that
+        // took none of the wave.
+        let here = || vec![Need::Machine("skiff".to_owned())];
         for _ in 0..starts::CELL_AN_HOUR {
             assert_eq!(
-                ask(socket.clone(), start(&["pi"])).await,
+                ask(socket.clone(), start(&["pi"], here())).await,
                 Err("skiff's node starts no sessions".to_owned()),
                 "the wave left the cell its eight"
             );
@@ -13437,7 +13444,11 @@ esac
         // boot, which its holder wakes as it's steered.
         let ended = ["s-spare", "s-own", "s-other", "s-skiff", "s-parked"];
         for (one, session) in ended.iter().enumerate() {
-            let state = if *session == "s-parked" { "parked" } else { "listening" };
+            let state = if *session == "s-parked" {
+                "parked"
+            } else {
+                "listening"
+            };
             store.start_here(
                 session,
                 json!({"session": session, "addresses": [format!("SPARE{one}")],
