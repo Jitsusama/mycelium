@@ -557,7 +557,7 @@ impl Easing {
                 }
                 self.said = Some(said);
             }
-            Choice::Sleep { sessions } => {
+            Choice::Sleep { sessions, .. } => {
                 self.said = None;
                 self.asleep.extend(sessions.iter().cloned());
                 self.history.slept(sessions.len(), now);
@@ -1650,6 +1650,57 @@ mod tests {
                 .as_str()
                 .is_some_and(|why| why.starts_with("it carried s1 at")),
             "after the carry it waits out its cooldown: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn sessions_going_idle_each_minute_hold_no_carry_off() {
+        let machines: Vec<Machine> = realm();
+        let declared = declaring(&[Kind::Fence]);
+        let here = Here {
+            name: "skiff",
+            declared: Some(&declared),
+            machines: &machines,
+            loads: &Loads::new(),
+        };
+        let mut easing = Easing::default();
+        let lines: Vec<Value> = (0..=20)
+            .filter_map(|minute| {
+                let at = ago(20 - minute);
+                let cells = (0..=minute)
+                    .map(|one| Cell {
+                        asleep: false,
+                        ..cell(&format!("s{one}"))
+                    })
+                    .collect();
+                easing.look(
+                    &here,
+                    balance::read(&machines, &[], at),
+                    cells,
+                    &BTreeMap::new(),
+                    Ok(0),
+                    at,
+                )
+            })
+            .collect();
+        let carry = lines
+            .iter()
+            .find(|line| line["choice"] == "carry")
+            .unwrap_or_else(|| panic!("a carry among {:?}", chosen(&lines)));
+        assert_eq!(
+            carry["at"],
+            json!(ago(5).to_string()),
+            "five minutes after the first sleep, though one slept each minute since"
+        );
+        let first: Vec<&str> = lines
+            .iter()
+            .filter(|line| line["choice"] == "sleep")
+            .flat_map(|line| line["sessions"].as_array().into_iter().flatten())
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(
+            first.contains(&carry["session"].as_str().expect("a session")),
+            "the one carried slept first: {first:?}"
         );
     }
 
