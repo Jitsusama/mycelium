@@ -2072,7 +2072,8 @@ node can't be opened from outside: its command line must give
 `--disable-sigusr1` as node's first option, since otherwise any
 process of its user may send SIGUSR1 and open node's inspector, and
 an option taking a value could take a later one as its own; that
-line, its quotes dropped as node drops them, may name neither
+line, read with its quotes and escapes dropped, which only refuses
+more, may name neither
 `--inspect` in any form nor `--no-disable-sigusr1`, which undoes the
 first; and its environment may give no `NODE_OPTIONS` but a blank
 one, since `--require` or `--import` there runs code as the host,
