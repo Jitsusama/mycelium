@@ -5,9 +5,11 @@
 //! holds it over while another has room, and only once every reading for
 //! [`HOT_FOR`] has said so. It first puts its waiting sessions to sleep
 //! where they are, counting them, and carries one only once the readings
-//! [`SETTLE`] after still say it is over. Then it carries one session at a
-//! time to a peer with room, placed as any work is, onto ground as firm as
-//! here's, never one in a turn, on the person's screen, orchestrating
+//! [`SETTLE`] after its first sleep still say it is over, putting those
+//! that wait anew to sleep meanwhile, and after only where it carries
+//! none. Then it carries one session at a time to a peer with room,
+//! placed as any work is, onto ground as firm as here's, never one in a
+//! turn, on the person's screen, orchestrating
 //! other sessions, part way through something a carry would break, or
 //! whose quest runs elsewhere too; what can't be told of a session keeps
 //! it here. After a carry it waits [`COOLDOWN`], and it carries at most
@@ -208,9 +210,19 @@ impl History {
         };
     }
 
-    /// Notes `count` sessions put to sleep `at`.
+    /// Notes `count` sessions put to sleep `at`. Only the first sleep of
+    /// a spell over is kept as when it slept, since [`SETTLE`] runs from
+    /// it: sessions that go on waiting after it sleep too, and would
+    /// otherwise start the wait again each time and hold a carry off for
+    /// as long as they kept coming.
     pub fn slept(&mut self, count: usize, at: Timestamp) {
-        self.slept_at = Some(at);
+        let this_spell = self
+            .slept_at
+            .zip(self.hot_since)
+            .is_some_and(|(slept, since)| slept >= since);
+        if !this_spell {
+            self.slept_at = Some(at);
+        }
         self.sleeps += count;
     }
 
@@ -346,19 +358,36 @@ pub fn choose(
         .filter(|cell| !cell.asleep && cell.stays(here.name).is_none())
         .map(|cell| cell.session.id.clone())
         .collect();
-    if !sleepy.is_empty() {
-        return Choice::Sleep { sessions: sleepy };
+    // Until the readings SETTLE after this spell's first sleep say it is
+    // still over, a session waiting sleeps first; after, one waiting
+    // anew sleeps only where no carry goes.
+    match history.slept_at.filter(|slept| *slept >= since) {
+        Some(slept) if now.duration_since(slept) >= SETTLE => {}
+        _ if !sleepy.is_empty() => return Choice::Sleep { sessions: sleepy },
+        Some(slept) => {
+            return nothing(format!(
+                "it put sessions to sleep at {slept}, and the readings for {} minutes after \
+                 say whether that eased it",
+                SETTLE.as_mins()
+            ));
+        }
+        None => {}
     }
-    if let Some(slept) = history.slept_at
-        && slept >= since
-        && now.duration_since(slept) < SETTLE
-    {
-        return nothing(format!(
-            "it put sessions to sleep at {slept}, and the readings for {} minutes after say \
-             whether that eased it",
-            SETTLE.as_mins()
-        ));
+    match carry(here, cells, reading, history, now) {
+        Choice::Nothing { .. } if !sleepy.is_empty() => Choice::Sleep { sessions: sleepy },
+        choice => choice,
     }
+}
+
+/// Which of `cells` `here` carries now, by `reading` and its `history`,
+/// or why none.
+fn carry(
+    here: &Here,
+    cells: &[Cell],
+    reading: &Reading,
+    history: &History,
+    now: Timestamp,
+) -> Choice {
     if let Some(last) = history.last_eased(here.name)
         && now.duration_since(last.at) < COOLDOWN
     {
@@ -790,6 +819,51 @@ pub(super) mod tests {
             carries(&chose(&realm, &[cell("s1")], &settled)),
             Some(("s1", "tern")),
             "still over five minutes after, it carries"
+        );
+    }
+
+    #[test]
+    fn sessions_that_keep_going_to_sleep_hold_no_carry_past_the_first_sleeps_settling() {
+        let realm = realm();
+        let awake = |id: &str| Cell {
+            asleep: false,
+            ..cell(id)
+        };
+        let mut history = hot_for(&realm, 20);
+        history.slept(2, ago(6));
+        history.slept(1, ago(2));
+        assert_eq!(
+            carries(&chose(&realm, &[cell("s1")], &history)),
+            Some(("s1", "tern")),
+            "five minutes are counted from the first sleep, not the last"
+        );
+        assert_eq!(
+            carries(&chose(&realm, &[cell("s1"), awake("s2")], &history)),
+            Some(("s1", "tern")),
+            "a session newly waiting doesn't put the carry off"
+        );
+        let mut settling = hot_for(&realm, 20);
+        settling.slept(2, ago(3));
+        assert_eq!(
+            chose(&realm, &[cell("s1"), awake("s2")], &settling),
+            Choice::Sleep {
+                sessions: vec!["s2".to_owned()]
+            },
+            "while the first sleep settles, one newly waiting sleeps too"
+        );
+        history.moved(Moved {
+            session: "s9".to_owned(),
+            from: "skiff".to_owned(),
+            to: "tern".to_owned(),
+            at: ago(1),
+            eases: true,
+        });
+        assert_eq!(
+            chose(&realm, &[cell("s1"), awake("s2")], &history),
+            Choice::Sleep {
+                sessions: vec!["s2".to_owned()]
+            },
+            "where no carry may go, one newly waiting still sleeps"
         );
     }
 

@@ -906,9 +906,11 @@ realm's balance as `mycelium balance --follow` does and holds what
 is seen in most of the last ten readings. Once its machine
 has been held over for ten minutes while another has room, it would
 put its sessions that wait to sleep where they are. If the readings
-five minutes on still say over, it would carry one session to a peer
-with room: the smallest log first, placed as any work is and onto
-ground as firm. A session in a turn, on the person's screen,
+five minutes after that first sleep still say over, it would carry one
+session to a peer with room: the smallest log first, placed as any work
+is and onto ground as firm. Sessions that wait anew meanwhile sleep too
+without putting the carry off, and once the five minutes are past they
+sleep only where nothing is carried. A session in a turn, on the person's screen,
 orchestrating other sessions, holding a lease or a heavy run, or whose
 quest runs elsewhere too stays. So does one it can't tell any of these
 of. A session waiting on a secret's release or a password prompt waits
