@@ -772,15 +772,21 @@ impl Exchange {
     /// would move the ended record aside for nothing: what the other end
     /// said before it stopped too, a link's Holds heard before its first
     /// Shares, or an end whose own record was moved aside and so names
-    /// the quest live with nothing of it to give.
-    fn brings_back(&self, id: &str, files: &BTreeMap<String, State>) -> bool {
-        let live = self
-            .theirs
-            .as_ref()
-            .is_some_and(|theirs| theirs.quests.contains(id) && !theirs.ended.contains(id));
-        live && files
-            .get(README)
-            .is_some_and(|readme| readme.hash.is_some())
+    /// the quest live with nothing of it to give. What it lacks, it says.
+    fn brings_back(&self, id: &str, files: &BTreeMap<String, State>) -> Result<(), &'static str> {
+        let Some(theirs) = self.theirs.as_ref() else {
+            return Err("has said nothing yet of what it shares");
+        };
+        if !theirs.quests.contains(id) {
+            return Err("no longer shares it");
+        }
+        if theirs.ended.contains(id) {
+            return Err("says it has ended there too");
+        }
+        if files.get(README).is_none_or(|readme| readme.hash.is_none()) {
+            return Err("says it is live but holds no README of it");
+        }
+        Ok(())
     }
 
     /// Whether quest `id` has ended at the other end as far as this end
@@ -1088,8 +1094,12 @@ impl Exchange {
         id: &str,
         files: &BTreeMap<String, State>,
     ) -> io::Result<Option<Vec<Say>>> {
+        let ended = self.places.ended(id);
         if !self.take_up(id, files)? {
             return Ok(None);
+        }
+        if ended {
+            self.take_up_scratch(id)?;
         }
         let wants = self.held(id, files.clone())?;
         let mut held = self.places.ledgers().hold(id)?;
@@ -1110,10 +1120,12 @@ impl Exchange {
         if !is_quest(id) || ledgers.shares(id) {
             return Ok(true);
         }
-        if self.places.ended(id) && !self.brings_back(id, files) {
+        if self.places.ended(id)
+            && let Err(why) = self.brings_back(id, files)
+        {
             eprintln!(
-                "{id} has ended here, and {} neither says it is live nor holds its README, \
-                 so this machine's record of it stays where it is",
+                "{id} has ended here, and {} {why}, so this machine's record of it stays \
+                 where it is",
                 self.other
             );
             return Ok(false);
@@ -1218,6 +1230,28 @@ impl Exchange {
             if !self.places.ended(id) && self.carries_whole(id)? {
                 self.clone_what(id, clones)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Takes up the scratch folders and clones the other end's last Shares
+    /// named of quest `id`, for one taken up only on hearing its Holds,
+    /// as one ended here is: [`Self::take_up_theirs`] passed them over,
+    /// and that Shares isn't said again until it changes.
+    fn take_up_scratch(&mut self, id: &str) -> io::Result<()> {
+        let Some(theirs) = self.theirs.as_ref() else {
+            return Ok(());
+        };
+        let folders = theirs.scratch.get(id).cloned();
+        let clones = theirs.clones.get(id).cloned();
+        if !self.carries_whole(id)? {
+            return Ok(());
+        }
+        if let Some(folders) = folders {
+            self.share_scratch(id, &folders)?;
+        }
+        if let Some(clones) = clones {
+            self.clone_what(id, &clones)?;
         }
         Ok(())
     }
@@ -3453,6 +3487,57 @@ mod tests {
     }
 
     #[test]
+    fn an_ended_quest_is_taken_up_only_from_an_end_saying_it_live_with_a_readme() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        kestrel.write(
+            "README.md",
+            &format!("---\nid: {QUEST}\nstatus: concluded\n---\n# Shared\n"),
+        );
+        kestrel.write("attachments/map.md", "the map\n");
+        let mut far = kestrel.exchange(&skiff);
+        let shares = |ended: &[&str]| Say::Shares {
+            quests: vec![QUEST.to_owned()],
+            scratch: BTreeMap::new(),
+            clones: BTreeMap::new(),
+            ended: ended.iter().map(|id| (*id).to_owned()).collect(),
+            above: BTreeSet::new(),
+        };
+        let holds = |hash: Option<&str>| Say::Holds {
+            quest: QUEST.to_owned(),
+            files: BTreeMap::from([(
+                README.to_owned(),
+                State {
+                    hash: hash.map(str::to_owned),
+                    ..State::default()
+                },
+            )]),
+        };
+        let kept = |far: &Exchange, why: &str| {
+            assert_eq!(
+                kestrel.read("attachments/map.md"),
+                Some("the map\n".to_owned()),
+                "{why}"
+            );
+            assert!(!far.places.ledgers().shares(QUEST), "{why}, not taken up");
+        };
+
+        far.hear(shares(&[QUEST])).expect("heard");
+        far.hear(holds(Some("a README"))).expect("heard");
+        kept(&far, "an end still sharing it as ended brings nothing back");
+
+        far.hear(shares(&[])).expect("heard");
+        far.hear(holds(None)).expect("heard");
+        kept(&far, "nor one saying it live with its README deleted");
+
+        far.hear(holds(Some("a README"))).expect("heard");
+        assert!(
+            far.places.ledgers().shares(QUEST),
+            "one saying it live with a README is taken up"
+        );
+    }
+
+    #[test]
     fn a_quest_ended_at_both_ends_and_reopened_at_one_is_taken_up_at_the_other() {
         let skiff = Machine::new("skiff");
         let kestrel = Machine::new("kestrel");
@@ -3473,11 +3558,22 @@ mod tests {
 
         kestrel.write("README.md", &readme("active"));
         kestrel.write("attachments/map.md", "the map\n");
+        put(
+            &kestrel.places.scratch,
+            &format!("{QUEST}/notes/plan.md"),
+            "the plan\n",
+        );
         share(&kestrel, QUEST);
-        for _ in 0..2 {
+        kestrel.places.name_scratch(QUEST, "notes").expect("named");
+        for _ in 0..3 {
             talk(&mut near, &mut far);
         }
         assert!(shares(&skiff), "skiff takes the reopened quest up");
+        assert_eq!(
+            fs::read_to_string(skiff.places.scratch.join(QUEST).join("notes/plan.md")).ok(),
+            Some("the plan\n".to_owned()),
+            "and the scratch folder kestrel names of it"
+        );
         assert_eq!(skiff.read("README.md"), Some(readme("active")));
         assert_eq!(
             skiff.read("attachments/map.md"),
