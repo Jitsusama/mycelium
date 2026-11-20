@@ -862,8 +862,9 @@ back knows; a session back and ended again while the node was stopped
 isn't seen. Trees let go don't come back if the node or `pi-carry` is
 rolled back, though each one's branch still names its commits. What
 asked nothing keeps no line: a
-`pi-carry` that didn't run, or one that can't settle (its exit 2, as
-one from before settling gives). That, and an answer lost, as when a
+`pi-carry` that didn't run, or one that refuses the form as asked
+wrongly: its exit 2, as one from before settling gives, or 64, as
+core.nix's exit table spells that refusal. That, and an answer lost, as when a
 signal ends the settling or its line can't be kept, is asked again
 only once the node starts afresh, which settling allows. Where the
 file can't be read, nothing is settled. The carry's record then holds
