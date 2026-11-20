@@ -2107,9 +2107,9 @@ again and may say any spawner. The host turns that cache on itself,
 so it must sit in pi's own state, which the fence keeps read-only,
 never in the temporary folder node picks when given none, which a
 fenced command can write. So the word proves a session only where
-the host's sessions run their commands fenced from the harness and
-its extensions; where they don't, it tells a command apart from its
-host only by accident. So too a command of the same user can open
+the host's sessions run their commands fenced from the harness, and
+the host loads no extension they can write; where either fails, it
+tells a command apart from its host only by accident. So too a command of the same user can open
 another session's spawner's pipe again through `/proc/<pid>/fd`,
 which Yama's scope 1 doesn't stop, and have it start a command for
 that session. And a command that can reach the host's own socket,

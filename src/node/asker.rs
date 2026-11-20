@@ -705,7 +705,7 @@ fn inspector_open(procs: &Path, pid: i32) -> Option<String> {
         if given {
             return Some(format!(
                 "process {pid} is given {name}, which could run code in it; a pi host \
-                 started from a shell takes the shell's, where its unit clears it"
+                 takes it from the shell or service manager that started it"
             ));
         }
     }
@@ -795,7 +795,9 @@ impl Spawners {
     /// that can rewrite the harness a host loads, then end the host, has
     /// its code run as the host when the host starts again, which may say
     /// any spawner. So the word proves a session only where the host's
-    /// sessions run their commands fenced from the harness's files.
+    /// sessions run their commands fenced from the harness's files, and
+    /// where the host loads no extension its sessions can write, as a
+    /// trusted project's own are today: no fence closes that.
     ///
     /// # Errors
     ///
@@ -2548,7 +2550,7 @@ mod tests {
                 "nor one given {loads}, which loads code into it as it starts"
             );
             assert!(
-                refused("a pi host started from a shell takes the shell's"),
+                refused("a pi host takes it from the shell or service manager that started it"),
                 "and the refusal says where a host gets {loads}, so a host started by \
                  hand isn't chased"
             );
