@@ -1919,14 +1919,19 @@ const LOOSER_REFUSED: &str = "so it starts nothing on looser ground";
 /// (WCJQSG, 19 November): only a session of its own quest, or one this
 /// node's book of `starts` says it or its orchestrator started. The
 /// nearest claim above the asker isn't enough: a pi host's sessions share
-/// its process, so any of them could be named. Otherwise, says who may
-/// reopen it.
+/// its process, so any of them could be named. A proved session's quest,
+/// address and orchestrator are its presence's, which its pi host writes
+/// under pi's state, a folder the fence keeps read-only to the agent: so
+/// they say what the harness has it work on, and an agent moves them
+/// only through the harness, as by loading another quest. Otherwise,
+/// says who may reopen it, its quest escaped as its id is, since another
+/// machine's presence says it.
 fn reopens_within(
     asker: Result<&Session, &str>,
     reopened: Option<&Session>,
     starts: &starts::Starts,
 ) -> Result<(), String> {
-    let who = |reopened: &str, quest: Option<&str>| match quest {
+    let who = |reopened: &str, quest: Option<&str>| match quest.map(str::escape_debug) {
         Some(quest) => format!(
             "{reopened} is reopened from fenced ground only by an agent of {quest}, one its \
              orchestrator started, or the person"
@@ -4861,14 +4866,14 @@ impl<S: Store> Shared<S> {
                     let reopened = all
                         .iter()
                         .find(|one| one.id == *session && one.machine == *machine);
-                    let asker = match &proved {
+                    let who_asks = match &proved {
                         Ok(id) => all
                             .iter()
                             .find(|one| one.id == *id && one.machine == self.machine)
                             .ok_or("its presence isn't held here"),
                         Err(why) => Err(why.as_str()),
                     };
-                    reopens_within(asker, reopened, &self.starts)
+                    reopens_within(who_asks, reopened, &self.starts)
                 });
             (
                 started_by,
