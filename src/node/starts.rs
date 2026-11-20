@@ -5,7 +5,8 @@
 //! may start in an hour, and every one while the person has stopped them,
 //! which takes one act. The person's own starts are never held back, and
 //! nor is pi's first start in the hour bringing back a session that
-//! ended, since it begins no new work.
+//! ended, since it begins no new work, up to [`RESUMED_AN_HOUR`] through
+//! the node.
 //!
 //! The book is kept in `starts.jsonl` beside the node's runs, a line a
 //! start: `{"at", "by", "started_by", "folder", "program"}`, `"resumes"`
@@ -93,8 +94,9 @@ pub struct Kept {
     /// Who asked it.
     pub by: By,
     /// The cell whose session asked, by its address, as the nearest
-    /// session claiming the asker's process says; none for the person's,
-    /// or an agent's no session claims. A claim proves nothing, so this
+    /// session claiming the asker's process says, or on a pi host the
+    /// claim its `PI_SESSION_ID` names; none for the person's, or an
+    /// agent's no session claims. A claim proves nothing, so this
     /// says who it counted toward, not who it was.
     pub started_by: Option<String>,
     /// The folder it was asked to begin in.
@@ -170,7 +172,8 @@ impl Kept {
 /// and says only one that ended, by its id, after `--session` or
 /// `--session-id`: no other word, so no prompt or flag gives the
 /// session new work as it comes back, and no file, which an agent may
-/// have written. Only pi itself is read, named bare, as the
+/// have written, nor an id that could name one: only letters, digits,
+/// `-` and `_`, since a presence's id is its writer's word. Only pi itself is read, named bare, as the
 /// person's login finds it, or by a path in [`PIS_FOLDERS`], so no shell,
 /// nor a program an agent wrote and named `pi` elsewhere, hides other
 /// work behind the words; and only an ended session, so one running, or
@@ -178,8 +181,8 @@ impl Kept {
 /// back uncounted. A bare `pi` is fenced by habit alone, since the login
 /// finds it on a path an agent may write: each session the node knows
 /// ended, once an hour, and [`RESUMED_AN_HOUR`] still bound what that
-/// hides. Where it runs is
-/// the caller's to pin to the session's own machine.
+/// hides. Where it runs is the caller's to pin to the session's own
+/// machine.
 #[must_use]
 pub fn brings_back<'a>(command: &[String], sessions: &'a [Session]) -> Option<&'a Session> {
     let program = command.first()?;
@@ -200,9 +203,15 @@ pub fn brings_back<'a>(command: &[String], sessions: &'a [Session]) -> Option<&'
             .and_then(|(flag, named)| RESUMING.contains(&flag).then_some(named))?,
         _ => return None,
     };
+    let plain = |id: &str| {
+        !id.is_empty()
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
     sessions
         .iter()
-        .find(|session| !session.id.is_empty() && session.id == named)
+        .find(|session| plain(&session.id) && session.id == named)
         .filter(|session| session.state == State::Ended)
 }
 
@@ -889,6 +898,9 @@ mod tests {
             session("0193-ended", "ended"),
             session("0193-busy", "busy"),
             session("0193-away", "unreachable"),
+            // A presence an agent wrote, naming a file of its own as the id.
+            session("/home/x/work/new.jsonl", "ended"),
+            session("../new", "ended"),
         ];
         let file = "/home/x/.pi/agent/sessions/--x--/2026-11-18T22-00-00_0193-ended.jsonl";
         for brought in [
@@ -917,6 +929,8 @@ mod tests {
             words(&["pi", "--session", "0193-ended", "--session", "0193-ended"]),
             words(&["pi", "--model", "x", "--session=0193-ended"]),
             words(&["pi", "--session", file]),
+            words(&["pi", "--session", "/home/x/work/new.jsonl"]),
+            words(&["pi", "--session=../new"]),
             words(&["sh", "-c", "new work", "--session", "0193-ended"]),
             words(&["pip", "--session", "0193-ended"]),
             words(&["/home/x/work/pi", "--session", "0193-ended"]),

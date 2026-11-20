@@ -4765,33 +4765,37 @@ impl<S: Store> Shared<S> {
 
     /// Pins `asked`, which brings back session `id` that ran on
     /// `machine`, to that machine, and where it names no folder, to the
-    /// one the session's last presence says it ran in, so pi opens it in
-    /// its own project rather than asking to fork it into home. That is
-    /// a path from home, as `~/` or whole, of a folder still there; one
-    /// gone leaves it in home, as before.
+    /// one the session's last presence there says it ran in, so pi opens
+    /// it in its own project rather than asking to fork it into home. A
+    /// `~/` path goes as one within home and a full path as it is, both
+    /// judged by the machine that runs it, whose home and disk they name:
+    /// one gone there leaves it in home, as before.
     fn reopen_there(&self, id: &str, machine: String, asked: &mut Start, whither: Whither) {
         let named = asked
             .work
             .needs
             .iter()
             .any(|need| matches!(need, Need::Machine(_)));
-        if whither == Whither::Placed && !named {
-            asked.work.needs.push(Need::Machine(machine));
-        }
         if asked.folder.is_none() {
             asked.folder = self
                 .store
                 .presences()
                 .into_iter()
-                .find(|presence| presence.session == id)
+                .find(|presence| {
+                    presence.session == id
+                        && presence.elsewhere.as_deref().unwrap_or(&self.machine) == machine
+                })
                 .and_then(|presence| {
                     let cwd = presence.body.get("cwd")?.as_str()?;
                     match cwd.strip_prefix("~/") {
-                        Some(under) => Some(std::env::home_dir()?.join(under)),
-                        None => Some(PathBuf::from(cwd)),
+                        Some(under) => Some(PathBuf::from(under)),
+                        None => Some(PathBuf::from(cwd)).filter(|cwd| cwd.is_absolute()),
                     }
                 })
-                .filter(|cwd| cwd.is_absolute() && cwd.is_dir());
+                .filter(|cwd| cwd.components().next().is_some());
+        }
+        if whither == Whither::Placed && !named {
+            asked.work.needs.push(Need::Machine(machine));
         }
     }
 
@@ -13278,15 +13282,18 @@ esac
             .collect::<Vec<_>>();
         let project = |one: usize| dir.path().join(format!("project-{one}"));
         for (one, session) in wave.iter().enumerate() {
-            // The last one's folder is gone, so it begins in home.
-            if one < wave.len() - 1 {
-                fs::create_dir(project(one)).expect("its folder is made");
-            }
+            // The last one's folder is said from home, as pi says it, so
+            // it goes as a folder within the home of the machine it runs on.
+            let cwd = if one < wave.len() - 1 {
+                json!(project(one))
+            } else {
+                json!("~/src/project-last")
+            };
             store.start_here(
                 session,
                 json!({"session": session, "addresses": [format!("GONE{one:02}")],
                        "groups": [], "busy": false, "state": "listening", "at": at,
-                       "cwd": project(one)}),
+                       "cwd": cwd}),
                 false,
             );
         }
@@ -13368,9 +13375,9 @@ esac
             .iter()
             .find(|kept| kept["resumes"] == wave[wave.len() - 1].as_str())
             .expect("the last brought back is kept");
-        assert!(
-            last.get("folder").is_none_or(Value::is_null),
-            "one whose folder is gone begins in home: {last}"
+        assert_eq!(
+            last["folder"], "src/project-last",
+            "one said from home goes as a folder within it: {last}"
         );
         assert_eq!(first["started_by"], "WCJQSG", "{first}");
     }
