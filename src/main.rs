@@ -232,7 +232,8 @@ enum Action {
     /// on you come first. In a terminal each purpose takes two lines at
     /// most, closed documents are counted, and each row is cut to fit.
     /// Named by its address or its quest's id, one cell's forage, with
-    /// its whole purpose and every document. Into a pipe nothing is cut.
+    /// its purpose as far as its node read it and every document. Into a
+    /// pipe nothing more is cut.
     #[command(after_help = "Example:\n  mycelium forage HARBOR")]
     Forage(ForageAsked),
     /// Says how a receptor stands, as the receptor.
