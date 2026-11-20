@@ -2266,8 +2266,9 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
 
 /// How wide stdout is drawn on: into a terminal, `COLUMNS`, then what the
 /// terminal `said`, then [`WIDTH_UNSAID`], as core.nix's commands read it;
-/// `COLUMNS` first because no shell exports it, so it's there only when
-/// someone asked for that width. It's read as a terminal's own width is,
+/// `COLUMNS` first because no shell exports it, so it's mostly there only
+/// when someone asked for that width; an editor's terminal can pass on a
+/// stale one, which can only draw narrower. It's read as a terminal's own width is,
 /// at most a `u16`, and no wider than a terminal that says, since a line
 /// past its edge only wraps. Into a pipe `COLUMNS` isn't read, as the
 /// kit's commands don't read it there, and the width is [`SWARM_WIDTH`].
@@ -3119,6 +3120,7 @@ mod tests {
             (None, Some(0), 80),
             (Some(" 60 "), Some(120), 60),
             (Some("200"), None, 200),
+            (Some("60"), Some(0), 60),
         ] {
             assert_eq!(
                 width(true, columns, said),
