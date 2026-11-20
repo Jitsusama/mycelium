@@ -1530,6 +1530,15 @@ mod tests {
                 None,
                 "{session}'s, a word off"
             );
+            // Pi takes word 7 as its first prompt, so one of the cell's
+            // own choosing is other work, however right the script.
+            let mut prompted = start.command.clone();
+            prompted[7] = "build the whole thing".to_owned();
+            assert_eq!(
+                super::ordered_arrival(&prompted),
+                None,
+                "{session}'s, told something else"
+            );
             let unordered = super::arriving(QUEST, "skiff", "tern", &done(session), None);
             assert_eq!(
                 super::ordered_arrival(&unordered.command),

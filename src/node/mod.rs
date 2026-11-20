@@ -4950,8 +4950,9 @@ impl<S: Store> Shared<S> {
     /// (`carry::ordered_arrival`), counted toward the very cell it says
     /// ordered it, and matching the newest carry this node kept of that
     /// session, ordered from here within the last
-    /// [`crate::carry::ORDERED_ARRIVES_WITHIN`], in that quest, by that
-    /// cell, to the one machine the start needs, for the same reason. The
+    /// [`crate::carry::ORDERED_ARRIVES_WITHIN`] and never dated ahead of
+    /// now, in that quest, by that cell, to the one machine the start
+    /// needs, for the same reason. The
     /// quest's own trees arrive held to the newest such carry of any of
     /// its sessions. The carry was proved as it was ordered, so a cell
     /// can start uncounted only the sessions it was proved to
@@ -4985,7 +4986,7 @@ impl<S: Store> Shared<S> {
         let kept = settle::newest_each(self.carries_looked_at())
             .into_iter()
             .any(|carry| {
-                carry.at >= since
+                (since..=now).contains(&carry.at)
                     && (own || carry.said("session") == arrives.session)
                     && carry.said("by").eq_ignore_ascii_case(cell)
                     && carry.said("from") == self.machine
@@ -10146,7 +10147,14 @@ esac
         let kept: String = lines.iter().map(|line| line.to_string() + "\n").collect();
         fs::write(socket.with_file_name("carries.jsonl"), kept).expect("the carries are kept");
         declares_runs(&socket, true);
-        asks_below(&socket, 7001);
+        spends(&socket, 7001).await;
+        (socket, stop, node, client)
+    }
+
+    /// Has the cell of the pi that is process `pi` start its eight this
+    /// hour on the node at `socket`, asking as that pi from then on.
+    async fn spends(socket: &Path, pi: i32) {
+        asks_below(socket, pi);
         for _ in 0..starts::CELL_AN_HOUR {
             let plain = Start {
                 work: work(vec![Need::Machine("skiff".to_owned())]),
@@ -10156,9 +10164,8 @@ esac
                 carries: false,
                 once: None,
             };
-            let _ = ask(socket.clone(), Request::Start(plain)).await;
+            let _ = ask(socket.to_path_buf(), Request::Start(plain)).await;
         }
-        (socket, stop, node, client)
     }
 
     /// The start a carry WCJQSG ordered for `why` gives `session`'s
@@ -10254,6 +10261,8 @@ esac
 
     // Round 1 (2026-11-20): a carry frees only its newest arrival, and
     // only within the hour, so an old or superseded line frees nothing.
+    // Round 2: nor one dated ahead, or asked by a cell that didn't order
+    // it.
     #[tokio::test]
     async fn only_a_sessions_newest_carry_this_hour_starts_it_uncounted() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -10275,6 +10284,14 @@ esac
                 minutes(10),
             ),
             carry_line(harbour, "s-ferry-1", "tern", ("WCJQSG", "then"), minutes(5)),
+            carry_line(
+                harbour,
+                "s-ferry-2",
+                "tern",
+                ("WCJQSG", "ahead"),
+                -minutes(5),
+            ),
+            carry_line(harbour, "s-ferry-3", "tern", ("WCJQSG", "mine"), minutes(5)),
         ];
         let (socket, _stop, _node, _client) = spent_cell(dir.path(), &lines).await;
         let start = |session, why| ordered_start(harbour, session, ("skiff", "tern"), why);
@@ -10287,15 +10304,31 @@ esac
             "one a later carry of its session superseded counts"
         );
         assert!(
+            counts(&socket, start("s-ferry-2", "ahead")).await,
+            "one dated ahead of now counts"
+        );
+        assert!(
             !counts(&socket, start("s-ferry-1", "then")).await,
             "the newest is uncounted"
+        );
+        spends(&socket, 7002).await;
+        let asked = ask(socket.clone(), Request::Start(start("s-ferry-3", "mine"))).await;
+        assert!(
+            asked
+                .as_ref()
+                .is_err_and(|why| why.starts_with("OSPHT4 started")),
+            "WCJQSG's carry asked by OSPHT4's cell counts toward it: {asked:?}"
         );
         let newest = booked(socket).await;
         let carried: Vec<_> = newest
             .iter()
             .filter_map(|kept| kept["carried"].as_str())
             .collect();
-        assert_eq!(carried, ["s-ferry-1"], "{newest:?}");
+        assert_eq!(
+            carried,
+            ["s-ferry-1"],
+            "only the newest, asked by the cell that ordered it: {newest:?}"
+        );
     }
 
     #[tokio::test]
