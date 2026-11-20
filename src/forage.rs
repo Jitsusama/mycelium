@@ -1305,22 +1305,31 @@ fn read_cut(purpose: &str) -> Option<&str> {
     (kept.chars().count() + CUT_TRIMS >= LONGEST_PURPOSE - 3).then_some(kept)
 }
 
-/// `purpose` wrapped under its indent in `width` columns, in at most
-/// [`PURPOSE_LINES`] unless it is drawn `whole`; a purpose cut there, or
-/// read already cut at its length, ends in one ellipsis after a whole
-/// word.
-fn purpose_drawn(purpose: &str, width: usize, whole: bool) -> String {
+/// A purpose, `said` as its node wrote it, cleaned and wrapped under its
+/// indent in `width` columns, in at most [`PURPOSE_LINES`] unless it is
+/// drawn `whole`; a purpose cut there, or read already cut at its length,
+/// ends in one ellipsis after a whole word.
+fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
     use crate::swarm::wrapped;
-    let (purpose, read_cut) = match read_cut(purpose) {
+    // Judged as its node counted it, before the marks one_line drops.
+    let length = read_cut(said).map(|kept| kept.chars().count());
+    let cleaned = one_line(said);
+    let (purpose, read_cut) = match (length, cleaned.strip_suffix("...")) {
         // Cut where it reached its length, often within a word, so that
         // word goes too and the mark comes after a whole one; a single
         // word is kept, to be cut within as one too long is.
-        Some(kept) => (
-            kept.rsplit_once(' ')
-                .map_or(kept, |(before, _)| before.trim_end()),
-            true,
-        ),
-        None => (purpose, false),
+        (Some(length), Some(kept)) if length >= LONGEST_PURPOSE - 3 => {
+            let kept = kept.trim_end();
+            (
+                kept.rsplit_once(' ')
+                    .map_or(kept, |(before, _)| before.trim_end()),
+                true,
+            )
+        }
+        // A cut that fell on a space, its trim leaving it short, left
+        // the word before it whole.
+        (Some(_), Some(kept)) => (kept.trim_end(), true),
+        _ => (cleaned.as_str(), false),
     };
     let most = if whole { usize::MAX } else { PURPOSE_LINES };
     let drawn = wrapped(purpose, "  ", "  ", width);
@@ -1328,7 +1337,14 @@ fn purpose_drawn(purpose: &str, width: usize, whole: bool) -> String {
         return drawn;
     }
     let mut kept: Vec<String> = drawn.lines().take(most).map(str::to_owned).collect();
-    if let Some(last) = kept.last_mut() {
+    // Drawn whole, every word read stays, so a mark with no room left on
+    // the last line takes one of its own.
+    let full = kept
+        .last()
+        .is_some_and(|last| last.chars().count() + 2 > width);
+    if whole && full {
+        kept.push("  \u{2026}".to_owned());
+    } else if let Some(last) = kept.last_mut() {
         while last.chars().count() + 2 > width {
             if let Some(at) = last.trim_end().rfind(' ').filter(|at| *at > 2) {
                 last.truncate(at);
@@ -1398,8 +1414,8 @@ fn documents_drawn(documents: &[Value], cell: &str, named: Option<&str>, width: 
     let counted = documents.len() - shown.len();
     if counted > 0 {
         // A cell's address comes as its node wrote it, unchecked, so only
-        // one that is an address is offered as a command to run.
-        let lists = if !cell.is_empty() && cell.chars().all(|each| each.is_ascii_alphanumeric()) {
+        // one that is an address as written is offered as a command.
+        let lists = if is_address(cell) {
             format!("mycelium forage {cell}")
         } else {
             "its cell's forage".to_owned()
@@ -1416,8 +1432,8 @@ fn documents_drawn(documents: &[Value], cell: &str, named: Option<&str>, width: 
 
 /// `forages` drawn for a person in `width` columns: a block each, those
 /// that wait on them first, its cell, machine and quest, its purpose in
-/// two lines at most, a line for each thing it waits on them for, then its
-/// documents. Says so in words when there are none, or none `named` names.
+/// two lines at most, or whole for a cell `named`, a line for each thing
+/// it waits on them for, then its documents. Says so in words when there are none, or none `named` names.
 #[must_use]
 pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
     use crate::swarm::{fit, wrapped};
@@ -1443,12 +1459,10 @@ pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
             );
             let mut block = fit(&heading, width);
             block.push('\n');
-            let purpose = one_line(
-                forage["purpose"]
-                    .as_str()
-                    .unwrap_or("Its quest says no purpose yet."),
-            );
-            block.push_str(&purpose_drawn(&purpose, width, named.is_some()));
+            let purpose = forage["purpose"]
+                .as_str()
+                .unwrap_or("Its quest says no purpose yet.");
+            block.push_str(&purpose_drawn(purpose, width, named.is_some()));
             for wait in forage["waits"].as_array().map_or(&[][..], Vec::as_slice) {
                 let when = wait["when"]
                     .as_str()
@@ -1468,7 +1482,7 @@ pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
                 .map_or(&[][..], Vec::as_slice);
             block.push_str(&documents_drawn(
                 documents,
-                &text(&forage["cell"]),
+                forage["cell"].as_str().unwrap_or_default(),
                 named,
                 width,
             ));
