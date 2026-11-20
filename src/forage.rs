@@ -2418,30 +2418,25 @@ mod tests {
 
     #[test]
     fn the_cells_that_wait_on_their_person_are_drawn_first() {
-        let mut osprey = forage("OSPREY", "kestrel", "QEST-3");
-        osprey["waits"] = json!([{"title": "Pick a field", "ready": true}]);
-        let mut tern = forage("TERN01", "tern", "QEST-4");
-        tern["waits"] = json!([{"title": "Name the hill"}]);
-        // Out of every other order, so only a stable sort keeps it.
-        let drawn = draw(
-            &[
-                forage("SKIFFS", "skiff", "QEST-2"),
-                tern,
-                forage("KESTRL", "kestrel", "QEST-1"),
-                osprey,
-            ],
-            None,
-            80,
-        );
-        assert_eq!(
-            headings(&drawn),
-            [
-                "TERN01  on tern  QEST-4",
-                "OSPREY  on kestrel  QEST-3",
-                "SKIFFS  on skiff  QEST-2",
-                "KESTRL  on kestrel  QEST-1",
-            ]
-        );
+        // Enough cells that an unstable sort partitions them rather than
+        // inserting each, and quests in no order of their own, so only a
+        // stable sort keeps each half as it came.
+        let quest = |at: usize| format!("QEST-{}", at * 7 % 30);
+        let forages: Vec<Value> = (0..30)
+            .map(|at| {
+                let mut each = forage(&format!("CELL{at:02}"), "kestrel", &quest(at));
+                if at % 2 == 0 {
+                    each["waits"] = json!([{"title": "Pick a field", "ready": at % 4 == 0}]);
+                }
+                each
+            })
+            .collect();
+        let expected: Vec<String> = (0..30)
+            .filter(|at| at % 2 == 0)
+            .chain((0..30).filter(|at| at % 2 == 1))
+            .map(|at| format!("CELL{at:02}  on kestrel  {}", quest(at)))
+            .collect();
+        assert_eq!(headings(&draw(&forages, None, 80)), expected);
     }
 
     #[test]
@@ -2457,35 +2452,60 @@ mod tests {
              field, then over the next, and the …\n  \
              plan  build  2 of 4 ticked     Hover…\n"
         );
+        // Dots its author wrote are theirs, not a cut's.
+        for written in ["Kestrel waits for the wind...", "..."] {
+            let mut dots = forage("KESTRL", "kestrel", "QEST-1");
+            dots["purpose"] = json!(written);
+            assert_eq!(
+                draw(&[dots], None, 80),
+                format!(
+                    "KESTRL  on kestrel  QEST-1\n  {written}\n  \
+                     plan  build  2 of 4 ticked     Hover Over the Field\n"
+                ),
+                "a purpose its author ended in three dots was read as cut"
+            );
+        }
+    }
+
+    #[test]
+    fn a_purpose_read_cut_at_its_length_ends_after_a_whole_word() {
+        // Cut within "over", as a quest's first sentence is cut where it
+        // reaches its length.
         let mut cut = forage("KESTRL", "kestrel", "QEST-1");
-        cut["purpose"] = json!("Kestrel learns to hov...");
-        assert_eq!(
-            draw(&[cut.clone()], None, 80),
-            "KESTRL  on kestrel  QEST-1\n  Kestrel learns to …\n  \
-             plan  build  2 of 4 ticked     Hover Over the Field\n",
-            "the three dots a purpose is cut with, mid-word, are drawn as the one mark \
-             after a whole word"
-        );
-        cut["purpose"] = json!("...");
-        assert_eq!(
-            draw(&[cut], None, 80),
-            "KESTRL  on kestrel  QEST-1\n  …\n  \
-             plan  build  2 of 4 ticked     Hover Over the Field\n",
-            "a purpose of the dots alone lost its line"
-        );
+        cut["purpose"] = json!(first_sentence(&"Kestrel hovers over field ".repeat(12)));
+        for (named, words) in [(None, 23), (Some("KESTRL"), 42)] {
+            let drawn = draw(&[cut.clone()], named, 80);
+            let purpose: Vec<&str> = drawn
+                .lines()
+                .skip(1)
+                .take_while(|line| !line.starts_with("  plan"))
+                .flat_map(str::split_whitespace)
+                .collect();
+            assert_eq!(purpose.last(), Some(&"\u{2026}"), "no mark ends it:\n{drawn}");
+            assert!(
+                purpose[..purpose.len() - 1]
+                    .iter()
+                    .all(|word| ["Kestrel", "hovers", "over", "field"].contains(word)),
+                "a word was drawn part of itself:\n{drawn}"
+            );
+            assert_eq!(purpose.len() - 1, words, "{named:?} drew too few words:\n{drawn}");
+        }
     }
 
     #[test]
     fn a_purpose_of_one_long_word_is_cut_within_it() {
-        let mut long = forage("KESTRL", "kestrel", "QEST-1");
-        long["purpose"] = json!("K".repeat(100));
-        let drawn = draw(&[long], None, 40);
-        let purpose: Vec<&str> = drawn.lines().skip(1).take(2).collect();
-        assert!(
-            purpose[0] == format!("  {}", "K".repeat(38))
-                && purpose[1] == format!("  {} …", "K".repeat(36)),
-            "the word wasn't cut to make room for its mark:\n{drawn}"
-        );
+        // Whether it was read whole or already cut within the word.
+        for word in ["K".repeat(100), first_sentence(&"K".repeat(300))] {
+            let mut long = forage("KESTRL", "kestrel", "QEST-1");
+            long["purpose"] = json!(word);
+            let drawn = draw(&[long], None, 40);
+            let purpose: Vec<&str> = drawn.lines().skip(1).take(2).collect();
+            assert!(
+                purpose[0] == format!("  {}", "K".repeat(38))
+                    && purpose[1] == format!("  {} …", "K".repeat(36)),
+                "the word wasn't cut to make room for its mark:\n{drawn}"
+            );
+        }
     }
 
     #[test]
@@ -2531,9 +2551,17 @@ mod tests {
         );
         kept["documents"].as_array_mut().unwrap().remove(0);
         assert_eq!(
-            draw(&[kept], None, 80),
+            draw(&[kept.clone()], None, 80),
             "KESTRL  on kestrel  QEST-1\n  Kestrel learns to hover over one field.\n  \
              2 closed, none open, which mycelium forage KESTRL lists\n"
+        );
+        // A cell's address isn't checked, so one that isn't an address
+        // is never offered as a command to run.
+        let mut odd = forage("K; rm -rf ~", "kestrel", "QEST-1");
+        odd["documents"] = kept["documents"].clone();
+        assert!(
+            draw(&[odd], None, 80).ends_with("  2 closed, none open, which its cell's forage lists\n"),
+            "a cell that isn't an address was offered as a command"
         );
     }
 
