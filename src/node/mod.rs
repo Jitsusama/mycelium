@@ -1913,20 +1913,19 @@ fn reopening(by: By, asked: &Start) -> Option<(String, String)> {
 /// How an agent's start held to its own ground is refused, after who asks.
 const LOOSER_REFUSED: &str = "so it starts nothing on looser ground";
 
-/// Whether an agent asking `by`, as the session `asker`, may reopen
-/// `reopened` with its fence left behind (WCJQSG, 19 November): an
-/// unfenced one any session, as the person may, and a fenced one only a
-/// session of its own quest, or one this node's book of `starts` says it
-/// or its orchestrator started. Otherwise, says who may reopen it.
+/// Whether an agent asking as the session `asker`, as the kernel and pi's
+/// records prove it alone ([`asker::session_alone`]), or as none where
+/// none is, saying why, may reopen `reopened` with its fence left behind
+/// (WCJQSG, 19 November): only a session of its own quest, or one this
+/// node's book of `starts` says it or its orchestrator started. The
+/// nearest claim above the asker isn't enough: a pi host's sessions share
+/// its process, so any of them could be named. Otherwise, says who may
+/// reopen it.
 fn reopens_within(
-    by: By,
-    asker: Option<&Session>,
+    asker: Result<&Session, &str>,
     reopened: Option<&Session>,
     starts: &starts::Starts,
 ) -> Result<(), String> {
-    if by == By::Agent(crate::declared::Kind::None) {
-        return Ok(());
-    }
     let who = |reopened: &str, quest: Option<&str>| match quest {
         Some(quest) => format!(
             "{reopened} is reopened from fenced ground only by an agent of {quest}, one its \
@@ -1945,9 +1944,12 @@ fn reopens_within(
         );
     };
     let shown = reopened.id.escape_debug().to_string();
-    let Some(asker) = asker else {
-        return Err(who(&shown, reopened.quest.as_deref()));
-    };
+    let asker = asker.map_err(|why| {
+        format!(
+            "{}, and this asks as no session proved alone: {why}",
+            who(&shown, reopened.quest.as_deref())
+        )
+    })?;
     let same_quest = asker.quest.is_some() && asker.quest == reopened.quest;
     let started_by = reopened
         .held
@@ -4835,6 +4837,11 @@ impl<S: Store> Shared<S> {
     ) -> Reply {
         asked.carries = marks_a_carry(by, &asked.command);
         let reopening = reopening(by, &asked);
+        // Who reopens is the session proved alone, never the nearest claim.
+        let proved = match &reopening {
+            Some(_) => Some(self.session_alone().await),
+            None => None,
+        };
         let (started_by, resumes, within) = {
             let inner = self.lock();
             let all = inner.state.sessions();
@@ -4847,10 +4854,22 @@ impl<S: Store> Shared<S> {
             let started_by = nearest
                 .map(|session| session.address.clone())
                 .filter(|address| forage::is_address(address));
-            let within = reopening.as_ref().map(|(_, session)| {
-                let reopened = all.iter().find(|one| one.id == *session);
-                reopens_within(by, nearest, reopened, &self.starts)
-            });
+            let within = reopening
+                .as_ref()
+                .zip(proved)
+                .map(|((machine, session), proved)| {
+                    let reopened = all
+                        .iter()
+                        .find(|one| one.id == *session && one.machine == *machine);
+                    let asker = match &proved {
+                        Ok(id) => all
+                            .iter()
+                            .find(|one| one.id == *id && one.machine == self.machine)
+                            .ok_or("its presence isn't held here"),
+                        Err(why) => Err(why.as_str()),
+                    };
+                    reopens_within(asker, reopened, &self.starts)
+                });
             (
                 started_by,
                 starts::brings_back(&asked.command, &all),
@@ -13862,6 +13881,25 @@ esac
                     .to_owned()
             ),
             "another quest's session is held to its asker's ground, told who may reopen it"
+        );
+        // Round 3 of our council (2026-11-20): a claim proves nothing, so
+        // one naming the asker's process lends it no quest. This one's
+        // start isn't its process's.
+        let forged = json!({
+            "session": "s-forged", "addresses": ["FORGED"], "busy": false,
+            "state": "listening", "at": jiff::Timestamp::now().to_string(),
+            "quest": "QEST-20261108-OSPHT4", "fence": "strict",
+            "owner": {"pid": 7009, "startTicks": started_at(7009) + 1},
+        });
+        store.start_here("s-forged", forged, true);
+        listed(socket.clone(), "s-forged").await;
+        asks_below(&socket, 7009);
+        let refused = ask(socket.clone(), reopen("s-theirs")).await;
+        assert!(
+            matches!(&refused, Err(why) if why.contains(
+                "or the person, and this asks as no session proved alone: "
+            )),
+            "a claim that doesn't prove lends the asker no quest: {refused:?}"
         );
         asks_as_person(&socket);
         assert_eq!(

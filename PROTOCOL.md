@@ -1588,12 +1588,16 @@ where it is looser. The person's starts aren't, nor is an agent's
 reopening: the person's `pi` given `--session` and a bare id, with at
 most `--model` and a model after them, and nothing more, in no folder
 of the asker's, naming one machine alone. It begins where a start in
-no folder begins, in the home folder. An unfenced agent may reopen
-any session so. A fenced one may reopen only a session of its own
-quest, or one this node's book says it or its orchestrator started;
-any other is held to its ground, and a refusal for looser ground then
-ends `; <id> is reopened from fenced ground only by an agent of
-<quest>, one its orchestrator started, or the person`. A reopening let
+no folder begins, in the home folder. An agent may reopen so only a
+session of its own quest, or one this node's book says it or its
+orchestrator started, judged as the session its process owns alone,
+as the kernel and pi's records prove it, as a run's work trees are,
+never by the nearest claim, since a pi host's sessions share its
+process. Any other is held to its ground, and a refusal for looser
+ground then ends `; <id> is reopened from fenced ground only by an
+agent of <quest>, one its orchestrator started, or the person`, with
+`, and this asks as no session proved alone: <why>` after it where
+none is proved. A reopening let
 through goes to the machine it names without its asker's fence, and
 makes no machine, since it brings back a session where and as it was
 rather than starting the asker's work there. Only the session's own
