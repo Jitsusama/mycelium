@@ -2241,8 +2241,13 @@ const SWARM_WITHIN: std::time::Duration = std::time::Duration::from_secs(4);
 /// seconds a link gives another machine to say it was told.
 const STEER_WITHIN: std::time::Duration = std::time::Duration::from_secs(35);
 
-/// How wide the swarm is drawn where its output isn't a terminal that says.
+/// How wide the swarm is drawn into a pipe, until its tables can be drawn
+/// whole there, as every command's should be.
 const SWARM_WIDTH: usize = 100;
+
+/// How wide a terminal is drawn on where neither `COLUMNS` nor the
+/// terminal says.
+const WIDTH_UNSAID: usize = 80;
 
 /// Prints the swarm's teams, or the one `team` names, as
 /// [`mycelium::swarm`] draws them, or each team's record as a JSON line.
@@ -2259,13 +2264,22 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
     writeln!(io::stdout().lock(), "{shown}")
 }
 
-/// How wide a terminal is drawn on.
-fn width(terminal: bool, _columns: Option<&str>, said: Option<u16>) -> usize {
-    said.filter(|cells| terminal && *cells > 0)
-        .map_or(SWARM_WIDTH, usize::from)
+/// How wide stdout is drawn on: into a terminal, `COLUMNS`, then what the
+/// terminal `said`, then [`WIDTH_UNSAID`], as core.nix's commands read it;
+/// `COLUMNS` first because no shell exports it, so it's there only when
+/// someone asked for that width. Into a pipe, [`SWARM_WIDTH`].
+fn width(terminal: bool, columns: Option<&str>, said: Option<u16>) -> usize {
+    if !terminal {
+        return SWARM_WIDTH;
+    }
+    columns
+        .and_then(|columns| columns.trim().parse().ok())
+        .filter(|cells: &usize| *cells > 0)
+        .or_else(|| said.filter(|cells| *cells > 0).map(usize::from))
+        .unwrap_or(WIDTH_UNSAID)
 }
 
-/// How a person's terminal is drawn on: as wide as it says, in colour
+/// How a person's terminal is drawn on: as [`width`] finds it, in colour
 /// unless it isn't one or `NO_COLOR` is set, with the theme's marks.
 fn look() -> mycelium::swarm::Look {
     use std::io::IsTerminal as _;
