@@ -909,6 +909,11 @@ pub(super) mod tests {
         history.read("skiff", &reading(&calm, ago(30)));
         history.read("skiff", &reading(&realm, ago(20)));
         history.read("skiff", &reading(&realm, now()));
+        assert_eq!(
+            chose(&realm, &[cell("s1"), awake("s2")], &history),
+            sleeps(&["s2"], None),
+            "before its own first sleep, a later spell sleeps rather than carry"
+        );
         history.slept(1, ago(2));
         let said = why_not(&chose(&realm, &[cell("s1")], &history)).to_owned();
         assert!(
@@ -966,12 +971,14 @@ pub(super) mod tests {
             sleeps(&["s2"], None),
             "one awake in a turn was never a carry to refuse"
         );
-        let mut unread = slept_since();
-        unread.kept_eases(Err("the record of carries can't be read".to_owned()));
+        let elsewhere = Cell {
+            alone: Some(false),
+            ..cell("s1")
+        };
         assert_eq!(
-            chose(&realm, &[cell("s1"), turning(), awake("s2")], &unread),
-            sleeps(&["s2"], Some("the record of carries can't be read")),
-            "one awake in a turn neither hides nor gives the reason"
+            chose(&realm, &[elsewhere, turning(), awake("s2")], &slept_since()),
+            sleeps(&["s2"], Some("S1's quest runs on other machines too")),
+            "one awake in a turn neither hides nor joins the reason"
         );
     }
 
