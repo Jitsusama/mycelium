@@ -2603,6 +2603,7 @@ mod tests {
             command: vec!["pi".to_owned(), "--session".to_owned(), "s-gone".to_owned()],
             may_cost: false,
             carries: false,
+            once: None,
         };
         let newer = realm("kestrel").hello();
         let older = Hello {

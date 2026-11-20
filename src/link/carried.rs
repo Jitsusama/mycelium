@@ -287,6 +287,7 @@ mod tests {
             command: vec!["pi".to_owned(), "--session".to_owned(), "s-gone".to_owned()],
             may_cost: false,
             carries: false,
+            once: None,
         }
     }
 
@@ -329,7 +330,9 @@ mod tests {
         );
         assert_eq!(
             asks.reopen("kestrel", reopening()).await,
-            Err("kestrel's link here is too old to carry a reopening".to_owned()),
+            Ok(Err(
+                "kestrel's link here is too old to carry a reopening".to_owned()
+            )),
             "a reopening is answered here, never handed on"
         );
         let started = tokio::spawn({

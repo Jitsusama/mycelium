@@ -1915,6 +1915,16 @@ fn reopening(by: By, asked: &Start) -> Option<(String, String)> {
 /// How an agent's start held to its own ground is refused, after who asks.
 const LOOSER_REFUSED: &str = "so it starts nothing on looser ground";
 
+/// `answered`, where a reopening held to its asker's ground for being
+/// another's, as `within` says, says who may reopen it rather than only
+/// that the ground is looser.
+fn says_who(answered: Reply, within: Option<Result<(), String>>) -> Reply {
+    match (answered, within) {
+        (Err(why), Some(Err(who))) if why.contains(LOOSER_REFUSED) => Err(format!("{why}; {who}")),
+        (answered, _) => answered,
+    }
+}
+
 /// Whether an agent asking as the session `asker`, as the kernel and pi's
 /// records prove it alone ([`asker::session_alone`]), or as none where
 /// none is, saying why, may reopen `reopened` with its fence left behind
@@ -4846,44 +4856,22 @@ impl<S: Store> Shared<S> {
     ) -> Reply {
         asked.carries = marks_a_carry(by, &asked.command);
         let reopening = reopening(by, &asked);
-        // Who reopens is the session proved alone, never the nearest claim.
-        let proved = match &reopening {
-            Some(_) => Some(self.session_alone().await),
+        let within = match &reopening {
+            Some((machine, session)) => Some(self.reopened_within(machine, session).await),
             None => None,
         };
-        let (started_by, resumes, within) = {
+        let (started_by, resumes) = {
             let inner = self.lock();
             let all = inner.state.sessions();
-            let nearest = sessions
-                .first()
-                .and_then(|id| all.iter().find(|session| session.id == *id));
             // The nearest claim alone, and only as an address: one the
             // node doesn't hold, or that isn't one, is no cell's, rather
             // than passing to a farther one.
-            let started_by = nearest
+            let started_by = sessions
+                .first()
+                .and_then(|id| all.iter().find(|session| session.id == *id))
                 .map(|session| session.address.clone())
                 .filter(|address| forage::is_address(address));
-            let within = reopening
-                .as_ref()
-                .zip(proved)
-                .map(|((machine, session), proved)| {
-                    let reopened = all
-                        .iter()
-                        .find(|one| one.id == *session && one.machine == *machine);
-                    let who_asks = match &proved {
-                        Ok(id) => all
-                            .iter()
-                            .find(|one| one.id == *id && one.machine == self.machine)
-                            .ok_or("its presence isn't held here"),
-                        Err(why) => Err(why.as_str()),
-                    };
-                    reopens_within(who_asks, reopened, &self.starts)
-                });
-            (
-                started_by,
-                starts::brings_back(&asked.command, &all),
-                within,
-            )
+            (started_by, starts::brings_back(&asked.command, &all))
         };
         let started_by = started_by.filter(|_| by != By::Person);
         let at = jiff::Timestamp::now().as_millisecond();
@@ -4900,18 +4888,7 @@ impl<S: Store> Shared<S> {
             }
             None => (None, None),
         };
-        // Asked here of another machine on looser ground, of a session the
-        // asker may reopen, it goes there unfenced, and costs nothing, for
-        // that machine's node to judge. On ground no looser it goes as any
-        // start, which a node of any age takes.
-        let dropped = match (&reopening, &within, fence_of(by)) {
-            (Some((machine, _)), Some(Ok(())), Some(kind)) => {
-                whither == Whither::Placed
-                    && *machine != self.machine
-                    && self.looser_for(kind, machine)
-            }
-            _ => false,
-        };
+        let dropped = self.drops_fence(by, reopening.as_ref(), within.as_ref(), whither);
         let fence = if dropped {
             asked.may_cost = false;
             None
@@ -4963,15 +4940,7 @@ impl<S: Store> Shared<S> {
             }
             (Whither::Here, _) => self.here(asked, fence).await,
         };
-        // A reopening held to its asker's ground for being another's says
-        // who may reopen it, rather than only that the ground is looser.
-        let answered = match (answered, within) {
-            (Err(why), Some(Err(who))) if why.contains(LOOSER_REFUSED) => {
-                Err(format!("{why}; {who}"))
-            }
-            (answered, _) => answered,
-        };
-        let started = match answered {
+        let started = match says_who(answered, within) {
             Ok(Response::Started(started)) => Ok(started),
             Ok(_) => Err("it answered with no session".to_owned()),
             Err(why) => Err(why),
@@ -4990,6 +4959,47 @@ impl<S: Store> Shared<S> {
             joined,
         );
         started.map(Response::Started)
+    }
+
+    /// Whether a reopening asked `whither` by `by` goes unfenced: asked
+    /// here of another machine on looser ground, of a session the asker
+    /// may reopen, it goes there unfenced, and costs nothing, for that
+    /// machine's node to judge. On ground no looser it goes as any start,
+    /// which a node of any age takes.
+    fn drops_fence(
+        &self,
+        by: By,
+        reopening: Option<&(String, String)>,
+        within: Option<&Result<(), String>>,
+        whither: Whither,
+    ) -> bool {
+        match (reopening, within, fence_of(by)) {
+            (Some((machine, _)), Some(Ok(())), Some(kind)) => {
+                whither == Whither::Placed
+                    && *machine != self.machine
+                    && self.looser_for(kind, machine)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the agent asking may reopen `session`, which ran on
+    /// `machine`, with its fence left behind, as [`reopens_within`] says:
+    /// asking as the session proved alone, never the nearest claim.
+    async fn reopened_within(&self, machine: &str, session: &str) -> Result<(), String> {
+        let proved = self.session_alone().await;
+        let all = self.lock().state.sessions();
+        let reopened = all
+            .iter()
+            .find(|one| one.id == session && one.machine == machine);
+        let who_asks = match &proved {
+            Ok(id) => all
+                .iter()
+                .find(|one| one.id == *id && one.machine == self.machine)
+                .ok_or("its presence isn't held here"),
+            Err(why) => Err(why.as_str()),
+        };
+        reopens_within(who_asks, reopened, &self.starts)
     }
 
     /// Whether `machine`'s ground, as it last said it, is looser than
@@ -13442,6 +13452,7 @@ esac
                 command: command.iter().map(|&word| word.to_owned()).collect(),
                 may_cost: true,
                 carries: false,
+                once: None,
             })
         };
         let tern = || vec![Need::Machine("tern".to_owned())];
@@ -13540,6 +13551,7 @@ esac
             command: ["pi", "--session", "s-near"].map(str::to_owned).to_vec(),
             may_cost: true,
             carries: false,
+            once: None,
         });
         assert_eq!(
             ask(socket, reopen).await,
@@ -13915,6 +13927,7 @@ esac
                 command: vec!["pi".to_owned(), "--session".to_owned(), session.to_owned()],
                 may_cost: false,
                 carries: false,
+                once: None,
             })
         };
         // HARBOR's session, which WCJQSG orchestrates.
@@ -14001,6 +14014,7 @@ esac
                     .collect(),
                 may_cost: false,
                 carries,
+                once: None,
             },
         };
         let relayed = |session: &str| relayed_as(session, false, false);
@@ -14075,6 +14089,7 @@ esac
                 command: ["pi", "--session", session].map(str::to_owned).to_vec(),
                 may_cost: false,
                 carries: false,
+                once: None,
             },
         };
         // s-parked has its marker; s-napped says it is parked, but has
