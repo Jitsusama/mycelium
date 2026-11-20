@@ -120,6 +120,12 @@ pub struct Kept {
     /// new work, so bringing one back again and again is bounded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes: Option<String>,
+    /// The session it brings back, counted or not, as [`brings_back`]
+    /// tells, so a second start of it within [`COMING_BACK`] is refused
+    /// rather than opening its log beside the first's, however the first
+    /// was counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopens: Option<String>,
     /// The machine it started on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
@@ -272,9 +278,13 @@ impl Book {
                         // ahead counts no more than one long gone. An
                         // agent's resume in the hour counts toward
                         // nothing but is kept, since a second of its
-                        // session counts.
+                        // session counts, and one asked again of where
+                        // it went counts toward nothing and is let go.
                         .position(|one| {
-                            !matches!(one.by, By::Agent(_)) || one.at <= since || one.at > ahead
+                            !matches!(one.by, By::Agent(_))
+                                || one.at <= since
+                                || one.at > ahead
+                                || !(one.counts() || one.reopens.is_some())
                         })
                 });
             match oldest {
@@ -347,9 +357,11 @@ impl Starts {
     }
 
     /// Lets `asked` go ahead, counting it till it is kept, or refuses it,
-    /// keeping why: an agent's while the person has stopped starts, or
-    /// once its cell, or agents together, have started their most in the
-    /// hour before it.
+    /// keeping why: an agent's while the person has stopped starts, once
+    /// its cell, or agents together, have started their most in the hour
+    /// before it, or where it brings back a session already coming back.
+    /// Each is judged under the lock that holds it as going, so two asked
+    /// at once can't both pass.
     ///
     /// # Errors
     ///
@@ -365,8 +377,10 @@ impl Starts {
             .map(|program| program.chars().take(PROGRAM_MOST).collect());
         let refused = {
             let mut book = self.lock();
-            Self::once_an_hour(&book, &mut asked);
-            let refused = self.refusal(&book, &asked).map(|(why, _)| why);
+            let refused = Self::coming_back(&book, &asked).or_else(|| {
+                Self::once_an_hour(&book, &mut asked);
+                self.refusal(&book, &asked).map(|(why, _)| why)
+            });
             if refused.is_none() {
                 let id = book.next;
                 book.next += 1;
@@ -380,20 +394,35 @@ impl Starts {
         Err(refused.unwrap_or_default())
     }
 
-    /// Whether session `id` is already coming back: a start an agent or
-    /// the person asked to bring it back, not refused, is going or was
-    /// asked within [`COMING_BACK`] before `at`.
-    #[must_use]
-    pub fn coming_back(&self, id: &str, at: i64) -> bool {
-        let book = self.lock();
+    /// Why `asked`, an agent's start bringing back a session, is refused
+    /// where that session is coming back already: a start of it an agent
+    /// or the person asked, counted or not, is going, or was let go and
+    /// didn't fail within [`COMING_BACK`] of it, its pi perhaps not yet
+    /// saying it runs, so a second would open its log beside the first.
+    /// The person's own start is never refused, and nor is one asked
+    /// again of the machine it went to, which that machine joins to the
+    /// first under its name.
+    fn coming_back(book: &Book, asked: &Kept) -> Option<String> {
+        let id = asked.reopens.as_deref()?;
+        if asked.by == By::Person || asked.again {
+            return None;
+        }
         book.kept
             .iter()
             .chain(book.going.iter().map(|(_, going)| going))
             .any(|one| {
                 one.refused.is_none()
-                    && one.resumes.as_deref() == Some(id)
-                    && one.at > at - COMING_BACK
-                    && one.at <= at + COMING_BACK
+                    && one.failed.is_none()
+                    && one.reopens.as_deref().or(one.resumes.as_deref()) == Some(id)
+                    && one.at > asked.at - COMING_BACK
+                    && one.at <= asked.at + COMING_BACK
+            })
+            .then(|| {
+                format!(
+                    "{id} is coming back already, from a start asked in the last {} seconds; \
+                     ask again after that if it hasn't",
+                    COMING_BACK / 1000
+                )
             })
     }
 
@@ -431,9 +460,11 @@ impl Starts {
                     && one.at <= asked.at + HOUR
             })
             .collect();
+        // One that failed brought nothing back, so it spends no session's
+        // hour, though it still counts toward the node's ceiling.
         let again = resumed
             .iter()
-            .any(|one| one.resumes.as_ref() == Some(session));
+            .any(|one| one.failed.is_none() && one.resumes.as_ref() == Some(session));
         if again || resumed.len() >= RESUMED_AN_HOUR {
             asked.resumes = None;
         }
@@ -779,6 +810,7 @@ mod tests {
             folder: None,
             program: Some("pi".to_owned()),
             resumes: None,
+            reopens: None,
             machine: None,
             held: None,
             failed: None,
@@ -793,6 +825,16 @@ mod tests {
         Kept {
             resumes: Some(session.to_owned()),
             ..agent(cell, at)
+        }
+    }
+
+    /// A start bringing `session` back, as the node asks it: uncounted
+    /// where the book lets it, and marked as reopening it either way.
+    fn reopening(by: By, cell: Option<&str>, session: &str, at: i64) -> Kept {
+        Kept {
+            resumes: Some(session.to_owned()),
+            reopens: Some(session.to_owned()),
+            ..asked(by, cell, at)
         }
     }
 
@@ -934,21 +976,73 @@ mod tests {
     }
 
     #[test]
-    fn a_session_brought_back_is_coming_back_for_two_minutes() {
+    fn a_session_brought_back_is_coming_back_for_two_minutes_however_it_counted() {
+        let (dir, starts) = book();
+        let agents = By::Agent(Kind::Fence);
+        let back = |session: &str, at: i64| reopening(agents, Some("OSPREY"), session, at);
+        started(&starts, back("s-0", NOW), "h");
+        let refused = starts
+            .admit(back("s-0", NOW + COMING_BACK - 1))
+            .expect_err("a retry soon after finds it coming back");
+        assert!(refused.contains("s-0 is coming back already"), "{refused}");
+        let book = std::fs::read_to_string(dir.path().join("starts.jsonl")).expect("kept");
+        let line = book.lines().last().expect("its line");
+        assert!(
+            line.contains(r#""refused":"s-0 is coming back"#),
+            "the refusal is booked: {line}"
+        );
+        // Its second in the hour counts, and still comes back only once.
+        started(&starts, back("s-0", NOW + COMING_BACK), "h");
+        starts
+            .admit(back("s-0", NOW + COMING_BACK + 1))
+            .expect_err("one counted comes back once too");
+        started(&starts, back("s-1", NOW + 1), "h");
+        started(
+            &starts,
+            reopening(By::Person, None, "s-0", NOW + COMING_BACK + 2),
+            "h",
+        );
+        let again = Kept {
+            again: true,
+            ..back("s-0", NOW + COMING_BACK + 3)
+        };
+        started(&starts, again, "h");
+    }
+
+    #[test]
+    fn a_resume_that_failed_leaves_its_session_free_to_come_back() {
         let (_dir, starts) = book();
-        started(&starts, resuming("OSPREY", "s-0", NOW), "h");
-        assert!(
-            starts.coming_back("s-0", NOW + COMING_BACK - 1),
-            "a retry soon after finds it coming back"
+        let agents = By::Agent(Kind::Fence);
+        let failed = starts
+            .admit(reopening(agents, Some("OSPREY"), "s-0", NOW))
+            .expect("it may start");
+        starts.keep(failed, Err("pi didn't start".to_owned()), 0);
+        let next = starts
+            .admit(reopening(agents, Some("OSPREY"), "s-0", NOW + 1))
+            .expect("one that failed brought nothing back");
+        assert_eq!(
+            next.asked.resumes.as_deref(),
+            Some("s-0"),
+            "and spent none of its hour"
         );
+    }
+
+    #[test]
+    fn the_book_lets_go_of_a_start_asked_again_before_one_that_counts() {
+        let (_dir, starts) = book();
+        let again = Kept {
+            again: true,
+            ..agent("OSPREY", NOW)
+        };
+        let mut book = starts.lock();
+        book.hold(again.clone());
+        for _ in 0..KEPT_MOST {
+            book.hold(agent("OSPREY", NOW + 1));
+        }
+        assert_eq!(book.kept.len(), KEPT_MOST, "the book grew past its bound");
         assert!(
-            !starts.coming_back("s-0", NOW + COMING_BACK),
-            "not once it has had its time"
-        );
-        assert!(!starts.coming_back("s-1", NOW + 1), "nor another session");
-        assert!(
-            !starts.coming_back("s-new", NOW + 1),
-            "nor one no start brought back"
+            !book.kept.contains(&again),
+            "the one counting nothing stayed"
         );
     }
 

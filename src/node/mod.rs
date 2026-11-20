@@ -281,7 +281,9 @@ fn stands(session: &Session) -> bool {
 /// The folder `session` ran in, as its presence says, for a start that
 /// brings it back: a `~/` path as one within home and a full path as it
 /// is, both for the machine that runs it to judge, whose home and disk
-/// they name; none for `~/` alone, another relative path, or none said.
+/// they name; none for `~/` alone, another relative path, one climbing
+/// with `..`, which a presence may say to reach out of home, or none
+/// said.
 fn ran_in(session: &Session) -> Option<PathBuf> {
     let cwd = session.presence.get("cwd")?.as_str()?;
     match cwd.strip_prefix("~/") {
@@ -289,6 +291,10 @@ fn ran_in(session: &Session) -> Option<PathBuf> {
         None => Some(PathBuf::from(cwd)).filter(|cwd| cwd.is_absolute()),
     }
     .filter(|cwd| cwd.components().next().is_some())
+    .filter(|cwd| {
+        cwd.components()
+            .all(|part| part != std::path::Component::ParentDir)
+    })
 }
 
 /// Whether `session` has ended parked, which reads its inbox as it wakes.
@@ -4663,7 +4669,7 @@ impl<S: Store> Shared<S> {
         whither: Whither,
     ) -> Reply {
         asked.carries = marks_a_carry(by, &asked.command);
-        let (started_by, reopened) = {
+        let (started_by, reopened, reopens, parked) = {
             let inner = self.lock();
             let all = inner.state.sessions();
             // Only as an address: one the node doesn't hold, or that
@@ -4673,9 +4679,10 @@ impl<S: Store> Shared<S> {
                 .map(|session| session.address.clone())
                 .filter(|address| forage::is_address(address));
             let brought = starts::brings_back(&asked.command, &all);
-            if let Some(session) = brought {
-                self.comes_back_once(session)?;
-            }
+            let reopens = brought.map(|session| session.id.clone());
+            let parked = brought
+                .filter(|session| by != By::Person && self.parked_here(session))
+                .map(|session| session.id.clone());
             // One naming a folder of its own is new work there, as one
             // naming another machine is, since pi takes its project from
             // the folder it opens in.
@@ -4683,7 +4690,7 @@ impl<S: Store> Shared<S> {
                 .filter(|session| self.reopens_where(session, &asked.work, whither))
                 .map(|session| (session.id.clone(), session.machine.clone(), ran_in(session)))
                 .filter(|(_, _, folder)| asked.folder.is_none() || asked.folder == *folder);
-            (started_by, reopened)
+            (started_by, reopened, reopens, parked)
         };
         let started_by = started_by.filter(|_| by != By::Person);
         let at = jiff::Timestamp::now().as_millisecond();
@@ -4700,6 +4707,18 @@ impl<S: Store> Shared<S> {
             }
             None => (None, None),
         };
+        // After the join, so an ask again under its name is answered the
+        // first's start rather than refused for it.
+        if let Some(id) = parked {
+            let refused = Err(format!(
+                "{id} is parked, and its holder brings it back as it's steered: steer it \
+                 rather than starting it again"
+            ));
+            if let Some(lead) = lead {
+                lead.ends(at, &refused);
+            }
+            return refused.map(Response::Started);
+        }
         let resumes = reopened.map(|(id, machine, folder)| {
             Self::reopen_there(machine, folder, &mut asked, whither);
             id
@@ -4713,6 +4732,7 @@ impl<S: Store> Shared<S> {
                     folder: asked.folder.clone(),
                     program: asked.command.first().cloned(),
                     resumes,
+                    reopens,
                     machine: None,
                     held: None,
                     failed: None,
@@ -4786,32 +4806,24 @@ impl<S: Store> Shared<S> {
         }
     }
 
-    /// Refuses a start bringing back `session` where it is coming back
-    /// already: parked this boot, for its holder to wake as it's steered,
-    /// or brought back within [`starts::COMING_BACK`], its pi perhaps not
-    /// yet saying it runs. Either way a second pi would open its log
-    /// beside the first.
-    fn comes_back_once(&self, session: &Session) -> Result<(), String> {
-        let boot = store::folders::boot_id();
-        if session.machine == self.machine && crate::carry::parked(session, boot.as_deref()) {
-            return Err(format!(
-                "{} is parked, and its holder brings it back as it's steered: steer it \
-                 rather than starting it again",
-                session.id
-            ));
-        }
-        if self
-            .starts
-            .coming_back(&session.id, jiff::Timestamp::now().as_millisecond())
-        {
-            return Err(format!(
-                "{} is coming back already, from a start asked in the last {} seconds; \
-                 ask again after that if it hasn't",
-                session.id,
-                starts::COMING_BACK / 1000
-            ));
-        }
-        Ok(())
+    /// Whether `session` is parked here this boot, for its holder to wake
+    /// as it's steered, so a start bringing it back would open its log
+    /// beside the one its holder wakes. Only where this machine and its
+    /// presence both name the boot: a holder can't outlive one, so a park
+    /// of a boot that can't be told, as on a Mac, is taken as an earlier
+    /// one's, whose session comes back by a start. A start bringing back
+    /// one already coming back is refused by [`starts::Starts::admit`].
+    fn parked_here(&self, session: &Session) -> bool {
+        let Some(boot) = store::folders::boot_id() else {
+            return false;
+        };
+        session.machine == self.machine
+            && session
+                .presence
+                .pointer("/owner/bootId")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+            && crate::carry::parked(session, Some(&boot))
     }
 
     /// Pins `asked`, which brings back a session that ran on `machine`
@@ -13323,6 +13335,8 @@ esac
             json!("src/x"),
             json!(""),
             json!(7),
+            json!("~/../other/.ssh"),
+            json!("/w/project/../../etc"),
         ] {
             assert_eq!(ran(none.clone()), None, "{none}");
         }
@@ -13440,19 +13454,13 @@ esac
         let store = Memory::default();
         let at = jiff::Timestamp::now().to_string();
         let project = |one: usize| dir.path().join(format!("project-{one}"));
-        // Ended here, each in a folder of its own, and one parked this
-        // boot, which its holder wakes as it's steered.
-        let ended = ["s-spare", "s-own", "s-other", "s-skiff", "s-parked"];
+        // Ended here, each in a folder of its own.
+        let ended = ["s-spare", "s-own", "s-other", "s-skiff"];
         for (one, session) in ended.iter().enumerate() {
-            let state = if *session == "s-parked" {
-                "parked"
-            } else {
-                "listening"
-            };
             store.start_here(
                 session,
                 json!({"session": session, "addresses": [format!("SPARE{one}")],
-                       "groups": [], "busy": false, "state": state, "at": at,
+                       "groups": [], "busy": false, "state": "listening", "at": at,
                        "cwd": project(100 + one)}),
                 false,
             );
@@ -13523,19 +13531,12 @@ esac
         .await
         .expect_err("in another folder it counts");
         assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
-        // One coming back already, or parked for its holder to wake, is
-        // refused, since either would open its log twice.
+        // One coming back already is refused, since it would open its log
+        // twice.
         let refused = ask(socket.clone(), start(&["pi", "--session", "s-own"]))
             .await
             .expect_err("a second start soon after is refused");
         assert!(refused.contains("is coming back already"), "{refused}");
-        let refused = ask(socket.clone(), start(&["pi", "--session", "s-parked"]))
-            .await
-            .expect_err("a parked one is refused");
-        assert!(
-            refused.contains("steer it rather than starting it"),
-            "{refused}"
-        );
         // And so does bringing one back on another machine.
         let elsewhere = vec![Need::Machine("tern".to_owned())];
         let refused = ask(
@@ -13545,6 +13546,59 @@ esac
         .await
         .expect_err("on another machine it counts");
         assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
+    }
+
+    // A session parked this boot is its holder's to wake, so a start of it
+    // would open its log twice. One parked in another boot, or one that
+    // can't be told, as on a Mac, comes back by a start, as a restarted
+    // machine's wave does.
+    #[tokio::test]
+    async fn only_a_session_parked_this_boot_is_left_to_its_holder() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let at = jiff::Timestamp::now().to_string();
+        let boot = store::folders::boot_id();
+        for (session, address, began) in [
+            ("s-this", "PARK01", json!(boot)),
+            ("s-before", "PARK02", json!("another-boot")),
+            ("s-untold", "PARK03", Value::Null),
+        ] {
+            store.start_here(
+                session,
+                json!({"session": session, "addresses": [address], "groups": [],
+                       "busy": false, "state": "parked", "at": at,
+                       "owner": {"bootId": began}}),
+                false,
+            );
+        }
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        asks_below(&socket, 7001);
+        let start = |session: &str| {
+            Request::Start(Start {
+                work: work(Vec::new()),
+                folder: None,
+                command: ["pi", "--session", session].map(str::to_owned).to_vec(),
+                may_cost: false,
+                carries: false,
+                once: None,
+            })
+        };
+        let this = ask(socket.clone(), start("s-this")).await;
+        let left = this
+            .as_ref()
+            .err()
+            .is_some_and(|why| why.contains("steer it rather than starting it"));
+        assert_eq!(left, boot.is_some(), "parked this boot: {this:?}");
+        for session in ["s-before", "s-untold"] {
+            assert_eq!(
+                ask(socket.clone(), start(session)).await,
+                Err("skiff's node starts no sessions".to_owned()),
+                "{session} comes back by a start"
+            );
+        }
     }
 
     // WCJQSG (2026-11-18): a refused start must never wait on the person,

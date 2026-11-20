@@ -1661,7 +1661,9 @@ toward every agent's starts through the node. A pi host's sessions
 all claim its one process, so there it counts toward the one the
 asker names in `PI_SESSION_ID`, if it is among them, and otherwise
 toward the agents of no known cell, who share one cell's number, as
-on a Mac, whose `ps` won't say it: in any hour a cell starts at most 8
+on a Mac, whose `ps` won't say it. An agent sets its own environment,
+so one on a host may name another of its sessions and charge that cell
+instead. In any hour a cell starts at most 8
 and every agent together at most 32, and one past either is refused,
 saying which. A claim proves nothing, so the 8 are a cell's fair
 share, and the 32, with the ended sessions below, the bound no agent
@@ -1686,9 +1688,15 @@ prompt or flag gives it new work, nor a file an agent wrote. A bare
 `pi` is the one the login finds, so it fences habit alone, and each
 ended session once an hour through each node, and the 128, bound what
 it hides. A second bringing back the same one within the hour counts
-as new work, and one within two minutes of the first is refused, as
-is one parked this boot, which its holder wakes as it's steered,
-since either would open the session's log twice. An id beginning
+as new work, unless the first failed, which brought nothing back. An
+agent's start within two minutes of one bringing it back that didn't
+fail, counted or not, is refused, and kept as refused, as is one
+parked this boot, which its holder wakes as it's steered, since either
+would open the session's log twice. A park is this boot's only where
+the machine and the presence both name the boot, so one a Mac parked
+comes back by a start. An ask again under the same name is answered
+the first start rather than refused for it, and the person's own
+start is never refused. An id beginning
 `-` is never one, and one running or on a machine out of reach is
 never brought back. A
 start past the limits with room again within a minute waits for it
@@ -1703,14 +1711,16 @@ an agent asking either, or the list, is refused. The stop is
 write there could lift it, as it could stop the node. Every start,
 refused ones too, is kept in `starts.jsonl` beside `runs.jsonl` as a
 JSON line, `{"at", "by", "started_by", "folder", "program",
-"resumes", "machine", "held",
+"resumes", "reopens", "machine", "held",
 "failed", "refused"}`: `at` in milliseconds, `started_by` null for the
 person's, `resumes` the id of the session it brings back uncounted,
+`reopens` the id of the session it brings back, counted or not,
 `program` the command's first word alone, so no argument is kept,
 `failed` the node's reason alone, before the words naming the command,
 and the rest only where they apply. The node reads it again as it
 starts, passing over a line it can't read, and holds the newest 2,048,
-never letting one go that counts within the hour; once the file has
+never letting one go within the hour that counts or brings a session
+back; once the file has
 grown by 8 MiB and doubled since, it writes it again from those. A start
 dated up to an hour ahead of an ask counts, as a clock set back leaves
 it; one further ahead doesn't. `mycelium starts` prints whether

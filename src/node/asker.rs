@@ -867,9 +867,11 @@ pub fn claimed_above(asker: Option<i32>, processes: &Processes, claims: &[Claim]
 /// claiming the nearest of the asker and its forebears that any claim
 /// names, where only one does. A pi host's sessions all claim its one
 /// process, so there the one the asker names its own (`PI_SESSION_ID`)
-/// counts, if it is among them, and otherwise none, so no other cell of
-/// the host is charged; the node's number still bounds them all. A claim
-/// proves nothing, so this is a fair share, never a fence.
+/// counts, if it is among them, and otherwise none. An agent sets its own
+/// environment, so one there may name another of the host's sessions and
+/// charge that cell rather than its own; the node's number still bounds
+/// them all. A claim proves nothing, so this is a fair share, never a
+/// fence.
 #[must_use]
 pub fn charged(asker: Option<i32>, processes: &Processes, claims: &[Claim]) -> Option<String> {
     let pid = asker?;
