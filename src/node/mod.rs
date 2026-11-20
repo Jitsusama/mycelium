@@ -14079,8 +14079,8 @@ esac
         };
         // s-parked has its marker; s-napped says it is parked, but has
         // none, so no holder here keeps it to wake. Both are parked now,
-        // so a Mac, which judges a park by when it changed, counts them
-        // as parked this boot.
+        // so on a Mac, which judges a park by when it changed, both fall
+        // within this boot, and only the marker tells them apart.
         fs::create_dir_all(parks_of(&socket)).expect("the parks' folder is made");
         fs::write(parks_of(&socket).join("s-parked.json"), "{}").expect("a marker");
         let now = jiff::Timestamp::now().to_string();

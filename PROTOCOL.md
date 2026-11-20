@@ -2036,8 +2036,8 @@ whether it runs `here`, and how it stands, as `standing`: `running` while
 its process runs, here or on a machine heard of this boot; `parked` here,
 ended for its holder to start again, its park marked this boot (where
 the machine names no boot, as a Mac doesn't, its session changed since
-the boot began); `closed` here, ended this boot unparked; and no
-`standing` for one passed over.
+the boot began, or the machine can't say when it began); `closed` here,
+ended this boot unparked; and no `standing` for one passed over.
 Its `told` is a digest of the record without what only an open launcher
 shows (its step, usage and times), so a
 change whose records carry no new `told` tells a shut one nothing it
