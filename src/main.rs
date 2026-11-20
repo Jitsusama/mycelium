@@ -3110,6 +3110,26 @@ mod tests {
             (Some("wide"), Some(90), 90),
             (Some("0"), Some(0), 80),
             (None, None, 80),
+            (Some("0"), Some(120), 120),
+            (None, Some(0), 80),
+            (Some(" 60 "), Some(120), 60),
+            (Some("200"), None, 200),
+        ] {
+            assert_eq!(
+                width(true, columns, said),
+                wide,
+                "COLUMNS {columns:?}, the terminal saying {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_terminal_is_drawn_no_wider_than_it_is() {
+        for (columns, said, wide) in [
+            (Some("200"), Some(120), 120),
+            (Some("99999999999"), Some(120), 120),
+            (Some("18446744073709551615"), None, 80),
+            (Some("65536"), None, 80),
         ] {
             assert_eq!(
                 width(true, columns, said),

@@ -2330,14 +2330,19 @@ mod tests {
             ("TRIAL_MODEL", "newest"),
             ("MYCELIUM_REALM", "elsewhere"),
             ("KITTY_PID", "1"),
+            ("COLUMNS", "120"),
+            ("LINES", "40"),
         ]);
         let (dir, held, _holder) = holding_sh_in(root.path(), Vec::new(), person).await;
         let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window
-            .types("echo \"[$TRIAL_MODEL in $MYCELIUM_REALM, ${KITTY_PID:-no} window]\"\r")
+            .types(concat!(
+                "echo \"[$TRIAL_MODEL in $MYCELIUM_REALM, ${KITTY_PID:-no} window, ",
+                "$(printenv COLUMNS LINES || echo no) size]\"\r"
+            ))
             .await;
-        window.sees("[newest in harbour, no window]").await;
+        window.sees("[newest in harbour, no window, no size]").await;
     }
 
     #[test]
