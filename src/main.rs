@@ -2268,9 +2268,10 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
 /// terminal `said`, then [`WIDTH_UNSAID`], as core.nix's commands read it;
 /// `COLUMNS` first because no shell exports it, so it's mostly there only
 /// when someone asked for that width; an editor's terminal can pass on a
-/// stale one, which can only draw narrower. It's read as a terminal's own width is,
-/// at most a `u16`, and no wider than a terminal that says, since a line
-/// past its edge only wraps. Into a pipe `COLUMNS` isn't read, as the
+/// stale one, which, where the terminal says its width, can only draw
+/// narrower. It's read as a terminal's own width is, at most a `u16`,
+/// and no wider than a terminal that says, since a line past its edge
+/// only wraps. Into a pipe `COLUMNS` isn't read, as the
 /// kit's commands don't read it there, and the width is [`SWARM_WIDTH`].
 fn width(terminal: bool, columns: Option<&str>, said: Option<u16>) -> usize {
     if !terminal {
@@ -3134,14 +3135,23 @@ mod tests {
     fn a_terminal_is_drawn_no_wider_than_it_is() {
         for (columns, said, wide) in [
             (Some("200"), Some(120), 120),
-            (Some("99999999999"), Some(120), 120),
-            (Some("18446744073709551615"), None, 80),
-            (Some("65536"), None, 80),
+            (Some("65535"), Some(120), 120),
         ] {
             assert_eq!(
                 width(true, columns, said),
                 wide,
                 "COLUMNS {columns:?}, the terminal saying {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn columns_past_what_a_terminal_could_say_is_ignored() {
+        for columns in ["65536", "99999999999", "18446744073709551615"] {
+            assert_eq!(
+                width(true, Some(columns), None),
+                80,
+                "COLUMNS {columns:?}, the terminal saying nothing"
             );
         }
     }
