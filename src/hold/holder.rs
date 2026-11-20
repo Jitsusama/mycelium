@@ -109,13 +109,17 @@ fn focus_of(typed: &[u8]) -> (bool, Vec<u8>) {
 const PARKED_WAKES: &str = "A key or a message tries again.";
 
 /// Variables a program's first terminal set that would name the wrong
-/// window once it is held, since it outlives that window.
-const WINDOW_VARIABLES: [&str; 5] = [
+/// window once it is held, since it outlives that window: `COLUMNS` and
+/// `LINES` among them, which would outrank the size of each window it is
+/// attached to later.
+const WINDOW_VARIABLES: [&str; 7] = [
     "KITTY_WINDOW_ID",
     "KITTY_LISTEN_ON",
     "KITTY_PID",
     "WINDOWID",
     "MYCELIUM_APP_ID",
+    "COLUMNS",
+    "LINES",
 ];
 
 /// The variable naming the agent a program signs with over ssh.

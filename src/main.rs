@@ -2267,16 +2267,21 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
 /// How wide stdout is drawn on: into a terminal, `COLUMNS`, then what the
 /// terminal `said`, then [`WIDTH_UNSAID`], as core.nix's commands read it;
 /// `COLUMNS` first because no shell exports it, so it's there only when
-/// someone asked for that width. Into a pipe, [`SWARM_WIDTH`].
+/// someone asked for that width. It's read as a terminal's own width is,
+/// at most a `u16`, and no wider than a terminal that says, since a line
+/// past its edge only wraps. Into a pipe `COLUMNS` isn't read, as the
+/// kit's commands don't read it there, and the width is [`SWARM_WIDTH`].
 fn width(terminal: bool, columns: Option<&str>, said: Option<u16>) -> usize {
     if !terminal {
         return SWARM_WIDTH;
     }
+    let said = said.filter(|cells| *cells > 0);
     columns
-        .and_then(|columns| columns.trim().parse().ok())
-        .filter(|cells: &usize| *cells > 0)
-        .or_else(|| said.filter(|cells| *cells > 0).map(usize::from))
-        .unwrap_or(WIDTH_UNSAID)
+        .and_then(|columns| columns.trim().parse::<u16>().ok())
+        .filter(|cells| *cells > 0)
+        .map(|cells| said.map_or(cells, |said| cells.min(said)))
+        .or(said)
+        .map_or(WIDTH_UNSAID, usize::from)
 }
 
 /// How a person's terminal is drawn on: as [`width`] finds it, in colour
