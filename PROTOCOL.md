@@ -1598,9 +1598,11 @@ ground then ends `; <id> is reopened from fenced ground only by an
 agent of <quest>, one its orchestrator started, or the person`, with
 `, and this asks as no session proved alone: <why>` after it where
 none is proved. A reopening let
-through goes to the machine it names without its asker's fence, and
-makes no machine, since it brings back a session where and as it was
-rather than starting the asker's work there. Only the session's own
+through to a machine on looser ground goes there without its asker's
+fence, and makes no machine, since it brings back a session where
+and as it was rather than starting the asker's work there; one whose
+machine is no looser keeps its fence and goes as any start, which a
+node of any age takes. Only the session's own
 node knows it ended, so a start relayed from another machine's node in
 that shape, whether or not it says it carries, is taken only for a
 session that ended on this machine, and otherwise refused as `no
@@ -1615,8 +1617,10 @@ already`; a start whose asker hung up holds it at most two minutes. A
 reopening let through without its asker's fence is asked only of a
 node whose link says `reopens`, since one older would take it as any
 relayed start, so one asked of an older node is refused as
-`<machine>'s mycelium is too old to judge a reopening`. The person's,
-and one held to its asker's ground, go as any start. A start relayed from
+`<machine>'s mycelium is too old to judge a reopening`, and one no
+link reaches as `no link reaches <machine> now to judge a
+reopening`. The person's, one held to its asker's ground, and one on
+ground no looser go as any start. A start relayed from
 another machine's node is pinned to this one, which is never looser
 than itself. A node run as a systemd unit
 starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in

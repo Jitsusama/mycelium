@@ -1889,10 +1889,12 @@ fn marks_a_carry(by: By, command: &[String]) -> bool {
 
 /// The machine an agent's start `asked` by `by` reopens a session on, and
 /// that session: pi's bare resume of it alone ([`starts::reopens`]), in
-/// no folder of the asker's, on the one machine the start needs. Its asker's fence doesn't place it,
-/// since it starts none of the asker's work, nor carries anything of the
-/// asker's into the session: that machine's node takes it only for a
-/// session that ended there ([`Shared::reopened_here`]).
+/// no folder of the asker's, on the one machine the start needs. On
+/// looser ground its asker's fence doesn't place it, since it starts
+/// none of the asker's work, nor carries anything of the asker's into
+/// the session: that machine's node takes it only for a session that
+/// ended there ([`Shared::reopened_here`]). On ground no looser it keeps
+/// the fence and goes as any start.
 fn reopening(by: By, asked: &Start) -> Option<(String, String)> {
     // A folder of the asker's choosing would start the session somewhere
     // other than where it ended, which carries the asker's choice in.
@@ -13458,30 +13460,6 @@ esac
             Err("no link reaches tern now to judge a reopening".to_owned()),
             "a bare reopening goes to the machine it names, for its node to judge"
         );
-        // Our council's round 5 on the reopen rule (2026-11-19): a
-        // reopening its asker's own ground takes goes as any start, which
-        // a node of any age takes, as before reopenings were judged.
-        store
-            .put_machine(&fenced("osprey", &["remote"]))
-            .expect("what it said is kept");
-        let near = json!({"session": "s-near", "addresses": ["NEAR01"],
-                          "quest": "QEST-20261007-WCJQSG", "at": "2026-11-19T06:00:00Z"});
-        store
-            .put_presence("s-near", "osprey", &near)
-            .expect("osprey's session is kept");
-        listed(socket.clone(), "s-near").await;
-        assert_eq!(
-            ask(
-                socket.clone(),
-                start(
-                    &["pi", "--session", "s-near"],
-                    vec![Need::Machine("osprey".to_owned())]
-                )
-            )
-            .await,
-            Err("no link reaches osprey now".to_owned()),
-            "a reopening on ground no looser than its asker's keeps its fence"
-        );
         let looser = |refused: Reply| matches!(&refused, Err(why) if why.contains("starts nothing on looser ground"));
         for (command, needs, why) in [
             (
@@ -13524,9 +13502,38 @@ esac
             "one naming two machines is no reopening, so it is held to its asker's ground"
         );
         assert_eq!(
-            ask(socket, start(&["pi", "--session", "s-gone"], Vec::new())).await,
+            ask(
+                socket.clone(),
+                start(&["pi", "--session", "s-gone"], Vec::new())
+            )
+            .await,
             Err("skiff's node starts no sessions".to_owned()),
             "one naming no machine is placed on its asker's ground"
+        );
+        // Our council's round 5 on the reopen rule (2026-11-19): a
+        // reopening its asker's own ground takes goes as any start, which
+        // a node of any age takes, as before reopenings were judged. Last,
+        // since a machine no looser than here could take the starts above.
+        store
+            .put_machine(&fenced("osprey", &["remote"]))
+            .expect("what it said is kept");
+        let near = json!({"session": "s-near", "addresses": ["NEAR01"],
+                          "quest": "QEST-20261007-WCJQSG", "at": "2026-11-19T06:00:00Z"});
+        store
+            .put_presence("s-near", "osprey", &near)
+            .expect("osprey's session is kept");
+        listed(socket.clone(), "s-near").await;
+        assert_eq!(
+            ask(
+                socket,
+                start(
+                    &["pi", "--session", "s-near"],
+                    vec![Need::Machine("osprey".to_owned())]
+                )
+            )
+            .await,
+            Err("no link reaches osprey now".to_owned()),
+            "a reopening on ground no looser than its asker's keeps its fence"
         );
     }
 
