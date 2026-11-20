@@ -6559,9 +6559,6 @@ mod tests {
             .expect("the client asks")
     }
 
-    /// Steers the session held on kestrel from the node at
-    /// `near_socket`, and has its talk answered there, as its session would,
-    /// until the answer is carried back to `near_steers`.
     /// Asks kestrel, over the link from `near_socket`, for a strict start
     /// in a folder under `dir` it hasn't, which its node refuses there
     /// rather than beginning at home.
@@ -6576,6 +6573,7 @@ mod tests {
                 command: vec!["pi".to_owned()],
                 may_cost: false,
                 carries: false,
+                once: None,
             }),
         )
         .await;
@@ -6589,6 +6587,9 @@ mod tests {
         );
     }
 
+    /// Steers the session held on kestrel from the node at
+    /// `near_socket`, and has its talk answered there, as its session would,
+    /// until the answer is carried back to `near_steers`.
     async fn steers_the_session_on_kestrel(
         near_socket: &Path,
         near_steers: &Path,
@@ -13004,6 +13005,7 @@ esac
                 command: vec!["pi".to_owned()],
                 may_cost: false,
                 carries: false,
+                once: None,
             }),
         )
         .await;
