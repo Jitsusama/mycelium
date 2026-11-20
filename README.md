@@ -38,8 +38,9 @@ The harness mesh's messages and presence, carried between machines:
   back to plain pi, as a release does, so whatever runs in the window
   next can carry on as that pi, and 69 when the host stayed gone past
   its two minutes for a restart, never answered the join, or couldn't be
-  reached at all; any other leaving exits 0. A holder keeps the window
-  on 69 as it does on 75, saying the host is away, and starts attach
+  reached at all, telling its holder so first; any other leaving exits
+  0. A holder keeps the window on such a 69 as it does on 75, saying
+  the host is away, and starts attach
   again at a key, a focus or its wake file, and by itself after a pause
   that doubles from 15 seconds to two minutes while the host stays away.
 - A session on another machine linked over SSH is joined with

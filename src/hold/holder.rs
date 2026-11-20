@@ -27,7 +27,7 @@ use super::journal::{Ended, How, Journal};
 use super::modes::Modes;
 use super::steering::{Heard, Steers, Watching};
 use super::title::Title;
-use super::{Held, Said, Size, again, next, socket, steers, turn, wake};
+use super::{GONE_SAID, Held, Said, Size, again, gone, next, socket, steers, turn, wake};
 use crate::node;
 use crate::record::Window;
 
@@ -58,7 +58,8 @@ pub const RELEASED: u8 = 3;
 /// The exit code `mycelium attach --host` ends with when its host stayed
 /// gone past its patience for a restart, or never answered a first join
 /// within its patience for an answer, or found no host there at all:
-/// sysexits' `EX_UNAVAILABLE`. The holder keeps its window on it, as for
+/// sysexits' `EX_UNAVAILABLE`. Attach writes its gone file first
+/// ([`super::say_gone`]), and on both the holder keeps its window, as for
 /// [`PARKED`], saying the pi host is away, and starts the program again
 /// at a key, a focus, a wake, or once [`gone_pause`] has passed, so the
 /// window joins the host once it's back rather than closing as it does
@@ -330,6 +331,8 @@ struct Files {
     chosen: PathBuf,
     /// Where it may say, as it parks, which steers wake it.
     steering: PathBuf,
+    /// Where it says, as it exits [`GONE`], that its pi host is away.
+    gone: PathBuf,
 }
 
 impl Files {
@@ -341,6 +344,7 @@ impl Files {
             naming: again(dir, id),
             chosen: next(dir, id),
             steering: steers(dir, id),
+            gone: gone(dir, id),
         };
         files.take_away();
         files
@@ -350,7 +354,13 @@ impl Files {
     /// over: a wake, a command named or steers left after it would be
     /// found by whoever looks, as though something still held it.
     fn take_away(&self) {
-        for left in [&self.waking, &self.naming, &self.chosen, &self.steering] {
+        for left in [
+            &self.waking,
+            &self.naming,
+            &self.chosen,
+            &self.steering,
+            &self.gone,
+        ] {
             let _ = fs::remove_file(left);
         }
     }
@@ -387,7 +397,8 @@ fn starting(
         .env("MYCELIUM_HELD", holding.id)
         .env("MYCELIUM_WAKE", &files.waking)
         .env("MYCELIUM_AGAIN", &files.naming)
-        .env("MYCELIUM_STEERS", &files.steering);
+        .env("MYCELIUM_STEERS", &files.steering)
+        .env(GONE_SAID, &files.gone);
     for variable in WINDOW_VARIABLES {
         command = command.env_remove(variable);
     }
@@ -408,7 +419,8 @@ fn starting(
 /// parked in `MYCELIUM_WAKE`, the file it may name its next command in
 /// as it parks in `MYCELIUM_AGAIN`, and the file it may say where its
 /// steers land in as it parks in `MYCELIUM_STEERS`, which wakes it too as
-/// one lands that would give it a turn. On Linux it is told to sign over
+/// one lands that would give it a turn, and the file it writes as its pi
+/// host is away in `MYCELIUM_GONE`. On Linux it is told to sign over
 /// ssh only through the agents' proxy in the runtime folder, never the
 /// person's own agent, a login shell's profile notwithstanding
 /// ([`agents`]). A program exiting with [`PARKED`] is
@@ -416,7 +428,8 @@ fn starting(
 /// for it from outside if any was (see [`super::name_next`]), else with
 /// the one it named itself; one that wrote its wake file before it went is restarting,
 /// and starts again at once, never shown as parked. One exiting with
-/// [`GONE`], its pi host away, is kept as a parked one is and also starts
+/// [`GONE`] having written its gone file, its pi host away, is kept as a
+/// parked one is and also starts
 /// again by itself after [`gone_pause`]. How each run ended, parked or
 /// not, is said to the holding's journal.
 #[expect(
@@ -519,7 +532,10 @@ pub async fn hold(
                 None => (ends(&mut child, pid).await?, true),
             };
             ended(holding, pid, &command, status);
-            let gone = status.code() == Some(i32::from(GONE));
+            // Taken whatever the code, so none is left to a later run; a
+            // program exiting so with none written ends, as any other.
+            let said_gone = fs::remove_file(&files.gone).is_ok();
+            let gone = said_gone && status.code() == Some(i32::from(GONE));
             // Told to end, a program that parked as it saved stays down.
             if telling || (!gone && status.code() != Some(PARKED)) {
                 break status;
@@ -546,6 +562,9 @@ pub async fn hold(
                     {
                         break 'held status;
                     }
+                    // What stood until now no longer does, so it isn't drawn
+                    // over what the program shows as it starts.
+                    shown.started();
                     shown.show(FOCUS_OFF);
                 }
                 // Where its steers land is said again at each park, so what
@@ -560,7 +579,6 @@ pub async fn hold(
                     Err(error) => parks(&record, &shown, &unstarted(&error)),
                 }
             };
-            shown.started();
             record.runs(child.id().unwrap_or_default(), &command);
             began = Instant::now();
         };
@@ -897,9 +915,20 @@ impl Shown {
     }
 
     /// Passes `bytes` to every joined terminal, reading them for modes
-    /// and a title.
+    /// and a title. While a line stands, it is passed again after them,
+    /// with focus reporting on: the ended run's last output may be read
+    /// only after the line was said, and attach's leaving the alternate
+    /// screen and focus reporting would otherwise hide it from a window
+    /// already joined, and leave a focus there waking nothing.
     fn show(&self, bytes: &[u8]) {
         self.passes(bytes, None);
+        let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
+        let standing = *self.standing.lock().unwrap_or_else(PoisonError::into_inner);
+        drop(modes);
+        if let Some(line) = standing {
+            self.passes(FOCUS_ON, None);
+            self.passes(line, None);
+        }
     }
 
     /// Passes the holder's own `line` to every joined terminal, and to
@@ -917,8 +946,9 @@ impl Shown {
         self.passes(line, None);
     }
 
-    /// Says the program has started again, so what the holder said would
-    /// stand until then is no longer told to a window joining.
+    /// Says the program is starting again, so what the holder said would
+    /// stand until then is no longer told to a window joining, nor drawn
+    /// again over what it shows.
     fn started(&self) {
         let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         *self.standing.lock().unwrap_or_else(PoisonError::into_inner) = None;
