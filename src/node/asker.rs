@@ -165,7 +165,8 @@ impl Processes {
 
     /// The session the host at process `host`, by its id and its start in
     /// ticks after boot, registered the spawner below it, in the lineage
-    /// of `asker`, by its id and its start as read when it connected, for,
+    /// of `asker`, by its id and its start as read when the node took its
+    /// connection, for,
     /// as [`Spawners::register`] took the host's word.
     ///
     /// A spawner's own process, its name or its command line, proves
@@ -769,7 +770,7 @@ impl Spawners {
     }
 
     /// Takes the word of `host`, the process at the other end of the
-    /// connection and its start as read when it connected, that its child
+    /// connection and its start as read when the node took it, that its child
     /// `spawner`, by its id and the start the host read before handing it
     /// any command, is the pi-spawner it started for `session`.
     ///
@@ -1046,7 +1047,8 @@ pub fn session_of(
 }
 
 /// The session whose work trees a run `asker` asks for, by its id and its
-/// start as read when it connected, may stand in, as [`session_of`] tells
+/// start as read when the node took its connection, may stand in, as
+/// [`session_of`] tells
 /// who asks, but only where the process proved to
 /// own it owns no other: a pi host's sessions share one process, and
 /// which of them a command runs for is only what its environment says,
@@ -1134,7 +1136,8 @@ pub fn session_alone(
     // host says it again once this node starts, is told none, though the
     // host holds only one: the spawner may serve a session gone since. So
     // is one whose lineage, read again, can't say whether it is below one.
-    if !keys.is_empty() && processes.takes_word_of(process) {
+    // A host that proves no session is told so instead, below.
+    if !proved.is_empty() && !keys.is_empty() && processes.takes_word_of(process) {
         match processes.below_a_spawner(pid, process) {
             Some(false) => {}
             Some(true) => {
@@ -2162,6 +2165,20 @@ mod tests {
             alone(83).is_err_and(|why| why.contains("it holds no word for the spawner")),
             "a command below a spawner never said, as after this node restarts, is told no \
              session, though the host holds only one"
+        );
+        // Our council, round 8 (2026-11-19): the spawner was blamed
+        // where the host proves no session at all.
+        assert_eq!(
+            session_alone(
+                (Some(83), super::started(procs.path(), 83)),
+                &processes,
+                &[],
+                &claims,
+                hosts.path(),
+                &Spawners::default(),
+            ),
+            Err("this asks below process 78, whose session none proves".to_owned()),
+            "a command below a host that proves none of its sessions is told so"
         );
         let plain = [claim("s-one", 78, Some(1), None)];
         assert_eq!(

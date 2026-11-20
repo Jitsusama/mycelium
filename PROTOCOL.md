@@ -2033,15 +2033,16 @@ no session.
 
 The host says it before the spawner runs anything, waiting up to about
 four seconds for the answer and then going ahead; a command run meanwhile
-is told no session. Where the node is older and refuses the ask, a
-command is told what such a node tells: the host's session where the
-host proves just one, and none where it holds more. A command below
-that spawner, each process between them started no earlier than the
-one above it, and the host and the asker unchanged from when it connected, is
-then proved as that session. Nothing a
-command runs can say it for another: it holds none of the host's
-connection, which the host opens closed on exec, and the node knows
-the speaker from the kernel, not from what it says. A command below
+is told no session, as is one below a spawner said before its session
+proved, until the host says it again. A command below that spawner,
+each process between them started no earlier than the one above it,
+and the host and the asker unchanged from when the node took their
+connections, is then proved as that session. Nothing a command runs
+can say it for another: it holds none of the host's connection, which
+the host opens closed on exec, and the node knows the speaker from the
+kernel, not from what it says. Where the node is older and refuses the
+ask, a command is told what such a node tells: the host's session
+where the host proves just one, and none where it holds more. A command below
 a pi-spawner the host started but the node holds no word for is told
 no session, even where the host holds only one, since that spawner
 may serve a session gone since. So too is one whose forebears, read
