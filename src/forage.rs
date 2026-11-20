@@ -3242,6 +3242,36 @@ mod tests {
         assert_eq!(one_line("fly\u{202E}nwod\u{2069} now"), "flynwod now");
     }
 
+    #[test]
+    fn a_line_or_paragraph_separator_ends_no_line() {
+        // Neither is a control, yet an editor or a viewer breaks a line
+        // at each, so a title could draw a row of its own.
+        assert_eq!(one_line("fly\u{2028}  plan\u{2029}done"), "fly   plan done");
+    }
+
+    #[test]
+    fn one_long_stage_pads_no_other_row_into_a_pipe() {
+        let long = "k".repeat(1000);
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        cell["documents"] = json!([
+            {"kind": "plan", "title": "Hover Over the Field", "stage": "build",
+             "ticked": 2, "open": 2},
+            {"kind": "plan", "title": "Learn the Wind", "stage": long,
+             "ticked": 3, "open": 0},
+        ]);
+        let drawn = draw_for_a_pipe(&[cell], None);
+        let row = |title: &str| {
+            drawn
+                .lines()
+                .find(|line| line.ends_with(title))
+                .map(str::len)
+        };
+        assert!(
+            row("Hover Over the Field").is_some_and(|length| length < 80) && drawn.contains(&long),
+            "one stage padded the others, or was cut: {drawn}"
+        );
+    }
+
     #[tokio::test]
     async fn a_document_written_is_told_and_read() {
         let store = Store::new("kept");
