@@ -1,7 +1,8 @@
 //! What `mycelium unanswered` prints, as its own process against a node
 //! holding a hold: into a pipe, text for a person, nothing cut; with
-//! `-o json`, or the older `--json`, the node's records as JSON lines,
-//! as the command printed them before it drew for a person.
+//! `-o json`, or `--json` as every command's output takes it, the node's
+//! records as JSON lines, as the command printed them before it drew for
+//! a person.
 
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;

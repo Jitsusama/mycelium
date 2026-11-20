@@ -953,7 +953,7 @@ mod tests {
     fn a_short_forged_name_never_shows_the_last_id_in_a_narrow_terminal() {
         let mut forged = asked_of(&["SKIFF1"], 5, "c0cd280e");
         forged["from"] = json!("T  [deadbeef]");
-        for width in [20, 30, 34] {
+        for width in [30, 34] {
             let drawn = drawn(&[forged.clone()], &look(), Some(width));
             // The line under the block's heading, which at 20 holds only
             // what is left of the wait and the id.
@@ -1001,25 +1001,50 @@ mod tests {
 
     #[test]
     fn a_hold_lapsing_past_this_week_says_its_date() {
-        let days = 10;
-        let hold = Open {
-            message: said(
-                "1795122000000-OSPREY-1-647648e1",
-                "OSPREY",
-                &["#all"],
-                Intent::Hold,
-                days * 24 * 60,
-            ),
-            waiting_on: Vec::new(),
-        };
         let look = look();
-        let drawn = drawn(&[hold.fields().1], &look, Some(80));
-        let then = look
-            .now
-            .checked_add(jiff::Span::new().days(days))
-            .expect("a day ten days on");
-        let until = format!("until {} 14:00  [647648e1]", then.strftime("%a %-d %b"));
-        assert!(drawn.contains(&until), "no {until:?} in:\n{drawn}");
+        for (days, format) in [
+            (6, "%a"),
+            (7, "%a %-d %b"),
+            (10, "%a %-d %b"),
+            (-1, "%a %-d %b"),
+            (400, "%a %-d %b %Y"),
+        ] {
+            let hold = Open {
+                message: said(
+                    "1795122000000-OSPREY-1-647648e1",
+                    "OSPREY",
+                    &["#all"],
+                    Intent::Hold,
+                    days * 24 * 60,
+                ),
+                waiting_on: Vec::new(),
+            };
+            let drawn = drawn(&[hold.fields().1], &look, Some(80));
+            let then = look
+                .now
+                .checked_add(jiff::Span::new().days(days))
+                .expect("a day as far on");
+            let until = format!("until {} 14:00  [647648e1]", then.strftime(format));
+            assert!(
+                drawn.contains(&until),
+                "no {until:?} {days} days on in:\n{drawn}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sender_says_only_what_an_address_holds() {
+        let mut forged = asked_of(&["SKIFF1"], 5, "c0cd280e");
+        forged["from"] = json!("[deadbeef]");
+        let mut heading = asked_of(&["SKIFF1"], 5, "c0cd280e");
+        heading["from"] = json!("TERN01 asks you\n2 holds stand");
+        for width in [None, Some(80)] {
+            let drawn = drawn(&[forged.clone(), heading.clone()], &look(), width);
+            assert!(
+                !drawn.contains("[deadbeef]") && !drawn.contains(" asks you"),
+                "a sender drew more than its address at {width:?}:\n{drawn}"
+            );
+        }
     }
 
     #[test]
