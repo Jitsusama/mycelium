@@ -4771,6 +4771,26 @@ impl<S: Store> Shared<S> {
         self.starts.admit(asked)
     }
 
+    /// Why the person's carry, taken as an agent's start where no person
+    /// works and refused there as `why` says, didn't stand, said for the
+    /// person rather than for an agent.
+    fn carry_refused(&self, why: &str) -> String {
+        format!(
+            "no person works on {}, so it takes the person's carry as an agent's start, \
+             arriving as a new cell, and refused it: {}",
+            self.machine,
+            why.replace(
+                starts::STOPPED_FOR_AN_AGENT,
+                "so resume it there to take the carry, or carry to a machine a person works \
+                 at instead"
+            )
+            .replace(
+                starts::PACED_FOR_AN_AGENT,
+                "Or carry to a machine a person works at instead."
+            )
+        )
+    }
+
     /// Starts a program the node of the linked machine `from` relayed
     /// here, on this machine alone, where a link asked it: this node's
     /// own process, or one judged the person's, as [`asker::relays`]
@@ -4849,20 +4869,7 @@ impl<S: Store> Shared<S> {
             // theirs paces it.
             return started.map_err(|why| {
                 if persons_carry {
-                    format!(
-                        "no person works on {}, so it takes the person's carry as an agent's \
-                         start, arriving as a new cell, and refused it: {}",
-                        self.machine,
-                        why.replace(
-                            starts::STOPPED_FOR_AN_AGENT,
-                            "so resume it there to take the carry, or carry to a machine a \
-                             person works at instead"
-                        )
-                        .replace(
-                            starts::PACED_FOR_AN_AGENT,
-                            "Or carry to a machine a person works at instead."
-                        )
-                    )
+                    self.carry_refused(&why)
                 } else {
                     why
                 }
@@ -16005,6 +16012,30 @@ esac
         }
     }
 
+    /// The person's carry of `s-harbour` and its `quest` from tern to
+    /// skiff, as tern's node relays it.
+    fn carried_from_tern(quest: &str) -> Start {
+        Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            command: [
+                "sh",
+                "-c",
+                r#"pi-carry arrive "$1" --from "$2" --session "$3"; exec pi --session "$3""#,
+                crate::carry::PI_CARRY,
+                quest,
+                "tern",
+                "s-harbour",
+                "carry on",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            may_cost: false,
+            carries: true,
+            once: None,
+        }
+    }
+
     #[tokio::test]
     async fn a_session_carried_here_stands_as_the_cell_it_left_as_with_its_ties() {
         let dir = tempfile::tempdir().expect("a temporary folder");
@@ -16053,25 +16084,7 @@ esac
         assert_eq!(stands(&shared), "STAND1", "a file alone proves no carry");
         // Only a session a linked node asked this one to start, as a carry
         // from that node's machine, is read for.
-        let carrying = Start {
-            work: work(vec![Need::Machine("skiff".to_owned())]),
-            folder: None,
-            command: [
-                "sh",
-                "-c",
-                r#"pi-carry arrive "$1" --from "$2" --session "$3"; exec pi --session "$3""#,
-                crate::carry::PI_CARRY,
-                quest,
-                "tern",
-                "s-harbour",
-                "carry on",
-            ]
-            .map(str::to_owned)
-            .to_vec(),
-            may_cost: false,
-            carries: true,
-            once: None,
-        };
+        let carrying = carried_from_tern(quest);
         let mut asker = shared.clone();
         asker.client = Some(1);
         let refused = asker

@@ -164,45 +164,57 @@ trains_made="$(git rev-parse --path-format=absolute --git-common-dir)/merge-trai
 # made, so what rides, every tree main's history gains, who made it and
 # when are still what this checkout said.
 pushed() {
-  local main=$1 main_date=$2 sha ref
+  local main=$1 main_date=$2 sha ref trains verdict
   shift 2
   [[ -f ${trains_made} ]] || return 0
+  trains=$(git ls-remote origin 'refs/heads/train/*')
   while read -r sha ref; do
     [[ -n ${sha} ]] || continue
     grep -qxF "${sha}" "${trains_made}" || continue
-    if same_train "${sha}" "${main}" "${main_date}" "$@"; then
+    verdict=$(same_train "${sha}" "${main}" "${main_date}" "$@")
+    if [[ ${verdict} == same ]]; then
       echo "${sha}"
       return
     fi
-  done <<< "$(git ls-remote origin 'refs/heads/train/*')"
+  done <<< "${trains}"
 }
 
 # Whether the train whose tip is `at` is, merge by merge from its tip
 # back to `main`, each of `made`: two parents, the same rider, tree and
 # words, and all authored and committed at the tip's one time, from
 # `main_date` to now, so it neither carries what wasn't merged nor steps
-# main's date back or past now.
+# main's date back or past now. It says `same` where it is, and nothing
+# where it isn't, so it is read rather than run as a condition, which
+# would turn `set -e` off within it.
 same_train() {
   local at=$1 main=$2 main_date=$3 i ours authored committed now dated
+  local listed rider theirs_tree our_tree theirs_words our_words stamps
   shift 3
   local -a made=("$@") parents
   now=$(date +%s)
-  dated=$(git log -1 --format=%ct "${at}" 2> /dev/null) || return 1
+  dated=$(git log -1 --format=%ct "${at}" 2> /dev/null) || return 0
   for ((i = ${#made[@]} - 1; i >= 0; i--)); do
     ours=${made[i]}
-    read -ra parents <<< "$(git rev-list --parents -n 1 "${at}" 2> /dev/null)"
-    ((${#parents[@]} == 3)) || return 1
+    listed=$(git rev-list --parents -n 1 "${at}" 2> /dev/null) || return 0
+    read -ra parents <<< "${listed}"
+    ((${#parents[@]} == 3)) || return 0
+    rider=$(git rev-parse "${ours}^2")
+    theirs_tree=$(git rev-parse "${at}^{tree}")
+    our_tree=$(git rev-parse "${ours}^{tree}")
+    theirs_words=$(git log -1 --format=%B "${at}")
+    our_words=$(git log -1 --format=%B "${ours}")
+    stamps=$(git log -1 --format='%at %ct' "${at}")
     # Quoted, so a rider's subject is matched as it is, never as a glob.
-    [[ ${parents[2]} == "$(git rev-parse "${ours}^2")" ]] || return 1
-    [[ $(git rev-parse "${at}^{tree}") == "$(git rev-parse "${ours}^{tree}")" ]] || return 1
-    [[ $(git log -1 --format=%B "${at}") == "$(git log -1 --format=%B "${ours}")" ]] ||
-      return 1
-    read -r authored committed <<< "$(git log -1 --format='%at %ct' "${at}")"
-    ((authored == dated && committed == dated)) || return 1
-    ((dated >= main_date && dated <= now)) || return 1
+    [[ ${parents[2]} == "${rider}" ]] || return 0
+    [[ ${theirs_tree} == "${our_tree}" ]] || return 0
+    [[ ${theirs_words} == "${our_words}" ]] || return 0
+    read -r authored committed <<< "${stamps}"
+    ((authored == dated && committed == dated)) || return 0
+    ((dated >= main_date && dated <= now)) || return 0
     at=${parents[1]}
   done
-  [[ ${at} == "${main}" ]]
+  [[ ${at} == "${main}" ]] || return 0
+  echo same
 }
 
 land_train() {

@@ -276,8 +276,8 @@ main_date=$(git log -1 --format=%ct "${base}")
 record="$(git rev-parse --path-format=absolute --git-common-dir)/merge-trains"
 # Merged as the train was and dated as main is, which only a forger can
 # make before the last train lands: this checkout never pushed it.
-refused "$(forge "${main_date}" "${tip}^1^{tree}")" \
-  "a train pushed by another, merged as this one was"
+forged=$(forge "${main_date}" "${tip}^1^{tree}")
+refused "${forged}" "a train pushed by another, merged as this one was"
 # Each of these is taken for one this checkout pushed, so what is
 # checked of every merge is what refuses it.
 for case in \
