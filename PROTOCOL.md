@@ -1807,7 +1807,13 @@ in no window: the node makes the `"Start"` and starts it as above, under
 the same limits. `words` is the work, a link alone or words, which
 become the session's first words; `from` the address of the cell it
 comes from; `on` the machine, this one when it's none or names this
-one; and all but `words` may be left out. Its folder is
+one; and all but `words` may be left out. Beside its first words the
+session is given `QUEST_WORKFLOW_SPROUT`, the same work as data:
+`{"v": 1, "link"}` or `{"v": 1, "words"}`, with `"from"` only where
+`from` is an address, so its harness makes and ties the quest itself.
+It's left out where the link or words run past 4000 UTF-16 units, the
+most a session reads, and the first words alone stand. It's a seed,
+as the words are, never a command. Its folder is
 `folder`, the checkout a link's repository has under home, or where the
 asker is when that's inside a repository, never home itself, and the
 session begins in it as the node names it, within home. Starting here,
