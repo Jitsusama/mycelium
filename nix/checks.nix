@@ -59,8 +59,11 @@ let
           touch $out
         '';
 
-    # The crate builds and its tests pass.
-    mycelium = package;
+    # The crate builds and its tests pass, on a Mac too, where the package
+    # alone runs none (nix/package.nix). A Mac builds this outside Nix's
+    # sandbox, as the lent one does, since inside it FSEvents and listeners
+    # are refused.
+    mycelium = package.override { macTests = true; };
 
     # clippy finds nothing, tests included, at the lints Cargo.toml sets.
     mycelium-passes-clippy = package.overrideAttrs (old: {
