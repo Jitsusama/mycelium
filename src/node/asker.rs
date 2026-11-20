@@ -210,12 +210,13 @@ impl Processes {
         (started(procs, spawner) == Some(starts[at - 1]) && unchanged()).then_some(session)
     }
 
-    /// Whether this node would take pi host `host`'s word for a spawner: on
-    /// a machine whose process folder it reads, not one run unattended or a
-    /// Mac, where none may trace another of
-    /// its user and the host's inspector can't be opened. Where it
-    /// wouldn't, no spawner is ever said for the host, so what runs below
-    /// one is told the host's one session, as before spawners were said.
+    /// Whether this node would take pi host `host`'s word for a spawner:
+    /// only on a machine whose process folder it reads, neither a Mac nor
+    /// one run unattended, and there only while none may trace another of
+    /// its user and the host's inspector can't be opened. Where such a
+    /// machine's node wouldn't, no spawner is ever said for the host, so
+    /// what runs below one is told the host's one session, as before
+    /// spawners were said; a Mac's sessions are told none.
     fn takes_word_of(&self, host: i32) -> bool {
         let Self::Folder(procs) = self else {
             return false;
@@ -816,7 +817,9 @@ impl Spawners {
                 );
             }
             Processes::Listed => {
-                return Err("this machine can't show its processes, so no spawner is told".into());
+                return Err(
+                    "this machine can't say when a process started, so no spawner is told".into(),
+                );
             }
         };
         if let Some(why) = tracing_open(procs) {
@@ -2388,7 +2391,7 @@ mod tests {
         );
         for (machine, why) in [
             (processes.clone().unattended(), "runs unattended"),
-            (Processes::Listed, "can't show its processes"),
+            (Processes::Listed, "can't say when a process started"),
         ] {
             assert!(
                 spawners
