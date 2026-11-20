@@ -79,15 +79,25 @@ impl Places {
     /// Whether quest `id` has ended on this machine, as [`Self::ended`]
     /// says, or `None` where its README is there and can't be read, or
     /// reads as one caught partway through being written, so neither is
-    /// known: what moves a record aside, or says a quest
-    /// reopened, waits for a reading rather than taking it as live.
+    /// known: what moves a record aside, says a quest reopened or stops
+    /// it waits for a reading rather than taking it as live. A README
+    /// unchanged for [`TORN_FOR`] and still read so is no write caught
+    /// partway but one left that way, so it reads as live, as it did
+    /// before a torn read was told apart, and its quest is shared still.
     #[must_use]
     pub fn standing(&self, id: &str) -> Option<bool> {
-        match fs::read_to_string(self.record(id).join("README.md")) {
-            Ok(readme) => has_ended(&readme),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Some(false),
+        let readme = self.record(id).join("README.md");
+        let read = match fs::read_to_string(&readme) {
+            Ok(text) => has_ended(&text),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Some(false),
             Err(_) => None,
-        }
+        };
+        read.or_else(|| {
+            let left = fs::metadata(&readme)
+                .and_then(|metadata| metadata.modified())
+                .is_ok_and(|at| at.elapsed().is_ok_and(|age| age >= TORN_FOR));
+            left.then_some(false)
+        })
     }
 
     /// Names `folder` of shared quest `id`'s scratch for sharing, refusing
@@ -533,6 +543,11 @@ fn may_be_machine(name: &str) -> bool {
 /// tried again: reading every process's open files once a second, for as
 /// long as a session sits in it, would wake the node for nothing.
 const SWEEP_AGAIN: Duration = Duration::from_secs(60);
+
+/// How long a README may go unchanged reading as one caught partway
+/// through being written before it is taken as left that way: a write
+/// finishes in well under it.
+const TORN_FOR: Duration = Duration::from_secs(60);
 
 /// How a link stands with the quests shared only for those under them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -986,15 +1001,20 @@ impl Exchange {
                 passed_over.insert(id);
                 continue;
             };
-            if ended && self.has_ended_there(&id) && self.swept(&id) {
+            // A quest stops only on a README read this look, so one that
+            // ended keeps the version it ended with, never one remembered;
+            // one read torn is decided again at the next look.
+            let read = standing.is_some();
+            if read && ended && self.has_ended_there(&id) && self.swept(&id) {
                 let why = format!("has ended here and on {}", self.other);
                 self.stop(&ledgers, &id, &why, true)?;
                 continue;
             }
             self.empty_here(&id, ended);
+            self.above_again |= decide && !read;
             // A parent ended here keeps its README's version as it stops,
             // like any ended quest, so a stale Holds can't take it up.
-            if decide && self.spent_here(&ledgers, &id)? {
+            if decide && read && self.spent_here(&ledgers, &id)? {
                 let why = "was shared for the quests under it, and none is shared now";
                 self.stop(&ledgers, &id, why, ended)?;
                 continue;
@@ -1084,13 +1104,15 @@ impl Exchange {
 
     /// Stops sharing quest `id`, which `why` says, forgetting what was
     /// heard of it; a quest above it may be spent now, so the next look
-    /// decides again. One that `ended` here keeps its README's version as
-    /// it stands on the disk now, scanned first, since the look may not
-    /// yet have seen it conclude; one whose README can't be read keeps
-    /// the version last scanned, since a torn read would raise it.
+    /// decides again. One that `ended` here, or reads ended now, keeps its
+    /// README's version as it stands on the disk now, scanned first, since
+    /// the look may not yet have seen it conclude; one whose README can't
+    /// be read now keeps the version last scanned, since a torn read
+    /// would raise it.
     fn stop(&mut self, ledgers: &Ledgers, id: &str, why: &str, ended: bool) -> io::Result<()> {
-        if ended
-            && self.places.standing(id) == Some(true)
+        let now = self.places.standing(id);
+        let ended = ended || now == Some(true);
+        if now == Some(true)
             && let Some(readme) = shared_of(README)
         {
             let mut held = ledgers.hold(id)?;
@@ -1275,7 +1297,11 @@ impl Exchange {
     /// here too, and isn't taken up once no shared quest is under it. None
     /// of its scratch is shared until a folder of it is named. One that
     /// has ended here is taken up only as [`Self::brings_back`] says, and
-    /// its sessions are told where its record went.
+    /// its sessions are told where its record went. One reopened here
+    /// gives way to the other end's live record, however old, since that
+    /// is how the person takes up a quest reopened elsewhere on purpose;
+    /// nothing is lost, as its own record is set aside and its sessions
+    /// told where.
     fn take_up(&mut self, id: &str, files: &BTreeMap<String, State>) -> io::Result<bool> {
         let ledgers = self.places.ledgers();
         if !is_quest(id) || ledgers.shares(id) {
@@ -1283,8 +1309,8 @@ impl Exchange {
         }
         let Some(ended) = self.places.standing(id) else {
             eprintln!(
-                "{id}'s README here can't be read, so this machine's record of it stays where \
-                 it is till it can"
+                "{id}'s README here can't be read, or reads as partway written, so this \
+                 machine's record of it stays where it is till it reads whole"
             );
             return Ok(false);
         };
@@ -1307,8 +1333,9 @@ impl Exchange {
                 let text = format!(
                     "{id} is live on {other}, but the version its README ended with on {here} \
                      can't be read ({unread}), so {here} keeps its ended record and takes \
-                     nothing of it from {other}. Move that file aside on {here} to take it up \
-                     from {other} again, as for a quest that ended before versions were kept.",
+                     nothing of it from {other}. Ask the person: moving that file aside on \
+                     {here} lets {here} take it up from {other} again, as for a quest that \
+                     ended before versions were kept.",
                     other = self.other,
                     here = self.machine,
                 );
@@ -1320,10 +1347,10 @@ impl Exchange {
                 let text = format!(
                     "{id} is live on {other}, but its README there doesn't follow the one it \
                      ended with on {here}, so {here} keeps its ended record and takes nothing \
-                     of it from {other}. If {other} was away when it ended, conclude it on \
-                     {other}. If it was reopened on {other} on purpose, reopen it on {here} \
-                     too: {here} then takes it up from {other}, setting its own record aside \
-                     and saying where.",
+                     of it from {other}. Ask the person which holds. If {other} was away \
+                     when it ended, it is concluded on {other}. If it was reopened on \
+                     {other} on purpose, reopening it on {here} too has {here} take it up \
+                     from {other}, setting its own record aside and saying where.",
                     other = self.other,
                     here = self.machine,
                 );
@@ -1342,7 +1369,9 @@ impl Exchange {
         }
         // One that ended here, live again here or not, holds its end in
         // its record, so its sessions hear where that record went.
-        let kept = ended || matches!(ledgers.ended(id), Ok(Some(_)));
+        // A kept version that can't be read was still kept, so its
+        // sessions are told too.
+        let kept = ended || !matches!(ledgers.ended(id), Ok(None));
         let group = if kept { self.places.group(id) } else { None };
         let aside = self.move_aside(&self.places.record(id), id, "record")?;
         // Its sessions are told as soon as it is aside, so a ledger that
@@ -2114,6 +2143,19 @@ mod tests {
     /// Writes `text` as quest `id`'s README on `machine`.
     fn written(machine: &Machine, id: &str, text: &str) {
         put(&machine.places.quests, &format!("{id}/README.md"), text);
+    }
+
+    /// The version of quest `id`'s README that `machine`'s ledger holds.
+    fn readme_version(machine: &Machine, id: &str) -> Version {
+        machine
+            .places
+            .ledgers()
+            .hold(id)
+            .expect("held")
+            .ledger
+            .files[README]
+            .version
+            .clone()
     }
 
     /// A child quest offered on `machine`, with the top quest above it
@@ -3170,6 +3212,7 @@ mod tests {
         talk(&mut near, &mut far);
         near.look().expect("looks");
         assert!(kestrel.places.ledgers().shares(top), "shared for its child");
+        let live = readme_version(&kestrel, top);
 
         // Concluded here, and its child moved off it, before skiff hears
         // of either, so it stops as spent rather than ended at both.
@@ -3183,12 +3226,14 @@ mod tests {
         near.look().expect("looks");
         near.look().expect("looks");
         assert!(!kestrel.places.ledgers().shares(top), "spent, it stops");
-        assert!(
-            matches!(kestrel.places.ledgers().ended(top), Ok(Some(_))),
-            "and keeps the version its README ended with"
+        assert_eq!(
+            kestrel.places.ledgers().ended(top).expect("read"),
+            Some(live.changed_on("kestrel")),
+            "and keeps the version its README ended with, not the live one"
         );
 
-        // Skiff's Holds from before it heard the parent end.
+        // Skiff's Holds from before it heard the parent end, its README
+        // edited there apart from the end, so it follows the live one.
         near.hear(Say::Shares {
             quests: vec![top.to_owned()],
             scratch: BTreeMap::new(),
@@ -3203,7 +3248,7 @@ mod tests {
                 README.to_owned(),
                 State {
                     hash: Some("a README".to_owned()),
-                    ..State::default()
+                    version: live.changed_on("skiff"),
                 },
             )]),
         })
@@ -3215,6 +3260,69 @@ mod tests {
         assert!(
             !kestrel.places.state.join("before-share").exists(),
             "and nothing of it goes aside"
+        );
+    }
+
+    // Gaps' third review (2026-11-20): a parent stopped as spent on a
+    // README caught partway through being concluded stopped as live, and
+    // forgot the version it ended with.
+    #[test]
+    fn a_parent_read_torn_as_it_is_spent_stops_only_once_its_readme_reads() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = child_of_top_offered(&kestrel);
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        talk(&mut near, &mut far);
+        talk(&mut near, &mut far);
+        near.look().expect("looks");
+        written(&kestrel, top, "---\nparent: null\nstatus: concluded\n");
+        written(&kestrel, child, "---\nparent: null\n---\n# Child, alone\n");
+        near.watch.hear_anything();
+        near.look().expect("looks");
+        near.look().expect("looks");
+        assert!(
+            kestrel.places.ledgers().shares(top),
+            "spent, but read torn, it waits"
+        );
+        written(
+            &kestrel,
+            top,
+            "---\nparent: null\nstatus: concluded\n---\n# Top\n",
+        );
+        near.watch.hear_anything();
+        near.look().expect("looks");
+        near.look().expect("looks");
+        assert!(
+            !kestrel.places.ledgers().shares(top),
+            "read whole, it stops"
+        );
+        assert!(
+            matches!(kestrel.places.ledgers().ended(top), Ok(Some(_))),
+            "keeping the version it ended with"
+        );
+    }
+
+    // Gaps' third review (2026-11-20): a README left unclosed, or empty,
+    // read as torn for good, so its quest was never shared again.
+    #[test]
+    fn a_readme_left_reading_torn_reads_live_once_a_minute_has_passed() {
+        let kestrel = Machine::new("kestrel");
+        kestrel.write("README.md", &format!("---\nid: {QUEST}\nstatus: active\n"));
+        assert_eq!(
+            kestrel.places.standing(QUEST),
+            None,
+            "just written, it may be torn"
+        );
+        let long_ago = std::time::SystemTime::now() - TORN_FOR - Duration::from_secs(1);
+        fs::File::options()
+            .write(true)
+            .open(kestrel.places.record(QUEST).join("README.md"))
+            .and_then(|file| file.set_modified(long_ago))
+            .expect("its time set");
+        assert_eq!(
+            kestrel.places.standing(QUEST),
+            Some(false),
+            "left so, it reads live, as before torn reads were told apart"
         );
     }
 
@@ -4126,9 +4234,17 @@ mod tests {
         );
         let mut far = kestrel.exchange(&skiff);
         far.hear(live(QUEST)).expect("heard");
+        // Reopened here, it gives way to the other end's live record,
+        // however old, as a quest reopened elsewhere on purpose is taken
+        // up; its own record is set aside, never lost.
         assert!(
             far.places.ledgers().shares(QUEST),
             "live here, it is taken up"
+        );
+        assert_eq!(
+            far.places.ledgers().hold(QUEST).expect("held").ledger.ended,
+            None,
+            "from nothing, so no version it ended with weighs what arrives"
         );
         let wants = far
             .hear(Say::Holds {
@@ -4204,7 +4320,7 @@ mod tests {
             .ledgers()
             .hold(QUEST)
             .expect("it is held all the same");
-        assert_eq!(held.ledger.files.get(README), None, "begun from nothing");
+        assert_eq!(held.ledger.ended, None, "begun from nothing");
         drop(held);
         assert!(kept.exists(), "the torn version stays, failing closed");
         far.hear(holds).expect("heard again");
