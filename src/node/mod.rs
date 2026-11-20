@@ -4896,12 +4896,15 @@ impl<S: Store> Shared<S> {
             }
             None => (None, None),
         };
-        // Asked here of another machine, of a session the asker may
-        // reopen, it goes there unfenced, and costs nothing, for that
-        // machine's node to judge.
-        let dropped = match (&reopening, &within) {
-            (Some((machine, _)), Some(Ok(()))) => {
-                whither == Whither::Placed && *machine != self.machine
+        // Asked here of another machine on looser ground, of a session the
+        // asker may reopen, it goes there unfenced, and costs nothing, for
+        // that machine's node to judge. On ground no looser it goes as any
+        // start, which a node of any age takes.
+        let dropped = match (&reopening, &within, fence_of(by)) {
+            (Some((machine, _)), Some(Ok(())), Some(kind)) => {
+                whither == Whither::Placed
+                    && *machine != self.machine
+                    && self.looser_for(kind, machine)
             }
             _ => false,
         };
@@ -4983,6 +4986,16 @@ impl<S: Store> Shared<S> {
             joined,
         );
         started.map(Response::Started)
+    }
+
+    /// Whether `machine`'s ground, as it last said it, is looser than
+    /// here's for an agent fenced as `kind`, so its start would be held
+    /// off it.
+    fn looser_for(&self, kind: crate::declared::Kind, machine: &str) -> bool {
+        let here = crate::declared::read(&self.declared);
+        ground::looser(kind, here.as_ref(), &self.machine, &self.machines())
+            .iter()
+            .any(|miss| miss.machine == machine)
     }
 
     /// Lets `asked` go ahead as the book of starts does, waiting for room
@@ -13442,8 +13455,32 @@ esac
                 start(&["pi", "--session", "s-gone"], tern())
             )
             .await,
-            Err("no link reaches tern now".to_owned()),
+            Err("no link reaches tern now to judge a reopening".to_owned()),
             "a bare reopening goes to the machine it names, for its node to judge"
+        );
+        // Our council's round 5 on the reopen rule (2026-11-19): a
+        // reopening its asker's own ground takes goes as any start, which
+        // a node of any age takes, as before reopenings were judged.
+        store
+            .put_machine(&fenced("osprey", &["remote"]))
+            .expect("what it said is kept");
+        let near = json!({"session": "s-near", "addresses": ["NEAR01"],
+                          "quest": "QEST-20261007-WCJQSG", "at": "2026-11-19T06:00:00Z"});
+        store
+            .put_presence("s-near", "osprey", &near)
+            .expect("osprey's session is kept");
+        listed(socket.clone(), "s-near").await;
+        assert_eq!(
+            ask(
+                socket.clone(),
+                start(
+                    &["pi", "--session", "s-near"],
+                    vec![Need::Machine("osprey".to_owned())]
+                )
+            )
+            .await,
+            Err("no link reaches osprey now".to_owned()),
+            "a reopening on ground no looser than its asker's keeps its fence"
         );
         let looser = |refused: Reply| matches!(&refused, Err(why) if why.contains("starts nothing on looser ground"));
         for (command, needs, why) in [
@@ -13871,7 +13908,7 @@ esac
         ] {
             assert_eq!(
                 ask(socket.clone(), reopen(session)).await,
-                Err("no link reaches tern now".to_owned()),
+                Err("no link reaches tern now to judge a reopening".to_owned()),
                 "{why} goes to tern, for its node to judge"
             );
         }

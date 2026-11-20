@@ -176,6 +176,12 @@ impl Asks {
     ///
     /// As [`Self::ask`]'s.
     pub async fn reopen(&self, machine: &str, start: Start) -> Result<Reply, Unsent> {
+        if self.there(machine).is_none() {
+            return Err(Unsent {
+                why: format!("no link reaches {machine} now to judge a reopening"),
+                sent: false,
+            });
+        }
         self.start(machine, start, Asked::Reopen).await
     }
 
