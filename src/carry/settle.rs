@@ -1448,18 +1448,24 @@ mod tests {
     #[test]
     fn a_settling_ending_with_another_code_is_held_saying_it() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        let (program, given) = stand_in(dir.path(), "exit 3");
-        let said = settled(&settler(dir.path(), program, PATIENCE), &carried(40));
-        assert!(given.exists(), "pi-carry is asked");
-        assert_eq!(
-            (&said["did"], &said["why"], &said["again"]),
-            (
-                &json!("kept"),
-                &json!("pi-carry settle ended with 3"),
-                &json!(true)
-            ),
-            "only 2 and 64 ask nothing: {said}"
-        );
+        // 3 beside 2, and 63 and 65 beside 64, so a check widened past
+        // 2 and 64 fails here. Each keeps its settlings apart.
+        for code in [3, 63, 65] {
+            let own = dir.path().join(format!("exits-{code}"));
+            fs::create_dir(&own).expect("the stand-in's folder is made");
+            let (program, given) = stand_in(&own, &format!("exit {code}"));
+            let said = settled(&settler(&own, program, PATIENCE), &carried(40));
+            assert!(given.exists(), "pi-carry is asked");
+            assert_eq!(
+                (&said["did"], &said["why"], &said["again"]),
+                (
+                    &json!("kept"),
+                    &json!(format!("pi-carry settle ended with {code}")),
+                    &json!(true)
+                ),
+                "only 2 and 64 ask nothing: {said}"
+            );
+        }
     }
 
     #[test]
