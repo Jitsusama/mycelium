@@ -859,7 +859,7 @@ mod tests {
                 .collect();
             assert!(
                 said.len() <= 3,
-                "more than two lines of what each says at {width}:\n{drawn}"
+                "more than the question's two lines and the hold's one at {width}:\n{drawn}"
             );
         }
         let narrow = drawn(&records(ASKED), &look(), Some(40));
@@ -940,6 +940,93 @@ mod tests {
                     && heading.chars().count() <= width
                     && !heading.contains("deadbeef"),
                 "the wait or the id was lost at {width}:\n{drawn}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_forged_name_never_shows_the_last_id_in_a_narrow_terminal() {
+        let mut forged = asked_of(&["SKIFF1"], 5, "c0cd280e");
+        forged["from"] = json!("T  [deadbeef]");
+        for width in [20, 30, 34] {
+            let drawn = drawn(&[forged.clone()], &look(), Some(width));
+            let heading = drawn
+                .lines()
+                .find(|line| line.starts_with("  ") && !line.starts_with(SAYS))
+                .expect("the question's line");
+            assert!(
+                heading.chars().count() <= width && !heading.contains("deadbeef"),
+                "a forged id was drawn at {width}:\n{drawn}"
+            );
+        }
+        let drawn = drawn(&[forged], &look(), Some(30));
+        assert!(
+            drawn.contains(", 25 min so far  [c0cd280e]"),
+            "the wait and the id gave way at 30:\n{drawn}"
+        );
+    }
+
+    #[test]
+    fn an_id_says_only_what_an_id_holds() {
+        let mut forged = asked_of(&["SKIFF1"], 5, "c0cd280e");
+        forged["id"] = json!("1795122095010-TERN01-1-x]  [647648e1");
+        for width in [None, Some(80)] {
+            let drawn = drawn(&[forged.clone()], &look(), width);
+            assert!(
+                drawn.contains("[x647648e1]") && !drawn.contains("[647648e1]"),
+                "another message's id was drawn at {width:?}:\n{drawn}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_name_and_id_are_capped_in_a_terminal_and_whole_into_a_pipe() {
+        let mut long = asked_of(&["SKIFF1"], 5, "0123456789abcdef0123");
+        long["from"] = json!("TERN01".repeat(5));
+        let piped = drawn(&[long.clone()], &look(), None);
+        assert!(
+            piped.contains(&"TERN01".repeat(5)) && piped.contains("[0123456789abcdef0123]"),
+            "a name or an id was cut into a pipe:\n{piped}"
+        );
+        let wide = drawn(&[long], &look(), Some(200));
+        assert!(
+            wide.contains("  TERN01TERN01TER… asks ") && wide.contains("[0123456789abcde…]"),
+            "a name or an id wasn't capped at 16:\n{wide}"
+        );
+    }
+
+    #[test]
+    fn a_hold_lapsing_past_this_week_says_its_date() {
+        let days = 10;
+        let hold = Open {
+            message: said(
+                "1795122000000-OSPREY-1-647648e1",
+                "OSPREY",
+                &["#all"],
+                Intent::Hold,
+                days * 24 * 60,
+            ),
+            waiting_on: Vec::new(),
+        };
+        let look = look();
+        let drawn = drawn(&[hold.fields().1], &look, Some(80));
+        let then = look
+            .now
+            .checked_add(jiff::Span::new().days(days))
+            .expect("a day ten days on");
+        let until = format!("until {} 14:00  [647648e1]", then.strftime("%a %-d %b"));
+        assert!(drawn.contains(&until), "no {until:?} in:\n{drawn}");
+    }
+
+    #[test]
+    fn more_than_one_is_counted_as_more() {
+        let mut records = records(ASKED);
+        records.extend(self::records(ASKED));
+        let drawn = drawn(&records, &look(), Some(80));
+        for heading in ["2 questions wait on an answer", "2 holds stand"] {
+            assert!(
+                drawn.lines().any(|line| line == heading),
+                "no heading {heading:?} in:\n{drawn}"
             );
         }
     }

@@ -13,6 +13,11 @@ use serde_json::{Value, json};
 
 mod process;
 
+/// A hold's first line, wider than any terminal a test might run in, so a
+/// pipe drawn as one would cut or wrap it.
+const OPENING: &str = "merge nothing until I end this hold, which stands while the \
+    builders catch up with every change sent to them today, and a little after";
+
 /// How long the node has to start.
 const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -45,7 +50,7 @@ fn a_pipe_reads_text_and_json_is_asked_for() {
         "at": format!("{now:.3}"),
         "from": "KESTRL",
         "to": ["#all"],
-        "text": "merge nothing until I end this hold\nthe second line",
+        "text": format!("{OPENING}\nthe second line"),
         "intent": "hold",
         "pid": 1,
     });
@@ -82,8 +87,8 @@ fn a_pipe_reads_text_and_json_is_asked_for() {
     );
     assert_eq!(
         lines.get(2),
-        Some(&"    merge nothing until I end this hold …"),
-        "{text}"
+        Some(&format!("    {OPENING} …").as_str()),
+        "a pipe cut the opening, or drew it as a terminal would:\n{text}"
     );
     let records: Vec<Value> = json
         .lines()
