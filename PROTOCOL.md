@@ -2774,11 +2774,13 @@ any other. The program starts again as a
 parked one does, at a key, a focus or `<id>.wake`, with any command
 named since in `<id>.next` or `<id>.again`, and also by itself: 15
 seconds on, doubling after each try that finds the host still away, to
-at most two minutes. So a window on a hosted session joins its host
-again once the host is back rather than closing. Before 19 November
-2026 a holder ended on 69. It still ends on any code but 75 and 69,
-such as 3, an attach whose host let the conversation go back to plain
-pi.
+at most two minutes. So a window held on the machine of the pi host
+it attaches to joins that host again once it is back rather than
+closing. A window on another machine's session, through SSH or
+`attach --on`, carries no `MYCELIUM_GONE` there, so it still closes.
+Before 19 November 2026 a holder ended on 69. It still ends on any
+code but 75 and such a 69, such as 3, an attach whose host let the
+conversation go back to plain pi, even with `<id>.gone` written.
 
 A joined terminal sends frames of a tag byte, a two-byte big-endian
 length and what it carries: tag 0 is bytes typed, and tag 1 is its size,
