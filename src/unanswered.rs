@@ -335,6 +335,10 @@ fn block(heading: &str, records: &[&Value], look: &Look, width: Option<usize>) -
     out
 }
 
+/// What an address holds besides letters and digits, as a group's or a
+/// machine-qualified peer's does.
+const ADDRESS_MARKS: &str = "#@-_.:/";
+
 /// The most of a sender's name, or of an id, drawn in a terminal, so one
 /// written long can't push the real wait and id off the line.
 const NAME_MOST: usize = 16;
@@ -354,7 +358,15 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
         Some(_) => fit(text, NAME_MOST),
         None => text.to_owned(),
     };
-    let from = capped(&one_line(record["from"].as_str().unwrap_or_default()));
+    // Only what an address holds, so a sender can't write an id or a
+    // heading into its name.
+    let from: String = record["from"]
+        .as_str()
+        .unwrap_or_default()
+        .chars()
+        .filter(|each| each.is_ascii_alphanumeric() || ADDRESS_MARKS.contains(*each))
+        .collect();
+    let from = capped(&from);
     // Only what an id holds, so a sender can't write another's into it.
     let short: String = short_id(record["id"].as_str().unwrap_or_default())
         .chars()
@@ -412,8 +424,10 @@ fn lapses(look: &Look, until: &str) -> Option<String> {
         "%H:%M"
     } else if (1..=WEEK_AHEAD).contains(&days) {
         "%a %H:%M"
-    } else {
+    } else if until.year() == look.now.year() {
         "%a %-d %b %H:%M"
+    } else {
+        "%a %-d %b %Y %H:%M"
     };
     Some(until.strftime(format).to_string())
 }
