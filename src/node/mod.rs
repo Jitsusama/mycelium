@@ -15993,6 +15993,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            strict: false,
             once: once.map(str::to_owned),
         })
     }
@@ -16083,6 +16084,7 @@ esac
                 command: vec!["pi".to_owned()],
                 may_cost: false,
                 carries: false,
+                strict: false,
                 once: Some(once.to_owned()),
             },
         };
@@ -16703,6 +16705,7 @@ esac
                 command: vec!["pi".to_owned()],
                 may_cost: false,
                 carries: false,
+                strict: false,
                 once: None,
             };
             let refused = link
@@ -16807,6 +16810,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            strict: false,
             once: Some("01J-retry".to_owned()),
         };
         let refused = link
