@@ -15787,6 +15787,7 @@ esac
                 command: vec!["pi".to_owned()],
                 may_cost: false,
                 carries: false,
+                once: None,
             };
             let refused = link
                 .relayed("tern", start)
