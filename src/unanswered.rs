@@ -335,19 +335,35 @@ fn block(heading: &str, records: &[&Value], look: &Look, width: Option<usize>) -
     out
 }
 
-/// The fewest columns the names are cut to before the whole line is
-/// cut instead.
+/// The fewest columns the names are cut to before the rest of the line
+/// before the wait gives way instead.
 const NAMES_LEAST: usize = 4;
 
+/// The fewest columns kept before the wait and the id; narrower than
+/// that, the whole line is cut from its end.
+const HEAD_LEAST: usize = 8;
+
+/// The most of a sender's name, or of an id, drawn, so one written long,
+/// or written to look like a line's end, can't push the real wait and
+/// id off the line.
+const NAME_MOST: usize = 16;
+
 /// A record's line: when, who, of whom, how long or until when, its id.
-/// In `width` columns the names give way first, so the wait and the id
-/// a person answers by stay whole; only where even they don't fit is the
-/// line cut from its end.
+/// In `width` columns the names give way first, then the sender and the
+/// time, so the wait and the id a person answers by stay whole; only
+/// where even they don't fit is the line cut from its end.
 fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
+    use crate::swarm::fit;
     let since = record["since"].as_str().unwrap_or_default();
     let when = look.when(since).unwrap_or_default();
-    let from = one_line(record["from"].as_str().unwrap_or_default());
-    let short = one_line(short_id(record["id"].as_str().unwrap_or_default()));
+    let from = fit(
+        &one_line(record["from"].as_str().unwrap_or_default()),
+        NAME_MOST,
+    );
+    let short = fit(
+        &one_line(short_id(record["id"].as_str().unwrap_or_default())),
+        NAME_MOST,
+    );
     let (verb, named, after) = if record["intent"] == "hold" {
         let until = record["until"]
             .as_str()
@@ -365,18 +381,21 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     };
     let lead = format!("  {when}  {from} {verb} ");
     let tail = format!("{after}  [{short}]");
-    let named = match width {
-        Some(width) => {
-            let room = width.saturating_sub(lead.chars().count() + tail.chars().count());
-            if room < NAMES_LEAST {
-                named
-            } else {
-                crate::swarm::fit(&named, room)
-            }
-        }
-        None => named,
+    let Some(width) = width else {
+        return format!("{lead}{named}{tail}");
     };
-    cut(&format!("{lead}{named}{tail}"), width)
+    let tail_cells = tail.chars().count();
+    let room = width.saturating_sub(lead.chars().count() + tail_cells);
+    if room >= NAMES_LEAST {
+        format!("{lead}{}{tail}", fit(&named, room))
+    } else if width >= tail_cells + HEAD_LEAST {
+        format!(
+            "{}{tail}",
+            fit(&format!("{lead}{named}"), width - tail_cells)
+        )
+    } else {
+        cut(&format!("{lead}{named}{tail}"), Some(width))
+    }
 }
 
 /// When a hold lapses, `until`: its time, and its weekday when that
@@ -422,8 +441,13 @@ fn short_id(id: &str) -> &str {
 /// after it where more lines follow.
 fn says(record: &Value) -> String {
     let text = record["text"].as_str().unwrap_or_default();
-    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
-    let first = one_line(lines.next().unwrap_or_default());
+    // Drawn safe before it is trimmed, so a line of controls alone counts
+    // as blank and gives way to the next.
+    let mut lines = text
+        .lines()
+        .map(|line| one_line(line).trim().to_owned())
+        .filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or_default();
     if lines.next().is_some() {
         format!("{first} …")
     } else {
@@ -839,7 +863,8 @@ mod tests {
             );
         }
         let narrow = drawn(&records(ASKED), &look(), Some(40));
-        let said = said_under(&narrow, "12:05  TERN01 asks");
+        // At 40 the sender gives way too, so the wait and the id stay.
+        let said = said_under(&narrow, "12:05  TER…, 25 min so far  [c0cd280e]");
         assert_eq!(said.len(), 2, "the opening isn't two lines:\n{narrow}");
         assert!(
             said[0] == "    TERN01, keeper of the wish list:"
