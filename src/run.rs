@@ -77,7 +77,9 @@ impl Default for Given {
     }
 }
 
-/// Why runs here are told no session, said once for each reason. Each
+/// Why runs here are told no session, said once for each reason in its
+/// own line of the node's log; each run's start record, which the log
+/// shows too, still carries its own reason as `untold`. Each
 /// `mycelium run` asks as a process of its own, so a reason is kept
 /// rather than its asker; a reason names its host's process and how many
 /// sessions share it, so a host restarted, or one more session, is said

@@ -1057,18 +1057,23 @@ pub fn session_of(
 /// asker runs below (`Processes::spawned_for`, [`Spawners`]), never by
 /// what its command names.
 ///
-/// Alone is counted over every claim here, proved or not, since a
-/// session whose claim doesn't prove yet still shares its host's process:
-/// the nearest of the asker and its forebears that any claim or owner
-/// names must be named by exactly one, the claims naming the same host
-/// and the sessions its host's own record lists counted with it, and
-/// that one must be proved.
+/// Below a spawner its host said, where the host proves a session and
+/// this node takes its word, the spawner decides alone: its session is
+/// told however many share the host. Elsewhere alone is counted over
+/// every claim here, proved or not, since a session whose claim doesn't
+/// prove yet still shares its host's process: the nearest of the asker
+/// and its forebears that any claim or owner names must be named by
+/// exactly one, the claims naming the same host and the sessions its
+/// host's own record lists counted with it, and that one must be proved.
 ///
 /// # Errors
 ///
 /// When nothing names the asker, no session here claims it or its
 /// forebears, the nearest claimed is claimed by more than one, or its
-/// claim doesn't prove.
+/// claim doesn't prove; and, where the host proves a session and this
+/// node takes its word, when the asker is below a spawner it holds no
+/// word for, its lineage can't be read again, or the spawner's session
+/// no longer proves, though the host proves just one.
 pub fn session_alone(
     asker: (Option<i32>, Option<u64>),
     processes: &Processes,
