@@ -14078,14 +14078,17 @@ esac
             },
         };
         // s-parked has its marker; s-napped says it is parked, but has
-        // none, so no holder here keeps it to wake.
+        // none, so no holder here keeps it to wake. Both are parked now,
+        // so a Mac, which judges a park by when it changed, counts them
+        // as parked this boot.
         fs::create_dir_all(parks_of(&socket)).expect("the parks' folder is made");
         fs::write(parks_of(&socket).join("s-parked.json"), "{}").expect("a marker");
+        let now = jiff::Timestamp::now().to_string();
         for (session, address) in [("s-parked", "PARKED"), ("s-napped", "NAPPED")] {
             store.start_here(
                 session,
                 json!({"session": session, "addresses": [address], "state": "parked",
-                       "at": "2026-11-19T06:00:00Z"}),
+                       "at": now}),
                 false,
             );
         }
