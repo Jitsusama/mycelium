@@ -1094,12 +1094,17 @@ impl Exchange {
         id: &str,
         files: &BTreeMap<String, State>,
     ) -> io::Result<Option<Vec<Say>>> {
-        let ended = self.places.ended(id);
+        let brought = self.places.ended(id) && !self.places.ledgers().shares(id);
         if !self.take_up(id, files)? {
             return Ok(None);
         }
-        if ended {
-            self.take_up_scratch(id)?;
+        // A failure here costs only the scratch, never the record the
+        // Holds brings back: that Holds isn't said again.
+        if brought && let Err(error) = self.take_up_scratch(id) {
+            eprintln!(
+                "{id}'s scratch named by {} isn't taken up: {error}",
+                self.other
+            );
         }
         let wants = self.held(id, files.clone())?;
         let mut held = self.places.ledgers().hold(id)?;
@@ -3534,6 +3539,59 @@ mod tests {
         assert!(
             far.places.ledgers().shares(QUEST),
             "one saying it live with a README is taken up"
+        );
+    }
+
+    #[test]
+    fn a_quest_ended_here_and_still_shared_takes_up_no_scratch_from_a_holds() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        kestrel.write(
+            "README.md",
+            &format!("---\nid: {QUEST}\nstatus: concluded\n---\n# Shared\n"),
+        );
+        share(&kestrel, QUEST);
+        let notes = kestrel.places.scratch.join(QUEST).join("notes/plan.md");
+        put(
+            &kestrel.places.scratch,
+            &format!("{QUEST}/notes/plan.md"),
+            "mine\n",
+        );
+        let mut far = kestrel.exchange(&skiff);
+        far.hear(Say::Shares {
+            quests: vec![QUEST.to_owned()],
+            scratch: BTreeMap::from([(QUEST.to_owned(), BTreeSet::from(["notes".to_owned()]))]),
+            clones: BTreeMap::new(),
+            ended: BTreeSet::new(),
+            above: BTreeSet::new(),
+        })
+        .expect("heard");
+        far.hear(Say::Holds {
+            quest: QUEST.to_owned(),
+            files: BTreeMap::from([(
+                README.to_owned(),
+                State {
+                    hash: Some("a README".to_owned()),
+                    ..State::default()
+                },
+            )]),
+        })
+        .expect("heard");
+        assert_eq!(
+            fs::read_to_string(&notes).ok(),
+            Some("mine\n".to_owned()),
+            "a scratch folder of a quest still finishing here stays where it is"
+        );
+        assert!(
+            !kestrel
+                .places
+                .ledgers()
+                .hold(QUEST)
+                .expect("held")
+                .ledger
+                .scratch
+                .contains("notes"),
+            "and isn't shared"
         );
     }
 
