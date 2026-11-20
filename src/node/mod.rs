@@ -5526,7 +5526,7 @@ impl<S: Store> Shared<S> {
     /// Asks `asked` again of `machine`, where a start under its name went
     /// and wasn't answered, as a reopening there without its asker's
     /// fence where `reopened` says. One that went so goes back only as
-    /// that reopening: one let through without its fence, as `dropped`
+    /// such a reopening: one let through without its fence, as `dropped`
     /// says, of a session on that machine, as `reopening` says, so no
     /// other start under its name rides it onto looser ground.
     async fn asked_again(
@@ -5547,9 +5547,9 @@ impl<S: Store> Shared<S> {
                 }
                 Err(format!(
                     "it was asked of {machine} under that name as a reopening let through \
-                     without its asker's fence, which hasn't answered, so only that \
-                     reopening, let through without its fence again, is asked there \
-                     again under it"
+                     without its asker's fence, which hasn't answered, so only a \
+                     reopening of a session there, let through without its fence \
+                     again, is asked there again under it"
                 ))
             }
         }
@@ -16807,7 +16807,7 @@ esac
         let once::Joined::Resends { reopens, .. } = link.onces.join(name, "skiff", now + 1) else {
             panic!("the name is still held for tern");
         };
-        assert!(reopens, "and still held as that reopening");
+        assert!(reopens, "and still held as such a reopening");
     }
 
     #[test]

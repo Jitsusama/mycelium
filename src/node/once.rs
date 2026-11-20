@@ -13,7 +13,8 @@
 //! there, so for that hour an ask again goes back to that machine, under
 //! the same name, rather than being placed and counted again. One sent
 //! as a reopening let through without its asker's fence is held saying
-//! so, since only that reopening may go back there without it.
+//! so, since only such a reopening, of a session there, may go back
+//! there without it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -150,7 +151,8 @@ pub enum Joined {
     /// The one under it went to `machine`, which answered nothing: this
     /// ask asks it there again, under the same name, counting nothing
     /// more, and says how that ends. Where `reopens` says it went as a
-    /// reopening without its asker's fence, only that reopening goes.
+    /// reopening without its asker's fence, only such a reopening, of a
+    /// session there, goes.
     Resends {
         machine: String,
         reopens: bool,
