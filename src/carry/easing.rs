@@ -1666,11 +1666,16 @@ mod tests {
             loads: &Loads::new(),
         };
         let mut easing = Easing::default();
+        let doubt = "the quest records have not been read yet";
         // One more goes idle each minute until the 30th, listed newest
-        // first so one never slept would be the first carried.
+        // first so one never slept would be the first carried, and who
+        // orchestrates comes into doubt at the 35th.
         let lines: Vec<Value> = (0..=50)
             .filter_map(|minute: i64| {
                 let at = ago(50 - minute);
+                if minute == 35 {
+                    easing.doubt(Some(doubt.to_owned()));
+                }
                 let cells = (0..=minute.min(30))
                     .rev()
                     .map(|one| Cell {
@@ -1722,13 +1727,22 @@ mod tests {
             "it carried {} at",
             lines[first]["session"].as_str().expect("a session")
         );
+        let (sleeping, said_again): (Vec<&Value>, Vec<&Value>) =
+            cooling.iter().partition(|line| line["choice"] == "sleep");
         assert!(
-            !cooling.is_empty()
-                && cooling.iter().all(|line| line["choice"] == "sleep"
-                    && line["why"]
-                        .as_str()
-                        .is_some_and(|why| why.starts_with(&said))),
-            "within the cooldown each sleep says why, and nothing says it again: {cooling:?}"
+            !sleeping.is_empty()
+                && sleeping.iter().all(|line| line["why"]
+                    .as_str()
+                    .is_some_and(|why| why.starts_with(&said))),
+            "within the cooldown each sleep says why: {cooling:?}"
+        );
+        assert_eq!(
+            said_again
+                .iter()
+                .map(|line| (&line["at"], &line["orchestrators_unknown"]))
+                .collect::<Vec<_>>(),
+            [(&json!(ago(15).to_string()), &json!(doubt))],
+            "nothing says a sleep's why again until a doubt arises: {cooling:?}"
         );
     }
 
