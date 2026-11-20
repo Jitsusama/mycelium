@@ -93,7 +93,7 @@ same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
    "steers", "releases", "updates", "runs", "carries", "shows",
-   "ends"}}`, first,
+   "ends", "reopens"}}`, first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -106,7 +106,9 @@ same code, each line a JSON value:
    older than any of them is asked none of it. `shows` says it tells of
    the carries its node ordered and keeps those the other end tells of;
    an end older than it is told none. `ends` says it carries an end of a
-   session held there; an end older than it is asked none.
+   session held there; an end older than it is asked none. `reopens`
+   says its node judges a reopening relayed to it (`"Start"`); an end
+   older than it is asked none.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -1581,15 +1583,22 @@ strictly fenced agent, so it starts nothing on looser ground: ...`. A
 machine made for it is held to the same once it links, and let go
 where it is looser. The person's starts aren't, nor is an agent's
 reopening: the person's `pi` given `--session` and a bare id, with at
-most `--model` and a model after them, and nothing more, naming one
-machine alone. That one goes to the machine it names without its
-asker's fence, and makes no machine, since it brings back a session as
-it was rather than starting the asker's work there. Only the session's
-own node knows it ended, so a start relayed from another machine's
-node in that shape, a carry aside, is taken only for a session that
-ended on this machine, and otherwise refused as `no session <id> ended
-on <machine>, so nothing is reopened here`, whoever asked. A node too
-old to judge it takes it as any relayed start. A start relayed from
+most `--model` and a model after them, and nothing more, in no folder
+of the asker's, naming one machine alone. That one goes to the machine
+it names without its asker's fence, and makes no machine, since it
+brings back a session where and as it was rather than starting the
+asker's work there. Only the session's own node knows it ended, so a
+start relayed from another machine's node in that shape, whether or
+not it says it carries, is taken only for a session that ended on this
+machine, and otherwise refused as `no session <id> ended on <machine>,
+so nothing is reopened here`, whoever asked. Once taken, the session
+is held as being reopened for two minutes, or until its start fails,
+and another reopening of it meanwhile is refused as `<id> is being
+reopened on <machine> already`. A start in that shape is asked only of
+a node whose link says `reopens`, since one older would take it as any
+relayed start, so a reopening asked of an older node is refused as
+`<machine>'s mycelium is too old to judge a reopening`, the person's
+too. A start relayed from
 another machine's node is pinned to this one, which is never looser
 than itself. A node run as a systemd unit
 starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in

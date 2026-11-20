@@ -116,6 +116,12 @@ const LEAVING_EVERY: Duration = Duration::from_secs(60);
 /// every process's status, and presences change many times a second.
 const FENCES_SEEN_EVERY: Duration = Duration::from_secs(2);
 
+/// How long a session reopened here by a relayed start is held as being
+/// reopened, so another reopening asked meanwhile, as when the asking node
+/// gave up waiting after half a minute and asked again, starts no second
+/// pi on it before the first shows it live.
+const REOPENING_HELD: Duration = Duration::from_secs(2 * 60);
+
 /// How many events a watch may fall behind by before the node lets it go;
 /// a client that can't keep up connects again and is sent the whole state.
 const WATCH_BACKLOG: usize = 4096;
@@ -1749,6 +1755,33 @@ struct Inner {
     /// there. The place tells two makes of one name apart, as the book
     /// does, so letting one go never unbooks the other.
     booked: HashMap<String, (String, Option<String>)>,
+    /// The sessions reopened here lately by a relayed start, and when,
+    /// kept only while the node runs (see [`REOPENING_HELD`]).
+    reopening: Reopening,
+}
+
+/// The sessions being reopened here by a relayed start, each held from
+/// when it was asked for [`REOPENING_HELD`], or until its start fails.
+#[derive(Default)]
+struct Reopening(HashMap<String, std::time::Instant>);
+
+impl Reopening {
+    /// Holds `session` as being reopened from `now`, unless it is held
+    /// already.
+    fn hold(&mut self, session: &str, now: std::time::Instant) -> bool {
+        self.0
+            .retain(|_, at| now.saturating_duration_since(*at) < REOPENING_HELD);
+        if self.0.contains_key(session) {
+            return false;
+        }
+        self.0.insert(session.to_owned(), now);
+        true
+    }
+
+    /// Holds `session` no longer, as when its start failed.
+    fn let_go(&mut self, session: &str) {
+        self.0.remove(session);
+    }
 }
 
 /// Which of the machines booked for one asker ([`Inner::booked`]) a
@@ -1845,13 +1878,15 @@ fn marks_a_carry(by: By, command: &[String]) -> bool {
 }
 
 /// The machine an agent's start `asked` by `by` reopens a session on, and
-/// that session: pi's bare resume of it alone ([`starts::reopens`]), on
-/// the one machine the start needs. Its asker's fence doesn't place it,
+/// that session: pi's bare resume of it alone ([`starts::reopens`]), in
+/// no folder of the asker's, on the one machine the start needs. Its asker's fence doesn't place it,
 /// since it starts none of the asker's work, nor carries anything of the
 /// asker's into the session: that machine's node takes it only for a
 /// session that ended there ([`Shared::reopened_here`]).
 fn reopening(by: By, asked: &Start) -> Option<(String, String)> {
-    if by == By::Person {
+    // A folder of the asker's choosing would start the session somewhere
+    // other than where it ended, which carries the asker's choice in.
+    if by == By::Person || asked.folder.is_some() {
         return None;
     }
     let session = starts::reopens(&asked.command)?;
@@ -4875,14 +4910,34 @@ impl<S: Store> Shared<S> {
         }
         // An asking node lets a reopening through without its asker's
         // fence, and which of those it relays were an agent's can't be
-        // told here, so each is held to a session that ended here. A
-        // carry is judged as a carry.
-        if !asked.carries
-            && let Some(session) = starts::reopens(&asked.command)
+        // told here, so each is held to a session that ended here, and
+        // none is reopened twice at once. No carry is shaped as one, so
+        // a start saying it carries is held so too. One that fails to
+        // start holds it no longer, so it may be asked again.
+        let Some(session) = starts::reopens(&asked.command).map(str::to_owned) else {
+            return self.relayed_start(from, asked).await;
+        };
         {
-            let sessions = self.lock().state.sessions();
-            self.reopened_here(session, &sessions)?;
+            let mut inner = self.lock();
+            let sessions = inner.state.sessions();
+            self.reopened_here(&session, &sessions)?;
+            if !inner.reopening.hold(&session, std::time::Instant::now()) {
+                return Err(format!(
+                    "{session} is being reopened on {} already",
+                    self.machine
+                ));
+            }
         }
+        let started = self.relayed_start(from, asked).await;
+        if started.is_err() {
+            self.lock().reopening.let_go(&session);
+        }
+        started
+    }
+
+    /// Starts what `from` relayed here, once any reopening in it is
+    /// judged ([`Self::relayed`]).
+    async fn relayed_start(&self, from: &str, asked: Start) -> Reply {
         let judged = self.judged().await?;
         let by = judged.0;
         if !asker::relays(self.client, by) {
@@ -5233,11 +5288,14 @@ impl<S: Store> Shared<S> {
     async fn start_on(&self, machine: String, asked: Start) -> Reply {
         if machine != self.machine {
             let there = asked.once.clone();
-            return self
-                .asks
-                .ask(&machine, asked)
-                .await
-                .unwrap_or_else(|unsent| {
+            // A bare reopening is asked only of a node that judges it,
+            // since one older takes it as any start.
+            let answered = if starts::reopens(&asked.command).is_some() {
+                self.asks.reopen(&machine, asked).await
+            } else {
+                self.asks.ask(&machine, asked).await
+            };
+            return answered.unwrap_or_else(|unsent| {
                     // One under a name that may have landed there is asked
                     // there again, as its lead holds it.
                     if let Some(there) = there {
@@ -13213,6 +13271,14 @@ esac
                 "a start {why} is held to its asker's ground"
             );
         }
+        let Request::Start(mut foldered) = start(&["pi", "--session", "s-gone"], tern()) else {
+            unreachable!("a start is made")
+        };
+        foldered.folder = Some(dir.path().to_owned());
+        assert!(
+            looser(ask(socket.clone(), Request::Start(foldered)).await),
+            "a reopening in a folder of the asker's is held to its asker's ground"
+        );
         let both = vec![
             Need::Machine("tern".to_owned()),
             Need::Machine("skiff".to_owned()),
@@ -13565,16 +13631,21 @@ esac
             json!({"session": "s-live", "addresses": ["LIVE01"], "at": "2026-11-19T06:00:00Z"}),
             true,
         );
-        let relayed = |session: &str| Request::Relayed {
+        let relayed_as = |session: &str, model: bool, carries: bool| Request::Relayed {
             from: "tern".to_owned(),
             start: Start {
                 work: work(vec![Need::Machine("skiff".to_owned())]),
                 folder: None,
-                command: vec!["pi".to_owned(), "--session".to_owned(), session.to_owned()],
+                command: ["pi", "--session", session]
+                    .into_iter()
+                    .chain(model.then_some(["--model", "m-1"]).into_iter().flatten())
+                    .map(str::to_owned)
+                    .collect(),
                 may_cost: false,
-                carries: false,
+                carries,
             },
         };
+        let relayed = |session: &str| relayed_as(session, false, false);
         asks_below(&socket, 7001);
         for session in ["s-unknown", "s-live"] {
             assert_eq!(
@@ -13586,9 +13657,40 @@ esac
             );
         }
         assert_eq!(
+            ask(socket.clone(), relayed_as("s-unknown", false, true)).await,
+            Err("no session s-unknown ended on skiff, so nothing is reopened here".to_owned()),
+            "one saying it carries is held so too"
+        );
+        assert_eq!(
+            ask(socket.clone(), relayed_as("s-ended", true, false)).await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "a session that ended here is reopened, on the model asked"
+        );
+        assert_eq!(
             ask(socket, relayed("s-ended")).await,
             Err("skiff's node starts no sessions".to_owned()),
-            "a session that ended here is reopened"
+            "a reopening that failed to start holds it no longer"
+        );
+    }
+
+    #[test]
+    fn a_session_is_held_as_being_reopened_only_for_a_while() {
+        let mut reopening = Reopening::default();
+        let asked = std::time::Instant::now();
+        assert!(reopening.hold("s-ended", asked), "the first is held");
+        assert!(
+            !reopening.hold("s-ended", asked + REOPENING_HELD / 2),
+            "a second within the while isn't"
+        );
+        assert!(reopening.hold("s-other", asked), "another session is");
+        assert!(
+            reopening.hold("s-ended", asked + REOPENING_HELD),
+            "once the while is over, it is held again"
+        );
+        reopening.let_go("s-ended");
+        assert!(
+            reopening.hold("s-ended", asked + REOPENING_HELD),
+            "as it is once let go"
         );
     }
 

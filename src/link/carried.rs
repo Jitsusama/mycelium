@@ -33,6 +33,7 @@ const ASKED_AGAIN_AFTER: Duration = Duration::from_secs(5);
 #[derive(Debug, Serialize, Deserialize)]
 enum Carried {
     Start(Start),
+    Reopen(Start),
     Steer {
         address: String,
         steer: Map<String, Value>,
@@ -58,6 +59,7 @@ impl TryFrom<Asked> for Carried {
     fn try_from(asked: Asked) -> Result<Self, String> {
         Ok(match asked {
             Asked::Start(start) => Self::Start(start),
+            Asked::Reopen(start) => Self::Reopen(start),
             Asked::Steer(steer) => Self::Steer {
                 address: steer.address,
                 steer: steer.body,
@@ -79,6 +81,7 @@ impl From<Carried> for Asked {
     fn from(carried: Carried) -> Self {
         match carried {
             Carried::Start(start) => Self::Start(start),
+            Carried::Reopen(start) => Self::Reopen(start),
             Carried::Steer {
                 address,
                 steer,

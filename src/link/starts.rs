@@ -87,6 +87,9 @@ pub enum Asking {
 pub(super) enum Asked {
     /// Start a program held there.
     Start(Start),
+    /// Reopen a session there by pi's bare resume of it, asked only of an
+    /// end whose node judges it.
+    Reopen(Start),
     /// Put a steer into a session's inbox there.
     Steer(Steer),
     /// Update that machine to its configuration's main.
@@ -161,7 +164,27 @@ impl Asks {
     /// When `machine` answered nothing, and whether it was asked first.
     ///
     /// [`Work::asked_there`]: crate::placement::Work::asked_there
-    pub async fn ask(&self, machine: &str, mut start: Start) -> Result<Reply, Unsent> {
+    pub async fn ask(&self, machine: &str, start: Start) -> Result<Reply, Unsent> {
+        self.start(machine, start, Asked::Start).await
+    }
+
+    /// Asks `machine` to reopen a session by `start`, pi's bare resume of
+    /// it, as [`Self::ask`] asks a start, but only of a link whose far end
+    /// says its node judges a reopening.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ask`]'s.
+    pub async fn reopen(&self, machine: &str, start: Start) -> Result<Reply, Unsent> {
+        self.start(machine, start, Asked::Reopen).await
+    }
+
+    async fn start(
+        &self,
+        machine: &str,
+        mut start: Start,
+        asked: fn(Start) -> Asked,
+    ) -> Result<Reply, Unsent> {
         let there = self.there(machine).ok_or_else(|| Unsent {
             why: format!("no link reaches {machine} now"),
             sent: false,
@@ -169,7 +192,7 @@ impl Asks {
         start.work = start.work.asked_there();
         Ok(
             match self
-                .send(machine, Asked::Start(start), Some(ANSWERED_WITHIN))
+                .send(machine, asked(start), Some(ANSWERED_WITHIN))
                 .await?
             {
                 Ok(Response::Started(started)) => Ok(Response::Started(Started {
