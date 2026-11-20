@@ -1808,12 +1808,18 @@ the same limits. `words` is the work, a link alone or words, which
 become the session's first words; `from` the address of the cell it
 comes from; `on` the machine, this one when it's none or names this
 one; and all but `words` may be left out. Beside its first words the
-session is given `QUEST_WORKFLOW_SPROUT`, the same work as data:
-`{"v": 1, "link"}` or `{"v": 1, "words"}`, with `"from"` only where
+session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
+JSON object such as `{"v": 1, "link": "https://...", "from": "HARBOR"}`:
+`v` the number 1; exactly one of `link`, a string, for a link alone,
+or `words`, a string, for words; and `from`, a string, only where
 `from` is an address, so its harness makes and ties the quest itself.
 It's left out where the link or words run past 4000 UTF-16 units, the
-most a session reads, and the first words alone stand. It's a seed,
-as the words are, never a command. Its folder is
+most a session reads, and the first words alone stand. That address
+and that length are what the node sends, never a guarantee: any agent
+starting pi can set the variable itself, so a harness checks every
+field again and treats it as a seed. Where a harness reads it, the
+seed wins over the first words. It's a seed, as the words are, never
+a command. Its folder is
 `folder`, the checkout a link's repository has under home, or where the
 asker is when that's inside a repository, never home itself, and the
 session begins in it as the node names it, within home. Starting here,
