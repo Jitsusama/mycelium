@@ -1271,13 +1271,21 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 }
 
 /// `text` as one line for a terminal: each control character, a newline
-/// or an escape among them, as a space, and each mark that turns text's
-/// direction left out, so words read from a file can't draw lines of
-/// their own, steer the terminal, or read backwards past their own end.
+/// or an escape among them, and each line or paragraph separator, which
+/// an editor or a viewer breaks a line at, as a space, and each mark that
+/// turns text's direction left out, so words read from a file can't draw
+/// lines of their own, steer the terminal, or read backwards past their
+/// own end.
 fn one_line(text: &str) -> String {
     text.chars()
         .filter(|each| !turns_direction(*each))
-        .map(|each| if each.is_control() { ' ' } else { each })
+        .map(|each| {
+            if each.is_control() || matches!(each, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                each
+            }
+        })
         .collect()
 }
 
@@ -1295,9 +1303,10 @@ const PURPOSE_LINES: usize = 2;
 /// How many spaces [`first_sentence`] trims from the end of what it keeps
 /// of a sentence it cuts, so a purpose that short of its length, before
 /// its three dots, was still cut there. One, since a quest's lines are
-/// trimmed and joined by a space each. An author's sentence that ends in
-/// dots at that length can't be told from a cut, since the node marks
-/// none.
+/// trimmed and joined by a space each; a cut on a run of spaces an author
+/// left inside a line keeps less, and reads as the author's own dots,
+/// which still show it was cut. An author's sentence that ends in dots at
+/// that length can't be told from a cut, since the node marks none.
 const CUT_TRIMS: usize = 1;
 
 /// What [`first_sentence`] kept of a purpose it cut at its length, before
@@ -1363,6 +1372,10 @@ fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
     })
 }
 
+/// The most a document's kind or stage is padded to, longer than any the
+/// quest tool writes.
+const PADDED_MOST: usize = 16;
+
 /// Whether `document` is closed, concluded or retired, so a list of every
 /// cell counts it rather than giving it a row. Judged as its stage is
 /// drawn, so a row never reads closed among the open.
@@ -1386,16 +1399,17 @@ fn documents_drawn(documents: &[Value], cell: &str, whole: bool, width: usize) -
         .iter()
         .filter(|each| whole || !closed(each))
         .collect();
-    let kinds = shown
-        .iter()
-        .map(|each| text(&each["kind"]).len())
-        .max()
-        .unwrap_or(0);
-    let stages = shown
-        .iter()
-        .map(|each| text(&each["stage"]).len())
-        .max()
-        .unwrap_or(0);
+    // Padded to the longest, up to a stage's length, so one long kind or
+    // stage, uncut into a pipe, makes its own row long and no other.
+    let padded = |field: &str| {
+        shown
+            .iter()
+            .map(|each| text(&each[field]).len())
+            .max()
+            .unwrap_or(0)
+            .min(PADDED_MOST)
+    };
+    let (kinds, stages) = (padded("kind"), padded("stage"));
     let mut drawn = String::new();
     for document in &shown {
         let (ticked, open) = (

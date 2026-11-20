@@ -228,8 +228,10 @@ enum Action {
     ///
     /// Each cell working on a quest, by its address, with its purpose, the
     /// first sentence of its quest's Summary, and each of its documents:
-    /// kind, stage, how many steps are ticked, and title. Named by its
-    /// address or its quest's id, one cell's forage.
+    /// kind, stage, how many steps are ticked, and title. Those that wait
+    /// on you come first. In a terminal each purpose takes two lines and
+    /// closed documents are counted; named by its address or its quest's
+    /// id, one cell's forage, all of it, as into a pipe.
     #[command(after_help = "Example:\n  mycelium forage HARBOR")]
     Forage(ForageAsked),
     /// Says how a receptor stands, as the receptor.
