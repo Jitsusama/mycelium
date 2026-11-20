@@ -335,35 +335,32 @@ fn block(heading: &str, records: &[&Value], look: &Look, width: Option<usize>) -
     out
 }
 
-/// The fewest columns the names are cut to before the rest of the line
-/// before the wait gives way instead.
-const NAMES_LEAST: usize = 4;
-
-/// The fewest columns kept before the wait and the id; narrower than
-/// that, the whole line is cut from its end.
-const HEAD_LEAST: usize = 8;
-
-/// The most of a sender's name, or of an id, drawn, so one written long,
-/// or written to look like a line's end, can't push the real wait and
-/// id off the line.
+/// The most of a sender's name, or of an id, drawn in a terminal, so one
+/// written long can't push the real wait and id off the line.
 const NAME_MOST: usize = 16;
 
 /// A record's line: when, who, of whom, how long or until when, its id.
-/// In `width` columns the names give way first, then the sender and the
-/// time, so the wait and the id a person answers by stay whole; only
-/// where even they don't fit is the line cut from its end.
+/// In `width` columns a sender and an id are drawn at most
+/// [`NAME_MOST`], and the line before the wait gives way from its end,
+/// the names first, then the sender and the time, so
+/// the wait and the id a person answers by stay whole; only where even
+/// they don't fit are they cut from their end. Into a pipe nothing is
+/// cut.
 fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     use crate::swarm::fit;
     let since = record["since"].as_str().unwrap_or_default();
     let when = look.when(since).unwrap_or_default();
-    let from = fit(
-        &one_line(record["from"].as_str().unwrap_or_default()),
-        NAME_MOST,
-    );
-    let short = fit(
-        &one_line(short_id(record["id"].as_str().unwrap_or_default())),
-        NAME_MOST,
-    );
+    let capped = |text: &str| match width {
+        Some(_) => fit(text, NAME_MOST),
+        None => text.to_owned(),
+    };
+    let from = capped(&one_line(record["from"].as_str().unwrap_or_default()));
+    // Only what an id holds, so a sender can't write another's into it.
+    let short: String = short_id(record["id"].as_str().unwrap_or_default())
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect();
+    let short = capped(&short);
     let (verb, named, after) = if record["intent"] == "hold" {
         let until = record["until"]
             .as_str()
@@ -385,30 +382,38 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
         return format!("{lead}{named}{tail}");
     };
     let tail_cells = tail.chars().count();
-    let room = width.saturating_sub(lead.chars().count() + tail_cells);
-    if room >= NAMES_LEAST {
-        format!("{lead}{}{tail}", fit(&named, room))
-    } else if width >= tail_cells + HEAD_LEAST {
+    if width > tail_cells {
         format!(
             "{}{tail}",
             fit(&format!("{lead}{named}"), width - tail_cells)
         )
     } else {
-        cut(&format!("{lead}{named}{tail}"), Some(width))
+        cut(&tail, Some(width))
     }
 }
 
+/// The days ahead a lapse is said by its weekday alone.
+const WEEK_AHEAD: i32 = 6;
+
 /// When a hold lapses, `until`: its time, and its weekday when that
-/// isn't today, as a hold put late in the evening lapses after midnight.
+/// isn't today, as a hold put late in the evening lapses after midnight;
+/// its date too past this week, as one sent dated ahead does.
 fn lapses(look: &Look, until: &str) -> Option<String> {
     let until = until
         .parse::<jiff::Timestamp>()
         .ok()?
         .to_zoned(look.now.time_zone().clone());
-    let format = if until.date() == look.now.date() {
+    let days = look
+        .now
+        .date()
+        .until(until.date())
+        .map_or(i32::MAX, |span| span.get_days());
+    let format = if days == 0 {
         "%H:%M"
-    } else {
+    } else if (1..=WEEK_AHEAD).contains(&days) {
         "%a %H:%M"
+    } else {
+        "%a %-d %b %H:%M"
     };
     Some(until.strftime(format).to_string())
 }
@@ -950,10 +955,9 @@ mod tests {
         forged["from"] = json!("T  [deadbeef]");
         for width in [20, 30, 34] {
             let drawn = drawn(&[forged.clone()], &look(), Some(width));
-            let heading = drawn
-                .lines()
-                .find(|line| line.starts_with("  ") && !line.starts_with(SAYS))
-                .expect("the question's line");
+            // The line under the block's heading, which at 20 holds only
+            // what is left of the wait and the id.
+            let heading = drawn.lines().nth(1).expect("the question's line");
             assert!(
                 heading.chars().count() <= width && !heading.contains("deadbeef"),
                 "a forged id was drawn at {width}:\n{drawn}"
