@@ -10,7 +10,8 @@
 //!
 //! The book is kept in `starts.jsonl` beside the node's runs, a line a
 //! start: `{"at", "by", "started_by", "folder", "program"}`, `"resumes"`
-//! with the session's id when it brings one back uncounted, then where it
+//! with the session's id when it brings one back uncounted, `"reopens"`
+//! with it when it brings one back counted or not, then where it
 //! started (`"machine"` and `"held"`), or why it didn't (`"failed"`), or
 //! why it was refused (`"refused"`). The person's stop is the file
 //! `starts.stopped` beside it, there for as long as starts are stopped.
@@ -64,7 +65,8 @@ pub const RESUMED_AN_HOUR: usize = 128;
 /// How long after a start that brings a session back a second is
 /// refused, in milliseconds: the first may still be on its way, its pi
 /// not yet saying it runs, and a second would open the same log beside
-/// it. A retry of one that failed waits this long.
+/// it. One still going refuses a second however long it takes, and one
+/// that failed, having brought nothing back, refuses none.
 pub const COMING_BACK: i64 = 120_000;
 
 /// An hour, in milliseconds.
@@ -278,13 +280,15 @@ impl Book {
                         // ahead counts no more than one long gone. An
                         // agent's resume in the hour counts toward
                         // nothing but is kept, since a second of its
-                        // session counts, and one asked again of where
-                        // it went counts toward nothing and is let go.
+                        // session counts, whether its line says
+                        // `reopens` or, from an earlier node, `resumes`
+                        // alone; one asked again of where it went counts
+                        // toward nothing and is let go.
                         .position(|one| {
                             !matches!(one.by, By::Agent(_))
                                 || one.at <= since
                                 || one.at > ahead
-                                || !(one.counts() || one.reopens.is_some())
+                                || !(one.counts() || one.reopens.is_some() || one.resumes.is_some())
                         })
                 });
             match oldest {
@@ -394,36 +398,47 @@ impl Starts {
         Err(refused.unwrap_or_default())
     }
 
+    /// Keeps `asked` as refused for `why`, a reason the node found
+    /// outside the book, such as its session being parked for its holder
+    /// to wake, so every refusal is in the book whatever refused it; and
+    /// answers `why`.
+    pub fn refuse(&self, mut asked: Kept, why: String) -> String {
+        asked.refused = Some(why.clone());
+        self.keep_line(&mut self.lock(), asked);
+        why
+    }
+
     /// Why `asked`, an agent's start bringing back a session, is refused
     /// where that session is coming back already: a start of it an agent
-    /// or the person asked, counted or not, is going, or was let go and
-    /// didn't fail within [`COMING_BACK`] of it, its pi perhaps not yet
-    /// saying it runs, so a second would open its log beside the first.
-    /// The person's own start is never refused, and nor is one asked
-    /// again of the machine it went to, which that machine joins to the
-    /// first under its name.
+    /// or the person asked, counted or not, is going, or was let go
+    /// within [`COMING_BACK`] of it and didn't fail, its pi perhaps not
+    /// yet saying it runs, so a second would open its log beside the
+    /// first. The person's own start is never refused, and nor is one
+    /// asked again of the machine it went to, which that machine joins to
+    /// the first under its name. Only a start of a session the node holds
+    /// as ended is judged: once its pi says it runs, nothing here refuses
+    /// another.
     fn coming_back(book: &Book, asked: &Kept) -> Option<String> {
         let id = asked.reopens.as_deref()?;
         if asked.by == By::Person || asked.again {
             return None;
         }
-        book.kept
-            .iter()
-            .chain(book.going.iter().map(|(_, going)| going))
-            .any(|one| {
-                one.refused.is_none()
-                    && one.failed.is_none()
-                    && one.reopens.as_deref().or(one.resumes.as_deref()) == Some(id)
-                    && one.at > asked.at - COMING_BACK
-                    && one.at <= asked.at + COMING_BACK
-            })
-            .then(|| {
-                format!(
-                    "{id} is coming back already, from a start asked in the last {} seconds; \
-                     ask again after that if it hasn't",
-                    COMING_BACK / 1000
-                )
-            })
+        let its = |one: &Kept| one.reopens.as_deref().or(one.resumes.as_deref()) == Some(id);
+        let going = book.going.iter().any(|(_, going)| its(going));
+        let let_go = book.kept.iter().any(|one| {
+            its(one)
+                && one.refused.is_none()
+                && one.failed.is_none()
+                && one.at > asked.at - COMING_BACK
+                && one.at <= asked.at + COMING_BACK
+        });
+        (going || let_go).then(|| {
+            format!(
+                "{id} is coming back already, from a start asked in the last {} seconds; \
+                 ask again after that only if it isn't running",
+                COMING_BACK / 1000
+            )
+        })
     }
 
     /// When the limits that refuse `asked` would let it, in milliseconds
@@ -993,10 +1008,22 @@ mod tests {
         );
         // Its second in the hour counts, and still comes back only once.
         started(&starts, back("s-0", NOW + COMING_BACK), "h");
-        starts
+        let refused = starts
             .admit(back("s-0", NOW + COMING_BACK + 1))
             .expect_err("one counted comes back once too");
+        assert!(refused.contains("s-0 is coming back already"), "{refused}");
         started(&starts, back("s-1", NOW + 1), "h");
+        // One still going refuses a second however long it has taken.
+        let going = starts.admit(back("s-2", NOW)).expect("it may start");
+        let refused = starts
+            .admit(back("s-2", NOW + 10 * COMING_BACK))
+            .expect_err("a start still going is coming back");
+        assert!(refused.contains("s-2 is coming back already"), "{refused}");
+        starts.keep(going, Ok(("skiff".to_owned(), "h".to_owned())), 0);
+        // One dated past the window ahead, as a clock set back would,
+        // holds none back.
+        started(&starts, back("s-3", NOW + 3 * COMING_BACK), "h");
+        started(&starts, back("s-3", NOW + 2), "h");
         started(
             &starts,
             reopening(By::Person, None, "s-0", NOW + COMING_BACK + 2),
@@ -1028,15 +1055,22 @@ mod tests {
     }
 
     #[test]
-    fn the_book_lets_go_of_a_start_asked_again_before_one_that_counts() {
+    fn the_book_lets_go_of_a_start_asked_again_before_a_resume_or_one_that_counts() {
         let (_dir, starts) = book();
         let again = Kept {
             again: true,
             ..agent("OSPREY", NOW)
         };
+        // An uncounted resume, as this node books it and as an earlier one
+        // did, with `resumes` alone: each is kept, since a second of its
+        // session counts and comes back only once.
+        let earlier = resuming("OSPREY", "s-0", NOW);
+        let resume = reopening(By::Agent(Kind::Fence), Some("OSPREY"), "s-1", NOW);
         let mut book = starts.lock();
+        book.hold(earlier.clone());
+        book.hold(resume.clone());
         book.hold(again.clone());
-        for _ in 0..KEPT_MOST {
+        for _ in 2..KEPT_MOST {
             book.hold(agent("OSPREY", NOW + 1));
         }
         assert_eq!(book.kept.len(), KEPT_MOST, "the book grew past its bound");
@@ -1044,6 +1078,11 @@ mod tests {
             !book.kept.contains(&again),
             "the one counting nothing stayed"
         );
+        assert!(
+            book.kept.contains(&earlier),
+            "an earlier node's resume went"
+        );
+        assert!(book.kept.contains(&resume), "an uncounted resume went");
     }
 
     #[test]

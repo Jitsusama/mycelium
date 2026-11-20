@@ -1689,14 +1689,18 @@ prompt or flag gives it new work, nor a file an agent wrote. A bare
 ended session once an hour through each node, and the 128, bound what
 it hides. A second bringing back the same one within the hour counts
 as new work, unless the first failed, which brought nothing back. An
-agent's start within two minutes of one bringing it back that didn't
-fail, counted or not, is refused, and kept as refused, as is one
-parked this boot, which its holder wakes as it's steered, since either
-would open the session's log twice. A park is this boot's only where
-the machine and the presence both name the boot, so one a Mac parked
-comes back by a start. An ask again under the same name is answered
-the first start rather than refused for it, and the person's own
-start is never refused. An id beginning
+agent's start bringing back a session on its own machine while
+another start of it is going, or within two minutes of one that
+didn't fail, counted or not, is refused, and kept as refused, as is
+one parked this boot, which its holder wakes as it's steered, since
+either would open the session's log twice. This guards only
+while the node holds the session as ended: once its pi says it runs,
+nothing here refuses a second. A park is judged this boot's by the
+boot both the machine and the presence name, or where either names
+none, as on a Mac, by whether it was last heard since the boot began;
+one from before comes back by a start. An ask again under the same
+name is answered the first start rather than refused for it, and the
+person's own start is never refused. An id beginning
 `-` is never one, and one running or on a machine out of reach is
 never brought back. A
 start past the limits with room again within a minute waits for it

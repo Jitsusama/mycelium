@@ -126,7 +126,7 @@ pub fn standing(
 
 /// When the session last changed, in milliseconds since the epoch, where
 /// its record says.
-fn changed(session: &Session) -> Option<i64> {
+pub(super) fn changed(session: &Session) -> Option<i64> {
     session
         .at
         .parse::<jiff::Timestamp>()
