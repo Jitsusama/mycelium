@@ -55,8 +55,9 @@ How this repository keeps Joel's repository standard:
   tests, `checks.aarch64-darwin.mycelium`, built on a Mac through
   core.nix's `nix-offload there`, since what compiles on Linux can fail
   on macOS (its `mode_t` is 16 bits, not 32); there is no hosted CI.
-  Where `nix-offload` can't reach a Mac, the same check is built on one
-  with plain `nix build`. Where no Mac answers at all, the merge says so
+  Where `nix-offload` can't reach a Mac, the same check is built with
+  plain `nix build` on one that builds outside Nix's sandbox, since the
+  check asks for no sandbox and a sandboxed Mac refuses it. Where no Mac answers at all, the merge says so
   in its Validation, and the Mac build runs before core.nix takes it.
   A merge goes only through `scripts/merge-gate.sh`, main's own copy,
   which refuses a head that doesn't hold main as it is now, or that
