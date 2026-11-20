@@ -529,7 +529,15 @@ pub struct Exchange {
     /// The quests shared here with no README, which the other end has
     /// ended, whose state this link has logged ([`Self::empty_here`]).
     empty: BTreeSet<String>,
+    /// The quests ended here whose reopen this link refused for a README
+    /// that doesn't follow the one each ended with, whose sessions it has
+    /// told ([`Self::take_up`]).
+    unfollowed: BTreeSet<String>,
 }
+
+/// Why [`Exchange::brings_back`] refuses a README said live that doesn't
+/// follow the one its quest ended with here.
+const UNFOLLOWED: &str = "holds a README that doesn't follow the one it ended with here";
 
 /// A shared quest's README, as its ledger keys it.
 const README: &str = "record/README.md";
@@ -591,6 +599,24 @@ struct Told {
     above: bool,
 }
 
+impl Told {
+    /// What a look tells of the quest `ledger` keeps, `carried` as it is,
+    /// ended here or not: of one whose README alone crosses, no scratch.
+    fn of(carried: &Quest, ledger: &Ledger, ended: bool) -> Self {
+        let (folders, clones) = if carried.readme_alone {
+            (BTreeSet::new(), BTreeMap::new())
+        } else {
+            (ledger.scratch.clone(), ledger.clones.clone())
+        };
+        Self {
+            folders,
+            clones,
+            ended,
+            above: ledger.above,
+        }
+    }
+}
+
 /// What a look says of the quests `shares` holds, as told.
 fn shares_said(shares: &BTreeMap<String, Told>) -> Say {
     Say::Shares {
@@ -649,6 +675,7 @@ impl Exchange {
             whole: BTreeSet::new(),
             passed_over: BTreeSet::new(),
             empty: BTreeSet::new(),
+            unfollowed: BTreeSet::new(),
         }
     }
 
@@ -849,6 +876,8 @@ impl Exchange {
     /// one changed by reopening does: an end that never heard the quest
     /// end, as a third machine away while it did, or one that withheld it
     /// for a while, names it live just the same. What it lacks, it says.
+    /// The versions are the other end's word, so this keeps a stale
+    /// README from undoing an end, and is no check of who may reopen one.
     fn brings_back(&self, id: &str, files: &BTreeMap<String, State>) -> Result<(), &'static str> {
         let Some(theirs) = self.theirs.as_ref() else {
             return Err("has said nothing yet of what it shares");
@@ -868,10 +897,11 @@ impl Exchange {
             return Err("says it is live but holds no README of it");
         };
         match self.places.ledgers().ended(id) {
-            Ok(Some(ended)) if readme.version.against(&ended) != Standing::Newer => {
-                Err("holds a README that doesn't follow the one it ended with here")
+            Ok(Some(ended)) if readme.version.against(&ended) != Standing::Newer => Err(UNFOLLOWED),
+            Err(error) => {
+                eprintln!("{id}'s README version as it ended here can't be read: {error}");
+                Err("can't be weighed against the README it ended with here, unread")
             }
-            Err(_) => Err("can't be weighed against the README it ended with here, unread"),
             _ => Ok(()),
         }
     }
@@ -962,20 +992,23 @@ impl Exchange {
         let mut passed_over = BTreeSet::new();
         for id in quests {
             // A README that can't be read this look is taken as it was
-            // last told, so a failed read never says a quest reopened.
-            let ended = self
-                .places
-                .standing(&id)
-                .unwrap_or_else(|| self.told.get(&id).is_some_and(|told| told.ended));
+            // last told, so a failed read never says a quest reopened;
+            // one this link hasn't told yet is passed over till it reads,
+            // since nothing says how it stands.
+            let standing = self.places.standing(&id);
+            let Some(ended) = standing.or_else(|| self.told.get(&id).map(|told| told.ended)) else {
+                passed_over.insert(id);
+                continue;
+            };
             if ended && self.has_ended_there(&id) && self.swept(&id) {
                 let why = format!("has ended here and on {}", self.other);
-                self.stop(&ledgers, &id, &why)?;
+                self.stop(&ledgers, &id, &why, true)?;
                 continue;
             }
             self.empty_here(&id, ended);
             if decide && self.spent_here(&ledgers, &id)? {
                 let why = "was shared for the quests under it, and none is shared now";
-                self.stop(&ledgers, &id, why)?;
+                self.stop(&ledgers, &id, why, false)?;
                 continue;
             }
             let mut held = ledgers.hold(&id)?;
@@ -1037,21 +1070,7 @@ impl Exchange {
                     files,
                 });
             }
-            // Of a quest whose README alone crosses, no scratch is named.
-            let (folders, clones) = if carried.readme_alone {
-                (BTreeSet::new(), BTreeMap::new())
-            } else {
-                (held.ledger.scratch.clone(), held.ledger.clones.clone())
-            };
-            shares.insert(
-                id,
-                Told {
-                    folders,
-                    clones,
-                    ended,
-                    above: held.ledger.above,
-                },
-            );
+            shares.insert(id, Told::of(&carried, &held.ledger, ended));
         }
         // Which folders are shared is said first, so the other end carries
         // a newly named folder's files by the time it hears of them.
@@ -1067,7 +1086,13 @@ impl Exchange {
         // stands, so a look that fails hears it all again at the next.
         if let Some(wants) = replay {
             says.extend(wants);
-            self.held_back.clear();
+            // What was kept of a quest ended here and still refused stays,
+            // as it would have with no hold, for the Holds that brings it
+            // back.
+            let places = &self.places;
+            self.held_back.retain(|quest, _| {
+                is_quest(quest) && places.ended(quest) && !ledgers.shares(quest)
+            });
             self.above = Above::Carried;
         }
         Ok(says)
@@ -1075,9 +1100,22 @@ impl Exchange {
 
     /// Stops sharing quest `id`, which `why` says, forgetting what was
     /// heard of it; a quest above it may be spent now, so the next look
-    /// decides again.
-    fn stop(&mut self, ledgers: &Ledgers, id: &str, why: &str) -> io::Result<()> {
-        ledgers.stop(id)?;
+    /// decides again. One that `ended` here keeps its README's version as
+    /// it stands on the disk now, scanned first, since the look may not
+    /// yet have seen it conclude; one whose README can't be read keeps
+    /// the version last scanned, since a torn read would raise it.
+    fn stop(&mut self, ledgers: &Ledgers, id: &str, why: &str, ended: bool) -> io::Result<()> {
+        if ended
+            && self.places.standing(id) == Some(true)
+            && let Some(readme) = shared_of(README)
+        {
+            let mut held = ledgers.hold(id)?;
+            let quest = self.quest(id, &held.ledger);
+            if held.ledger.scan_one(&quest, &readme, &self.machine)? != Sight::Same {
+                held.keep()?;
+            }
+        }
+        ledgers.stop(id, ended)?;
         self.unsaid.remove(id);
         self.held_back.remove(id);
         self.watch.forget(id);
@@ -1172,7 +1210,11 @@ impl Exchange {
                     // What is said of a quest ended here is kept too, as a
                     // Holds after the first says only what changed: one that
                     // later brings it back then asks for all of it.
-                    if self.above_withheld() || (is_quest(&quest) && self.places.ended(&quest)) {
+                    // So is one whose README here can't be read, which
+                    // may have ended.
+                    if self.above_withheld()
+                        || (is_quest(&quest) && self.places.standing(&quest) != Some(false))
+                    {
                         self.keep_back(quest, files);
                     }
                     return Ok(Vec::new());
@@ -1270,6 +1312,21 @@ impl Exchange {
                  where it is",
                 self.other
             );
+            // A real reopen weighed so is refused till the README follows,
+            // which may be never, so its sessions hear of it once a link.
+            if why == UNFOLLOWED && self.unfollowed.insert(id.to_owned()) {
+                let group = self.places.group(id);
+                let text = format!(
+                    "{id} is live on {other}, but its README there doesn't follow the one it \
+                     ended with on {here}, so {here} keeps its ended record and takes nothing \
+                     of it from {other}. If it was reopened on {other} on purpose, reopen it \
+                     on {here} too: {here} then takes it up from {other}, setting its own \
+                     record aside.",
+                    other = self.other,
+                    here = self.machine,
+                );
+                self.tell(group, text);
+            }
             return Ok(false);
         }
         let above = self
@@ -1281,7 +1338,9 @@ impl Exchange {
         if self.spent_above(id, above)? || (above && self.above_withheld()) {
             return Ok(false);
         }
-        let mut held = ledgers.hold(id)?;
+        // The record here moves aside for the other end's copy, so what its
+        // ledger kept as it ended says nothing of that copy.
+        let mut held = ledgers.hold(id)?.unseeded();
         held.ledger.above = above;
         held.ledger.aside = self.places.record(id).exists();
         held.ledger.waits_for = held.ledger.aside.then(|| self.other.clone());
@@ -4126,6 +4185,15 @@ mod tests {
         stays(&far, "nor one changed apart from its end");
         far.hear(holds(ended.clone())).expect("heard");
         stays(&far, "nor one that changed nothing since");
+        let told = far.findings();
+        assert_eq!(told.len(), 1, "its sessions are told once a link: {told:?}");
+        assert!(
+            told[0]
+                .text
+                .contains("doesn't follow the one it ended with on kestrel"),
+            "that its README there doesn't follow: {}",
+            told[0].text
+        );
         // Reopened there, its README follows the one it ended with.
         far.hear(holds(ended.changed_on("skiff"))).expect("heard");
         assert!(
@@ -4164,7 +4232,7 @@ mod tests {
         );
         held.keep().expect("shared");
         drop(held);
-        machine.places.ledgers().stop(QUEST).expect("stopped");
+        machine.places.ledgers().stop(QUEST, true).expect("stopped");
         ended
     }
 
@@ -4177,6 +4245,39 @@ mod tests {
             ended: BTreeSet::new(),
             above: BTreeSet::new(),
         }
+    }
+
+    // The hotfix gaps' first review (2026-11-20): a quest shared here with
+    // no README while the other end has ended it is an empty share that
+    // nothing fills, so it is noted once, and let go once a README is back.
+    #[test]
+    fn a_share_left_empty_beside_an_end_that_ended_it_is_noted_until_its_readme_is_back() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let readme = format!("---\nid: {QUEST}\nstatus: active\n---\n# Shared\n");
+        kestrel.write("README.md", &readme);
+        share(&kestrel, QUEST);
+        let mut far = kestrel.exchange(&skiff);
+        far.hear(live(QUEST)).expect("heard");
+        far.look().expect("it looks");
+        assert!(far.empty.is_empty(), "a share with its README isn't empty");
+        fs::remove_file(kestrel.places.record(QUEST).join("README.md")).expect("moved aside");
+        far.hear(Say::Shares {
+            quests: vec![QUEST.to_owned()],
+            scratch: BTreeMap::new(),
+            clones: BTreeMap::new(),
+            ended: BTreeSet::from([QUEST.to_owned()]),
+            above: BTreeSet::new(),
+        })
+        .expect("heard");
+        far.look().expect("it looks");
+        assert!(
+            far.empty.contains(QUEST),
+            "one left with no README is noted"
+        );
+        kestrel.write("README.md", &readme);
+        far.look().expect("it looks");
+        assert!(far.empty.is_empty(), "and let go once its README is back");
     }
 
     // Round 4's R4-8 (2026-11-20): a Holds after the first says only what
@@ -4208,6 +4309,11 @@ mod tests {
             "a Holds with no README brings nothing back"
         );
         assert!(!far.places.ledgers().shares(QUEST), "so it isn't taken up");
+        // A hold on the quests above, lifted, replays what was kept and
+        // lets it go, but not what a quest ended here still waits on.
+        far.withhold_above(true);
+        far.withhold_above(false);
+        far.look().expect("it looks");
         let wants = far
             .hear(Say::Holds {
                 quest: QUEST.to_owned(),
@@ -4230,6 +4336,96 @@ mod tests {
             BTreeSet::from([README, plan]),
             "asking for what the refused Holds named too"
         );
+    }
+
+    // The hotfix gaps' first review (2026-11-20): a record moved aside for
+    // a take-up leaves nothing here, so its ledger begins with no README,
+    // never one deleted at the version it ended with, which would have the
+    // other end delete an older README of its own.
+    #[test]
+    fn a_quest_taken_up_after_it_ended_here_takes_an_older_readme_and_deletes_none() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        ended_and_stopped(&kestrel);
+        kestrel.write(
+            "README.md",
+            &format!("---\nid: {QUEST}\nstatus: active\n---\n# Shared\n"),
+        );
+        let mut far = kestrel.exchange(&skiff);
+        far.hear(live(QUEST)).expect("heard");
+        assert!(
+            far.places.ledgers().shares(QUEST),
+            "live here, it is taken up"
+        );
+        let wants = far
+            .hear(Say::Holds {
+                quest: QUEST.to_owned(),
+                files: BTreeMap::from([(
+                    README.to_owned(),
+                    State {
+                        hash: Some("older".to_owned()),
+                        version: Version::default().changed_on("skiff"),
+                    },
+                )]),
+            })
+            .expect("heard");
+        assert!(
+            wants
+                .iter()
+                .any(|say| matches!(say, Say::Want { file, .. } if file == README)),
+            "skiff's README is asked for: {wants:?}"
+        );
+        let says = far.look().expect("it looks");
+        assert!(
+            !says.iter().any(|say| matches!(
+                say,
+                Say::Holds { files, .. }
+                    if files.get(README).is_some_and(|readme| readme.hash.is_none())
+            )),
+            "and none is said deleted: {says:?}"
+        );
+    }
+
+    // The hotfix gaps' first review (2026-11-20): a version kept that can't
+    // be read refuses a reopen, failing closed, but never a hold here.
+    #[test]
+    fn an_ended_version_that_cant_be_read_refuses_a_reopen_but_no_hold() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let ended = ended_and_stopped(&kestrel);
+        let kept = kestrel
+            .places
+            .state
+            .join("shared/ended")
+            .join(format!("{QUEST}.json"));
+        assert!(kept.exists(), "the version is kept at {}", kept.display());
+        fs::write(&kept, "{").expect("the version is torn");
+        let mut far = kestrel.exchange(&skiff);
+        far.hear(live(QUEST)).expect("heard");
+        far.hear(Say::Holds {
+            quest: QUEST.to_owned(),
+            files: BTreeMap::from([(
+                README.to_owned(),
+                State {
+                    hash: Some("reopened".to_owned()),
+                    version: ended.changed_on("skiff"),
+                },
+            )]),
+        })
+        .expect("heard");
+        assert_eq!(
+            kestrel.read("attachments/map.md"),
+            Some("the map\n".to_owned()),
+            "the ended record stays"
+        );
+        assert!(!kestrel.places.state.join("before-share").exists());
+        assert!(!far.places.ledgers().shares(QUEST), "and it isn't taken up");
+        let held = far
+            .places
+            .ledgers()
+            .hold(QUEST)
+            .expect("it is held all the same");
+        assert_eq!(held.ledger.files.get(README), None, "begun from nothing");
     }
 
     #[test]
@@ -4326,8 +4522,12 @@ mod tests {
         );
         share(&kestrel, QUEST);
         kestrel.places.name_scratch(QUEST, "notes").expect("named");
+        // Read after each talk, since the next talk's look lets go of a
+        // clone already ended, as one of a host that can't be found is.
+        let mut made = Vec::new();
         for _ in 0..3 {
             talk(&mut near, &mut far);
+            made.extend(near.cloning.making());
         }
         assert!(shares(&skiff), "skiff takes the reopened quest up");
         assert_eq!(
@@ -4335,8 +4535,9 @@ mod tests {
             Some("the plan\n".to_owned()),
             "and the scratch folder kestrel names of it"
         );
+        made.dedup();
         assert_eq!(
-            near.cloning.making(),
+            made,
             vec![skiff.places.scratch.join(QUEST).join("notes/ttc")],
             "and makes the clone in it from its remote"
         );
