@@ -326,6 +326,9 @@ pub struct Held {
     /// The ledger.
     pub ledger: Ledger,
     path: PathBuf,
+    /// Where the README's version as the quest ended was kept, when this
+    /// ledger was begun from it, so keeping the ledger forgets it.
+    seeded: Option<PathBuf>,
     _lock: fs::File,
 }
 
@@ -335,9 +338,16 @@ impl Held {
         let staged = self.path.with_extension("json.mycelium.tmp");
         let text = serde_json::to_vec_pretty(&self.ledger).map_err(io::Error::other)?;
         fs::write(&staged, text)?;
-        fs::rename(staged, &self.path)
+        fs::rename(staged, &self.path)?;
+        match self.seeded.as_ref().map(fs::remove_file) {
+            Some(Err(error)) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
     }
 }
+
+/// The README's key in a ledger.
+const README: &str = "record/README.md";
 
 impl Ledgers {
     /// The ledgers in mycelium's folder `state`.
@@ -393,9 +403,22 @@ impl Ledgers {
         self.folder.join(format!("{quest}.json")).exists()
     }
 
-    /// Stops sharing `quest`, leaving its files as they are.
+    /// Stops sharing `quest`, leaving its files as they are, and keeps
+    /// the version its README stood at, so a README said of it later is
+    /// known for one changed since, as one reopened is, or for one that
+    /// never heard it end.
     pub fn stop(&self, quest: &str) -> io::Result<()> {
         let held = self.hold(quest)?;
+        if let Some(readme) = held.ledger.files.get(README)
+            && readme.hash.is_some()
+        {
+            let at = self.ended_at(quest);
+            fs::create_dir_all(self.folder.join(ENDED))?;
+            let staged = at.with_extension("json.mycelium.tmp");
+            let text = serde_json::to_vec(&readme.version).map_err(io::Error::other)?;
+            fs::write(&staged, text)?;
+            fs::rename(staged, at)?;
+        }
         match fs::remove_file(&held.path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
@@ -423,19 +446,66 @@ impl Ledgers {
         };
         rustix::fs::flock(&lock, FlockOperation::LockExclusive)?;
         let path = self.folder.join(format!("{quest}.json"));
+        let mut seeded = None;
         let ledger = match fs::read(&path) {
             Ok(text) => serde_json::from_slice(&text)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ledger::default(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                // Shared anew after it ended here, its README goes on from
+                // the version it ended at, so a change made since follows
+                // it wherever that end was heard. It is entered as held
+                // nowhere yet, so a scan takes up what is on the disk and
+                // a README missing here is never said as deleted.
+                let mut ledger = Ledger::default();
+                if let Some(version) = self.ended(quest)? {
+                    ledger.files.insert(
+                        README.to_owned(),
+                        Entry {
+                            hash: None,
+                            version,
+                            seen: None,
+                        },
+                    );
+                    seeded = Some(self.ended_at(quest));
+                }
+                ledger
+            }
             Err(error) => return Err(error),
         };
         Ok(Held {
             ledger,
             path,
+            seeded,
             _lock: lock,
         })
     }
+
+    /// The version `quest`'s README stood at when this machine last
+    /// stopped sharing it, if it kept one: none for a quest it never
+    /// stopped, or stopped before it kept them.
+    pub fn ended(&self, quest: &str) -> io::Result<Option<Version>> {
+        if !is_quest(quest) {
+            return Ok(None);
+        }
+        match fs::read(self.ended_at(quest)) {
+            Ok(text) => serde_json::from_slice(&text)
+                .map(Some)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Where the version of `quest`'s README as it ended here is kept,
+    /// in a folder of its own, which [`Self::quests`] passes over.
+    fn ended_at(&self, quest: &str) -> PathBuf {
+        self.folder.join(ENDED).join(format!("{quest}.json"))
+    }
 }
+
+/// The folder beside the ledgers where each stopped quest's README
+/// version is kept.
+const ENDED: &str = "ended";
 
 /// Whether `id` is a quest's: `QEST-`, a date and six letters or digits.
 #[must_use]
@@ -571,6 +641,61 @@ mod tests {
         assert!(
             ledgers.hold("../etc").is_err(),
             "only a quest's id names a ledger"
+        );
+    }
+
+    // Round 5 of the ended-record fix (2026-11-20): a README said of a
+    // quest after it stopped here is weighed against the one it ended
+    // with, so the stop keeps that one's version.
+    #[test]
+    fn a_quest_stopped_here_begins_its_next_ledger_from_the_readme_it_ended_with() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let ledgers = Ledgers::in_state(dir.path());
+        let quest_id = "QEST-20261013-4UHC5Q";
+        let ended = Version::default().changed_on("skiff").changed_on("kestrel");
+        let mut held = ledgers.hold(quest_id).expect("held");
+        held.ledger.files.insert(
+            README.to_owned(),
+            Entry {
+                hash: Some("concluded".to_owned()),
+                version: ended.clone(),
+                seen: None,
+            },
+        );
+        held.keep().expect("kept");
+        drop(held);
+        assert_eq!(
+            ledgers.ended(quest_id).expect("read"),
+            None,
+            "none kept while shared"
+        );
+        ledgers.stop(quest_id).expect("stopped");
+        assert!(!ledgers.shares(quest_id), "it is shared no longer");
+        assert_eq!(
+            ledgers.ended(quest_id).expect("read"),
+            Some(ended.clone()),
+            "its README's version is kept"
+        );
+        assert!(
+            ledgers.quests().expect("listed").is_empty(),
+            "and what is kept is no ledger"
+        );
+        let held = ledgers.hold(quest_id).expect("held anew");
+        assert_eq!(
+            held.ledger.files.get(README),
+            Some(&Entry {
+                hash: None,
+                version: ended,
+                seen: None,
+            }),
+            "shared anew, its README goes on from that version, held nowhere yet"
+        );
+        held.keep().expect("kept");
+        drop(held);
+        assert_eq!(
+            ledgers.ended(quest_id).expect("read"),
+            None,
+            "and once its ledger is kept, the version is forgotten"
         );
     }
 }
