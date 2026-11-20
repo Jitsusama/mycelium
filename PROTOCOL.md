@@ -910,29 +910,30 @@ five minutes after that first sleep still say over, it would carry one
 session to a peer with room: the smallest log first, placed as any work
 is and onto ground as firm. Sessions that wait anew meanwhile sleep too
 without putting the carry off, and once the five minutes are past they
-sleep only where nothing is carried. A session in a turn, on the person's screen,
-orchestrating other sessions, holding a lease or a heavy run, or whose
-quest runs elsewhere too stays. So does one it can't tell any of these
-of. A session waiting on a secret's release or a password prompt waits
-inside its turn, so it stays as one in a turn. What a session is part
-way through is told only once its presence says `"leases":
-{"background": true}`, its harness keeping a lease for each background
-run. After a carry it would carry none for half an hour, and it would
-carry at most six in a day. A session moved by anyone stays put for a
-day, by the carries kept here, and nothing goes to a machine a session
-came from within the hour.
+sleep only where nothing is carried. A session in a turn, on the
+person's screen, orchestrating other sessions, holding a lease or a
+heavy run, or whose quest runs elsewhere too stays. So does one it
+can't tell any of these of. A session waiting on a secret's release or
+a password prompt waits inside its turn, so it stays as one in a turn.
+What a session is part way through is told only once its presence says
+`"leases": {"background": true}`, its harness keeping a lease for each
+background run. After a carry it would carry none for half an hour, and
+it would carry at most six in a day. A session moved by anyone stays put
+for a day, by the carries kept here, and nothing goes to a machine a
+session came from within the hour.
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at
 most 8 MiB but for carries, the folder its owner's alone. Each line
 holds `at`, `would: true`, `choice` (`nothing` with `why`, `sleep`
 with `sessions`, or `carry` with `session`, `to` and `why`) and the
-`reading` it was chosen by. A carry's line adds `holds`, what the
-session's own process holds where it has one: `memory` resident in
-bytes, and `cpu` in cores over the last ten minutes. What it would
-have done counts in its memory, and a carry in its lines too, so a
-session it would have put to sleep counts as asleep, and one it would
-have carried as gone. Nothing reaches the record of carries.
+`reading` it was chosen by. A sleep made only because no carry could go
+adds `why`, why none of those already asleep was carried. A carry's
+line adds `holds`, what the session's own process holds where it has
+one: `memory` resident in bytes, and `cpu` in cores over the last ten
+minutes. What it would have done counts in its memory, and a carry in
+its lines too, so a session it would have put to sleep counts as asleep,
+and one it would have carried as gone. Nothing reaches the record of carries.
 
 Run with `--eases-carry` too, the node makes each carry it chooses,
 as it would an orchestrator's ordered carry and onto ground as firm,
