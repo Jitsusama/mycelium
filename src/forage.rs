@@ -1430,6 +1430,12 @@ fn documents_drawn(documents: &[Value], cell: &str, named: Option<&str>, width: 
     drawn
 }
 
+/// `forages` drawn into a pipe.
+#[must_use]
+pub fn draw_for_a_pipe(forages: &[Value], named: Option<&str>) -> String {
+    draw(forages, named, usize::MAX)
+}
+
 /// `forages` drawn for a person in `width` columns: a block each, those
 /// that wait on them first, its cell, machine and quest, its purpose in
 /// two lines at most, or whole for a cell `named`, a line for each thing
@@ -2456,8 +2462,12 @@ mod tests {
         let forages: Vec<Value> = (0..30)
             .map(|at| {
                 let mut each = forage(&format!("CELL{at:02}"), "kestrel", &quest(at));
+                // A wait ready or not moves a cell alike, and one that
+                // says it waits on nothing, as another node may, doesn't.
                 if at % 2 == 0 {
                     each["waits"] = json!([{"title": "Pick a field", "ready": at % 4 == 0}]);
+                } else if at % 3 == 0 {
+                    each["waits"] = json!([]);
                 }
                 each
             })
@@ -2545,11 +2555,12 @@ mod tests {
 
     #[test]
     fn a_purpose_is_read_as_cut_only_near_its_length() {
-        // As short as a cut one can be once its spaces are trimmed, and
-        // one shorter, whose dots are its author's.
+        // As long as a cut keeps, one a space shorter, as a cut that fell
+        // on one is, and one shorter still, whose dots are its author's.
         for (kept, cut) in [
-            (LONGEST_PURPOSE - 3 - CUT_TRIMS, true),
-            (LONGEST_PURPOSE - 4 - CUT_TRIMS, false),
+            (LONGEST_PURPOSE - 3, true),
+            (LONGEST_PURPOSE - 4, true),
+            (LONGEST_PURPOSE - 5, false),
         ] {
             let mut cell = forage("KESTRL", "kestrel", "QEST-1");
             cell["purpose"] = json!(format!("{} hovers...", "K".repeat(kept - 7)));
@@ -2569,7 +2580,7 @@ mod tests {
         let mut cell = forage("KESTRL", "kestrel", "QEST-1");
         cell["purpose"] = json!(format!(
             "\u{200f}\u{200f}\u{200f}{} hovers...",
-            "K".repeat(LONGEST_PURPOSE - 3 - CUT_TRIMS - 10)
+            "K".repeat(LONGEST_PURPOSE - 14)
         ));
         let words = purpose_words(&cell, Some("KESTRL"), 400);
         assert_eq!(
@@ -2597,7 +2608,74 @@ mod tests {
         cell["purpose"] = json!(first_sentence(&format!("a {}", "abcd ".repeat(60))));
         let words = purpose_words(&cell, Some("KESTRL"), 12);
         assert_eq!(words.len(), 57, "a word was lost for the mark: {words:?}");
-        assert_eq!(words.last().map(String::as_str), Some("\u{2026}"));
+        let drawn = draw(std::slice::from_ref(&cell), Some("KESTRL"), 12);
+        assert!(
+            drawn.contains("\n  abcd abcd\n  \u{2026}\n")
+                && drawn.lines().all(|line| line.chars().count() <= 12),
+            "the mark didn't take a line of its own: {drawn}"
+        );
+    }
+
+    #[test]
+    fn a_mark_with_just_room_on_its_line_takes_no_word() {
+        // Its second line is 18 cells of 20, so the mark fits after it.
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        cell["purpose"] = json!("abcdef abcd abcd abcdef abcd abcd abcdefgh abcdefgh.");
+        let drawn = draw(std::slice::from_ref(&cell), None, 20);
+        assert!(
+            drawn.contains("\n  abcdef abcd abcd\n  abcdef abcd abcd \u{2026}\n"),
+            "{drawn}"
+        );
+    }
+
+    #[test]
+    fn a_cut_word_after_a_space_still_says_its_purpose() {
+        // one_line makes the control before it a space, so the word is
+        // the only one, and is kept to be cut within.
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        cell["purpose"] = json!(format!("\u{1}{}...", "K".repeat(LONGEST_PURPOSE - 4)));
+        for named in [None, Some("KESTRL")] {
+            let words = purpose_words(&cell, named, 80);
+            assert!(
+                words.first().is_some_and(|first| first.starts_with('K'))
+                    && words.last().map(String::as_str) == Some("\u{2026}"),
+                "named {named:?}, the purpose was lost: {words:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stage_is_judged_closed_as_it_is_drawn() {
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        cell["documents"] = json!([
+            {"kind": "plan", "title": "Learn the Wind", "stage": "concluded\u{200e}",
+             "ticked": 3, "open": 0},
+        ]);
+        let drawn = draw(&[cell], None, 80);
+        assert!(
+            drawn.contains("1 closed, none open"),
+            "a stage drawn concluded was listed open: {drawn}"
+        );
+    }
+
+    #[test]
+    fn into_a_pipe_nothing_is_cut_or_counted() {
+        let purpose = "Kestrel hovers over the field ".repeat(10);
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        cell["purpose"] = json!(purpose.trim_end());
+        cell["documents"] = json!([
+            {"kind": "plan", "title": "Hover Over the Field", "stage": "build",
+             "ticked": 2, "open": 2},
+            {"kind": "plan", "title": "Learn the Wind", "stage": "concluded",
+             "ticked": 3, "open": 0},
+        ]);
+        let drawn = draw_for_a_pipe(&[cell], None);
+        assert!(
+            drawn.contains(&format!("\n  {}\n", purpose.trim_end()))
+                && drawn.contains("Learn the Wind")
+                && !drawn.contains("closed"),
+            "into a pipe something gave way: {drawn}"
+        );
     }
 
     #[test]
