@@ -804,18 +804,35 @@ pub(crate) struct OrderedArrival<'a> {
     pub(crate) why: &'a str,
 }
 
+/// How long after a carry was ordered its arrival may start uncounted:
+/// an arrival follows its order within minutes, so a carry line older
+/// than this frees nothing more.
+pub(crate) const ORDERED_ARRIVES_WITHIN: jiff::SignedDuration = jiff::SignedDuration::from_hours(1);
+
 /// The ordered arrival `command` starts, where it is word for word what
-/// [`arriving`] gives a session's start for a carry an orchestrator
-/// ordered from `from`, and nothing more, so no other work hides behind
-/// one; or none. Its words prove nothing of who ordered it: its caller
-/// holds them to the carry it kept.
+/// [`arriving`] gives a start for a carry an orchestrator ordered from
+/// `from`, and nothing more, so no other work hides behind one: a
+/// session's, or the quest's own trees', whose session is the quest; or
+/// none. Its words prove nothing of who ordered it: its caller holds
+/// them to the carry it kept.
 pub(crate) fn ordered_arrival(command: &[String]) -> Option<OrderedArrival<'_>> {
-    let arrives = arrives(command)?;
-    let [_, _, script, _, _, _, _, told, by, why] = command else {
+    let [sh, c, script, name, quest, from, session, told, by, why] = command else {
         return None;
     };
-    let exact = *script == arrival_script(false, true) && *told == carry_on(arrives.from);
-    exact.then_some(OrderedArrival { arrives, by, why })
+    let exact = sh == "sh"
+        && c == "-c"
+        && name == PI_CARRY
+        && *script == arrival_script(session == quest, true)
+        && *told == carry_on(from);
+    exact.then_some(OrderedArrival {
+        arrives: Arrives {
+            quest,
+            from,
+            session,
+        },
+        by,
+        why,
+    })
 }
 
 /// What a session carried from `from` is told as it starts, in the
@@ -1476,6 +1493,50 @@ mod tests {
         ]});
         realm.sessions[0] = session("BUSY01", "skiff", QUEST, "busy", &harbour);
         realm
+    }
+
+    // Round 1 (2026-11-20): an ordered carry's every start, the quest's
+    // own trees' too, reads back as the arrival it is, and one shaped
+    // otherwise by a single word reads as none.
+    #[test]
+    fn an_ordered_arrival_is_read_from_its_start_word_for_word() {
+        let ordered = Ordered {
+            by: "WCJQSG".to_owned(),
+            why: "it needs the lens".to_owned(),
+        };
+        let done = |session: &str| Done {
+            session: session.to_owned(),
+            started_before: None,
+        };
+        for session in ["s-busy01", QUEST] {
+            let start = super::arriving(QUEST, "skiff", "tern", &done(session), Some(&ordered));
+            assert_eq!(
+                super::ordered_arrival(&start.command),
+                Some(super::OrderedArrival {
+                    arrives: super::Arrives {
+                        quest: QUEST,
+                        from: "skiff",
+                        session,
+                    },
+                    by: "WCJQSG",
+                    why: "it needs the lens",
+                }),
+                "{session}'s arrival reads back"
+            );
+            let mut other = start.command.clone();
+            other[2] = other[2].replace("--why=", "--reason=");
+            assert_eq!(
+                super::ordered_arrival(&other),
+                None,
+                "{session}'s, a word off"
+            );
+            let unordered = super::arriving(QUEST, "skiff", "tern", &done(session), None);
+            assert_eq!(
+                super::ordered_arrival(&unordered.command),
+                None,
+                "{session}'s, unordered"
+            );
+        }
     }
 
     #[test]

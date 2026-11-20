@@ -484,17 +484,7 @@ fn shown_of(
     ticks: u64,
     session: &str,
 ) -> Result<Kind, String> {
-    let environ = fs::read(procs.join(pid.to_string()).join("environ")).map_err(|_| {
-        format!("{session}'s process can't be read, so the fence it runs in can't be told")
-    })?;
-    let began = environ
-        .split(|byte| *byte == 0)
-        .find_map(|pair| pair.strip_prefix(SANDBOX))
-        .map_or(Kind::None, |value| match value.trim_ascii() {
-            b"strict" => Kind::Strict,
-            b"fence" => Kind::Fence,
-            _ => Kind::None,
-        });
+    let began = began_in(procs, pid, session)?;
     let fenced_below = tree.runs_below(pid, BWRAP);
     // Read again last, so what was read before was that process's.
     if started(procs, pid) != Some(ticks) {
@@ -510,6 +500,23 @@ fn shown_of(
     })
 }
 
+/// The fence process `pid`, owning `session`, names in `PI_SANDBOX` as
+/// its environment began: none where it names none or a word no fence
+/// is.
+fn began_in(procs: &Path, pid: i32, session: &str) -> Result<Kind, String> {
+    let environ = fs::read(procs.join(pid.to_string()).join("environ")).map_err(|_| {
+        format!("{session}'s process can't be read, so the fence it runs in can't be told")
+    })?;
+    Ok(environ
+        .split(|byte| *byte == 0)
+        .find_map(|pair| pair.strip_prefix(SANDBOX))
+        .map_or(Kind::None, |value| match value.trim_ascii() {
+            b"strict" => Kind::Strict,
+            b"fence" => Kind::Fence,
+            _ => Kind::None,
+        }))
+}
+
 /// The most of a pi host's record read, so a record grown past any a
 /// host writes holds no carry up.
 const HOST_RECORD_MOST: u64 = 1 << 20;
@@ -517,7 +524,9 @@ const HOST_RECORD_MOST: u64 = 1 << 20;
 /// The fence the pi host keyed `key`, run by process `pid` started
 /// `ticks` after boot, names for `session` in its record in `hosts`, as
 /// the harness writes it there and rewrites it as the session's fence
-/// changes: `none`, `fence` or `strict`. A record that names none for it,
+/// changes: `none`, `fence` or `strict`, and never looser than the
+/// host's own `PI_SANDBOX`, so a record alone can't read a session out
+/// of the fence its host began in. A record that names none for it,
 /// or a word no harness writes, says nothing, so the fence can't be told,
 /// never guessed looser; nor can a record read as [`host_record`]
 /// refuses, or once `pid` is another process, read again last.
@@ -556,7 +565,9 @@ fn hosted_fence(
         Some("strict") => Kind::Strict,
         _ => return Err(untold("names no fence for it")),
     };
-    // Read again last, so the record read was that process's.
+    let kind = kind.max(began_in(procs, pid, session)?);
+    // Read again last, so the record and environment read were that
+    // process's.
     if started(procs, pid) != Some(ticks) {
         return Err(format!(
             "{session}'s pi host {pid} ended while its record was read, so the fence it runs \
@@ -3112,8 +3123,9 @@ mod tests {
 
     #[test]
     fn a_hosted_session_shows_the_fence_its_hosts_record_names() {
-        // Strict as the host began, so only its record can say looser.
-        let hosted = fenced_pi("PI_SANDBOX=strict\0", &[(71, "bwrap", 58)]);
+        // Unfenced as the host began, and a bubblewrap below it for
+        // another session, so only its record says how this one runs.
+        let hosted = fenced_pi("", &[(71, "bwrap", 58)]);
         let hosts = fs::canonicalize(hosted.2.path()).expect("its real path");
         for (word, kind) in [
             ("none", Kind::None),
@@ -3148,12 +3160,20 @@ mod tests {
             untold("names no fence for it"),
             "nor one a word no harness writes names"
         );
+        let strict = fenced_pi("PI_SANDBOX=strict\0", &[]);
+        let hosts = fs::canonicalize(strict.2.path()).expect("its real path");
+        hosts_in_58(&hosts, &[("s-own", Some("none"))]);
+        assert_eq!(
+            shown_hosted(&strict, &hosts),
+            Ok(Kind::Strict),
+            "a host begun strict is never read looser, whatever its record names"
+        );
     }
 
     #[test]
     fn a_hosts_record_another_account_or_a_link_could_have_put_there_says_no_fence() {
         use std::os::unix::fs::PermissionsExt as _;
-        let hosted = fenced_pi("PI_SANDBOX=strict\0", &[]);
+        let hosted = fenced_pi("", &[]);
         let hosts = fs::canonicalize(hosted.2.path()).expect("its real path");
         let record = hosts.join("58-500.json");
         let untold = |why: &str| {

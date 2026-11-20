@@ -1759,10 +1759,11 @@ an agent asking either, or the list, is refused. The stop is
 write there could lift it, as it could stop the node. Every start,
 refused ones too, is kept in `starts.jsonl` beside `runs.jsonl` as a
 JSON line, `{"at", "by", "started_by", "folder", "program",
-"resumes", "reopens", "machine", "held",
+"resumes", "reopens", "carried", "machine", "held",
 "failed", "refused"}`: `at` in milliseconds, `started_by` null for the
 person's, `resumes` the id of the session it brings back uncounted,
 `reopens` the id of the session it brings back, counted or not,
+`carried` the id of the session a carry takes uncounted, as below,
 `program` the command's first word alone, so no argument is kept,
 `failed` the node's reason alone, before the words naming the command,
 and the rest only where they apply. The node reads it again as it
@@ -1785,12 +1786,17 @@ new work there, so its start counts toward neither limit, once an hour
 for each session, sharing the 128 with the sessions brought back. The
 node asked judges it so only for a start counted toward the very cell
 that ordered the carry, word for word the start the carry gives its
-session, and matching a carry this node kept in `carries.jsonl` from
-here, of that session in that quest, by that cell, to the one machine
-the start names, for the same reason. The carry was proved as it was
-ordered, so a cell starts uncounted only the sessions it was proved to
-orchestrate. Its line in `starts.jsonl` names the session as `carried`.
-A start relayed from another node is judged as before.
+session, and matching the newest carry of that session this node kept
+in `carries.jsonl`, ordered from here within the hour, in that quest,
+by that cell, to the one machine the start names, for the same reason.
+The quest's own trees, which arrive as a session named for the quest,
+match the newest such carry of any of its sessions. The carry was
+proved as it was ordered, so a cell starts uncounted only the sessions
+it was proved to orchestrate, as each carry arrives. Its line in
+`starts.jsonl` names the session, or the quest, as `carried`. A start
+relayed from another node is judged as before. A node older than this
+reads a `carried` line as a counted start, so one rolled back counts
+those for the rest of their hour.
 
 A start may carry `once`, the asker's own name for it, 1 to 64 bytes,
 as `mycelium start --once NAME` gives it. An asker that heard no answer
