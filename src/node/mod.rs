@@ -13459,6 +13459,7 @@ esac
                 command: command.iter().map(|&word| word.to_owned()).collect(),
                 may_cost: false,
                 carries: false,
+                once: None,
             })
         };
         let placed = |command: &[&str], needs: Vec<Need>| foldered(command, needs, None);
