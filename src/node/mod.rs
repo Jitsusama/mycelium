@@ -1955,8 +1955,8 @@ fn reopens_within(
     };
     let Some(reopened) = reopened else {
         return Err(
-            "a session this node doesn't know is reopened from fenced ground only by \
-                    the person"
+            "a session this node hasn't known in the last week is reopened from fenced \
+             ground only by the person"
                 .to_owned(),
         );
     };
@@ -4985,13 +4985,24 @@ impl<S: Store> Shared<S> {
 
     /// Whether the agent asking may reopen `session`, which ran on
     /// `machine`, with its fence left behind, as [`reopens_within`] says:
-    /// asking as the session proved alone, never the nearest claim.
+    /// asking as the session proved alone, never the nearest claim. One
+    /// that machine's node said has ended is judged as it was last told.
     async fn reopened_within(&self, machine: &str, session: &str) -> Result<(), String> {
         let proved = self.session_alone().await;
         let all = self.lock().state.sessions();
+        let gone = || {
+            self.store
+                .gone()
+                .iter()
+                .filter(|one| one.session == session && one.elsewhere.as_deref() == Some(machine))
+                .find_map(|one| mesh::session(one, &self.machine))
+        };
         let reopened = all
             .iter()
-            .find(|one| one.id == session && one.machine == machine);
+            .find(|one| one.id == session && one.machine == machine)
+            .cloned()
+            .or_else(gone);
+        let reopened = reopened.as_ref();
         let who_asks = match &proved {
             Ok(id) => all
                 .iter()
@@ -6335,6 +6346,28 @@ mod tests {
             .await
             .expect("the node lists it in time")
             .expect("the client asks")
+    }
+
+    /// Once the node at `socket` no longer lists session `id`.
+    async fn unlisted(socket: PathBuf, id: &'static str) {
+        let unlisted = tokio::task::spawn_blocking(move || {
+            let mut client = Client::connect(&socket).expect("the client connects");
+            // Nothing tells a client when the link has let a session go,
+            // so it asks again every few milliseconds until it has.
+            loop {
+                let Ok(Ok(Response::Sessions(all))) = client.ask(&Request::Sessions) else {
+                    panic!("the node lists its sessions");
+                };
+                if !all.iter().any(|one| one.id == id) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        tokio::time::timeout(PATIENCE, unlisted)
+            .await
+            .expect("the node lets it go in time")
+            .expect("the client asks");
     }
 
     /// What a node given only its sessions' `steers` and its `starter` runs
@@ -13522,6 +13555,64 @@ esac
             .await,
             Err("skiff's node starts no sessions".to_owned()),
             "one naming no machine is placed on its asker's ground"
+        );
+    }
+
+    // KP0L6A's review of the reopen rule (2026-11-20): a session another
+    // machine's node says has ended is let go here, as every session that
+    // quits is, yet it is still one its quest's agents may reopen there.
+    #[tokio::test]
+    async fn an_agent_reopens_a_session_whose_node_said_it_ended() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        let reopen = |session: &str| {
+            Request::Start(Start {
+                work: work(vec![Need::Machine("tern".to_owned())]),
+                folder: None,
+                command: vec!["pi".to_owned(), "--session".to_owned(), session.to_owned()],
+                may_cost: true,
+                carries: false,
+                once: None,
+            })
+        };
+        for (session, address, quest) in [
+            ("s-gone", "GONE01", "QEST-20261007-WCJQSG"),
+            ("s-other", "OTHER1", "QEST-20261007-OTHER1"),
+        ] {
+            let gone = json!({"session": session, "addresses": [address],
+                              "quest": quest, "at": "2026-11-19T06:00:00Z"});
+            store
+                .put_presence(session, "tern", &gone)
+                .expect("tern's session is kept");
+            listed(socket.clone(), session).await;
+            store
+                .remove_presence(session, "tern")
+                .expect("tern's node said it ended");
+            unlisted(socket.clone(), session).await;
+        }
+        asks_below(&socket, 7001);
+        assert_eq!(
+            ask(socket.clone(), reopen("s-gone")).await,
+            Err("no link reaches tern now to judge a reopening".to_owned()),
+            "a session of the asker's quest that ended there is reopened there"
+        );
+        assert_eq!(
+            ask(socket.clone(), reopen("s-other")).await,
+            Err(
+                "this asks as a strictly fenced agent, so it starts nothing on looser ground: \
+                 tern's strictly fenced session opens builders cloud, which here's doesn't, so \
+                 the session would land looser there; s-other is reopened from fenced ground \
+                 only by an agent of QEST-20261007-OTHER1, one its orchestrator started, or \
+                 the person"
+                    .to_owned()
+            ),
+            "one another quest's agents ran is still theirs once it ended"
         );
     }
 

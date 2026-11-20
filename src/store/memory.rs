@@ -22,6 +22,9 @@ pub struct Memory(Arc<Mutex<Held>>);
 struct Held {
     messages: BTreeMap<String, Value>,
     presences: BTreeMap<String, Presence>,
+    /// The presences of sessions elsewhere let go, every one kept, since
+    /// memory holds no times to let them go by.
+    gone: Vec<Presence>,
     holdings: BTreeMap<String, Value>,
     claimed: BTreeSet<String>,
     linked: BTreeMap<String, i64>,
@@ -303,13 +306,23 @@ impl Store for Memory {
     fn remove_presence(&self, session: &str, machine: &str) -> io::Result<()> {
         let mut held = self.held();
         if held.carries(session, machine) {
-            held.presences.remove(session);
+            if let Some(presence) = held.presences.remove(session) {
+                held.gone.push(Presence {
+                    lives: false,
+                    unreachable_since: None,
+                    ..presence
+                });
+            }
             if held.holds_for(session, machine) {
                 held.holdings.remove(session);
             }
             held.tell(&Change::Presence);
         }
         Ok(())
+    }
+
+    fn gone(&self) -> Vec<Presence> {
+        self.held().gone.clone()
     }
 
     fn holdings(&self) -> Vec<Value> {
