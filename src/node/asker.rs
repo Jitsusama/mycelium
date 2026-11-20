@@ -1057,10 +1057,11 @@ pub fn session_of(
 /// started for it, which the asker runs below (`Processes::spawned_for`,
 /// [`Spawners`]), never by what its command names.
 ///
-/// Below a spawner its host said, while tracing stays shut and the host
-/// proves a session, the spawner decides alone: its session is told
-/// however many share the host. The host's other words were checked once,
-/// when it said the spawner. Elsewhere alone is counted over
+/// Below a spawner its host said, where tracing is shut when it asks and
+/// the host proves a session, the spawner decides alone: its session is
+/// told however many share the host. The host's command line and
+/// environment were read once, when it said the spawner. Elsewhere alone
+/// is counted over
 /// every claim here, proved or not, since a session whose claim doesn't
 /// prove yet still shares its host's process: the nearest of the asker
 /// and its forebears that any claim or owner names must be named by
@@ -1074,8 +1075,9 @@ pub fn session_of(
 /// claim doesn't prove; below a said spawner, when its session no longer
 /// proves; and, where the host proves a session and this node takes its
 /// word (`Processes::takes_word_of`), when the asker is below a spawner
-/// it holds no word for or its lineage can't be read again, though the
-/// host proves just one.
+/// it holds no word for, or whose line has changed since it was said or
+/// since the node took the asker's connection, or its lineage can't be
+/// read again, though the host proves just one.
 pub fn session_alone(
     asker: (Option<i32>, Option<u64>),
     processes: &Processes,
