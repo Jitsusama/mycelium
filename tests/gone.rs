@@ -68,6 +68,10 @@ fn holder(home: &Path) -> Running {
         .env("HOME", home)
         .env("XDG_RUNTIME_DIR", home.join("r"))
         .env("XDG_STATE_HOME", home.join("s"))
+        // Each start lays the user manager's environment over the holder's,
+        // and that names the real runtime folder, where attach would find
+        // no stand-in host and this test would hang on its accept.
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
         .args([
             "--realm", "harbour", "holder", "--id", "window1", "--folder",
         ])

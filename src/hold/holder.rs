@@ -2001,7 +2001,9 @@ mod tests {
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
         let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
         let exiting = Instant::now();
-        window.types("echo first $((40 + 2)); exit 69\r").await;
+        window
+            .types("echo first $((40 + 2)); : > \"$MYCELIUM_GONE\"; exit 69\r")
+            .await;
         window.sees("first 42").await;
         window.sees("pi host is away").await;
         let away = listed_parked(&dir, &mut changes, true).await;
@@ -2025,11 +2027,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_program_exiting_69_for_a_reason_of_its_own_ends_as_any_other() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        // As a tool that is unavailable exits, with no pi host in it.
+        window.types("exit 69\r").await;
+        assert_eq!(
+            exited(holder).await,
+            Some(69),
+            "a 69 its program never said was its pi host ends the holder"
+        );
+    }
+
+    #[tokio::test]
     async fn a_window_joining_while_its_pi_host_is_away_is_told_so() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
         let mut first = Joined::join(socket(&dir, &held.id), WINDOW, None);
-        first.types("exit 69\r").await;
+        first.types(": > \"$MYCELIUM_GONE\"; exit 69\r").await;
         first.sees("pi host is away").await;
         // Nothing more is shown until it tries again, so a window joining now
         // is told by the holder itself.
@@ -2111,13 +2127,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_away_line_stands_over_attachs_leaving_in_a_window_already_joined() {
+        let shown = shown();
+        let (_, mut joined) = shown.join();
+        shown.show(b"\x1b[?1049h\x1b[?1004h");
+        shown.stands(GONE_LINE);
+        // Attach's leaving, read only after the holder has spoken: it turns
+        // focus reporting off and goes back to the main screen.
+        shown.show(b"\x1b[?1004l\x1b[?1049lmycelium: the pi host has gone\r\n");
+        assert!(
+            shown.reports_focus(),
+            "a focus still wakes it once attach has left"
+        );
+        let mut seen = Vec::new();
+        while let Ok(bytes) = joined.try_recv() {
+            seen.extend_from_slice(&bytes);
+        }
+        let left = seen
+            .windows(b"\x1b[?1049l".len())
+            .position(|window| window == b"\x1b[?1049l")
+            .expect("the window was shown attach leaving");
+        assert!(
+            holds(&seen[left..], GONE_LINE),
+            "the window already joined is told again after it: {:?}",
+            String::from_utf8_lossy(&seen)
+        );
+        shown.started();
+        let (_, mut later) = shown.join();
+        shown.show(b"what starts draws");
+        let mut drawn = Vec::new();
+        while let Ok(bytes) = later.try_recv() {
+            drawn.extend_from_slice(&bytes);
+        }
+        assert!(
+            !holds(&drawn, GONE_LINE),
+            "once it starts again, the line isn't drawn over it: {:?}",
+            String::from_utf8_lossy(&drawn)
+        );
+    }
+
     #[tokio::test]
     async fn a_program_whose_pi_host_is_gone_starts_again_by_itself() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
         let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
-        window.types("exit 69\r").await;
+        window.types(": > \"$MYCELIUM_GONE\"; exit 69\r").await;
         window.sees("pi host is away").await;
         listed_parked(&dir, &mut changes, true).await;
         // No key: it tries again once its pause is up, as its host may be back.
