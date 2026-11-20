@@ -56,9 +56,11 @@ How this repository keeps Joel's repository standard:
   core.nix's `nix-offload there`, since what compiles on Linux can fail
   on macOS (its `mode_t` is 16 bits, not 32); there is no hosted CI.
   Where `nix-offload` can't reach a Mac, the same check is built with
-  plain `nix build` on one that builds outside Nix's sandbox, since the
-  check asks for no sandbox and a sandboxed Mac refuses it. Where no Mac answers at all, the merge says so
-  in its Validation, and the Mac build runs before core.nix takes it.
+  plain `nix build` on one whose Nix sets `sandbox = relaxed`, which
+  lets this check alone out of the sandbox it asks to leave; a Mac with
+  the sandbox fully on refuses it. Where no Mac answers at all, the
+  merge says so in its Validation, and the Mac build runs before
+  core.nix takes it.
   A merge goes only through `scripts/merge-gate.sh`, main's own copy,
   which refuses a head that doesn't hold main as it is now, or that
   lacks any Linux check kept as passed at that very commit. So rebase
