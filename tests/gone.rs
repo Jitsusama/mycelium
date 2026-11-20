@@ -15,6 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use mycelium::hold::holder::GONE_AGAIN;
 use mycelium::hold::{Said, socket};
 
 /// How long anything here has to happen before the test gives up.
@@ -24,6 +25,9 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// It is shorter than the pause a holder waits before trying again by
 /// itself, so only the key can meet it.
 const KEY_PATIENCE: Duration = Duration::from_secs(10);
+
+// A key is told apart from the pause only while the pause is the longer.
+const _: () = assert!(KEY_PATIENCE.as_secs() < GONE_AGAIN.as_secs());
 
 /// How the pi host answers a join it takes.
 const ACCEPTED: &str = r#"{"v": 1, "id": "attach", "ok": true, "result": {"sessionId": "s-1"}}"#;

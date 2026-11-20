@@ -11,7 +11,7 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pty_process::OwnedWritePty;
 use rustix::process::{Pid, kill_process};
@@ -57,10 +57,36 @@ pub const RELEASED: u8 = 3;
 
 /// The exit code `mycelium attach --host` ends with when its host stayed
 /// gone past its patience for a restart, or never answered a first join
-/// within its patience for an answer: sysexits' `EX_UNAVAILABLE`, so
-/// whatever runs in the window next waits for the host to come back,
-/// rather than closing the window as it does for a person leaving.
+/// within its patience for an answer, or found no host there at all:
+/// sysexits' `EX_UNAVAILABLE`. The holder keeps its window on it, as for
+/// [`PARKED`], saying the pi host is away, and starts the program again
+/// at a key, a focus, a wake, or once [`gone_pause`] has passed, so the
+/// window joins the host once it's back rather than closing as it does
+/// for a person leaving (since 19 November 2026).
 pub const GONE: u8 = 69;
+
+/// How long a program whose pi host is gone stays down before its holder
+/// first starts it again by itself: attach has already waited out its own
+/// patience for a restart, so a short pause is enough between tries.
+#[cfg(not(test))]
+pub const GONE_AGAIN: Duration = Duration::from_secs(15);
+/// How long a program whose pi host is gone stays down before its holder
+/// first starts it again by itself, shortened for the unit tests.
+#[cfg(test)]
+pub const GONE_AGAIN: Duration = Duration::from_secs(10);
+
+/// The longest pause between a gone program's tries by itself, each try
+/// doubling the last while its host stays away, so a host that never
+/// comes back costs a start every two minutes rather than every 15
+/// seconds. A run lasting this long counts as the host having been back.
+#[cfg(not(test))]
+const GONE_AGAIN_MOST: Duration = Duration::from_secs(120);
+#[cfg(test)]
+const GONE_AGAIN_MOST: Duration = Duration::from_secs(40);
+
+/// What every joined window shows while its program's pi host is away.
+const GONE_LINE: &[u8] =
+    b"\r\nIts pi host is away: this window joins it again by itself once it's back, or now at a key.\r\n";
 
 /// How often a parked holder looks for its wake file. A stat a second
 /// costs nothing, and a message waking a session waits a second at most.
@@ -389,8 +415,10 @@ fn starting(
 /// started again on the same terminal when woken, with the command named
 /// for it from outside if any was (see [`super::name_next`]), else with
 /// the one it named itself; one that wrote its wake file before it went is restarting,
-/// and starts again at once, never shown as parked. How each run ended,
-/// parked or not, is said to the holding's journal.
+/// and starts again at once, never shown as parked. One exiting with
+/// [`GONE`], its pi host away, is kept as a parked one is and also starts
+/// again by itself after [`gone_pause`]. How each run ended, parked or
+/// not, is said to the holding's journal.
 #[expect(
     clippy::too_many_lines,
     reason = "a holder's one life, its first start to its end, reads best whole"
@@ -456,6 +484,7 @@ pub async fn hold(
         output,
         over: watch::Sender::new(false),
         said: Mutex::new(None),
+        standing: Mutex::new(None),
     });
     let mut reader = tokio::spawn(read_output(reading, shown.clone(), starts));
     let mut joined = JoinSet::new();
@@ -478,6 +507,10 @@ pub async fn hold(
     };
     // Told to end as it waited, it ends having started nothing.
     let code = if let Some(mut child) = first {
+        // How many runs in a row have ended with their pi host gone, and
+        // when the latest began.
+        let mut gone_runs = 0u32;
+        let mut began = Instant::now();
         let status = 'held: loop {
             let pid = child.id().unwrap_or_default();
             let run = told.before(child.wait());
@@ -486,17 +519,25 @@ pub async fn hold(
                 None => (ends(&mut child, pid).await?, true),
             };
             ended(holding, pid, &command, status);
+            let gone = status.code() == Some(i32::from(GONE));
             // Told to end, a program that parked as it saved stays down.
-            if telling || status.code() != Some(PARKED) {
+            if telling || (!gone && status.code() != Some(PARKED)) {
                 break status;
             }
-            let mut restarting = restarting(&files.waking, &record, &shown);
+            gone_runs = gone_runs_after(gone_runs, gone, began.elapsed());
+            let mut restarting = if gone {
+                away(&record, &shown);
+                false
+            } else {
+                restarting(&files.waking, &record, &shown)
+            };
+            let again = gone.then(|| gone_pause(gone_runs));
             // One that can't start again stays parked, saying why, rather than
             // ending: its session, its window and its next wake are all still
             // here, and a command named again may start.
             child = loop {
                 if !std::mem::take(&mut restarting) {
-                    let woke = told.before(woken(&terminal, &files.waking, &files.steering));
+                    let woke = told.before(woken_within(&terminal, &files, again));
                     // A parked program has saved all it holds, so being told
                     // to end then ends only the holder.
                     if joining_until(woke, &socket, &mut joined, &serving)
@@ -519,7 +560,9 @@ pub async fn hold(
                     Err(error) => parks(&record, &shown, &unstarted(&error)),
                 }
             };
+            shown.started();
             record.runs(child.id().unwrap_or_default(), &command);
+            began = Instant::now();
         };
         status.code()
     } else {
@@ -561,6 +604,56 @@ async fn its_turn(node: &Path, session: &str, terminal: &Terminal, shown: &Shown
     // Its turn may have come while it watched for a key.
     terminal.parked.send_replace(false);
     shown.says(REOPENING_LINE);
+}
+
+/// How long a program waits to start again by itself once `runs` runs in
+/// a row have ended with its pi host gone: [`GONE_AGAIN`] after the
+/// first, doubling after each one more, to at most [`GONE_AGAIN_MOST`].
+fn gone_pause(runs: u32) -> Duration {
+    let doublings = runs.saturating_sub(1).min(GONE_DOUBLINGS);
+    GONE_AGAIN
+        .saturating_mul(1 << doublings)
+        .min(GONE_AGAIN_MOST)
+}
+
+/// How many runs in a row have ended with their pi host gone, once one
+/// more has ended, `gone` or not, having lasted `lasted`: one that lasted
+/// [`GONE_AGAIN_MOST`] counts as the host having been back between.
+fn gone_runs_after(runs: u32, gone: bool, lasted: Duration) -> u32 {
+    match (gone, lasted < GONE_AGAIN_MOST) {
+        (false, _) => 0,
+        (true, true) => runs.saturating_add(1),
+        (true, false) => 1,
+    }
+}
+
+/// More doublings than any pause needs to reach [`GONE_AGAIN_MOST`], so
+/// the shift stays far inside a `u32`.
+const GONE_DOUBLINGS: u32 = 8;
+
+/// Says to every joined window, and each joining until the program starts
+/// again, that the program's pi host is away, with the program's record
+/// parked. It stands over whatever the ended run's last output shows after
+/// it, as attach saying why it left can be read only once this is said.
+fn away(record: &Record, shown: &Shown) {
+    record.parks();
+    shown.show(FOCUS_ON);
+    shown.stands(GONE_LINE);
+}
+
+/// Waits as [`woken`] does, or until `after` has passed, if given: a
+/// program whose pi host is gone tries again by itself, as the host may
+/// be back.
+async fn woken_within(terminal: &Terminal, files: &Files, after: Option<Duration>) {
+    let Some(after) = after else {
+        return woken(terminal, &files.waking, &files.steering).await;
+    };
+    tokio::select! {
+        () = woken(terminal, &files.waking, &files.steering) => {}
+        () = tokio::time::sleep(after) => {
+            terminal.parked.send_replace(false);
+        }
+    }
 }
 
 /// Says to the holding's journal that the run of `command` as `pid` ended
@@ -790,6 +883,10 @@ struct Shown {
     /// as nothing else it is shown says so. Only ever taken while `modes`
     /// is held, so a window joining is never told it once drawn over.
     said: Mutex<Option<&'static [u8]>>,
+    /// What the holder said that a window joining is told until the program
+    /// starts again, whatever is shown meanwhile, as that its pi host is
+    /// away. Only ever taken while `modes` is held, as `said` is.
+    standing: Mutex<Option<&'static [u8]>>,
 }
 
 impl Shown {
@@ -809,6 +906,23 @@ impl Shown {
     /// each joining until anything else is shown.
     fn says(&self, line: &'static [u8]) {
         self.passes(line, Some(line));
+    }
+
+    /// Passes the holder's own `line` to every joined terminal, and to
+    /// each joining until the program starts again.
+    fn stands(&self, line: &'static [u8]) {
+        let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
+        *self.standing.lock().unwrap_or_else(PoisonError::into_inner) = Some(line);
+        drop(modes);
+        self.passes(line, None);
+    }
+
+    /// Says the program has started again, so what the holder said would
+    /// stand until then is no longer told to a window joining.
+    fn started(&self) {
+        let modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
+        *self.standing.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        drop(modes);
     }
 
     /// Passes `bytes` to every joined terminal, reading them for modes
@@ -847,7 +961,12 @@ impl Shown {
                 .unwrap_or_else(PoisonError::into_inner)
                 .restored(),
         );
-        if let Some(line) = *self.said.lock().unwrap_or_else(PoisonError::into_inner) {
+        let said = *self.said.lock().unwrap_or_else(PoisonError::into_inner);
+        let standing = *self.standing.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(line) = standing.filter(|line| said != Some(*line)) {
+            first.extend_from_slice(line);
+        }
+        if let Some(line) = said {
             first.extend_from_slice(line);
         }
         (first, self.output.subscribe())
@@ -1875,6 +1994,139 @@ mod tests {
         window.sees("again 42").await;
     }
 
+    #[tokio::test]
+    async fn a_program_whose_pi_host_is_gone_keeps_its_window_and_starts_again_at_a_key() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        let exiting = Instant::now();
+        window.types("echo first $((40 + 2)); exit 69\r").await;
+        window.sees("first 42").await;
+        window.sees("pi host is away").await;
+        let away = listed_parked(&dir, &mut changes, true).await;
+        assert_eq!(away.pid, 0, "nothing runs while its pi host is away");
+
+        // A Return, which is harmless to the shell should the pause start it first.
+        window.types("\r").await;
+        let again = listed_parked(&dir, &mut changes, false).await;
+        assert!(
+            again.pid != 0 && again.pid != held.pid,
+            "it runs again as a new process"
+        );
+        assert!(
+            exiting.elapsed() < GONE_AGAIN,
+            "the key started it, before its pause could: {:?}",
+            exiting.elapsed()
+        );
+        window.types("echo again $((6 * 7)); exit 3\r").await;
+        window.sees("again 42").await;
+        assert_eq!(exited(holder).await, Some(3), "a release still ends it");
+    }
+
+    #[tokio::test]
+    async fn a_window_joining_while_its_pi_host_is_away_is_told_so() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let mut first = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        first.types("exit 69\r").await;
+        first.sees("pi host is away").await;
+        // Nothing more is shown until it tries again, so a window joining now
+        // is told by the holder itself.
+        let mut late = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        late.sees("pi host is away").await;
+    }
+
+    #[test]
+    fn a_gone_programs_pause_doubles_while_its_pi_host_stays_away() {
+        assert_eq!(gone_pause(1), GONE_AGAIN, "the first try waits the least");
+        assert_eq!(gone_pause(0), GONE_AGAIN, "no run is the same as one");
+        assert_eq!(gone_pause(2), GONE_AGAIN * 2, "each try doubles the pause");
+        assert_eq!(gone_pause(40), GONE_AGAIN_MOST, "the pause stops growing");
+        assert_eq!(gone_pause(u32::MAX), GONE_AGAIN_MOST, "and never wraps");
+    }
+
+    #[test]
+    fn a_run_long_enough_counts_as_its_pi_host_having_been_back() {
+        let brief = GONE_AGAIN;
+        assert_eq!(
+            gone_runs_after(0, true, brief),
+            1,
+            "the first gone run counts"
+        );
+        assert_eq!(gone_runs_after(3, true, brief), 4, "each in a row counts");
+        assert_eq!(
+            gone_runs_after(3, true, GONE_AGAIN_MOST),
+            1,
+            "a run that lasted starts the count again"
+        );
+        assert_eq!(
+            gone_runs_after(3, false, brief),
+            0,
+            "a run not gone ends it"
+        );
+        assert_eq!(
+            gone_runs_after(u32::MAX, true, brief),
+            u32::MAX,
+            "and never wraps"
+        );
+    }
+
+    /// What is shown, as a holder makes it, with nobody joined yet.
+    fn shown() -> Shown {
+        let (output, _) = broadcast::channel(OUTPUT_BACKLOG);
+        Shown {
+            modes: Mutex::new(Modes::default()),
+            title: Mutex::new(Title::default()),
+            output,
+            over: watch::Sender::new(false),
+            said: Mutex::new(None),
+            standing: Mutex::new(None),
+        }
+    }
+
+    /// Whether `bytes` hold `line` anywhere.
+    fn holds(bytes: &[u8], line: &[u8]) -> bool {
+        bytes.windows(line.len()).any(|window| window == line)
+    }
+
+    #[test]
+    fn the_away_line_stands_over_the_ended_runs_last_output_until_a_start() {
+        let shown = shown();
+        shown.stands(GONE_LINE);
+        // Attach's last words, read only after the holder has spoken.
+        shown.show(b"mycelium: the pi host harbour-background can't be reached\r\n");
+        let (first, _) = shown.join();
+        assert!(
+            holds(&first, GONE_LINE),
+            "a window joining is told its pi host is away: {:?}",
+            String::from_utf8_lossy(&first)
+        );
+        shown.started();
+        let (first, _) = shown.join();
+        assert!(
+            !holds(&first, GONE_LINE),
+            "once it starts again, it no longer says so: {:?}",
+            String::from_utf8_lossy(&first)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_program_whose_pi_host_is_gone_starts_again_by_itself() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window.types("exit 69\r").await;
+        window.sees("pi host is away").await;
+        listed_parked(&dir, &mut changes, true).await;
+        // No key: it tries again once its pause is up, as its host may be back.
+        let again = listed_parked(&dir, &mut changes, false).await;
+        assert!(again.pid != 0, "it runs again with nobody at its window");
+        window.types("echo back $((6 * 7))\r").await;
+        window.sees("back 42").await;
+    }
+
     /// A command resuming the session `01a1-ab`, saying so as it starts.
     fn resuming() -> Vec<String> {
         [
@@ -2149,7 +2401,7 @@ mod tests {
         // waking at all proves a talk wakes it; how fast is the machine's
         // load, said rather than held to, since half a look failed 2 of 3
         // runs on a loaded machine (16 Nov).
-        let landed = std::time::Instant::now();
+        let landed = Instant::now();
         steer_lands(&inbox, "2-b.json", r#"{"text":"are you there?"}"#);
         listed_parked(&dir, &mut changes, false).await;
         eprintln!("a talk woke a parked program in {:?}", landed.elapsed());

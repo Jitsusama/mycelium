@@ -2813,8 +2813,9 @@ fn attach(dir: &Path, id: &str) -> io::Result<()> {
 /// Joins `session` through the pi host `host` of `realm` on this machine
 /// until the host lets it go, exiting [`hold::holder::RELEASED`] when it
 /// lets the conversation go back to plain pi, and [`hold::holder::GONE`]
-/// when it stayed gone past its patience for a restart or never answered
-/// the first join.
+/// when it stayed gone past its patience for a restart, never answered
+/// the first join, isn't running here, or can't be reached, so a holder
+/// keeps the window for it to come back.
 fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode> {
     let runtime_dir = place::login_runtime().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "this login has no runtime folder")
@@ -2822,10 +2823,8 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
     let socket = hosted_attach::socket(&runtime_dir, realm, host)
         .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
     if !socket.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("no pi host {host} is running here"),
-        ));
+        tell!("mycelium: no pi host {host} is running here");
+        return Ok(ExitCode::from(hold::holder::GONE));
     }
     let runtime = runtime()?;
     let left = runtime.block_on(hosted_attach::join_here(&socket, session));
@@ -2839,6 +2838,7 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
             tell!("mycelium: the pi host {host} let the conversation go back to plain pi");
         }
         hosted_attach::Left::Gone => tell!("mycelium: the pi host {host} has gone"),
+        hosted_attach::Left::Unreachable => tell!("mycelium: the pi host {host} can't be reached"),
         hosted_attach::Left::Unanswered(within) => {
             tell!("mycelium: the pi host {host} didn't answer the join in {within:?}");
         }

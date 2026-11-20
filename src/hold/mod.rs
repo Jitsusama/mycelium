@@ -17,7 +17,9 @@
 //! `MYCELIUM_WAKE`, so whatever wakes it needs to know nothing of this
 //! folder. One that says as it parks where its steers land, in
 //! `<id>.steers` (told in `MYCELIUM_STEERS`), wakes too as one lands
-//! there that would give it a turn ([`steering`]).
+//! there that would give it a turn ([`steering`]). One that exits with
+//! [`holder::GONE`], its pi host away, is kept the same way, and also
+//! starts again by itself after a pause, as its host may be back.
 //!
 //! - [`holder`]: the holder, keeping the program's terminal
 //! - [`attach`]: a terminal joining a holder
