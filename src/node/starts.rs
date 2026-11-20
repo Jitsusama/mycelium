@@ -61,6 +61,12 @@ pub const PACED_FOR_AN_AGENT: &str =
 /// at most this many an hour beside the [`NODE_AN_HOUR`].
 pub const RESUMED_AN_HOUR: usize = 128;
 
+/// How long after a start that brings a session back a second is
+/// refused, in milliseconds: the first may still be on its way, its pi
+/// not yet saying it runs, and a second would open the same log beside
+/// it. A retry of one that failed waits this long.
+pub const COMING_BACK: i64 = 120_000;
+
 /// An hour, in milliseconds.
 const HOUR: i64 = 3_600_000;
 
@@ -173,16 +179,17 @@ impl Kept {
 /// `--session-id`: no other word, so no prompt or flag gives the
 /// session new work as it comes back, and no file, which an agent may
 /// have written, nor an id that could name one: only letters, digits,
-/// `-` and `_`, since a presence's id is its writer's word. Only pi itself is read, named bare, as the
-/// person's login finds it, or by a path in [`PIS_FOLDERS`], so no shell,
-/// nor a program an agent wrote and named `pi` elsewhere, hides other
-/// work behind the words; and only an ended session, so one running, or
-/// on a machine out of reach, where it may still run, is never brought
-/// back uncounted. A bare `pi` is fenced by habit alone, since the login
-/// finds it on a path an agent may write: each session the node knows
-/// ended, once an hour, and [`RESUMED_AN_HOUR`] still bound what that
-/// hides. Where it runs is the caller's to pin to the session's own
-/// machine.
+/// `-` and `_`, never first `-`, which pi would read as a flag, since a
+/// presence's id is its writer's word. Only pi itself is read, named
+/// bare, as the person's login finds it, or by a path in
+/// [`PIS_FOLDERS`], so no shell, nor a program an agent wrote and named
+/// `pi` elsewhere, hides other work behind the words; and only an ended
+/// session, so one running, or on a machine out of reach, where it may
+/// still run, is never brought back uncounted. A bare `pi` is fenced by
+/// habit alone, since the login finds it on a path an agent may write:
+/// each session the node knows ended, once an hour through each node,
+/// and [`RESUMED_AN_HOUR`] still bound what that hides. Where it runs,
+/// and in which folder, is the caller's to pin to the session's own.
 #[must_use]
 pub fn brings_back<'a>(command: &[String], sessions: &'a [Session]) -> Option<&'a Session> {
     let program = command.first()?;
@@ -205,6 +212,7 @@ pub fn brings_back<'a>(command: &[String], sessions: &'a [Session]) -> Option<&'
     };
     let plain = |id: &str| {
         !id.is_empty()
+            && !id.starts_with('-')
             && id
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -370,6 +378,23 @@ impl Starts {
         asked.refused.clone_from(&refused);
         self.keep_line(&mut self.lock(), asked);
         Err(refused.unwrap_or_default())
+    }
+
+    /// Whether session `id` is already coming back: a start an agent or
+    /// the person asked to bring it back, not refused, is going or was
+    /// asked within [`COMING_BACK`] before `at`.
+    #[must_use]
+    pub fn coming_back(&self, id: &str, at: i64) -> bool {
+        let book = self.lock();
+        book.kept
+            .iter()
+            .chain(book.going.iter().map(|(_, going)| going))
+            .any(|one| {
+                one.refused.is_none()
+                    && one.resumes.as_deref() == Some(id)
+                    && one.at > at - COMING_BACK
+                    && one.at <= at + COMING_BACK
+            })
     }
 
     /// When the limits that refuse `asked` would let it, in milliseconds
@@ -887,6 +912,47 @@ mod tests {
     }
 
     #[test]
+    fn resumes_dated_up_to_an_hour_ahead_still_fill_the_nodes_uncounted() {
+        let ahead = |by: i64| {
+            let (dir, starts) = book();
+            for one in 0..RESUMED_AN_HOUR {
+                let at = NOW + by + i64::try_from(one).expect("few");
+                started(&starts, resuming("OSPREY", &format!("s-{one}"), at), "h");
+            }
+            for _ in 0..CELL_AN_HOUR {
+                started(&starts, agent("OSPREY", NOW), "h");
+            }
+            (dir, starts)
+        };
+        let (_dir, starts) = ahead(HOUR / 2);
+        let refused = starts
+            .admit(resuming("OSPREY", "s-more", NOW))
+            .expect_err("a clock set back half an hour gains no fresh 128");
+        assert!(refused.contains("OSPREY started 8"), "{refused}");
+        let (_dir, starts) = ahead(2 * HOUR);
+        started(&starts, resuming("OSPREY", "s-more", NOW), "h");
+    }
+
+    #[test]
+    fn a_session_brought_back_is_coming_back_for_two_minutes() {
+        let (_dir, starts) = book();
+        started(&starts, resuming("OSPREY", "s-0", NOW), "h");
+        assert!(
+            starts.coming_back("s-0", NOW + COMING_BACK - 1),
+            "a retry soon after finds it coming back"
+        );
+        assert!(
+            !starts.coming_back("s-0", NOW + COMING_BACK),
+            "not once it has had its time"
+        );
+        assert!(!starts.coming_back("s-1", NOW + 1), "nor another session");
+        assert!(
+            !starts.coming_back("s-new", NOW + 1),
+            "nor one no start brought back"
+        );
+    }
+
+    #[test]
     fn a_start_brings_back_a_session_only_by_its_id_alone_while_it_doesnt_run() {
         let words = |words: &[&str]| {
             words
@@ -901,6 +967,8 @@ mod tests {
             // A presence an agent wrote, naming a file of its own as the id.
             session("/home/x/work/new.jsonl", "ended"),
             session("../new", "ended"),
+            // One pi would read as a flag.
+            session("--continue", "ended"),
         ];
         let file = "/home/x/.pi/agent/sessions/--x--/2026-11-18T22-00-00_0193-ended.jsonl";
         for brought in [
@@ -931,6 +999,8 @@ mod tests {
             words(&["pi", "--session", file]),
             words(&["pi", "--session", "/home/x/work/new.jsonl"]),
             words(&["pi", "--session=../new"]),
+            words(&["pi", "--session", "--continue"]),
+            words(&["pi", "--session=--continue"]),
             words(&["sh", "-c", "new work", "--session", "0193-ended"]),
             words(&["pip", "--session", "0193-ended"]),
             words(&["/home/x/work/pi", "--session", "0193-ended"]),

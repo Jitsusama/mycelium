@@ -278,6 +278,19 @@ fn stands(session: &Session) -> bool {
     matches!(session.state, SessionState::Busy | SessionState::Idle) || parked_presence(session)
 }
 
+/// The folder `session` ran in, as its presence says, for a start that
+/// brings it back: a `~/` path as one within home and a full path as it
+/// is, both for the machine that runs it to judge, whose home and disk
+/// they name; none for `~/` alone, another relative path, or none said.
+fn ran_in(session: &Session) -> Option<PathBuf> {
+    let cwd = session.presence.get("cwd")?.as_str()?;
+    match cwd.strip_prefix("~/") {
+        Some(under) => Some(PathBuf::from(under)),
+        None => Some(PathBuf::from(cwd)).filter(|cwd| cwd.is_absolute()),
+    }
+    .filter(|cwd| cwd.components().next().is_some())
+}
+
 /// Whether `session` has ended parked, which reads its inbox as it wakes.
 fn parked_presence(session: &Session) -> bool {
     session.state == SessionState::Ended
@@ -4659,9 +4672,17 @@ impl<S: Store> Shared<S> {
                 .and_then(|id| all.iter().find(|session| session.id == id))
                 .map(|session| session.address.clone())
                 .filter(|address| forage::is_address(address));
-            let reopened = starts::brings_back(&asked.command, &all)
+            let brought = starts::brings_back(&asked.command, &all);
+            if let Some(session) = brought {
+                self.comes_back_once(session)?;
+            }
+            // One naming a folder of its own is new work there, as one
+            // naming another machine is, since pi takes its project from
+            // the folder it opens in.
+            let reopened = brought
                 .filter(|session| self.reopens_where(session, &asked.work, whither))
-                .map(|session| (session.id.clone(), session.machine.clone()));
+                .map(|session| (session.id.clone(), session.machine.clone(), ran_in(session)))
+                .filter(|(_, _, folder)| asked.folder.is_none() || asked.folder == *folder);
             (started_by, reopened)
         };
         let started_by = started_by.filter(|_| by != By::Person);
@@ -4679,8 +4700,8 @@ impl<S: Store> Shared<S> {
             }
             None => (None, None),
         };
-        let resumes = reopened.map(|(id, machine)| {
-            self.reopen_there(&id, machine, &mut asked, whither);
+        let resumes = reopened.map(|(id, machine, folder)| {
+            Self::reopen_there(machine, folder, &mut asked, whither);
             id
         });
         let admitted = self
@@ -4752,7 +4773,9 @@ impl<S: Store> Shared<S> {
     /// Whether a start of `work`, going where `whither` says, would bring
     /// `session` back on the machine it ran on: here, for one relayed
     /// here; or wherever placement chooses, for one that names no other
-    /// machine. One naming another is new work there, and counts.
+    /// machine. One naming another is new work there, and counts. A node
+    /// sees only its own machine's sessions as ended, since another's
+    /// presence goes as it ends, so that machine is this one in practice.
     fn reopens_where(&self, session: &Session, work: &Work, whither: Whither) -> bool {
         match whither {
             Whither::Here => session.machine == self.machine,
@@ -4763,36 +4786,46 @@ impl<S: Store> Shared<S> {
         }
     }
 
-    /// Pins `asked`, which brings back session `id` that ran on
-    /// `machine`, to that machine, and where it names no folder, to the
-    /// one the session's last presence there says it ran in, so pi opens
-    /// it in its own project rather than asking to fork it into home. A
-    /// `~/` path goes as one within home and a full path as it is, both
-    /// judged by the machine that runs it, whose home and disk they name:
-    /// one gone there leaves it in home, as before.
-    fn reopen_there(&self, id: &str, machine: String, asked: &mut Start, whither: Whither) {
+    /// Refuses a start bringing back `session` where it is coming back
+    /// already: parked this boot, for its holder to wake as it's steered,
+    /// or brought back within [`starts::COMING_BACK`], its pi perhaps not
+    /// yet saying it runs. Either way a second pi would open its log
+    /// beside the first.
+    fn comes_back_once(&self, session: &Session) -> Result<(), String> {
+        let boot = store::folders::boot_id();
+        if session.machine == self.machine && crate::carry::parked(session, boot.as_deref()) {
+            return Err(format!(
+                "{} is parked, and its holder brings it back as it's steered: steer it \
+                 rather than starting it again",
+                session.id
+            ));
+        }
+        if self
+            .starts
+            .coming_back(&session.id, jiff::Timestamp::now().as_millisecond())
+        {
+            return Err(format!(
+                "{} is coming back already, from a start asked in the last {} seconds; \
+                 ask again after that if it hasn't",
+                session.id,
+                starts::COMING_BACK / 1000
+            ));
+        }
+        Ok(())
+    }
+
+    /// Pins `asked`, which brings back a session that ran on `machine`
+    /// in `folder`, to that machine, and where it names no folder, to
+    /// that one, so pi opens it in its own project rather than asking to
+    /// fork it into home: one gone there leaves it in home, as before.
+    fn reopen_there(machine: String, folder: Option<PathBuf>, asked: &mut Start, whither: Whither) {
         let named = asked
             .work
             .needs
             .iter()
             .any(|need| matches!(need, Need::Machine(_)));
         if asked.folder.is_none() {
-            asked.folder = self
-                .store
-                .presences()
-                .into_iter()
-                .find(|presence| {
-                    presence.session == id
-                        && presence.elsewhere.as_deref().unwrap_or(&self.machine) == machine
-                })
-                .and_then(|presence| {
-                    let cwd = presence.body.get("cwd")?.as_str()?;
-                    match cwd.strip_prefix("~/") {
-                        Some(under) => Some(PathBuf::from(under)),
-                        None => Some(PathBuf::from(cwd)).filter(|cwd| cwd.is_absolute()),
-                    }
-                })
-                .filter(|cwd| cwd.components().next().is_some());
+            asked.folder = folder;
         }
         if whither == Whither::Placed && !named {
             asked.work.needs.push(Need::Machine(machine));
@@ -13267,6 +13300,40 @@ esac
         ));
     }
 
+    #[test]
+    fn a_session_comes_back_in_a_folder_only_its_presence_names_whole() {
+        let ran = |cwd: Value| {
+            let session: Session = serde_json::from_value(json!({
+                "id": "s-0", "address": "OSPREY", "machine": "skiff", "groups": [],
+                "state": "ended", "at": "2026-11-20T00:00:00Z", "presence": {"cwd": cwd},
+            }))
+            .expect("a session");
+            ran_in(&session)
+        };
+        assert_eq!(ran(json!("/w/project")), Some(PathBuf::from("/w/project")));
+        assert_eq!(
+            ran(json!("~/src/project")),
+            Some(PathBuf::from("src/project")),
+            "one said from home goes as a folder within it"
+        );
+        for none in [
+            json!("~/"),
+            json!("~"),
+            json!("~x/src"),
+            json!("src/x"),
+            json!(""),
+            json!(7),
+        ] {
+            assert_eq!(ran(none.clone()), None, "{none}");
+        }
+        let session: Session = serde_json::from_value(json!({
+            "id": "s-0", "address": "OSPREY", "machine": "skiff", "groups": [],
+            "state": "ended", "at": "2026-11-20T00:00:00Z",
+        }))
+        .expect("a session");
+        assert_eq!(ran_in(&session), None, "nor where its presence says none");
+    }
+
     // WCJQSG (2026-11-19): the Mac waves brought back held sessions on
     // their own files, and a restarted machine's every session must come
     // back, in its own folder, whatever the cell or the node has started.
@@ -13297,23 +13364,13 @@ esac
                 false,
             );
         }
-        // One more ended here, never brought back in the wave.
-        store.start_here(
-            "s-spare",
-            json!({"session": "s-spare", "addresses": ["SPARE1"], "groups": [],
-                   "busy": false, "state": "listening", "at": at}),
-            false,
-        );
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
         // As in the limit's test, each start stays here.
         declares_runs(&socket, true);
-        store
-            .put_machine(&fenced("tern", &["remote", "cloud"]))
-            .expect("what it said is kept");
-        let placed = |command: &[&str], needs: Vec<Need>| {
+        let start = |command: &[&str]| {
             Request::Start(Start {
-                work: work(needs),
+                work: work(Vec::new()),
                 folder: None,
                 command: command.iter().map(|&word| word.to_owned()).collect(),
                 may_cost: false,
@@ -13321,7 +13378,6 @@ esac
                 once: None,
             })
         };
-        let start = |command: &[&str]| placed(command, Vec::new());
         asks_below(&socket, 7001);
         for session in &wave {
             assert_eq!(
@@ -13337,20 +13393,6 @@ esac
                 "the wave left the cell its eight"
             );
         }
-        // Bringing one back a second time in the hour counts, as new work.
-        let refused = ask(socket.clone(), start(&["pi", "--session", &wave[0]]))
-            .await
-            .expect_err("a second time counts");
-        assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
-        // And so does bringing one back on another machine.
-        let elsewhere = vec![Need::Machine("tern".to_owned())];
-        let refused = ask(
-            socket.clone(),
-            placed(&["pi", "--session", "s-spare"], elsewhere),
-        )
-        .await
-        .expect_err("on another machine it counts");
-        assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
         asks_as_person(&socket);
         let Ok(Response::Starts { newest, .. }) = ask(
             socket,
@@ -13380,6 +13422,117 @@ esac
             "one said from home goes as a folder within it: {last}"
         );
         assert_eq!(first["started_by"], "WCJQSG", "{first}");
+    }
+
+    // WCJQSG (2026-11-19): a session is brought back uncounted only where
+    // it ran, and never twice at once, which would open its log twice.
+    #[tokio::test]
+    async fn a_session_brought_back_elsewhere_counts_and_twice_is_refused() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let at = jiff::Timestamp::now().to_string();
+        let project = |one: usize| dir.path().join(format!("project-{one}"));
+        // Ended here, each in a folder of its own, and one parked this
+        // boot, which its holder wakes as it's steered.
+        let ended = ["s-spare", "s-own", "s-other", "s-skiff", "s-parked"];
+        for (one, session) in ended.iter().enumerate() {
+            let state = if *session == "s-parked" { "parked" } else { "listening" };
+            store.start_here(
+                session,
+                json!({"session": session, "addresses": [format!("SPARE{one}")],
+                       "groups": [], "busy": false, "state": state, "at": at,
+                       "cwd": project(100 + one)}),
+                false,
+            );
+        }
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        store
+            .put_machine(&fenced("tern", &["remote", "cloud"]))
+            .expect("what it said is kept");
+        let foldered = |command: &[&str], needs: Vec<Need>, folder: Option<PathBuf>| {
+            Request::Start(Start {
+                work: work(needs),
+                folder,
+                command: command.iter().map(|&word| word.to_owned()).collect(),
+                may_cost: false,
+                carries: false,
+            })
+        };
+        let placed = |command: &[&str], needs: Vec<Need>| foldered(command, needs, None);
+        let start = |command: &[&str]| placed(command, Vec::new());
+        asks_below(&socket, 7001);
+        // The cell spends its eight, so anything counted is refused.
+        for _ in 0..starts::CELL_AN_HOUR {
+            assert_eq!(
+                ask(socket.clone(), start(&["pi"])).await,
+                Err("skiff's node starts no sessions".to_owned()),
+                "the cell has its eight"
+            );
+        }
+        // Naming its own folder, or its own machine, it still counts for
+        // nothing.
+        assert_eq!(
+            ask(
+                socket.clone(),
+                foldered(
+                    &["pi", "--session", "s-own"],
+                    Vec::new(),
+                    Some(project(101))
+                ),
+            )
+            .await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "in its own folder it is brought back uncounted"
+        );
+        assert_eq!(
+            ask(
+                socket.clone(),
+                placed(
+                    &["pi", "--session", "s-skiff"],
+                    vec![Need::Machine("skiff".to_owned())]
+                ),
+            )
+            .await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "on its own machine it is brought back uncounted"
+        );
+        // In another folder, which pi takes its project from, it counts.
+        let refused = ask(
+            socket.clone(),
+            foldered(
+                &["pi", "--session", "s-other"],
+                Vec::new(),
+                Some(dir.path().join("elsewhere")),
+            ),
+        )
+        .await
+        .expect_err("in another folder it counts");
+        assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
+        // One coming back already, or parked for its holder to wake, is
+        // refused, since either would open its log twice.
+        let refused = ask(socket.clone(), start(&["pi", "--session", "s-own"]))
+            .await
+            .expect_err("a second start soon after is refused");
+        assert!(refused.contains("is coming back already"), "{refused}");
+        let refused = ask(socket.clone(), start(&["pi", "--session", "s-parked"]))
+            .await
+            .expect_err("a parked one is refused");
+        assert!(
+            refused.contains("steer it rather than starting it"),
+            "{refused}"
+        );
+        // And so does bringing one back on another machine.
+        let elsewhere = vec![Need::Machine("tern".to_owned())];
+        let refused = ask(
+            socket.clone(),
+            placed(&["pi", "--session", "s-spare"], elsewhere),
+        )
+        .await
+        .expect_err("on another machine it counts");
+        assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
     }
 
     // WCJQSG (2026-11-18): a refused start must never wait on the person,

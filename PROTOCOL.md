@@ -1672,18 +1672,25 @@ starts are never counted or refused. An agent's first start in the
 hour that brings back a session the node knows has ended, on the
 machine it ran on, counts toward neither, up to 128 through the node
 in the hour, so every session a restarted machine held comes back at
-once; past that, each counts as new work. One naming no machine goes
-to the session's, and one naming no folder begins in the `cwd` its
-last presence said, where that folder is still there, so pi opens it
-in its own project; one naming another machine is new work there,
-and counts. It is pi itself, named bare or under
+once; past that, each counts as new work. A node knows only its own
+machine's sessions as ended, since another's presence goes when it
+ends, so a wave is asked of the restarted machine's own node. One
+naming no machine stays on the session's, and one naming no folder
+begins in the `cwd` its last presence said, where that folder is
+still there, so pi opens it in its own project; one naming another
+machine or another folder is new work there, and counts, since pi
+takes its project from the folder. It is pi itself, named bare or under
 `/run/current-system/sw/bin/` or `/etc/profiles/per-user/`, with no
 word but `--session` or `--session-id` and the session's id, so no
 prompt or flag gives it new work, nor a file an agent wrote. A bare
 `pi` is the one the login finds, so it fences habit alone, and each
-ended session once an hour, and the 128, bound what it hides. A
-second bringing back the same one within the hour counts as new work,
-and one running or on a machine out of reach is never brought back. A
+ended session once an hour through each node, and the 128, bound what
+it hides. A second bringing back the same one within the hour counts
+as new work, and one within two minutes of the first is refused, as
+is one parked this boot, which its holder wakes as it's steered,
+since either would open the session's log twice. An id beginning
+`-` is never one, and one running or on a machine out of reach is
+never brought back. A
 start past the limits with room again within a minute waits for it
 and goes through; one further off is refused, saying in how many
 minutes and at what time there is room, and that it goes to the
