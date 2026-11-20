@@ -401,12 +401,16 @@ const LOOKED_THROUGH: usize = 65_536;
 /// which only the agent fence starts. The harness fences each command
 /// rather than pi itself, so pi's own seccomp, `no_new_privs` and mount
 /// namespace say nothing of it, and the strict fence's Landlock leaves
-/// nothing past each command it runs.
+/// nothing past each command it runs. A pi host's environment and
+/// commands are those of every session it holds, so a hosted session's
+/// fence is the one its host's record names for it, as [`hosted_fence`]
+/// reads it.
 ///
 /// # Errors
 ///
 /// Where who owns `session` can't be proved, or its process read, as on a
-/// Mac, since then the fence it runs in can't be told.
+/// Mac, or its host's record names no fence for it, since then the fence
+/// it runs in can't be told.
 pub fn shown_fence(
     claims: &[Claim],
     processes: &Processes,
@@ -430,13 +434,10 @@ pub fn shown_fence(
         .iter()
         .find(|claim| claim.session == session)
         .ok_or_else(unproved)?;
-    if claim.host.is_some() {
-        return Err(format!(
-            "{session} runs in a pi host, whose environment says nothing of each session's \
-             fence, so the fence it runs in can't be told"
-        ));
-    }
     let ticks = claim.start_ticks.ok_or_else(unproved)?;
+    if let Some(host) = &claim.host {
+        return hosted_fence(procs, hosts, host, pid, ticks, session);
+    }
     shown_of(procs, &Tree::of(procs), pid, ticks, session)
 }
 
@@ -461,11 +462,12 @@ pub fn shown_fences(
         .into_iter()
         .filter_map(|(session, pid)| {
             let claim = claims.iter().find(|claim| claim.session == session)?;
-            if claim.host.is_some() {
-                return None;
-            }
-            let shown = shown_of(procs, &tree, pid, claim.start_ticks?, &session).ok()?;
-            Some((session, shown))
+            let ticks = claim.start_ticks?;
+            let shown = match &claim.host {
+                Some(host) => hosted_fence(procs, hosts, host, pid, ticks, &session),
+                None => shown_of(procs, &tree, pid, ticks, &session),
+            };
+            Some((session, shown.ok()?))
         })
         .collect()
 }
@@ -506,6 +508,103 @@ fn shown_of(
     } else {
         began
     })
+}
+
+/// The most of a pi host's record read, so a record grown past any a
+/// host writes holds no carry up.
+const HOST_RECORD_MOST: u64 = 1 << 20;
+
+/// The fence the pi host keyed `key`, run by process `pid` started
+/// `ticks` after boot, names for `session` in its record in `hosts`, as
+/// the harness writes it there and rewrites it as the session's fence
+/// changes: `none`, `fence` or `strict`. A record that names none for it,
+/// or a word no harness writes, says nothing, so the fence can't be told,
+/// never guessed looser; nor can a record read as [`host_record`]
+/// refuses, or once `pid` is another process, read again last.
+fn hosted_fence(
+    procs: &Path,
+    hosts: &Path,
+    key: &str,
+    pid: i32,
+    ticks: u64,
+    session: &str,
+) -> Result<Kind, String> {
+    let untold = |why: &str| {
+        format!(
+            "{session} runs in a pi host whose record {why}, so the fence it runs in can't be told"
+        )
+    };
+    let record = host_record(hosts, pid, ticks).map_err(|why| untold(&why))?;
+    if record.get("key").and_then(Value::as_str) != Some(key)
+        || record.pointer("/owner/pid").and_then(Value::as_i64) != Some(i64::from(pid))
+        || record.pointer("/owner/startTicks").and_then(Value::as_u64) != Some(ticks)
+    {
+        return Err(untold("is another host's"));
+    }
+    let said = record
+        .get("sessions")
+        .and_then(Value::as_array)
+        .and_then(|sessions| {
+            sessions
+                .iter()
+                .find(|one| one.get("id").and_then(Value::as_str) == Some(session))
+        })
+        .ok_or_else(|| untold("doesn't hold it"))?;
+    let kind = match said.get("fence").and_then(Value::as_str) {
+        Some("none") => Kind::None,
+        Some("fence") => Kind::Fence,
+        Some("strict") => Kind::Strict,
+        _ => return Err(untold("names no fence for it")),
+    };
+    // Read again last, so the record read was that process's.
+    if started(procs, pid) != Some(ticks) {
+        return Err(format!(
+            "{session}'s pi host {pid} ended while its record was read, so the fence it runs \
+             in can't be told"
+        ));
+    }
+    Ok(kind)
+}
+
+/// The record the pi host run by process `pid`, started `ticks` after
+/// boot, keeps in `hosts` as `<pid>-<ticks>.json`, read only where
+/// nothing but this account could have put it there: `hosts` reached
+/// through no link, a folder of this account's that no group or other
+/// account may write, and the record itself a file of this account's,
+/// readable and writable by it alone, as the harness writes it, opened
+/// without following a link. Every fence keeps pi's state folder from
+/// its commands, so a fenced command can neither write the record nor
+/// put another folder in its place.
+fn host_record(hosts: &Path, pid: i32, ticks: u64) -> Result<Value, String> {
+    use rustix::fs::{Mode, OFlags};
+    use std::io::Read as _;
+    use std::os::unix::fs::MetadataExt as _;
+    let own = rustix::process::geteuid().as_raw();
+    if fs::canonicalize(hosts).ok().as_deref() != Some(hosts) {
+        return Err("folder is reached through a link, or isn't there".to_owned());
+    }
+    let folder = fs::symlink_metadata(hosts).map_err(|_| "folder can't be read".to_owned())?;
+    if !folder.is_dir() || folder.uid() != own || folder.mode() & 0o022 != 0 {
+        return Err("folder isn't this account's alone to write".to_owned());
+    }
+    // Opened without blocking, too, so one put there as a pipe holds
+    // nothing up before it is seen to be no file.
+    let file = rustix::fs::open(
+        hosts.join(format!("{pid}-{ticks}.json")),
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(fs::File::from)
+    .map_err(|_| "can't be opened as a file".to_owned())?;
+    let written = file.metadata().map_err(|_| "can't be read".to_owned())?;
+    if !written.is_file() || written.uid() != own || written.mode() & 0o777 != 0o600 {
+        return Err("isn't a file this account alone may read and write".to_owned());
+    }
+    let mut text = String::new();
+    file.take(HOST_RECORD_MOST)
+        .read_to_string(&mut text)
+        .map_err(|_| "can't be read".to_owned())?;
+    serde_json::from_str(&text).map_err(|_| "can't be read as a record".to_owned())
 }
 
 /// The machine's processes, each by its id with its name and parent, as
@@ -2973,34 +3072,128 @@ mod tests {
     }
 
     /// Writes the record of the host `work-background`, run by pi 58, as
-    /// holding `sessions`.
-    fn hosts_in_58(hosts: &Path, sessions: &[&str]) {
+    /// holding `sessions`, each with the fence it names, if any, readable
+    /// and writable by this account alone, as the harness writes it.
+    fn hosts_in_58(hosts: &Path, sessions: &[(&str, Option<&str>)]) {
+        use std::os::unix::fs::PermissionsExt as _;
         let sessions: Vec<Value> = sessions
             .iter()
-            .map(|id| json!({"id": id, "state": "running"}))
+            .map(|(id, fence)| match fence {
+                Some(fence) => json!({"id": id, "state": "running", "fence": fence}),
+                None => json!({"id": id, "state": "running"}),
+            })
             .collect();
+        let record = hosts.join("58-500.json");
         fs::write(
-            hosts.join("58-500.json"),
+            &record,
             json!({"key": "work-background",
                    "owner": {"pid": 58, "startedAt": 1, "startTicks": 500},
                    "sessions": sessions})
             .to_string(),
         )
         .expect("its host's record is written");
+        fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).expect("its own");
+    }
+
+    /// The fence `s-own`, held by the host `work-background` that pi 58
+    /// runs, shows it runs in, its host's records read from `hosts`.
+    fn shown_hosted(
+        (procs, logs, _): &(tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
+        hosts: &Path,
+    ) -> Result<Kind, String> {
+        shown_fence(
+            &[claim("s-own", 58, Some(500), Some("work-background"))],
+            &folder(procs.path()),
+            hosts,
+            logs.path(),
+            "s-own",
+        )
     }
 
     #[test]
-    fn a_hosted_session_shows_no_fence_of_its_own() {
+    fn a_hosted_session_shows_the_fence_its_hosts_record_names() {
+        // Strict as the host began, so only its record can say looser.
         let hosted = fenced_pi("PI_SANDBOX=strict\0", &[(71, "bwrap", 58)]);
-        hosts_in_58(hosted.2.path(), &["s-own"]);
+        let hosts = fs::canonicalize(hosted.2.path()).expect("its real path");
+        for (word, kind) in [
+            ("none", Kind::None),
+            ("fence", Kind::Fence),
+            ("strict", Kind::Strict),
+        ] {
+            hosts_in_58(
+                &hosts,
+                &[("s-own", Some(word)), ("s-other", Some("strict"))],
+            );
+            assert_eq!(
+                shown_hosted(&hosted, &hosts),
+                Ok(kind),
+                "its own, as its record names it: {word}"
+            );
+        }
+        let untold = |why: &str| {
+            Err(format!(
+                "s-own runs in a pi host whose record {why}, so the fence it runs in can't be \
+                 told"
+            ))
+        };
+        hosts_in_58(&hosts, &[("s-own", None), ("s-other", Some("strict"))]);
         assert_eq!(
-            shown(&hosted, Some("work-background")),
-            Err(
-                "s-own runs in a pi host, whose environment says nothing of each session's \
-                 fence, so the fence it runs in can't be told"
-                    .to_owned()
-            ),
-            "a host's environment and commands are those of every session it holds"
+            shown_hosted(&hosted, &hosts),
+            untold("names no fence for it"),
+            "one an older harness wrote, or the host couldn't say, is never guessed"
+        );
+        hosts_in_58(&hosts, &[("s-own", Some("loose"))]);
+        assert_eq!(
+            shown_hosted(&hosted, &hosts),
+            untold("names no fence for it"),
+            "nor one a word no harness writes names"
+        );
+    }
+
+    #[test]
+    fn a_hosts_record_another_account_or_a_link_could_have_put_there_says_no_fence() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let hosted = fenced_pi("PI_SANDBOX=strict\0", &[]);
+        let hosts = fs::canonicalize(hosted.2.path()).expect("its real path");
+        let record = hosts.join("58-500.json");
+        let untold = |why: &str| {
+            Err(format!(
+                "s-own runs in a pi host whose record {why}, so the fence it runs in can't be \
+                 told"
+            ))
+        };
+        hosts_in_58(&hosts, &[("s-own", Some("none"))]);
+        assert_eq!(shown_hosted(&hosted, &hosts), Ok(Kind::None), "as written");
+        fs::set_permissions(&record, fs::Permissions::from_mode(0o644)).expect("opened");
+        assert_eq!(
+            shown_hosted(&hosted, &hosts),
+            untold("isn't a file this account alone may read and write"),
+            "a record others may read is none the harness wrote"
+        );
+        let elsewhere = tempfile::tempdir().expect("somewhere else");
+        let planted = elsewhere.path().join("58-500.json");
+        fs::rename(&record, &planted).expect("moved");
+        fs::set_permissions(&planted, fs::Permissions::from_mode(0o600)).expect("its own");
+        std::os::unix::fs::symlink(&planted, &record).expect("linked");
+        assert_eq!(
+            shown_hosted(&hosted, &hosts),
+            untold("can't be opened as a file"),
+            "nor one reached through a link"
+        );
+        fs::remove_file(&record).expect("unlinked");
+        hosts_in_58(&hosts, &[("s-own", Some("none"))]);
+        let linked = elsewhere.path().join("hosts");
+        std::os::unix::fs::symlink(&hosts, &linked).expect("linked");
+        assert_eq!(
+            shown_hosted(&hosted, &linked),
+            untold("folder is reached through a link, or isn't there"),
+            "nor a folder put in the hosts' place as a link"
+        );
+        fs::set_permissions(&hosts, fs::Permissions::from_mode(0o775)).expect("opened");
+        assert_eq!(
+            shown_hosted(&hosted, &hosts),
+            untold("folder isn't this account's alone to write"),
+            "nor a folder its group may write"
         );
     }
 
@@ -3028,20 +3221,26 @@ mod tests {
     #[test]
     fn the_fences_shown_are_those_of_each_session_proved_to_run_alone() {
         let (procs, logs, hosts) = fenced_pi("PI_SANDBOX=fence\0", &[]);
-        hosts_in_58(hosts.path(), &["s-hosted"]);
+        let hosts = fs::canonicalize(hosts.path()).expect("its real path");
+        hosts_in_58(&hosts, &[("s-hosted", None), ("s-told", Some("strict"))]);
         holds_log(procs.path(), 58, logs.path(), "s-hosted");
+        holds_log(procs.path(), 58, logs.path(), "s-told");
         let claims = [
             claim("s-own", 58, Some(500), None),
             claim("s-hosted", 58, Some(500), Some("work-background")),
+            claim("s-told", 58, Some(500), Some("work-background")),
             claim("s-ghost", 59, Some(1), None),
         ];
-        let shown = |claims: &[Claim]| {
-            shown_fences(claims, &folder(procs.path()), hosts.path(), logs.path())
-        };
+        let shown =
+            |claims: &[Claim]| shown_fences(claims, &folder(procs.path()), &hosts, logs.path());
         assert_eq!(
             shown(&claims),
-            BTreeMap::from([("s-own".to_owned(), Kind::Fence)]),
-            "neither a hosted session nor one whose owner isn't proved"
+            BTreeMap::from([
+                ("s-own".to_owned(), Kind::Fence),
+                ("s-told".to_owned(), Kind::Strict)
+            ]),
+            "a hosted session as its record names it, but neither one it names none for nor \
+             one whose owner isn't proved"
         );
         let twice = [
             claim("s-own", 58, Some(500), None),

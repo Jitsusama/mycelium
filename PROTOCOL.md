@@ -676,7 +676,10 @@ session says of itself:
   `quests`, in place of what it said before. Pi says it as a session
   loads an orchestrating quest and whenever the quests below it change,
   and says it with neither as it unloads or concludes, which forgets
-  what that session held. A quest another session holds is refused:
+  what that session held; `"Orchestrating"` asks what the session
+  asking holds, changing nothing, answered
+  `{"Orchestrating": {"heads", "quests"}}`, each left out where it holds
+  none. A quest another session holds is refused:
   only that session hands it on, by forgetting it, or by being
   continued, as a session whose log's first line, `<time>_<id>.jsonl`
   under pi's `sessions` folder, names it as `parentSession`. What a
@@ -719,9 +722,20 @@ session says of itself:
   fenced, so where it may land can't be told`; one naming a stricter
   stands, since the strict fence leaves nothing lasting to show. A
   process that can't be read, one that ends while it is read, or an
-  owner that can't be proved, is refused too, and so is a session a
-  pi host runs, since the host's environment says nothing of each
-  session's fence.
+  owner that can't be proved, is refused too.
+- A session a pi host runs shows the fence its host's record names for
+  it, since the host's environment and commands are every session's:
+  the `fence` (`none`, `fence` or `strict`) of its entry in the record's
+  `sessions`, which the host rewrites as that session's fence changes.
+  The record is read only where nothing but this account could have put
+  it there: its folder reached through no link, this account's own and
+  writable by no group or other account, and the record a plain file,
+  opened without following a link, this account's and readable by it
+  alone. Its `owner` must still name the host's process, by `pid` and
+  `startTicks`, as it is read and after. A record failing any of that,
+  naming no entry for the session, or naming another word, is refused,
+  since the fence can't be told. Every fence keeps pi's state folder
+  from its commands, so no fenced command can write the record.
 - A fence missing from what a process shows proves nothing: a
   `bwrap` lives only while a command it fences runs, and a session
   may switch its fence on after its pi began. So the node looks at
@@ -1765,6 +1779,18 @@ relayed from another machine's node through the person's link is that
 node's to count, book and stop, so the machine it runs on does none of
 these again; one relayed by an agent is counted, booked and stopped
 there as that agent's own start.
+
+A session an orchestrator's carry takes to another machine begins no
+new work there, so its start counts toward neither limit, once an hour
+for each session, sharing the 128 with the sessions brought back. The
+node asked judges it so only for a start counted toward the very cell
+that ordered the carry, word for word the start the carry gives its
+session, and matching a carry this node kept in `carries.jsonl` from
+here, of that session in that quest, by that cell, to the one machine
+the start names, for the same reason. The carry was proved as it was
+ordered, so a cell starts uncounted only the sessions it was proved to
+orchestrate. Its line in `starts.jsonl` names the session as `carried`.
+A start relayed from another node is judged as before.
 
 A start may carry `once`, the asker's own name for it, 1 to 64 bytes,
 as `mycelium start --once NAME` gives it. An asker that heard no answer

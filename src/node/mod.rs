@@ -3310,6 +3310,9 @@ impl<S: Store> Shared<S> {
             Request::Orchestrates { .. } => {
                 Err("an orchestration is answered by `orchestrates`".to_owned())
             }
+            Request::Orchestrating => {
+                Err("an orchestration read is answered by `orchestrating`".to_owned())
+            }
             Request::Free { .. } => Err("freeing a quest is answered by `frees`".to_owned()),
             Request::Starts { .. } => Err("starts are answered by `starts_asked`".to_owned()),
             Request::Spawned { .. } => Err("a spawner is answered by `spawned`".to_owned()),
@@ -4164,6 +4167,33 @@ impl<S: Store> Shared<S> {
         .await
     }
 
+    /// What the session asking orchestrates by this node's record, as
+    /// the kernel and pi's records prove which session asks, changing
+    /// nothing. A claim lapsed as [`Self::orchestrates`] would lapse it
+    /// is shown as none, though the record keeps it until the next
+    /// change.
+    async fn orchestrating(&self) -> Reply {
+        let asker = self.asking_session().await?;
+        let standing: std::collections::BTreeSet<String> = self
+            .standing()
+            .into_iter()
+            .map(|presence| presence.session)
+            .collect();
+        let file = self.orchestrations.clone();
+        let mut record = tokio::task::spawn_blocking(move || chain::Orchestrations::read(&file))
+            .await
+            .map_err(|error| format!("the record of orchestrations couldn't be read: {error}"))?
+            .map_err(|error| format!("the record of orchestrations can't be read: {error}"))?;
+        record.lapse(|session| standing.contains(session));
+        let claim = record.sessions.get(&asker);
+        Ok(Response::Orchestrating {
+            heads: claim.map(|claim| claim.heads.clone()),
+            quests: claim
+                .map(|claim| claim.quests.iter().cloned().collect())
+                .unwrap_or_default(),
+        })
+    }
+
     /// Stops, resumes or lists agents' starts, where the person's own
     /// login asks: a list too, since it names the person's own folders.
     async fn starts_asked(&self, act: crate::wire::StartsAct) -> Reply {
@@ -4796,6 +4826,7 @@ impl<S: Store> Shared<S> {
             None => (None, None),
         };
         let resumes = Self::brought_there(reopened, on, &mut asked, whither);
+        let carried = self.carried_by_order(by, started_by.as_deref(), &asked, whither);
         let kept = starts::Kept {
             at,
             by,
@@ -4804,6 +4835,7 @@ impl<S: Store> Shared<S> {
             program: asked.command.first().cloned(),
             resumes,
             reopens,
+            carried,
             machine: None,
             held: None,
             failed: None,
@@ -4910,6 +4942,47 @@ impl<S: Store> Shared<S> {
                 .filter(|session| by != By::Person && inner.turns.holds(&session.id))
                 .map(|session| session.id.clone()),
         }
+    }
+
+    /// The session `asked` starts uncounted as the arrival of a carry its
+    /// own cell ordered from here: an agent's start asked of this node,
+    /// word for word the start such a carry gives its session
+    /// (`carry::ordered_arrival`), counted toward the very cell it says
+    /// ordered it, and matching a carry this node kept from here, as far
+    /// back as settling looks, of that session in that quest, by that
+    /// cell, to the one machine the start needs, for the same reason. The
+    /// carry was proved as it was ordered, so a cell can start uncounted
+    /// only the sessions it was proved to orchestrate, and the book still
+    /// counts a second of one within the hour. None for any other start,
+    /// which counts as it would.
+    fn carried_by_order(
+        &self,
+        by: By,
+        started_by: Option<&str>,
+        asked: &Start,
+        whither: Whither,
+    ) -> Option<String> {
+        if !matches!(by, By::Agent(_)) || whither != Whither::Placed {
+            return None;
+        }
+        let ordered = crate::carry::ordered_arrival(&asked.command)?;
+        let cell = started_by.filter(|cell| cell.eq_ignore_ascii_case(ordered.by))?;
+        let [Need::Machine(to)] = asked.work.needs.as_slice() else {
+            return None;
+        };
+        let arrives = &ordered.arrives;
+        if arrives.from != self.machine {
+            return None;
+        }
+        let kept = self.carries_looked_at().into_iter().any(|carry| {
+            carry.said("session") == arrives.session
+                && carry.said("by").eq_ignore_ascii_case(cell)
+                && carry.said("from") == self.machine
+                && carry.said("to") == to.as_str()
+                && carry.said("quest") == arrives.quest
+                && carry.said("why") == ordered.why
+        });
+        kept.then(|| arrives.session.to_owned())
     }
 
     /// Whether a start of `work`, going where `whither` says, would bring
@@ -5976,6 +6049,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             Ok(Request::Orchestrates { heads, quests }) => {
                 shared.orchestrates(heads, quests).await.into()
             }
+            Ok(Request::Orchestrating) => shared.orchestrating().await.into(),
             Ok(Request::Free { quest }) => shared.frees(quest).await.into(),
             Ok(Request::Starts { act }) => shared.starts_asked(act).await.into(),
             Ok(Request::Spawned {
@@ -9478,11 +9552,30 @@ esac
             ),
             "and orders nothing"
         );
+        let read = |pid: i32| {
+            asks_below(&socket, pid);
+            ask(socket.clone(), Request::Orchestrating)
+        };
+        let none = Ok(Response::Orchestrating {
+            heads: None,
+            quests: Vec::new(),
+        });
+        assert_eq!(read(7002).await, none, "the refused claim is kept for none");
+        let held = Ok(Response::Orchestrating {
+            heads: Some("QEST-20261007-WCJQSG".to_owned()),
+            quests: vec![
+                "QEST-20261108-OSPHT4".to_owned(),
+                "QEST-20261115-HARBOR".to_owned(),
+            ],
+        });
+        assert_eq!(read(7001).await, held, "reading the claim keeps it");
+        assert_eq!(read(7001).await, held, "however often it is read");
         assert_eq!(
             claims(&socket, 7001, None, &[]).await,
             Ok(Response::Orchestrated),
             "the steward releases what it held"
         );
+        assert_eq!(read(7001).await, none, "and holds none once it lets go");
         assert_eq!(
             claims(
                 &socket,
@@ -10006,6 +10099,70 @@ esac
         assert!(
             store.told_carries().contains_key("kestrel"),
             "kestrel's stay"
+        );
+    }
+
+    // WCJQSG (2026-11-19): an orchestrator carrying its quest's sessions
+    // begins no new work, so their arrivals spend none of its eight; a
+    // start only shaped like one, with no carry kept for it, still counts.
+    #[tokio::test]
+    async fn a_carry_an_orchestrator_ordered_starts_its_sessions_uncounted() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let (_stop, _node, _client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        let why = "it needs the camera";
+        let line = json!({"at": jiff::Timestamp::now().to_string(), "by": "WCJQSG",
+                          "session": "s-harbour", "address": "HARBOR", "from": "skiff",
+                          "to": "tern", "why": why, "quest": "QEST-20261115-HARBOR"});
+        fs::write(socket.with_file_name("carries.jsonl"), format!("{line}\n"))
+            .expect("the carry is kept");
+        declares_runs(&socket, true);
+        asks_below(&socket, 7001);
+        for _ in 0..starts::CELL_AN_HOUR {
+            let plain = Start {
+                work: work(vec![Need::Machine("skiff".to_owned())]),
+                folder: None,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+                once: None,
+            };
+            let _ = ask(socket.clone(), Request::Start(plain)).await;
+        }
+        let arrival = |why: &str| {
+            let ordered = crate::carry::Ordered {
+                by: "WCJQSG".to_owned(),
+                why: why.to_owned(),
+            };
+            let one = crate::carry::Done {
+                session: "s-harbour".to_owned(),
+                started_before: None,
+            };
+            let mut start = crate::carry::arriving(
+                "QEST-20261115-HARBOR",
+                "skiff",
+                "tern",
+                &one,
+                Some(&ordered),
+            );
+            start.once = None;
+            Request::Start(start)
+        };
+        let forged = ask(socket.clone(), arrival("for no carry kept"))
+            .await
+            .expect_err("one no carry was kept for counts");
+        assert!(forged.starts_with("WCJQSG started 8"), "{forged}");
+        let carried = ask(socket.clone(), arrival(why)).await;
+        assert!(
+            !carried
+                .as_ref()
+                .is_err_and(|why| why.starts_with("WCJQSG started")),
+            "the carry's arrival is uncounted: {carried:?}"
+        );
+        let newest = booked(socket).await;
+        assert!(
+            newest.iter().any(|kept| kept["carried"] == "s-harbour"),
+            "it is booked as carried: {newest:?}"
         );
     }
 

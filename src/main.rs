@@ -448,8 +448,9 @@ enum Action {
     /// Run by an orchestrator's session, from its own process, as it loads
     /// the orchestrating quest HEADS and whenever the quests below it
     /// change; the node proves which session runs it and records the
-    /// claim, refusing a quest another session holds. Without HEADS, it
-    /// forgets what the session claimed, as it unloads or concludes.
+    /// claim, refusing a quest another session holds. Bare, it prints
+    /// what the session claims, changing nothing; `--forget` forgets it,
+    /// as the session unloads or concludes.
     ///
     /// `--free QUEST`, from the person's own login, frees a quest from
     /// the session holding it, such as one another session took while its
@@ -460,11 +461,14 @@ enum Action {
     )]
     Orchestrates {
         /// The orchestrating quest the session has loaded.
-        #[arg(long, conflicts_with = "free")]
+        #[arg(long, conflicts_with_all = ["free", "forget"])]
         heads: Option<String>,
         /// The quests it orchestrates.
-        #[arg(conflicts_with = "free")]
+        #[arg(conflicts_with_all = ["free", "forget"])]
         quests: Vec<String>,
+        /// Forgets what the session claimed.
+        #[arg(long, conflicts_with = "free")]
+        forget: bool,
         /// A quest to free from whichever session holds it, as the person.
         #[arg(long)]
         free: Option<String>,
@@ -1466,6 +1470,22 @@ fn reader_left(error: &io::Error, out: impl AsFd) -> bool {
             .intersects(PollFlags::ERR | PollFlags::HUP)
 }
 
+/// What `mycelium orchestrates` asks: to free a quest, to read what the
+/// session claims where it names nothing, or else to claim what it names,
+/// nothing where it forgets.
+fn orchestrates(
+    heads: Option<String>,
+    quests: Vec<String>,
+    forget: bool,
+    free: Option<String>,
+) -> Request {
+    match free {
+        Some(quest) => Request::Free { quest },
+        None if heads.is_none() && quests.is_empty() && !forget => Request::Orchestrating,
+        None => Request::Orchestrates { heads, quests },
+    }
+}
+
 fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Result<ExitCode> {
     let realm = realm.ok_or_else(|| {
         io::Error::new(
@@ -1521,11 +1541,11 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Run(asked) => return run_there(&socket, asked),
         Action::Steer { address } => steer(&socket, address),
         Action::Orchestrates {
-            free: Some(quest), ..
-        } => print_reply(&socket, &Request::Free { quest }),
-        Action::Orchestrates { heads, quests, .. } => {
-            print_reply(&socket, &Request::Orchestrates { heads, quests })
-        }
+            heads,
+            quests,
+            forget,
+            free,
+        } => print_reply(&socket, &orchestrates(heads, quests, forget, free)),
         Action::Messages { groups, limit } => {
             print_reply(&socket, &Request::Messages { groups, limit })
         }
@@ -3153,9 +3173,12 @@ mod tests {
 
     use std::io;
 
+    use mycelium::wire::Request;
+
     use super::{
         Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, in_place, kit,
-        processes_here, reader_left, room_of, said_text, swarm_asked, tree, width, write_line,
+        orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked, tree, width,
+        write_line,
     };
 
     #[test]
@@ -3288,6 +3311,56 @@ mod tests {
         assert!(
             parsed.is_err(),
             "its words are named, or `-` asks for input, so an open input never holds it"
+        );
+    }
+
+    // A bare `orchestrates` once forgot what the session claimed, so a
+    // person reading it lost the claim; it reads now, and forgets only
+    // with `--forget`.
+    #[test]
+    fn a_bare_orchestrates_reads_and_only_forget_forgets() {
+        let asked = |words: &[&str]| match Command::try_parse_from(
+            [["mycelium", "orchestrates"].as_slice(), words].concat(),
+        )
+        .map(|asked| asked.action)
+        {
+            Ok(Some(Action::Orchestrates {
+                heads,
+                quests,
+                forget,
+                free,
+            })) => Ok(orchestrates(heads, quests, forget, free)),
+            Ok(_) => panic!("{words:?} is no orchestrates"),
+            Err(error) => Err(error.kind()),
+        };
+        assert_eq!(asked(&[]), Ok(Request::Orchestrating), "bare, it reads");
+        assert_eq!(
+            asked(&["--forget"]),
+            Ok(Request::Orchestrates {
+                heads: None,
+                quests: Vec::new()
+            }),
+            "--forget forgets"
+        );
+        assert_eq!(
+            asked(&["--heads", "QEST-20261007-WCJQSG", "QEST-20261108-OSPHT4"]),
+            Ok(Request::Orchestrates {
+                heads: Some("QEST-20261007-WCJQSG".to_owned()),
+                quests: vec!["QEST-20261108-OSPHT4".to_owned()]
+            }),
+            "and naming quests claims them"
+        );
+        assert_eq!(
+            asked(&["--free", "QEST-20261108-OSPHT4"]),
+            Ok(Request::Free {
+                quest: "QEST-20261108-OSPHT4".to_owned()
+            }),
+            "--free frees"
+        );
+        assert_eq!(
+            asked(&["--forget", "QEST-20261108-OSPHT4"]),
+            Err(clap::error::ErrorKind::ArgumentConflict),
+            "forgetting and claiming at once is refused"
         );
     }
 
