@@ -1681,7 +1681,9 @@ naming no machine stays on the session's, and one naming no folder
 begins in the `cwd` its last presence said, where that folder is
 still there, so pi opens it in its own project; one naming another
 machine or another folder is new work there, and counts, since pi
-takes its project from the folder. It is pi itself, named bare or under
+takes its project from the folder. One naming no machine goes to the
+session's whether it counts or not, since pi finds its log only
+there. It is pi itself, named bare or under
 `/run/current-system/sw/bin/` or `/etc/profiles/per-user/`, with no
 word but `--session` and the session's id, so no prompt or flag gives
 it new work, nor a file an agent wrote; never `--session-id`, with
@@ -1694,10 +1696,13 @@ agent's start bringing back a session on its own machine while
 another start of it is going, or within two minutes of one that
 didn't fail, counted or not, is refused, and kept as refused, as is
 one parked with a holder a steer would wake, which wakes it instead,
-and one whose holder waits for its turn to come back or runs it,
-since each would open the session's log twice. This guards only
-while the node holds the session as ended, only for a start asked
-of the session's own node, and only for a start in the form above
+and one whose holder already waits in the node's queue for its turn
+to come back or runs it, since each would open the session's log
+twice. A turn ends as the session is heard from or after a minute.
+This guards only while the node holds the session as ended, not
+against a holder asking its turn after the start or starting with
+no node to ask, only for a start asked of the session's own node,
+and only for a start in the form above
 naming the session's whole id: one relayed from another node isn't
 judged so, and one naming the session otherwise, with a prompt, a
 flag or its file, counts as new work and isn't refused for this.
