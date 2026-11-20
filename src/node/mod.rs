@@ -3821,9 +3821,9 @@ impl<S: Store> Shared<S> {
     /// node lets an agent's reopening through without its asker's fence
     /// ([`reopening`]), so this node, which alone keeps its own ended
     /// sessions, must find it one of them, or an agent could start a
-    /// fresh session on looser ground. One still live, parked, held by a
-    /// holder here, carried away or waiting for its turn is coming back
-    /// by itself, and a second pi on it would write over the first, so
+    /// fresh session on looser ground. One still live, parked this boot
+    /// for its holder to wake, held by a holder here, carried away or
+    /// waiting for its turn is coming back by itself, and a second pi on it would write over the first, so
     /// each is refused too, with why.
     fn reopened_here(
         &self,
@@ -3850,7 +3850,9 @@ impl<S: Store> Shared<S> {
             Err(format!(
                 "{shown} is still live on {machine}, so it isn't reopened"
             ))
-        } else if parked_presence(one) {
+        } else if standing::standing(one, true, &standing::parked(&self.parked), &self.boot)
+            == Some("parked")
+        {
             Err(format!(
                 "{shown} is parked on {machine}, and its holder wakes it, so it isn't reopened"
             ))
@@ -13993,6 +13995,9 @@ esac
             },
         };
         let relayed = |session: &str| relayed_as(session, false, false);
+        // Parked and marked this boot: its holder wakes it.
+        fs::create_dir_all(parks_of(&socket)).expect("the parks' folder is made");
+        fs::write(parks_of(&socket).join("s-parked.json"), "{}").expect("a marker");
         store.start_here(
             "s-parked",
             json!({"session": "s-parked", "addresses": ["PARKED"], "state": "parked",
@@ -14042,6 +14047,19 @@ esac
             ask(socket.clone(), relayed_as("s-unknown", false, true)).await,
             Err("no session s-unknown ended on skiff, so nothing is reopened here".to_owned()),
             "one saying it carries is held so too"
+        );
+        // Parked, but not marked this boot, as after a reboot: nothing
+        // is left to wake it, so it is reopened as any ended session.
+        store.start_here(
+            "s-napped",
+            json!({"session": "s-napped", "addresses": ["NAPPED"], "state": "parked",
+                   "at": "2026-11-19T06:00:00Z"}),
+            false,
+        );
+        assert_eq!(
+            ask(socket.clone(), relayed("s-napped")).await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "a park nothing can wake is reopened"
         );
         assert_eq!(
             ask(socket.clone(), relayed_as("s-ended", true, false)).await,

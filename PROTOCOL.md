@@ -1137,10 +1137,11 @@ start}`, `{"Steer": {"address", "steer", "checked"}}` or `"Update"`,
 and the link writes back `{"ask", "reply"}` with the other end's reply.
 A link says `reopens` as it connects, since one older can't read a
 `Reopen`; to one that doesn't, the node hands none, and answers it
-itself as `<machine>'s link here is too old to carry a reopening`. A run isn't carried:
-it goes only where this machine dialled. It lasts until either
-hangs up, or until another link reaching the machine takes its place;
-an ask still waiting then hears that the link dropped.
+itself as `<machine>'s link here is too old to carry a reopening`. A
+run isn't carried: it goes only where this machine dialled. It lasts
+until either hangs up, or until another link reaching the machine
+takes its place; an ask still waiting then hears that the link
+dropped.
 
 A `Health` connection is how the end of a link another machine dialled
 says this machine's own health in its facts. The node answers with the
@@ -1608,7 +1609,9 @@ that shape, whether or not it says it carries, is taken only for a
 session that ended on this machine, and otherwise refused as `no
 session <id> ended on <machine>, so nothing is reopened here`, whoever
 asked. Nor is one taken for a session that comes back by itself: one
-still live (`<id> is still live on <machine>`), parked, held by a
+still live (`<id> is still live on <machine>`), parked this boot for
+its holder to wake (one parked before it has nothing to wake it, so
+is reopened as any ended session), held by a
 holder there, carried away or waiting for its turn, each refused with
 why, nor while the carries can't be read. Once taken, the session is
 held as being reopened while its start runs, and another reopening of
