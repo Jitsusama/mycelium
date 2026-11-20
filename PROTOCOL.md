@@ -2088,7 +2088,7 @@ word is read again at each proof, so a spawner taken while tracing
 was shut proves nothing once it opens, and its commands are told as
 the host's own child is.
 
-It rests too on three things the node doesn't prove. It can't tell
+It rests too on four things the node doesn't prove. It can't tell
 the host's own code from code an agent brought into
 the host's process, an extension a project carries or a reload onto
 another tree among it, which can say any spawner serves any session
@@ -2102,8 +2102,11 @@ fenced from the harness and its extensions; where they don't, it
 tells a command apart from its host only by accident. So too a
 command of the same user can open another session's spawner's pipe
 again through `/proc/<pid>/fd`, which Yama's scope 1 doesn't stop,
-and have it start a command for that session. The fence the host's
-sessions run under is what closes all three.
+and have it start a command for that session. And a command that can
+reach the host's own socket, which joins a terminal to any
+conversation the host holds, can type into another session, whose
+commands are then that session's. The fence the host's sessions run
+under is what must close all four.
 
 ### The Daemon Interface
 

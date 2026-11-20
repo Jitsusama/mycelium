@@ -660,9 +660,10 @@ fn tracing_open(procs: &Path) -> Option<&'static str> {
 /// option is [`NO_SIGUSR1`], as a host's unit starts it, a SIGUSR1 opens
 /// it, and an option on its command line may open it outright. The
 /// first, since an option taking a value would take one later as its
-/// own. Any `NODE_OPTIONS` at all is refused, since besides opening the
-/// inspector, `--require` or `--import` there runs code as the host
-/// before it starts; a host's unit clears it. So is any [`LOADS_CODE`]
+/// own. Any `NODE_OPTIONS` but a blank one is refused, since besides
+/// opening the inspector, `--require` or `--import` there runs code as
+/// the host before it starts; a host's unit clears it. So is any
+/// other [`LOADS_CODE`]
 /// variable, which loads a library's or a module's code into the host as
 /// it starts.
 /// An environment that can't be read is taken as one that might hold
@@ -1185,8 +1186,8 @@ pub fn session_alone(
         )),
         _ if !keys.is_empty() => Err(format!(
             "this asks below pi host process {process}, which {shared} sessions share, \
-             and whose word for its pi-spawners this node can't take on this \
-             machine"
+             and whose word for its pi-spawners this node can't take, as this \
+             machine or that host stands"
         )),
         _ => Err(format!(
             "this asks from process {process}, which {shared} sessions share, so none is \
