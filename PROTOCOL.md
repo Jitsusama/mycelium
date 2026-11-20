@@ -2093,21 +2093,33 @@ It rests too on four things the node doesn't prove. It can't tell
 the host's own code from code an agent brought into
 the host's process, an extension a project carries or a reload onto
 another tree among it, which can say any spawner serves any session
-the host proves. And a command that can write the harness's files,
-the folder the host caches its compiled code in, or the host's unit
-and environment through the user's service manager, can change the
-code a host loads, then end the host, which runs that code when it
-starts again and may say any spawner. So the word
-proves a session only where the host's sessions run their commands
-fenced from the harness and its extensions; where they don't, it
-tells a command apart from its host only by accident. So too a
-command of the same user can open another session's spawner's pipe
-again through `/proc/<pid>/fd`, which Yama's scope 1 doesn't stop,
-and have it start a command for that session. And a command that can
-reach the host's own socket, which joins a terminal to any
-conversation the host holds, can type into another session, whose
-commands are then that session's. The fence the host's sessions run
-under is what must close all four.
+the host proves. No fence closes this one today: pi loads a trusted
+project's own `.pi/extensions`, and an agent's work tree is writable
+to it by design, so an agent that writes an extension there has the
+host run it at its next reload or restart. Until a host loads a
+project's extensions only from a checkout its sessions can't write,
+or loads none, an agent of a trusted project can say any spawner.
+And a command that can write the harness's files, the folder node
+caches the host's compiled code in, or the host's unit and
+environment through the user's service manager, can change the code
+a host loads, then end the host, which runs that code when it starts
+again and may say any spawner. The host turns that cache on itself,
+so it must sit in pi's own state, which the fence keeps read-only,
+never in the temporary folder node picks when given none, which a
+fenced command can write. So the word proves a session only where
+the host's sessions run their commands fenced from the harness and
+its extensions; where they don't, it tells a command apart from its
+host only by accident. So too a command of the same user can open
+another session's spawner's pipe again through `/proc/<pid>/fd`,
+which Yama's scope 1 doesn't stop, and have it start a command for
+that session. And a command that can reach the host's own socket,
+which joins a terminal to any conversation the host holds, can type
+into another session, whose commands are then that session's. On
+Linux the fence closes these last two for a fenced session: it gives
+the command its own process namespace, where no spawner's `/proc`
+shows, and lays an empty folder over the one holding the host's
+socket, since a socket in a read-only folder still connects. A Mac's
+fence must deny connecting to that socket for the same.
 
 ### The Daemon Interface
 

@@ -704,7 +704,8 @@ fn inspector_open(procs: &Path, pid: i32) -> Option<String> {
             .any(|value| name != "NODE_OPTIONS" || !value.iter().all(u8::is_ascii_whitespace));
         if given {
             return Some(format!(
-                "process {pid} is given {name}, which could run code in it"
+                "process {pid} is given {name}, which could run code in it; a pi host \
+                 started from a shell takes the shell's, where its unit clears it"
             ));
         }
     }
@@ -2545,6 +2546,11 @@ mod tests {
             assert!(
                 refused("which could run code in it"),
                 "nor one given {loads}, which loads code into it as it starts"
+            );
+            assert!(
+                refused("a pi host started from a shell takes the shell's"),
+                "and the refusal says where a host gets {loads}, so a host started by \
+                 hand isn't chased"
             );
         }
         runs_node(procs.path(), 78, &HOST_NODE, Some(" "));
