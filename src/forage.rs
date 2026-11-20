@@ -1292,26 +1292,36 @@ pub(crate) const fn turns_direction(each: char) -> bool {
 /// paragraph.
 const PURPOSE_LINES: usize = 2;
 
+/// How many spaces [`first_sentence`] may trim from the end of what it
+/// keeps of a sentence it cuts, so a purpose that short of its length,
+/// before its three dots, was still cut there.
+const CUT_TRIMS: usize = 8;
+
+/// What [`first_sentence`] kept of a purpose it cut at its length, before
+/// the three dots it ends one with; a purpose shorter, its dots its
+/// author's, has none.
+fn read_cut(purpose: &str) -> Option<&str> {
+    let kept = purpose.strip_suffix("...")?.trim_end();
+    (kept.chars().count() + CUT_TRIMS >= LONGEST_PURPOSE - 3).then_some(kept)
+}
+
 /// `purpose` wrapped under its indent in `width` columns, in at most
 /// [`PURPOSE_LINES`] unless it is drawn `whole`; a purpose cut there, or
-/// read already cut with its three dots, ends in one ellipsis after a
-/// whole word.
+/// read already cut at its length, ends in one ellipsis after a whole
+/// word.
 fn purpose_drawn(purpose: &str, width: usize, whole: bool) -> String {
     use crate::swarm::wrapped;
-    let (purpose, read_cut) = match purpose.strip_suffix("...") {
-        // Read cut where it reached its length, often within a word, so
-        // that word goes too and the mark comes after a whole one.
+    let (purpose, read_cut) = match read_cut(purpose) {
+        // Cut where it reached its length, often within a word, so that
+        // word goes too and the mark comes after a whole one; a single
+        // word is kept, to be cut within as one too long is.
         Some(kept) => (
-            kept.trim_end()
-                .rsplit_once(' ')
-                .map_or("", |(before, _)| before.trim_end()),
+            kept.rsplit_once(' ')
+                .map_or(kept, |(before, _)| before.trim_end()),
             true,
         ),
         None => (purpose, false),
     };
-    if read_cut && purpose.is_empty() {
-        return "  …\n".to_owned();
-    }
     let most = if whole { usize::MAX } else { PURPOSE_LINES };
     let drawn = wrapped(purpose, "  ", "  ", width);
     if !read_cut && drawn.lines().count() <= most {
@@ -1387,10 +1397,17 @@ fn documents_drawn(documents: &[Value], cell: &str, named: Option<&str>, width: 
     }
     let counted = documents.len() - shown.len();
     if counted > 0 {
-        let said = if shown.is_empty() {
-            format!("{counted} closed, none open, which mycelium forage {cell} lists")
+        // A cell's address comes as its node wrote it, unchecked, so only
+        // one that is an address is offered as a command to run.
+        let lists = if !cell.is_empty() && cell.chars().all(|each| each.is_ascii_alphanumeric()) {
+            format!("mycelium forage {cell}")
         } else {
-            format!("and {counted} closed, which mycelium forage {cell} lists")
+            "its cell's forage".to_owned()
+        };
+        let said = if shown.is_empty() {
+            format!("{counted} closed, none open, which {lists} lists")
+        } else {
+            format!("and {counted} closed, which {lists} lists")
         };
         drawn.push_str(&wrapped(&said, "  ", "  ", width));
     }
@@ -2481,14 +2498,22 @@ mod tests {
                 .take_while(|line| !line.starts_with("  plan"))
                 .flat_map(str::split_whitespace)
                 .collect();
-            assert_eq!(purpose.last(), Some(&"\u{2026}"), "no mark ends it:\n{drawn}");
+            assert_eq!(
+                purpose.last(),
+                Some(&"\u{2026}"),
+                "no mark ends it:\n{drawn}"
+            );
             assert!(
                 purpose[..purpose.len() - 1]
                     .iter()
                     .all(|word| ["Kestrel", "hovers", "over", "field"].contains(word)),
                 "a word was drawn part of itself:\n{drawn}"
             );
-            assert_eq!(purpose.len() - 1, words, "{named:?} drew too few words:\n{drawn}");
+            assert_eq!(
+                purpose.len() - 1,
+                words,
+                "{named:?} drew too few words:\n{drawn}"
+            );
         }
     }
 
@@ -2560,7 +2585,8 @@ mod tests {
         let mut odd = forage("K; rm -rf ~", "kestrel", "QEST-1");
         odd["documents"] = kept["documents"].clone();
         assert!(
-            draw(&[odd], None, 80).ends_with("  2 closed, none open, which its cell's forage lists\n"),
+            draw(&[odd], None, 80)
+                .ends_with("  2 closed, none open, which its cell's forage lists\n"),
             "a cell that isn't an address was offered as a command"
         );
     }
