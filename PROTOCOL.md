@@ -734,8 +734,10 @@ session says of itself:
   alone. Its `owner` must still name the host's process, by `pid` and
   `startTicks`, as it is read and after. A record failing any of that,
   naming no entry for the session, or naming another word, is refused,
-  since the fence can't be told. Every fence keeps pi's state folder
-  from its commands, so no fenced command can write the record.
+  since the fence can't be told. The harness names a session's fence
+  in the record only where no fenced command could have replaced the
+  record, so one a command could have written names none, and reads
+  as untold.
 - A fence missing from what a process shows proves nothing: a
   `bwrap` lives only while a command it fences runs, and a session
   may switch its fence on after its pi began. So the node looks at
@@ -1782,7 +1784,8 @@ these again; one relayed by an agent is counted, booked and stopped
 there as that agent's own start.
 
 A session an orchestrator's carry takes to another machine begins no
-new work there, so its start counts toward neither limit, once an hour
+new work there, so on the node that ordered the carry its start counts
+toward neither limit, once an hour
 for each session, sharing the 128 with the sessions brought back. The
 node asked judges it so only for a start counted toward the very cell
 that ordered the carry, word for word the start the carry gives its
@@ -1791,10 +1794,14 @@ in `carries.jsonl`, ordered from here within the hour, in that quest,
 by that cell, to the one machine the start names, for the same reason.
 The quest's own trees, which arrive as a session named for the quest,
 match the newest such carry of any of its sessions. The carry was
-proved as it was ordered, so a cell starts uncounted only the sessions
-it was proved to orchestrate, as each carry arrives. Its line in
+proved as it was ordered, so only the sessions a cell was proved to
+orchestrate start uncounted, as each carry arrives. The cell a start is
+counted toward is still the asker's fair share, never proved, so an
+agent naming the orchestrator's session could spend that session's free
+start, though only on the very start the carry gives it. Its line in
 `starts.jsonl` names the session, or the quest, as `carried`. A start
-relayed from another node is judged as before. A node older than this
+relayed from another node is judged as before, so a carry to a machine
+where no person works counts each arrival on that machine's node. A node older than this
 reads a `carried` line as a counted start, so one rolled back counts
 those for the rest of their hour.
 

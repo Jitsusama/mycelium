@@ -583,9 +583,10 @@ fn hosted_fence(
 /// through no link, a folder of this account's that no group or other
 /// account may write, and the record itself a file of this account's,
 /// readable and writable by it alone, as the harness writes it, opened
-/// without following a link. Every fence keeps pi's state folder from
-/// its commands, so a fenced command can neither write the record nor
-/// put another folder in its place.
+/// without following a link. The harness names a session's fence in
+/// its record only where no fenced command could have replaced that
+/// record, so a record a command could have written names none and the
+/// fence reads as untold.
 fn host_record(hosts: &Path, pid: i32, ticks: u64) -> Result<Value, String> {
     use rustix::fs::{Mode, OFlags};
     use std::io::Read as _;
@@ -3160,6 +3161,26 @@ mod tests {
             untold("names no fence for it"),
             "nor one a word no harness writes names"
         );
+        hosts_in_58(&hosts, &[("s-own", Some("none"))]);
+        let record = hosts.join("58-500.json");
+        let written = fs::read_to_string(&record).expect("its record reads");
+        // A record naming another key or owner proves no host owns the
+        // session, so it is refused before its fence is weighed.
+        for (whose, other) in [
+            ("key", written.replace("work-background", "work-attended")),
+            ("owner", written.replace("\"pid\":58", "\"pid\":59")),
+        ] {
+            assert_ne!(other, written, "the {whose} is rewritten");
+            fs::write(&record, other).expect("its record is rewritten in place");
+            assert_eq!(
+                shown_hosted(&hosted, &hosts),
+                Err(
+                    "who owns s-own can't be proved here, so the fence it runs in can't be told"
+                        .to_owned()
+                ),
+                "one naming another {whose} is never read as its own"
+            );
+        }
         let strict = fenced_pi("PI_SANDBOX=strict\0", &[]);
         let hosts = fs::canonicalize(strict.2.path()).expect("its real path");
         hosts_in_58(&hosts, &[("s-own", Some("none"))]);

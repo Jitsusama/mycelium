@@ -4954,11 +4954,12 @@ impl<S: Store> Shared<S> {
     /// now, in that quest, by that cell, to the one machine the start
     /// needs, for the same reason. The
     /// quest's own trees arrive held to the newest such carry of any of
-    /// its sessions. The carry was proved as it was ordered, so a cell
-    /// can start uncounted only the sessions it was proved to
-    /// orchestrate, as each carry arrives, and the book still counts a
-    /// second of one within the hour. None for any other start, which
-    /// counts as it would.
+    /// its sessions. The carry was proved as it was ordered, so only the
+    /// sessions a cell was proved to orchestrate start uncounted, as each
+    /// carry arrives, and the book still counts a second of one within
+    /// the hour. `started_by` is the asker's fair share, never proved, so
+    /// this frees at most the one start the carry gives. None for any
+    /// other start, which counts as it would.
     fn carried_by_order(
         &self,
         by: By,
@@ -10224,7 +10225,7 @@ esac
             ),
             (
                 "from",
-                ordered_start(harbour, "s-harbour", ("tern", "skiff"), why),
+                ordered_start(harbour, "s-harbour", ("kestrel", "tern"), why),
             ),
             (
                 "cell",
