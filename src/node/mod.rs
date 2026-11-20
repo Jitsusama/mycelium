@@ -4970,13 +4970,12 @@ impl<S: Store> Shared<S> {
                 eprintln!("a carry relayed from {from:?} is refused: {why}");
                 // Where the node couldn't read the link's end, running it
                 // elsewhere changes nothing; reading it does.
-                let when = if claims.is_empty()
-                    && [asker::UNNAMED, asker::UNTOLD].contains(&unclaimed)
-                {
-                    "its node can read the process at this machine's end of the link"
-                } else {
-                    "this machine's end of the link runs outside every agent's session"
-                };
+                let when =
+                    if claims.is_empty() && [asker::UNNAMED, asker::UNTOLD].contains(&unclaimed) {
+                        "its node can read the process at this machine's end of the link"
+                    } else {
+                        "this machine's end of the link runs outside every agent's session"
+                    };
                 return Err(format!(
                     "{} takes no carry from {from:?} here, so the carried session couldn't \
                      stand as its cell: {why}. Its files stay in the handover, so the carry \
