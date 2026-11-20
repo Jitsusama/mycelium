@@ -969,8 +969,8 @@ mod tests {
         forged["from"] = json!("T  [deadbeef]");
         for width in [30, 34] {
             let drawn = drawn(&[forged.clone()], &look(), Some(width));
-            // The line under the block's heading, which at 20 holds only
-            // what is left of the wait and the id.
+            // The line under the block's heading, which gives way from
+            // its sender's end before the wait or the id does.
             let heading = drawn.lines().nth(1).expect("the question's line");
             assert!(
                 heading.chars().count() <= width && !heading.contains("deadbeef"),
@@ -1057,6 +1057,16 @@ mod tests {
             assert!(
                 !drawn.contains("[deadbeef]") && !drawn.contains(" asks you"),
                 "a sender drew more than its address at {width:?}:\n{drawn}"
+            );
+        }
+        // A name with nothing an address holds still leaves an asker.
+        let mut unnamed = asked_of(&["SKIFF1"], 5, "c0cd280e");
+        unnamed["from"] = json!("ÉÀ Ö");
+        for width in [None, Some(80)] {
+            let drawn = drawn(&[unnamed.clone()], &look(), width);
+            assert!(
+                drawn.contains("  12:05  someone asks SKIFF1"),
+                "a sender with no address left no asker at {width:?}:\n{drawn}"
             );
         }
     }
