@@ -1293,22 +1293,31 @@ pub(crate) const fn turns_direction(each: char) -> bool {
 const PURPOSE_LINES: usize = 2;
 
 /// `purpose` wrapped under its indent in `width` columns, in at most
-/// [`PURPOSE_LINES`]; a purpose cut there, or read already cut with its
-/// three dots, ends in one ellipsis after a whole word.
-fn purpose_drawn(purpose: &str, width: usize) -> String {
+/// [`PURPOSE_LINES`] unless it is drawn `whole`; a purpose cut there, or
+/// read already cut with its three dots, ends in one ellipsis after a
+/// whole word.
+fn purpose_drawn(purpose: &str, width: usize, whole: bool) -> String {
     use crate::swarm::wrapped;
-    let (purpose, read_cut) = purpose
-        .strip_suffix("...")
-        .map_or((purpose, false), |kept| (kept, true));
+    let (purpose, read_cut) = match purpose.strip_suffix("...") {
+        // Read cut where it reached its length, often within a word, so
+        // that word goes too and the mark comes after a whole one.
+        Some(kept) => (
+            kept.trim_end()
+                .rsplit_once(' ')
+                .map_or("", |(before, _)| before.trim_end()),
+            true,
+        ),
+        None => (purpose, false),
+    };
+    if read_cut && purpose.is_empty() {
+        return "  …\n".to_owned();
+    }
+    let most = if whole { usize::MAX } else { PURPOSE_LINES };
     let drawn = wrapped(purpose, "  ", "  ", width);
-    if !read_cut && drawn.lines().count() <= PURPOSE_LINES {
+    if !read_cut && drawn.lines().count() <= most {
         return drawn;
     }
-    let mut kept: Vec<String> = drawn
-        .lines()
-        .take(PURPOSE_LINES)
-        .map(str::to_owned)
-        .collect();
+    let mut kept: Vec<String> = drawn.lines().take(most).map(str::to_owned).collect();
     if let Some(last) = kept.last_mut() {
         while last.chars().count() + 2 > width {
             if let Some(at) = last.trim_end().rfind(' ').filter(|at| *at > 2) {
@@ -1335,8 +1344,8 @@ fn closed(document: &Value) -> bool {
 
 /// A forage's `documents` as rows in `width` columns, each title cut where
 /// its row would pass `width`. Unless a cell is `named`, the closed ones
-/// are counted in a line of their own.
-fn documents_drawn(documents: &[Value], named: Option<&str>, width: usize) -> String {
+/// are counted in a line of their own, saying how `cell`'s are listed.
+fn documents_drawn(documents: &[Value], cell: &str, named: Option<&str>, width: usize) -> String {
     use crate::swarm::{fit, wrapped};
     if documents.is_empty() {
         return wrapped("No research, plans or reports yet.", "  ", "  ", width);
@@ -1379,9 +1388,9 @@ fn documents_drawn(documents: &[Value], named: Option<&str>, width: usize) -> St
     let counted = documents.len() - shown.len();
     if counted > 0 {
         let said = if shown.is_empty() {
-            format!("{counted} closed, none open")
+            format!("{counted} closed, none open, which mycelium forage {cell} lists")
         } else {
-            format!("and {counted} closed")
+            format!("and {counted} closed, which mycelium forage {cell} lists")
         };
         drawn.push_str(&wrapped(&said, "  ", "  ", width));
     }
@@ -1422,7 +1431,7 @@ pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
                     .as_str()
                     .unwrap_or("Its quest says no purpose yet."),
             );
-            block.push_str(&purpose_drawn(&purpose, width));
+            block.push_str(&purpose_drawn(&purpose, width, named.is_some()));
             for wait in forage["waits"].as_array().map_or(&[][..], Vec::as_slice) {
                 let when = wait["when"]
                     .as_str()
@@ -1440,7 +1449,12 @@ pub fn draw(forages: &[Value], named: Option<&str>, width: usize) -> String {
             let documents = forage["documents"]
                 .as_array()
                 .map_or(&[][..], Vec::as_slice);
-            block.push_str(&documents_drawn(documents, named, width));
+            block.push_str(&documents_drawn(
+                documents,
+                &text(&forage["cell"]),
+                named,
+                width,
+            ));
             block
         })
         .collect();
