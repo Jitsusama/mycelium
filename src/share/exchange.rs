@@ -496,6 +496,9 @@ pub struct Exchange {
     whole: BTreeSet<String>,
     /// The quests the last look withheld from the other end.
     passed_over: BTreeSet<String>,
+    /// The quests shared here with no README, which the other end has
+    /// ended, whose state this link has logged ([`Self::empty_here`]).
+    empty: BTreeSet<String>,
 }
 
 /// A shared quest's README, as its ledger keys it.
@@ -615,6 +618,7 @@ impl Exchange {
             held_back: BTreeMap::new(),
             whole: BTreeSet::new(),
             passed_over: BTreeSet::new(),
+            empty: BTreeSet::new(),
         }
     }
 
@@ -757,7 +761,31 @@ impl Exchange {
             other = self.other,
             here = self.machine,
         );
-        match self.places.group(id) {
+        let group = self.places.group(id);
+        self.tell(group, text);
+    }
+
+    /// Tells the sessions on quest `id`, a quest ended here and reopened
+    /// on the other machine, that this machine's record of it went aside
+    /// to `aside` for the one coming back, and with it anything written
+    /// here after it ended. Its sessions' `group` is read before the move,
+    /// as the move takes the README it is read from.
+    fn set_aside(&mut self, id: &str, group: Option<Group>, aside: &std::path::Path) {
+        let text = format!(
+            "{id} was reopened on {other}, so {here} takes its record from there. What {here} \
+             held of it as it ended, and anything written to it here since, is on {here} at \
+             {aside}: read it and bring back what {other}'s lacks.",
+            other = self.other,
+            here = self.machine,
+            aside = aside.display(),
+        );
+        self.tell(group, text);
+    }
+
+    /// Says `text` to a quest's sessions, `group`, as a finding from this
+    /// machine's node, or logs it when the group couldn't be read.
+    fn tell(&mut self, group: Option<Group>, text: String) {
+        match group {
             Some(group) => self.findings.push(Draft {
                 from: format!("mycelium@{}", self.machine.replace('-', "_")),
                 groups: vec![group],
@@ -861,6 +889,25 @@ impl Exchange {
         true
     }
 
+    /// Logs, once a link, that quest `id` is shared here with no README
+    /// while the other end has ended it: no Holds of it is taken up there,
+    /// so it stays an empty share, and the record it lacks may be aside.
+    fn empty_here(&mut self, id: &str, ended: bool) {
+        let empty = !ended
+            && self.has_ended_there(id)
+            && !self.places.record(id).join("README.md").exists();
+        if !empty {
+            self.empty.remove(id);
+        } else if self.empty.insert(id.to_owned()) {
+            eprintln!(
+                "{id} is shared here with no README of it, and {} has ended it, so nothing of \
+                 it comes from there: this machine's record of it may be aside under {}",
+                self.other,
+                self.places.state.join("before-share").display()
+            );
+        }
+    }
+
     /// Whether this end settles files written apart.
     fn settles(&self) -> bool {
         self.machine < self.other
@@ -895,6 +942,7 @@ impl Exchange {
                 self.stop(&ledgers, &id, &why)?;
                 continue;
             }
+            self.empty_here(&id, ended);
             if decide && self.spent_here(&ledgers, &id)? {
                 let why = "was shared for the quests under it, and none is shared now";
                 self.stop(&ledgers, &id, why)?;
@@ -1086,7 +1134,10 @@ impl Exchange {
                 };
                 let Some(wants) = self.take_holds(&quest, &files)? else {
                     // Only what the hold refused is heard again, as it lifts.
-                    if self.above_withheld() {
+                    // What is said of a quest ended here is kept too, as a
+                    // Holds after the first says only what changed: one that
+                    // later brings it back then asks for all of it.
+                    if self.above_withheld() || (is_quest(&quest) && self.places.ended(&quest)) {
                         self.keep_back(quest, files);
                     }
                     return Ok(Vec::new());
@@ -1162,8 +1213,9 @@ impl Exchange {
     /// one the other end shares only as a quest above others is shared so
     /// here too, and isn't taken up once no shared quest is under it. None
     /// of its scratch is shared until a folder of it is named. One that
-    /// has ended here is taken up only as [`Self::brings_back`] says.
-    fn take_up(&self, id: &str, files: &BTreeMap<String, State>) -> io::Result<bool> {
+    /// has ended here is taken up only as [`Self::brings_back`] says, and
+    /// its sessions are told where its record went.
+    fn take_up(&mut self, id: &str, files: &BTreeMap<String, State>) -> io::Result<bool> {
         let ledgers = self.places.ledgers();
         if !is_quest(id) || ledgers.shares(id) {
             return Ok(true);
@@ -1192,10 +1244,14 @@ impl Exchange {
         if self.spent_above(id, above)? || (above && self.above_withheld()) {
             return Ok(false);
         }
-        self.move_aside(&self.places.record(id), id, "record")?;
+        let group = if ended { self.places.group(id) } else { None };
+        let aside = self.move_aside(&self.places.record(id), id, "record")?;
         let mut held = ledgers.hold(id)?;
         held.ledger.above = above;
         held.keep()?;
+        if ended && let Some(aside) = aside {
+            self.set_aside(id, group, &aside);
+        }
         Ok(true)
     }
 
@@ -1402,10 +1458,16 @@ impl Exchange {
     }
 
     /// Moves this machine's copy of `id`'s `name`, at `folder`, aside into
-    /// mycelium's own folder, if it has one, so nothing it held is lost.
-    fn move_aside(&self, folder: &std::path::Path, id: &str, name: &str) -> io::Result<()> {
+    /// mycelium's own folder, if it has one, so nothing it held is lost,
+    /// saying where it went.
+    fn move_aside(
+        &self,
+        folder: &std::path::Path,
+        id: &str,
+        name: &str,
+    ) -> io::Result<Option<PathBuf>> {
         if !folder.exists() {
-            return Ok(());
+            return Ok(None);
         }
         let aside = self
             .places
@@ -1424,7 +1486,7 @@ impl Exchange {
             "moved this machine's copy of {id}'s {name} aside to {}",
             aside.display()
         );
-        Ok(())
+        Ok(Some(aside))
     }
 
     /// Asks for each file the other end holds that this end should take.
@@ -1737,6 +1799,7 @@ fn is_journey(shared: &Shared) -> bool {
 mod tests {
     use super::*;
 
+    use super::super::version::Version;
     use super::super::watch::HEARD_WITHIN;
 
     const QUEST: &str = "QEST-20261013-4UHC5Q";
@@ -3640,36 +3703,11 @@ mod tests {
     // apart.
     #[test]
     fn an_ended_quest_is_taken_up_only_for_a_readme_following_the_one_it_ended_with() {
-        use super::super::version::Version;
         let kestrel = Machine::new("kestrel");
         let skiff = Machine::new("skiff");
-        kestrel.write(
-            "README.md",
-            &format!("---\nid: {QUEST}\nstatus: concluded\n---\n# Shared\n"),
-        );
-        kestrel.write("attachments/map.md", "the map\n");
-        let ended = Version::default().changed_on("skiff").changed_on("kestrel");
-        let mut held = kestrel.places.ledgers().hold(QUEST).expect("held");
-        held.ledger.files.insert(
-            README.to_owned(),
-            Entry {
-                hash: Some("concluded".to_owned()),
-                version: ended.clone(),
-                seen: None,
-            },
-        );
-        held.keep().expect("shared");
-        drop(held);
-        kestrel.places.ledgers().stop(QUEST).expect("stopped");
+        let ended = ended_and_stopped(&kestrel);
         let mut far = kestrel.exchange(&skiff);
-        far.hear(Say::Shares {
-            quests: vec![QUEST.to_owned()],
-            scratch: BTreeMap::new(),
-            clones: BTreeMap::new(),
-            ended: BTreeSet::new(),
-            above: BTreeSet::new(),
-        })
-        .expect("heard");
+        far.hear(live(QUEST)).expect("heard");
         let holds = |version: Version| Say::Holds {
             quest: QUEST.to_owned(),
             files: BTreeMap::from([(
@@ -3715,6 +3753,95 @@ mod tests {
             far.places.ledgers().ended(QUEST).expect("read"),
             None,
             "and the version it ended with is forgotten"
+        );
+    }
+
+    /// Puts quest `QUEST` on `machine` concluded, with a map, as a quest
+    /// shared and then stopped there once its README stood at the version
+    /// returned.
+    fn ended_and_stopped(machine: &Machine) -> Version {
+        machine.write(
+            "README.md",
+            &format!("---\nid: {QUEST}\nstatus: concluded\n---\n# Shared\n"),
+        );
+        machine.write("attachments/map.md", "the map\n");
+        let ended = Version::default().changed_on("skiff").changed_on("kestrel");
+        let mut held = machine.places.ledgers().hold(QUEST).expect("held");
+        held.ledger.files.insert(
+            README.to_owned(),
+            Entry {
+                hash: Some("concluded".to_owned()),
+                version: ended.clone(),
+                seen: None,
+            },
+        );
+        held.keep().expect("shared");
+        drop(held);
+        machine.places.ledgers().stop(QUEST).expect("stopped");
+        ended
+    }
+
+    /// A Shares naming quest `id` live, and nothing else of it.
+    fn live(id: &str) -> Say {
+        Say::Shares {
+            quests: vec![id.to_owned()],
+            scratch: BTreeMap::new(),
+            clones: BTreeMap::new(),
+            ended: BTreeSet::new(),
+            above: BTreeSet::new(),
+        }
+    }
+
+    // Round 4's R4-8 (2026-11-20): a Holds after the first says only what
+    // changed, so what a refused one said is kept for the one that brings
+    // the quest back.
+    #[test]
+    fn what_a_refused_holds_named_of_an_ended_quest_is_asked_for_once_it_comes_back() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let ended = ended_and_stopped(&kestrel);
+        let mut far = kestrel.exchange(&skiff);
+        far.hear(live(QUEST)).expect("heard");
+        let state = |hash: &str, version: Version| State {
+            hash: Some(hash.to_owned()),
+            version,
+        };
+        let plan = "record/attachments/plan.md";
+        let wants = far
+            .hear(Say::Holds {
+                quest: QUEST.to_owned(),
+                files: BTreeMap::from([(
+                    plan.to_owned(),
+                    state("a plan", Version::default().changed_on("skiff")),
+                )]),
+            })
+            .expect("heard");
+        assert!(
+            wants.is_empty(),
+            "a Holds with no README brings nothing back"
+        );
+        assert!(!far.places.ledgers().shares(QUEST), "so it isn't taken up");
+        let wants = far
+            .hear(Say::Holds {
+                quest: QUEST.to_owned(),
+                files: BTreeMap::from([(
+                    README.to_owned(),
+                    state("reopened", ended.changed_on("skiff")),
+                )]),
+            })
+            .expect("heard");
+        assert!(far.places.ledgers().shares(QUEST), "a reopen is taken up");
+        let asked: BTreeSet<&str> = wants
+            .iter()
+            .filter_map(|say| match say {
+                Say::Want { file, .. } => Some(file.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            asked,
+            BTreeSet::from([README, plan]),
+            "asking for what the refused Holds named too"
         );
     }
 
@@ -3789,6 +3916,9 @@ mod tests {
             !shares(&skiff) && !shares(&kestrel),
             "neither end shares it"
         );
+        // Written on skiff after it ended there, so neither end shares it.
+        skiff.write("attachments/late.md", "written late\n");
+        drop((near.findings(), far.findings()));
 
         kestrel.write("README.md", &readme("active"));
         kestrel.write("attachments/map.md", "the map\n");
@@ -3814,6 +3944,30 @@ mod tests {
             Some("the map\n".to_owned()),
             "with all kestrel holds of it"
         );
+        assert_eq!(skiff.read("attachments/late.md"), None, "and nothing else");
+        let aside: Vec<PathBuf> = fs::read_dir(skiff.places.state.join("before-share"))
+            .expect("skiff's record went aside")
+            .map(|at| at.expect("an entry").path().join(QUEST).join("record"))
+            .collect();
+        assert_eq!(aside.len(), 1, "once: {aside:?}");
+        assert_eq!(
+            fs::read_to_string(aside[0].join("attachments/late.md")).ok(),
+            Some("written late\n".to_owned()),
+            "what was written there late is kept aside"
+        );
+        let told: Vec<Draft> = near
+            .findings()
+            .into_iter()
+            .filter(|told| told.text.contains("reopened on kestrel"))
+            .collect();
+        assert_eq!(told.len(), 1, "skiff's sessions are told once: {told:?}");
+        assert!(
+            told[0].text.contains(&aside[0].display().to_string()),
+            "where it went: {}",
+            told[0].text
+        );
+        assert_eq!(told[0].intent, Some(Intent::Finding));
+        assert!(far.findings().is_empty(), "and kestrel's are told nothing");
     }
 
     #[test]
