@@ -1692,13 +1692,15 @@ as new work, unless the first failed, which brought nothing back. An
 agent's start bringing back a session on its own machine while
 another start of it is going, or within two minutes of one that
 didn't fail, counted or not, is refused, and kept as refused, as is
-one parked this boot, which its holder wakes as it's steered, since
-either would open the session's log twice. This guards only
-while the node holds the session as ended: once its pi says it runs,
-nothing here refuses a second. A park is judged this boot's by the
-boot both the machine and the presence name, or where either names
-none, as on a Mac, by whether it was last heard since the boot began;
-one from before comes back by a start. An ask again under the same
+one parked with a holder a steer would wake, which wakes it instead,
+since either would open the session's log twice. This guards only
+while the node holds the session as ended, and only for a start asked
+of the session's own node: one relayed from another node isn't
+judged so. Once its pi says it runs, nothing here refuses a second. A
+park is judged as a wake judges it: of this boot where both the
+machine and the presence name it, or where either names none, and
+with a holder here still running. One from an earlier boot, or whose
+holder has gone, comes back by a start. An ask again under the same
 name is answered the first start rather than refused for it, and the
 person's own start is never refused. An id beginning
 `-` is never one, and one running or on a machine out of reach is

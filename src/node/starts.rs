@@ -283,11 +283,13 @@ impl Book {
                         // session counts, whether its line says
                         // `reopens` or, from an earlier node, `resumes`
                         // alone; one asked again of where it went counts
-                        // toward nothing and is let go.
+                        // toward nothing, whatever it brings back, since the
+                        // first ask's line stands for it, and is let go.
                         .position(|one| {
                             !matches!(one.by, By::Agent(_))
                                 || one.at <= since
                                 || one.at > ahead
+                                || one.again
                                 || !(one.counts() || one.reopens.is_some() || one.resumes.is_some())
                         })
                 });
@@ -297,6 +299,18 @@ impl Book {
             }
         }
     }
+}
+
+/// `asked` with what an agent chose held to a bound, so its asks, refused
+/// ones too, can't grow the book past what starts would.
+fn bounded(mut asked: Kept) -> Kept {
+    asked.folder = asked
+        .folder
+        .filter(|folder| folder.as_os_str().len() <= FOLDER_MOST);
+    asked.program = asked
+        .program
+        .map(|program| program.chars().take(PROGRAM_MOST).collect());
+    asked
 }
 
 impl Starts {
@@ -370,15 +384,8 @@ impl Starts {
     /// # Errors
     ///
     /// Why it is refused.
-    pub fn admit(&self, mut asked: Kept) -> Result<Admitted, String> {
-        // What an agent chose is held to a bound, so its asks, refused
-        // ones too, can't grow the book past what starts would.
-        asked.folder = asked
-            .folder
-            .filter(|folder| folder.as_os_str().len() <= FOLDER_MOST);
-        asked.program = asked
-            .program
-            .map(|program| program.chars().take(PROGRAM_MOST).collect());
+    pub fn admit(&self, asked: Kept) -> Result<Admitted, String> {
+        let mut asked = bounded(asked);
         let refused = {
             let mut book = self.lock();
             let refused = Self::coming_back(&book, &asked).or_else(|| {
@@ -402,7 +409,8 @@ impl Starts {
     /// outside the book, such as its session being parked for its holder
     /// to wake, so every refusal is in the book whatever refused it; and
     /// answers `why`.
-    pub fn refuse(&self, mut asked: Kept, why: String) -> String {
+    pub fn refuse(&self, asked: Kept, why: String) -> String {
+        let mut asked = bounded(asked);
         asked.refused = Some(why.clone());
         self.keep_line(&mut self.lock(), asked);
         why
@@ -424,7 +432,12 @@ impl Starts {
             return None;
         }
         let its = |one: &Kept| one.reopens.as_deref().or(one.resumes.as_deref()) == Some(id);
-        let going = book.going.iter().any(|(_, going)| its(going));
+        if book.going.iter().any(|(_, going)| its(going)) {
+            return Some(format!(
+                "{id} is coming back already, from a start of it still going; \
+                 ask again once it has gone only if it isn't running"
+            ));
+        }
         let let_go = book.kept.iter().any(|one| {
             its(one)
                 && one.refused.is_none()
@@ -432,7 +445,7 @@ impl Starts {
                 && one.at > asked.at - COMING_BACK
                 && one.at <= asked.at + COMING_BACK
         });
-        (going || let_go).then(|| {
+        let_go.then(|| {
             format!(
                 "{id} is coming back already, from a start asked in the last {} seconds; \
                  ask again after that only if it isn't running",
@@ -969,6 +982,22 @@ mod tests {
     }
 
     #[test]
+    fn a_resume_that_failed_still_fills_the_nodes_uncounted() {
+        let (_dir, starts) = book();
+        for one in 0..RESUMED_AN_HOUR {
+            let at = NOW + i64::try_from(one).expect("few");
+            let admitted = starts
+                .admit(resuming("OSPREY", &format!("s-{one}"), at))
+                .expect("it may start");
+            starts.keep(admitted, Err("pi didn't start".to_owned()), 0);
+        }
+        let next = starts
+            .admit(resuming("OSPREY", "s-more", NOW + 200))
+            .expect("the cell has room for new work");
+        assert_eq!(next.asked.resumes, None, "so one more counts as new work");
+    }
+
+    #[test]
     fn resumes_dated_up_to_an_hour_ahead_still_fill_the_nodes_uncounted() {
         let ahead = |by: i64| {
             let (dir, starts) = book();
@@ -1018,7 +1047,10 @@ mod tests {
         let refused = starts
             .admit(back("s-2", NOW + 10 * COMING_BACK))
             .expect_err("a start still going is coming back");
-        assert!(refused.contains("s-2 is coming back already"), "{refused}");
+        assert!(
+            refused.contains("s-2 is coming back already, from a start of it still going"),
+            "{refused}"
+        );
         starts.keep(going, Ok(("skiff".to_owned(), "h".to_owned())), 0);
         // One dated past the window ahead, as a clock set back would,
         // holds none back.
@@ -1034,6 +1066,17 @@ mod tests {
             ..back("s-0", NOW + COMING_BACK + 3)
         };
         started(&starts, again, "h");
+    }
+
+    #[test]
+    fn one_brought_back_a_little_ahead_of_an_ask_is_coming_back() {
+        let (_dir, starts) = book();
+        let back = |at: i64| reopening(By::Agent(Kind::Fence), Some("OSPREY"), "s-4", at);
+        started(&starts, back(NOW + COMING_BACK / 2), "h");
+        let refused = starts
+            .admit(back(NOW))
+            .expect_err("a clock a minute behind finds it coming back");
+        assert!(refused.contains("s-4 is coming back already"), "{refused}");
     }
 
     #[test]
@@ -1057,9 +1100,11 @@ mod tests {
     #[test]
     fn the_book_lets_go_of_a_start_asked_again_before_a_resume_or_one_that_counts() {
         let (_dir, starts) = book();
+        // One asked again of where it went, bringing back the session its
+        // first ask did.
         let again = Kept {
             again: true,
-            ..agent("OSPREY", NOW)
+            ..reopening(By::Agent(Kind::Fence), Some("OSPREY"), "s-2", NOW)
         };
         // An uncounted resume, as this node books it and as an earlier one
         // did, with `resumes` alone: each is kept, since a second of its
@@ -1507,6 +1552,21 @@ mod tests {
             kept[0].program.as_deref().map(str::len),
             Some(PROGRAM_MOST),
             "a program is cut at the bound"
+        );
+        let mut asked = agent("OSPREY", NOW + 1);
+        asked.folder = Some(PathBuf::from("f".repeat(FOLDER_MOST + 1)));
+        asked.program = Some("p".repeat(PROGRAM_MOST + 1));
+        assert_eq!(
+            starts.refuse(asked, "it is parked".to_owned()),
+            "it is parked"
+        );
+        let kept = starts.newest(1);
+        assert_eq!(kept[0].refused.as_deref(), Some("it is parked"));
+        assert_eq!(kept[0].folder, None, "one refused outside the book too");
+        assert_eq!(
+            kept[0].program.as_deref().map(str::len),
+            Some(PROGRAM_MOST),
+            "and its program is cut"
         );
     }
 

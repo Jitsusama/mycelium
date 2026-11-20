@@ -4837,29 +4837,17 @@ impl<S: Store> Shared<S> {
         }
     }
 
-    /// Whether `session` is parked here this boot, for its holder to wake
-    /// as it's steered, so a start bringing it back would open its log
-    /// beside the one its holder wakes. A holder can't outlive its boot,
-    /// so a park of an earlier boot has nothing to wake it and comes back
-    /// by a start, as a restarted machine's wave does. Where this machine
-    /// and the presence both name the boot, they say which it is; where
-    /// either can't, as on a Mac, the park is this boot's if its session
-    /// was last heard since the boot began, and an earlier one's where
-    /// when it began can't be told. A start bringing back one already
+    /// Whether `session` is parked here with a holder that a steer would
+    /// wake, so a start bringing it back would open its log beside the
+    /// one its holder wakes. It is judged as [`steer::wake_for`] judges
+    /// it, so a start is refused exactly where a steer would wake the
+    /// session instead: a park of an earlier boot, or one whose holder
+    /// has gone, has nothing to wake it and comes back by a start, as a
+    /// restarted machine's wave does. A start bringing back one already
     /// coming back is refused by [`starts::Starts::admit`].
     fn parked_here(&self, session: &Session) -> bool {
-        let named = session
-            .presence
-            .pointer("/owner/bootId")
-            .and_then(serde_json::Value::as_str);
-        let this_boot = match (self.boot.id.as_deref(), named) {
-            (Some(now), Some(began)) => now == began,
-            _ => self
-                .boot
-                .began
-                .is_some_and(|began| standing::changed(session).is_some_and(|at| at >= began)),
-        };
-        session.machine == self.machine && this_boot && crate::carry::parked(session, None)
+        session.machine == self.machine
+            && steer::wake_for(session, self.boot.id.as_deref(), &self.held).is_some()
     }
 
     /// Pins `asked`, which brings back a session that ran on `machine`
@@ -13449,17 +13437,7 @@ esac
                 "the wave left the cell its eight"
             );
         }
-        asks_as_person(&socket);
-        let Ok(Response::Starts { newest, .. }) = ask(
-            socket,
-            Request::Starts {
-                act: crate::wire::StartsAct::List,
-            },
-        )
-        .await
-        else {
-            panic!("the person lists the starts");
-        };
+        let newest = booked(socket).await;
         let first = newest
             .iter()
             .find(|kept| kept["resumes"] == wave[0].as_str())
@@ -13478,6 +13456,24 @@ esac
             "one said from home goes as a folder within it: {last}"
         );
         assert_eq!(first["started_by"], "WCJQSG", "{first}");
+        assert_eq!(first["reopens"], wave[0].as_str(), "it reopens its session");
+    }
+
+    /// The starts the node on `socket` keeps, newest last, as the person
+    /// lists them, who asks from then on.
+    async fn booked(socket: PathBuf) -> Vec<Value> {
+        asks_as_person(&socket);
+        let Ok(Response::Starts { newest, .. }) = ask(
+            socket,
+            Request::Starts {
+                act: crate::wire::StartsAct::List,
+            },
+        )
+        .await
+        else {
+            panic!("the person lists the starts");
+        };
+        newest
     }
 
     // WCJQSG (2026-11-19): a session is brought back uncounted only where
@@ -13583,36 +13579,53 @@ esac
         .await
         .expect_err("on another machine it counts");
         assert!(refused.starts_with("WCJQSG started 8"), "{refused}");
+        let newest = booked(socket).await;
+        let there = newest.last().expect("its start is kept");
+        assert_eq!(there["refused"], refused.as_str(), "{there}");
+        assert!(
+            there.get("reopens").is_none(),
+            "nor does it reopen its session there: {there}"
+        );
     }
 
-    // A session parked this boot is its holder's to wake, so a start of it
-    // would open its log twice. One parked in an earlier boot comes back
-    // by a start, as a restarted machine's wave does. Where the boot isn't
-    // named, as on a Mac, when the session was last heard says which.
+    // A session parked with a live holder is its holder's to wake, so a
+    // start of it would open its log twice. One parked in an earlier boot,
+    // or whose holder has gone, comes back by a start, as a restarted
+    // machine's wave does: just where a steer would wake it or not.
     #[tokio::test]
     async fn only_a_session_parked_this_boot_is_left_to_its_holder() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
         let now = jiff::Timestamp::now().to_string();
-        let long_ago = "2001-01-01T00:00:00Z".to_owned();
         let boot = standing::Boot::this();
-        for (session, address, began, at) in [
-            ("s-this", "PARK01", json!(boot.id), &now),
-            ("s-before", "PARK02", json!("another-boot"), &long_ago),
-            ("s-untold", "PARK03", Value::Null, &now),
-            ("s-long-ago", "PARK04", Value::Null, &long_ago),
-        ] {
+        let held = held_of(&socket);
+        // Each parked session names its holder's wake file, as a stand-in
+        // pi's presence does; only the first, second and last are held.
+        let parked = [
+            ("s-held", "PARK01", json!(boot.id), "e0p1", true),
+            ("s-before", "PARK02", json!("another-boot"), "e0p2", true),
+            ("s-unheld", "PARK03", json!(boot.id), "e0p3", false),
+            ("s-untold", "PARK04", Value::Null, "e0p4", true),
+        ];
+        for (session, address, began, hold, _) in &parked {
             store.start_here(
                 session,
                 json!({"session": session, "addresses": [address], "groups": [],
-                       "busy": false, "state": "parked", "at": at,
+                       "busy": false, "state": "parked", "at": now,
+                       "wake": held.join(format!("{hold}.wake")),
                        "owner": {"bootId": began}}),
                 false,
             );
         }
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        // Once the node has made its folder, private, as it must be.
+        for (_, _, _, hold, holds) in parked {
+            if holds {
+                holds_for_real(&held, hold);
+            }
+        }
         declares_runs(&socket, true);
         asks_below(&socket, 7001);
         let start = |session: &str| {
@@ -13633,29 +13646,22 @@ esac
                 other => panic!("{session}: {other:?}"),
             }
         };
-        let told = boot.began.is_some();
+        assert!(left("s-held").await, "one held this boot is left");
+        // A machine that names no boot takes every park as this boot's.
         assert_eq!(
-            left("s-this").await,
-            boot.id.is_some() || told,
-            "this boot's"
+            left("s-before").await,
+            boot.id.is_none(),
+            "another boot's comes back"
         );
-        assert_eq!(left("s-untold").await, told, "heard since the boot began");
-        assert!(!left("s-before").await, "another boot's comes back");
-        assert!(
-            !left("s-long-ago").await,
-            "one heard before the boot comes back"
-        );
+        assert!(!left("s-unheld").await, "one with no holder comes back");
+        assert!(left("s-untold").await, "one naming no boot is this boot's");
         asks_as_person(&socket);
-        let Ok(Response::Starts { newest, .. }) = ask(
-            socket,
-            Request::Starts {
-                act: crate::wire::StartsAct::List,
-            },
-        )
-        .await
-        else {
-            panic!("the person lists the starts");
-        };
+        assert_eq!(
+            ask(socket.clone(), start("s-held")).await,
+            Err("skiff's node starts no sessions".to_owned()),
+            "the person's start is never left to its holder"
+        );
+        let newest = booked(socket).await;
         let parked = newest.iter().filter(|kept| {
             kept["refused"]
                 .as_str()
@@ -13663,7 +13669,7 @@ esac
         });
         assert_eq!(
             parked.count(),
-            usize::from(boot.id.is_some() || told) + usize::from(told),
+            2 + usize::from(boot.id.is_none()),
             "each parked refusal is booked: {newest:?}"
         );
     }
