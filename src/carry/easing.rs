@@ -557,8 +557,10 @@ impl Easing {
                 }
                 self.said = Some(said);
             }
-            Choice::Sleep { sessions, .. } => {
-                self.said = None;
+            Choice::Sleep { sessions, why } => {
+                // A sleep that says why no carry went has said it, as a
+                // line doing nothing for that reason would have.
+                self.said = why.clone().map(|why| (why, self.doubt.clone()));
                 self.asleep.extend(sessions.iter().cloned());
                 self.history.slept(sessions.len(), now);
             }
@@ -1664,10 +1666,13 @@ mod tests {
             loads: &Loads::new(),
         };
         let mut easing = Easing::default();
-        let lines: Vec<Value> = (0..=20)
-            .filter_map(|minute| {
-                let at = ago(20 - minute);
-                let cells = (0..=minute)
+        // One more goes idle each minute until the 30th, listed newest
+        // first so one never slept would be the first carried.
+        let lines: Vec<Value> = (0..=50)
+            .filter_map(|minute: i64| {
+                let at = ago(50 - minute);
+                let cells = (0..=minute.min(30))
+                    .rev()
                     .map(|one| Cell {
                         asleep: false,
                         ..cell(&format!("s{one}"))
@@ -1683,24 +1688,47 @@ mod tests {
                 )
             })
             .collect();
-        let carry = lines
-            .iter()
-            .find(|line| line["choice"] == "carry")
-            .unwrap_or_else(|| panic!("a carry among {:?}", chosen(&lines)));
-        assert_eq!(
-            carry["at"],
-            json!(ago(5).to_string()),
-            "five minutes after the first sleep, though one slept each minute since"
-        );
-        let first: Vec<&str> = lines
-            .iter()
-            .filter(|line| line["choice"] == "sleep")
-            .flat_map(|line| line["sessions"].as_array().into_iter().flatten())
-            .filter_map(Value::as_str)
+        let carries: Vec<usize> = (0..lines.len())
+            .filter(|&at| lines[at]["choice"] == "carry")
             .collect();
+        let [first, second] = carries[..] else {
+            panic!("two carries among {:?}", chosen(&lines));
+        };
+        assert_eq!(
+            [&lines[first]["at"], &lines[second]["at"]],
+            [&json!(ago(35).to_string()), &json!(ago(5).to_string())],
+            "five minutes after the first sleep, though one slept each minute \
+             since, and again once the cooldown is out"
+        );
+        for carry in [first, second] {
+            let session = &lines[carry]["session"];
+            assert!(
+                lines[..carry].iter().any(|line| line["choice"] == "sleep"
+                    && line["sessions"]
+                        .as_array()
+                        .is_some_and(|slept| slept.contains(session))),
+                "{session} slept before it was carried: {lines:?}"
+            );
+        }
         assert!(
-            first.contains(&carry["session"].as_str().expect("a session")),
-            "the one carried slept first: {first:?}"
+            lines[..first]
+                .iter()
+                .filter(|line| line["choice"] == "sleep")
+                .all(|line| line.get("why").is_none()),
+            "a sleep while it settles says no why: {lines:?}"
+        );
+        let cooling = &lines[first + 1..second];
+        let said = format!(
+            "it carried {} at",
+            lines[first]["session"].as_str().expect("a session")
+        );
+        assert!(
+            !cooling.is_empty()
+                && cooling.iter().all(|line| line["choice"] == "sleep"
+                    && line["why"]
+                        .as_str()
+                        .is_some_and(|why| why.starts_with(&said))),
+            "within the cooldown each sleep says why, and nothing says it again: {cooling:?}"
         );
     }
 
