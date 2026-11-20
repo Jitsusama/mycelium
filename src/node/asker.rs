@@ -226,10 +226,10 @@ impl Processes {
     /// process `host`, read from the kernel, where only a process's own
     /// threads may change its name. None where it can't be told: the
     /// lineage, read again, no longer reaches the host, or that child's
-    /// name can't be read. Where this node can't read processes, as on a
-    /// Mac or a machine run unattended, it is below none; and it is asked
-    /// only where this node takes the host's word, so elsewhere the host's
-    /// one session is told as it was before spawners were said.
+    /// name can't be read. On a Mac or a machine run unattended, where no
+    /// spawner is ever said, it is below none; and it is asked only where
+    /// this node takes the host's word, so elsewhere the host's one session
+    /// is told as it was before spawners were said.
     fn below_a_spawner(&self, asker: i32, host: i32) -> Option<bool> {
         let Self::Folder(procs) = self else {
             return Some(false);
