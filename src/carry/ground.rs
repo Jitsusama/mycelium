@@ -169,9 +169,22 @@ pub fn runs_nothing_offered(kind: Kind, to: &str, there: Option<&Declared>) -> O
     }
 }
 
+/// Why the start that brings a session carried to `to`, declaring itself
+/// as `declared` says, back would be refused there, if it would. That
+/// start is an agent's, the orchestrator's or the node's own, judged in
+/// whichever of fence and strict its asker runs, and each kind declares
+/// its own `runs`, so a carry is refused when either declared runs
+/// nothing.
+#[must_use]
+pub fn brought_back(to: &str, declared: Option<&Declared>) -> Option<String> {
+    [Kind::Fence, Kind::Strict]
+        .into_iter()
+        .find_map(|kind| runs_nothing_there(kind, to, declared))
+}
+
 /// Why `name`, declaring itself as `declared` says, runs no command in its
 /// `kind` fence by that fence's words alone, if it doesn't.
-pub fn runs_nothing_there(kind: Kind, name: &str, declared: Option<&Declared>) -> Option<String> {
+fn runs_nothing_there(kind: Kind, name: &str, declared: Option<&Declared>) -> Option<String> {
     let doors = declared
         .and_then(|declared| declared.fence.as_ref())
         .and_then(|fences| fences.get(&kind))?;

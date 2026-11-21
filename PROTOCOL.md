@@ -711,9 +711,11 @@ session says of itself:
   is refused, since where it lands can't be told. A refusal names the
   doors that are wider, as `tern's strictly fenced session opens
   builders cloud, which here's doesn't`. The start that brings it
-  back there is asked by the orchestrator, an agent, so `to`'s strict
-  fence must declare its `runs` too, or the carry is refused before any
-  session is told to carry and ends (The Socket).
+  back there is an agent's, the orchestrator's or the node's own, so
+  each of `to`'s `fence` and `strict` fences it declares must declare
+  its `runs` too, or the carry is refused before any session is told
+  to carry and ends (The Socket). A node easing itself never chooses
+  such a machine.
 - The fence it names is never looser than its process shows. The
   node reads the proved owner's process: `PI_SANDBOX` in the
   environment it began with (`strict` or `fence`), and, for a pi that

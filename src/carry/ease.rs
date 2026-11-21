@@ -512,6 +512,12 @@ fn carried(
             why_not.push(format!("{who}: {why}"));
             continue;
         }
+        // The carry refuses a machine the start bringing it back can't
+        // run on, so the look never chooses one.
+        if let Some(why) = ground::brought_back(&to, there.and_then(|one| one.declared.as_ref())) {
+            why_not.push(format!("{who}: {why}"));
+            continue;
+        }
         return Choice::Carry {
             session: cell.session.id.clone(),
             why: why(here.name, &to, reading, history),
@@ -565,7 +571,10 @@ pub(super) mod tests {
             builders: ["big".to_owned()].into(),
             forges: ["github".to_owned()].into(),
             secrets: ["forge".to_owned()].into(),
-            runs: Vec::new(),
+            runs: vec![
+                "/nix/store/0000-fence/bin/fence".to_owned(),
+                "--".to_owned(),
+            ],
         };
         Declared {
             fence: Some(kinds.iter().map(|&kind| (kind, open.clone())).collect()),
@@ -860,6 +869,28 @@ pub(super) mod tests {
             carries(&chose(&realm, &[with_turn(), cell("s2")], &history)),
             Some(("s2", "tern")),
             "one that stays leaves the next free to go"
+        );
+    }
+
+    // The start that brings a carried session back is an agent's, so a
+    // look never chooses a machine whose fence runs no command, which the
+    // carry would refuse after spending the session's move for the day.
+    #[test]
+    fn a_look_never_chooses_a_machine_its_start_back_cant_run_on() {
+        let mut realm = realm();
+        let fences = realm[1]
+            .declared
+            .as_mut()
+            .and_then(|declared| declared.fence.as_mut())
+            .expect("tern declares a fence");
+        for doors in fences.values_mut() {
+            doors.runs.clear();
+        }
+        let history = hot_for(&realm, 11);
+        assert_eq!(
+            why_not(&chose(&realm, &[cell("s1")], &history)),
+            "S1: tern declares no way to run a command as its fenced sessions run that its \
+             launcher accepts, or its node is too old to say one"
         );
     }
 

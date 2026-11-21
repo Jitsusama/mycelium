@@ -4442,13 +4442,11 @@ impl<S: Store> Shared<S> {
             to,
             there.as_ref(),
         )?;
-        // The start that brings it back there is the orchestrator's, an
-        // agent's at least as strict as fence, so it is refused unless
-        // that fence runs a command there. Refused here first, judged as
-        // strictly as an agent may be, before any session is told to
-        // carry and ends.
+        // The start that brings it back there is an agent's, so it is
+        // refused unless its fence runs a command there. Refused here
+        // first, before any session is told to carry and ends.
         let declared = there.as_ref().and_then(|machine| machine.declared.as_ref());
-        if let Some(why) = ground::runs_nothing_there(crate::declared::Kind::Strict, to, declared) {
+        if let Some(why) = ground::brought_back(to, declared) {
             return Err(format!(
                 "{address} isn't carried to {to}, as the start that brings it back there would \
                  be refused: {why}"
