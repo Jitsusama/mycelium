@@ -640,8 +640,7 @@ mod tests {
         })
         .expect("an event is said");
         assert_eq!(
-            event["Message"]["message"],
-            said,
+            event["Message"]["message"], said,
             "a boxed message is said as a bare one"
         );
     }
