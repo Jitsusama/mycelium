@@ -123,7 +123,10 @@ pub fn holds_here(
     // the link's look finds nothing new in, and so never says.
     let mut ledger = places.ledgers().hold(quest)?.ledger;
     let shared = places.quest(quest, &ledger);
-    ledger.scan(&shared, machine)?;
+    // A record waiting to move aside is one the look never says.
+    if !ledger.aside {
+        ledger.scan(&shared, machine)?;
+    }
     Ok(ledger
         .files
         .into_iter()

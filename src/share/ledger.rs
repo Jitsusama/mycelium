@@ -83,6 +83,13 @@ pub struct Ledger {
     /// so it stops once no shared quest is under it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub above: bool,
+    /// Whether this machine's own record of the quest, there before it was
+    /// taken up from another machine, still waits to move aside until that
+    /// machine's copy first comes. Until then it is neither read nor said,
+    /// so it is never taken for a change made here, and a link that drops
+    /// first leaves it where it was.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub aside: bool,
 }
 
 /// A shared file's key in a ledger and on a link: its place and its path.

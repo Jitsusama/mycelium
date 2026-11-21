@@ -23,7 +23,9 @@ use serde::{Deserialize, Serialize};
 
 use super::clones::{Clone, Cloning};
 use super::ended::{Processes, Removal, Users, take_away};
-use super::ledger::{Entry, Ledger, Ledgers, Scan, Sight, clock, is_quest, lasting, shared_of};
+use super::ledger::{
+    Entry, Held, Ledger, Ledgers, Scan, Sight, clock, is_quest, lasting, shared_of,
+};
 use super::pieces::{PIECE, Pieces, Staged};
 use super::settle::{Merge, Settled, State, beside, settle};
 use super::tree::{Place, Quest, Shared, content, may_name};
@@ -69,10 +71,13 @@ impl Places {
     }
 
     /// Whether quest `id` has ended on this machine: its README says it
-    /// concluded or was retired.
+    /// concluded or was retired. A record waiting to move aside for the
+    /// other end's copy isn't the shared quest's, so its README says
+    /// nothing of whether the quest ended.
     #[must_use]
     pub fn ended(&self, id: &str) -> bool {
         fs::read_to_string(self.record(id).join("README.md")).is_ok_and(|readme| has_ended(&readme))
+            && !self.ledgers().read(id).is_ok_and(|ledger| ledger.aside)
     }
 
     /// Names `folder` of shared quest `id`'s scratch for sharing, refusing
@@ -888,8 +893,10 @@ impl Exchange {
             let record = self.watch.record_to_walk(&id) || anew;
             let quest = carried.clone().walking(&walk);
             // A quest nothing was heard to change in isn't walked, so an
-            // idle look reads no file's size and time.
-            let scan = if record || !walk.is_empty() {
+            // idle look reads no file's size and time; nor is one whose
+            // own record waits to move aside, which is none of the
+            // shared quest's.
+            let scan = if !held.ledger.aside && (record || !walk.is_empty()) {
                 held.ledger.scan(&quest, &self.machine)?
             } else {
                 Scan::default()
@@ -1121,9 +1128,11 @@ impl Exchange {
     }
 
     /// Starts sharing `id` as the other end does, if this end doesn't yet,
-    /// moving its own record aside first, and saying whether it shares it:
-    /// one the other end shares only as a quest above others is shared so
-    /// here too, and isn't taken up once no shared quest is under it. None
+    /// and says whether it shares it. This end's own record of it stays
+    /// where it is, neither read nor said, until the other end's copy
+    /// first comes, and only then moves aside ([`Self::aside_first`]), so
+    /// a link that drops before leaves it as it was. One the other end
+    /// shares only as a quest above others is shared so here too, and isn't taken up once no shared quest is under it. None
     /// of its scratch is shared until a folder of it is named. One that
     /// has ended here is taken up only as [`Self::brings_back`] says.
     fn take_up(&self, id: &str, files: &BTreeMap<String, State>) -> io::Result<bool> {
@@ -1150,11 +1159,23 @@ impl Exchange {
         if self.spent_above(id, above)? || (above && self.above_withheld()) {
             return Ok(false);
         }
-        self.move_aside(&self.places.record(id), id, "record")?;
         let mut held = ledgers.hold(id)?;
         held.ledger.above = above;
+        held.ledger.aside = self.places.record(id).exists();
         held.keep()?;
         Ok(true)
+    }
+
+    /// Moves this end's own record of `id` aside, if it still waits for
+    /// the other end's copy to first come, as one of that copy's files is
+    /// about to be written in its place.
+    fn aside_first(&self, id: &str, held: &mut Held) -> io::Result<()> {
+        if !held.ledger.aside {
+            return Ok(());
+        }
+        self.move_aside(&self.places.record(id), id, "record")?;
+        held.ledger.aside = false;
+        held.keep()
     }
 
     /// Keeps what the other end said it holds of quest `id` while the
@@ -1394,7 +1415,12 @@ impl Exchange {
             let Some(shared) = shared_of(&key).filter(|shared| quest.carries(shared)) else {
                 continue;
             };
-            let sight = held.ledger.scan_one(&quest, &shared, &self.machine)?;
+            // A record waiting to move aside holds nothing of the quest.
+            let sight = if held.ledger.aside && shared.place == Place::Record {
+                Sight::Same
+            } else {
+                held.ledger.scan_one(&quest, &shared, &self.machine)?
+            };
             if sight.is_new() {
                 held.keep()?;
             }
@@ -1413,8 +1439,12 @@ impl Exchange {
                 Settled::Keep => {}
                 Settled::Merge(_) | Settled::Beside if !self.settles() => {}
                 _ if theirs.hash.is_none() => {
-                    // A deletion needs nothing sent: it is taken here.
-                    quest.write(&shared, None, None)?;
+                    // A deletion needs nothing sent: it is taken here, and
+                    // from a record waiting to move aside, which isn't the
+                    // shared one, nothing is deleted.
+                    if !(held.ledger.aside && shared.place == Place::Record) {
+                        quest.write(&shared, None, None)?;
+                    }
                     held.ledger.files.insert(
                         key,
                         Entry {
@@ -1448,6 +1478,10 @@ impl Exchange {
         let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
             return Ok(Vec::new());
         };
+        // A record waiting to move aside is never sent as the quest's.
+        if held.ledger.aside && shared.place == Place::Record {
+            return Ok(Vec::new());
+        }
         let sight = held.ledger.scan_one(&quest, &shared, &self.machine)?;
         if sight.is_new() {
             held.keep()?;
@@ -1562,6 +1596,11 @@ impl Exchange {
         let Some(shared) = shared_of(key).filter(|shared| quest.carries(shared)) else {
             return Ok(Vec::new());
         };
+        // The other end's copy has come, so this end's own record moves
+        // aside before anything of it is written in its place.
+        if shared.place == Place::Record {
+            self.aside_first(id, &mut held)?;
+        }
         let sight = held.ledger.scan_one(&quest, &shared, &self.machine)?;
         if sight == Sight::Changed {
             self.unsay(id, key);
@@ -1790,6 +1829,83 @@ mod tests {
             to_two = next_one;
         }
         panic!("the two ends never stopped talking");
+    }
+
+    #[test]
+    fn a_quest_named_shared_stays_where_it_is_until_the_other_ends_copy_comes() {
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("README.md", "# Shared\n");
+        kestrel.write("README.md", "# Live here\n");
+        kestrel.write("plans/PLAN-20261026-IZH11J.md", "kestrel's plan\n");
+        share(&skiff, QUEST);
+
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+        near.watch.hear_anything();
+        // The link drops after skiff says what it shares, before it says
+        // what it holds of it, so none of skiff's copy ever comes.
+        for say in near.look().expect("skiff looks") {
+            if matches!(say, Say::Shares { .. }) {
+                far.hear(say).expect("kestrel hears");
+            }
+        }
+        assert_eq!(
+            kestrel.read("README.md").as_deref(),
+            Some("# Live here\n"),
+            "kestrel's own record stays in place while nothing has come to replace it"
+        );
+        assert_eq!(
+            kestrel.read("plans/PLAN-20261026-IZH11J.md").as_deref(),
+            Some("kestrel's plan\n"),
+            "its other files too"
+        );
+        assert!(
+            !kestrel.places.state.join("before-share").exists(),
+            "nothing moved aside"
+        );
+
+        // The link comes back and skiff's copy comes, so kestrel's own
+        // moves aside whole, none of it said to skiff as the quest's.
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+        talk(&mut near, &mut far);
+        assert_eq!(
+            kestrel.read("README.md").as_deref(),
+            Some("# Shared\n"),
+            "skiff's README took its place"
+        );
+        assert_eq!(
+            kestrel.read("plans/PLAN-20261026-IZH11J.md"),
+            None,
+            "kestrel's plan went aside with the rest of its record"
+        );
+        assert_eq!(
+            skiff.read("plans/PLAN-20261026-IZH11J.md"),
+            None,
+            "and never reached skiff"
+        );
+        assert_eq!(
+            skiff.read("README.md").as_deref(),
+            Some("# Shared\n"),
+            "skiff's own README stands"
+        );
+        let aside = fs::read_dir(kestrel.places.state.join("before-share"))
+            .expect("something moved aside")
+            .next()
+            .expect("one move")
+            .expect("read")
+            .path()
+            .join(QUEST)
+            .join("record");
+        assert_eq!(
+            fs::read_to_string(aside.join("README.md")).expect("kept"),
+            "# Live here\n",
+            "kestrel's own README was kept aside"
+        );
+        assert_eq!(
+            fs::read_to_string(aside.join("plans/PLAN-20261026-IZH11J.md")).expect("kept"),
+            "kestrel's plan\n",
+            "with its plan"
+        );
     }
 
     #[test]
