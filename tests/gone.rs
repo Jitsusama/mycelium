@@ -35,8 +35,19 @@ const ACCEPTED: &str = r#"{"v": 1, "id": "attach", "ok": true, "result": {"sessi
 /// What the pi host shows the window once it is back.
 const BACK: &str = "the conversation, back again";
 
+/// What attach says when the pi host closes its join unanswered.
+const GONE_WORDS: &str = "the pi host harbour-background has gone";
+
 /// What attach says when it finds no pi host to join.
 const NO_HOST: &str = "no pi host harbour-background is running here";
+
+/// What attach says when it finds no pi host to join, and none has been
+/// there since its holder started.
+const NEVER_HOST: &str = "no pi host harbour-background has run here since this window opened";
+
+/// What the holder says while no pi host by its program's name has been
+/// here since it started.
+const NEVER: &str = "No pi host by that name has run here since this window opened";
 
 /// What attach says when the pi host's socket is there but nobody takes
 /// the join.
@@ -111,31 +122,33 @@ impl Window {
     /// passes with nothing more shown, with what it did show. What came
     /// after it is kept for the next look.
     fn sees(&mut self, wanted: &str, patience: Duration) {
-        self.sees_each(&[wanted], patience);
+        self.sees_then(wanted, "", patience);
     }
 
-    /// Reads until the window has shown each of `wanted`, in any order, as
-    /// attach's last words and the holder's own may come either way round,
+    /// Reads until the window has shown `first`, then `then` after it,
     /// failing once `patience` passes with nothing more shown. What came
-    /// after the last of them is kept for the next look.
-    fn sees_each(&mut self, wanted: &[&str], patience: Duration) {
+    /// after `then` is kept for the next look. Attach's last words come
+    /// before it exits, and the holder draws its away line again after
+    /// any of them read late, so a run's away line is looked for after
+    /// that run's own words: one drawn for an earlier run is never taken
+    /// for it.
+    fn sees_then(&mut self, first: &str, then: &str, patience: Duration) {
         self.stream
             .set_read_timeout(Some(patience))
             .expect("the window's patience is set");
         let mut buffer = [0u8; 4096];
         loop {
-            let ends: Option<Vec<usize>> = wanted
-                .iter()
-                .map(|one| self.unseen.find(one).map(|at| at + one.len()))
-                .collect();
-            if let Some(last) = ends.and_then(|ends| ends.into_iter().max()) {
-                self.unseen.drain(..last);
+            let after = self.unseen.find(first).map(|at| at + first.len());
+            if let Some(end) =
+                after.and_then(|after| Some(after + self.unseen[after..].find(then)? + then.len()))
+            {
+                self.unseen.drain(..end);
                 return;
             }
             let read = self.stream.read(&mut buffer).unwrap_or(0);
             assert!(
                 read > 0,
-                "the window never showed each of {wanted:?}; it showed {:?}",
+                "the window never showed {first:?} then {then:?}; it showed {:?}",
                 self.unseen
             );
             self.unseen
@@ -195,19 +208,20 @@ fn a_window_whose_pi_host_stops_stays_while_it_is_down_and_joins_it_once_back() 
     let mut holder = holder(home.path());
     let mut window = Window::joins(&home.path().join("r/mycelium/harbour.held"));
     joining.send(()).expect("the host hears the window joined");
-    window.sees(AWAY, PATIENCE);
+    window.sees_then(GONE_WORDS, AWAY, PATIENCE);
     going.join().expect("the host stopped");
 
     // With the host down and nobody taking a join at its socket, a key
     // tries again at once, can't reach it, and the window stays, told
     // again that its host is away.
     window.types_return();
-    window.sees_each(&[UNREACHABLE, AWAY], KEY_PATIENCE);
+    window.sees_then(UNREACHABLE, AWAY, KEY_PATIENCE);
 
-    // With its socket gone too, the next key finds no host at all.
+    // With its socket gone too, the next key finds no host at all, one it
+    // had since it started, so it's still told its host is away.
     fs::remove_file(&at).expect("the stopped host's socket goes");
     window.types_return();
-    window.sees_each(&[NO_HOST, AWAY], KEY_PATIENCE);
+    window.sees_then(NO_HOST, AWAY, KEY_PATIENCE);
     assert!(
         holder.0.try_wait().expect("the holder is asked").is_none(),
         "the holder keeps its window while its pi host is down"
@@ -215,8 +229,17 @@ fn a_window_whose_pi_host_stops_stays_while_it_is_down_and_joins_it_once_back() 
 
     // Back, the host answers the join the next key sends, and shows the
     // conversation.
-    let host = UnixListener::bind(&at).expect("the pi host listens again");
-    let serving = std::thread::spawn(move || {
+    let serving = serves(UnixListener::bind(&at).expect("the pi host listens again"));
+    window.types_return();
+    window.sees(BACK, KEY_PATIENCE);
+    let again = serving.join().expect("the host served the join");
+    drop(again);
+}
+
+/// The pi host listening at `host` answering the next join and showing
+/// the conversation, its connection kept open until the thread is joined.
+fn serves(host: UnixListener) -> std::thread::JoinHandle<UnixStream> {
+    std::thread::spawn(move || {
         let mut again = joined(&host).into_inner();
         again
             .write_all(format!("{ACCEPTED}\n").as_bytes())
@@ -226,7 +249,36 @@ fn a_window_whose_pi_host_stops_stays_while_it_is_down_and_joins_it_once_back() 
             .write_all(format!("{output}\n").as_bytes())
             .expect("the host shows the conversation");
         again
-    });
+    })
+}
+
+#[test]
+fn a_window_whose_pi_host_never_ran_here_says_so_and_joins_one_once_it_starts() {
+    let home = tempfile::tempdir().expect("a temporary home");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(home.path().join("r/pi-host"))
+        .expect("its runtime folder is made");
+    let at = home.path().join("r/pi-host/harbour-background.sock");
+
+    // No host by its name has been here since the holder started, as for a
+    // realm mistyped, so the window isn't told a host it never had is
+    // away, and it stays.
+    let mut holder = holder(home.path());
+    let mut window = Window::joins(&home.path().join("r/mycelium/harbour.held"));
+    // Joined after its first try may have ended, the window is told by the
+    // holder itself; a key tries again with it there to see attach say so.
+    window.sees(NEVER, PATIENCE);
+    window.types_return();
+    window.sees_then(NEVER_HOST, NEVER, KEY_PATIENCE);
+    assert!(
+        holder.0.try_wait().expect("the holder is asked").is_none(),
+        "the holder keeps its window, as a host not yet started may come"
+    );
+
+    // One starting, the next key joins it.
+    let serving = serves(UnixListener::bind(&at).expect("the pi host listens"));
     window.types_return();
     window.sees(BACK, KEY_PATIENCE);
     let again = serving.join().expect("the host served the join");
