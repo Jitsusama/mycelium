@@ -115,6 +115,12 @@ fn heard(root: &Path, path: &Path, within: Duration, holds: impl Fn(&str) -> boo
     }
 }
 
+/// Every fence of a machine a provider offers, each shut but for no door,
+/// and each naming how a command runs in it. Where the node takes the
+/// asker for a strictly fenced agent, as on macOS, a machine is made for
+/// it only where its offer says how its strict fence runs one.
+const OFFERED: &str = r#"{"none": {"builders": [], "forges": [], "secrets": []}, "fence": {"builders": [], "forges": [], "secrets": [], "runs": ["/nix/store/0000-fence/bin/fence", "--"]}, "strict": {"builders": [], "forges": [], "secrets": [], "runs": ["/nix/store/0000-fence/bin/fence", "--"]}}"#;
+
 /// What the machine `provider` offers costs an hour.
 const COSTS: &str = "0.003";
 
@@ -128,7 +134,7 @@ const FREE: &str = "0.000";
 /// asked each time, and saying what it released.
 fn provider(root: &Path, lent: &Path, until: jiff::Timestamp, hourly: &str) -> PathBuf {
     let offer = format!(
-        r#"{{"shape": "small", "facts": {{"declared": {{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": [], "fence": {SHUT}}}}}, "costs": {{"hourly": "{hourly}", "currency": "USD"}}, "lasts": 3600}}"#
+        r#"{{"shape": "small", "facts": {{"declared": {{"reach": ["lent-net"], "outlives": [], "costs_money": true, "taints": [], "fence": {OFFERED}}}}}, "costs": {{"hourly": "{hourly}", "currency": "USD"}}, "lasts": 3600}}"#
     );
     let made = format!(r#"{{"place": "p1", "machine": "lent", "until": "{until}"}}"#);
     let at = |name: &str| lent.join(name).display().to_string();
