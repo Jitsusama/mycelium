@@ -293,6 +293,44 @@ const IN_HOME: &str = "mycelium sprout: that machine has no such folder, so this
 /// terminal joining it reads why before it goes.
 const LINGER: u32 = 10;
 
+/// The variable a sprouted session reads its seed from as data, so its
+/// harness makes the quest and ties it itself rather than asking the
+/// model to, as the first words do.
+const SEED_VARIABLE: &str = "QUEST_WORKFLOW_SPROUT";
+
+/// The one shape of the seed there is.
+const SEED_VERSION: u8 = 1;
+
+/// The longest link or words the seed carries, in UTF-16 units, as the
+/// harness counts a string and the most it reads. Past it the seed is
+/// left out, so the first words alone stand rather than a seed the
+/// session would drop whole.
+const SEED_MOST: usize = 4000;
+
+/// The seed a sprouted session makes its quest from, as JSON: its
+/// version, the link or the words, and the cell it came from, only where
+/// that's an address, since a quest's id ties through the first words
+/// alone. Nothing where it says nothing or runs past [`SEED_MOST`]. It
+/// is an agent's word, as the link and words are: the session reads it
+/// as a seed, never as a command.
+#[must_use]
+pub fn seed_data(seed: &Seed, from: Option<&str>) -> Option<String> {
+    let (key, said) = match seed {
+        Seed::Link(link) => ("link", link),
+        Seed::Words(words) => ("words", words),
+    };
+    if said.is_empty() || said.encode_utf16().count() > SEED_MOST {
+        return None;
+    }
+    let mut data = serde_json::Map::new();
+    data.insert("v".to_owned(), SEED_VERSION.into());
+    data.insert(key.to_owned(), said.as_str().into());
+    if let Some(from) = from.filter(|from| crate::forage::is_address(from)) {
+        data.insert("from".to_owned(), from.into());
+    }
+    Some(serde_json::Value::Object(data).to_string())
+}
+
 /// The shell words that end a session before it starts where it would
 /// begin in home, however home is spelled there, keeping it up `linger`
 /// seconds to say why; else that run the rest of the command.
@@ -302,19 +340,22 @@ fn guard(linger: u32) -> String {
     )
 }
 
-/// The command a sprout starts: pi, told its first words, behind a guard
-/// that ends it before it starts where it would begin in home.
+/// The command a sprout starts: pi, told its first words and given its
+/// seed where there is one, behind a guard that ends it before it starts
+/// where it would begin in home.
 #[must_use]
-pub fn command(first_words: &str) -> Vec<String> {
-    vec![
+pub fn command(first_words: &str, seed: Option<&str>) -> Vec<String> {
+    let mut said = vec![
         "sh".to_owned(),
         "-c".to_owned(),
         guard(LINGER),
         "sprout".to_owned(),
         "env".to_owned(),
         format!("QUEST_WORKFLOW_FIRST_TEXT={first_words}"),
-        "pi".to_owned(),
-    ]
+    ];
+    said.extend(seed.map(|seed| format!("{SEED_VARIABLE}={seed}")));
+    said.push("pi".to_owned());
+    said
 }
 
 /// What the sprout `asked` starts, asked from `cwd` by someone whose home
@@ -386,7 +427,7 @@ pub fn start(machine: &str, folder: Option<PathBuf>, seed: &Seed, from: Option<&
         },
         folder,
         strict: true,
-        command: command(&first_words(seed, from)),
+        command: command(&first_words(seed, from), seed_data(seed, from).as_deref()),
         may_cost: false,
         carries: false,
         once: None,
@@ -799,11 +840,78 @@ mod tests {
 
     #[test]
     fn the_command_is_the_guard_then_pi_told_its_words() {
-        let said = command("hello");
+        let said = command("hello", None);
         assert_eq!(said[..3], ["sh", "-c", &guard(LINGER)]);
         assert_eq!(
             &said[3..],
             ["sprout", "env", "QUEST_WORKFLOW_FIRST_TEXT=hello", "pi"]
+        );
+        let seeded = command("hello", Some(r#"{"v":1,"words":"hello"}"#));
+        assert_eq!(
+            &seeded[5..],
+            [
+                "QUEST_WORKFLOW_FIRST_TEXT=hello",
+                r#"QUEST_WORKFLOW_SPROUT={"v":1,"words":"hello"}"#,
+                "pi"
+            ]
+        );
+    }
+
+    /// The seed `seed_data` makes, read back as JSON.
+    fn seed_read(seed: &Seed, from: Option<&str>) -> Option<serde_json::Value> {
+        seed_data(seed, from).map(|data| serde_json::from_str(&data).expect("it's JSON"))
+    }
+
+    #[test]
+    fn the_seed_is_the_link_or_the_words_as_data() {
+        let issue = "https://example.org/owner/skiff/issues/3";
+        assert_eq!(
+            seed_read(&link(issue), None),
+            Some(serde_json::json!({ "v": 1, "link": issue }))
+        );
+        // Quotes, a newline and a would-be command stay words, escaped.
+        let said = "make \"tea\"\nthen $(id); rm -rf ~";
+        assert_eq!(
+            seed_read(&words(said), Some("HARBOR")),
+            Some(serde_json::json!({ "v": 1, "words": said, "from": "HARBOR" }))
+        );
+    }
+
+    #[test]
+    fn the_seed_names_where_it_came_from_only_by_address() {
+        // A quest's id is a cell to tie to, but not an address, so the
+        // first words tie it and the seed leaves it out.
+        for not in ["QEST-20261116-42P0R4", &"A".repeat(33)] {
+            assert_eq!(
+                seed_read(&words("make tea"), Some(not)),
+                Some(serde_json::json!({ "v": 1, "words": "make tea" })),
+                "{not:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_seed_keeps_to_the_longest_the_session_reads() {
+        let longest = "a".repeat(SEED_MOST);
+        assert_eq!(
+            seed_read(&words(&longest), None),
+            Some(serde_json::json!({ "v": 1, "words": longest }))
+        );
+        assert_eq!(seed_data(&words(&"a".repeat(SEED_MOST + 1)), None), None);
+        // Counted as the session counts, in UTF-16 units: each of these
+        // is two, so half as many fit.
+        let wide = "\u{1F331}".repeat(SEED_MOST / 2);
+        assert!(seed_data(&words(&wide), None).is_some());
+        assert_eq!(seed_data(&words(&format!("{wide}a")), None), None);
+        assert_eq!(seed_data(&words(""), None), None);
+    }
+
+    #[test]
+    fn a_start_carries_its_seed_beside_its_first_words() {
+        let asked = start("kestrel", None, &words("make tea"), Some("HARBOR"));
+        assert_eq!(
+            asked.command[6],
+            r#"QUEST_WORKFLOW_SPROUT={"from":"HARBOR","v":1,"words":"make tea"}"#
         );
     }
 }
