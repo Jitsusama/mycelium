@@ -619,18 +619,30 @@ mod tests {
         let odd = json!({
             "v": 1, "id": "1793046604647-OSPHT4-101-2", "at": "2026-11-21T18:00:00.000Z",
             "from": "OSPHT4", "to": ["@WCJQSG"], "text": "odd",
-            "pid": "101", "hosted": "yes", "invite": 3,
+            "pid": "101", "hosted": {"key": "work-background"}, "invite": 3,
         });
         let oddly = message(&odd).expect("odd fields cost only themselves");
         assert_eq!((oddly.pid, oddly.hosted, oddly.invite), (None, false, None));
-        let plain = serde_json::to_value(message(&json!({
+        let plain = message(&json!({
             "v": 1, "id": "x", "at": "2026-11-21T18:00:00.000Z",
             "from": "OSPHT4", "to": ["@WCJQSG"], "text": "plain",
-        })))
-        .expect("a message is said");
+        }))
+        .expect("a plain message reads");
+        let plain = serde_json::to_value(plain).expect("a message is said");
         assert!(
-            plain.get("pid").is_none() && plain.get("hosted").is_none(),
+            ["pid", "hosted", "invite"]
+                .iter()
+                .all(|field| plain.get(field).is_none()),
             "none said where the file named none: {plain}"
+        );
+        let event = serde_json::to_value(crate::wire::Event::Message {
+            message: Box::new(hosted),
+        })
+        .expect("an event is said");
+        assert_eq!(
+            event["Message"]["message"],
+            said,
+            "a boxed message is said as a bare one"
         );
     }
 

@@ -1158,7 +1158,13 @@ sender is a conversation in a shared host, and the group it `invite`s
 those it names to, each as its file says it and none where the file
 says none or something it can't read, so a session reading the mesh
 through a watch knows its own messages come back and joins what it is
-invited to, as one reading the folder does.
+invited to, as one reading the folder does. The `pid` is a process on
+the machine whose file it is: a node's own `Send`, and a message taken
+from another realm, carry the node's, and say neither `hosted` nor
+`invite`; one a link carried from another machine carries a process
+there. So a session knows its own by `pid` only beside its `from`, and
+only for what it wrote itself. `invite` is the mesh target as written
+(`#harness`), not a group's name (`harness`).
 
 A `Present` connection counts the process at its other end, as the
 kernel names it, present until the connection closes; then every session

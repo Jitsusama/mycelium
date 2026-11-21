@@ -95,10 +95,15 @@ impl<S: Store> Shared<S> {
             message,
             from_realm,
         } = crossing;
+        // Said as the file written here says it: by this node's process,
+        // which hosts no conversation and invites no one.
         let taken = Message {
             from_realm: Some(from_realm.clone()),
             for_realm: None,
             supersedes: None,
+            pid: Some(std::process::id()),
+            hosted: false,
+            invite: None,
             ..message
         };
         let verdict = self.may_take(&taken, &from_realm);
@@ -612,6 +617,9 @@ mod tests {
         );
 
         hold.intent = Some(Intent::Question);
+        hold.pid = Some(1);
+        hold.hosted = true;
+        hold.invite = Some("#harness".to_owned());
         let crossing = crate::flow::Crossing {
             message: hold.clone(),
             from_realm: "personal".to_owned(),
@@ -621,6 +629,20 @@ mod tests {
         else {
             panic!("a question crosses");
         };
+        let there = work.store.message(&first.id).expect("it is in the mesh");
+        assert_eq!(
+            (first.pid, there["pid"].as_u64()),
+            (Some(std::process::id()), Some(u64::from(std::process::id()))),
+            "said and written as the taking node's own"
+        );
+        assert!(
+            !first.hosted && first.invite.is_none(),
+            "the sender's conversation and invite stay behind: {first:?}"
+        );
+        assert!(
+            there.get("hosted").is_none() && there.get("invite").is_none(),
+            "none written: {there}"
+        );
         let Answer::Ok(Response::Sent(again)) =
             answer(&work.socket, Request::Cross(crossing)).await
         else {
