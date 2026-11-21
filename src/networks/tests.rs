@@ -1861,6 +1861,41 @@ fn drawn_whole_the_tree_is_as_wide_as_its_widest_row_and_its_counts_line_up() {
 }
 
 #[test]
+fn drawn_whole_with_cells_each_network_s_sessions_line_up_under_it() {
+    let shown = overview(&mycelium(), &whole(), true, false);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(
+        lines[2..25],
+        [
+            "                              need you  stuck  moving  quiet  dormant",
+            "orchestrations",
+            "  Harbour Ships                                     1               1",
+            "    moving     BUSY01  Harbour Ships      running the tests",
+            "    dormant    NAPS01  Napping one",
+            "    kelp      Kelp: Tides            1",
+            "      needs you  ASKS01  Kelp's question  Which tide?",
+            "projects",
+            "  harbor    Harbour Ships                           1               1",
+            "    moving     BUSY01  Harbour Ships      running the tests",
+            "    dormant    NAPS01  Napping one",
+            "repositories",
+            "  skiff                              1              1",
+            "    needs you  ASKS01  Kelp's question    Which tide?",
+            "    moving     BUSY01  Harbour Ships      running the tests",
+            "groups",
+            "  dock/crew                                                         1",
+            "    dormant    NAPS01  Napping one",
+            "machines",
+            "  skiff     ready · 42% busy         1              1               1",
+            "    needs you  ASKS01  Kelp's question    Which tide?",
+            "    moving     BUSY01  Harbour Ships      running the tests",
+            "    dormant    NAPS01  Napping one",
+        ],
+        "the tree with its cells, whole:\n{shown}"
+    );
+}
+
+#[test]
 fn drawn_whole_what_each_cell_does_lines_up_after_the_widest_title() {
     let shown = cells(&mycelium(), &whole(), false, &[]);
     let lines: Vec<&str> = shown.lines().collect();

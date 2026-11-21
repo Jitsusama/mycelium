@@ -498,7 +498,7 @@ mod tests {
     fn drawn_whole_every_column_is_there_and_nothing_wraps() {
         assert_eq!(
             table(&[osprey()], &[], &look(crate::swarm::WHOLE)),
-            "machine  state  busy  memory free  disk free     power         updated\n\
+            "machine  state  busy  memory free  disk free      power         updated\n\
              osprey   ready        ? of 48 GiB  130 of 994 GB  battery 100%  failed 16:29\n\
              \n\
              osprey's update failed at 16:29: building the system failed (exit status: 1)\n"
