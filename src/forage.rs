@@ -1363,9 +1363,12 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// file can't draw lines of their own, steer the terminal, read backwards
 /// past their own end, or pass for another's name.
 pub(crate) fn one_line(text: &str) -> String {
-    text.chars()
-        .filter(|each| !turns_direction(*each) && !draws_nothing(*each))
-        .map(|each| {
+    let chars: Vec<char> = text.chars().collect();
+    chars
+        .iter()
+        .enumerate()
+        .filter(|&(at, each)| !turns_direction(*each) && !draws_nothing(&chars, at))
+        .map(|(_, &each)| {
             if each.is_control() || matches!(each, '\u{2028}' | '\u{2029}') {
                 ' '
             } else {
@@ -1381,11 +1384,60 @@ pub(crate) const fn turns_direction(each: char) -> bool {
     matches!(each, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
-/// Whether `each` is one of Unicode's format characters that take no
-/// room, a soft hyphen, a zero-width space or joiner, a word joiner or a
-/// byte-order mark, which make two names that read the same differ.
-pub(crate) const fn draws_nothing(each: char) -> bool {
-    matches!(each, '\u{00AD}' | '\u{200B}'..='\u{200D}' | '\u{2060}'..='\u{2064}' | '\u{FEFF}')
+/// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
+/// joiner, a word joiner or invisible operator, a grapheme joiner, a
+/// Hangul or Khmer filler, a variation selector, Mongolian or not, a byte
+/// order mark, or a tag, any of which hides text from the person or
+/// smuggles it past them.
+pub(crate) const fn unseen(each: char) -> bool {
+    matches!(
+        each,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{17B4}'
+            | '\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{200B}'..='\u{200D}'
+            | '\u{2060}'..='\u{2065}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{E0100}'..='\u{E01EF}'
+            | '\u{E0000}'..='\u{E007F}'
+    )
+}
+
+/// Whether the character at `at` in `chars` is [`unseen`] and spells
+/// nothing either, so two names that read the same can't differ by it.
+/// A joiner or non-joiner between two characters past ASCII, and a
+/// variation selector after one, are kept, since Persian and Indic words
+/// are spelled with them and an emoji is drawn by them; beside ASCII, as
+/// in an address, they only part names that read alike.
+fn draws_nothing(chars: &[char], at: usize) -> bool {
+    let spelt = |near: Option<usize>| {
+        near.filter(|near| *near < chars.len())
+            .is_some_and(|near| spells(chars, near))
+    };
+    match chars[at] {
+        '\u{200C}' | '\u{200D}' => !(spelt(at.checked_sub(1)) && spelt(Some(at + 1))),
+        '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}' => !spelt(at.checked_sub(1)),
+        each => unseen(each),
+    }
+}
+
+/// Whether the character at `at` is part of a word past ASCII that a
+/// joiner may join: one drawn, or a variation selector kept after one,
+/// as an emoji's is before the joiner that leads to its next part.
+fn spells(chars: &[char], at: usize) -> bool {
+    match chars[at] {
+        '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}' => {
+            at.checked_sub(1).is_some_and(|before| spells(chars, before))
+        }
+        each => !each.is_ascii() && !unseen(each),
+    }
 }
 
 /// The most lines a cell's purpose takes when drawn, so each block leads
@@ -3451,6 +3503,20 @@ mod tests {
             one_line("SK\u{200B}IFF\u{200C}1\u{200D} \u{00AD}tern\u{2060}\u{FEFF}"),
             "SKIFF1 tern"
         );
+        assert_eq!(
+            one_line("SKIFF1\u{3164}\u{E0041}\u{FE0F}\u{034F} tern\u{115F}\u{2065}"),
+            "SKIFF1 tern",
+            "a filler, a tag, a selector or a grapheme joiner beside ASCII was kept"
+        );
+    }
+
+    #[test]
+    fn a_joiner_that_spells_a_word_or_an_emoji_is_kept() {
+        // Persian spells "I want" with a non-joiner, and a heart on fire
+        // is a heart, its emoji selector, a joiner and a fire.
+        for spelt in ["\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}", "\u{2764}\u{FE0F}\u{200D}\u{1F525}"] {
+            assert_eq!(one_line(spelt), spelt, "a joiner past ASCII was dropped");
+        }
     }
 
     #[test]

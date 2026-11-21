@@ -381,39 +381,13 @@ pub fn subjects(declared: &Value) -> Vec<String> {
                 && !subject.chars().any(|each| {
                     each.is_control()
                         || crate::forage::turns_direction(each)
-                        || unseen(each)
+                        || crate::forage::unseen(each)
                         || matches!(each, '\u{2028}' | '\u{2029}')
                 })
         })
         .take(MOST_SUBJECTS)
         .map(str::to_owned)
         .collect()
-}
-
-/// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
-/// joiner, a word joiner or invisible operator, a grapheme joiner, a
-/// Hangul or Khmer filler, a variation selector, Mongolian or not, a byte order mark, or a
-/// tag, any of which hides
-/// text from the person or smuggles it past them.
-fn unseen(each: char) -> bool {
-    matches!(
-        each,
-        '\u{00AD}'
-            | '\u{034F}'
-            | '\u{115F}'
-            | '\u{1160}'
-            | '\u{17B4}'
-            | '\u{17B5}'
-            | '\u{180B}'..='\u{180F}'
-            | '\u{200B}'..='\u{200D}'
-            | '\u{2060}'..='\u{2065}'
-            | '\u{3164}'
-            | '\u{FE00}'..='\u{FE0F}'
-            | '\u{FEFF}'
-            | '\u{FFA0}'
-            | '\u{E0100}'..='\u{E01EF}'
-            | '\u{E0000}'..='\u{E007F}'
-    )
 }
 
 /// Which of the networks' asks is for the node's receptors.

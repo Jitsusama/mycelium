@@ -99,7 +99,8 @@ The harness mesh's messages and presence, carried between machines:
   follows: a machine over while another has room, one resource spent
   while the other idles, loads spread too far, or facts too old to
   place by. In a terminal its table keeps the columns that fit whole and
-  names those left out; into a pipe it has every one.
+  names those left out; into a pipe it has every one, and each of its
+  sentences is one line.
   `-o json` prints the same as one JSON line. `--follow` reads
   each minute, says the flags seen in most of the last ten, and keeps
   each reading as a JSON line in the state folder's `balance`, one file
@@ -161,8 +162,10 @@ The harness mesh's messages and presence, carried between machines:
   counting the rest; `--all` unfolds it, and a name opens any one.
   `mycelium cells --standing needs-you,stuck` lists only the cells
   standing so. Into a pipe, as `watch` and `less` read it, swarm's,
-  networks' and cells' tables are drawn whole: nothing is cut, and each
-  column is as wide as what is in it.
+  networks', cells' and machines' tables are drawn whole: nothing is
+  cut or wrapped, every column is there, and each is as wide as what
+  is in it, but for a name past 48 characters, which runs on alone
+  rather than moving every row's counts.
   `-w` on either draws it again in place every two
   seconds, as it changes, until stopped. Both print JSON lines with
   `-o json`, networks first,

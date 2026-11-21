@@ -418,13 +418,14 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
 
 /// When `at` is, into a pipe: its day, date, time and zone, so a copy
 /// kept until tomorrow, or read on a machine in another zone, still says
-/// when.
+/// when. The zone's offset follows its name, since a name such as IST or
+/// CST is held by more than one zone, and some zones have none.
 fn stamped(look: &Look, at: &str) -> Option<String> {
     let at = at
         .parse::<jiff::Timestamp>()
         .ok()?
         .to_zoned(look.now.time_zone().clone());
-    Some(at.strftime("%a %-d %b %Y %H:%M %Z").to_string())
+    Some(at.strftime("%a %-d %b %Y %H:%M %Z (%:z)").to_string())
 }
 
 /// The days ahead a lapse is said by its weekday alone.
@@ -1044,15 +1045,32 @@ mod tests {
     fn into_a_pipe_each_time_says_its_date_and_zone() {
         let piped = drawn(&records(ASKED), &look(), None);
         for line in [
-            "  Sun 15 Nov 2026 12:05 UTC  TERN01 asks SKIFF1 and KESTRL, 25 min so far  [c0cd280e]",
-            "  Sun 15 Nov 2026 12:02 UTC  OSPREY holds #all, until Sun 15 Nov 2026 14:02 UTC  \
-             [647648e1]",
+            "  Sun 15 Nov 2026 12:05 UTC (+00:00)  TERN01 asks SKIFF1 and KESTRL, 25 min so far  \
+             [c0cd280e]",
+            "  Sun 15 Nov 2026 12:02 UTC (+00:00)  OSPREY holds #all, until Sun 15 Nov 2026 14:02 \
+             UTC (+00:00)  [647648e1]",
         ] {
             assert!(
                 piped.lines().any(|each| each == line),
                 "no line {line:?}, so a kept copy can't say when:\n{piped}"
             );
         }
+    }
+
+    #[test]
+    fn into_a_pipe_a_time_is_said_in_the_reader_s_zone() {
+        let mut look = look();
+        look.now = look
+            .now
+            .with_time_zone(jiff::tz::TimeZone::fixed(jiff::tz::offset(-5)));
+        let piped = drawn(&records(ASKED), &look, None);
+        assert!(
+            piped.lines().any(|each| {
+                each.starts_with("  Sun 15 Nov 2026 07:05 ")
+                    && each.contains(" (-05:00)  TERN01 asks SKIFF1")
+            }),
+            "a time wasn't said in the reader's zone, with its offset:\n{piped}"
+        );
     }
 
     #[test]
@@ -1104,11 +1122,13 @@ mod tests {
         // A name with nothing an address holds still leaves an asker.
         let mut unnamed = asked_of(&["SKIFF1"], 5, "c0cd280e");
         unnamed["from"] = json!("ÉÀ Ö");
-        for width in [None, Some(80)] {
+        for (width, when) in [
+            (None, "  Sun 15 Nov 2026 12:05 UTC (+00:00)"),
+            (Some(80), "  12:05"),
+        ] {
             let drawn = drawn(&[unnamed.clone()], &look(), width);
             assert!(
-                drawn.contains("12:05  someone asks SKIFF1")
-                    || drawn.contains("12:05 UTC  someone asks SKIFF1"),
+                drawn.contains(&format!("{when}  someone asks SKIFF1")),
                 "a sender with no address left no asker at {width:?}:\n{drawn}"
             );
         }
