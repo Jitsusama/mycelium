@@ -228,8 +228,12 @@ enum Action {
     ///
     /// Each cell working on a quest, by its address, with its purpose, the
     /// first sentence of its quest's Summary, and each of its documents:
-    /// kind, stage, how many steps are ticked, and title. Named by its
-    /// address or its quest's id, one cell's forage.
+    /// kind, stage, how many steps are ticked, and title. Those that wait
+    /// on you come first. In a terminal each purpose takes two lines at
+    /// most, closed documents are counted, and each row is cut to fit.
+    /// Named by its address or its quest's id, one cell's forage, with
+    /// its purpose as far as its node read it and every document. Into a
+    /// pipe nothing more is cut.
     #[command(after_help = "Example:\n  mycelium forage HARBOR")]
     Forage(ForageAsked),
     /// Says how a receptor stands, as the receptor.
@@ -3002,16 +3006,20 @@ fn web(asked: WebAsked) -> io::Result<()> {
 /// names, drawn for a person or a JSON line each.
 fn forage(socket: &Path, asked: &ForageAsked) -> io::Result<()> {
     use mycelium::forage;
+    use std::io::IsTerminal as _;
     let records = mycelium::swarm::records(socket, forage::KIND, SWARM_WITHIN)?;
     let chosen = forage::chosen(records, asked.cell.as_deref());
     if asked.output.json() {
         return chosen.iter().try_for_each(print_line);
     }
-    write!(
-        io::stdout().lock(),
-        "{}",
+    // Into a pipe nothing gives way, so a reader that greps or saves it
+    // has every word and every document.
+    let drawn = if io::stdout().is_terminal() {
         forage::draw(&chosen, asked.cell.as_deref(), look().width)
-    )
+    } else {
+        forage::draw_for_a_pipe(&chosen, asked.cell.as_deref())
+    };
+    write!(io::stdout().lock(), "{drawn}")
 }
 
 /// Prints each record of `kind` the node holds, a JSON line each, oldest

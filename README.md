@@ -174,10 +174,14 @@ The harness mesh's messages and presence, carried between machines:
   machine whose quest, of the node's realm, claims it and lists them.
 - `mycelium forage` says what each cell is for: its purpose, the first
   sentence of its quest's Summary, and each of its plans, research and
-  reports with its stage and how many steps are ticked. Named by its
-  address or its quest's id, it says one cell's; `-o json` prints a
-  JSON line each. Each node serves its own cells' forages as the
-  `forage` kind, read from its quest store as it changes.
+  reports with its stage and how many steps are ticked. The cells
+  that wait on the person come first, each purpose takes two lines at
+  most, and closed documents are counted rather than listed. Named by
+  its address or its quest's id, it says one cell's, its purpose as
+  far as its node read it and every document listed, as it says every
+  cell's into a pipe; `-o json` prints a JSON line each, whole.
+  Each node serves its own cells' forages as the `forage` kind, read
+  from its quest store as it changes.
 - `mycelium swarm say <NAME> <WORDS>` says something as the person to
   a team, which its lead hears, or to one session;
   `mycelium swarm pause|resume <NAME>` pauses or resumes every session
