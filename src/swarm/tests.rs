@@ -366,7 +366,7 @@ fn drawn_whole_a_long_name_is_never_cut_and_runs_on_alone() {
     assert!(!shown.contains('…'), "whole, nothing is cut:\n{shown}");
     assert_eq!(
         lines[at + 1],
-        format!("{}1", " ".repeat(38)),
+        format!("{}1", " ".repeat(36)),
         "its count sits under its header, moving:\n{shown}"
     );
     assert!(
@@ -465,7 +465,9 @@ fn marks_line_up_within_a_block_and_each_kind_on_its_own() {
          on the next line under the column, and a mark left over goes"
     );
     assert_eq!(
-        aligned(&format!("\u{fdd0}  need you  stuck  moving  quiet  dormant\n{fits}\u{fdd0}  1")),
+        aligned(&format!(
+            "\u{fdd0}  need you  stuck  moving  quiet  dormant\n{fits}\u{fdd0}  1"
+        )),
         format!("  need you  stuck  moving  quiet  dormant\n{fits}\n  1"),
         "with five headers, 41 columns, a lead of 48 runs on"
     );
@@ -479,11 +481,21 @@ fn a_short_name_holding_what_draws_nothing_moves_no_title() {
         swarm
     };
     let plain = overview(&named("dock"), &whole());
-    assert!(plain.contains("\ndock  "), "the short name is shown:\n{plain}");
+    assert!(
+        plain.contains("\ndock  "),
+        "the short name is shown:\n{plain}"
+    );
+    // The table alone: the hint after it names the short name as typed.
+    let table = |swarm: &Swarm, look: &Look| -> String {
+        let drawn = overview(swarm, look);
+        drawn
+            .rsplit_once("\n\n")
+            .map_or_else(|| drawn.clone(), |(table, _)| table.to_owned())
+    };
     for look in [look(), whole()] {
         assert_eq!(
-            overview(&named("do\u{200B}ck\u{fdd0}"), &look),
-            overview(&named("dock"), &look),
+            table(&named("do\u{200B}ck\u{fdd0}"), &look),
+            table(&named("dock"), &look),
             "a character a short name loses moved its title at {}",
             look.width
         );

@@ -518,13 +518,18 @@ mod tests {
     fn a_column_is_kept_while_it_reaches_the_edge_and_no_further() {
         let at = |width| said(&two(), "work", width, false);
         assert!(
-            at(82).lines().nth(2).is_some_and(|line| line.ends_with("per core  facts"))
+            at(82)
+                .lines()
+                .nth(2)
+                .is_some_and(|line| line.ends_with("per core  facts"))
                 && !at(82).contains("left out"),
             "at 82 the facts reach the edge, so they stay:\n{}",
             at(82)
         );
         assert!(
-            at(81).lines().any(|line| line == "  left out to fit: facts"),
+            at(81)
+                .lines()
+                .any(|line| line == "  left out to fit: facts"),
             "at 81 they'd pass it, so they're left out:\n{}",
             at(81)
         );
