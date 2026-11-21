@@ -1963,9 +1963,12 @@ start placed (`"PlaceToStart"`, `"Start"`) is held to `runs` too,
 missed as `runs-nothing`, so it starts only where that fence runs a
 command: its session doesn't run through that launcher yet, but a
 machine declaring none, as a Mac does, would run it looser than its
-asker. The person's start is relayed as theirs, but a machine no person
-works at, or one where the link's end can't be named, judges it an
-agent's, so there it needs that machine's launcher too. An agent's run
+asker. What is judged is what a machine declares, never its system, so
+a Mac declaring `runs` would take such a start unfenced. The person's
+start is relayed as theirs, but a machine no person works at, or one
+where the link's end can't be named, judges it an agent's, so there it
+needs that machine's launcher too, and a refusal there says it was so
+judged. An agent's run
 naming no machine that every machine refuses, this one for its
 launcher, is told this one's reason and then every other's; one a
 link carried here is told this machine by name, not as here. Each

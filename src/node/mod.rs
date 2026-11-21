@@ -5102,10 +5102,18 @@ impl<S: Store> Shared<S> {
             let started = self.counted((by, charged), pinned, 0, Whither::Here).await;
             // The person's carry, taken as an agent's start where no
             // person works, is the person's to read: no orchestrator of
-            // theirs paces it.
+            // theirs paces it. Any other start refused there says it was
+            // judged an agent's, since the person's may be among them and
+            // would otherwise read a refusal for a fence it never asked.
             return started.map_err(|why| {
                 if persons_carry {
                     self.carry_refused(&why)
+                } else if unattended {
+                    format!(
+                        "no person works on {}, so it takes a relayed start as an agent's, \
+                         and refused it: {why}",
+                        self.machine
+                    )
                 } else {
                     why
                 }
@@ -6052,7 +6060,10 @@ fn refused(why: &str) {
 /// session would run looser than its asker. It stands in for that until
 /// held starts go through the launcher, so a Linux machine whose launcher
 /// is refused, or whose node is too old to say its `runs`, takes no
-/// agent's held start either.
+/// agent's held start either. It reads what a machine declares, never
+/// its system, so a Mac that did declare a launcher would still take one
+/// unfenced: none does, since a Mac's fence is declared with no `runs`
+/// until its held starts go through it.
 fn held_in_launcher(fence: Option<crate::declared::Kind>) -> bool {
     fence.is_some()
 }
@@ -16807,8 +16818,11 @@ esac
             .await
             .expect_err("and is counted here, as an agent's");
         assert!(
-            refused.starts_with("agents of no known cell started 8 sessions"),
-            "{refused}"
+            refused.starts_with(
+                "no person works on skiff, so it takes a relayed start as an agent's, and \
+                 refused it: agents of no known cell started 8 sessions"
+            ),
+            "and says it was judged an agent's: {refused}"
         );
         let refused = link
             .relayed("tern", carrying)
@@ -16942,6 +16956,12 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let processes = Processes::Folder("/nowhere/proc".into());
         let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        // Declared by an account trusted to, as any declaration is read,
+        // so what refuses it is the fence's words alone.
+        let socket = dir.path().join("node.sock");
+        declares_runs(&socket, false);
+        link.declared = socket.with_file_name("declared.json");
+        link.runs = Arc::new(runs_of(&socket));
         link.client = Some(1);
         let start = Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
@@ -16957,7 +16977,9 @@ esac
             .expect_err("an agent's relayed start is refused here");
         assert!(
             refused.starts_with("skiff doesn't take it now")
-                && refused.contains("declares no way to run a command"),
+                && refused.contains(
+                    "declares no way to run a command as its strictly fenced sessions run"
+                ),
             "{refused}"
         );
     }
