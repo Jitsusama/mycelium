@@ -122,11 +122,9 @@ pub fn holds_here(
     // Copied and let go, never kept: a change entered here would be one
     // the link's look finds nothing new in, and so never says.
     let mut ledger = places.ledgers().hold(quest)?.ledger;
-    let shared = places.quest(quest, &ledger);
     // A record waiting to move aside is one the look never says.
-    if !ledger.aside {
-        ledger.scan(&shared, machine)?;
-    }
+    let shared = places.quest(quest, &ledger).record_waits(ledger.aside);
+    ledger.scan(&shared, machine)?;
     Ok(ledger
         .files
         .into_iter()

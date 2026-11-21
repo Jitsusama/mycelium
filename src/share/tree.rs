@@ -72,6 +72,8 @@ pub struct Quest {
     pub home: PathBuf,
     /// Whether its README alone crosses ([`Self::readme_alone`]).
     pub readme_alone: bool,
+    /// Whether its record waits to move aside ([`Self::record_waits`]).
+    pub record_waits: bool,
 }
 
 impl Quest {
@@ -85,6 +87,19 @@ impl Quest {
             folders: BTreeSet::new(),
             home,
             readme_alone: false,
+            record_waits: false,
+        }
+    }
+
+    /// The same quest, carrying nothing of its record if `waits`, as when
+    /// this machine's own record waits to move aside for the other end's
+    /// copy: that record is none of the shared quest's, so it is neither
+    /// read nor found gone, while the scratch is still walked.
+    #[must_use]
+    pub fn record_waits(self, waits: bool) -> Self {
+        Self {
+            record_waits: waits,
+            ..self
         }
     }
 
@@ -129,7 +144,9 @@ impl Quest {
     pub fn carries(&self, shared: &Shared) -> bool {
         crosses(shared)
             && match shared.place {
-                Place::Record => !self.readme_alone || shared.path == "README.md",
+                Place::Record => {
+                    !self.record_waits && (!self.readme_alone || shared.path == "README.md")
+                }
                 Place::Scratch => {
                     self.scratch.is_some()
                         && shared

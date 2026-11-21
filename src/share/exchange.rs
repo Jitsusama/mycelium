@@ -206,6 +206,12 @@ impl Places {
             ));
         }
         let ledgers = self.ledgers();
+        if ledgers.read(quest).is_ok_and(|ledger| ledger.aside) {
+            return Err(io::Error::other(format!(
+                "{quest} is shared from another machine, so the copy here moves aside as \
+                 that one's comes; share it once it has"
+            )));
+        }
         {
             // Shared on its own, it no longer stops with the quests under it.
             let mut held = ledgers.hold(quest)?;
@@ -891,12 +897,15 @@ impl Exchange {
             }
             let walk = self.watch.to_walk(&id, &held.ledger.scratch);
             let record = self.watch.record_to_walk(&id) || anew;
-            let quest = carried.clone().walking(&walk);
+            // A record waiting to move aside is none of the shared quest's,
+            // so only its scratch is walked.
+            let quest = carried
+                .clone()
+                .walking(&walk)
+                .record_waits(held.ledger.aside);
             // A quest nothing was heard to change in isn't walked, so an
-            // idle look reads no file's size and time; nor is one whose
-            // own record waits to move aside, which is none of the
-            // shared quest's.
-            let scan = if !held.ledger.aside && (record || !walk.is_empty()) {
+            // idle look reads no file's size and time.
+            let scan = if record || !walk.is_empty() {
                 held.ledger.scan(&quest, &self.machine)?
             } else {
                 Scan::default()
@@ -1597,8 +1606,13 @@ impl Exchange {
             return Ok(Vec::new());
         };
         // The other end's copy has come, so this end's own record moves
-        // aside before anything of it is written in its place.
+        // aside before anything of it is written in its place. A deletion
+        // writes nothing, and a waiting record holds nothing of the
+        // quest's to delete, so it waits on.
         if shared.place == Place::Record {
+            if body.is_none() && held.ledger.aside {
+                return Ok(Vec::new());
+            }
             self.aside_first(id, &mut held)?;
         }
         let sight = held.ledger.scan_one(&quest, &shared, &self.machine)?;
@@ -1905,6 +1919,88 @@ mod tests {
             fs::read_to_string(aside.join("plans/PLAN-20261026-IZH11J.md")).expect("kept"),
             "kestrel's plan\n",
             "with its plan"
+        );
+    }
+
+    /// Skiff shares the quest with its notes, and kestrel hears only that
+    /// it does before the link drops, so kestrel's own record waits.
+    fn waiting_at_kestrel() -> (Machine, Machine, Exchange) {
+        let skiff = Machine::new("skiff");
+        let kestrel = Machine::new("kestrel");
+        skiff.write("README.md", "# Shared\n");
+        kestrel.write("README.md", "# Live here\n");
+        let notes = skiff.places.scratch.join(QUEST).join("notes");
+        fs::create_dir_all(&notes).expect("made");
+        fs::write(notes.join("plan.md"), "skiff's notes\n").expect("written");
+        share(&skiff, QUEST);
+        skiff
+            .places
+            .name_scratch(QUEST, "notes")
+            .expect("notes named");
+        let (mut near, mut far) = (skiff.exchange(&kestrel), kestrel.exchange(&skiff));
+        near.watch.hear_anything();
+        for say in near.look().expect("skiff looks") {
+            if matches!(say, Say::Shares { .. }) {
+                far.hear(say).expect("kestrel hears");
+            }
+        }
+        (skiff, kestrel, far)
+    }
+
+    #[test]
+    fn a_quest_whose_record_waits_says_its_scratch_and_refuses_a_share_from_here() {
+        let (_skiff, kestrel, mut far) = waiting_at_kestrel();
+        let refused = kestrel
+            .places
+            .offer(QUEST, &[])
+            .expect_err("a quest whose record waits isn't shared from here");
+        assert!(
+            refused.to_string().contains("moves aside"),
+            "the refusal says why: {refused}"
+        );
+
+        let note = kestrel.places.scratch.join(QUEST).join("notes/mine.md");
+        fs::create_dir_all(note.parent().expect("a file has a folder")).expect("made");
+        fs::write(&note, "kestrel's note\n").expect("written");
+        far.watch.hear_anything();
+        let said: Vec<String> = far
+            .look()
+            .expect("kestrel looks")
+            .into_iter()
+            .flat_map(|say| match say {
+                Say::Holds { files, .. } => files.into_keys().collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert!(
+            said.iter().any(|key| key == "scratch/notes/mine.md"),
+            "a note written while the record waits is said: {said:?}"
+        );
+        assert!(
+            said.iter().all(|key| !key.starts_with("record/")),
+            "and nothing of the waiting record: {said:?}"
+        );
+    }
+
+    #[test]
+    fn a_deletion_coming_first_leaves_a_waiting_record_where_it_is() {
+        let (_skiff, kestrel, mut far) = waiting_at_kestrel();
+        far.take_file(
+            QUEST,
+            "record/plans/PLAN-20261026-IZH11J.md",
+            &State::default(),
+            None,
+            None,
+        )
+        .expect("the deletion is taken");
+        assert_eq!(
+            kestrel.read("README.md").as_deref(),
+            Some("# Live here\n"),
+            "a deletion writes nothing, so kestrel's own record stays"
+        );
+        assert!(
+            !kestrel.places.state.join("before-share").exists(),
+            "nothing moved aside"
         );
     }
 
