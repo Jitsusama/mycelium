@@ -3294,9 +3294,7 @@ impl<S: Store> Shared<S> {
             Request::Messages { groups, limit } => {
                 Ok(Response::Messages(self.lock().state.recent(&groups, limit)))
             }
-            Request::Send(draft) => self
-                .send(&draft)
-                .map(|sent| Response::Sent(Box::new(sent))),
+            Request::Send(draft) => self.send(&draft).map(|sent| Response::Sent(Box::new(sent))),
             Request::Flows => Ok(Response::Flows {
                 to: self.flows.to.iter().cloned().collect(),
             }),
