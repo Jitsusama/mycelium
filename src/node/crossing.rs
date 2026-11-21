@@ -594,6 +594,9 @@ mod tests {
             from_realm: None,
             for_realm: None,
             ends_hold: false,
+            pid: None,
+            hosted: false,
+            invite: None,
         };
         let crossing = crate::flow::Crossing {
             message: hold.clone(),
@@ -645,6 +648,9 @@ mod tests {
                     from_realm: None,
                     for_realm: None,
                     ends_hold: false,
+                    pid: None,
+                    hosted: false,
+                    invite: None,
                 },
                 from_realm: "personal".to_owned(),
             };

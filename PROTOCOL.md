@@ -1153,6 +1153,12 @@ sent across carries `fromRealm`, and one left waiting for a link to
 carry it `forRealm`. A `Send` naming its own realm is a plain send.
 A message answering a hold (`re`) on the person's word that it is over
 carries `endsHold`, kept as its sender's file says it, and nowhere else.
+A message carries the `pid` that wrote its file, `hosted` when its
+sender is a conversation in a shared host, and the group it `invite`s
+those it names to, each as its file says it and none where the file
+says none or something it can't read, so a session reading the mesh
+through a watch knows its own messages come back and joins what it is
+invited to, as one reading the folder does.
 
 A `Present` connection counts the process at its other end, as the
 kernel names it, present until the connection closes; then every session
