@@ -4693,7 +4693,7 @@ mod tests {
             quest: QUEST.to_owned(),
             file: README.to_owned(),
             state: State {
-                hash: content(body.as_bytes()).hash,
+                hash: Some(content(body.as_bytes()).hash),
                 version: Version::default().changed_on("skiff"),
             },
             body: Some(STANDARD.encode(&body)),
