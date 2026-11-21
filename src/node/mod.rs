@@ -13354,6 +13354,7 @@ esac
             may_cost: false,
             carries: false,
             once: None,
+            strict: false,
         };
         assert_eq!(
             ask(socket.clone(), Request::Start(held.clone())).await,
@@ -13473,6 +13474,7 @@ esac
                 may_cost: false,
                 carries: false,
                 once: None,
+                strict: false,
             })
         };
         assert_eq!(
@@ -16857,6 +16859,56 @@ esac
         );
     }
 
+    // That ruling holds only where the cell's strict fence runs a
+    // command: one declaring no launcher refuses the starts its maker
+    // placed there, the person's carry too, and says how it judged them.
+    #[tokio::test]
+    async fn a_cell_declaring_no_launcher_refuses_the_starts_placed_on_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let unattended = Processes::Folder("/nowhere/proc".into()).unattended();
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, unattended);
+        let socket = dir.path().join("node.sock");
+        declares_runs(&socket, false);
+        link.declared = socket.with_file_name("declared.json");
+        link.runs = Arc::new(runs_of(&socket));
+        link.client = Some(1);
+        let start = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let carrying = Start {
+            command: carried_in("QEST-20261112-HARBOR"),
+            carries: true,
+            ..start.clone()
+        };
+        let refused = link
+            .relayed("tern", start)
+            .await
+            .expect_err("a start placed here is refused");
+        assert!(
+            refused.starts_with(
+                "no person works on skiff, so it takes a relayed start as an agent's, and \
+                 refused it:"
+            ) && refused.contains("starts only where that fence runs a command"),
+            "and says it was judged an agent's, and why: {refused}"
+        );
+        let refused = link
+            .relayed("tern", carrying)
+            .await
+            .expect_err("the person's carry is refused the same");
+        assert!(
+            refused.starts_with("no person works on skiff, so it takes the person's carry")
+                && refused.contains("starts only where that fence runs a command"),
+            "the person reads why: {refused}"
+        );
+        assert_eq!(link.arrivals.carrying(), 0, "and nothing arrives");
+    }
+
     // The asking node stops waiting on a relay's answer within half a
     // minute, so a relayed start never waits for room, however soon it
     // comes, where a person works or not.
@@ -16993,6 +17045,7 @@ esac
             may_cost: false,
             carries: false,
             once: None,
+            strict: false,
         };
         let refused = link
             .relayed("tern", start)

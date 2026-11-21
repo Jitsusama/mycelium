@@ -169,7 +169,8 @@ same code, each line a JSON value:
    stops waiting on its answer within 30 seconds. Where no person
    works, an agent's SSH login can't be told from a link's end, so
    every relay but its own process's is taken so, and a machine made
-   from a basin still takes the starts placed on it. Elsewhere, a
+   from a basin still takes the starts placed on it, where its strict
+   fence declares `runs` (The Socket). Elsewhere, a
    link's end an agent ran is taken so too, as is one whose owner the
    kernel can't tell, but one marked as the person's carry is refused,
    so the person hears the carry failed rather than finding its
@@ -1963,10 +1964,16 @@ start placed (`"PlaceToStart"`, `"Start"`) is held to `runs` too,
 missed as `runs-nothing`, so it starts only where that fence runs a
 command: its session doesn't run through that launcher yet, but a
 machine declaring none, as a Mac does, would run it looser than its
-asker. What is judged is what a machine declares, never its system, so
-a Mac declaring `runs` would take such a start unfenced. So an agent's
-session that ran on a Mac isn't brought back there after a restart,
-since its start is pinned to that machine. The person's start is
+asker. Since a Mac declares none, an agent's session that ran on a Mac
+isn't brought back there after a restart, as its start is pinned to
+that machine, and an agent's start on a Mac that names no machine goes
+to one that runs its fence. There it begins in its home where its
+folder isn't, unless it asks `"strict"`, or it is told what a machine
+made for it would cost. Only placement is held so: an agent's session
+already held on a Mac wakes there as before, outside any fence, until
+it ends or the Mac boots again. What is judged is what a machine
+declares, never its system, so a Mac declaring `runs` would take such
+a start unfenced. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that
 machine's launcher too, and a refusal of any start judged so says it
