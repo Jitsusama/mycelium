@@ -78,7 +78,7 @@ impl Carried {
             Asked::Update => Self::Update,
             Asked::Carry { quest, to, checked } => Self::Carry { quest, to, checked },
             Asked::End { held, by } => Self::End { held, by },
-            Asked::Lend(lend, lent) => return Ok((Self::Lend(lend), Some(lent))),
+            Asked::Lend(lend, answers) => return Ok((Self::Lend(lend), Some(answers))),
             Asked::Run(..) => {
                 return Err("it dialled this machine, and a run goes only where this \
                             machine dialled"
@@ -106,8 +106,8 @@ impl Carried {
             Self::Carry { quest, to, checked } => Asked::Carry { quest, to, checked },
             Self::End { held, by } => Asked::End { held, by },
             Self::Lend(lend) => {
-                let (lent, reading) = mpsc::channel(BACKLOG);
-                return (Asked::Lend(lend, lent), Some(reading));
+                let (sending, answers) = mpsc::channel(BACKLOG);
+                return (Asked::Lend(lend, sending), Some(answers));
             }
         };
         (asked, None)
@@ -223,23 +223,20 @@ where
                     Ok(FromLink::Lent { ask, lent }) => {
                         let Some(handing) = lending.get(&ask) else { continue };
                         let ends = matches!(lent, Lent::Done | Lent::Refused { .. });
-                        match handing.try_send(lent) {
-                            Ok(()) => {
-                                if ends {
-                                    lending.remove(&ask);
-                                }
+                        if handing.try_send(lent).is_ok() {
+                            if ends {
+                                lending.remove(&ask);
                             }
+                        } else {
                             // A reader that fell behind, or hung up, has
                             // its lend let go there; what it was handed
                             // ends short.
-                            Err(_) => {
-                                lending.remove(&ask);
-                                if write(&mut writing, &ToLink::Unlend { unlend: ask })
-                                    .await
-                                    .is_err()
-                                {
-                                    return;
-                                }
+                            lending.remove(&ask);
+                            if write(&mut writing, &ToLink::Unlend { unlend: ask })
+                                .await
+                                .is_err()
+                            {
+                                return;
                             }
                         }
                     }
@@ -338,7 +335,7 @@ async fn carry(node: &Path, machine: &str, asks: &mpsc::UnboundedSender<Ask>) ->
     // Each lend's reading, which ends as the node hangs up.
     let mut reading = JoinSet::new();
     let mut lends: HashMap<u64, AbortHandle> = HashMap::new();
-    let (lending, mut lent) = mpsc::channel(BACKLOG);
+    let (lending, mut pieces) = mpsc::channel(BACKLOG);
     loop {
         tokio::select! {
             line = lines.next_line() => {
@@ -349,8 +346,8 @@ async fn carry(node: &Path, machine: &str, asks: &mpsc::UnboundedSender<Ask>) ->
                     ToLink::Handed(handed) => handed,
                     ToLink::Unlend { unlend } => {
                         // Dropping its reader lets the lend go there.
-                        if let Some(lend) = lends.remove(&unlend) {
-                            lend.abort();
+                        if let Some(reader) = lends.remove(&unlend) {
+                            reader.abort();
                         }
                         continue;
                     }
@@ -362,8 +359,8 @@ async fn carry(node: &Path, machine: &str, asks: &mpsc::UnboundedSender<Ask>) ->
                     return Ok(());
                 }
                 if let Some(answers) = answers {
-                    let lend = reading.spawn(read_lend(ask, answers, lending.clone()));
-                    lends.insert(ask, lend);
+                    let reader = reading.spawn(read_lend(ask, answers, lending.clone()));
+                    lends.insert(ask, reader);
                 }
                 answering.spawn(async move {
                     let reply = answered
@@ -376,7 +373,7 @@ async fn carry(node: &Path, machine: &str, asks: &mpsc::UnboundedSender<Ask>) ->
                 let answered = FromLink::Answered(answered.map_err(io::Error::other)?);
                 write(&mut writing, &answered).await?;
             }
-            Some((ask, piece)) = lent.recv() => match piece {
+            Some((ask, piece)) = pieces.recv() => match piece {
                 Some(lent) => write(&mut writing, &FromLink::Lent { ask, lent }).await?,
                 None => {
                     lends.remove(&ask);
@@ -537,10 +534,10 @@ mod tests {
         let mut link = Link::carried_by(&asks).await;
         let (ask, answers) = borrowed(&asks, &mut link).await;
         drop(answers);
-        let line = link.heard().await;
+        let said = link.heard().await;
         assert!(
-            matches!(serde_json::from_str(&line), Ok(ToLink::Unlend { unlend }) if unlend == ask),
-            "the node lets the lend go: {line}"
+            matches!(serde_json::from_str(&said), Ok(ToLink::Unlend { unlend }) if unlend == ask),
+            "the node lets the lend go: {said}"
         );
     }
 
@@ -549,11 +546,11 @@ mod tests {
         let asks = Asks::default();
         let mut link = Link::carried_by(&asks).await;
         let (ask, mut answers) = borrowed(&asks, &mut link).await;
-        let head = Lent::Head {
+        let first = Lent::Head {
             status: 200,
             headers: vec![],
         };
-        link.say(&FromLink::Lent { ask, lent: head }).await;
+        link.say(&FromLink::Lent { ask, lent: first }).await;
         // More than the reader's backlog and the node's hold together.
         let sent = BACKLOG + STALLED_AFTER + 8;
         for _ in 0..sent {
@@ -565,10 +562,10 @@ mod tests {
             lent: Lent::Done,
         })
         .await;
-        let line = link.heard().await;
+        let said = link.heard().await;
         assert!(
-            matches!(serde_json::from_str(&line), Ok(ToLink::Unlend { unlend }) if unlend == ask),
-            "the node lets the stalled lend go: {line}"
+            matches!(serde_json::from_str(&said), Ok(ToLink::Unlend { unlend }) if unlend == ask),
+            "the node lets the stalled lend go: {said}"
         );
         let (other, _answers) = borrowed(&asks, &mut link).await;
         assert_ne!(other, ask, "another lend still crosses");

@@ -201,8 +201,8 @@ impl Asks {
     /// answering each piece of the answer as it comes, or why it can't be
     /// asked. Dropping what this answers lets the lend go there.
     pub async fn lend(&self, machine: &str, lend: Lend) -> Result<mpsc::Receiver<Lent>, String> {
-        let (lent, said) = mpsc::channel(crate::lend::BACKLOG);
-        self.send(machine, Asked::Lend(lend, lent), Some(ANSWERED_WITHIN))
+        let (answer, said) = mpsc::channel(crate::lend::BACKLOG);
+        self.send(machine, Asked::Lend(lend, answer), Some(ANSWERED_WITHIN))
             .await??;
         Ok(said)
     }

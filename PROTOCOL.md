@@ -2125,6 +2125,16 @@ after it, which ends it. A node named no lender refuses every lend 403,
 so a lender's own node hands none on, and one whose lender no link
 reaches now refuses it 503. A client that hangs up lets the lend go.
 
+Where the lender dialled this machine, as a maker dials its workers,
+the link runs apart from the node, and the lend crosses the `"Carry"`
+connection to it: the node hands it as `{"ask", "asked": {"Lend":
+lend}}`, and the link answers `{"ask", "reply"}` once it is asked, then
+`{"ask", "lent"}` a line a piece. The node never waits on a lend's
+reader: it holds at most 64 pieces for one that has stopped taking
+them, and past that, or once the reader hangs up, it writes
+`{"unlend": ask}`, the link lets the lend go, and what was handed on
+ends short.
+
 `mycelium lend serve --listen PATH [--budget NAME]` serves pi's model
 requests on `PATH` as a machine's model relay does, so a pi whose
 `PI_PROXY_RELAY` names `PATH`'s folder sends there. It makes that
