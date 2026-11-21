@@ -443,8 +443,9 @@ pub enum Response {
     },
     /// The messages asked for.
     Messages(Vec<Message>),
-    /// The message as sent.
-    Sent(Message),
+    /// The message as sent, boxed since a message is far larger than any
+    /// other answer.
+    Sent(Box<Message>),
     /// The realms this realm's messages may go to.
     Flows {
         /// Each realm, by name.
@@ -528,8 +529,9 @@ pub enum Event {
     },
     /// A message went to a group the watch hears.
     Message {
-        /// The message.
-        message: Message,
+        /// The message, boxed so each event a watcher's backlog holds is
+        /// no larger than a session's.
+        message: Box<Message>,
     },
 }
 

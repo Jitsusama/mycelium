@@ -59,7 +59,7 @@ impl<S: Store> Shared<S> {
             return Answer::Err(format!("the store refused the message: {error}"));
         }
         message.for_realm = Some(realm);
-        Answer::Ok(Response::Sent(message))
+        Answer::Ok(Response::Sent(Box::new(message)))
     }
 
     /// Hands `message` to `realm`'s node on this machine, keeping how that
@@ -107,14 +107,14 @@ impl<S: Store> Shared<S> {
             return refusal.into();
         }
         if self.store.message(&taken.id).is_some() {
-            return Answer::Ok(Response::Sent(taken));
+            return Answer::Ok(Response::Sent(Box::new(taken)));
         }
         let body = mesh::crossed(&taken, &from_realm, std::process::id());
         if let Err(error) = self.store.put_message(&taken.id, &body) {
             return Answer::Err(format!("the store refused the message: {error}"));
         }
         self.keep(&taken, &from_realm, &self.realm, Ok(()));
-        Answer::Ok(Response::Sent(taken))
+        Answer::Ok(Response::Sent(Box::new(taken)))
     }
 
     /// Whether this realm takes `message` from `from_realm`: only under a
@@ -464,7 +464,7 @@ mod tests {
             let _ = watching.send(());
             loop {
                 match watch.next_event().expect("the watch reads") {
-                    Some(Event::Message { message }) => return message,
+                    Some(Event::Message { message }) => return *message,
                     Some(_) => {}
                     None => panic!("the node hung up before the message came"),
                 }
