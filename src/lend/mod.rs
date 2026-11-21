@@ -1,43 +1,58 @@
-//! PROVISIONAL stand-in for KP0L6A's types, to be replaced by theirs.
+//! A model call one machine lends another: the borrower's pi asks as it
+//! would ask a model's relay, and the lender makes the call with its own
+//! credentials, which never leave it, answering as the model does. Each
+//! crosses the link both machines' nodes already share.
+//!
+//! [`serve`] is the borrower's side, where pi's requests come in.
 
 pub mod serve;
 
 use serde::{Deserialize, Serialize};
 
-/// A model call lent.
+/// How many [`Lent`]s wait between a lend and its reader at most, at each
+/// step from the lender to whoever asked for it.
+pub const BACKLOG: usize = 4;
+
+/// A model call asked of the machine lending, as pi asked it, with none
+/// of pi's credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lend {
-    /// The budget it is counted against.
+    /// The budget the lender counts it against, where it keeps more than
+    /// one; none for its default.
     pub budget: Option<String>,
-    /// Its method.
+    /// Its HTTP method.
     pub method: String,
-    /// Its path.
+    /// Its path, as pi asked it, such as `/apis/anthropic/v1/messages`.
     pub path: String,
-    /// Its headers.
+    /// The headers a model's answer turns on, and no others.
     pub headers: Vec<(String, String)>,
     /// Its body, in base64.
     pub body: String,
 }
 
-/// What a lend answers.
+/// A piece of what a lend answers, in the order the lender says them: a
+/// head, then its body's pieces, then that it is done; or, before any
+/// head, that it is refused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Lent {
-    /// Its head.
+    /// The answer's status and headers.
     Head {
-        /// Status.
+        /// Its HTTP status.
         status: u16,
-        /// Headers.
+        /// Its headers, as the model gave them.
         headers: Vec<(String, String)>,
     },
-    /// A piece of its body, in base64.
+    /// A piece of the answer's body, in base64.
     Body(String),
-    /// It ended whole.
+    /// The answer ended whole.
     Done,
-    /// It was refused.
+    /// The lend was refused, or failed before its head.
     Refused {
-        /// Status.
+        /// The HTTP status pi is answered with: 429 past the day's count,
+        /// 403 for a machine cut off or a scope it may not ask, 502 where
+        /// the model failed, 503 where no link reaches the lender.
         status: u16,
-        /// Why.
+        /// Why, in words pi shows.
         why: String,
     },
 }

@@ -19,6 +19,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 use crate::client::Client;
 use crate::hold::end::Asker;
 use crate::hold::start::Kit;
+use crate::lend::{Lend, Lent};
 use crate::link::dial::{Dial, Ssh};
 use crate::placement::Need;
 use crate::share::exchange::Places;
@@ -94,6 +95,10 @@ pub(super) enum Asked {
     /// Run a command there, handing what it says to the sender as it
     /// comes; answered once the run is asked of the other end.
     Run(Run, mpsc::Sender<Ran>),
+    /// Borrow a model call from that machine, handing each piece of its
+    /// answer to the sender as it comes; answered once the lend is asked
+    /// of the other end. Dropping the receiver lets the lend go.
+    Lend(Lend, mpsc::Sender<Lent>),
     /// Carry `quest`'s sessions off that machine to the machine `to`, as
     /// the person asks, once this machine's node `checked` the person
     /// asked.
@@ -192,21 +197,14 @@ impl Asks {
         Ok(said)
     }
 
-    /// A stand-in for the lender's own, which lends nothing yet.
-    #[expect(
-        clippy::unused_async,
-        clippy::unused_async_trait_impl,
-        reason = "a stand-in for the lend the link carries, which awaits its frames"
-    )]
-    pub async fn lend(
-        &self,
-        machine: &str,
-        _lend: crate::lend::Lend,
-    ) -> Result<mpsc::Receiver<crate::lend::Lent>, String> {
-        if !self.lock().by_machine.contains_key(machine) {
-            return Err(format!("no link reaches {machine} now"));
-        }
-        Err("not yet".to_owned())
+    /// Asks `machine` to lend `lend`, through the link reaching it,
+    /// answering each piece of the answer as it comes, or why it can't be
+    /// asked. Dropping what this answers lets the lend go there.
+    pub async fn lend(&self, machine: &str, lend: Lend) -> Result<mpsc::Receiver<Lent>, String> {
+        let (lent, said) = mpsc::channel(crate::lend::BACKLOG);
+        self.send(machine, Asked::Lend(lend, lent), Some(ANSWERED_WITHIN))
+            .await??;
+        Ok(said)
     }
 
     /// Asks `machine` to put `steer` into its session's inbox, through the

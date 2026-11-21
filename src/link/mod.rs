@@ -1084,6 +1084,8 @@ impl<S: Store> End<S> {
             Asked::Steer(_) => self.said.steers.then_some(()).ok_or("carry steers"),
             Asked::Update => self.said.updates.then_some(()).ok_or("be asked to update"),
             Asked::Run(..) => self.said.runs.then_some(()).ok_or("run commands"),
+            // Until the link carries a lend's frames, no end lends.
+            Asked::Lend(..) => Err("lend model calls"),
             Asked::Carry { .. } => self.said.carries.then_some(()).ok_or("carry sessions"),
             Asked::End { .. } => self.said.ends.then_some(()).ok_or("end held sessions"),
         };
@@ -1123,6 +1125,7 @@ impl<S: Store> End<S> {
             },
             Asked::End { held, by } => Frame::End { ask: id, held, by },
             Asked::Run(..) => unreachable!("a run is sent above"),
+            Asked::Lend(..) => unreachable!("a lend is refused above"),
         };
         send(writing, &frame).await
     }

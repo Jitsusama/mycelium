@@ -171,8 +171,9 @@ async fn a_refused_lend_answers_its_status() {
             })
             .expect("the fake node answers");
         let mut heard = Vec::new();
+        // Anthropic's error, its keys in the order serde_json writes them.
         let body =
-            format!(r#"{{"type":"error","error":{{"type":"mycelium_lend","message":"{why}"}}}}"#);
+            format!(r#"{{"error":{{"message":"{why}","type":"mycelium_lend"}},"type":"error"}}"#);
         until(&mut pi, &mut heard, &body).await;
         let heard = String::from_utf8_lossy(&heard);
         assert!(
