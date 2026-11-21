@@ -1135,6 +1135,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Update": {"machine"}}` | `{"Updated": ending}`, as its updater said it |
 | `{"End": {"held"}}` | `{"Ended": {"machine", "held", "ending"}}`, `ending` `gently` or `killed` (A Held Session) |
 | `{"Run": {"work", "folder", "command", "by", "from"}}` | `{"Running": {"machine"}}`, then a `Ran` a line |
+| `{"Lend": {"budget", "method", "path", "headers", "body"}}` | a `Lent` a line, no reply first (Borrowing a Lend) |
 | `{"Messages": {"groups", "limit"}}` | `{"Messages": [message]}`, oldest first |
 | `{"Send": {"from", "groups", "intent", "text", "re"}}` | `{"Sent": message}` |
 | `{"Send": {"from", "groups", "intent", "text", "re", "realm"}}` | `{"Sent": message}`, or refused |
@@ -2111,6 +2112,39 @@ again for the whole state.
 A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 `quest.4uhc5q`, and a peer's `@4UHC5Q` is `peer.4uhc5q`. A pattern takes
 `*` for any one token and a final `>` for one or more.
+
+### Borrowing a Lend
+
+A machine borrowing model calls, as a worker does from its maker, has
+its node started with `--lends-from MACHINE`. A `"Lend"` asked of it
+goes over the link reaching that machine, which knows this one by the
+link alone, and the node writes each `Lent` it answers as a line:
+`{"Head": {"status", "headers"}}`, then `{"Body": base64}` as it comes,
+then `"Done"`; or `{"Refused": {"status", "why"}}`, before the head or
+after it, which ends it. A node named no lender refuses every lend 403,
+so a lender's own node hands none on, and one whose lender no link
+reaches now refuses it 503. A client that hangs up lets the lend go.
+
+`mycelium lend serve --listen PATH [--budget NAME]` serves pi's model
+requests on `PATH` as a machine's model relay does, so a pi whose
+`PI_PROXY_RELAY` names `PATH`'s folder sends there. It makes that
+folder open to its account alone, refuses one open to others, and
+binds the socket for its account alone. Each request, HTTP/1.1 with a
+body of a length or in chunks, at most 64 KiB of head and 32 MiB of
+body, goes to the node as a `"Lend"` with only its `content-type`,
+`anthropic-version`, `anthropic-beta` and `accept` headers, so pi's
+credentials never leave the machine, and the budget named. One whose
+body is coded is answered 415 unasked, which pi's zstd coding takes as
+leave to send it plain. The head is answered with the lender's headers
+but those of one connection, and the body in chunks as each `Body`
+comes. A refusal before the head, or a request that can't be read or
+lent, is answered with its status and an error shaped as Anthropic's,
+`{"type": "error", "error": {"type": "mycelium_lend", "message"}}`,
+and the connection carries the next request. A refusal after it, or a
+node that stops answering, ends the connection short of the last
+chunk, so pi reads the answer as failed. A pi that hangs up hangs up on
+the node. It holds no key and asks for none, and never answers 421,
+which pi reads as a relay sending it straight to the proxy.
 
 ### A Hosted Session's Spawner
 

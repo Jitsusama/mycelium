@@ -89,6 +89,7 @@ pub mod hindsight;
 pub mod hold;
 pub mod hosted_attach;
 pub mod install;
+pub mod lend;
 pub mod link;
 pub mod machines;
 pub mod made;

@@ -534,6 +534,18 @@ enum Action {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+    /// Borrows model calls from another machine, or lends them.
+    ///
+    /// A machine borrowing serves pi's model requests and hands each
+    /// to its node, which sends it over the link it holds to the
+    /// machine lending; PROTOCOL.md says how.
+    #[command(
+        after_help = "Example:\n  mycelium lend serve --listen \"$PI_PROXY_RELAY/agents.sock\""
+    )]
+    Lend {
+        #[command(subcommand)]
+        act: LendAct,
+    },
     /// Prints the node's events as they come.
     ///
     /// Each is a JSON line, the latest messages first.
@@ -545,6 +557,31 @@ enum Action {
         /// How many of the latest messages come first.
         #[arg(long, default_value_t = 20)]
         recent: usize,
+    },
+}
+
+/// What `mycelium lend` is asked to do.
+#[derive(Subcommand)]
+enum LendAct {
+    /// Serves pi's model requests, each lent through this machine's node.
+    ///
+    /// It listens on `--listen` as a machine's model relay does, so a pi
+    /// whose `PI_PROXY_RELAY` names its folder sends there. Each request
+    /// goes to the node as a lend, with none of pi's credentials and only
+    /// the headers a model's answer turns on, and its answer streams
+    /// back as it comes. It holds no key and asks for none.
+    #[command(
+        after_help = "Example:\n  mycelium lend serve --listen \"$PI_PROXY_RELAY/agents.sock\""
+    )]
+    Serve {
+        /// The socket pi's requests come to, in a folder only this
+        /// account may write, made so where it isn't there.
+        #[arg(long)]
+        listen: PathBuf,
+        /// The budget the lender counts these calls against, where it
+        /// keeps more than one.
+        #[arg(long)]
+        budget: Option<String>,
     },
 }
 
@@ -653,6 +690,12 @@ struct Node {
     /// `node@<machine>`, or a carry is kept and told but never taken.
     #[arg(long, requires = "eases")]
     eases_carry: bool,
+    /// The machine this one borrows model calls from, through the link
+    /// it was accepted by, as a worker's image names its maker. Unnamed,
+    /// the node refuses every lend asked of it, so a lender's own node
+    /// hands on none.
+    #[arg(long)]
+    lends_from: Option<String>,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -1539,6 +1582,9 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Start(asked) => start(&socket, asked),
         Action::Sprout(asked) => sprout(&socket, asked),
         Action::Run(asked) => return run_there(&socket, asked),
+        Action::Lend {
+            act: LendAct::Serve { listen, budget },
+        } => lend_serve(&listen, socket, budget),
         Action::Steer { address } => steer(&socket, address),
         Action::Orchestrates {
             heads,
@@ -1834,6 +1880,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let (dials, serves) = (node.dials(), node.serves(&machine)?);
     let providers = node.providers;
     let declared = node.declared.unwrap_or_else(place::declared);
+    let lends_from = node.lends_from;
     let processes = processes_here(node.unattended);
     let kit = node.kit;
     let builders = builders::Given {
@@ -1913,6 +1960,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
             realm: membership.name.clone(),
             answers_within: carry::settle::ANSWERS_WITHIN,
         }),
+        lends_from,
     };
     tell!(
         "mycelium: {}",
@@ -2704,6 +2752,19 @@ fn said_within_home(folder: Option<PathBuf>) -> io::Result<Option<PathBuf>> {
             Err(_) => Some(folder),
         },
         (folder, _) => folder,
+    })
+}
+
+/// Serves pi's model requests on `listen`, each lent through the node at
+/// `node` from the budget `budget` names, until asked to stop.
+fn lend_serve(listen: &Path, node: PathBuf, budget: Option<String>) -> io::Result<()> {
+    runtime()?.block_on(async {
+        let bound = node::bind(listen)?;
+        tell!("mycelium: lending pi's model calls at {}", listen.display());
+        tokio::select! {
+            served = mycelium::lend::serve::serve(bound, node, budget) => served,
+            () = stopped() => Ok(()),
+        }
     })
 }
 

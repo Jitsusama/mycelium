@@ -192,6 +192,23 @@ impl Asks {
         Ok(said)
     }
 
+    /// A stand-in for the lender's own, which lends nothing yet.
+    #[expect(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "a stand-in for the lend the link carries, which awaits its frames"
+    )]
+    pub async fn lend(
+        &self,
+        machine: &str,
+        _lend: crate::lend::Lend,
+    ) -> Result<mpsc::Receiver<crate::lend::Lent>, String> {
+        if !self.lock().by_machine.contains_key(machine) {
+            return Err(format!("no link reaches {machine} now"));
+        }
+        Err("not yet".to_owned())
+    }
+
     /// Asks `machine` to put `steer` into its session's inbox, through the
     /// link reaching it, answering as that end does, or why no answer came.
     pub async fn steer(&self, machine: &str, steer: Steer) -> Reply {
