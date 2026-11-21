@@ -17,7 +17,10 @@
 //! `MYCELIUM_WAKE`, so whatever wakes it needs to know nothing of this
 //! folder. One that says as it parks where its steers land, in
 //! `<id>.steers` (told in `MYCELIUM_STEERS`), wakes too as one lands
-//! there that would give it a turn ([`steering`]).
+//! there that would give it a turn ([`steering`]). One that exits with
+//! [`holder::GONE`] having written `<id>.gone` (told in `MYCELIUM_GONE`),
+//! its pi host away, is kept the same way, and also starts again by
+//! itself after a pause, as its host may be back; any other exit ends it.
 //!
 //! - [`holder`]: the holder, keeping the program's terminal
 //! - [`attach`]: a terminal joining a holder
@@ -199,6 +202,28 @@ pub fn wake(dir: &Path, id: &str) -> PathBuf {
 pub fn steers(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.steers"))
 }
+
+/// The file a program held as `id` in `dir` writes as it exits
+/// [`holder::GONE`], saying its pi host is away, as attach does: a
+/// program exiting so for a reason of its own, as one whose tools are
+/// unavailable may, writes none and ends as any other.
+#[must_use]
+pub fn gone(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.gone"))
+}
+
+/// Says to the holder of the program running this, if any, that its pi
+/// host is away, as it is about to exit [`holder::GONE`].
+pub fn say_gone() {
+    if let Some(gone) = std::env::var_os(GONE_SAID) {
+        // A holder not told ends the window, as it did before it kept one
+        // for a pi host away: nothing worse than that follows.
+        let _ = fs::write(gone, b"");
+    }
+}
+
+/// What a held program is told the path of [`gone`] in.
+pub const GONE_SAID: &str = "MYCELIUM_GONE";
 
 /// The file a program held as `id` in `dir` may write, as it parks, with
 /// the command that takes it up again where it left off.

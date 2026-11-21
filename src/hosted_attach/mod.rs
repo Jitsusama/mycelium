@@ -93,6 +93,11 @@ pub enum Left {
     Released,
     /// The host's end of the connection closed without saying.
     Gone,
+    /// No host could be reached, or its connection broke: its socket is
+    /// missing, nobody accepts on it, or the connection was reset or its
+    /// pipe broken, before the join was heard or as the conversation was
+    /// shown, as for a host stopping, stopped and not yet back, or dying.
+    Unreachable,
     /// The host took a first join's connection but didn't answer it within
     /// this long, so the join let it go.
     Unanswered(Duration),
@@ -108,14 +113,14 @@ impl Left {
     /// The code `mycelium attach --host` exits with, having left so:
     /// [`RELEASED`](crate::hold::holder::RELEASED) for a release, so the
     /// window carries on as plain pi, [`GONE`](crate::hold::holder::GONE)
-    /// for a host gone past its patience or one that never answered, so the
-    /// window waits for it as for a refused attach, and 0 for any other
-    /// leaving, which closes it.
+    /// for a host gone past its patience, one that never answered, or one
+    /// that couldn't be reached, so the window waits for it, and 0 for any
+    /// other leaving, which closes it.
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::Released => crate::hold::holder::RELEASED,
-            Self::Gone | Self::Unanswered(_) => crate::hold::holder::GONE,
+            Self::Gone | Self::Unanswered(_) | Self::Unreachable => crate::hold::holder::GONE,
             Self::Detached(_) | Self::Suspended | Self::Restarting => 0,
         }
     }
@@ -164,13 +169,14 @@ pub fn attach_here(realm: &str, host: &str, session: &str) -> Vec<String> {
 /// host restarts, it keeps the screen, says so on its last row, and joins
 /// again once the host is back. So it never answers [`Left::Suspended`]
 /// or [`Left::Restarting`]; a host that isn't back within
-/// [`RESTART_PATIENCE`] has gone, and one that never answers a first join
-/// within [`ANSWER_PATIENCE`] leaves it [`Left::Unanswered`].
+/// [`RESTART_PATIENCE`] has gone, one that never answers a first join
+/// within [`ANSWER_PATIENCE`] leaves it [`Left::Unanswered`], and one not
+/// there to join at all leaves it [`Left::Unreachable`].
 ///
 /// # Errors
 ///
-/// When the host can't be reached, refuses the session, or breaks its
-/// frames.
+/// When this terminal can't be taken, the host refuses the session, or
+/// it breaks its frames.
 pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
     let mut here = Tty::enter()?;
     let (tell, mut sizes) = mpsc::unbounded_channel();
@@ -213,9 +219,14 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
                 join(socket, session, size, &mut here, &mut output, &mut sizes).await
             }
         };
-        let left = tokio::select! {
+        let left = match tokio::select! {
             left = joining => left,
             () = &mut watching => Ok(Left::Gone),
+        } {
+            // A host stopped and not yet back, or one whose connection broke as
+            // it stopped or died, is one to wait for, not a fault.
+            Err(error) if starting(&error) => Ok(Left::Unreachable),
+            left => left,
         };
         restarted = left.as_ref().is_ok_and(|left| *left == Left::Restarting);
         if restarted {
@@ -601,6 +612,11 @@ mod tests {
             Left::Unanswered(ANSWER_PATIENCE).exit_code(),
             GONE,
             "a host that never answered, so the window looks again as for one gone"
+        );
+        assert_eq!(
+            Left::Unreachable.exit_code(),
+            GONE,
+            "a host not there to join, so the window waits for it to be back"
         );
         for left in [
             Left::Detached("Conversation closed".to_owned()),

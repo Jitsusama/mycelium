@@ -2862,6 +2862,26 @@ start again stays parked and says why on its terminal, and the next
 wake tries again, with any command named since. A parked program is no
 work: it keeps no machine awake and holds up no handover.
 
+A program that exits with 69 (sysexits' `EX_UNAVAILABLE`) having
+written `<id>.gone`, told its path in `MYCELIUM_GONE`, is kept as a
+parked one is, with its windows, and each window joining meanwhile,
+told the pi host is away; the line is drawn again over anything the
+ended run shows after it. `attach --host` writes it and exits so once
+its pi host stays gone past its patience for a restart, never answers
+its first join, or isn't there to join at all. A program exiting 69
+with no such file written, as a tool that is unavailable may, ends as
+any other. The program starts again as a
+parked one does, at a key, a focus or `<id>.wake`, with any command
+named since in `<id>.next` or `<id>.again`, and also by itself: 15
+seconds on, doubling after each try that finds the host still away, to
+at most two minutes. So a window held on the machine of the pi host
+it attaches to joins that host again once it is back rather than
+closing. A window on another machine's session, through SSH or
+`attach --on`, carries no `MYCELIUM_GONE` there, so it still closes.
+Before 19 November 2026 a holder ended on 69. It still ends on any
+code but 75 and such a 69, such as 3, an attach whose host let the
+conversation go back to plain pi, even with `<id>.gone` written.
+
 A joined terminal sends frames of a tag byte, a two-byte big-endian
 length and what it carries: tag 0 is bytes typed, and tag 1 is its size,
 rows then columns, two bytes each, sent on joining and on each change.

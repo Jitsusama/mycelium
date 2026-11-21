@@ -13,6 +13,10 @@ The rest of the tests sit beside the code they prove, in `src/`.
   its quest's documents, about 5 KB a cell, made for each ask and never
   held, a gap that closes by noon on 18 November 2026, by writing the
   records as raw bytes as the cells' do
+- `gone.rs`: a holder of a window on a pi host's conversation keeping
+  the window when the host stops before answering its join, trying again
+  at a key while nobody takes a join at its socket and while the socket
+  is gone, and joining it once it's back
 - `held.rs`: a holder told to end as its scope's stop tells it, with a
   window joined, ending as its program does
 - `made.rs`: a machine made for a start from a provider's offer, linked,
