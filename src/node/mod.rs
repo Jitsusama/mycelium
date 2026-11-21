@@ -10164,6 +10164,7 @@ esac
                 may_cost: false,
                 carries: false,
                 once: None,
+                strict: false,
             };
             let _ = ask(socket.to_path_buf(), Request::Start(plain)).await;
         }
