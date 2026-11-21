@@ -2245,8 +2245,13 @@ const SWARM_WITHIN: std::time::Duration = std::time::Duration::from_secs(4);
 /// seconds a link gives another machine to say it was told.
 const STEER_WITHIN: std::time::Duration = std::time::Duration::from_secs(35);
 
-/// How wide the swarm is drawn where its output isn't a terminal that says.
+/// How wide the swarm is drawn into a pipe, until its tables can be drawn
+/// whole there, as every command's should be.
 const SWARM_WIDTH: usize = 100;
+
+/// How wide a terminal is drawn on where neither `COLUMNS` nor the
+/// terminal says.
+const WIDTH_UNSAID: usize = 80;
 
 /// Prints the swarm's teams, or the one `team` names, as
 /// [`mycelium::swarm`] draws them, or each team's record as a JSON line.
@@ -2263,16 +2268,39 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
     writeln!(io::stdout().lock(), "{shown}")
 }
 
-/// How a person's terminal is drawn on: as wide as it says, in colour
+/// How wide stdout is drawn on: into a terminal, `COLUMNS`, then what the
+/// terminal `said`, then [`WIDTH_UNSAID`], as core.nix's commands read it;
+/// `COLUMNS` first because no shell exports it, so it's mostly there only
+/// when someone asked for that width; an editor's terminal can pass on a
+/// stale one, which, where the terminal says its width, can only draw
+/// narrower. It's read as a terminal's own width is, at most a `u16`,
+/// and no wider than a terminal that says, since a line past its edge
+/// only wraps. Into a pipe `COLUMNS` isn't read, as the
+/// kit's commands don't read it there, and the width is [`SWARM_WIDTH`].
+fn width(terminal: bool, columns: Option<&str>, said: Option<u16>) -> usize {
+    if !terminal {
+        return SWARM_WIDTH;
+    }
+    let said = said.filter(|cells| *cells > 0);
+    columns
+        .and_then(|columns| columns.trim().parse::<u16>().ok())
+        .filter(|cells| *cells > 0)
+        .map(|cells| said.map_or(cells, |said| cells.min(said)))
+        .or(said)
+        .map_or(WIDTH_UNSAID, usize::from)
+}
+
+/// How a person's terminal is drawn on: as [`width`] finds it, in colour
 /// unless it isn't one or `NO_COLOR` is set, with the theme's marks.
 fn look() -> mycelium::swarm::Look {
     use std::io::IsTerminal as _;
     let stdout = io::stdout();
     let terminal = stdout.is_terminal();
-    let width = rustix::termios::tcgetwinsize(&stdout)
+    let columns = std::env::var("COLUMNS").ok();
+    let said = rustix::termios::tcgetwinsize(&stdout)
         .ok()
-        .filter(|size| terminal && size.ws_col > 0)
-        .map_or(SWARM_WIDTH, |size| usize::from(size.ws_col));
+        .map(|size| size.ws_col);
+    let width = width(terminal, columns.as_deref(), said);
     mycelium::swarm::Look {
         width,
         colour: terminal && std::env::var_os("NO_COLOR").is_none(),
@@ -3090,9 +3118,61 @@ mod tests {
     use std::io;
 
     use super::{
-        Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, in_place, kit, processes_here,
-        reader_left, said_text, swarm_asked, tree, write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, in_place, kit,
+        processes_here, reader_left, said_text, swarm_asked, tree, width, write_line,
     };
+
+    #[test]
+    fn a_terminal_is_as_wide_as_columns_says_then_as_it_says_then_eighty() {
+        for (columns, said, wide) in [
+            (Some("60"), Some(120), 60),
+            (None, Some(120), 120),
+            (Some("wide"), Some(90), 90),
+            (Some("0"), Some(0), 80),
+            (None, None, 80),
+            (Some("0"), Some(120), 120),
+            (None, Some(0), 80),
+            (Some(" 60 "), Some(120), 60),
+            (Some("200"), None, 200),
+            (Some("60"), Some(0), 60),
+        ] {
+            assert_eq!(
+                width(true, columns, said),
+                wide,
+                "COLUMNS {columns:?}, the terminal saying {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_terminal_is_drawn_no_wider_than_it_is() {
+        for (columns, said, wide) in [
+            (Some("200"), Some(120), 120),
+            (Some("65535"), Some(120), 120),
+        ] {
+            assert_eq!(
+                width(true, columns, said),
+                wide,
+                "COLUMNS {columns:?}, the terminal saying {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn columns_past_what_a_terminal_could_say_is_ignored() {
+        for columns in ["65536", "99999999999", "18446744073709551615"] {
+            assert_eq!(
+                width(true, Some(columns), None),
+                80,
+                "COLUMNS {columns:?}, the terminal saying nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn into_a_pipe_columns_is_not_read() {
+        assert_eq!(width(false, Some("60"), Some(120)), SWARM_WIDTH);
+    }
 
     #[test]
     fn a_message_is_read_from_input_so_its_words_sit_in_no_command_line() {

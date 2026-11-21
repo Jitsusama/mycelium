@@ -136,13 +136,17 @@ fn focus_of(typed: &[u8]) -> (bool, Vec<u8>) {
 const PARKED_WAKES: &str = "A key or a message tries again.";
 
 /// Variables a program's first terminal set that would name the wrong
-/// window once it is held, since it outlives that window.
-const WINDOW_VARIABLES: [&str; 5] = [
+/// window once it is held, since it outlives that window: `COLUMNS` and
+/// `LINES` among them, which would outrank the size of each window it is
+/// attached to later.
+const WINDOW_VARIABLES: [&str; 7] = [
     "KITTY_WINDOW_ID",
     "KITTY_LISTEN_ON",
     "KITTY_PID",
     "WINDOWID",
     "MYCELIUM_APP_ID",
+    "COLUMNS",
+    "LINES",
 ];
 
 /// The variable naming the agent a program signs with over ssh.
@@ -2775,14 +2779,19 @@ mod tests {
             ("TRIAL_MODEL", "newest"),
             ("MYCELIUM_REALM", "elsewhere"),
             ("KITTY_PID", "1"),
+            ("COLUMNS", "120"),
+            ("LINES", "40"),
         ]);
         let (dir, held, _holder) = holding_sh_in(root.path(), Vec::new(), person).await;
         let size = WINDOW;
         let mut window = Joined::join(socket(&dir, &held.id), size, None);
         window
-            .types("echo \"[$TRIAL_MODEL in $MYCELIUM_REALM, ${KITTY_PID:-no} window]\"\r")
+            .types(concat!(
+                "echo \"[$TRIAL_MODEL in $MYCELIUM_REALM, ${KITTY_PID:-no} window, ",
+                "$(printenv COLUMNS LINES || echo no) size]\"\r"
+            ))
             .await;
-        window.sees("[newest in harbour, no window]").await;
+        window.sees("[newest in harbour, no window, no size]").await;
     }
 
     #[test]
