@@ -543,8 +543,13 @@ mod tests {
             .iter()
             .position(|line| line.starts_with("  left out to fit: "))
             .expect("a line says what was left out");
-        assert!(
-            lines[at + 1].starts_with(&" ".repeat(18)) && lines[at + 1].ends_with("facts"),
+        assert_eq!(
+            lines[at..at + 3],
+            [
+                "  left out to fit: processors, stall,",
+                "                   busy, idle, per core,",
+                "                   facts",
+            ],
             "the columns left out wrap under the first one named:\n{shown}"
         );
     }
