@@ -548,10 +548,12 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
         drawing.networks(&mut lines, tops.collect(), 1);
     }
     lines.push(String::new());
+    // A short name comes from a peer's subject, so it is held to one line
+    // and of marks, as on its row.
     let example = mycelium
         .networks
         .first()
-        .map_or("<network>", |each| each.short.as_str());
+        .map_or_else(|| "<network>".to_owned(), |each| unmarked(&each.short));
     lines.push(look.paint(
         FAINT,
         &format!(

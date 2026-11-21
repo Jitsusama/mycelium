@@ -87,7 +87,12 @@ fn shares_of(presence: &Value) -> Vec<Share> {
         share.key.make_ascii_lowercase();
         // Cleaned whole before the cut, so what a terminal would act on is
         // gone wherever it was said, and the cut counts what is drawn.
-        share.about = drawable(&share.about);
+        // A title is a name read and voted on, so it drops what draws
+        // nothing too, as every peer's text on a page does; a folder is
+        // a path, kept to the letter but for what would act on a terminal.
+        swarm::unmarked(&share.about)
+            .trim()
+            .clone_into(&mut share.about);
         share.folder = drawable(&share.folder);
         if let Some((cut, _)) = share.about.char_indices().nth(SHARE_FOR_MOST) {
             share.about.truncate(cut);
@@ -577,12 +582,11 @@ impl Share {
     }
 }
 
-/// `said` as a terminal can draw it on one line, as a forage's lines
-/// are: each control character and line or paragraph separator a space,
-/// and each mark turning text's direction gone, so nothing it says acts
-/// on the terminal or turns the text after it. Every other character
-/// stays, the joiners an emoji or a script spells with among them: a
-/// folder is never refused for its title, which was the quest's.
+/// `said`, a folder's path, as a terminal can draw it on one line: each
+/// control character and line or paragraph separator a space, and each
+/// mark turning text's direction gone, so nothing it says acts on the
+/// terminal or turns the text after it. Every other character stays, as
+/// the path holds it.
 fn drawable(said: &str) -> String {
     said.chars()
         .filter(|each| !crate::forage::turns_direction(*each))

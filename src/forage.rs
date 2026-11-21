@@ -3541,6 +3541,9 @@ mod tests {
             ("SKIFF1\u{202E}\u{FE0F}", "SKIFF1"),
             ("SKIFF\u{2066}\u{200C}\u{2066}1", "SKIFF1"),
             ("Reef\u{2028}\u{FE0F}", "Reef "),
+            // A space past ASCII survives as itself, and vouches for nothing.
+            ("Reef\u{A0}\u{FE0F}", "Reef\u{A0}"),
+            ("\u{E9}\u{3000}\u{200D}\u{E9}", "\u{E9}\u{3000}\u{E9}"),
             ("Reef\u{FDD0}\u{FE0F}", "Reef\u{FDD0}"),
             // A keycap's base is ASCII, so it loses its emoji form.
             ("1\u{FE0F}\u{20E3}", "1\u{20E3}"),
