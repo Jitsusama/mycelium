@@ -891,6 +891,7 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         json!({"key": "quest:lined", "for": "Lined\u{2028}up\u{2029}", "folder": "/l"}),
         json!({"key": "quest:joined", "for": "👩\u{200D}💻 Harbour", "folder": "/j"}),
         json!({"key": "quest:persian", "for": "می\u{200C}خواهم", "folder": "/p"}),
+        json!({"key": "quest:hidden", "for": "Tide\u{200B} plan\u{FDD0}", "folder": "/h"}),
         json!({"key": "quest:untitled", "for": "", "folder": "/u"}),
         json!({"key": "quest:unsaid", "folder": "/u"}),
         json!({"key": "quest:nulled", "for": null, "folder": "/n"}),
@@ -904,6 +905,7 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
             titled("quest:accented", &"é".repeat(120)),
             untitled("quest:blank"),
             titled("quest:cut", &"c".repeat(119)),
+            titled("quest:hidden", "Tide plan"),
             titled("quest:joined", "👩\u{200D}💻 Harbour"),
             titled("quest:lined", "Lined up"),
             untitled("quest:nulled"),
@@ -916,8 +918,9 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         ],
         "a title past 120 characters is cut to them, however many bytes each is, counting \
          what is drawn; a control character or separator in it is a space and a mark \
-         turning its direction is gone, and a cut ends in no space; the joiners an emoji or \
-         a script spells with stay; and a share saying nothing or null it is for is kept, \
+         turning its direction is gone, as is what draws nothing or a mark, and a cut ends in \
+         no space; the joiners an emoji or a script spells with stay; and a share saying \
+         nothing or null it is for is kept, \
          untitled"
     );
 }
@@ -1897,8 +1900,10 @@ fn drawn_whole_a_cell_s_marks_and_breaks_move_no_column() {
 
 #[test]
 fn a_peer_s_escape_break_or_mark_reaches_no_page() {
-    let pages = |title: &str, step: &str, machine: (&str, &str)| {
+    let pages = |title: &str, step: &str, machine: (&str, &str), said: &str| {
         let [teams, mut sessions, mut machines] = records();
+        let mut lent = builders();
+        lent[1]["said"] = json!(said);
         for session in &mut sessions {
             if session["address"] == "ASKS01" {
                 session["presence"]["questInfo"]["title"] = json!(title);
@@ -1909,25 +1914,34 @@ fn a_peer_s_escape_break_or_mark_reaches_no_page() {
         }
         machines[1]["name"] = json!(machine.0);
         machines[1]["state"] = json!(machine.1);
-        let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
+        let mycelium = Mycelium::of("work", &teams, &sessions, &machines).with_builders(&lent);
         let page = |name: &str| {
             let found = mycelium.cell(name).expect("the session is a cell");
             cell(&mycelium, found, &look())
         };
+        let one = |name: &str| network(&mycelium, name, &whole(), false).expect("a network");
         [
             overview(&mycelium, &whole(), true, false),
             cells(&mycelium, &whole(), false, &[]),
             cells(&mycelium, &look(), false, &[]),
             page("ASKS01"),
             page("BUSY01"),
+            one("kelp"),
+            one("machines"),
         ]
     };
-    let clean = pages("Kelp's question", "running the tests", ("dinghy", "ready"));
+    let clean = pages(
+        "Kelp's question",
+        "running the tests",
+        ("dinghy", "ready"),
+        "nothing is lent",
+    );
     assert_eq!(
         pages(
             "Kelp's\u{200b} question\u{fdd0}",
             "running\u{fdd1} the tests",
             ("ding\u{200b}hy\u{fdd0}", "ready"),
+            "nothing\u{200b} is lent\u{fdd0}",
         ),
         clean,
         "what draws nothing, or a mark, in a peer's name, title, step or state moved a column"
@@ -1935,12 +1949,13 @@ fn a_peer_s_escape_break_or_mark_reaches_no_page() {
     // An escape's control goes and its visible rest stays, so these pages
     // are held to the same words set on one line, which may run on as
     // any long title does.
-    let (title, step, state) = (
+    let (title, step, state, said) = (
         "Kelp's \u{1b}]0;tide\u{7}question",
         "running\u{1b}[2J the\n\ntests",
         "ready\r\n\nlater",
+        "nothing\u{1b}]52;c;eA==\u{7} is\nlent",
     );
-    let dirty = pages(title, step, ("dinghy", state));
+    let dirty = pages(title, step, ("dinghy", state), said);
     for page in &dirty {
         assert!(
             !page.contains(['\u{1b}', '\u{7}', '\r']),
@@ -1952,7 +1967,8 @@ fn a_peer_s_escape_break_or_mark_reaches_no_page() {
         pages(
             &one_line(title),
             &one_line(step),
-            ("dinghy", &one_line(state))
+            ("dinghy", &one_line(state)),
+            &one_line(said),
         ),
         "a peer's escape or break drew otherwise than its words on one line"
     );
@@ -2036,6 +2052,34 @@ fn drawn_whole_nothing_is_cut_and_no_line_trails() {
         drawn.lines().all(|line| line == line.trim_end()),
         "no line ends in spaces:\n{drawn}"
     );
+    // The long title's row runs on: drawn single-spaced, its own gaps
+    // too, with its doing on the next line in the column the others use.
+    for page in [
+        overview(&mycelium, &whole(), true, false),
+        cells(&mycelium, &whole(), false, &[]),
+    ] {
+        let lines: Vec<&str> = page.lines().collect();
+        let column = lines
+            .iter()
+            .find_map(|line| line.find("running the tests"))
+            .expect("a doing in its column");
+        let ran_on: Vec<usize> = (0..lines.len())
+            .filter(|at| lines[*at].contains(long))
+            .collect();
+        assert!(!ran_on.is_empty(), "the long title is drawn:\n{page}");
+        for at in ran_on {
+            assert!(
+                lines[at].ends_with(long) && !lines[at].trim_start().contains("  "),
+                "{:?} ran on other than single-spaced, or kept its doing:\n{page}",
+                lines[at]
+            );
+            assert_eq!(
+                lines[at + 1],
+                format!("{}Which tide?", " ".repeat(column)),
+                "the doing of a row that ran on left the others' column:\n{page}"
+            );
+        }
+    }
 }
 
 /// The builders the harbour's machine sends Nix builds to, as its node

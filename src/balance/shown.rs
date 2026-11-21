@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 
 use super::{Flag, IMBALANCE, Load, Reading};
-use crate::swarm::{BOLD, FAINT, RESET};
+use crate::swarm::{BOLD, FAINT, RESET, unmarked};
 
 /// The table's columns after the machine's name and how it stands, each
 /// as wide as its header or its widest figure.
@@ -56,23 +56,24 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
         None => {}
     }
     out.push_str("\n\n");
-    let named = reading
+    // A machine's name is its own to say, so it is held to one line and
+    // counted as it is drawn.
+    let rows: Vec<(&Load, String, [String; 8])> = reading
         .machines
         .iter()
-        .map(|one| one.machine.chars().count())
+        .map(|one| (one, unmarked(&one.machine), figures(one)))
+        .collect();
+    let named = rows
+        .iter()
+        .map(|(_, name, _)| name.chars().count())
         .max()
         .unwrap_or(0);
-    let rows: Vec<(&Load, [String; 8])> = reading
-        .machines
-        .iter()
-        .map(|one| (one, figures(one)))
-        .collect();
     let wides: Vec<usize> = COLUMNS
         .iter()
         .enumerate()
         .map(|(at, column)| {
             rows.iter()
-                .map(|(_, figures)| figures[at].chars().count())
+                .map(|(_, _, figures)| figures[at].chars().count())
                 .chain([column.len()])
                 .max()
                 .unwrap_or_default()
@@ -93,9 +94,12 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
     for (column, wide) in COLUMNS.iter().zip(&wides).take(shown) {
         let _ = write!(header, "  {column:>wide$}");
     }
-    let _ = writeln!(out, "{}", paint(FAINT, header.trim_end()));
-    for (one, figures) in &rows {
-        let mut row = format!("  {:named$}  {:STANDS$}", one.machine, stands(one));
+    // With no column fitting, the header would be a blank line.
+    if shown > 0 {
+        let _ = writeln!(out, "{}", paint(FAINT, header.trim_end()));
+    }
+    for (one, name, figures) in &rows {
+        let mut row = format!("  {name:named$}  {:STANDS$}", stands(one));
         for (figure, wide) in figures.iter().zip(&wides).take(shown) {
             let _ = write!(row, "  {figure:>wide$}");
         }
@@ -186,21 +190,25 @@ fn sentence(flag: &Flag, reading: &Reading) -> (&'static str, String) {
             "hot while cool",
             format!(
                 "{hot} is over while {cool} has room; new work should go to {cool}, \
-                 and each minute of this counts against place's weights"
+                 and each minute of this counts against place's weights",
+                hot = unmarked(hot),
+                cool = unmarked(cool),
             ),
         ),
         Flag::Stranded { machine, spent } if spent == "memory" => (
             "stranded",
             format!(
                 "{machine}'s memory is nearly all used while its processors idle; \
-                 work there waits on memory while the processors go unused"
+                 work there waits on memory while the processors go unused",
+                machine = unmarked(machine),
             ),
         ),
         Flag::Stranded { machine, .. } => (
             "stranded",
             format!(
                 "{machine}'s processors are spent while half its memory or more is \
-                 free; work there waits on processors while the memory goes unused"
+                 free; work there waits on processors while the memory goes unused",
+                machine = unmarked(machine),
             ),
         ),
         Flag::Stale { machine } => {
@@ -211,7 +219,8 @@ fn sentence(flag: &Flag, reading: &Reading) -> (&'static str, String) {
                 "stale",
                 format!(
                     "{machine}'s facts are {old} old, too old to place by; its link may \
-                     be slow or down, and placing there is placing blind"
+                     be slow or down, and placing there is placing blind",
+                    machine = unmarked(machine),
                 ),
             )
         }
@@ -239,22 +248,24 @@ fn imbalanced(reading: &Reading) -> String {
     format!(
         "{} carries {}{}, {} {}{}; place weighs headroom, so new work leans to {} \
          until the two even out",
-        most.machine,
+        unmarked(&most.machine),
         percent(most.load),
         per_core(most, true),
-        least.machine,
+        unmarked(&least.machine),
         percent(least.load),
         per_core(least, false),
-        least.machine,
+        unmarked(&least.machine),
     )
 }
 
 /// A flag in a few words, for the flags held.
 fn short(flag: &Flag) -> String {
     match flag {
-        Flag::HotWhileCool { hot, cool } => format!("{hot} hot while {cool} cool"),
-        Flag::Stranded { machine, .. } => format!("{machine} stranded"),
-        Flag::Stale { machine } => format!("{machine} stale"),
+        Flag::HotWhileCool { hot, cool } => {
+            format!("{} hot while {} cool", unmarked(hot), unmarked(cool))
+        }
+        Flag::Stranded { machine, .. } => format!("{} stranded", unmarked(machine)),
+        Flag::Stale { machine } => format!("{} stale", unmarked(machine)),
         Flag::Imbalanced => "imbalanced".to_owned(),
     }
 }
@@ -532,6 +543,63 @@ mod tests {
                 .any(|line| line == "  left out to fit: facts"),
             "at 81 they'd pass it, so they're left out:\n{}",
             at(81)
+        );
+    }
+
+    #[test]
+    fn with_no_column_fitting_no_blank_header_is_drawn() {
+        let long = "a-machine-named-thirty-letters";
+        let shown = said(
+            &reading(vec![machine(long, 0.9, 28, 1.75)], None, vec![]),
+            "work",
+            40,
+            false,
+        );
+        let lines: Vec<&str> = shown.lines().collect();
+        assert!(
+            lines[1].is_empty() && lines[2].starts_with(&format!("  {long}")),
+            "a header with no column drew a blank line under the head:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn a_machine_s_name_reaches_the_table_and_sentences_as_one_line() {
+        let realm = |hot: &str, cool: &str| {
+            reading(
+                vec![machine(hot, 0.9, 28, 1.75), machine(cool, 0.4, 13, 1.08)],
+                Some(0.25),
+                vec![
+                    Flag::HotWhileCool {
+                        hot: hot.to_owned(),
+                        cool: cool.to_owned(),
+                    },
+                    Flag::Stale {
+                        machine: cool.to_owned(),
+                    },
+                    Flag::Imbalanced,
+                ],
+            )
+        };
+        let pages = |hot: &str, cool: &str| {
+            [40, 80, crate::swarm::WHOLE].map(|width| said(&realm(hot, cool), "work", width, false))
+        };
+        assert_eq!(
+            pages("kes\u{200B}trel\u{fdd0}", "osprey"),
+            pages("kestrel", "osprey"),
+            "what draws nothing, or a mark, in a machine's name moved a column"
+        );
+        let dirty = "kestrel\u{1b}]0;x\u{7}\r\nlater";
+        let drawn = pages(dirty, "osprey");
+        assert!(
+            !drawn
+                .iter()
+                .any(|page| page.contains(['\u{1b}', '\u{7}', '\r'])),
+            "a machine's escape reached the page: {drawn:?}"
+        );
+        assert_eq!(
+            drawn,
+            pages(&crate::forage::one_line(dirty), "osprey"),
+            "a machine's escape or break drew otherwise than its name on one line"
         );
     }
 

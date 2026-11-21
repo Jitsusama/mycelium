@@ -491,9 +491,11 @@ fn a_row_that_runs_on_leaves_no_gap_and_spaces_out_no_figure() {
     let (fits, none) = ("x".repeat(48), "z".repeat(49));
     assert_eq!(
         aligned(&format!(
-            "\u{fdd0}{counts}\n{none}\u{fdd0}\n{fits}\u{fdd0}  1"
+            "\u{fdd0}{counts}\n{none}\u{fdd0}\n  Reef{}1{}x\u{fdd0}\n{fits}\u{fdd0}  1",
+            " ".repeat(30),
+            " ".repeat(20)
         )),
-        format!("{pad}{counts}\n{none}\n{fits}  1"),
+        format!("{pad}{counts}\n{none}\n  Reef 1 x\n{fits}  1"),
         "a long row with no counts stays on its line, leaving no blank one to end \
          the table early"
     );
@@ -505,6 +507,23 @@ fn a_row_that_runs_on_leaves_no_gap_and_spaces_out_no_figure() {
         format!("{pad}{counts}\n  Reef 1 x\n{pad}  2\n{fits}  1"),
         "a title that runs on draws each run of spaces as one, so it can't set a \
          figure under a header"
+    );
+    let blank = format!("  Reef{}1{}x", "\u{2800}".repeat(30), " ".repeat(20));
+    assert_eq!(
+        aligned(&format!(
+            "\u{fdd0}{counts}\n{blank}\u{fdd0}  2\n{fits}\u{fdd0}  1"
+        )),
+        format!("{pad}{counts}\n  Reef 1 x\n{pad}  2\n{fits}  1"),
+        "a run of braille blanks, drawn as spaces, is drawn as one space too"
+    );
+}
+
+#[test]
+fn a_colour_s_escape_takes_no_column_where_marks_line_up() {
+    assert_eq!(
+        aligned("\u{1b}[1mab\u{1b}[0m\u{fdd0}  1\nabcd\u{fdd0}  2"),
+        "\u{1b}[1mab\u{1b}[0m    1\nabcd  2",
+        "a painted lead was padded by its characters rather than the columns it takes"
     );
 }
 
@@ -540,31 +559,25 @@ fn a_doing_past_its_column_runs_on_under_it() {
 
 #[test]
 fn a_short_name_holding_what_draws_nothing_moves_no_title() {
-    // A second, shorter name shown beside Kelp is padded to the widest, so
-    // a name counted before it is cleaned would move Kelp's title too.
-    let named = |short: &str| {
+    // The widest short name sets the column, so a name counted before it
+    // is cleaned would move every title; the narrower one is padded to
+    // it, so a name padded before it is cleaned would move its own.
+    let named = |harbour: &str, kelp: &str| {
         let mut swarm = swarm();
-        swarm.teams[1]["swarm"] = json!(short);
-        swarm.teams[2]["swarm"] = json!("bay");
+        swarm.teams[1]["swarm"] = json!(harbour);
+        swarm.teams[2]["swarm"] = json!(kelp);
         swarm
     };
-    let plain = overview(&named("dock"), &whole());
+    let plain = overview(&named("dock", "ba"), &whole());
     assert!(
-        plain.contains("\ndock  ") && plain.contains("bay   Kelp"),
+        plain.contains("\ndock  ") && plain.contains("ba    Kelp"),
         "both short names are shown, Kelp's padded to Harbour's:\n{plain}"
     );
-    // The table alone: the hint after it names the short name as typed.
-    let table = |swarm: &Swarm, look: &Look| -> String {
-        let drawn = overview(swarm, look);
-        drawn
-            .rsplit_once("\n\n")
-            .map_or_else(|| drawn.clone(), |(table, _)| table.to_owned())
-    };
     for look in [look(), whole()] {
         assert_eq!(
-            table(&named("do\u{200B}ck\u{fdd0}"), &look),
-            table(&named("dock"), &look),
-            "a character a short name loses moved its title at {}",
+            overview(&named("do\u{200B}ck\u{fdd0}", "b\u{200B}a"), &look),
+            overview(&named("dock", "ba"), &look),
+            "a character a short name loses moved a title, or reached the hint, at {}",
             look.width
         );
     }

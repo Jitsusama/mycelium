@@ -191,8 +191,8 @@ pub(crate) const NARROWEST: usize = 16;
 pub const WHOLE: usize = usize::MAX;
 
 /// Where a row's counts begin, as a table is drawn [`WHOLE`], for
-/// [`aligned`] to line them up once every row is drawn: a character of
-/// the private use area, as no title has one once [`unmarked`].
+/// [`aligned`] to line them up once every row is drawn: a Unicode
+/// noncharacter, as no title has one once [`unmarked`].
 pub(crate) const COUNTS_AT: &str = "\u{fdd0}";
 
 /// Where a line's doing begins, as [`COUNTS_AT`] says its counts do.
@@ -236,9 +236,9 @@ const DOING_ROOM: usize = 32;
 /// nothing after its mark, it stays on its line. A doing's block where
 /// no lead fits sets its doings under the furthest column allowed. A
 /// line that runs on has each run of spaces after its indent drawn as
-/// one, so a title can't space a figure out under a header. A mark
-/// left over is dropped. A pipe is never drawn in colour, so a
-/// character is a column.
+/// one, its own gaps too, so a title can't space a figure out under a
+/// header. A mark left over is dropped. A colour's escape takes no
+/// column, should a pipe ever be drawn in colour.
 pub(crate) fn aligned(text: &str) -> String {
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
     let blocks: Vec<(usize, usize)> = {
@@ -259,7 +259,7 @@ pub(crate) fn aligned(text: &str) -> String {
             let split = |line: &str| {
                 line.find(mark).map(|at| {
                     let after = &line[at + mark.len()..];
-                    (at, line[..at].chars().count(), after.chars().count())
+                    (at, columns(&line[..at]), columns(after))
                 })
             };
             let room = if mark == COUNTS_AT {
@@ -284,7 +284,7 @@ pub(crate) fn aligned(text: &str) -> String {
                 if let Some((at, before, _)) = split(line) {
                     let after = &line[at + mark.len()..];
                     *line = if before > widest && after.trim().is_empty() {
-                        line[..at].to_owned()
+                        single_spaced(&line[..at])
                     } else if before > widest {
                         format!(
                             "{}\n{}{after}",
@@ -307,14 +307,39 @@ pub(crate) fn aligned(text: &str) -> String {
 }
 
 /// `lead` as a line that runs on draws it: its indent kept, and each run
-/// of spaces after it drawn as one, with none at its end.
+/// of spaces after it drawn as one, with none at its end. A braille
+/// blank, which draws as a space though no text calls it one, counts
+/// as one, since a name may hold it to look empty.
 fn single_spaced(lead: &str) -> String {
     let body = lead.trim_start();
     let indent = &lead[..lead.len() - body.len()];
-    format!(
-        "{indent}{}",
-        body.split_whitespace().collect::<Vec<_>>().join(" ")
-    )
+    let words: Vec<&str> = body
+        .split(|each: char| each.is_whitespace() || each == '\u{2800}')
+        .filter(|word| !word.is_empty())
+        .collect();
+    format!("{indent}{}", words.join(" "))
+}
+
+/// The columns `text` takes in a terminal, counting no colour's escape,
+/// which [`Look::paint`] writes and no peer's text keeps once
+/// [`unmarked`].
+fn columns(text: &str) -> usize {
+    let mut count = 0;
+    let mut chars = text.chars().peekable();
+    while let Some(each) = chars.next() {
+        if each == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            // An escape ends at its first letter or other final byte.
+            for each in chars.by_ref() {
+                if ('@'..='~').contains(&each) {
+                    break;
+                }
+            }
+        } else {
+            count += 1;
+        }
+    }
+    count
 }
 
 impl Look {
@@ -660,7 +685,12 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
     let first = within
         .get("")
         .and_then(|top| ordered(top.iter().copied()).first().copied());
-    let example = first.map_or("<team>", |team| names::typed(team, &shorts));
+    // A chosen short name is a peer's text, so it is held to one line
+    // here as on its row.
+    let example = first.map_or_else(
+        || "<team>".to_owned(),
+        |team| unmarked(names::typed(team, &shorts)),
+    );
     lines.push(look.paint(
         FAINT,
         &format!(
@@ -733,15 +763,17 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
     match picked(&swarm.teams, asked, naming) {
         Picked::One(team) => Ok(team),
         Picked::None => Err(format!("no team is named {asked}")),
-        Picked::Several(many) => Err(format!(
-            "{asked} could be {}",
-            either(
-                &many
-                    .iter()
-                    .map(|team| names::typed(team, &shorts))
-                    .collect::<Vec<_>>()
-            )
-        )),
+        Picked::Several(many) => {
+            // Each is a peer's text, so it is held to one line.
+            let named: Vec<String> = many
+                .iter()
+                .map(|team| unmarked(names::typed(team, &shorts)))
+                .collect();
+            Err(format!(
+                "{asked} could be {}",
+                either(&named.iter().map(String::as_str).collect::<Vec<_>>())
+            ))
+        }
     }
 }
 
