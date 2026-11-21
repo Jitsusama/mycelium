@@ -7151,8 +7151,8 @@ mod tests {
     /// Puts a provider beside `socket` offering a free machine reaching
     /// `basin`, whose make writes who it is told asks to `told` and fails,
     /// so nothing is left to link. The machine would run every fence shut
-    /// but for no door, so an agent's start is never refused it for its
-    /// ground.
+    /// but for no door, through a launcher, so an agent's start is never
+    /// refused it for its ground.
     fn provider_telling(socket: &Path, told: &Path) {
         crate::stand_in::program(
             &socket.with_file_name("provider"),
@@ -7168,9 +7168,15 @@ esac
         );
     }
 
-    /// Every fence, each shut but for no door, as a machine declares it.
+    /// Every fence, each shut but for no door and run through a launcher,
+    /// as a Linux machine declares it.
     fn shut_fences() -> Value {
-        let shut = json!({"builders": [], "forges": [], "secrets": []});
+        let shut = json!({
+            "builders": [],
+            "forges": [],
+            "secrets": [],
+            "runs": ["/nix/store/0000-fence/bin/fence", "--"],
+        });
         json!({"none": shut, "fence": shut, "strict": shut})
     }
 
@@ -13328,7 +13334,9 @@ esac
         );
         asks_as_person(&socket);
         assert_eq!(
-            run_through(socket.clone(), run_of("tern", "true")).await.err(),
+            run_through(socket.clone(), run_of("tern", "true"))
+                .await
+                .err(),
             Some("no link reaches tern now".to_owned()),
             "the person's run needs no fence, so it goes as far as the link"
         );
@@ -13430,7 +13438,11 @@ esac
             })
         };
         assert_eq!(
-            ask(socket.clone(), held(vec![Need::Machine("skiff".to_owned())])).await,
+            ask(
+                socket.clone(),
+                held(vec![Need::Machine("skiff".to_owned())])
+            )
+            .await,
             Err(
                 "this asks as a strictly fenced agent, so it starts only where that fence runs \
                  a command: this machine declares no way to run a command as its strictly \
