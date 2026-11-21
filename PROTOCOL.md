@@ -3185,9 +3185,10 @@ reasons ends the window as any exit does, said on the node's log; one
 holding nothing, as an `attach --host` from before wrote, says `away`.
 It reads at most a few bytes of it, from a plain file only.
 `attach --host` writes `<id>.reached`, told its path in
-`MYCELIUM_REACHED`, naming its pi host, whenever that host answers it, and the holder keeps
-that file until it ends: a socket missing, or one nobody listens on,
-with none written for that host says `unseen`, and the window says no
+`MYCELIUM_REACHED`, naming its pi host, whenever that host answers
+it, and the holder keeps that file until it ends: a socket missing,
+or one nobody listens on, with none written for that host says
+`unseen`, and the window says no
 pi host by that name has run here since it opened, as for a mistyped
 realm or a host taken away, rather than that its host is away; it
 waits and tries again all the same, as one not yet started may come.
