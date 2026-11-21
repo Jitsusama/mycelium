@@ -721,6 +721,7 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done, ordered: Option<&Orde
             lasts: None,
         },
         folder: None,
+        strict: false,
         command,
         may_cost: false,
         carries: false,

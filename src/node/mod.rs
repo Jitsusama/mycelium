@@ -5426,7 +5426,8 @@ impl<S: Store> Shared<S> {
         let Some(home) = std::env::home_dir() else {
             return Err(format!("{machine} has no home to start it in"));
         };
-        let folder = start::begins_in(asked.folder.as_deref(), &home);
+        let folder =
+            start::begins_strictly(asked.folder.as_deref(), asked.strict, &home, &machine)?;
         let realm = self.realm.clone();
         let command = asked.command;
         let begins = folder.clone();
@@ -6558,6 +6559,34 @@ mod tests {
             .expect("the client asks")
     }
 
+    /// Asks kestrel, over the link from `near_socket`, for a strict start
+    /// in a folder under `dir` it hasn't, which its node refuses there
+    /// rather than beginning at home.
+    async fn refuses_a_strict_start_kestrel_cant_begin(near_socket: &Path, dir: &Path) {
+        let missing = dir.join("not-on-kestrel");
+        let refused = ask(
+            near_socket.to_owned(),
+            Request::Start(Start {
+                work: work(vec![Need::Machine("kestrel".to_owned())]),
+                folder: Some(missing.clone()),
+                strict: true,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+                once: None,
+            }),
+        )
+        .await;
+        assert_eq!(
+            refused.err(),
+            Some(format!(
+                "kestrel has no folder {}, which the start names",
+                missing.display()
+            )),
+            "kestrel's node refuses it rather than beginning at home"
+        );
+    }
+
     /// Steers the session held on kestrel from the node at
     /// `near_socket`, and has its talk answered there, as its session would,
     /// until the answer is carried back to `near_steers`.
@@ -7123,6 +7152,7 @@ esac
         let asked = Request::Start(Start {
             work: work(vec![Need::Reach("basin".to_owned())]),
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -12094,6 +12124,7 @@ esac
         let asked = Request::Start(Start {
             work: work(vec![there]),
             folder: Some(dir.path().to_owned()),
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -12102,6 +12133,7 @@ esac
         // The person starts it, since kestrel declares no fence, so an
         // agent's start would be refused its looser ground.
         asks_as_person(&near_socket);
+        refuses_a_strict_start_kestrel_cant_begin(&near_socket, dir.path()).await;
         let started = ask(near_socket.clone(), asked).await;
         // Told of nobody again, as the steers below begin.
         fs::remove_dir_all(procs_of(&near_socket).join(std::process::id().to_string()))
@@ -12186,6 +12218,7 @@ esac
         let asked = Request::Start(Start {
             work: work(vec![Need::Machine("kestrel".to_owned())]),
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -12364,6 +12397,7 @@ esac
         let asked = Request::Start(Start {
             work: work(vec![there]),
             folder: Some(dir.path().to_owned()),
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -12949,6 +12983,47 @@ esac
     }
 
     #[tokio::test]
+    async fn a_strict_start_naming_a_folder_this_machine_hasnt_is_refused_naming_both() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let starter = Starter {
+            // Nothing is held here: the start is refused before it.
+            program: PathBuf::from("/bin/false"),
+            scope: start::Scope::None,
+            kit: None,
+        };
+        let running = node(&store, "skiff", Vec::<Piped>::new(), Some(starter), &socket);
+        asks_as_person(&socket);
+        let missing = dir.path().join("no-checkout-here");
+        let refused = ask(
+            socket,
+            Request::Start(Start {
+                work: work(vec![Need::Machine("skiff".to_owned())]),
+                folder: Some(missing.clone()),
+                strict: true,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+                once: None,
+            }),
+        )
+        .await;
+        assert_eq!(
+            refused.err(),
+            Some(format!(
+                "skiff has no folder {}, which the start names",
+                missing.display()
+            )),
+            "it's refused rather than begun at home"
+        );
+        let (stop, node) = running;
+        drop(stop);
+        let stopped = node.await.expect("the node runs to its end");
+        assert!(stopped.is_ok(), "the node stops cleanly: {stopped:?}");
+    }
+
+    #[tokio::test]
     async fn a_run_on_another_machine_streams_back_over_a_link_its_key_proved_and_only_then() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (near_socket, nodes) = linked_to_kestrel(dir.path(), true).await;
@@ -13426,6 +13501,7 @@ esac
                 ..work(needs)
             },
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -13479,6 +13555,7 @@ esac
             Request::Start(Start {
                 work: work(needs),
                 folder: None,
+                strict: false,
                 command: vec!["pi".to_owned(), "--said-once".to_owned()],
                 may_cost: false,
                 carries: false,
@@ -13634,6 +13711,7 @@ esac
             Request::Start(Start {
                 work: work(needs),
                 folder: None,
+                strict: false,
                 command: command.iter().map(|&word| word.to_owned()).collect(),
                 may_cost: false,
                 carries: false,
@@ -13713,6 +13791,7 @@ esac
             may_cost: false,
             carries: false,
             once: None,
+            strict: false,
         };
         let resumes = Shared::<Memory>::brought_there(
             None,
@@ -13778,6 +13857,7 @@ esac
                 may_cost: false,
                 carries: false,
                 once: None,
+                strict: false,
             })
         };
         let placed = |command: &[&str], needs: Vec<Need>| foldered(command, needs, None);
@@ -13917,6 +13997,7 @@ esac
                 may_cost: false,
                 carries: false,
                 once: None,
+                strict: false,
             })
         };
         let left = async |session: &str| {
@@ -14000,6 +14081,7 @@ esac
                 may_cost: false,
                 carries: false,
                 once: None,
+                strict: false,
             })
         };
         let refused = ask(socket.clone(), start("s-turn-0"))
@@ -14093,6 +14175,7 @@ esac
             Request::Start(Start {
                 work: work(Vec::new()),
                 folder: None,
+                strict: false,
                 command: vec!["pi".to_owned()],
                 may_cost: false,
                 carries: false,
@@ -14134,6 +14217,7 @@ esac
         let start = Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -15814,6 +15898,7 @@ esac
                 let asked = Request::Start(Start {
                     work: work(needs),
                     folder,
+                    strict: false,
                     command,
                     may_cost: false,
                     carries: false,
@@ -15912,6 +15997,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            strict: false,
             once: once.map(str::to_owned),
         })
     }
@@ -16002,6 +16088,7 @@ esac
                 command: vec!["pi".to_owned()],
                 may_cost: false,
                 carries: false,
+                strict: false,
                 once: Some(once.to_owned()),
             },
         };
@@ -16549,6 +16636,7 @@ esac
         let start = Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -16621,6 +16709,7 @@ esac
                 command: vec!["pi".to_owned()],
                 may_cost: false,
                 carries: false,
+                strict: false,
                 once: None,
             };
             let refused = link
@@ -16660,6 +16749,7 @@ esac
         let start = Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
@@ -16724,6 +16814,7 @@ esac
             command: vec!["pi".to_owned()],
             may_cost: false,
             carries: false,
+            strict: false,
             once: Some("01J-retry".to_owned()),
         };
         let refused = link
@@ -16845,6 +16936,7 @@ esac
         Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
             folder: None,
+            strict: false,
             command: [
                 "sh",
                 "-c",

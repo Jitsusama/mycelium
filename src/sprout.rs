@@ -131,8 +131,10 @@ pub(crate) fn lexical(path: &Path) -> PathBuf {
 /// one here is refused rather than begun in home. Started on another
 /// machine, the link's checkout and the folder it was asked from are
 /// judged by this machine's disk, since a person's machines keep their
-/// repositories at the same places; the command's guard ends it there
-/// where they don't.
+/// repositories at the same places. Where they don't, its start is
+/// strict, so that machine's node refuses it; a node or link end too old
+/// to know strict begins it in home, and the command's guard ends it
+/// there.
 ///
 /// # Errors
 ///
@@ -283,7 +285,8 @@ pub fn first_words(seed: &Seed, from: Option<&str>) -> String {
 
 /// What a guard says, and ends with, where a session started elsewhere
 /// would begin in that machine's home, as a start does when the folder it
-/// asked for isn't there.
+/// asked for isn't there and a node too old to refuse it, or a link end
+/// between, drops its strictness.
 const IN_HOME: &str = "mycelium sprout: that machine has no such folder, so this session would begin in its home; nothing was started";
 
 /// How long, in seconds, a guard that ends a session keeps it up, so the
@@ -369,7 +372,8 @@ pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
 }
 
 /// What a sprout asks the node to start: its session on `machine` and
-/// nowhere else, in `folder`, never on a machine that costs money.
+/// nowhere else, in `folder` and never at home where that machine hasn't
+/// it (`strict`), never on a machine that costs money.
 #[must_use]
 pub fn start(machine: &str, folder: Option<PathBuf>, seed: &Seed, from: Option<&str>) -> Start {
     Start {
@@ -381,6 +385,7 @@ pub fn start(machine: &str, folder: Option<PathBuf>, seed: &Seed, from: Option<&
             lasts: None,
         },
         folder,
+        strict: true,
         command: command(&first_words(seed, from)),
         may_cost: false,
         carries: false,
@@ -666,6 +671,10 @@ mod tests {
         assert!(asked.work.prefers.is_empty() && !asked.work.may_wait);
         assert!(!asked.may_cost);
         assert_eq!(asked.folder, Some(PathBuf::from("src/skiff")));
+        assert!(
+            asked.strict,
+            "its folder is the work's, so never home instead"
+        );
         assert_eq!(&asked.command[3..5], ["sprout", "env"]);
         assert!(asked.command[5].starts_with("QUEST_WORKFLOW_FIRST_TEXT=The person"));
         assert_eq!(asked.command.last().map(String::as_str), Some("pi"));
