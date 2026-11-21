@@ -376,7 +376,6 @@ impl Files {
             &self.chosen,
             &self.steering,
             &self.gone,
-            &self.reached,
         ] {
             let _ = fs::remove_file(left);
         }

@@ -248,7 +248,7 @@ impl Gone {
     pub fn heard(said: &str, pid: u32) -> Option<Self> {
         let mut words = said.split_whitespace();
         let Some(writer) = words.next() else {
-            return Some(Self::Away);
+            return None;
         };
         if writer.parse::<u32>().ok()? != pid {
             return None;
@@ -312,9 +312,9 @@ pub fn read_small(path: &Path) -> Option<String> {
     use std::io::Read as _;
     // A pid and a word, or a host's name, with room to spare.
     const SAID_MOST: u64 = 256;
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC;
     let file = fs::File::from(rustix::fs::open(path, flags, Mode::empty()).ok()?);
-    if !file.metadata().ok()?.is_file() {
+    if file.metadata().ok()?.is_dir() {
         return None;
     }
     let mut said = String::new();
