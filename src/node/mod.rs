@@ -41,7 +41,7 @@ use crate::murmur::{self, Murmurs};
 use crate::offer::{self, Offer};
 use crate::own_health;
 use crate::place;
-use crate::placement::{self, Miss, Need, Placement, Work};
+use crate::placement::{self, DeclaredFence, Miss, Need, Placement, Work};
 use crate::placements;
 use crate::receptor;
 use crate::record::{Intent, Message, Session, State as SessionState};
@@ -4796,18 +4796,23 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let (by, _, charged) = self.judged_charging().await?;
-        self.counted((by, charged), asked, waits, Whither::Placed)
+        let (by, named, charged) = self.judged_declaring(asked.work.fence).await?;
+        self.counted((by, charged), named, asked, waits, Whither::Placed)
             .await
     }
 
     /// Starts `asked`, from the asker judged `by` whose start counts
     /// toward `charged`'s cell, as [`Self::started`] does, where
     /// `whither` says: counted, limited and booked, and waiting for room
-    /// up to `waits` milliseconds.
+    /// up to `waits` milliseconds. Its name is the asker's as judged
+    /// `named`, before any fence it declared moved it, and a name tells
+    /// only the person from an agent, so an ask again whose declaration,
+    /// or whose reading of the claims above, came out otherwise still
+    /// joins the first rather than starting twice.
     async fn counted(
         &self,
         (by, charged): (By, Option<String>),
+        named: By,
         mut asked: Start,
         waits: i64,
         whither: Whither,
@@ -4827,7 +4832,7 @@ impl<S: Store> Shared<S> {
         let (lead, again) = match &once {
             Some(said) => {
                 match self
-                    .named(by, started_by.as_deref(), said, &mut asked, at)
+                    .named(named, started_by.as_deref(), said, &mut asked, at)
                     .await
                 {
                     ControlFlow::Break(answered) => return answered,
@@ -4854,6 +4859,7 @@ impl<S: Store> Shared<S> {
             once,
             joined: 0,
             again: again.is_some(),
+            declared: asked.work.fence,
         };
         // After the join, so an ask again under its name is answered the
         // first's start rather than refused for it; and kept, as every
@@ -5217,12 +5223,21 @@ impl<S: Store> Shared<S> {
             };
             // Quoted, since an agent may have put anything in `from`.
             eprintln!("a start relayed from {from:?} is taken as an agent's: {why}");
+            // A fence declared on another machine was weighed there, by
+            // the asker it judged; here the asker is the link's end, so
+            // the declaration is neither weighed nor kept.
             let pinned = Start {
                 carries: false,
                 may_cost: false,
+                work: Work {
+                    fence: None,
+                    ..asked.work
+                },
                 ..asked
             };
-            let started = self.counted((by, charged), pinned, 0, Whither::Here).await;
+            let started = self
+                .counted((by, charged), by, pinned, 0, Whither::Here)
+                .await;
             return started.map_err(|why| {
                 if persons_carry {
                     self.carry_refused(&why)
@@ -5303,10 +5318,11 @@ impl<S: Store> Shared<S> {
     /// where and how to join it, or why it didn't start. Where none of the
     /// realm's machines takes it, on a machine made for it: one that costs
     /// nothing for any start, and one that costs only for a start that
-    /// says it may. An agent's, asked in `fence`, is held to its own
-    /// ground, as a run of its is, so a session it starts never lands
-    /// looser than the one asking, nor where that fence runs no command
-    /// ([`held_in_launcher`]).
+    /// says it may. An agent's, asked in `fence`, is held to that ground,
+    /// as a run of its is: the asker as judged with the fence its start
+    /// declared, which only ever raises it ([`asker::declaring`]), so a
+    /// session it starts never lands looser than the one asking, nor
+    /// where that fence runs no command ([`held_in_launcher`]).
     async fn placed(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
         let admits = self.admits().await;
         let runs = held_in_launcher(fence);
@@ -5940,22 +5956,23 @@ impl<S: Store> Shared<S> {
     /// what it is told would take the work is where the work can run. Work
     /// placed to start (`counts` other than [`Counts::Never`]) is held to
     /// where its fence runs a command as a held start is
-    /// ([`held_in_launcher`]).
+    /// ([`held_in_launcher`]). A declared fence moves only work placed to
+    /// start, since it says the fence a session started for it runs in;
+    /// a run is judged without it, so neither is its placement.
     async fn place_asked(&self, work: &Work, counts: Counts) -> Reply {
-        let fence = self.fence_asked().await?;
+        let (declaring, judged, _) = self.judged_declaring(work.fence).await?;
+        let by = if counts == Counts::Never {
+            judged
+        } else {
+            declaring
+        };
+        let fence = fence_of(by);
         // Held to the machines booked for whoever asks, as its run is.
         let admits = self.admits().await;
         let runs = counts == Counts::Never || held_in_launcher(fence);
         Ok(Response::Placement(
             self.place(work, counts, fence, runs, &admits),
         ))
-    }
-
-    /// The fence whoever asks runs in, as [`Self::judged`] tells it and
-    /// [`fence_of`] holds it.
-    async fn fence_asked(&self) -> Result<Option<crate::declared::Kind>, String> {
-        let (judged, _) = self.judged().await?;
-        Ok(fence_of(judged))
     }
 
     /// Who asks a run, as [`asker::judge`] tells it, and the sessions
@@ -5998,6 +6015,18 @@ impl<S: Store> Shared<S> {
         })
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))
+    }
+
+    /// Who asks a start that declares `declared`, as [`asker::declaring`]
+    /// lets the declaration raise [`Self::judged_charging`]'s judgement;
+    /// that judgement before it was raised; and the session the start
+    /// counts toward.
+    async fn judged_declaring(
+        &self,
+        declared: Option<DeclaredFence>,
+    ) -> Result<(By, By, Option<String>), String> {
+        let (by, _, charged) = self.judged_charging().await?;
+        Ok((asker::declaring(by, declared), by, charged))
     }
 
     /// Starts a watch: its first events are the whole state, taken under
@@ -6483,6 +6512,7 @@ mod tests {
             tolerates: Vec::new(),
             may_wait: false,
             lasts: None,
+            fence: None,
         }
     }
 
@@ -13270,6 +13300,7 @@ esac
                 tolerates: Vec::new(),
                 may_wait: false,
                 lasts: None,
+                fence: None,
             },
             // A full path, since a build's home is no folder at all.
             folder: Some(std::env::temp_dir()),
@@ -14020,6 +14051,230 @@ esac
             ask(socket, Request::Start(start(tern(), Vec::new()))).await,
             Err("no link reaches tern now".to_owned()),
             "the person's start isn't held to an agent's ground"
+        );
+    }
+
+    // ISXEG8 (2026-11-21, 949595a4): under a strict claim a start's own
+    // declaration may keep or tighten its fence, never lower it, whatever
+    // declared it, since the node can't tell the harness's start from one
+    // injected text asks for; but each is kept with its start, for the
+    // census.
+    #[tokio::test]
+    async fn a_declared_fence_is_kept_with_its_start_and_lowers_nothing_under_strict() {
+        use crate::declared::Kind;
+        use crate::placement::{FenceFrom, FenceKind};
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        let declared = |from| DeclaredFence {
+            kind: FenceKind::Fence,
+            from,
+        };
+        // Each start is pinned here, since what this machine measures in a
+        // build's sandbox may send an unpinned one to tern.
+        let start = |from| {
+            Request::Start(Start {
+                work: Work {
+                    fence: Some(declared(from)),
+                    ..work(vec![Need::Machine("skiff".to_owned())])
+                },
+                folder: None,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+                once: None,
+                strict: false,
+            })
+        };
+        // Every claim above the asker says the strict fence, and each reads.
+        asks_below(&socket, 7001);
+        let froms = [FenceFrom::Spawn, FenceFrom::Quest, FenceFrom::Default];
+        for from in froms {
+            assert_eq!(
+                ask(socket.clone(), start(from)).await,
+                Err("skiff's node starts no sessions".to_owned()),
+                "each start stays here, on the ground it asks from"
+            );
+        }
+        let book = fs::read_to_string(socket.with_file_name("starts.jsonl"))
+            .expect("every start is written down");
+        let kept: Vec<(By, Option<DeclaredFence>)> = book
+            .lines()
+            .map(|line| {
+                let kept: starts::Kept = serde_json::from_str(line).expect("a kept start");
+                (kept.by, kept.declared)
+            })
+            .collect();
+        assert_eq!(
+            kept,
+            froms.map(|from| (By::Agent(Kind::Strict), Some(declared(from)))),
+            "each start runs strict, as the claim above it says, and keeps what it declared: \
+             {book}"
+        );
+    }
+
+    // A declared fence says where a session started for the work runs, so
+    // work placed to start is judged with it, and a run's placement, like
+    // the run, without it. Under a strict claim it lowers nothing (ISXEG8,
+    // 949595a4); under a claim of the agent fence it keeps that, and a
+    // strict one raises it.
+    #[tokio::test]
+    async fn a_declared_fence_raises_where_a_start_goes_but_never_lowers_it() {
+        use crate::placement::{FenceFrom, FenceKind};
+        let toward_tern = |kind| Work {
+            fence: Some(DeclaredFence {
+                kind,
+                from: FenceFrom::Spawn,
+            }),
+            ..work(vec![Need::Machine("tern".to_owned())])
+        };
+        let placed = |socket: &Path, asked| {
+            let socket = socket.to_owned();
+            async move { format!("{:?}", placement_through(socket, asked).await) }
+        };
+        // Tern runs only strict sessions, opening more than here's, so a
+        // start judged strict is refused for its builders, and one judged
+        // in the agent fence because tern runs none.
+        let strictly = "opens builders cloud";
+        let fenced_only = "tern runs no";
+        for (fence, asker) in [("strict", 7001), ("fence", 7003)] {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let socket = dir.path().join("skiff").join("work.sock");
+            let store = Memory::default();
+            let (_stop, _node, _client) =
+                harbour_claiming(&store, &socket, &orchestrations(), &[], (fence, STRICT)).await;
+            declares_runs(&socket, true);
+            store
+                .put_machine(&fenced("tern", &["remote", "cloud"]))
+                .expect("what it said is kept");
+            asks_below(&socket, asker);
+            let run = placed(&socket, Request::Place(toward_tern(FenceKind::Fence))).await;
+            let start = placed(
+                &socket,
+                Request::PlaceToStart(toward_tern(FenceKind::Fence)),
+            )
+            .await;
+            let raised = placed(
+                &socket,
+                Request::PlaceToStart(toward_tern(FenceKind::Strict)),
+            )
+            .await;
+            assert!(
+                raised.contains(strictly),
+                "a strict declaration raises a start under {fence}: {raised}"
+            );
+            if fence == "strict" {
+                assert!(
+                    run.contains(strictly),
+                    "a run's placement judges the asker strict, as the run would: {run}"
+                );
+                assert!(
+                    start.contains(strictly) && !start.contains(fenced_only),
+                    "and a start's under a strict claim, whatever its spawn declared: {start}"
+                );
+            } else {
+                assert!(
+                    start.contains(fenced_only) && !start.contains(strictly),
+                    "a start's under a fence claim keeps the agent fence: {start}"
+                );
+                let run = placed(&socket, Request::Place(toward_tern(FenceKind::Strict))).await;
+                assert!(
+                    run.contains(fenced_only) && !run.contains(strictly),
+                    "a run's placement isn't raised by what its work declares: {run}"
+                );
+                // The start itself, pinned here, is judged and booked
+                // raised, not only placed so.
+                let pinned = Start {
+                    work: Work {
+                        needs: vec![Need::Machine("skiff".to_owned())],
+                        ..toward_tern(FenceKind::Strict)
+                    },
+                    folder: None,
+                    command: vec!["pi".to_owned()],
+                    may_cost: false,
+                    carries: false,
+                    once: None,
+                    strict: false,
+                };
+                assert_eq!(
+                    ask(socket.clone(), Request::Start(pinned)).await,
+                    Err("skiff's node starts no sessions".to_owned()),
+                    "it stays here, on the ground it asks from"
+                );
+                let book = fs::read_to_string(socket.with_file_name("starts.jsonl"))
+                    .expect("every start is written down");
+                let kept: starts::Kept =
+                    serde_json::from_str(book.lines().next().expect("one")).expect("a kept start");
+                assert_eq!(
+                    kept.by,
+                    By::Agent(crate::declared::Kind::Strict),
+                    "a strict declaration raises the start under a fence claim: {book}"
+                );
+            }
+        }
+    }
+
+    // ISXEG8 (2026-11-21, 949595a4): a start that may cost, under a strict
+    // claim, is never made a machine whose strict ground is looser than
+    // here's, whatever fence its spawn declared.
+    #[tokio::test]
+    async fn a_start_that_may_cost_under_strict_is_never_made_a_looser_machine() {
+        use crate::placement::{FenceFrom, FenceKind};
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let made = dir.path().join("made");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        // The offer's strict fence opens builders here's doesn't, and its
+        // agent fence is shut: only a start lowered from strict could take
+        // it.
+        let shut = json!({"builders": [], "forges": [], "secrets": []});
+        let fence = json!({
+            "none": shut, "fence": shut,
+            "strict": {"builders": ["remote", "cloud"], "forges": [], "secrets": []},
+        });
+        crate::stand_in::program(
+            &socket.with_file_name("provider"),
+            &r#"#!/bin/sh
+case "$1" in
+offers) echo '{"shape": "cell", "costs": {"hourly": "1", "currency": "USD"}, "lasts": 600, "facts": {"declared": {"reach": ["basin"], "outlives": [], "costs_money": true, "taints": [], "fence": FENCE}}}' ;;
+make) : > 'MADE'; exit 1 ;;
+esac
+"#
+            .replace("FENCE", &fence.to_string())
+            .replace("MADE", &made.display().to_string()),
+        );
+        asks_below(&socket, 7001);
+        let start = Start {
+            work: Work {
+                fence: Some(DeclaredFence {
+                    kind: FenceKind::Fence,
+                    from: FenceFrom::Spawn,
+                }),
+                ..work(vec![Need::Reach("basin".to_owned())])
+            },
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: true,
+            carries: false,
+            once: None,
+            strict: false,
+        };
+        let refused = ask(socket.clone(), Request::Start(start))
+            .await
+            .expect_err("no machine is made for it");
+        assert!(
+            refused.contains("on looser ground") && refused.contains("opens builders cloud"),
+            "it asks as strict, and the offer's strict ground is looser: {refused}"
+        );
+        assert!(
+            !made.exists(),
+            "and its provider is never asked to make one"
         );
     }
 

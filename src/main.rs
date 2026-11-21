@@ -1074,6 +1074,7 @@ impl From<Asked> for Work {
             tolerates: asked.tolerates,
             may_wait: asked.may_wait,
             lasts: asked.lasts,
+            fence: None,
         }
     }
 }
