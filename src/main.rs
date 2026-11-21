@@ -2851,7 +2851,8 @@ fn attach(dir: &Path, id: &str) -> io::Result<()> {
 /// when it stayed gone past its patience for a restart, never answered
 /// the first join, isn't running here, or can't be reached, so a holder
 /// keeps the window for it to come back, told so first
-/// ([`hold::say_gone`]).
+/// ([`hold::say_gone`]), and told whether the host was ever here since it
+/// started ([`hold::say_reached`]), so the window says which.
 fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode> {
     let runtime_dir = place::login_runtime().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "this login has no runtime folder")
@@ -2859,10 +2860,17 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
     let socket = hosted_attach::socket(&runtime_dir, realm, host)
         .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
     if !socket.exists() {
-        tell!("mycelium: no pi host {host} is running here");
-        hold::say_gone();
+        let how = if hold::reached_before() {
+            tell!("mycelium: no pi host {host} is running here");
+            hold::Gone::Away
+        } else {
+            tell!("mycelium: no pi host {host} has run here since this window opened");
+            hold::Gone::Unseen
+        };
+        hold::say_gone(how);
         return Ok(ExitCode::from(hold::holder::GONE));
     }
+    hold::say_reached();
     let runtime = runtime()?;
     let left = runtime.block_on(hosted_attach::join_here(&socket, session));
     // Typing is read on a thread of its own, waiting on a key nobody will
@@ -2883,7 +2891,7 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
         hosted_attach::Left::Suspended | hosted_attach::Left::Restarting => {}
     }
     if left.exit_code() == hold::holder::GONE {
-        hold::say_gone();
+        hold::say_gone(hold::Gone::Away);
     }
     Ok(ExitCode::from(left.exit_code()))
 }

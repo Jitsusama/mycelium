@@ -3019,9 +3019,18 @@ parked one is, with its windows, and each window joining meanwhile,
 told the pi host is away; the line is drawn again over anything the
 ended run shows after it. `attach --host` writes it and exits so once
 its pi host stays gone past its patience for a restart, never answers
-its first join, or isn't there to join at all. A program exiting 69
-with no such file written, as a tool that is unavailable may, ends as
-any other. The program starts again as a
+its first join, or isn't there to join at all. The file holds the
+writer's pid and `away` or `unseen`, and the holder heeds it only from
+the process it started, so a process under it saying so for its own
+reasons ends the window as any exit does. `attach --host` writes
+`<id>.reached`, told its path in `MYCELIUM_REACHED`, whenever it finds
+its pi host's socket, and the holder keeps that file until it ends: a
+socket missing with none written says `unseen`, and the window says no
+pi host by that name has run here since it opened, as for a mistyped
+realm or a host taken away, rather than that its host is away; it
+waits and tries again all the same, as one not yet started may come.
+A program exiting 69 with no such file written, as a tool that is
+unavailable may, ends as any other. The program starts again as a
 parked one does, at a key, a focus or `<id>.wake`, with any command
 named since in `<id>.next` or `<id>.again`, and also by itself: 15
 seconds on, doubling after each try that finds the host still away, to

@@ -27,7 +27,10 @@ use super::journal::{Ended, How, Journal};
 use super::modes::Modes;
 use super::steering::{Heard, Steers, Watching};
 use super::title::Title;
-use super::{GONE_SAID, Held, Said, Size, again, gone, next, socket, steers, turn, wake};
+use super::{
+    GONE_SAID, Gone, Held, REACHED_SAID, Said, Size, again, gone, next, reached, socket, steers,
+    turn, wake,
+};
 use crate::node;
 use crate::record::Window;
 
@@ -88,6 +91,12 @@ const GONE_AGAIN_MOST: Duration = Duration::from_secs(40);
 /// What every joined window shows while its program's pi host is away.
 const GONE_LINE: &[u8] =
     b"\r\nIts pi host is away: this window joins it again by itself once it's back, or now at a key.\r\n";
+
+/// What every joined window shows while no pi host by its program's name
+/// has been here since the holder started, as for a mistyped realm or a
+/// host taken away, so it isn't told a host it never had is away.
+const UNSEEN_LINE: &[u8] =
+    b"\r\nNo pi host by that name has run here since this window opened: it joins one by itself once one starts, or now at a key.\r\n";
 
 /// How often a parked holder looks for its wake file. A stat a second
 /// costs nothing, and a message waking a session waits a second at most.
@@ -337,6 +346,8 @@ struct Files {
     steering: PathBuf,
     /// Where it says, as it exits [`GONE`], that its pi host is away.
     gone: PathBuf,
+    /// Where it says its pi host's socket is here, kept from run to run.
+    reached: PathBuf,
 }
 
 impl Files {
@@ -349,6 +360,7 @@ impl Files {
             chosen: next(dir, id),
             steering: steers(dir, id),
             gone: gone(dir, id),
+            reached: reached(dir, id),
         };
         files.take_away();
         files
@@ -364,6 +376,7 @@ impl Files {
             &self.chosen,
             &self.steering,
             &self.gone,
+            &self.reached,
         ] {
             let _ = fs::remove_file(left);
         }
@@ -402,7 +415,8 @@ fn starting(
         .env("MYCELIUM_WAKE", &files.waking)
         .env("MYCELIUM_AGAIN", &files.naming)
         .env("MYCELIUM_STEERS", &files.steering)
-        .env(GONE_SAID, &files.gone);
+        .env(GONE_SAID, &files.gone)
+        .env(REACHED_SAID, &files.reached);
     for variable in WINDOW_VARIABLES {
         command = command.env_remove(variable);
     }
@@ -423,8 +437,9 @@ fn starting(
 /// parked in `MYCELIUM_WAKE`, the file it may name its next command in
 /// as it parks in `MYCELIUM_AGAIN`, and the file it may say where its
 /// steers land in as it parks in `MYCELIUM_STEERS`, which wakes it too as
-/// one lands that would give it a turn, and the file it writes as its pi
-/// host is away in `MYCELIUM_GONE`. On Linux it is told to sign over
+/// one lands that would give it a turn, the file it writes as its pi
+/// host is away in `MYCELIUM_GONE`, and the one it writes once it finds
+/// its pi host in `MYCELIUM_REACHED`. On Linux it is told to sign over
 /// ssh only through the agents' proxy in the runtime folder, never the
 /// person's own agent, a login shell's profile notwithstanding
 /// ([`agents`]). A program exiting with [`PARKED`] is
@@ -525,7 +540,7 @@ pub async fn hold(
     // Told to end as it waited, it ends having started nothing.
     let code = if let Some(mut child) = first {
         // How many runs in a row have ended with their pi host gone, and
-        // when the latest began.
+        // when the latest began, which comes with each child started.
         let mut gone_runs = 0u32;
         let mut began = Instant::now();
         let status = 'held: loop {
@@ -537,16 +552,21 @@ pub async fn hold(
             };
             ended(holding, pid, &command, status);
             // Taken whatever the code, so none is left to a later run; a
-            // program exiting so with none written ends, as any other.
-            let said_gone = fs::remove_file(&files.gone).is_ok();
-            let gone = said_gone && status.code() == Some(i32::from(GONE));
+            // program exiting so with none written ends, as any other, and
+            // so does one whose file a process under it wrote.
+            let said = fs::read_to_string(&files.gone).ok();
+            let _ = fs::remove_file(&files.gone);
+            let how = said
+                .and_then(|said| Gone::heard(&said, pid))
+                .filter(|_| status.code() == Some(i32::from(GONE)));
+            let gone = how.is_some();
             // Told to end, a program that parked as it saved stays down.
             if telling || (!gone && status.code() != Some(PARKED)) {
                 break status;
             }
             gone_runs = gone_runs_after(gone_runs, gone, began.elapsed());
-            let mut restarting = if gone {
-                away(&record, &shown);
+            let mut restarting = if let Some(how) = how {
+                away(&record, &shown, how);
                 false
             } else {
                 restarting(&files.waking, &record, &shown)
@@ -555,7 +575,9 @@ pub async fn hold(
             // One that can't start again stays parked, saying why, rather than
             // ending: its session, its window and its next wake are all still
             // here, and a command named again may start.
-            child = loop {
+            // Each start comes with the time it began, so a run's length is
+            // always its own, never one from before it.
+            (child, began) = loop {
                 if !std::mem::take(&mut restarting) {
                     let woke = told.before(woken_within(&terminal, &files, again));
                     // A parked program has saved all it holds, so being told
@@ -579,12 +601,11 @@ pub async fn hold(
                 let its_own = named(&files.naming);
                 command = named(&files.chosen).or(its_own).unwrap_or(command);
                 match start(&command, terminal.size()) {
-                    Ok(child) => break child,
+                    Ok(child) => break (child, Instant::now()),
                     Err(error) => parks(&record, &shown, &unstarted(&error)),
                 }
             };
             record.runs(child.id().unwrap_or_default(), &command);
-            began = Instant::now();
         };
         status.code()
     } else {
@@ -657,10 +678,13 @@ const GONE_DOUBLINGS: u32 = 8;
 /// again, that the program's pi host is away, with the program's record
 /// parked. It stands over whatever the ended run's last output shows after
 /// it, as attach saying why it left can be read only once this is said.
-fn away(record: &Record, shown: &Shown) {
+fn away(record: &Record, shown: &Shown, how: Gone) {
     record.parks();
     shown.show(FOCUS_ON);
-    shown.stands(GONE_LINE);
+    shown.stands(match how {
+        Gone::Away => GONE_LINE,
+        Gone::Unseen => UNSEEN_LINE,
+    });
 }
 
 /// Waits as [`woken`] does, or until `after` has passed, if given: a
@@ -2034,10 +2058,13 @@ mod tests {
         let (dir, held, holder) = holding_sh(root.path()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
         let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
-        let exiting = Instant::now();
         window
-            .types("echo first $((40 + 2)); : > \"$MYCELIUM_GONE\"; exit 69\r")
+            .types("echo first $((40 + 2)); echo \"$$ away\" > \"$MYCELIUM_GONE\"; exit 69\r")
             .await;
+        // Timed from once it's typed, which is before it exits and its
+        // pause begins, so a start within the pause is the key's, and the
+        // typing itself spends none of the margin.
+        let exiting = Instant::now();
         window.sees("first 42").await;
         window.sees("pi host is away").await;
         let away = listed_parked(&dir, &mut changes, true).await;
@@ -2075,13 +2102,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_gone_file_another_process_wrote_ends_it_as_any_exit() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, holder) = holding_sh(root.path()).await;
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        // A process under it, with a pid of its own, says so for its own
+        // reasons, and the program exits 69 as an unavailable tool may.
+        window
+            .types("sh -c 'echo \"$$ away\" > \"$MYCELIUM_GONE\"'; exit 69\r")
+            .await;
+        assert_eq!(
+            exited(holder).await,
+            Some(69),
+            "only the program the holder started is heeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_program_whose_pi_host_never_ran_here_says_so_and_keeps_its_window() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, held, _holder) = holding_sh(root.path()).await;
+        let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
+        let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
+        window
+            .types("echo \"$$ unseen\" > \"$MYCELIUM_GONE\"; exit 69\r")
+            .await;
+        window
+            .sees("No pi host by that name has run here since this window opened")
+            .await;
+        let away = listed_parked(&dir, &mut changes, true).await;
+        assert_eq!(away.pid, 0, "it waits for one, its window kept");
+        assert!(
+            !window.seen.contains("pi host is away"),
+            "it isn't told a host it never had is away: {:?}",
+            window.seen
+        );
+    }
+
+    #[tokio::test]
     async fn a_gone_file_keeps_only_a_69_and_a_release_or_an_end_still_ends_it() {
         for code in [3, 0] {
             let root = tempfile::tempdir().expect("a temporary folder");
             let (dir, held, holder) = holding_sh(root.path()).await;
             let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
             window
-                .types(&format!(": > \"$MYCELIUM_GONE\"; exit {code}\r"))
+                .types(&format!(
+                    "echo \"$$ away\" > \"$MYCELIUM_GONE\"; exit {code}\r"
+                ))
                 .await;
             assert_eq!(
                 exited(holder).await,
@@ -2096,7 +2163,9 @@ mod tests {
         let root = tempfile::tempdir().expect("a temporary folder");
         let (dir, held, _holder) = holding_sh(root.path()).await;
         let mut first = Joined::join(socket(&dir, &held.id), WINDOW, None);
-        first.types(": > \"$MYCELIUM_GONE\"; exit 69\r").await;
+        first
+            .types("echo \"$$ away\" > \"$MYCELIUM_GONE\"; exit 69\r")
+            .await;
         first.sees("pi host is away").await;
         // Nothing more is shown until it tries again, so a window joining now
         // is told by the holder itself.
@@ -2224,12 +2293,29 @@ mod tests {
         let (dir, held, _holder) = holding_sh(root.path()).await;
         let (_watching, mut changes) = super::super::watch(&dir).expect("the folder is watched");
         let mut window = Joined::join(socket(&dir, &held.id), WINDOW, None);
-        window.types(": > \"$MYCELIUM_GONE\"; exit 69\r").await;
+        window
+            .types("echo \"$$ away\" > \"$MYCELIUM_GONE\"; exit 69\r")
+            .await;
         window.sees("pi host is away").await;
         listed_parked(&dir, &mut changes, true).await;
         // No key: it tries again once its pause is up, as its host may be back.
+        let first = Instant::now();
         let again = listed_parked(&dir, &mut changes, false).await;
+        let first = first.elapsed();
         assert!(again.pid != 0, "it runs again with nobody at its window");
+        // Its host still away, the next pause is twice the first, the run
+        // between too short to count as the host having been back.
+        window
+            .types("echo \"$$ away\" > \"$MYCELIUM_GONE\"; exit 69\r")
+            .await;
+        listed_parked(&dir, &mut changes, true).await;
+        let second = Instant::now();
+        listed_parked(&dir, &mut changes, false).await;
+        let second = second.elapsed();
+        assert!(
+            second >= GONE_AGAIN * 3 / 2 && second > first + GONE_AGAIN / 2,
+            "each try in a row waits longer: {first:?}, then {second:?}"
+        );
         window.types("echo back $((6 * 7))\r").await;
         window.sees("back 42").await;
     }

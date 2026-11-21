@@ -21,6 +21,9 @@
 //! [`holder::GONE`] having written `<id>.gone` (told in `MYCELIUM_GONE`),
 //! its pi host away, is kept the same way, and also starts again by
 //! itself after a pause, as its host may be back; any other exit ends it.
+//! Whether its host was ever here since the holder started is kept in
+//! `<id>.reached` (told in `MYCELIUM_REACHED`), which the program writes
+//! once it finds its host, so the window can say which.
 //!
 //! - [`holder`]: the holder, keeping the program's terminal
 //! - [`attach`]: a terminal joining a holder
@@ -206,24 +209,94 @@ pub fn steers(dir: &Path, id: &str) -> PathBuf {
 /// The file a program held as `id` in `dir` writes as it exits
 /// [`holder::GONE`], saying its pi host is away, as attach does: a
 /// program exiting so for a reason of its own, as one whose tools are
-/// unavailable may, writes none and ends as any other.
+/// unavailable may, writes none and ends as any other. It holds the
+/// writer's pid and how its host is gone ([`Gone::said`]), so the holder
+/// heeds only the program it started, never a process under it.
 #[must_use]
 pub fn gone(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.gone"))
 }
 
+/// How a held program's pi host is gone, as it says in [`gone`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gone {
+    /// The host was there since the holder started, and has gone, as it
+    /// does as it stops or restarts.
+    Away,
+    /// No host by its name has been here since the holder started, as for
+    /// a mistyped realm or a host taken away, or one not yet started.
+    Unseen,
+}
+
+impl Gone {
+    /// What [`say_gone`] writes for the process `pid`.
+    #[must_use]
+    pub fn said(self, pid: u32) -> String {
+        let how = match self {
+            Self::Away => "away",
+            Self::Unseen => "unseen",
+        };
+        format!("{pid} {how}\n")
+    }
+
+    /// How the gone file `said` says the host is gone, if the process
+    /// `pid` wrote it: one another process wrote, or one written as
+    /// nothing, says nothing.
+    #[must_use]
+    pub fn heard(said: &str, pid: u32) -> Option<Self> {
+        let mut words = said.split_whitespace();
+        if words.next()?.parse::<u32>().ok()? != pid {
+            return None;
+        }
+        Some(match words.next() {
+            Some("unseen") => Self::Unseen,
+            _ => Self::Away,
+        })
+    }
+}
+
 /// Says to the holder of the program running this, if any, that its pi
-/// host is away, as it is about to exit [`holder::GONE`].
-pub fn say_gone() {
+/// host is gone, and how, as it is about to exit [`holder::GONE`].
+pub fn say_gone(how: Gone) {
     if let Some(gone) = std::env::var_os(GONE_SAID) {
         // A holder not told ends the window, as it did before it kept one
         // for a pi host away: nothing worse than that follows.
-        let _ = fs::write(gone, b"");
+        let _ = fs::write(gone, how.said(std::process::id()));
     }
 }
 
 /// What a held program is told the path of [`gone`] in.
 pub const GONE_SAID: &str = "MYCELIUM_GONE";
+
+/// The file a program held as `id` in `dir` writes once it finds its pi
+/// host's socket ([`say_reached`]), kept until the holder ends, so a
+/// later run that finds none knows its host was here and is away, rather
+/// than never here at all.
+#[must_use]
+pub fn reached(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.reached"))
+}
+
+/// Says to the holder of the program running this, if any, that its pi
+/// host's socket is here.
+pub fn say_reached() {
+    if let Some(reached) = std::env::var_os(REACHED_SAID) {
+        // Unsaid, a later run finding no socket says its host was never
+        // here, and the window still waits for it.
+        let _ = fs::write(reached, b"");
+    }
+}
+
+/// Whether the pi host of the program running this was here in an
+/// earlier run since its holder started ([`say_reached`]); one no holder
+/// runs is never told, so says it was.
+#[must_use]
+pub fn reached_before() -> bool {
+    std::env::var_os(REACHED_SAID).is_none_or(|reached| Path::new(&reached).exists())
+}
+
+/// What a held program is told the path of [`reached`] in.
+pub const REACHED_SAID: &str = "MYCELIUM_REACHED";
 
 /// The file a program held as `id` in `dir` may write, as it parks, with
 /// the command that takes it up again where it left off.
@@ -352,6 +425,22 @@ fn runs(pid: u32) -> bool {
 mod tests {
     use super::*;
     use notify::event::{AccessKind, AccessMode, CreateKind, EventKind, ModifyKind};
+
+    #[test]
+    fn a_gone_file_is_heard_only_from_its_writer_and_says_how() {
+        assert_eq!(Gone::heard(&Gone::Away.said(7), 7), Some(Gone::Away));
+        assert_eq!(
+            Gone::heard(&Gone::Unseen.said(7), 7),
+            Some(Gone::Unseen),
+            "a host never here is told apart from one away"
+        );
+        assert_eq!(
+            Gone::heard(&Gone::Away.said(8), 7),
+            None,
+            "one another process wrote says nothing"
+        );
+        assert_eq!(Gone::heard("", 7), None, "nor does one written as nothing");
+    }
 
     #[test]
     fn only_a_records_change_is_told_never_its_reading() {
