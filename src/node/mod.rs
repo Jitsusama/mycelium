@@ -14269,7 +14269,8 @@ esac
             .await
             .expect_err("no machine is made for it");
         assert!(
-            refused.contains("on looser ground") && refused.contains("opens builders cloud"),
+            refused.contains("where it would land looser")
+                && refused.contains("opens builders cloud"),
             "it asks as strict, and the offer's strict ground is looser: {refused}"
         );
         assert!(
