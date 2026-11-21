@@ -13791,6 +13791,7 @@ esac
             may_cost: false,
             carries: false,
             once: None,
+            strict: false,
         };
         let resumes = Shared::<Memory>::brought_there(
             None,
@@ -13856,6 +13857,7 @@ esac
                 may_cost: false,
                 carries: false,
                 once: None,
+                strict: false,
             })
         };
         let placed = |command: &[&str], needs: Vec<Need>| foldered(command, needs, None);
@@ -13995,6 +13997,7 @@ esac
                 may_cost: false,
                 carries: false,
                 once: None,
+                strict: false,
             })
         };
         let left = async |session: &str| {
@@ -14078,6 +14081,7 @@ esac
                 may_cost: false,
                 carries: false,
                 once: None,
+                strict: false,
             })
         };
         let refused = ask(socket.clone(), start("s-turn-0"))
