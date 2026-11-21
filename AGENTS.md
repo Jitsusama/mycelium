@@ -58,9 +58,9 @@ How this repository keeps Joel's repository standard:
   Where `nix-offload` can't reach a Mac, the same check is built with
   plain `nix build` on one whose Nix sets `sandbox = relaxed`, which
   lets this check alone out of the sandbox it asks to leave; a Mac with
-  the sandbox fully on refuses it. Where no Mac answers at all, the
-  merge says so in its Validation, and the Mac build runs before
-  core.nix takes it.
+  the sandbox fully on refuses it. A merge never waits for the Mac's
+  build: where no Mac has built it yet, the merge says so in its
+  Validation, and the Mac build runs before core.nix takes it.
   A merge goes only through `scripts/merge-gate.sh`, main's own copy,
   which refuses a head that doesn't hold main as it is now, or that
   lacks any Linux check kept as passed at that very commit. So rebase
@@ -70,7 +70,9 @@ How this repository keeps Joel's repository standard:
   copy, `git show origin/main:scripts/merge-train.sh | bash -s -- make
   SHA...`, after `git fetch -q origin main`: it lays them onto main as
   one tip, the checks build there once, and `land TIP` moves main to
-  it through main's gate, each change then reading merged.
+  it through main's gate, each change then reading merged. An approved
+  change's author makes and lands its own train, as
+  [scripts/README.md](scripts/README.md) says.
 - **Linters:** clippy with pedantic and rustc's own lints, as
   `Cargo.toml` sets them; rustfmt; nixfmt, deadnix and statix; taplo;
   rumdl, as `.rumdl.toml` sets it; shellcheck with every optional check.
