@@ -122,7 +122,8 @@ pub fn holds_here(
     // Copied and let go, never kept: a change entered here would be one
     // the link's look finds nothing new in, and so never says.
     let mut ledger = places.ledgers().hold(quest)?.ledger;
-    let shared = places.quest(quest, &ledger);
+    // A record waiting to move aside is one the look never says.
+    let shared = places.quest(quest, &ledger).record_waits(ledger.aside);
     ledger.scan(&shared, machine)?;
     Ok(ledger
         .files
@@ -368,6 +369,30 @@ mod tests {
         let mut held = places.ledgers().hold(quest).expect("held");
         held.ledger.theirs.insert("skiff".to_owned(), files);
         held.keep().expect("kept");
+    }
+
+    #[test]
+    fn a_quest_whose_record_waits_holds_its_scratch_here_and_none_of_its_record() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = kestrel(dir.path());
+        put(
+            places.record(QUEST).join("plans/PLAN-20261026-IZH11J.md"),
+            "mine\n",
+        );
+        {
+            // Shared from another machine, whose copy hasn't come.
+            let mut held = places.ledgers().hold(QUEST).expect("held");
+            held.ledger.aside = true;
+            held.keep().expect("kept");
+        }
+        assert_eq!(
+            holds_here(&places, QUEST, "kestrel")
+                .expect("read")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["scratch/handover/kestrel/one.done.json"],
+            "its scratch, and nothing of the record waiting to move aside"
+        );
     }
 
     #[test]

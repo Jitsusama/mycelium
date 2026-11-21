@@ -83,6 +83,19 @@ pub struct Ledger {
     /// so it stops once no shared quest is under it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub above: bool,
+    /// Whether this machine's own record of the quest, there before it was
+    /// taken up from another machine, still waits to move aside until that
+    /// machine's copy first comes. Until then it is neither read nor said,
+    /// so it is never taken for a change made here, and a link that drops
+    /// first leaves it where it was.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub aside: bool,
+    /// The machine whose copy the record waits for, while it does, so a
+    /// share refused meanwhile can name it. Kept apart from `theirs`,
+    /// which lets a machine's runs into this one's trees, since nothing
+    /// of its copy has come.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waits_for: Option<String>,
 }
 
 /// A shared file's key in a ledger and on a link: its place and its path.

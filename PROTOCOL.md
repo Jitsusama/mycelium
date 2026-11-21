@@ -409,8 +409,12 @@ hearing the other end is said at the next look:
   whose README says `concluded` or `retired`, and those it shares only
   as quests above others, which the other end shares so too and doesn't
   take up once none is under them. The other end starts sharing
-  any quest or folder it didn't, first moving its own copy aside to
-  `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. It is said
+  any quest or folder it didn't, moving its own copy aside to
+  `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. A quest's
+  own record moves only once the first of the sharing end's files
+  comes to be written in its place; until then it stays where it was,
+  neither read nor said, so a link that drops first leaves it there.
+  A scratch folder named moves aside as it is named. It is said
   before the files, so a folder's files are carried once heard of.
   An ended quest's record still crosses, so the README saying it ended
   reaches the other end, but its scratch is let be. Once a quest has
