@@ -5009,6 +5009,28 @@ impl<S: Store> Shared<S> {
         self.starts.admit(asked)
     }
 
+    /// What a start relayed here and taken as an agent's is told when
+    /// refused for `why`: that it was judged an agent's, since the
+    /// person's may be among them and would otherwise read a refusal for
+    /// a fence it never asked. Where no person works that is said so,
+    /// and elsewhere as it was `judged`. The person's carry is told
+    /// [`Self::carry_refused`] instead, since no orchestrator of theirs
+    /// paces it.
+    fn relay_refused(&self, unattended: bool, judged: &str, why: &str) -> String {
+        if unattended {
+            format!(
+                "no person works on {}, so it takes a relayed start as an agent's, and \
+                 refused it: {why}",
+                self.machine
+            )
+        } else {
+            format!(
+                "{} takes a relayed start as an agent's where {judged}, and refused it: {why}",
+                self.machine
+            )
+        }
+    }
+
     /// Why the person's carry, taken as an agent's start where no person
     /// works and refused there as `why` says, didn't stand, said for the
     /// person rather than for an agent.
@@ -5105,27 +5127,11 @@ impl<S: Store> Shared<S> {
                 ..asked
             };
             let started = self.counted((by, charged), pinned, 0, Whither::Here).await;
-            // The person's carry, taken as an agent's start where no
-            // person works, is the person's to read: no orchestrator of
-            // theirs paces it. Any other start refused says it was judged
-            // an agent's, and why, since the person's may be among them
-            // and would otherwise read a refusal for a fence it never
-            // asked.
             return started.map_err(|why| {
                 if persons_carry {
                     self.carry_refused(&why)
-                } else if unattended {
-                    format!(
-                        "no person works on {}, so it takes a relayed start as an agent's, \
-                         and refused it: {why}",
-                        self.machine
-                    )
                 } else {
-                    format!(
-                        "{} takes a relayed start as an agent's where {judged}, and refused \
-                         it: {why}",
-                        self.machine
-                    )
+                    self.relay_refused(unattended, &judged, &why)
                 }
             });
         }
@@ -13374,15 +13380,8 @@ esac
         );
     }
 
-    // Here is judged by its own launcher, as a run here would be, so an
-    // agent's run goes nowhere once neither here nor tern runs a command.
-    #[tokio::test]
-    async fn an_agents_run_goes_nowhere_here_when_here_runs_no_command() {
-        let dir = tempfile::tempdir().expect("a temporary folder");
-        let socket = dir.path().join("skiff").join("work.sock");
-        let store = Memory::default();
-        let (_stop, _node, _client) =
-            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+    /// Tern, as `store` keeps it, saying its strict fence runs nothing.
+    fn tern_runs_nothing(store: &Memory) {
         let mut tern = fenced("tern", &["remote"]);
         let declared = tern.declared.as_mut().expect("declared");
         let fences = declared.fence.as_mut().expect("a fence");
@@ -13392,6 +13391,18 @@ esac
             .runs
             .clear();
         store.put_machine(&tern).expect("what it said is kept");
+    }
+
+    // Here is judged by its own launcher, as a run here would be, so an
+    // agent's run goes nowhere once neither here nor tern runs a command.
+    #[tokio::test]
+    async fn an_agents_run_goes_nowhere_here_when_here_runs_no_command() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        tern_runs_nothing(&store);
         declares_runs(&socket, false);
         asks_below(&socket, 7001);
 
