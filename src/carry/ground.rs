@@ -217,9 +217,15 @@ pub fn runs_nothing_offered(kind: Kind, to: &str, there: Option<&Declared>) -> O
 /// start is an agent's, the orchestrator's or the node's own, judged in
 /// whichever of fence and strict its asker runs, and each kind declares
 /// its own `runs`, so a carry is refused when either declared runs
-/// nothing.
+/// nothing. It is held too, so a carry to a Mac, a `system` machine as
+/// [`lifts_fence`] judges one, is refused whatever it declares.
 #[must_use]
-pub fn brought_back(to: &str, declared: Option<&Declared>) -> Option<String> {
+pub fn brought_back(to: &str, declared: Option<&Declared>, system: Option<&str>) -> Option<String> {
+    if system == Some(MAC) {
+        return Some(format!(
+            "{to} is a Mac, where a session brought back held would run outside any fence"
+        ));
+    }
     [Kind::Fence, Kind::Strict]
         .into_iter()
         .find_map(|kind| runs_nothing_there(kind, to, declared))
@@ -708,6 +714,32 @@ mod tests {
                 .count(),
             1,
             "and only so"
+        );
+    }
+
+    // Our council on #359 (2026-11-21): a carry to a Mac passed its
+    // checks, then the held start bringing the session back was refused,
+    // so the session ended and stayed down.
+    #[test]
+    fn a_carry_to_a_mac_is_refused_before_anything_ends() {
+        const FENCE: &str = "/nix/store/0000-fence/bin/fence";
+        let runs = BTreeMap::from([
+            (Kind::Fence, running(&[FENCE, "--"])),
+            (Kind::Strict, running(&[FENCE, "--"])),
+        ]);
+        let declared = declaring(Some(runs));
+        assert_eq!(
+            brought_back("osprey", Some(&declared), Some("linux")),
+            None,
+            "a machine whose fences run a command takes the carry"
+        );
+        assert_eq!(
+            brought_back("osprey", Some(&declared), Some(MAC)),
+            Some(
+                "osprey is a Mac, where a session brought back held would run outside any fence"
+                    .to_owned()
+            ),
+            "but a Mac declaring the same is refused by its system"
         );
     }
 }

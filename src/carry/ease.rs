@@ -483,15 +483,20 @@ fn carried(
     let mut left_out = Vec::new();
     let peers: Vec<Machine> = peers
         .iter()
-        .filter(
-            |machine| match ground::brought_back(&machine.name, machine.declared.as_ref()) {
+        .filter(|machine| {
+            let back = ground::brought_back(
+                &machine.name,
+                machine.declared.as_ref(),
+                machine.system.as_deref(),
+            );
+            match back {
                 Some(why) => {
                     left_out.push(why);
                     false
                 }
                 None => true,
-            },
-        )
+            }
+        })
         .cloned()
         .collect();
     // With none left, placement would say the realm knows no machine, so

@@ -4480,7 +4480,8 @@ impl<S: Store> Shared<S> {
         // refused unless its fence runs a command there. Refused here
         // first, before any session is told to carry and ends.
         let declared = there.as_ref().and_then(|machine| machine.declared.as_ref());
-        if let Some(why) = ground::brought_back(to, declared) {
+        let system = there.as_ref().and_then(|machine| machine.system.as_deref());
+        if let Some(why) = ground::brought_back(to, declared, system) {
             return Err(format!(
                 "{address} isn't carried to {to}, as the start that brings it back there would \
                  be refused: {why}"
@@ -15204,7 +15205,11 @@ esac
         let firm = offered("firm", Some(&["remote"]));
         let loose = offered("loose", Some(&["remote", "cloud"]));
         let bare_shape = offered("bare", None);
-        let all = vec![firm.clone(), loose.clone(), bare_shape.clone()];
+        // Our council on #359 (2026-11-21): a Mac would be made, and paid
+        // for, then refused the agent's held start as lifts-fence.
+        let mut mac = offered("mac", Some(&["remote"]));
+        mac.facts.system = Some("macos".to_owned());
+        let all = vec![firm.clone(), loose.clone(), bare_shape.clone(), mac.clone()];
         let strict = Some(crate::declared::Kind::Strict);
         assert_eq!(
             shared.offered_on_ground(all.clone(), None),
@@ -15255,12 +15260,8 @@ esac
             ),
             "nor is one made of an offer whose fence would run no command"
         );
-        // Our council on #359 (2026-11-21): a Mac would be made, and paid
-        // for, then refused the agent's held start as lifts-fence.
-        let mut mac = offered("mac", Some(&["remote"]));
-        mac.facts.system = Some("macos".to_owned());
         assert_eq!(
-            shared.offered_on_ground(vec![mac.clone()], strict),
+            shared.offered_on_ground(vec![mac], strict),
             Err(
                 "this asks as a strictly fenced agent, so no machine is made for it where it \
                  would land looser or run nothing: mac would be a Mac, where a strictly fenced \
@@ -15268,11 +15269,6 @@ esac
                     .to_owned()
             ),
             "nor is a Mac made for it"
-        );
-        assert_eq!(
-            shared.offered_on_ground(vec![mac.clone()], None),
-            Ok(vec![mac]),
-            "though one may be for the person"
         );
     }
 

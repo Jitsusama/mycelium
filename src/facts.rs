@@ -545,14 +545,20 @@ mod here {
 
     /// What `program` says, asked with `args`, kept in `kept` from the
     /// first time it answers, for what doesn't change while the node runs.
-    /// One that failed isn't asked again for [`ASKED_AGAIN_AFTER`], so a
-    /// loaded Mac waits out its deadline once in that while rather than at
-    /// every measuring.
     fn said_once(kept: &OnceLock<String>, program: &'static str, args: &[&str]) -> Option<String> {
-        static FAILED: Mutex<BTreeMap<&str, Instant>> = Mutex::new(BTreeMap::new());
         if let Some(said) = kept.get() {
             return Some(said.clone());
         }
+        let answer = said_lately(program, args)?;
+        Some(kept.get_or_init(|| answer).clone())
+    }
+
+    /// What `program` says, asked with `args`, as [`said`] asks it, but
+    /// where it failed lately, nothing without asking: one that failed
+    /// isn't asked again for [`ASKED_AGAIN_AFTER`], so a loaded Mac waits
+    /// out its deadline once in that while rather than at every measuring.
+    fn said_lately(program: &'static str, args: &[&str]) -> Option<String> {
+        static FAILED: Mutex<BTreeMap<&str, Instant>> = Mutex::new(BTreeMap::new());
         let lately = |failed: &BTreeMap<&str, Instant>| {
             failed
                 .get(program)
@@ -561,23 +567,29 @@ mod here {
         if FAILED.lock().is_ok_and(|failed| lately(&failed)) {
             return None;
         }
-        let Some(answer) = said(program, args) else {
-            if let Ok(mut failed) = FAILED.lock() {
-                failed.insert(program, Instant::now());
-            }
-            return None;
-        };
-        Some(kept.get_or_init(|| answer).clone())
+        let answer = said(program, args);
+        if answer.is_none()
+            && let Ok(mut failed) = FAILED.lock()
+        {
+            failed.insert(program, Instant::now());
+        }
+        answer
     }
 
     /// How long a fact that failed to be said is left unasked.
     const ASKED_AGAIN_AFTER: Duration = Duration::from_secs(600);
 
+    /// How long a program that ended is given to finish saying what it
+    /// said, however near its deadline it ended.
+    const SAID_AFTER_ENDING: Duration = Duration::from_millis(200);
+
     /// What `program` says, asked with `args`, or nothing where it fails
     /// or hasn't answered within [`SAID_WITHIN`], when it is killed. What
     /// it says is read beside the wait, so a long answer never fills the
     /// pipe and stalls it; a reader still held open by something it
-    /// started is left to end with that.
+    /// started is left to end with that, as a killed program is left to
+    /// be reaped beside, since one stuck in the kernel can't end at once.
+    /// Where no thread can be started beside, nothing is said.
     fn said(program: &str, args: &[&str]) -> Option<String> {
         let mut child = Command::new(program)
             .args(args)
@@ -590,10 +602,15 @@ mod here {
         let (read, reading) = std::sync::mpsc::channel();
         // Its output is waited on no longer than the program, since a
         // program it left behind may hold it open after it ends.
-        std::thread::spawn(move || {
+        let reader = std::thread::Builder::new().spawn(move || {
             let mut out = Vec::new();
             let _ = read.send(stdout.read_to_end(&mut out).map(|_| out));
         });
+        if reader.is_err() {
+            let _ = child.kill();
+            reap(child);
+            return None;
+        }
         let deadline = Instant::now() + SAID_WITHIN;
         loop {
             match child.try_wait() {
@@ -603,20 +620,33 @@ mod here {
                 }
                 Ok(None) => {
                     let _ = child.kill();
-                    let _ = child.wait();
+                    reap(child);
                     return None;
                 }
                 Ok(Some(_)) | Err(_) => return None,
             }
         }
         let left = deadline.saturating_duration_since(Instant::now());
-        let out = reading.recv_timeout(left).ok()?.ok()?;
+        let out = reading
+            .recv_timeout(left.max(SAID_AFTER_ENDING))
+            .ok()?
+            .ok()?;
         String::from_utf8(out).ok()
+    }
+
+    /// Waits beside for the killed `child` to end, so the node's thread
+    /// never waits on it and it leaves no zombie. Where no thread can be
+    /// started it is let go unreaped, which costs a zombie, not the node.
+    fn reap(mut child: std::process::Child) {
+        let reaping = std::thread::Builder::new().spawn(move || child.wait());
+        if let Err(error) = reaping {
+            eprintln!("a killed probe couldn't be reaped beside: {error}");
+        }
     }
 
     /// What it runs on now, as `pmset` says.
     pub(super) fn power() -> Option<Power> {
-        said("/usr/bin/pmset", &["-g", "batt"]).and_then(|said| macos::power(&said))
+        said_lately("/usr/bin/pmset", &["-g", "batt"]).and_then(|said| macos::power(&said))
     }
 
     /// What the Mach host has counted of its cores' time.

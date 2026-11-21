@@ -441,12 +441,13 @@ async fn pull(
 }
 
 /// `first`, or where it is a machine's facts and others wait behind it,
-/// the frames waiting with every machine's facts but the newest left out,
-/// the first of them returned and the rest put in `queued`, in the order
-/// they came. Facts are said whole every time, so older ones held up
+/// the newest facts waiting, taken in `first`'s place, with the other
+/// frames waiting put in `queued` in the order they came and every older
+/// facts left out. Facts are said whole every time, so older ones held up
 /// behind newer ones say nothing the newest doesn't: a link whose node
 /// fell behind, as one did by 49 minutes on 2026-11-21, catches up on
-/// what its machine is now rather than on what it was.
+/// what its machine is now rather than on what it was. The newest come
+/// first so no frame is judged on facts older than those it came behind.
 fn newest_facts(
     first: io::Result<Frame>,
     frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
@@ -470,16 +471,14 @@ fn newest_facts(
     }
     let newest = waiting
         .iter()
-        .rposition(|frame| matches!(frame, Ok(Frame::Machine(_))));
-    let mut kept = waiting
-        .into_iter()
-        .enumerate()
-        .filter(|(at, frame)| Some(*at) == newest || !matches!(frame, Ok(Frame::Machine(_))))
-        .map(|(_, frame)| frame);
-    let next = kept
-        .next()
-        .unwrap_or_else(|| unreachable!("the newest facts are kept"));
-    queued.extend(kept);
+        .rposition(|frame| matches!(frame, Ok(Frame::Machine(_))))
+        .unwrap_or_else(|| unreachable!("the first is facts"));
+    let next = waiting.remove(newest);
+    queued.extend(
+        waiting
+            .into_iter()
+            .filter(|frame| !matches!(frame, Ok(Frame::Machine(_)))),
+    );
     next
 }
 
@@ -2028,7 +2027,9 @@ mod tests {
 
     // KP0L6A (2026-11-21): a node fell 49 minutes behind the facts a
     // Mac sent it, so a link takes only the newest of those
-    // waiting, and every other frame in the order it came.
+    // waiting, first, and every other frame in the order it came.
+    // Our council on #359: none is judged on facts older than it came
+    // behind.
     #[tokio::test]
     async fn a_link_behind_takes_only_the_newest_facts() {
         let (sender, mut frames) = mpsc::unbounded_channel();
@@ -2059,9 +2060,9 @@ mod tests {
         }
         assert_eq!(
             heard,
-            [ended("a"), facts(3), ended("b")]
+            [facts(3), ended("a"), ended("b")]
                 .map(|frame: io::Result<Frame>| frame.expect("a frame")),
-            "the older facts are left out, and the rest keep their order"
+            "the newest facts come first, the older are left out, and the rest keep their order"
         );
         sender.send(facts(4)).expect("sent");
         assert_eq!(
