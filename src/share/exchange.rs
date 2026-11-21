@@ -77,8 +77,7 @@ impl Places {
     /// nothing of whether the quest ended.
     #[must_use]
     pub fn ended(&self, id: &str) -> bool {
-        self.standing(id) == Some(true)
-            && !self.ledgers().read(id).is_ok_and(|ledger| ledger.aside)
+        self.standing(id) == Some(true) && !self.ledgers().read(id).is_ok_and(|ledger| ledger.aside)
     }
 
     /// Whether quest `id` has ended on this machine, as [`Self::ended`]
@@ -1154,8 +1153,7 @@ impl Exchange {
             return Ok(false);
         };
         let ended = ended || now;
-        if now && let Some(readme) = shared_of(README)
-        {
+        if now && let Some(readme) = shared_of(README) {
             let mut held = ledgers.hold(id)?;
             let quest = self.quest(id, &held.ledger);
             if held.ledger.scan_one(&quest, &readme, &self.machine)? != Sight::Same {
@@ -2318,7 +2316,7 @@ mod tests {
         let body = b"skiff's notes\n";
         let theirs = State {
             hash: Some(content(body).hash),
-            version: super::super::version::Version::default(),
+            version: Version::default(),
         };
         far.take_file(QUEST, "scratch/notes/plan.md", &theirs, Some(body), None)
             .expect("the note is taken");
@@ -2376,7 +2374,7 @@ mod tests {
         let body = b"# Shared\n";
         let theirs = State {
             hash: Some(content(body).hash),
-            version: super::super::version::Version::default(),
+            version: Version::default(),
         };
         far.take_file(QUEST, "record/README.md", &theirs, Some(body), None)
             .expect("the README is taken");
@@ -4444,9 +4442,14 @@ mod tests {
             far.places.ledgers().shares(QUEST),
             "one reopened is taken up"
         );
+        let ledger = far.places.ledgers().hold(QUEST).expect("held").ledger;
         assert!(
-            kestrel.places.state.join("before-share").exists(),
-            "its ended record set aside for the one coming back"
+            ledger.aside && ledger.waits_for.as_deref() == Some("skiff") && ledger.holds_end,
+            "its ended record waits to move aside for the one coming back, holding its end"
+        );
+        assert!(
+            !kestrel.places.state.join("before-share").exists(),
+            "and stays until that one's first file comes"
         );
         assert_eq!(
             far.places.ledgers().ended(QUEST).expect("read"),
@@ -4683,6 +4686,20 @@ mod tests {
             )),
             "and none is said deleted: {says:?}"
         );
+        // Its record moves aside only as skiff's copy first comes, and its
+        // sessions hear where it went then.
+        let body = format!("---\nid: {QUEST}\nstatus: active\n---\n# Reopened on skiff\n");
+        far.hear(Say::File {
+            quest: QUEST.to_owned(),
+            file: README.to_owned(),
+            state: State {
+                hash: content(body.as_bytes()).hash,
+                version: Version::default().changed_on("skiff"),
+            },
+            body: Some(STANDARD.encode(&body)),
+            mode: None,
+        })
+        .expect("heard");
         let told: Vec<String> = far.findings().into_iter().map(|draft| draft.text).collect();
         assert!(
             told.iter()
