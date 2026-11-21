@@ -1037,10 +1037,24 @@ fn named_pi(procs: &Path, pid: i32) -> bool {
 /// host keeps as `<pid>-<ticks>.json`, which pi itself trusts to tell
 /// which sessions a host holds.
 fn hosts_session(hosts: &Path, key: &str, pid: i32, ticks: u64, session: &str) -> bool {
-    let Some(record) = fs::read_to_string(hosts.join(format!("{pid}-{ticks}.json")))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-    else {
+    use rustix::fs::{Mode, OFlags};
+    use std::io::Read as _;
+    // Opened without blocking and read no further than any host writes,
+    // as [`host_record`] reads it, so a pipe or an outsized file put
+    // there holds nothing up before the fence is weighed.
+    let Some(record) = rustix::fs::open(
+        hosts.join(format!("{pid}-{ticks}.json")),
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()
+    .map(fs::File::from)
+    .filter(|file| file.metadata().is_ok_and(|written| written.is_file()))
+    .and_then(|file| {
+        let mut text = String::new();
+        file.take(HOST_RECORD_MOST).read_to_string(&mut text).ok()?;
+        serde_json::from_str::<Value>(&text).ok()
+    }) else {
         return false;
     };
     record.get("key").and_then(Value::as_str) == Some(key)
@@ -3188,6 +3202,47 @@ mod tests {
             shown_hosted(&strict, &hosts),
             Ok(Kind::Strict),
             "a host begun strict is never read looser, whatever its record names"
+        );
+    }
+
+    #[test]
+    fn a_pipe_or_an_outsized_record_in_a_hosts_place_holds_nothing_up() {
+        let unproved = Err(
+            "who owns s-own can't be proved here, so the fence it runs in can't be told".to_owned(),
+        );
+        let hosted = fenced_pi("", &[]);
+        let hosts = fs::canonicalize(hosted.2.path()).expect("its real path");
+        let record = hosts.join("58-500.json");
+        hosts_in_58(&hosts, &[("s-own", Some("none"))]);
+        let written = fs::read_to_string(&record).expect("its record reads");
+        // Blank space before the record, past the most any host writes,
+        // leaves nothing but blank space in what is read.
+        let padded = " ".repeat(usize::try_from(HOST_RECORD_MOST).expect("fits")) + &written;
+        fs::write(&record, padded).expect("its record is rewritten in place");
+        assert_eq!(
+            shown_hosted(&hosted, &hosts),
+            unproved,
+            "a record grown past any a host writes is never read whole"
+        );
+        fs::remove_file(&record).expect("removed");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&record)
+            .status()
+            .expect("mkfifo ran");
+        assert!(made.success(), "mkfifo made no pipe: {made}");
+        // Asked on a thread of its own, so a read that waits on the pipe
+        // fails here rather than holding the suite up.
+        let (tell, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let shown = shown_hosted(&hosted, &hosts);
+            tell.send(shown).ok();
+        });
+        assert_eq!(
+            heard
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("a pipe in a record's place holds nothing up"),
+            unproved,
+            "and a pipe is no record"
         );
     }
 
