@@ -156,6 +156,20 @@ impl Turns {
         self.waiting.iter().map(|waiting| waiting.session.as_str())
     }
 
+    /// Whether `session` is coming back through a turn: waiting for one,
+    /// its holder already started, or running its turn, its pi started
+    /// but not yet done. A start of it then would open its log beside
+    /// the one its holder opens, however long its turn is in coming.
+    pub fn holds(&self, session: &str) -> bool {
+        self.waiting
+            .iter()
+            .any(|waiting| waiting.session == session)
+            || self
+                .running
+                .iter()
+                .any(|running| running.session == session)
+    }
+
     /// Takes `ticket` out of the queue, for a holder that stopped waiting.
     pub fn leave(&mut self, ticket: u64) {
         self.waiting.retain(|waiting| waiting.ticket != ticket);
@@ -320,6 +334,10 @@ mod tests {
             first,
             ["s00", "s01", "s02", "s03"],
             "four go at once, as asked"
+        );
+        assert!(
+            turns.holds("s00") && turns.holds("s05") && !turns.holds("s99"),
+            "one running its turn and one waiting for it are coming back; one never asked isn't"
         );
         turns.pass(&sessions, began + Duration::from_secs(59));
         assert!(

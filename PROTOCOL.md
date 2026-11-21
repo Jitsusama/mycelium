@@ -1657,45 +1657,89 @@ offer's reasons, and each program that couldn't say what it offers.
 An agent starts sessions within limits the node keeps, so a cell gone
 wrong can't start without end. Each start an agent asks counts toward
 the nearest session claiming the asker's process, by its address, and
-toward every agent's starts through the node: in any hour a cell
-starts at most 8 and every agent together at most 32, and one past
-either is refused, saying which. A claim proves nothing, so the 8 are
-a cell's fair share, and the 32 the bound no agent gets round. A
-start counts whether it started or failed, since a failed one may
+toward every agent's starts through the node. A pi host's sessions
+all claim its one process, so there it counts toward the one the
+asker names in `PI_SESSION_ID`, if it is among them, and otherwise
+toward the agents of no known cell, who share one cell's number, as
+on a Mac, whose `ps` won't say it. An agent sets its own environment,
+so one on a host may name another of its sessions and charge that cell
+instead. In any hour a cell starts at most 8
+and every agent together at most 32, and one past either is refused,
+saying which. A claim proves nothing, so the 8 are a cell's fair
+share, and the 32, with the ended sessions below, the bound no agent
+gets round. A start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
 once can't pass the limit; a refused one doesn't. The person's own
 starts are never counted or refused. An agent's first start in the
-hour that brings back a session the node knows has ended counts toward
-the 32 but not its cell's 8, so a wave brought back starts whole and
-no agent brings back more than 32 an hour; a cell brings back at most
-9 an hour beside its 8, and the tenth is refused, saying which. It is
-pi itself, named bare or under `/run/current-system/sw/bin/` or
-`/etc/profiles/per-user/`, given one session after `--session` or
-`--session-id`, by its id or by a file whose name ends in `_` and
-the id. A bare `pi` is the one the
-login finds, so it fences habit alone. A second bringing back the same
-one within the hour counts toward both, and one running or on a
-machine out of reach is never brought back. A start past the limits
-with room again within a minute waits for it and goes through; one
-further off is refused, saying in how many minutes and at what time
-there is room, and that it goes to the agent's orchestrator as a
-finding, since pacing is never the person's to lift. The person stops
-the agents' starts asked of a node in one act, `mycelium starts stop`, which
-holds through a restart till `mycelium starts resume`, and while
-whether it stands can't be told; an agent asking either, or the list,
-is refused. The stop is `starts.stopped` in the node's state folder,
-so an agent able to write there could lift it, as it could stop the
-node. Every start, refused ones too, is kept in
-`starts.jsonl` beside `runs.jsonl` as a JSON line, `{"at", "by",
-"started_by", "folder", "program", "resumes", "machine", "held",
+hour that brings back a session the node knows has ended, on the
+machine it ran on, counts toward neither, up to 128 through the node
+in the hour, so every session a restarted machine held comes back at
+once; past that, each counts as new work. A node knows only its own
+machine's sessions as ended, since another's presence goes when it
+ends, so a wave is asked of the restarted machine's own node. One
+naming no machine stays on the session's, and one naming no folder
+begins in the `cwd` its last presence said, where that folder is
+still there, so pi opens it in its own project; one naming another
+machine or another folder is new work there, and counts, since pi
+takes its project from the folder. One naming no machine goes to the
+session's whether it counts or not, since pi finds its log only
+there. It is pi itself, named bare or under
+`/run/current-system/sw/bin/` or `/etc/profiles/per-user/`, with no
+word but `--session` and the session's id, so no prompt or flag gives
+it new work, nor a file an agent wrote; never `--session-id`, with
+which pi begins a new session under an id it finds none of. A bare
+`pi` is the one the login finds, so it fences habit alone, and each
+ended session once an hour through each node, and the 128, bound what
+it hides. A second bringing back the same one within the hour counts
+as new work, unless the first failed, which brought nothing back. An
+agent's start bringing back a session on its own machine while
+another start of it is going, or within two minutes of one that
+didn't fail, counted or not, is refused, and kept as refused, as is
+one parked with a holder a steer would wake, which wakes it instead,
+and one whose holder already waits in the node's queue for its turn
+to come back or runs it, since each would open the session's log
+twice. A turn ends as the session is heard from or after a minute.
+This guards only while the node holds the session as ended, not
+against a holder asking its turn after the start or starting with
+no node to ask, only for a start asked of the session's own node,
+and only for a start in the form above
+naming the session's whole id: one relayed from another node isn't
+judged so, and one naming the session otherwise, with a prompt, a
+flag or its file, counts as new work and isn't refused for this.
+One whose id begins another session's known on its machine counts
+too, since pi may open that one instead, and is still judged by the
+one it names. Once its pi says it runs, nothing here refuses a
+second. A
+park is judged as a wake judges it: of this boot where both the
+machine and the presence name it, or where either names none, and
+with a holder here still running. One from an earlier boot, or whose
+holder has gone, comes back by a start. An ask again under the same
+name is answered the first start rather than refused for it, and the
+person's own start is never refused. An id beginning
+`-` is never one, and one running or on a machine out of reach is
+never brought back. A
+start past the limits with room again within a minute waits for it
+and goes through; one further off is refused, saying in how many
+minutes and at what time there is room, and that it goes to the
+agent's orchestrator as a finding, since pacing is never the person's
+to lift. The person stops the agents' starts asked of a node in one
+act, `mycelium starts stop`, which holds through a restart till
+`mycelium starts resume`, and while whether it stands can't be told;
+an agent asking either, or the list, is refused. The stop is
+`starts.stopped` in the node's state folder, so an agent able to
+write there could lift it, as it could stop the node. Every start,
+refused ones too, is kept in `starts.jsonl` beside `runs.jsonl` as a
+JSON line, `{"at", "by", "started_by", "folder", "program",
+"resumes", "reopens", "machine", "held",
 "failed", "refused"}`: `at` in milliseconds, `started_by` null for the
-person's, `resumes` the id of the session it brings back, spared its
-cell's 8,
+person's, `resumes` the id of the session it brings back uncounted,
+`reopens` the id of the session it brings back, counted or not,
 `program` the command's first word alone, so no argument is kept,
 `failed` the node's reason alone, before the words naming the command,
 and the rest only where they apply. The node reads it again as it
 starts, passing over a line it can't read, and holds the newest 2,048,
-never letting one go that counts within the hour; once the file has
+never letting one go within the hour that counts or brings a session
+back; once the file has
 grown by 8 MiB and doubled since, it writes it again from those. A start
 dated up to an hour ahead of an ask counts, as a clock set back leaves
 it; one further ahead doesn't. `mycelium starts` prints whether
