@@ -436,7 +436,11 @@ pub fn shown_fence(
         .ok_or_else(unproved)?;
     let ticks = claim.start_ticks.ok_or_else(unproved)?;
     if let Some(host) = &claim.host {
-        return hosted_fence(procs, hosts, host, pid, ticks, session);
+        let beside = Beside {
+            tree: &Tree::of(procs),
+            owners: &owners,
+        };
+        return hosted_fence(procs, hosts, host, pid, ticks, session, &beside);
     }
     shown_of(procs, &Tree::of(procs), pid, ticks, session)
 }
@@ -458,16 +462,20 @@ pub fn shown_fences(
         return std::collections::BTreeMap::new();
     };
     let tree = Tree::of(procs);
+    let beside = Beside {
+        tree: &tree,
+        owners: &owners,
+    };
     owners
-        .into_iter()
+        .iter()
         .filter_map(|(session, pid)| {
-            let claim = claims.iter().find(|claim| claim.session == session)?;
+            let claim = claims.iter().find(|claim| &claim.session == session)?;
             let ticks = claim.start_ticks?;
             let shown = match &claim.host {
-                Some(host) => hosted_fence(procs, hosts, host, pid, ticks, &session),
-                None => shown_of(procs, &tree, pid, ticks, &session),
+                Some(host) => hosted_fence(procs, hosts, host, *pid, ticks, session, &beside),
+                None => shown_of(procs, &tree, *pid, ticks, session),
             };
-            Some((session, shown.ok()?))
+            Some((session.clone(), shown.ok()?))
         })
         .collect()
 }
@@ -529,7 +537,11 @@ const HOST_RECORD_MOST: u64 = 1 << 20;
 /// of the fence its host began in. A record that names none for it,
 /// or a word no harness writes, says nothing, so the fence can't be told,
 /// never guessed looser; nor can a record read as [`host_record`]
-/// refuses, or once `pid` is another process, read again last.
+/// refuses, or once `pid` is another process, read again last. A
+/// bubblewrap below the host reads it at least the ordinary fence, as
+/// for a pi of its own, unless another session `beside` proves on that
+/// host is named fenced in the record, so a record forged for a pi that
+/// hosts nothing can't read its session out of the fence below it.
 fn hosted_fence(
     procs: &Path,
     hosts: &Path,
@@ -537,6 +549,7 @@ fn hosted_fence(
     pid: i32,
     ticks: u64,
     session: &str,
+    beside: &Beside<'_>,
 ) -> Result<Kind, String> {
     let untold = |why: &str| {
         format!(
@@ -565,7 +578,31 @@ fn hosted_fence(
         Some("strict") => Kind::Strict,
         _ => return Err(untold("names no fence for it")),
     };
+    let fenced_beside = record
+        .get("sessions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|one| {
+            matches!(
+                one.get("fence").and_then(Value::as_str),
+                Some("fence" | "strict")
+            )
+        })
+        .filter_map(|one| one.get("id").and_then(Value::as_str))
+        .any(|other| {
+            other != session
+                && beside
+                    .owners
+                    .iter()
+                    .any(|(owned, by)| owned == other && *by == pid)
+        });
     let kind = kind.max(began_in(procs, pid, session)?);
+    let kind = if !fenced_beside && beside.tree.runs_below(pid, BWRAP) {
+        kind.max(Kind::Fence)
+    } else {
+        kind
+    };
     // Read again last, so the record and environment read were that
     // process's.
     if started(procs, pid) != Some(ticks) {
@@ -575,6 +612,36 @@ fn hosted_fence(
         ));
     }
     Ok(kind)
+}
+
+/// What a hosted session's fence is weighed beside: the machine's
+/// processes, and the sessions proved here with the process that owns
+/// each.
+struct Beside<'a> {
+    tree: &'a Tree,
+    owners: &'a [(String, i32)],
+}
+
+/// The text of a file in the hosts folder, opened without blocking and
+/// read no further than any host writes, as [`host_record`] reads it,
+/// so a pipe or an outsized file put there holds nothing up. None for
+/// anything but a file, or one that can't be read.
+fn host_file(path: &Path) -> Option<String> {
+    use rustix::fs::{Mode, OFlags};
+    use std::io::Read as _;
+    let file = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()
+    .map(fs::File::from)?;
+    if !file.metadata().is_ok_and(|written| written.is_file()) {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(HOST_RECORD_MOST).read_to_string(&mut text).ok()?;
+    Some(text)
 }
 
 /// The record the pi host run by process `pid`, started `ticks` after
@@ -1037,24 +1104,9 @@ fn named_pi(procs: &Path, pid: i32) -> bool {
 /// host keeps as `<pid>-<ticks>.json`, which pi itself trusts to tell
 /// which sessions a host holds.
 fn hosts_session(hosts: &Path, key: &str, pid: i32, ticks: u64, session: &str) -> bool {
-    use rustix::fs::{Mode, OFlags};
-    use std::io::Read as _;
-    // Opened without blocking and read no further than any host writes,
-    // as [`host_record`] reads it, so a pipe or an outsized file put
-    // there holds nothing up before the fence is weighed.
-    let Some(record) = rustix::fs::open(
-        hosts.join(format!("{pid}-{ticks}.json")),
-        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .ok()
-    .map(fs::File::from)
-    .filter(|file| file.metadata().is_ok_and(|written| written.is_file()))
-    .and_then(|file| {
-        let mut text = String::new();
-        file.take(HOST_RECORD_MOST).read_to_string(&mut text).ok()?;
-        serde_json::from_str::<Value>(&text).ok()
-    }) else {
+    let Some(record) = host_file(&hosts.join(format!("{pid}-{ticks}.json")))
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    else {
         return false;
     };
     record.get("key").and_then(Value::as_str) == Some(key)
@@ -1343,7 +1395,7 @@ fn hosted(hosts: &Path, pid: i32) -> usize {
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| name.starts_with(&prefix))
         })
-        .filter_map(|path| fs::read_to_string(path).ok())
+        .filter_map(|path| host_file(&path))
         .filter_map(|text| serde_json::from_str::<Value>(&text).ok())
         .filter_map(|record| record.get("sessions")?.as_array().map(Vec::len))
         .max()
@@ -3124,16 +3176,24 @@ mod tests {
     /// The fence `s-own`, held by the host `work-background` that pi 58
     /// runs, shows it runs in, its host's records read from `hosts`.
     fn shown_hosted(
-        (procs, logs, _): &(tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
+        hosted: &(tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
         hosts: &Path,
     ) -> Result<Kind, String> {
-        shown_fence(
-            &[claim("s-own", 58, Some(500), Some("work-background"))],
-            &folder(procs.path()),
-            hosts,
-            logs.path(),
-            "s-own",
-        )
+        shown_hosted_beside(hosted, hosts, &[])
+    }
+
+    /// The fence `s-own` shows it runs in, as [`shown_hosted`], with the
+    /// sessions `beside` it claimed on the same host too.
+    fn shown_hosted_beside(
+        (procs, logs, _): &(tempfile::TempDir, tempfile::TempDir, tempfile::TempDir),
+        hosts: &Path,
+        beside: &[&str],
+    ) -> Result<Kind, String> {
+        let claims: Vec<Claim> = std::iter::once("s-own")
+            .chain(beside.iter().copied())
+            .map(|session| claim(session, 58, Some(500), Some("work-background")))
+            .collect();
+        shown_fence(&claims, &folder(procs.path()), hosts, logs.path(), "s-own")
     }
 
     #[test]
@@ -3141,6 +3201,7 @@ mod tests {
         // Unfenced as the host began, and a bubblewrap below it for
         // another session, so only its record says how this one runs.
         let hosted = fenced_pi("", &[(71, "bwrap", 58)]);
+        holds_log(hosted.0.path(), 58, hosted.1.path(), "s-other");
         let hosts = fs::canonicalize(hosted.2.path()).expect("its real path");
         for (word, kind) in [
             ("none", Kind::None),
@@ -3152,11 +3213,38 @@ mod tests {
                 &[("s-own", Some(word)), ("s-other", Some("strict"))],
             );
             assert_eq!(
-                shown_hosted(&hosted, &hosts),
+                shown_hosted_beside(&hosted, &hosts, &["s-other"]),
                 Ok(kind),
                 "its own, as its record names it: {word}"
             );
         }
+        // A bubblewrap below a host that holds no other session proved
+        // fenced is this session's, as a record forged for a pi that
+        // hosts nothing would read it.
+        hosts_in_58(
+            &hosts,
+            &[("s-own", Some("none")), ("s-other", Some("strict"))],
+        );
+        assert_eq!(
+            shown_hosted(&hosted, &hosts),
+            Ok(Kind::Fence),
+            "a fenced session beside it that none proves explains nothing below"
+        );
+        hosts_in_58(&hosts, &[("s-own", Some("none"))]);
+        assert_eq!(
+            shown_hosted(&hosted, &hosts),
+            Ok(Kind::Fence),
+            "nor does a record naming it alone"
+        );
+        hosts_in_58(
+            &hosts,
+            &[("s-own", Some("none")), ("s-other", Some("none"))],
+        );
+        assert_eq!(
+            shown_hosted_beside(&hosted, &hosts, &["s-other"]),
+            Ok(Kind::Fence),
+            "nor one beside it named unfenced"
+        );
         let untold = |why: &str| {
             Err(format!(
                 "s-own runs in a pi host whose record {why}, so the fence it runs in can't be \
@@ -3225,7 +3313,7 @@ mod tests {
             "a record grown past any a host writes is never read whole"
         );
         fs::remove_file(&record).expect("removed");
-        let made = std::process::Command::new("mkfifo")
+        let made = Command::new("mkfifo")
             .arg(&record)
             .status()
             .expect("mkfifo ran");
