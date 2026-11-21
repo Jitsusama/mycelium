@@ -3411,7 +3411,7 @@ mod tests {
         });
         assert_eq!(
             heard
-                .recv_timeout(std::time::Duration::from_secs(30))
+                .recv_timeout(Duration::from_secs(30))
                 .expect("a pipe in a record's place holds nothing up"),
             unproved,
             "and a pipe is no record"
