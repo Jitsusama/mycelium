@@ -493,6 +493,11 @@ fn carried(
         )
         .cloned()
         .collect();
+    // With none left, placement would say the realm knows no machine, so
+    // the look says why each was left out instead.
+    if peers.is_empty() {
+        return nothing(left_out.join("; "));
+    }
     let mut smallest_first: Vec<&Cell> = cells.iter().collect();
     smallest_first.sort_by_key(|cell| cell.size.map_or((1, 0), |size| (0, size)));
     let mut why_not = Vec::new();
@@ -889,35 +894,38 @@ pub(super) mod tests {
     // carry would refuse after spending the session's move for the day.
     #[test]
     fn a_look_never_chooses_a_machine_its_start_back_cant_run_on() {
-        // Tern, the roomiest, declares a strict fence too, which runs
-        // nothing, though the session runs fenced: the start back may be
-        // a strict asker's.
-        let mut alone = realm();
-        let mut strict = declaring(&[Kind::Fence, Kind::Strict]);
-        strict
-            .fence
-            .as_mut()
-            .and_then(|fences| fences.get_mut(&Kind::Strict))
-            .expect("a strict fence")
-            .runs
-            .clear();
-        alone[1].declared = Some(strict);
-        let refused = "tern declares no way to run a command as its strictly fenced sessions \
-                       run that its launcher accepts, or its node is too old to say one";
-        let history = hot_for(&alone, 11);
-        let why = why_not(&chose(&alone, &[cell("s1")], &history)).to_owned();
-        assert!(
-            why.starts_with("S1: ") && why.ends_with(refused),
-            "with no other machine, nothing goes, saying why: {why}"
-        );
-        let mut beside = alone.clone();
-        beside.push(machine("osprey", 9.0));
-        let history = hot_for(&beside, 11);
-        assert_eq!(
-            carries(&chose(&beside, &[cell("s1")], &history)),
-            Some(("s1", "osprey")),
-            "the next machine is placed instead"
-        );
+        // Tern, the roomiest, declares both fences, and one runs nothing.
+        // The session runs fenced, but the start back may be either kind
+        // of asker's, so either refuses tern.
+        for (kind, runs_as) in [(Kind::Fence, "fenced"), (Kind::Strict, "strictly fenced")] {
+            let mut alone = realm();
+            let mut declared = declaring(&[Kind::Fence, Kind::Strict]);
+            declared
+                .fence
+                .as_mut()
+                .and_then(|fences| fences.get_mut(&kind))
+                .expect("both fences")
+                .runs
+                .clear();
+            alone[1].declared = Some(declared);
+            let history = hot_for(&alone, 11);
+            assert_eq!(
+                why_not(&chose(&alone, &[cell("s1")], &history)),
+                format!(
+                    "tern declares no way to run a command as its {runs_as} sessions run that \
+                     its launcher accepts, or its node is too old to say one"
+                ),
+                "with no other machine, nothing goes, saying why"
+            );
+            let mut beside = alone.clone();
+            beside.push(machine("osprey", 9.0));
+            let history = hot_for(&beside, 11);
+            assert_eq!(
+                carries(&chose(&beside, &[cell("s1")], &history)),
+                Some(("s1", "osprey")),
+                "the next machine is placed instead"
+            );
+        }
     }
 
     #[test]
