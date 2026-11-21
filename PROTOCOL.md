@@ -1969,9 +1969,11 @@ isn't brought back there after a restart, as its start is pinned to
 that machine, and an agent's start on a Mac that names no machine goes
 to one that runs its fence. There it begins in its home where its
 folder isn't, unless it asks `"strict"`, or it is told what a machine
-made for it would cost. Only placement is held so: an agent's session
-already held on a Mac wakes there as before, outside any fence, until
-it ends or the Mac boots again. What is judged is what a machine
+made for it would cost. The node placing a start judges it, as a relay
+carries no asker's fence, so a machine stops taking these starts only
+once every node that may place on it judges so. Only placement is held
+so: an agent's session already held on a Mac wakes there as before,
+outside any fence, until it ends or the Mac boots again. What is judged is what a machine
 declares, never its system, so a Mac declaring `runs` would take such
 a start unfenced. The person's start is
 relayed as theirs, but a machine no person works at, or one where the

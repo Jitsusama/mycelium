@@ -5265,7 +5265,11 @@ impl<S: Store> Shared<S> {
     ) -> Reply {
         let who = self.asker_of_a_make().await;
         let mut offers = self.offers().await;
-        offers.offers = self.offered_on_ground(offers.offers, fence)?;
+        // Why the realm's machines refused it comes first, so the asker
+        // doesn't read a provider's lack as the whole reason.
+        offers.offers = self
+            .offered_on_ground(offers.offers, fence)
+            .map_err(|why| format!("nowhere: {}, and {why}", placement::said(misses)))?;
         let offer = placement::to_make(&asked.work, &offers.offers, &self.machines())
             .map_err(|offered| nothing_offered(misses, &offered, &offers.unanswered))?
             .clone();
@@ -5325,7 +5329,9 @@ impl<S: Store> Shared<S> {
         fence: Option<crate::declared::Kind>,
     ) -> Reply {
         let who = self.asker_of_a_make().await;
-        let offers = self.offered_on_ground(self.offers().await.offers, fence)?;
+        let offers = self
+            .offered_on_ground(self.offers().await.offers, fence)
+            .map_err(|why| format!("{nowhere}, and {why}"))?;
         let free: Vec<Offer> = offers
             .iter()
             .filter(|offer| offer.costs.free())
@@ -16864,8 +16870,8 @@ esac
     // placed there, the person's carry too, and says how it judged them.
     #[tokio::test]
     async fn a_cell_declaring_no_launcher_refuses_the_starts_placed_on_it() {
-        // Placement refuses it, or, where the build's file owners leave the
-        // asker judged unfenced, the cell's own launcher does; both say so.
+        // A relayed start is placed on this machine alone, so its refusal
+        // is placement's miss here, which names the launcher it lacks.
         const NO_LAUNCHER: &str =
             "declares no way to run a command as its strictly fenced sessions run";
         let dir = tempfile::tempdir().expect("a temporary folder");
