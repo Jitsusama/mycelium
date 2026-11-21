@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use crate::declared::{Declared, Doors, Effect, Kind, Taint, Unrunnable};
 use crate::facts::{Machine, Readiness};
-use crate::placement::{Because, LOOSER_GROUND, Miss, RUNS_NOTHING};
+use crate::placement::{Because, LIFTS_FENCE, LOOSER_GROUND, Miss, RUNS_NOTHING};
 
 /// The fence the session `address` is judged to run in: the one its
 /// presence `claimed`, refused where its process `shown` it stricter,
@@ -147,6 +147,36 @@ pub fn runs_nothing(
         });
     here.into_iter().chain(there).collect()
 }
+
+/// Each of `machines` an agent's held start in the fence `kind` may not
+/// be placed on, this one among them, refused saying why: every Mac,
+/// whatever it declares. A held start runs through the login shell with
+/// no launcher round it, and pi lifts its own fence on a Mac, which has
+/// no Landlock, so the session would run there outside any fence. A Mac
+/// declaring its fence's `runs` passes [`runs_nothing`], so this judges
+/// its system instead, until held starts go through the launcher.
+#[must_use]
+pub fn lifts_fence(kind: Kind, machines: &[Machine]) -> Vec<Miss> {
+    machines
+        .iter()
+        .filter(|machine| machine.system.as_deref() == Some(MAC))
+        .map(|machine| Miss {
+            machine: machine.name.clone(),
+            because: vec![Because::Refuses(Taint {
+                key: LIFTS_FENCE.to_owned(),
+                effect: Effect::Never,
+                why: format!(
+                    "{} is a Mac, where a {kind} session started held would run outside any \
+                     fence",
+                    machine.name
+                ),
+            })],
+        })
+        .collect()
+}
+
+/// The system a Mac says it is, as Rust names macOS.
+const MAC: &str = "macos";
 
 /// Why a machine made of the offer `to`, declaring itself as `there`
 /// says it would, runs no command an agent asks in the fence `kind`, as
