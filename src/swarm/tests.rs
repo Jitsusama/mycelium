@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Look, Swarm, overview, team, typed};
+use super::{Look, Swarm, WHOLE, aligned, overview, team, typed};
 
 /// A look 72 columns wide, without colour, at 17:00 on Thursday
 /// 12 November 2026, in UTC.
@@ -316,5 +316,103 @@ fn colour_marks_what_needs_you_and_what_is_stuck() {
     assert!(
         shown.contains("\x1b[33m1 needs you\x1b[0m") && shown.contains("\x1b[31m1 stuck\x1b[0m"),
         "needing you in yellow, stuck in red: {shown:?}"
+    );
+}
+
+/// The look a pipe is drawn with: whole, never in colour.
+fn whole() -> Look {
+    Look {
+        width: WHOLE,
+        ..look()
+    }
+}
+
+#[test]
+fn drawn_whole_the_counts_line_up_after_the_widest_name_and_nothing_trails() {
+    let shown = overview(&swarm(), &whole());
+    let expected = [
+        "work · 6 running · 1 needs you · 1 stuck",
+        "",
+        "              need you  stuck  moving  quiet",
+        "Harbour                     1       1      1",
+        "  Kelp               1",
+        "Reef                                1",
+        "on their own                        1",
+        "",
+        "see a team by any part of its name: mycelium --realm work swarm harbour",
+    ];
+    assert_eq!(
+        shown.lines().collect::<Vec<_>>(),
+        expected,
+        "as wide as its widest name, not the terminal's room:\n{shown}"
+    );
+}
+
+#[test]
+fn drawn_whole_a_long_name_is_never_cut_and_the_header_moves_over_for_it() {
+    let mut swarm = swarm();
+    let long = "A reef whose name runs far past every column it was given";
+    swarm.teams[0]["title"] = json!(long);
+    let shown = overview(&swarm, &whole());
+    let lines: Vec<&str> = shown.lines().collect();
+    let moving = |line: &str| line.find("moving").map(|at| at + "moving".len());
+    // Led by the short name a long title is given.
+    let named = format!("reef  {long}");
+    assert!(
+        !shown.contains('…')
+            && lines.contains(&format!("{named}{}1", " ".repeat(24)).as_str())
+            && moving(lines[2]) == Some(named.len() + 24 + 1),
+        "whole, its count still under moving:\n{shown}"
+    );
+}
+
+#[test]
+fn drawn_whole_what_each_session_does_lines_up_after_the_widest_name() {
+    let shown = team(&swarm(), "harb", &whole()).expect("Harbour is found by its name");
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(
+        lines[3..],
+        [
+            "      need you  stuck  moving  quiet",
+            "Kelp         1",
+            "",
+            "stuck      Paused one  paused",
+            "moving     Busy one    running the tests",
+            "quiet      Harbour's lead",
+            "",
+            "works in skiff beside Reef",
+        ],
+        "one team, whole:\n{shown}"
+    );
+}
+
+#[test]
+fn a_title_holding_a_mark_moves_no_column() {
+    let mut swarm = swarm();
+    swarm.teams[0]["title"] = json!("Re\u{e000}ef");
+    swarm.sessions[2]["title"] = json!("Busy\u{e001} one");
+    assert_eq!(
+        overview(&swarm, &whole()),
+        overview(&self::swarm(), &whole()),
+        "a team's mark is dropped, so its count stays put"
+    );
+    assert_eq!(
+        team(&swarm, "harb", &whole()),
+        team(&self::swarm(), "harb", &whole()),
+        "and a session's, so what it does stays put"
+    );
+}
+
+#[test]
+fn marks_line_up_within_a_block_and_each_kind_on_its_own() {
+    assert_eq!(
+        aligned("a\u{e000}  1\nlonger\u{e000}  2\n\nx\u{e001}  doing\nlong\u{e000}  3\n"),
+        "a       1\nlonger  2\n\nx  doing\nlong  3",
+        "padded to the block's widest, a blank line starting the next"
+    );
+    assert_eq!(
+        aligned("été\u{e000} 1\nab\u{e000} 2   "),
+        "été 1\nab  2",
+        "counted in characters, not bytes, and nothing trails"
     );
 }

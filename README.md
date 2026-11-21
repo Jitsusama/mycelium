@@ -98,7 +98,9 @@ The harness mesh's messages and presence, carried between machines:
   far the loads spread; and a sentence for each thing wrong, saying what
   follows: a machine over while another has room, one resource spent
   while the other idles, loads spread too far, or facts too old to
-  place by. `-o json` prints the same as one JSON line. `--follow` reads
+  place by. In a terminal its table keeps the columns that fit whole and
+  names those left out; into a pipe it has every one.
+  `-o json` prints the same as one JSON line. `--follow` reads
   each minute, says the flags seen in most of the last ten, and keeps
   each reading as a JSON line in the state folder's `balance`, one file
   a day, and the latest whole in `now.json` beside them, written and
@@ -133,7 +135,8 @@ The harness mesh's messages and presence, carried between machines:
   each question of the last two hours still waiting on a peer it was
   put to, with who asks whom and how long it has waited, and each hold
   still standing, with until when, each with its id and how it opens.
-  It draws text into a pipe too, as `swarm` and `forage` do, so a
+  It draws text into a pipe too, as `swarm` and `forage` do, each time
+  there with its date and zone so a kept copy still says when; a
   script reading the JSON lines it once printed asks for them with
   `-o json`, which prints each whole as a JSON line. `mycelium said`
   prints what you said to sessions through this machine, with when each
@@ -157,7 +160,10 @@ The harness mesh's messages and presence, carried between machines:
   worrying first, then the busiest few, then one row
   counting the rest; `--all` unfolds it, and a name opens any one.
   `mycelium cells --standing needs-you,stuck` lists only the cells
-  standing so. `-w` on either draws it again in place every two
+  standing so. Into a pipe, as `watch` and `less` read it, swarm's,
+  networks' and cells' tables are drawn whole: nothing is cut, and each
+  column is as wide as what is in it.
+  `-w` on either draws it again in place every two
   seconds, as it changes, until stopped. Both print JSON lines with
   `-o json`, networks first,
   then cells, then what the cells did, the model a page draws the

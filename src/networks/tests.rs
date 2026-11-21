@@ -6,7 +6,7 @@ use super::kept::{RECORD, answered, paths, pruned};
 use super::made::asks;
 use super::{Is, Mycelium, Shape, cell, cells, network, overview};
 use crate::daemon::fields::{MOST_FIELDS, projected};
-use crate::swarm::{ASKS_FIT, Look, Shapes, together};
+use crate::swarm::{ASKS_FIT, Look, Shapes, WHOLE, together};
 
 /// A look 80 columns wide, without colour, at 17:00 on Thursday
 /// 12 November 2026, in UTC.
@@ -1824,6 +1824,84 @@ fn every_cell_lists_worst_first_and_one_says_its_networks() {
         shown.lines().collect::<Vec<_>>(),
         expected,
         "one cell:\n{shown}"
+    );
+}
+
+/// The look a pipe is drawn with: whole, never in colour.
+fn whole() -> Look {
+    Look {
+        width: WHOLE,
+        ..look()
+    }
+}
+
+#[test]
+fn drawn_whole_the_tree_is_as_wide_as_its_widest_row_and_its_counts_line_up() {
+    let shown = overview(&mycelium(), &whole(), false, false);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(
+        lines[2..15],
+        [
+            "                              need you  stuck  moving  quiet  dormant",
+            "orchestrations",
+            "  Harbour Ships                                     1               1",
+            "    kelp      Kelp: Tides            1",
+            "projects",
+            "  harbor    Harbour Ships                           1               1",
+            "repositories",
+            "  skiff                              1              1",
+            "groups",
+            "  dock/crew                                                         1",
+            "machines",
+            "  skiff     ready · 42% busy         1              1               1",
+            "  dinghy    ready",
+        ],
+        "the tree, whole:\n{shown}"
+    );
+}
+
+#[test]
+fn drawn_whole_what_each_cell_does_lines_up_after_the_widest_title() {
+    let shown = cells(&mycelium(), &whole(), false, &[]);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(
+        lines[2..5],
+        [
+            "needs you  ASKS01  Kelp's question  Which tide?",
+            "moving     BUSY01  Harbour Ships    running the tests",
+            "dormant    NAPS01  Napping one",
+        ],
+        "each cell, whole:\n{shown}"
+    );
+    let kelp = network(&mycelium(), "kelp", &whole(), false).expect("found by its short name");
+    assert!(
+        kelp.ends_with("\nneeds you  ASKS01  Kelp's question  Which tide?"),
+        "one network's cells, whole:\n{kelp}"
+    );
+}
+
+#[test]
+fn drawn_whole_nothing_is_cut_and_no_line_trails() {
+    let [teams, mut sessions, machines] = records();
+    let long = "A question whose title runs far past every column a terminal gave it";
+    for session in &mut sessions {
+        if session["address"] == "ASKS01" {
+            session["presence"]["questInfo"]["title"] = json!(long);
+        }
+    }
+    let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
+    let drawn = [
+        overview(&mycelium, &whole(), true, false),
+        cells(&mycelium, &whole(), false, &[]),
+    ]
+    .join("\n");
+    assert!(
+        drawn.contains(long) && !drawn.contains('…'),
+        "the long title whole:\n{drawn}"
+    );
+    assert!(
+        drawn.lines().all(|line| line == line.trim_end()),
+        "no line ends in spaces:\n{drawn}"
     );
 }
 

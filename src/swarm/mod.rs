@@ -184,7 +184,86 @@ const STEP: usize = 2;
 /// The narrowest a name is cut to, however narrow the terminal.
 pub(crate) const NARROWEST: usize = 16;
 
+/// The width a pipe is drawn at: nothing is cut to it, and no column is
+/// padded out to it, so a reader that greps or saves the text has all of
+/// it, each table's columns as wide as what is in them.
+pub const WHOLE: usize = usize::MAX;
+
+/// Where a row's counts begin, as a table is drawn [`WHOLE`], for
+/// [`aligned`] to line them up once every row is drawn: a character of
+/// the private use area, as no title has one once [`unmarked`].
+pub(crate) const COUNTS_AT: &str = "\u{e000}";
+
+/// Where a line's doing begins, as [`COUNTS_AT`] says its counts do.
+pub(crate) const DOING_AT: &str = "\u{e001}";
+
+/// `text` with no mark [`aligned`] reads, so a title can't move a column.
+pub(crate) fn unmarked(text: &str) -> String {
+    text.replace(['\u{e000}', '\u{e001}'], "")
+}
+
+/// `text` drawn [`WHOLE`] with its marks lined up: in each block of
+/// lines between blank ones, what comes before each mark is padded to
+/// the widest of the block's, counts and doings each on their own. A pipe
+/// is never drawn in colour, so a character is a column.
+pub(crate) fn aligned(text: &str) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let blocks: Vec<(usize, usize)> = {
+        let mut blocks = Vec::new();
+        let mut start = 0;
+        for (at, line) in lines.iter().enumerate() {
+            if line.is_empty() {
+                blocks.push((start, at));
+                start = at + 1;
+            }
+        }
+        blocks.push((start, lines.len()));
+        blocks
+    };
+    for mark in [DOING_AT, COUNTS_AT] {
+        for &(start, end) in &blocks {
+            let block = &mut lines[start..end];
+            let Some(widest) = block
+                .iter()
+                .filter_map(|line| Some(line[..line.find(mark)?].chars().count()))
+                .max()
+            else {
+                continue;
+            };
+            for line in block.iter_mut() {
+                if let Some(at) = line.find(mark) {
+                    let before = line[..at].chars().count();
+                    let after = &line[at + mark.len()..];
+                    *line = format!("{}{}{after}", &line[..at], " ".repeat(widest - before));
+                }
+            }
+        }
+    }
+    lines
+        .iter()
+        .map(|line| line.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 impl Look {
+    /// Whether it is drawn [`WHOLE`], into a pipe.
+    pub(crate) const fn whole(&self) -> bool {
+        self.width == WHOLE
+    }
+
+    /// `mark` where it is drawn [`WHOLE`], for [`aligned`]; else nothing.
+    pub(crate) const fn mark(&self, mark: &'static str) -> &'static str {
+        if self.whole() { mark } else { "" }
+    }
+
+    /// `lines` as one text, their columns lined up where it is drawn
+    /// [`WHOLE`].
+    pub(crate) fn joined(&self, lines: &[String]) -> String {
+        let text = lines.join("\n");
+        if self.whole() { aligned(&text) } else { text }
+    }
+
     /// `text` in `colour`, where it is drawn in colour.
     pub(crate) fn paint(&self, colour: &str, text: &str) -> String {
         if self.colour && !colour.is_empty() && !text.trim().is_empty() {
@@ -356,27 +435,29 @@ pub(crate) fn row(
     strong: bool,
 ) -> String {
     let columns: Vec<Standing> = counts.iter().map(|(each, _)| *each).collect();
-    let room = look
-        .width
-        .saturating_sub(counts_width(&columns) + depth * STEP)
-        .max(NARROWEST);
-    let (plain, lead) = label.short.map_or_else(
-        || (label.title.to_owned(), room),
-        |short| {
-            (
-                format!("{}{GAP}{}", padded(short, label.width), label.title),
-                label.width + GAP.len(),
-            )
-        },
-    );
+    let plain = unmarked(&label.short.map_or_else(
+        || label.title.to_owned(),
+        |short| format!("{}{GAP}{}", padded(short, label.width), label.title),
+    ));
+    // Drawn whole, the name is as wide as it is, and its counts are lined
+    // up with the table's once it's drawn.
+    let room = if look.whole() {
+        plain.chars().count()
+    } else {
+        look.width
+            .saturating_sub(counts_width(&columns) + depth * STEP)
+            .max(NARROWEST)
+    };
+    let lead = label.short.map_or(room, |_| label.width + GAP.len());
     let name = padded(&fit(&plain, room), room);
     let head: String = name.chars().take(lead).collect();
     let tail: String = name.chars().skip(lead).collect();
     let mut line = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         " ".repeat(depth * STEP),
         look.paint(if strong { BOLD } else { "" }, &head),
-        look.paint(FAINT, &tail)
+        look.paint(FAINT, &tail),
+        look.mark(COUNTS_AT)
     );
     for &(each, count) in counts {
         let shown = if count == 0 {
@@ -392,6 +473,13 @@ pub(crate) fn row(
 
 /// The header over the counts of `columns`, lined up with them.
 pub(crate) fn header(look: &Look, depth: usize, columns: &[Standing]) -> String {
+    if look.whole() {
+        let mut line = format!("{}{COUNTS_AT}", " ".repeat(depth * STEP));
+        for &each in columns {
+            let _ = write!(line, "{GAP}{}", each.header());
+        }
+        return line;
+    }
     let room = look
         .width
         .saturating_sub(counts_width(columns) + depth * STEP)
@@ -501,7 +589,7 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
             swarm.realm
         ),
     ));
-    lines.join("\n")
+    look.joined(&lines)
 }
 
 /// Each team as a person types it, its short name where it has one, in
@@ -701,7 +789,7 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
         lines.push(String::new());
         lines.extend(meets.iter().map(|line| look.paint(FAINT, line)));
     }
-    Ok(lines.join("\n"))
+    Ok(look.joined(&lines))
 }
 
 /// What a team landed last, and when.
@@ -728,20 +816,29 @@ fn member(look: &Look, standing: Standing, session: &Value) -> String {
         .unwrap_or_default();
     let doing = standing.doing(session);
     let room = look.width.saturating_sub(said + GAP.len());
-    let name_room = if doing.is_some() {
+    let name = unmarked(title(session));
+    // Drawn whole, the name is as wide as it is, and what it does is lined
+    // up with the others' once they're drawn.
+    let name_room = if look.whole() {
+        name.chars().count()
+    } else if doing.is_some() {
         (room / 2).max(NARROWEST)
     } else {
         room
     };
-    let name = fit(title(session), name_room);
     let mut line = format!(
         "{}{GAP}{}",
         look.paint(standing.colour(), &padded(standing.said(), said)),
-        padded(&name, name_room)
+        padded(&fit(&name, name_room), name_room)
     );
     if let Some(doing) = doing {
         let left = room.saturating_sub(name_room + GAP.len()).max(NARROWEST);
-        let _ = write!(line, "{GAP}{}", look.paint(FAINT, &fit(doing, left)));
+        let _ = write!(
+            line,
+            "{}{GAP}{}",
+            look.mark(DOING_AT),
+            look.paint(FAINT, &fit(&unmarked(doing), left))
+        );
     }
     line.trim_end().to_owned()
 }
