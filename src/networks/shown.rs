@@ -22,7 +22,7 @@ use std::fmt::Write as _;
 use super::{Cell, Is, MACHINES, Mycelium, Network, Shape, Share};
 use crate::swarm::{
     BOLD, DOING_AT, FAINT, GAP, Label, Look, NARROWEST, Standing, fit, header, padded, row,
-    says_again, unmarked,
+    says_again, unmarked, without_marks,
 };
 
 impl Shape {
@@ -636,7 +636,7 @@ fn cell_line(
     let mut line = format!(
         "{indent}{}{GAP}{}{GAP}{}",
         look.paint(standing.colour(), &padded(standing.said(), said)),
-        padded(&cell.name, name_width),
+        padded(&unmarked(&cell.name), name_width),
         padded(&fit(&title, title_room), title_room)
     );
     if let Some(doing) = doing {
@@ -673,7 +673,7 @@ pub fn network(mycelium: &Mycelium, asked: &str, look: &Look, all: bool) -> Resu
             above.title.as_deref().unwrap_or(&above.short)
         );
     }
-    let mut lines = vec![look.paint(BOLD, &head)];
+    let mut lines = vec![look.paint(BOLD, &unmarked(&head))];
     let sessions = network.cells.iter().filter_map(|name| mycelium.cell(name));
     let many = sessions
         .clone()
@@ -962,5 +962,6 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
             lines.push(format!("{line}{about}"));
         }
     }
-    look.joined(&lines)
+    // A cell's page draws no table, so any mark in it is a peer's.
+    without_marks(&lines.join("\n"))
 }

@@ -102,12 +102,12 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
         let _ = writeln!(out, "{}", row.trim_end());
     }
     if shown < COLUMNS.len() {
-        let left = COLUMNS[shown..].join(", ");
-        let _ = writeln!(
-            out,
-            "{}",
-            paint(FAINT, &format!("  left out to fit: {left}"))
-        );
+        // Wrapped as the sentences are, so the line saying what didn't fit
+        // fits itself.
+        let label = "  left out to fit";
+        for line in wrapped(label, label, &COLUMNS[shown..].join(", "), width).lines() {
+            let _ = writeln!(out, "{}", paint(FAINT, line));
+        }
     }
     out.push('\n');
     let sentences: Vec<(&str, String)> = if reading.flags.is_empty() {
@@ -511,6 +511,41 @@ mod tests {
         assert_eq!(
             lines[5], "  left out to fit: facts",
             "and the line under the table says so:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn a_column_is_kept_while_it_reaches_the_edge_and_no_further() {
+        let at = |width| said(&two(), "work", width, false);
+        assert!(
+            at(82).lines().nth(2).is_some_and(|line| line.ends_with("per core  facts"))
+                && !at(82).contains("left out"),
+            "at 82 the facts reach the edge, so they stay:\n{}",
+            at(82)
+        );
+        assert!(
+            at(81).lines().any(|line| line == "  left out to fit: facts"),
+            "at 81 they'd pass it, so they're left out:\n{}",
+            at(81)
+        );
+    }
+
+    #[test]
+    fn in_a_narrow_terminal_no_line_passes_its_edge() {
+        let shown = said(&two(), "work", 40, false);
+        let long: Vec<&str> = shown
+            .lines()
+            .filter(|line| line.chars().count() > 40)
+            .collect();
+        assert!(long.is_empty(), "lines past 40 columns: {long:?}\n{shown}");
+        let lines: Vec<&str> = shown.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| line.starts_with("  left out to fit: "))
+            .expect("a line says what was left out");
+        assert!(
+            lines[at + 1].starts_with(&" ".repeat(18)) && lines[at + 1].ends_with("facts"),
+            "the columns left out wrap under the first one named:\n{shown}"
         );
     }
 

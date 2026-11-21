@@ -192,19 +192,39 @@ pub const WHOLE: usize = usize::MAX;
 /// Where a row's counts begin, as a table is drawn [`WHOLE`], for
 /// [`aligned`] to line them up once every row is drawn: a character of
 /// the private use area, as no title has one once [`unmarked`].
-pub(crate) const COUNTS_AT: &str = "\u{e000}";
+pub(crate) const COUNTS_AT: &str = "\u{fdd0}";
 
 /// Where a line's doing begins, as [`COUNTS_AT`] says its counts do.
-pub(crate) const DOING_AT: &str = "\u{e001}";
+pub(crate) const DOING_AT: &str = "\u{fdd1}";
 
-/// `text` with no mark [`aligned`] reads, so a title can't move a column.
+/// Both marks, each a Unicode noncharacter, which no font draws and no
+/// text from outside should hold, unlike the private-use characters a
+/// theme's shape marks are drawn from.
+const MARKS: [char; 2] = ['\u{fdd0}', '\u{fdd1}'];
+
+/// `text` from a peer as a marked row draws it: on one line, as
+/// [`one_line`](crate::forage::one_line) says, so a break in a title can't
+/// split the block its counts line up in, and with no mark [`aligned`]
+/// reads, so a title can't move a column.
 pub(crate) fn unmarked(text: &str) -> String {
-    text.replace(['\u{e000}', '\u{e001}'], "")
+    crate::forage::one_line(text).replace(MARKS, "")
 }
+
+/// `text` with no mark left in it, for a page that lines nothing up.
+pub(crate) fn without_marks(text: &str) -> String {
+    text.replace(MARKS, "")
+}
+
+/// The widest text before a mark that the block's others line up after,
+/// the room a name has beside swarm's four counts at 80 columns (80 less
+/// their 32): a name past it, a pasted paragraph for a title, runs on
+/// alone rather than pushing every row's counts off a reader's screen.
+const LINES_UP_WITHIN: usize = 48;
 
 /// `text` drawn [`WHOLE`] with its marks lined up: in each block of
 /// lines between blank ones, what comes before each mark is padded to
-/// the widest of the block's, counts and doings each on their own. A pipe
+/// the widest of the block's up to [`LINES_UP_WITHIN`], counts and
+/// doings each on their own, and a mark left over is dropped. A pipe
 /// is never drawn in colour, so a character is a column.
 pub(crate) fn aligned(text: &str) -> String {
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
@@ -226,6 +246,7 @@ pub(crate) fn aligned(text: &str) -> String {
             let Some(widest) = block
                 .iter()
                 .filter_map(|line| Some(line[..line.find(mark)?].chars().count()))
+                .filter(|before| *before <= LINES_UP_WITHIN)
                 .max()
             else {
                 continue;
@@ -234,14 +255,15 @@ pub(crate) fn aligned(text: &str) -> String {
                 if let Some(at) = line.find(mark) {
                     let before = line[..at].chars().count();
                     let after = &line[at + mark.len()..];
-                    *line = format!("{}{}{after}", &line[..at], " ".repeat(widest - before));
+                    let pad = widest.saturating_sub(before);
+                    *line = format!("{}{}{after}", &line[..at], " ".repeat(pad));
                 }
             }
         }
     }
     lines
         .iter()
-        .map(|line| line.trim_end())
+        .map(|line| line.replace(MARKS, "").trim_end().to_owned())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -749,9 +771,11 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
     if let Some(above) = team["within"].as_str().and_then(|above| titled.get(above)) {
         let _ = write!(head, " · within {above}");
     }
-    let mut lines = vec![look.paint(BOLD, &head)];
+    // Peer text off the table's rows is unmarked too, since a mark in a
+    // title here would line up with another's in its block.
+    let mut lines = vec![look.paint(BOLD, &unmarked(&head))];
     if let Some(landed) = landed(team, look) {
-        lines.push(look.paint(FAINT, &landed));
+        lines.push(look.paint(FAINT, &unmarked(&landed)));
     }
     let inner = ordered(
         swarm
@@ -787,7 +811,7 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
     let meets = meetings(team, &titled, &sessions);
     if !meets.is_empty() {
         lines.push(String::new());
-        lines.extend(meets.iter().map(|line| look.paint(FAINT, line)));
+        lines.extend(meets.iter().map(|line| look.paint(FAINT, &unmarked(line))));
     }
     Ok(look.joined(&lines))
 }

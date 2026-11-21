@@ -495,6 +495,17 @@ mod tests {
     }
 
     #[test]
+    fn drawn_whole_every_column_is_there_and_nothing_wraps() {
+        assert_eq!(
+            table(&[osprey()], &[], &look(crate::swarm::WHOLE)),
+            "machine  state  busy  memory free  disk free     power         updated\n\
+             osprey   ready        ? of 48 GiB  130 of 994 GB  battery 100%  failed 16:29\n\
+             \n\
+             osprey's update failed at 16:29: building the system failed (exit status: 1)\n"
+        );
+    }
+
+    #[test]
     fn a_narrow_terminal_shows_whole_columns_and_wraps_whats_worth_a_look() {
         assert_eq!(
             table(&[osprey()], &[], &look(40)),

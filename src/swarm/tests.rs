@@ -349,20 +349,37 @@ fn drawn_whole_the_counts_line_up_after_the_widest_name_and_nothing_trails() {
 }
 
 #[test]
-fn drawn_whole_a_long_name_is_never_cut_and_the_header_moves_over_for_it() {
+fn drawn_whole_a_long_name_is_never_cut_and_runs_on_alone() {
     let mut swarm = swarm();
     let long = "A reef whose name runs far past every column it was given";
     swarm.teams[0]["title"] = json!(long);
     let shown = overview(&swarm, &whole());
     let lines: Vec<&str> = shown.lines().collect();
-    let moving = |line: &str| line.find("moving").map(|at| at + "moving".len());
-    // Led by the short name a long title is given.
+    // Led by the short name a long title is given, its counts after it.
     let named = format!("reef  {long}");
     assert!(
-        !shown.contains('…')
-            && lines.contains(&format!("{named}{}1", " ".repeat(24)).as_str())
-            && moving(lines[2]) == Some(named.len() + 24 + 1),
-        "whole, its count still under moving:\n{shown}"
+        !shown.contains('…') && lines.contains(&format!("{named}{}1", " ".repeat(24)).as_str()),
+        "whole, the long name is drawn in full:\n{shown}"
+    );
+    assert!(
+        lines
+            .iter()
+            .filter(|line| !line.starts_with("reef"))
+            .all(|line| line.chars().count() <= 80),
+        "one long name pushed the other rows past 80 columns:\n{shown}"
+    );
+}
+
+#[test]
+fn a_title_holding_a_break_draws_on_its_one_line() {
+    let mut broken = swarm();
+    broken.teams[0]["title"] = json!("Re\n\nef");
+    let mut spaced = swarm();
+    spaced.teams[0]["title"] = json!("Re  ef");
+    assert_eq!(
+        overview(&broken, &whole()),
+        overview(&spaced, &whole()),
+        "a break in a title split the block its counts line up in"
     );
 }
 
@@ -388,31 +405,45 @@ fn drawn_whole_what_each_session_does_lines_up_after_the_widest_name() {
 
 #[test]
 fn a_title_holding_a_mark_moves_no_column() {
-    let mut swarm = swarm();
-    swarm.teams[0]["title"] = json!("Re\u{e000}ef");
-    swarm.sessions[2]["title"] = json!("Busy\u{e001} one");
+    // Reef is named in two of Harbour's lines, so its marks would line
+    // up with each other if either were kept.
+    let bridged = || {
+        let mut swarm = swarm();
+        swarm.teams[1]["bridges"] = json!([{"repo": "skiff", "teams": ["REEF01"]},
+                                          {"repo": "kelp", "teams": ["REEF01", "KELP01"]}]);
+        swarm
+    };
+    let mut swarm = bridged();
+    swarm.teams[0]["title"] = json!("Re\u{fdd0}e\u{fdd0}f");
+    swarm.sessions[2]["title"] = json!("Busy\u{fdd1} one");
     assert_eq!(
         overview(&swarm, &whole()),
-        overview(&self::swarm(), &whole()),
+        overview(&bridged(), &whole()),
         "a team's mark is dropped, so its count stays put"
     );
     assert_eq!(
         team(&swarm, "harb", &whole()),
-        team(&self::swarm(), "harb", &whole()),
-        "and a session's, so what it does stays put"
+        team(&bridged(), "harb", &whole()),
+        "and in every line naming it, so none moves"
     );
 }
 
 #[test]
 fn marks_line_up_within_a_block_and_each_kind_on_its_own() {
     assert_eq!(
-        aligned("a\u{e000}  1\nlonger\u{e000}  2\n\nx\u{e001}  doing\nlong\u{e000}  3\n"),
+        aligned("a\u{fdd0}  1\nlonger\u{fdd0}  2\n\nx\u{fdd1}  doing\nlong\u{fdd0}  3\n"),
         "a       1\nlonger  2\n\nx  doing\nlong  3",
         "padded to the block's widest, a blank line starting the next"
     );
     assert_eq!(
-        aligned("été\u{e000} 1\nab\u{e000} 2   "),
+        aligned("été\u{fdd0} 1\nab\u{fdd0} 2   "),
         "été 1\nab  2",
         "counted in characters, not bytes, and nothing trails"
+    );
+    let long = "x".repeat(49);
+    assert_eq!(
+        aligned(&format!("a\u{fdd0}  1\n{long}\u{fdd0}  2\nab\u{fdd0}\u{fdd0}  3")),
+        format!("a   1\n{long}  2\nab  3"),
+        "a line past 48 runs on alone, and a mark left over goes"
     );
 }
