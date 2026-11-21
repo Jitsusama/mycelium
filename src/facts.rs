@@ -162,6 +162,17 @@ pub fn kit(folder: &Path) -> Option<Kit> {
     })
 }
 
+/// The system a machine measured here says it is, as Rust names it.
+#[cfg(not(test))]
+const SYSTEM: &str = std::env::consts::OS;
+
+/// The system every machine measured in a test says it is, whatever
+/// builds the tests: a Mac takes no agent's held start, so a test node
+/// and its stand-ins measured on one would refuse every such start the
+/// tests make. A test's Mac says its system itself.
+#[cfg(test)]
+const SYSTEM: &str = "linux";
+
 /// Where a machine's facts are read from, beyond the machine itself.
 #[derive(Debug, Clone)]
 pub struct Sources {
@@ -327,7 +338,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         measured_at: now.to_string(),
         state: Readiness::Ready,
         os: read.os,
-        system: Some(std::env::consts::OS.to_owned()),
+        system: Some(SYSTEM.to_owned()),
         arch: std::env::consts::ARCH.to_owned(),
         model: read.model,
         model_name: read.model_name,
@@ -505,39 +516,137 @@ mod here {
 mod here {
     //! macOS says what it is through `sysctl` and `sw_vers`.
 
-    use std::process::Command;
-    use std::sync::OnceLock;
+    use std::collections::BTreeMap;
+    use std::io::Read as _;
+    use std::process::{Command, Stdio};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
 
     use super::{Cpu, Power, Read, macos};
 
+    /// How long a program asked what this Mac is has to answer. A node
+    /// measures on the thread that serves it, so one that hangs, as one
+    /// did for 35 minutes under a load of 168 on 2026-11-21, stops the
+    /// node answering anything.
+    const SAID_WITHIN: Duration = Duration::from_secs(3);
+
     /// What Apple calls this Mac's kind, as `system_profiler` says it.
-    /// It is asked once, since it never changes and the asking takes a
-    /// good part of a second.
+    /// It is kept once said, since it never changes and the asking takes a
+    /// good part of a second, and asked again only while it hasn't been.
     fn model_name() -> Option<String> {
-        static NAME: OnceLock<Option<String>> = OnceLock::new();
-        NAME.get_or_init(|| {
-            said(
-                "/usr/sbin/system_profiler",
-                &["-json", "SPHardwareDataType"],
-            )
-            .and_then(|said| macos::model_name(&said))
-        })
-        .clone()
+        static NAME: OnceLock<String> = OnceLock::new();
+        said_once(
+            &NAME,
+            "/usr/sbin/system_profiler",
+            &["-json", "SPHardwareDataType"],
+        )
+        .and_then(|said| macos::model_name(&said))
     }
 
-    /// What `program` says, asked with `args`, or nothing where it fails.
+    /// What `program` says, asked with `args`, kept in `kept` from the
+    /// first time it answers, for what doesn't change while the node runs.
+    fn said_once(kept: &OnceLock<String>, program: &'static str, args: &[&str]) -> Option<String> {
+        if let Some(said) = kept.get() {
+            return Some(said.clone());
+        }
+        let answer = said_lately(program, args)?;
+        Some(kept.get_or_init(|| answer).clone())
+    }
+
+    /// What `program` says, asked with `args`, as [`said`] asks it, but
+    /// where it failed lately, nothing without asking: one that failed
+    /// isn't asked again for [`ASKED_AGAIN_AFTER`], so a loaded Mac waits
+    /// out its deadline once in that while rather than at every measuring.
+    fn said_lately(program: &'static str, args: &[&str]) -> Option<String> {
+        static FAILED: Mutex<BTreeMap<&str, Instant>> = Mutex::new(BTreeMap::new());
+        let lately = |failed: &BTreeMap<&str, Instant>| {
+            failed
+                .get(program)
+                .is_some_and(|at| at.elapsed() < ASKED_AGAIN_AFTER)
+        };
+        if FAILED.lock().is_ok_and(|failed| lately(&failed)) {
+            return None;
+        }
+        let answer = said(program, args);
+        if answer.is_none()
+            && let Ok(mut failed) = FAILED.lock()
+        {
+            failed.insert(program, Instant::now());
+        }
+        answer
+    }
+
+    /// How long a fact that failed to be said is left unasked.
+    const ASKED_AGAIN_AFTER: Duration = Duration::from_secs(600);
+
+    /// How long a program that ended is given to finish saying what it
+    /// said, however near its deadline it ended.
+    const SAID_AFTER_ENDING: Duration = Duration::from_millis(200);
+
+    /// What `program` says, asked with `args`, or nothing where it fails
+    /// or hasn't answered within [`SAID_WITHIN`], when it is killed. What
+    /// it says is read beside the wait, so a long answer never fills the
+    /// pipe and stalls it; a reader still held open by something it
+    /// started is left to end with that, as a killed program is left to
+    /// be reaped beside, since one stuck in the kernel can't end at once.
+    /// Where no thread can be started beside, nothing is said.
     fn said(program: &str, args: &[&str]) -> Option<String> {
-        Command::new(program)
+        let mut child = Command::new(program)
             .args(args)
-            .output()
-            .ok()
-            .filter(|out| out.status.success())
-            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut stdout = child.stdout.take()?;
+        let (read, reading) = std::sync::mpsc::channel();
+        // Its output is waited on no longer than the program, since a
+        // program it left behind may hold it open after it ends.
+        let reader = std::thread::Builder::new().spawn(move || {
+            let mut out = Vec::new();
+            let _ = read.send(stdout.read_to_end(&mut out).map(|_| out));
+        });
+        if reader.is_err() {
+            let _ = child.kill();
+            reap(child);
+            return None;
+        }
+        let deadline = Instant::now() + SAID_WITHIN;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    reap(child);
+                    return None;
+                }
+                Ok(Some(_)) | Err(_) => return None,
+            }
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        let out = reading
+            .recv_timeout(left.max(SAID_AFTER_ENDING))
+            .ok()?
+            .ok()?;
+        String::from_utf8(out).ok()
+    }
+
+    /// Waits beside for the killed `child` to end, so the node's thread
+    /// never waits on it and it leaves no zombie. Where no thread can be
+    /// started it is let go unreaped, which costs a zombie, not the node.
+    fn reap(mut child: std::process::Child) {
+        let reaping = std::thread::Builder::new().spawn(move || child.wait());
+        if let Err(error) = reaping {
+            eprintln!("a killed probe couldn't be reaped beside: {error}");
+        }
     }
 
     /// What it runs on now, as `pmset` says.
     pub(super) fn power() -> Option<Power> {
-        said("/usr/bin/pmset", &["-g", "batt"]).and_then(|said| macos::power(&said))
+        said_lately("/usr/bin/pmset", &["-g", "batt"]).and_then(|said| macos::power(&said))
     }
 
     /// What the Mach host has counted of its cores' time.
@@ -643,7 +752,12 @@ mod here {
     }
 
     pub(super) fn read() -> Read {
-        let sysctl = said(
+        // Neither changes while the node runs, so each is asked until it
+        // answers once, and only `pmset` is asked each time.
+        static SYSCTL: OnceLock<String> = OnceLock::new();
+        static VERSION: OnceLock<String> = OnceLock::new();
+        let sysctl = said_once(
+            &SYSCTL,
             "/usr/sbin/sysctl",
             &[
                 "hw.model",
@@ -655,7 +769,7 @@ mod here {
         .unwrap_or_default();
         let value = |key| macos::sysctl(&sysctl, key);
         Read {
-            os: said("/usr/bin/sw_vers", &["-productVersion"])
+            os: said_once(&VERSION, "/usr/bin/sw_vers", &["-productVersion"])
                 .map(|version| format!("macOS {}", version.trim())),
             model: value("hw.model"),
             model_name: model_name(),

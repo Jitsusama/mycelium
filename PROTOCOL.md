@@ -150,7 +150,10 @@ same code, each line a JSON value:
    as it is sent, as a node answers `"Machine"`: after the Have, before
    its sessions, and again each minute. The other end keeps it only if
    it names the sending machine, as ready while the link stands and as
-   unreachable, with what it last said, once the link drops. Between
+   unreachable, with what it last said, once the link drops. An end
+   fallen behind what it hears keeps, of the `Machine` frames waiting,
+   only the newest, and takes every other frame in the order it came,
+   since each says the machine whole. Between
    two ends that both say `facts`, an end that has heard nothing at all
    for three minutes by the wall clock ends the link, so one left from
    before its machine slept gives way to its dialler's new one.
@@ -2036,8 +2039,8 @@ it is told the work would go is where the work may run. An agent's
 start placed (`"PlaceToStart"`, `"Start"`) is held to `runs` too,
 missed as `runs-nothing`, so it starts only where that fence runs a
 command: its session doesn't run through that launcher yet, but a
-machine declaring none, as a Mac does, would run it looser than its
-asker. Since a Mac declares none, an agent's session that ran on a Mac
+machine declaring none would run it looser than its asker. Since a
+Mac is refused too, as below, an agent's session that ran on a Mac
 isn't brought back there after a restart, as its start is pinned to
 that machine, and an agent's start on a Mac that names no machine goes
 to one that runs its fence. There it begins in its home where its
@@ -2046,9 +2049,12 @@ made for it would cost. The node placing a start judges it, as a relay
 carries no asker's fence, so a machine stops taking these starts only
 once every node that may place on it judges so. Only placement is held
 so: an agent's session already held on a Mac wakes there as before,
-outside any fence, until it ends or the Mac boots again. What is
-judged is what a machine declares, never its system, so a Mac
-declaring `runs` would take such a start unfenced. The person's start is
+outside any fence, until it ends or the Mac boots again. A Mac's
+holder starts a held session outside its fence even where the Mac
+declares `runs`, so an agent's start is refused every machine whose
+facts say `system` `macos` too, missed as `lifts-fence`, `never`, and
+its refusal says so, nor is a Mac made of an offer for one; an agent's
+run there still goes through its launcher. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that
 machine's launcher too, and a refusal of any start judged so says it

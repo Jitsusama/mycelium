@@ -54,6 +54,7 @@ pub mod steers;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -369,9 +370,10 @@ pub async fn run(
     end.open(&mut writing).await?;
 
     let (mut keeping, mut looking) = paces();
+    let mut queued = VecDeque::new();
     let result = loop {
         let step = tokio::select! {
-            frame = frames.recv() => match frame {
+            frame = pull(&mut queued, &mut frames) => match frame {
                 Some(Ok(frame)) => end.take(frame, &mut writing).await,
                 Some(Err(error)) => Err(error),
                 None => break Ok(Ending::Left),
@@ -416,6 +418,68 @@ async fn next<T>(asked: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
         Some(asked) => asked.recv().await,
         None => std::future::pending().await,
     }
+}
+
+/// How many frames waiting behind a machine's facts are looked through
+/// for newer facts at once, so a long queue still lets the link's other
+/// work in between.
+const FACTS_LOOKED_THROUGH: usize = 256;
+
+/// The other end's next frame: the first of `queued`, else the next of
+/// `frames`, where facts it brings are kept only if no newer facts wait
+/// behind them ([`newest_facts`]). It is cancel safe, as `select!` needs:
+/// nothing is taken from `frames` but in the wait for its next.
+async fn pull(
+    queued: &mut VecDeque<io::Result<Frame>>,
+    frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
+) -> Option<io::Result<Frame>> {
+    if let Some(frame) = queued.pop_front() {
+        return Some(frame);
+    }
+    let first = frames.recv().await?;
+    Some(newest_facts(first, frames, queued))
+}
+
+/// `first`, or where it is a machine's facts and others wait behind it,
+/// the newest facts waiting, taken in `first`'s place, with the other
+/// frames waiting put in `queued` in the order they came and every older
+/// facts left out. Facts are said whole every time, so older ones held up
+/// behind newer ones say nothing the newest doesn't: a link whose node
+/// fell behind, as one did by 49 minutes on 2026-11-21, catches up on
+/// what its machine is now rather than on what it was. The newest come
+/// first so no frame is judged on facts older than those it came behind.
+fn newest_facts(
+    first: io::Result<Frame>,
+    frames: &mut mpsc::UnboundedReceiver<io::Result<Frame>>,
+    queued: &mut VecDeque<io::Result<Frame>>,
+) -> io::Result<Frame> {
+    if !matches!(first, Ok(Frame::Machine(_))) {
+        return first;
+    }
+    let mut waiting = vec![first];
+    while waiting.len() < FACTS_LOOKED_THROUGH {
+        match frames.try_recv() {
+            Ok(frame) => {
+                let failed = frame.is_err();
+                waiting.push(frame);
+                if failed {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let newest = waiting
+        .iter()
+        .rposition(|frame| matches!(frame, Ok(Frame::Machine(_))))
+        .unwrap_or_else(|| unreachable!("the first is facts"));
+    let next = waiting.remove(newest);
+    queued.extend(
+        waiting
+            .into_iter()
+            .filter(|frame| !matches!(frame, Ok(Frame::Machine(_)))),
+    );
+    next
 }
 
 /// The task reading a link's frames, stopped when this end of the link is,
@@ -1959,6 +2023,56 @@ mod tests {
             tokio::time::sleep(after).await;
         });
         frames
+    }
+
+    // KP0L6A (2026-11-21): a node fell 49 minutes behind the facts a
+    // Mac sent it, so a link takes only the newest of those
+    // waiting, first, and every other frame in the order it came.
+    // Our council on #359: none is judged on facts older than it came
+    // behind.
+    #[tokio::test]
+    async fn a_link_behind_takes_only_the_newest_facts() {
+        let (sender, mut frames) = mpsc::unbounded_channel();
+        // Measured once, since each measuring reads the clock and the disk.
+        let tern = facts::measure("tern", &facts::Sources::nowhere());
+        let facts = |cores: u32| {
+            let mut machine = tern.clone();
+            machine.cpu.cores = Some(cores);
+            Ok(Frame::Machine(Box::new(machine)))
+        };
+        let ended = |session: &str| {
+            Ok(Frame::Ended {
+                session: session.to_owned(),
+            })
+        };
+        for frame in [facts(1), ended("a"), facts(2), facts(3), ended("b")] {
+            sender.send(frame).expect("sent");
+        }
+        let mut queued = VecDeque::new();
+        let mut heard = Vec::new();
+        for _ in 0..3 {
+            heard.push(
+                pull(&mut queued, &mut frames)
+                    .await
+                    .expect("a frame")
+                    .expect("read"),
+            );
+        }
+        assert_eq!(
+            heard,
+            [facts(3), ended("a"), ended("b")]
+                .map(|frame: io::Result<Frame>| frame.expect("a frame")),
+            "the newest facts come first, the older are left out, and the rest keep their order"
+        );
+        sender.send(facts(4)).expect("sent");
+        assert_eq!(
+            pull(&mut queued, &mut frames)
+                .await
+                .expect("a frame")
+                .expect("read"),
+            facts(4).expect("a frame"),
+            "facts nothing newer waits behind are taken as they come"
+        );
     }
 
     #[tokio::test(start_paused = true)]

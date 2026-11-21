@@ -3193,9 +3193,10 @@ impl<S: Store> Shared<S> {
     /// one, once the lock is let go. Work an agent asks, running in the fence `fence`, is refused
     /// every machine whose ground is looser than here, so nothing is carried
     /// to a machine that would refuse to run it once it got there; and an
-    /// agent's run or held start, where `runs` says it is one, every machine whose fence
+    /// agent's run or held start, where `screen` says it is one, every machine whose fence
     /// runs no command, this one's as its launcher judges it and another's
-    /// as it last said its fence, which refuses that run there. Those
+    /// as it last said its fence, which refuses that run there; and a held
+    /// start, every Mac ([`ground::lifts_fence`]). Those
     /// machines still count for what the realm reaches, and the record
     /// keeps why each was refused, so a replay refuses them too. A machine
     /// booked for one asker ([`Inner::booked`]) is weighed only where
@@ -3205,7 +3206,7 @@ impl<S: Store> Shared<S> {
         work: &Work,
         counts: Counts,
         fence: Option<crate::declared::Kind>,
-        runs: bool,
+        screen: Screen,
         admits: &Admits,
     ) -> Placement {
         // Measured before the lock is taken, since measuring reads this
@@ -3220,7 +3221,7 @@ impl<S: Store> Shared<S> {
             .map(|kind| {
                 let here = crate::declared::read(&self.declared);
                 let mut refused = ground::looser(kind, here.as_ref(), &self.machine, &machines);
-                if runs {
+                if screen != Screen::Ground {
                     // Told in the log, since a broken launcher sends an
                     // agent's runs and held starts elsewhere that would
                     // have gone here.
@@ -3239,6 +3240,9 @@ impl<S: Store> Shared<S> {
                         launches,
                         &machines,
                     ));
+                }
+                if screen == Screen::Held {
+                    refused.extend(ground::lifts_fence(kind, &machines));
                 }
                 refused
             })
@@ -4476,7 +4480,8 @@ impl<S: Store> Shared<S> {
         // refused unless its fence runs a command there. Refused here
         // first, before any session is told to carry and ends.
         let declared = there.as_ref().and_then(|machine| machine.declared.as_ref());
-        if let Some(why) = ground::brought_back(to, declared) {
+        let system = there.as_ref().and_then(|machine| machine.system.as_deref());
+        if let Some(why) = ground::brought_back(to, declared, system) {
             return Err(format!(
                 "{address} isn't carried to {to}, as the start that brings it back there would \
                  be refused: {why}"
@@ -5294,8 +5299,13 @@ impl<S: Store> Shared<S> {
     /// asking no provider for a machine to make.
     async fn here(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
         let admits = self.admits().await;
-        let runs = held_in_launcher(fence);
-        match self.place(&asked.work, Counts::Always, fence, runs, &admits) {
+        match self.place(
+            &asked.work,
+            Counts::Always,
+            fence,
+            held_screen(fence),
+            &admits,
+        ) {
             Placement::Placed { machine, .. } if machine == self.machine => {
                 self.start_on(machine, asked).await
             }
@@ -5318,44 +5328,53 @@ impl<S: Store> Shared<S> {
     /// as a run of its is: the asker as judged with the fence its start
     /// declared, which only ever raises it ([`asker::declaring`]), so a
     /// session it starts never lands looser than the one asking, nor
-    /// where that fence runs no command ([`held_in_launcher`]).
+    /// where that fence runs no command, nor on a Mac ([`held_screen`]).
     async fn placed(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
         let admits = self.admits().await;
-        let runs = held_in_launcher(fence);
-        let (misses, nowhere) = match self.place(&asked.work, Counts::Always, fence, runs, &admits)
-        {
-            Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
-            Placement::Pending { misses } => {
-                let nowhere = format!(
-                    "nowhere now, though a machine out of reach would do: {}",
-                    placement::said(&misses)
-                );
-                (misses, nowhere)
-            }
-            Placement::Refused { misses } => {
-                if let (Some(kind), Some(why)) = (
-                    fence,
-                    refused_named(&asked.work, &misses, placement::LOOSER_GROUND),
-                ) {
-                    return Err(format!(
-                        "this asks as {}, so it starts nothing on looser ground: {why}",
-                        By::Agent(kind)
-                    ));
+        let screen = held_screen(fence);
+        let (misses, nowhere) =
+            match self.place(&asked.work, Counts::Always, fence, screen, &admits) {
+                Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
+                Placement::Pending { misses } => {
+                    let nowhere = format!(
+                        "nowhere now, though a machine out of reach would do: {}",
+                        placement::said(&misses)
+                    );
+                    (misses, nowhere)
                 }
-                if let (Some(kind), Some(why)) = (
-                    fence,
-                    refused_named(&asked.work, &misses, placement::RUNS_NOTHING),
-                ) {
-                    return Err(format!(
-                        "this asks as {}, so it starts only where that fence runs a command: \
+                Placement::Refused { misses } => {
+                    if let (Some(kind), Some(why)) = (
+                        fence,
+                        refused_named(&asked.work, &misses, placement::LOOSER_GROUND),
+                    ) {
+                        return Err(format!(
+                            "this asks as {}, so it starts nothing on looser ground: {why}",
+                            By::Agent(kind)
+                        ));
+                    }
+                    if let (Some(kind), Some(why)) = (
+                        fence,
+                        refused_named(&asked.work, &misses, placement::RUNS_NOTHING),
+                    ) {
+                        return Err(format!(
+                            "this asks as {}, so it starts only where that fence runs a command: \
                          {why}",
-                        By::Agent(kind)
-                    ));
+                            By::Agent(kind)
+                        ));
+                    }
+                    if let (Some(kind), Some(why)) = (
+                        fence,
+                        refused_named(&asked.work, &misses, placement::LIFTS_FENCE),
+                    ) {
+                        return Err(format!(
+                            "this asks as {}, so it starts nothing held on a Mac: {why}",
+                            By::Agent(kind)
+                        ));
+                    }
+                    let nowhere = format!("nowhere: {}", placement::said(&misses));
+                    (misses, nowhere)
                 }
-                let nowhere = format!("nowhere: {}", placement::said(&misses));
-                (misses, nowhere)
-            }
-        };
+            };
         if asked.may_cost {
             return self.start_on_made(asked, &misses, fence).await;
         }
@@ -5387,7 +5406,7 @@ impl<S: Store> Shared<S> {
     /// The `offers` a machine may be made of for a start asked in the
     /// fence `fence`: every one for the person's, and for an agent's only
     /// those whose machine would declare ground as firm as here, and a
-    /// fence that runs a command ([`held_in_launcher`]), judged by what
+    /// fence that runs a command ([`held_screen`]), judged by what
     /// each says it would declare, so no machine is made, and paid for,
     /// only to be refused once it links.
     ///
@@ -5409,7 +5428,10 @@ impl<S: Store> Shared<S> {
         for offer in offers {
             let said = offer.facts.declared.as_ref();
             let refused = ground::looser_offered(kind, here.as_ref(), &offer.shape, said)
-                .or_else(|| ground::runs_nothing_offered(kind, &offer.shape, said));
+                .or_else(|| ground::runs_nothing_offered(kind, &offer.shape, said))
+                .or_else(|| {
+                    ground::lifts_fence_offered(kind, &offer.shape, offer.facts.system.as_deref())
+                });
             match refused {
                 None => firm.push(offer),
                 Some(looser) => why.push(looser),
@@ -5543,8 +5565,13 @@ impl<S: Store> Shared<S> {
         let mut there = asked.work.clone();
         there.needs.push(Need::Machine(made.machine.clone()));
         // Pinned to the machine made for it, which is booked for its asker.
-        let runs = held_in_launcher(fence);
-        match self.place(&there, Counts::Always, fence, runs, &Admits::All) {
+        match self.place(
+            &there,
+            Counts::Always,
+            fence,
+            held_screen(fence),
+            &Admits::All,
+        ) {
             Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 let its: Vec<Miss> = misses
@@ -5777,7 +5804,7 @@ impl<S: Store> Shared<S> {
         // only on ground as firm as here, where it stands in the fence its
         // launcher sets.
         let admits = self.admits().await;
-        let machine = match self.place(&asked.work, Counts::Never, fence, true, &admits) {
+        let machine = match self.place(&asked.work, Counts::Never, fence, Screen::Run, &admits) {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } => {
                 return Err(format!(
@@ -5952,7 +5979,7 @@ impl<S: Store> Shared<S> {
     /// what it is told would take the work is where the work can run. Work
     /// placed to start (`counts` other than [`Counts::Never`]) is held to
     /// where its fence runs a command as a held start is
-    /// ([`held_in_launcher`]). A declared fence moves only work placed to
+    /// ([`held_screen`]). A declared fence moves only work placed to
     /// start, since it says the fence a session started for it runs in;
     /// a run is judged without it, so neither is its placement.
     async fn place_asked(&self, work: &Work, counts: Counts) -> Reply {
@@ -5965,9 +5992,13 @@ impl<S: Store> Shared<S> {
         let fence = fence_of(by);
         // Held to the machines booked for whoever asks, as its run is.
         let admits = self.admits().await;
-        let runs = counts == Counts::Never || held_in_launcher(fence);
+        let screen = if counts == Counts::Never {
+            Screen::Run
+        } else {
+            held_screen(fence)
+        };
         Ok(Response::Placement(
-            self.place(work, counts, fence, runs, &admits),
+            self.place(work, counts, fence, screen, &admits),
         ))
     }
 
@@ -6192,8 +6223,8 @@ fn refused(why: &str) {
     eprintln!("a run is refused: {}", why.escape_debug());
 }
 
-/// Whether a session started held in the fence `fence` is placed only
-/// where that fence declares how a command runs, as an agent's runs are:
+/// How a session started held in the fence `fence` is screened: placed
+/// only where that fence declares how a command runs, as an agent's runs are:
 /// any start judged an agent's, which [`fence_of`] floors at the agent
 /// fence. The person's start is spared by having no fence, not by this,
 /// so where a relay's end is judged an agent's, as where no person works,
@@ -6204,12 +6235,29 @@ fn refused(why: &str) {
 /// session would run looser than its asker. It stands in for that until
 /// held starts go through the launcher, so a Linux machine whose launcher
 /// is refused, or whose node is too old to say its `runs`, takes no
-/// agent's held start either. It reads what a machine declares, never
-/// its system, so a Mac that did declare a launcher would still take one
-/// unfenced: none does, since a Mac's fence is declared with no `runs`
-/// until its held starts go through it.
-fn held_in_launcher(fence: Option<crate::declared::Kind>) -> bool {
-    fence.is_some()
+/// agent's held start either. What a machine declares can't stand in
+/// on a Mac, since a Mac declaring its fence's `runs` would pass, so a
+/// held start judged an agent's is refused every Mac by its system too
+/// ([`ground::lifts_fence`]).
+fn held_screen(fence: Option<crate::declared::Kind>) -> Screen {
+    if fence.is_some() {
+        Screen::Held
+    } else {
+        Screen::Ground
+    }
+}
+
+/// What placement holds an agent's work to, beside ground as firm as
+/// where it asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    /// Firm ground alone.
+    Ground,
+    /// An agent's run: only where its fence runs a command.
+    Run,
+    /// An agent's held start: where its fence runs a command, and on no
+    /// Mac, whose holder would start it outside any fence.
+    Held,
 }
 
 /// Why `machine` refused the work with the refusal `key`, where it did.
@@ -13759,6 +13807,85 @@ esac
         );
     }
 
+    // ISXEG8 (2026-11-21): a Mac's holder starts a held session outside
+    // any fence, so no held start judged an agent's lands on one, though
+    // the Mac declares its fence's runs and its room is fresh.
+    #[tokio::test]
+    async fn an_agents_held_start_lands_on_no_mac() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let osprey = facts::Machine {
+            system: Some("macos".to_owned()),
+            ..fenced("osprey", &["remote"])
+        };
+        store.put_machine(&osprey).expect("what it said is kept");
+        declares_runs(&socket, true);
+        asks_below(&socket, 7001);
+
+        let on_osprey = work(vec![Need::Machine("osprey".to_owned())]);
+        let answer =
+            placement_through(socket.clone(), Request::PlaceToStart(on_osprey.clone())).await;
+        let Placement::Refused { misses } = answer else {
+            panic!("osprey doesn't take an agent's start: {answer:?}");
+        };
+        assert!(
+            refused_on(&misses, "osprey", placement::LIFTS_FENCE).is_some(),
+            "a session started there would run unfenced: {}",
+            placement::said(&misses)
+        );
+        let toward_osprey = Work {
+            prefers: vec![Need::Machine("osprey".to_owned())],
+            ..work(Vec::new())
+        };
+        let placed = |request: Request| {
+            let socket = socket.clone();
+            async move {
+                match placement_through(socket, request).await {
+                    Placement::Placed { machine, .. } => machine,
+                    other => panic!("placed: {other:?}"),
+                }
+            }
+        };
+        assert_ne!(
+            placed(Request::PlaceToStart(toward_osprey.clone())).await,
+            "osprey",
+            "an agent's start that would rather the Mac goes elsewhere"
+        );
+        assert_eq!(
+            placed(Request::Place(toward_osprey)).await,
+            "osprey",
+            "an agent's run still goes there, through the Mac's launcher"
+        );
+        let held = Start {
+            work: on_osprey,
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+            strict: false,
+        };
+        assert_eq!(
+            ask(socket.clone(), Request::Start(held.clone())).await,
+            Err(
+                "this asks as a strictly fenced agent, so it starts nothing held on a Mac: \
+                 osprey is a Mac, where a strictly fenced session started held would run \
+                 outside any fence"
+                    .to_owned()
+            ),
+            "an agent's start naming the Mac is told why not"
+        );
+        asks_as_person(&socket);
+        assert_eq!(
+            ask(socket, Request::Start(held)).await,
+            Err("no link reaches osprey now".to_owned()),
+            "the person's start is no agent's, so it goes as far as the link"
+        );
+    }
+
     /// Tern, as `store` keeps it, saying its strict fence runs nothing.
     fn tern_runs_nothing(store: &Memory) {
         let mut tern = fenced("tern", &["remote"]);
@@ -15078,7 +15205,11 @@ esac
         let firm = offered("firm", Some(&["remote"]));
         let loose = offered("loose", Some(&["remote", "cloud"]));
         let bare_shape = offered("bare", None);
-        let all = vec![firm.clone(), loose.clone(), bare_shape.clone()];
+        // Our council on #359 (2026-11-21): a Mac would be made, and paid
+        // for, then refused the agent's held start as lifts-fence.
+        let mut mac = offered("mac", Some(&["remote"]));
+        mac.facts.system = Some("macos".to_owned());
+        let all = vec![firm.clone(), loose.clone(), bare_shape.clone(), mac.clone()];
         let strict = Some(crate::declared::Kind::Strict);
         assert_eq!(
             shared.offered_on_ground(all.clone(), None),
@@ -15128,6 +15259,16 @@ esac
                     .to_owned()
             ),
             "nor is one made of an offer whose fence would run no command"
+        );
+        assert_eq!(
+            shared.offered_on_ground(vec![mac], strict),
+            Err(
+                "this asks as a strictly fenced agent, so no machine is made for it where it \
+                 would land looser or run nothing: mac would be a Mac, where a strictly fenced \
+                 session started held would run outside any fence"
+                    .to_owned()
+            ),
+            "nor is a Mac made for it"
         );
     }
 
@@ -17128,7 +17269,7 @@ esac
             &basin,
             Counts::Always,
             None,
-            false,
+            Screen::Ground,
             &Admits::Asker(told.to_owned()),
         ) {
             Placement::Placed { machine, .. } => Some(machine),
@@ -17170,7 +17311,7 @@ esac
                 &anywhere,
                 Counts::Always,
                 None,
-                false,
+                Screen::Ground,
                 &Admits::Asker("P9R1KI".to_owned()),
             ) {
                 Placement::Placed { machine, .. } => Some(machine),

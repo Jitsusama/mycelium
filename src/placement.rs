@@ -407,6 +407,10 @@ pub const LOOSER_GROUND: &str = "looser-ground";
 /// for it names no way to run a command, which would refuse it there.
 pub const RUNS_NOTHING: &str = "runs-nothing";
 
+/// The key of the refusal an agent's held start meets on a Mac, whose
+/// holder starts it outside any fence.
+pub const LIFTS_FENCE: &str = "lifts-fence";
+
 /// The key of the taint a machine past its queue's processor limit carries.
 pub const CPU_PRESSURE: &str = "cpu-pressure";
 
