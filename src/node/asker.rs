@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::declared::Kind;
+use crate::placement::DeclaredFence;
 use crate::steer::claims_the_person;
 use crate::wire::By;
 
@@ -1526,8 +1527,8 @@ fn listing(listed: &str) -> HashMap<i32, (String, i32)> {
 
 /// The sessions of `claims` whose process is the asker or one of its
 /// forebears, nearest first. Nothing is proved: a claim here can only
-/// limit what the asker may do, never widen it, so one forged or stale
-/// costs the asker, not the machine.
+/// limit what the asker may do, so one forged or stale costs the asker,
+/// not the machine.
 #[must_use]
 pub fn claimed_above(asker: Option<i32>, processes: &Processes, claims: &[Claim]) -> Vec<String> {
     let Some(pid) = asker else {
@@ -1612,6 +1613,21 @@ pub fn judge(asker: Option<i32>, processes: &Processes, above: &[Option<Kind>]) 
     By::Person
 }
 
+/// Who asks a start that declares `declared`, where [`judge`] said `by`.
+/// A declaration raises a looser judgement of an agent to the fence it
+/// names, since that only fences more, and never lowers one, whatever
+/// declared it: the node can't tell the harness's start from one the
+/// agent asks itself, and an agent reading a stranger's text can be
+/// asked to say anything, so a child of a strict session runs strict.
+/// The person's starts are judged as they were.
+#[must_use]
+pub fn declaring(by: By, declared: Option<DeclaredFence>) -> By {
+    match (by, declared) {
+        (By::Agent(judged), Some(declared)) => By::Agent(judged.max(declared.kind.into())),
+        _ => by,
+    }
+}
+
 /// Why [`unclaimed_because`] says an asker is an agent's where the
 /// kernel names no process at it.
 pub const UNNAMED: &str = "the kernel names no process at it";
@@ -1674,6 +1690,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::placement::{FenceFrom, FenceKind};
 
     /// A control group under the person's service manager, as the kernel
     /// tells it.
@@ -3759,5 +3776,50 @@ mod tests {
             unattended,
             "said twice, it is said once"
         );
+    }
+
+    #[test]
+    fn a_declared_fence_raises_an_agents_judgement_and_never_lowers_it() {
+        let fence = |from| {
+            Some(DeclaredFence {
+                kind: FenceKind::Fence,
+                from,
+            })
+        };
+        let strict = |from| {
+            Some(DeclaredFence {
+                kind: FenceKind::Strict,
+                from,
+            })
+        };
+        let agent = By::Agent(Kind::Strict);
+        assert_eq!(declaring(agent, None), agent, "a start that declares none");
+        for from in [FenceFrom::Spawn, FenceFrom::Quest, FenceFrom::Default] {
+            assert_eq!(
+                declaring(agent, fence(from)),
+                agent,
+                "under strict, a declared fence lowers nothing, whatever said it: {from:?}"
+            );
+            assert_eq!(
+                declaring(By::Agent(Kind::Fence), fence(from)),
+                By::Agent(Kind::Fence),
+                "under the agent fence, it keeps it: {from:?}"
+            );
+            assert_eq!(
+                declaring(By::Agent(Kind::Fence), strict(from)),
+                agent,
+                "strict raises an agent in the agent fence: {from:?}"
+            );
+            assert_eq!(
+                declaring(By::Agent(Kind::None), fence(from)),
+                By::Agent(Kind::Fence),
+                "a looser judgement is raised to the fence declared: {from:?}"
+            );
+            assert_eq!(
+                declaring(By::Person, strict(from)),
+                By::Person,
+                "and the person's starts are judged as they were: {from:?}"
+            );
+        }
     }
 }

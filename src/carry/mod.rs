@@ -696,6 +696,7 @@ pub(crate) fn arriving(
             tolerates: Vec::new(),
             may_wait: false,
             lasts: None,
+            fence: None,
         },
         folder: None,
         strict: false,

@@ -150,7 +150,10 @@ same code, each line a JSON value:
    as it is sent, as a node answers `"Machine"`: after the Have, before
    its sessions, and again each minute. The other end keeps it only if
    it names the sending machine, as ready while the link stands and as
-   unreachable, with what it last said, once the link drops. Between
+   unreachable, with what it last said, once the link drops. An end
+   fallen behind what it hears keeps, of the `Machine` frames waiting,
+   only the newest, and takes every other frame in the order it came,
+   since each says the machine whole. Between
    two ends that both say `facts`, an end that has heard nothing at all
    for three minutes by the wall clock ends the link, so one left from
    before its machine slept gives way to its dialler's new one.
@@ -317,18 +320,22 @@ Three seams shape a link:
   it ends when it can't. Its error output is passed on, and a line
   saying the other end "turned this machine away" is taken as a refused
   SSH key is. A machine reached so is a worker: it is asked and asks
-  nothing back. Its end's starts, steers and updates are refused, its
-  follows are ignored, and a presence of its naming another machine
-  isn't kept, nor a reply to an ask it wasn't sent, nor what it tells
-  of carries. It is said and
-  served only the quests it was given, each by a `mycelium share --to`
-  naming it, which gives that quest alone and none above it, and takes
-  back only those and
-  the quests it began, which this machine holds none of; it can end
-  no other. A message of its isn't kept when it names as its sender a
-  session another machine holds, or when this machine already holds
-  one by that id, while its own sessions' messages and presence cross
-  as any machine's do. The name it first says hello as is the one it
+  nothing back. Its end's starts, steers, updates, carries, ends and
+  runs are refused, its follows are ignored, and a presence of its
+  naming another machine isn't kept, nor a reply to an ask it wasn't
+  sent, nor what it tells of carries. It is said and served only the
+  quests it was given, each by a `mycelium share --to` naming it,
+  which gives that quest alone and none above it, and nothing it says
+  of any quest is taken: what it writes to one it was given stays on
+  it, as does a quest it began. A message of its is kept only when it
+  names as its sender a session it holds a presence for now, and this
+  machine holds none by that id. One kept opens its `text` with
+  `[said on <worker>, a worker machine]` and a space, and gains
+  `"worker"`, the
+  machine's name, both from the link's own name for it, never from
+  what the worker says, so each session reads it as the worker's word.
+  Its sessions' presence crosses as any machine's does. The name it
+  first says hello as is the one it
   is held to: a redial of the same place saying another is refused.
   Either way, the far `mycelium link` looks each minute at
   the `mycelium` its search path names, and once that is another build
@@ -1482,8 +1489,27 @@ it probes while its probe last answered, and lacks one whose probe
 didn't; it has a tool its `kit` lists, lacks one its kit doesn't, and
 hasn't said one where it says no kit, nor has a machine not yet made); the
 keys of the taints it `tolerates`; whether it `may_wait` for a machine
-out of reach; and how long it `lasts`, as an ISO 8601 duration such as
-`PT2H` (`2h` reads too). A machine carries the taints its configuration
+out of reach; how long it `lasts`, as an ISO 8601 duration such as
+`PT2H` (`2h` reads too); and, where its asker says, the `fence` a
+session started for it runs in, `{"kind", "from"}`. Its `kind` is
+`fence` or `strict`, never `none`. Its `from` is `spawn` (the spawn
+that asked), `quest` (the quest's README) or `default` (the harness's
+own choice, said for the record). A declaration naming any other kind
+is passed over, as an older node passes over the field, rather than
+refusing the ask; one naming any other source, or none, keeps its
+kind. The
+`from` is the asker's own word, which the node doesn't check, and it
+moves nothing. A declared fence raises an agent's fence when it is
+stricter than the node's judgement of the asker, and never lowers it,
+whatever declared it: the node can't tell the harness's start from one
+an agent asks itself, so a session started below a strict one runs
+strict. It moves only a start's judgement: a `Place` that starts
+nothing and a `Run` are judged without it, and a start relayed from
+another machine is judged by its link's end, its declaration neither
+weighed nor kept there. The person's work is judged as before, and
+each start keeps what it declared in its line in the book, as
+`declared`. A node older than the field ignores it, judging as before.
+A machine carries the taints its configuration
 declares, and while they last, `on-battery`, `memory-pressure` (past
 its queue's memory limit), `cpu-pressure` (past its queue's processor
 limit), `cpu-saturated` (its `room` `saturated`, or at processor
@@ -2013,8 +2039,8 @@ it is told the work would go is where the work may run. An agent's
 start placed (`"PlaceToStart"`, `"Start"`) is held to `runs` too,
 missed as `runs-nothing`, so it starts only where that fence runs a
 command: its session doesn't run through that launcher yet, but a
-machine declaring none, as a Mac does, would run it looser than its
-asker. Since a Mac declares none, an agent's session that ran on a Mac
+machine declaring none would run it looser than its asker. Since a
+Mac is refused too, as below, an agent's session that ran on a Mac
 isn't brought back there after a restart, as its start is pinned to
 that machine, and an agent's start on a Mac that names no machine goes
 to one that runs its fence. There it begins in its home where its
@@ -2023,9 +2049,12 @@ made for it would cost. The node placing a start judges it, as a relay
 carries no asker's fence, so a machine stops taking these starts only
 once every node that may place on it judges so. Only placement is held
 so: an agent's session already held on a Mac wakes there as before,
-outside any fence, until it ends or the Mac boots again. What is
-judged is what a machine declares, never its system, so a Mac
-declaring `runs` would take such a start unfenced. The person's start is
+outside any fence, until it ends or the Mac boots again. A Mac's
+holder starts a held session outside its fence even where the Mac
+declares `runs`, so an agent's start is refused every machine whose
+facts say `system` `macos` too, missed as `lifts-fence`, `never`, and
+its refusal says so, nor is a Mac made of an offer for one; an agent's
+run there still goes through its launcher. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that
 machine's launcher too, and a refusal of any start judged so says it
