@@ -944,6 +944,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_host_that_dies_once_it_has_answered_has_gone() {
+        bounded(async {
+            let dir = tempfile::tempdir().expect("a folder");
+            let path = dir.path().join("work-attended.sock");
+            let listener = UnixListener::bind(&path).expect("a socket");
+            let dying = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("a viewer");
+                // Read byte by byte, so what the viewer types next stays
+                // unread, and the host dying with it there breaks the
+                // connection rather than ending it.
+                let mut byte = [0];
+                while byte[0] != b'\n' {
+                    stream.read_exact(&mut byte).await.expect("the attach");
+                }
+                send(&mut stream, &accepted()).await.expect("answered");
+                stream.readable().await.expect("the viewer typed");
+            });
+            let (_tell, mut sizes) = mpsc::unbounded_channel();
+            let mut here = Script::typing(b"x");
+            let left = join(&path, "s-1", SIZE, &mut here, Vec::new(), &mut sizes)
+                .await
+                .map_err(|error| error.kind());
+            dying.await.expect("the host ran");
+            assert_eq!(
+                left,
+                Ok(Left::Gone),
+                "a host that answered, then broke the connection dying, has gone"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn a_session_the_host_refuses_says_why() {
         bounded(async {
             let (_dir, path, _serving) = host(
