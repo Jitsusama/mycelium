@@ -475,15 +475,18 @@ fn marks_line_up_within_a_block_and_each_kind_on_its_own() {
 
 #[test]
 fn a_short_name_holding_what_draws_nothing_moves_no_title() {
+    // A second, shorter name shown beside Kelp is padded to the widest, so
+    // a name counted before it is cleaned would move Kelp's title too.
     let named = |short: &str| {
         let mut swarm = swarm();
         swarm.teams[1]["swarm"] = json!(short);
+        swarm.teams[2]["swarm"] = json!("bay");
         swarm
     };
     let plain = overview(&named("dock"), &whole());
     assert!(
-        plain.contains("\ndock  "),
-        "the short name is shown:\n{plain}"
+        plain.contains("\ndock  ") && plain.contains("bay   Kelp"),
+        "both short names are shown, Kelp's padded to Harbour's:\n{plain}"
     );
     // The table alone: the hint after it names the short name as typed.
     let table = |swarm: &Swarm, look: &Look| -> String {
