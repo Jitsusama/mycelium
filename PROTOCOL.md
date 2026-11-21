@@ -737,7 +737,11 @@ session says of itself:
   since the fence can't be told. The harness names a session's fence
   in the record only where no fenced command could have replaced the
   record, so one a command could have written names none, and reads
-  as untold.
+  as untold. It is never looser than its host's `PI_SANDBOX` either.
+  At a carry, a `bwrap` running below the host shows it fenced too,
+  unless another session the record names `fence` is proved on that
+  host and explains it; the look kept in `fences.json`, below, leaves
+  that out, since a sibling's `bwrap` can outlive its session.
 - A fence missing from what a process shows proves nothing: a
   `bwrap` lives only while a command it fences runs, and a session
   may switch its fence on after its pi began. So the node looks at

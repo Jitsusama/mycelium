@@ -439,6 +439,7 @@ pub fn shown_fence(
         let beside = Beside {
             tree: &Tree::of(procs),
             owners: &owners,
+            weighs_bubblewrap: true,
         };
         return hosted_fence(procs, hosts, host, pid, ticks, session, &beside);
     }
@@ -448,7 +449,11 @@ pub fn shown_fence(
 /// The fence each session here shows it runs in, as [`shown_fence`] tells
 /// it, for every session whose owner is proved and holds no other, read
 /// with one look through the machine's processes. None where who owns
-/// what can't be told.
+/// what can't be told. A bubblewrap below a pi host isn't weighed here:
+/// what this look finds is kept as the strictest each session was seen
+/// in, for good, and a sibling's bubblewrap outliving its session, or
+/// running before it is proved, would keep a session read fenced that
+/// isn't. A carry's own look weighs it ([`shown_fence`]).
 pub fn shown_fences(
     claims: &[Claim],
     processes: &Processes,
@@ -465,6 +470,7 @@ pub fn shown_fences(
     let beside = Beside {
         tree: &tree,
         owners: &owners,
+        weighs_bubblewrap: false,
     };
     owners
         .iter()
@@ -537,11 +543,12 @@ const HOST_RECORD_MOST: u64 = 1 << 20;
 /// of the fence its host began in. A record that names none for it,
 /// or a word no harness writes, says nothing, so the fence can't be told,
 /// never guessed looser; nor can a record read as [`host_record`]
-/// refuses, or once `pid` is another process, read again last. A
-/// bubblewrap below the host reads it at least the ordinary fence, as
-/// for a pi of its own, unless another session `beside` proves on that
-/// host is named fenced in the record, so a record forged for a pi that
-/// hosts nothing can't read its session out of the fence below it.
+/// refuses, or once `pid` is another process, read again last. Where
+/// `beside` weighs it, a bubblewrap below the host reads it at least the
+/// ordinary fence, as for a pi of its own, unless another session proved
+/// on that host is named `fence` in the record, the one fence that starts
+/// a bubblewrap, so a record forged for a pi that hosts nothing can't
+/// read its session out of the fence below it.
 fn hosted_fence(
     procs: &Path,
     hosts: &Path,
@@ -583,12 +590,7 @@ fn hosted_fence(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|one| {
-            matches!(
-                one.get("fence").and_then(Value::as_str),
-                Some("fence" | "strict")
-            )
-        })
+        .filter(|one| one.get("fence").and_then(Value::as_str) == Some("fence"))
         .filter_map(|one| one.get("id").and_then(Value::as_str))
         .any(|other| {
             other != session
@@ -598,7 +600,7 @@ fn hosted_fence(
                     .any(|(owned, by)| owned == other && *by == pid)
         });
     let kind = kind.max(began_in(procs, pid, session)?);
-    let kind = if !fenced_beside && beside.tree.runs_below(pid, BWRAP) {
+    let kind = if beside.weighs_bubblewrap && !fenced_beside && beside.tree.runs_below(pid, BWRAP) {
         kind.max(Kind::Fence)
     } else {
         kind
@@ -620,6 +622,9 @@ fn hosted_fence(
 struct Beside<'a> {
     tree: &'a Tree,
     owners: &'a [(String, i32)],
+    /// Whether a bubblewrap below the host is weighed, as a carry's own
+    /// look weighs it and the look kept for good doesn't.
+    weighs_bubblewrap: bool,
 }
 
 /// The text of a file in the hosts folder, opened without blocking and
@@ -3208,10 +3213,7 @@ mod tests {
             ("fence", Kind::Fence),
             ("strict", Kind::Strict),
         ] {
-            hosts_in_58(
-                &hosts,
-                &[("s-own", Some(word)), ("s-other", Some("strict"))],
-            );
+            hosts_in_58(&hosts, &[("s-own", Some(word)), ("s-other", Some("fence"))]);
             assert_eq!(
                 shown_hosted_beside(&hosted, &hosts, &["s-other"]),
                 Ok(kind),
@@ -3223,7 +3225,7 @@ mod tests {
         // hosts nothing would read it.
         hosts_in_58(
             &hosts,
-            &[("s-own", Some("none")), ("s-other", Some("strict"))],
+            &[("s-own", Some("none")), ("s-other", Some("fence"))],
         );
         assert_eq!(
             shown_hosted(&hosted, &hosts),
@@ -3290,6 +3292,59 @@ mod tests {
             shown_hosted(&strict, &hosts),
             Ok(Kind::Strict),
             "a host begun strict is never read looser, whatever its record names"
+        );
+    }
+
+    #[test]
+    fn only_a_fenced_session_proved_on_its_host_explains_a_bubblewrap_below_it() {
+        // Pi 59 owns s-other alone, beside the host pi 58 runs, with a
+        // bubblewrap below the host alone.
+        let hosted = fenced_pi("", &[(71, "bwrap", 58), (59, "pi", 1)]);
+        started(hosted.0.path(), 59, "pi", 600);
+        holds_log(hosted.0.path(), 59, hosted.1.path(), "s-other");
+        let hosts = fs::canonicalize(hosted.2.path()).expect("its real path");
+        let claims = [
+            claim("s-own", 58, Some(500), Some("work-background")),
+            claim("s-other", 59, Some(600), None),
+        ];
+        let shown = || {
+            shown_fence(
+                &claims,
+                &folder(hosted.0.path()),
+                &hosts,
+                hosted.1.path(),
+                "s-own",
+            )
+        };
+        hosts_in_58(
+            &hosts,
+            &[("s-own", Some("none")), ("s-other", Some("fence"))],
+        );
+        assert_eq!(
+            shown(),
+            Ok(Kind::Fence),
+            "a fenced session the record names, proved on another pi, explains nothing below"
+        );
+        // What the look kept for good finds leaves the bubblewrap out,
+        // since a sibling's may outlive its session there.
+        assert_eq!(
+            shown_fences(&claims, &folder(hosted.0.path()), &hosts, hosted.1.path()).get("s-own"),
+            Some(&Kind::None),
+            "as its record names it"
+        );
+        // A strict session's fence is Landlock, which starts no
+        // bubblewrap, so one named strict explains none either.
+        let beside = fenced_pi("", &[(71, "bwrap", 58)]);
+        holds_log(beside.0.path(), 58, beside.1.path(), "s-other");
+        let hosts = fs::canonicalize(beside.2.path()).expect("its real path");
+        hosts_in_58(
+            &hosts,
+            &[("s-own", Some("none")), ("s-other", Some("strict"))],
+        );
+        assert_eq!(
+            shown_hosted_beside(&beside, &hosts, &["s-other"]),
+            Ok(Kind::Fence),
+            "a strict session beside it, proved there, explains nothing below"
         );
     }
 
