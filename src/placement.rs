@@ -125,8 +125,10 @@ pub enum FenceFrom {
 /// A declared fence in the shape this build reads, or none: one naming a
 /// kind it doesn't know, as a newer asker or node may say it, is passed
 /// over, as a node older than the field passes it over, rather than
-/// refusing the ask or the line it is in. One naming only a source it
-/// doesn't know keeps its kind ([`FenceFrom::Unknown`]).
+/// refusing the ask or the line it is in. One naming a kind it knows
+/// keeps it whatever it says of its source, a source left out, null or
+/// not a word among them ([`FenceFrom::Unknown`]), since a source moves
+/// nothing and a kind only ever raises.
 ///
 /// # Errors
 ///
@@ -134,8 +136,22 @@ pub enum FenceFrom {
 pub fn declared_or_none<'de, D: serde::Deserializer<'de>>(
     said: D,
 ) -> Result<Option<DeclaredFence>, D::Error> {
-    Ok(Option::<serde_json::Value>::deserialize(said)?
-        .and_then(|declared| serde_json::from_value(declared).ok()))
+    let Some(declared) = Option::<serde_json::Value>::deserialize(said)? else {
+        return Ok(None);
+    };
+    let Some(kind) = read_field::<FenceKind>(&declared, "kind") else {
+        return Ok(None);
+    };
+    let from = read_field(&declared, "from").unwrap_or(FenceFrom::Unknown);
+    Ok(Some(DeclaredFence { kind, from }))
+}
+
+/// `field` of `declared`, where it is there and reads as a `T`.
+fn read_field<T: serde::de::DeserializeOwned>(
+    declared: &serde_json::Value,
+    field: &str,
+) -> Option<T> {
+    serde_json::from_value(declared.get(field)?.clone()).ok()
 }
 
 impl Work {
@@ -1549,14 +1565,23 @@ pub(crate) mod tests {
             assert_eq!(read(fence.clone()), None, "{fence} is passed over");
         }
         // A source this build doesn't know moves nothing, so a strict
-        // kind it names still raises.
-        assert_eq!(
-            read(serde_json::json!({"kind": "strict", "from": "orchestrator"})),
-            Some(DeclaredFence {
-                kind: FenceKind::Strict,
-                from: FenceFrom::Unknown,
-            })
-        );
+        // kind it names still raises, as it does with its source left
+        // out, null or not a word.
+        for fence in [
+            serde_json::json!({"kind": "strict", "from": "orchestrator"}),
+            serde_json::json!({"kind": "strict"}),
+            serde_json::json!({"kind": "strict", "from": null}),
+            serde_json::json!({"kind": "strict", "from": 5}),
+        ] {
+            assert_eq!(
+                read(fence.clone()),
+                Some(DeclaredFence {
+                    kind: FenceKind::Strict,
+                    from: FenceFrom::Unknown,
+                }),
+                "{fence} still raises"
+            );
+        }
     }
 
     #[test]

@@ -4796,23 +4796,21 @@ impl<S: Store> Shared<S> {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let (by, named, charged) = self.judged_declaring(asked.work.fence).await?;
-        self.counted((by, charged), named, asked, waits, Whither::Placed)
+        let (by, _, charged) = self.judged_declaring(asked.work.fence).await?;
+        self.counted((by, charged), asked, waits, Whither::Placed)
             .await
     }
 
     /// Starts `asked`, from the asker judged `by` whose start counts
     /// toward `charged`'s cell, as [`Self::started`] does, where
     /// `whither` says: counted, limited and booked, and waiting for room
-    /// up to `waits` milliseconds. Its name is the asker's as judged
-    /// `named`, before any fence it declared moved it, and a name tells
-    /// only the person from an agent, so an ask again whose declaration,
-    /// or whose reading of the claims above, came out otherwise still
-    /// joins the first rather than starting twice.
+    /// up to `waits` milliseconds. A name tells only the person from an
+    /// agent, so an ask again whose declared fence, or whose reading of
+    /// the claims above, came out otherwise still joins the first rather
+    /// than starting twice.
     async fn counted(
         &self,
         (by, charged): (By, Option<String>),
-        named: By,
         mut asked: Start,
         waits: i64,
         whither: Whither,
@@ -4832,7 +4830,7 @@ impl<S: Store> Shared<S> {
         let (lead, again) = match &once {
             Some(said) => {
                 match self
-                    .named(named, started_by.as_deref(), said, &mut asked, at)
+                    .named(by, started_by.as_deref(), said, &mut asked, at)
                     .await
                 {
                     ControlFlow::Break(answered) => return answered,
@@ -5235,9 +5233,7 @@ impl<S: Store> Shared<S> {
                 },
                 ..asked
             };
-            let started = self
-                .counted((by, charged), by, pinned, 0, Whither::Here)
-                .await;
+            let started = self.counted((by, charged), pinned, 0, Whither::Here).await;
             return started.map_err(|why| {
                 if persons_carry {
                     self.carry_refused(&why)
@@ -14231,12 +14227,15 @@ esac
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
         declares_runs(&socket, true);
         // The offer's strict fence opens builders here's doesn't, and its
-        // agent fence is shut: only a start lowered from strict could take
-        // it.
-        let shut = json!({"builders": [], "forges": [], "secrets": []});
+        // agent fence is shut and runs a command: a start lowered from
+        // strict would be made it, so only judging it strict refuses it.
+        let runs = json!(["/nix/store/0000-fence/bin/fence", "--"]);
+        let shut = json!({"builders": [], "forges": [], "secrets": [], "runs": runs});
         let fence = json!({
             "none": shut, "fence": shut,
-            "strict": {"builders": ["remote", "cloud"], "forges": [], "secrets": []},
+            "strict": {
+                "builders": ["remote", "cloud"], "forges": [], "secrets": [], "runs": runs,
+            },
         });
         crate::stand_in::program(
             &socket.with_file_name("provider"),

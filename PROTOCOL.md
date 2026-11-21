@@ -1489,7 +1489,8 @@ session started for it runs in, `{"kind", "from"}`. Its `kind` is
 that asked), `quest` (the quest's README) or `default` (the harness's
 own choice, said for the record). A declaration naming any other kind
 is passed over, as an older node passes over the field, rather than
-refusing the ask; one naming any other source keeps its kind. The
+refusing the ask; one naming any other source, or none, keeps its
+kind. The
 `from` is the asker's own word, which the node doesn't check, and it
 moves nothing. A declared fence raises an agent's fence when it is
 stricter than the node's judgement of the asker, and never lowers it,
