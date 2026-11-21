@@ -1109,6 +1109,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Cross": {"message", "from_realm"}}` | `{"Sent": message}`, or refused |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
+| `{"Spawned": {"pid", "started", "session"}}` | `"Spawned"`, from a pi host, of its own spawner (A Hosted Session's Spawner) |
 | `{"Carry": {"machine"}}` | `"Carrying"`, then what it asks of `machine` |
 | `"Health"` | `{"Health": health}`, then another each time it moves |
 | `{"Turn": {"session"}}` | `"Turn"`, once a holder may resume `session` (A Held Session) |
@@ -1971,9 +1972,13 @@ the node's link to that machine says so. A run is told no
 that session alone, as the kernel and pi's records prove it, since
 pi-fence grants the work trees that session holds. Alone counts
 every session claimed there, proved or not, and every one its host's
-record lists, so the sessions of a pi
-host holding more than one, the person's, one on a Mac and one asked
-from another machine are told none. The node takes `runs`
+record lists. A pi host's sessions share its process, so one of them
+is proved instead by the pi-spawner its command runs below, where
+the host said that spawner serves it (A Hosted Session's Spawner).
+Otherwise the sessions of a host holding more than one, the
+person's, one on a Mac, where the node can't read when a process
+started, and
+one asked from another machine are told none. The node takes `runs`
 only from a declaration reached through folders and links root owns
 and no one else may write, each followed as written, with any part
 within the Nix store taken as the store's, and only where its first
@@ -1988,8 +1993,10 @@ up stops it: its process group is sent the terminate signal, then the
 kill signal if any of it still runs 10 seconds on. Each machine a run
 crosses keeps it in `runs.jsonl` in mycelium's folder, and logs each
 line: `{"run", "at", "by", "sessions", "from", "on", "folder",
-"command", "spared"}` as it starts, `"spared"` only where the node
-spared it a shared quest's tree, then `{"run", "at", "ended"}`, the last `Ran`
+"command", "spared", "untold"}` as it starts, `"spared"` only where
+the node spared it a shared quest's tree and `"untold"`, why, only
+where an agent's run here was told no session, then
+`{"run", "at", "ended"}`, the last `Ran`
 or `{"Stopped": why}` where its asker let go.
 `mycelium run` prints what it writes as it comes and exits with its
 code, or 255 when it couldn't run.
@@ -2002,6 +2009,122 @@ again for the whole state.
 A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 `quest.4uhc5q`, and a peer's `@4UHC5Q` is `peer.4uhc5q`. A pattern takes
 `*` for any one token and a final `>` for one or more.
+
+### A Hosted Session's Spawner
+
+A pi host runs many sessions in one process, so its process alone
+can't say which of them asked for a run. It starts a pi-spawner for
+the commands of each, and says so on a connection of its own:
+`{"Spawned": {"pid", "started", "session"}}` names the spawner by
+its process and its start, in clock ticks since boot as the kernel's
+`stat` counts them, and the session it serves. The node takes it
+only where the kernel names the connection's other end as a process
+that proves `session` as its host, by its claim at its own start,
+and only of that process's own child, named `pi-spawner` by the
+kernel and started when it says. It answers `"Spawned"`, or refuses,
+saying why there and, once for each reason, in its log. A session is
+named in at most 256 bytes. A spawner serves one session, and a
+session's spawners are one host's at a time, since a session proves
+under one host at a time: once it proves under another, that host's
+word is taken, though the first's spawners run on.
+Of 4096 kept at most, those ended, or whose host has, are let go
+first, and none more is taken until some end.
+
+The node keeps what hosts said only while it runs. A host says each
+of its live spawners again every 30 seconds, and saying one again is
+answered as the first time was, so a node that restarts knows them
+all again within 30 seconds; until then a command below one is told
+no session.
+
+The host says it before the spawner runs anything, waiting up to about
+four seconds for the answer and then going ahead; a command run meanwhile
+is told no session, as is one below a spawner said before its session
+proved, until the host says it again. A command below that spawner,
+each process between them started no earlier than the one above it,
+and the host and the asker unchanged from when the node took their
+connections, is then proved as that session. Nothing a command runs
+can say it for another: it holds none of the host's connection, which
+the host opens closed on exec, and the node knows the speaker from the
+kernel, not from what it says. Where the node is older and refuses the
+ask, a command is told what such a node tells: the host's session
+where the host proves just one, and none where it holds more. A command below
+a pi-spawner the host started but the node holds no word for is told
+no session, even where the host holds only one, since that spawner
+may serve a session gone since. So too is one whose forebears, read
+again, no longer reach the host or name the child below it. So a
+harness that says no spawners, as one older than this rule, keeps
+none of its sessions' work trees where the node takes its host's
+word: the node and the harness land together and roll back together.
+A
+command the host starts as its own
+child, as it does once a spawner is lost, runs below no spawner: it
+is told the host's session where the host proves just one, and none
+where it holds more. A spawner a command starts below a said one
+changes nothing: what runs below it is told the said one's session.
+Where the node would take no host's word, as below, no spawner is
+ever said, so what runs below one is told as the host's own child
+is, as before spawners were said.
+
+The node checks for itself that no other process can speak as the
+host. It takes the
+word only where the kernel lets a process trace no more than its own
+descendants, Yama's `ptrace_scope` at 1 or more, since otherwise a
+command could write the host's memory and speak as the host;
+elsewhere, or where the kernel doesn't say, it refuses every
+spawner. For the same reason it takes it only from a host whose
+node can't be opened from outside: its command line must give
+`--disable-sigusr1` as node's first option, since otherwise any
+process of its user may send SIGUSR1 and open node's inspector, and
+an option taking a value could take a later one as its own; that
+line, read with its quotes and escapes dropped, which only refuses
+more, may name neither
+`--inspect` in any form nor `--no-disable-sigusr1`, which undoes the
+first; and its environment may give no `NODE_OPTIONS` but a blank
+one, since `--require` or `--import` there runs code as the host,
+nor any `NODE_PATH`, where a require that finds nothing beside it
+looks, nor any `NODE_COMPILE_CACHE`, whose compiled code node runs as
+the host's modules, nor any `LD_PRELOAD`, `LD_AUDIT` or
+`LD_LIBRARY_PATH`, which load a library's code into it as it starts,
+or `OPENSSL_CONF` or `OPENSSL_MODULES`, whose configuration has
+OpenSSL load a module. Blank or not, each of these is refused, since
+node and the loader take a blank path as a folder of its own.
+A host whose environment can't be read is refused. The kernel's
+word is read again at each proof, so a spawner taken while tracing
+was shut proves nothing once it opens, and its commands are told as
+the host's own child is.
+
+It rests too on four things the node doesn't prove. It can't tell
+the host's own code from code an agent brought into
+the host's process, an extension a project carries or a reload onto
+another tree among it, which can say any spawner serves any session
+the host proves. No fence closes this one today: pi loads a trusted
+project's own `.pi/extensions`, and an agent's work tree is writable
+to it by design, so an agent that writes an extension there has the
+host run it at its next reload or restart. Until a host loads a
+project's extensions only from a checkout its sessions can't write,
+or loads none, an agent of a trusted project can say any spawner.
+And a command that can write the harness's files, the folder node
+caches the host's compiled code in, or the host's unit and
+environment through the user's service manager, can change the code
+a host loads, then end the host, which runs that code when it starts
+again and may say any spawner. The host turns that cache on itself,
+so it must sit in pi's own state, which the fence keeps read-only,
+never in the temporary folder node picks when given none, which a
+fenced command can write. So the word proves a session only where
+the host's sessions run their commands fenced from the harness, and
+the host loads no extension they can write; where either fails, it
+tells a command apart from its host only by accident. So too a
+command of the same user can open another session's spawner's pipe
+again through `/proc/<pid>/fd`, which Yama's scope 1 doesn't stop,
+and have it start a command for that session. And a command that
+can reach the host's own socket, which joins a terminal to any
+conversation the host holds, can type into another session, whose
+commands are then that session's. On Linux the fence closes these
+last two for a fenced session: it gives the command its own process
+namespace, where no spawner's `/proc` shows, and lays an empty
+folder over the one holding the host's socket, since a socket in a
+read-only folder still connects. A Mac's fence must deny connecting
+to that socket for the same.
 
 ### The Daemon Interface
 

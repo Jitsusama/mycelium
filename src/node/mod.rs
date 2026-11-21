@@ -1224,6 +1224,10 @@ struct Shared<S> {
     starts: Arc<starts::Starts>,
     /// Each start asked under a name, so an ask again joins it.
     onces: Arc<once::Onces>,
+    /// Why runs here were told no session, said once for each reason.
+    untold: Arc<run::Untold>,
+    /// Each hosted session's spawner, as its host said it.
+    spawners: Arc<asker::Spawners>,
     /// Where pi's hosts keep their records of the sessions they hold.
     hosts: PathBuf,
     /// Where it keeps who orchestrates which quests.
@@ -1423,6 +1427,8 @@ impl<S: Clone> Clone for Shared<S> {
             runs: self.runs.clone(),
             starts: Arc::clone(&self.starts),
             onces: Arc::clone(&self.onces),
+            untold: Arc::clone(&self.untold),
+            spawners: Arc::clone(&self.spawners),
             hosts: self.hosts.clone(),
             orchestrations: self.orchestrations.clone(),
             logs: self.logs.clone(),
@@ -2117,6 +2123,8 @@ impl<S: Store> Shared<S> {
             starts,
             onces: Arc::default(),
             runs: Arc::new(runs),
+            untold: Arc::default(),
+            spawners: Arc::default(),
             hosts,
             orchestrations,
             logs,
@@ -3304,6 +3312,7 @@ impl<S: Store> Shared<S> {
             }
             Request::Free { .. } => Err("freeing a quest is answered by `frees`".to_owned()),
             Request::Starts { .. } => Err("starts are answered by `starts_asked`".to_owned()),
+            Request::Spawned { .. } => Err("a spawner is answered by `spawned`".to_owned()),
             Request::Update { .. } => Err("an update is answered by `update`".to_owned()),
             Request::Carry { .. } => Err("carrying is answered by `carried`".to_owned()),
             Request::Health => Err("health is answered by `own_health::tell`".to_owned()),
@@ -3720,18 +3729,71 @@ impl<S: Store> Shared<S> {
     /// [`asker::session_alone`] proves it from the presences here.
     async fn session_alone(&self) -> Result<String, String> {
         let claims = self.claims();
-        let (client, processes, hosts, logs) = (
-            self.client,
+        let (client, processes, hosts, logs, spawners) = (
+            (self.client, self.client_started),
             self.processes.clone(),
             self.hosts.clone(),
             self.logs.clone(),
+            Arc::clone(&self.spawners),
         );
         tokio::task::spawn_blocking(move || {
             let owners = asker::proved(&claims, &processes, &hosts, &logs)?;
-            asker::session_alone(client, &processes, &owners, &claims, &hosts)
+            asker::session_alone(client, &processes, &owners, &claims, &hosts, &spawners)
         })
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))?
+    }
+
+    /// Takes a pi host's word, the host being the process at the other
+    /// end, that its child `spawner` serves `session`, as
+    /// [`asker::Spawners::register`] takes it. A refusal is said on the
+    /// node's stderr too, since a host refused may be a command trying:
+    /// once for each reason, its digits aside, and again an hour on, as
+    /// [`asker::Spawners::first_refusal`] keeps them, so new speakers say
+    /// nothing more. The session the host named leads the line, cut
+    /// short and escaped, since anyone may name one; a reason may name a
+    /// session too, the one a process was said to serve before.
+    async fn spawned(&self, spawner: (i32, u64), session: String) -> Reply {
+        // A session's id is far shorter; one longer is refused before
+        // anything is weighed.
+        const LONGEST: usize = 256;
+        // How much of the session it named a refusal says.
+        const SAID_SESSION_CHARS: usize = 64;
+        if session.len() > LONGEST {
+            return Err(format!("a session is named in at most {LONGEST} bytes"));
+        }
+        let claims = self.claims();
+        let (host, processes, hosts, logs, spawners) = (
+            (self.client, self.client_started),
+            self.processes.clone(),
+            self.hosts.clone(),
+            self.logs.clone(),
+            Arc::clone(&self.spawners),
+        );
+        let said: String = session
+            .chars()
+            .take(SAID_SESSION_CHARS)
+            .flat_map(char::escape_debug)
+            .collect();
+        let registered = tokio::task::spawn_blocking(move || {
+            // What it says names sessions any presence may name, so it
+            // is left out of the reason.
+            let owners = asker::proved(&claims, &processes, &hosts, &logs).map_err(|_| {
+                "who owns the sessions here can't be told, so no spawner is told".to_owned()
+            })?;
+            spawners.register(host, spawner, &session, &processes, &owners, &claims)
+        })
+        .await
+        .map_err(|error| format!("the spawner couldn't be told: {error}"))?;
+        if let Err(why) = &registered {
+            // No reason names the session asked for, which a speaker
+            // chooses, so speakers that come and go each say no more.
+            if self.spawners.first_refusal(why, std::time::Instant::now()) {
+                let why: String = why.chars().flat_map(char::escape_debug).collect();
+                eprintln!("mycelium: a spawner for {said} isn't taken: {why}");
+            }
+        }
+        registered.map(|()| Response::Spawned)
     }
 
     /// The fence `session` shows it runs in, by its owner's process,
@@ -5597,7 +5659,14 @@ impl<S: Store> Shared<S> {
                 By::Agent(_) if asked.from.is_none() => self
                     .session_alone()
                     .await
-                    .inspect_err(|why| eprintln!("a run here is told no session: {why}"))
+                    .inspect_err(|why| {
+                        if self.untold.first(why) {
+                            // A reason may hold what a record says, so
+                            // it is escaped, as the spawner's is.
+                            eprintln!("a run here is told no session: {}", why.escape_debug());
+                        }
+                        started["untold"] = serde_json::Value::from(why.as_str());
+                    })
                     .ok(),
                 _ => None,
             };
@@ -5894,27 +5963,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             return;
         }
         if let Ok(Request::Watch { groups, recent }) = request {
-            if write(&mut writing, &Reply::Ok(Response::Watching))
-                .await
-                .is_ok()
-            {
-                let (id, mut events) = shared.watch(groups.as_ref(), recent);
-                loop {
-                    tokio::select! {
-                        event = events.recv() => {
-                            let Some(event) = event else { break };
-                            let written = tokio::time::timeout(WATCH_PATIENCE, write(&mut writing, &event)).await;
-                            if !matches!(written, Ok(Ok(()))) {
-                                break;
-                            }
-                        }
-                        // A watch's client says nothing more; anything it
-                        // does send, or its hanging up, ends the watch.
-                        _ = lines.next_line() => break,
-                    }
-                }
-                shared.unwatch(id);
-            }
+            keep_watching(&shared, groups.as_ref(), recent, lines, writing).await;
             return;
         }
         let reply: Answer = match request {
@@ -5928,6 +5977,11 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             }
             Ok(Request::Free { quest }) => shared.frees(quest).await.into(),
             Ok(Request::Starts { act }) => shared.starts_asked(act).await.into(),
+            Ok(Request::Spawned {
+                pid,
+                started,
+                session,
+            }) => shared.spawned((pid, started), session).await.into(),
             Ok(Request::Update { machine }) => shared.update(&machine).await.into(),
             Ok(Request::Offers) => Answer::Ok(Response::Offers(shared.offers().await)),
             // A receptor's cell is named `<source>@<machine>`, and only the
@@ -6031,6 +6085,39 @@ async fn hand_on_run<S: Store>(
             _ = lines.next_line() => return,
         }
     }
+}
+
+/// Send a watch's client the whole state, then each change, until it
+/// says anything more, hangs up or falls too far behind.
+async fn keep_watching<S: Store>(
+    shared: &Shared<S>,
+    groups: Option<&Pattern>,
+    recent: usize,
+    mut lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    mut writing: tokio::net::unix::OwnedWriteHalf,
+) {
+    if write(&mut writing, &Reply::Ok(Response::Watching))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let (id, mut events) = shared.watch(groups, recent);
+    loop {
+        tokio::select! {
+            event = events.recv() => {
+                let Some(event) = event else { break };
+                let written = tokio::time::timeout(WATCH_PATIENCE, write(&mut writing, &event)).await;
+                if !matches!(written, Ok(Ok(()))) {
+                    break;
+                }
+            }
+            // A watch's client says nothing more; anything it does send,
+            // or its hanging up, ends the watch.
+            _ = lines.next_line() => break,
+        }
+    }
+    shared.unwatch(id);
 }
 
 /// Answers a holder's ask for a turn once it may resume `session`,
@@ -7878,6 +7965,55 @@ esac
         }
     }
 
+    /// Tells the stand-in for /proc beside `socket` that this test asks
+    /// from below pi-spawner `spawner`, which the host `host` started,
+    /// each started after its parent, that the kernel lets a process be
+    /// traced only by its forebears, and that the host's node shuts its
+    /// inspector, as a host's unit starts it.
+    fn asks_below_spawner(socket: &Path, spawner: i32, host: i32) {
+        let procs = procs_of(socket);
+        fs::write(
+            procs.join(host.to_string()).join("cmdline"),
+            "node\0--disable-sigusr1\0/x/scripts/pi-host.ts\0background\0",
+        )
+        .expect("the host's command line is written");
+        let zeros = "0 ".repeat(17);
+        let asker = i32::try_from(std::process::id()).expect("a pid");
+        for (pid, name, parent, ticks) in [
+            (spawner, "pi-spawner", host, started_at(host) + 1),
+            (asker, "mycelium", spawner, started_at(host) + 2),
+        ] {
+            let folder = procs.join(pid.to_string());
+            fs::create_dir_all(&folder).expect("its folder is made");
+            fs::write(
+                folder.join("status"),
+                format!("Name:\t{name}\nPPid:\t{parent}\n"),
+            )
+            .expect("its status is written");
+            fs::write(
+                folder.join("stat"),
+                format!("{pid} ({name}) S {parent} {zeros}{ticks} 0 0\n"),
+            )
+            .expect("its stat is written");
+        }
+        let scope = procs.join("sys/kernel/yama/ptrace_scope");
+        fs::create_dir_all(scope.parent().expect("its folder")).expect("its folder is made");
+        fs::write(scope, "1\n").expect("the scope is written");
+    }
+
+    /// The `nth` run started that the node on `socket` keeps in its
+    /// record of runs.
+    fn kept_start(socket: &Path, nth: usize) -> Value {
+        let record = fs::read_to_string(socket.with_file_name("runs.jsonl"))
+            .expect("the node keeps its runs");
+        let started: Vec<Value> = record
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a line is JSON"))
+            .filter(|line: &Value| line.get("command").is_some())
+            .collect();
+        started.get(nth).cloned().expect("the run is kept")
+    }
+
     /// Tells the stand-in for /proc beside `socket` that pi `pid` runs,
     /// started when its presence says, by [`started_at`], with `environ`
     /// the environment it began with.
@@ -8083,6 +8219,21 @@ esac
         let fds = procs_of(socket).join(pid.to_string()).join("fd");
         fs::create_dir_all(&fds).expect("made");
         std::os::unix::fs::symlink(&log, fds.join("3")).expect("linked");
+    }
+
+    /// Writes the record the pi host `pid` keeps, beside `socket`, of the
+    /// `sessions` it holds.
+    fn hosts_sessions(socket: &Path, pid: i32, sessions: &[&str]) {
+        let hosts = socket.with_file_name("hosts");
+        fs::create_dir_all(&hosts).expect("its folder is made");
+        let sessions: Vec<Value> = sessions.iter().map(|id| json!({"id": id})).collect();
+        fs::write(
+            hosts.join(format!("{pid}-{}.json", started_at(pid))),
+            json!({"key": "work", "sessions": sessions,
+                   "owner": {"pid": pid, "startTicks": started_at(pid)}})
+            .to_string(),
+        )
+        .expect("the host's record is written");
     }
 
     /// What the node at `socket` answers the session owned by pi `pid` as it
@@ -14538,7 +14689,7 @@ esac
     }
 
     #[tokio::test]
-    async fn a_hosts_run_is_fenced_for_none_of_its_sessions_whichever_its_command_names() {
+    async fn a_hosts_run_is_told_no_session_by_a_spawner_its_host_never_said() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
         let store = Memory::default();
@@ -14557,19 +14708,6 @@ esac
         declares_launcher(&socket, Some(SAYS_WHOSE));
         asks_below(&socket, 7101);
         holds_log(&socket, 7101, "s-one");
-        let hosts = socket.with_file_name("hosts");
-        fs::create_dir_all(&hosts).expect("its folder is made");
-        let record = hosts.join(format!("7101-{}.json", started_at(7101)));
-        let hosting = |sessions: &[&str]| {
-            let sessions: Vec<Value> = sessions.iter().map(|id| json!({"id": id})).collect();
-            fs::write(
-                &record,
-                json!({"key": "work", "sessions": sessions,
-                       "owner": {"pid": 7101, "startTicks": started_at(7101)}})
-                .to_string(),
-            )
-            .expect("the host's record is written");
-        };
         fs::write(
             procs_of(&socket)
                 .join(std::process::id().to_string())
@@ -14577,7 +14715,7 @@ esac
             "PI_SESSION_ID=s-one\0",
         )
         .expect("its command names s-one");
-        hosting(&["s-one"]);
+        hosts_sessions(&socket, 7101, &["s-one"]);
         let unproved = run_through(socket.clone(), run_of("skiff", "true"))
             .await
             .expect("a hosted agent's runs here");
@@ -14588,10 +14726,16 @@ esac
              it names proves, since its other still shares the host; it signs \
              as the agent it is all the same"
         );
+        assert!(
+            kept_start(&socket, 0)["untold"]
+                .as_str()
+                .is_some_and(|why| why.contains("sessions share")),
+            "its record says why it was told none"
+        );
         let fds = procs_of(&socket).join("7101").join("fd");
         fs::rename(fds.join("3"), fds.join("4")).expect("s-one's log is held as 4");
         holds_log(&socket, 7101, "s-two");
-        hosting(&["s-one", "s-two"]);
+        hosts_sessions(&socket, 7101, &["s-one", "s-two"]);
         let proved = run_through(socket.clone(), run_of("skiff", "true"))
             .await
             .expect("a hosted agent's runs here");
@@ -14599,6 +14743,47 @@ esac
             String::from_utf8_lossy(&proved.out),
             format!("the fence runs for none{SIGNS}\n"),
             "nor once both prove, whichever its command names"
+        );
+        asks_below_spawner(&socket, 7102, 7101);
+        let forged = ask(
+            socket.clone(),
+            Request::Spawned {
+                pid: 7102,
+                started: started_at(7101) + 1,
+                session: "s-two".to_owned(),
+            },
+        )
+        .await;
+        assert!(
+            forged.is_err_and(|why| why.contains("no pi host")),
+            "a command below the host can't say the spawner for it"
+        );
+        let overlong = ask(
+            socket.clone(),
+            Request::Spawned {
+                pid: 7102,
+                started: started_at(7101) + 1,
+                session: "s".repeat(257),
+            },
+        )
+        .await;
+        assert!(
+            overlong.is_err_and(|why| why.contains("at most 256 bytes")),
+            "nor name a session longer than any, which is refused unread"
+        );
+        let still = run_through(socket.clone(), run_of("skiff", "true"))
+            .await
+            .expect("a hosted agent's runs here");
+        assert_eq!(
+            String::from_utf8_lossy(&still.out),
+            format!("the fence runs for none{SIGNS}\n"),
+            "so a command below a pi-spawner its host never said is told none"
+        );
+        assert!(
+            kept_start(&socket, 2)["untold"]
+                .as_str()
+                .is_some_and(|why| why.contains("can't tie to a session the host proves")),
+            "its record says why: no spawner its host said, before its sessions are counted"
         );
         let (stop, node) = running;
         drop(stop);

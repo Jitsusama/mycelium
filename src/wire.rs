@@ -140,6 +140,21 @@ pub enum Request {
     /// ends. The process is the one the kernel says is at the other end, so
     /// no process can speak for another. It says nothing more.
     Present,
+    /// A pi host's word that its child `pid`, started `started` clock
+    /// ticks after boot as the host read it before handing it any command,
+    /// is the pi-spawner it started for `session`, so a command asking
+    /// below it asks for that session alone. Taken only from the host
+    /// itself, as the kernel names the process at the other end, and only
+    /// for a session it proves; see PROTOCOL.md's A Hosted Session's
+    /// Spawner.
+    Spawned {
+        /// The spawner's process.
+        pid: i32,
+        /// When it started, in clock ticks since boot.
+        started: u64,
+        /// The session it serves.
+        session: String,
+    },
     /// What this node asks of `machine`, handed to the connection one ask
     /// a line for as long as it stays, each answered on a line of its own:
     /// a link `machine` dialled, which runs outside the node, carries them.
@@ -445,6 +460,8 @@ pub enum Response {
     Watching,
     /// The process is counted present until it hangs up.
     Present,
+    /// The spawner said, registered for its session.
+    Spawned,
     /// Asks follow, one per line, each to be answered on a line back.
     Carrying,
     /// This machine's own health, or none while it is unknown: one at
@@ -524,6 +541,25 @@ mod tests {
         assert!(
             serde_json::from_str::<Request>(r#"{"Watch":{"groups":[]}}"#).is_err(),
             "a pattern is one string, never a list"
+        );
+    }
+
+    #[test]
+    fn a_spawner_is_said_and_answered_as_the_protocol_writes_it() {
+        let said = r#"{"Spawned":{"pid":82,"started":5,"session":"s-one"}}"#;
+        assert_eq!(
+            serde_json::from_str::<Request>(said).expect("a spawner's word reads"),
+            Request::Spawned {
+                pid: 82,
+                started: 5,
+                session: "s-one".to_owned(),
+            },
+            "{said}"
+        );
+        assert_eq!(
+            serde_json::to_string(&Response::Spawned).expect("its answer writes"),
+            r#""Spawned""#,
+            "the answer is the bare word"
         );
     }
 }
