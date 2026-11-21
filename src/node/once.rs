@@ -323,6 +323,24 @@ impl Onces {
             .insert(there.to_owned(), (machine.to_owned(), sent, reopens));
     }
 
+    /// Joins the start under `name` where one landed within the hour
+    /// before `at`, or is landing, as [`Self::join`] would, but leads none:
+    /// `None` where there is none to join, so whoever asks judges the ask
+    /// before it leads one.
+    pub fn joins(&self, name: &Name, at: i64) -> Option<Joined> {
+        match self.lock().held.get_mut(name)? {
+            Held::Landing { told, joined } => {
+                *joined = joined.saturating_add(1);
+                Some(Joined::Landing(Joining(told.clone())))
+            }
+            Held::Landed {
+                at: landed,
+                started,
+            } if at - *landed < LANDED_FOR => Some(Joined::Landed(started.clone())),
+            Held::Landed { .. } | Held::Unanswered { .. } => None,
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, Book> {
         // Each change is one insert or remove, so a panic leaves the map
         // whole.

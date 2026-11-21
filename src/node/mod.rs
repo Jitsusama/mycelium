@@ -5468,6 +5468,22 @@ impl<S: Store> Shared<S> {
         let Some(session) = starts::reopens(&asked.command).map(str::to_owned) else {
             return self.relayed_start(from, asked).await;
         };
+        // A resend under the name of a start that landed, or is landing,
+        // is answered that start, which starts nothing more, rather than
+        // refused for the session it started being live. Joined here, not
+        // led: one under no such name is judged below before it leads.
+        if let Some(said) = asked.once.as_deref() {
+            let (by, _) = self.judged().await?;
+            let name = once::Name::of(by, None, said)?;
+            let now = jiff::Timestamp::now().as_millisecond();
+            match self.onces.joins(&name, now) {
+                Some(once::Joined::Landed(started)) => return Ok(Response::Started(started)),
+                Some(once::Joined::Landing(joining)) => {
+                    return joining.outcome().await.map(Response::Started);
+                }
+                Some(once::Joined::Leads(_) | once::Joined::Resends { .. }) | None => {}
+            }
+        }
         // Where the carries can't be read, which session is away can't be
         // told, so none is reopened.
         let away = self
@@ -18276,6 +18292,52 @@ esac
                     "declares no way to run a command as its strictly fenced sessions run"
                 ),
             "{refused}"
+        );
+    }
+
+    // A reopening the asking node sends again under its name, after its
+    // link stopped waiting on the first, is answered the start that
+    // landed, rather than refused for the session it reopened, which no
+    // longer ended here; and it starts nothing more.
+    #[tokio::test]
+    async fn a_relayed_reopening_sent_again_under_its_name_is_answered_the_start_that_landed() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        link.client = Some(1);
+        let (by, _) = link.judged().await.expect("the asker is judged");
+        let name = once::Name::of(by, None, "01J-reopened").expect("a name");
+        let now = jiff::Timestamp::now().as_millisecond();
+        let once::Joined::Leads(lead) = link.onces.join(name, "skiff", now) else {
+            panic!("the first ask under it leads");
+        };
+        let landed = Started {
+            machine: "skiff".to_owned(),
+            held: "h-reopened".to_owned(),
+            folder: dir.path().to_owned(),
+            attach: vec!["mycelium".to_owned(), "attach".to_owned()],
+        };
+        lead.ends(now, &Ok(landed.clone()));
+        let again = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            command: vec!["pi".to_owned(), "--session".to_owned(), "s-back".to_owned()],
+            may_cost: false,
+            carries: false,
+            strict: false,
+            once: Some("01J-reopened".to_owned()),
+        };
+        let answered = link
+            .relayed("tern", again)
+            .await
+            .expect("the resend is answered the start that landed");
+        assert!(
+            matches!(&answered, Response::Started(started) if *started == landed),
+            "answered the first start, not another: {answered:?}"
+        );
+        assert!(
+            link.starts.newest(10).is_empty(),
+            "a resend under a landed name starts nothing more"
         );
     }
 
