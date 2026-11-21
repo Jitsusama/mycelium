@@ -3595,7 +3595,7 @@ mod tests {
             let skiff = Memory::default();
             let (_skiff_end, _far_reading, mut far_writing) = skiff_over(
                 skiff.clone(),
-                |connection| Connection {
+                move |connection| Connection {
                     worker,
                     ..connection
                 },

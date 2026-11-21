@@ -327,7 +327,8 @@ Three seams shape a link:
   it, as does a quest it began. A message of its is kept only when it
   names as its sender a session it holds a presence for now, and this
   machine holds none by that id. One kept opens its `text` with
-  `[said on <worker>, a worker machine] ` and gains `"worker"`, the
+  `[said on <worker>, a worker machine]` and a space, and gains
+  `"worker"`, the
   machine's name, both from the link's own name for it, never from
   what the worker says, so each session reads it as the worker's word.
   Its sessions' presence crosses as any machine's does. The name it
