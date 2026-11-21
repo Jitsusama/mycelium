@@ -296,6 +296,14 @@ fn a_window_whose_pi_host_never_ran_here_says_so_and_joins_one_once_it_starts() 
         "the holder keeps its window, as a host not yet started may come"
     );
 
+    // A socket nobody listens on, as a host that crashed before the window
+    // opened leaves, says no more that one ran here.
+    drop(UnixListener::bind(&at).expect("a host listens, then crashes"));
+    window.quiets(STILL);
+    window.types_return();
+    window.sees_then(UNREACHABLE, NEVER, KEY_PATIENCE);
+    fs::remove_file(&at).expect("the crashed host's socket is cleaned up");
+
     // One starting, the next key joins it.
     let serving = serves(UnixListener::bind(&at).expect("the pi host listens"));
     window.types_return();
