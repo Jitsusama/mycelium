@@ -3181,10 +3181,13 @@ its pi host stays gone past its patience for a restart, never answers
 its first join, or isn't there to join at all. The file holds the
 writer's pid and `away` or `unseen`, and the holder heeds it only from
 the process it started, so a process under it saying so for its own
-reasons ends the window as any exit does. `attach --host` writes
-`<id>.reached`, told its path in `MYCELIUM_REACHED`, whenever it finds
-its pi host's socket, and the holder keeps that file until it ends: a
-socket missing with none written says `unseen`, and the window says no
+reasons ends the window as any exit does, said on the node's log; one
+holding nothing, as an `attach --host` from before wrote, says `away`.
+It reads at most a few bytes of it, from a plain file only.
+`attach --host` writes `<id>.reached`, told its path in
+`MYCELIUM_REACHED`, naming its pi host, whenever that host answers it, and the holder keeps
+that file until it ends: a socket missing, or one nobody listens on,
+with none written for that host says `unseen`, and the window says no
 pi host by that name has run here since it opened, as for a mistyped
 realm or a host taken away, rather than that its host is away; it
 waits and tries again all the same, as one not yet started may come.

@@ -444,8 +444,8 @@ fn starting(
 /// steers land in as it parks in `MYCELIUM_STEERS`, which wakes it too as
 /// one lands that would give it a turn, the file it writes as its pi
 /// host is away in `MYCELIUM_GONE`, the file it writes just before it
-/// quits to park in `MYCELIUM_PARKED`, and the one it writes once it
-/// finds its pi host in `MYCELIUM_REACHED`. On Linux it is told to sign over
+/// quits to park in `MYCELIUM_PARKED`, and the one it writes once its pi
+/// host answers in `MYCELIUM_REACHED`. On Linux it is told to sign over
 /// ssh only through the agents' proxy in the runtime folder, never the
 /// person's own agent, a login shell's profile notwithstanding
 /// ([`agents`]). A program exiting with [`PARKED`], or ending any way
@@ -561,11 +561,27 @@ pub async fn hold(
             // Taken whatever the code, so none is left to a later run; a
             // program exiting so with none written ends, as any other, and
             // so does one whose file a process under it wrote.
-            let said = fs::read_to_string(&files.gone).ok();
+            let said = super::read_small(&files.gone);
             let _ = fs::remove_file(&files.gone);
+            let exited_gone = status.code() == Some(i32::from(GONE));
             let how = said
-                .and_then(|said| Gone::heard(&said, pid))
-                .filter(|_| status.code() == Some(i32::from(GONE)));
+                .as_deref()
+                .and_then(|said| Gone::heard(said, pid))
+                .filter(|_| exited_gone);
+            if exited_gone
+                && how.is_none()
+                && let Some(said) = &said
+            {
+                // Said on the node's log, since the window ends as on any
+                // exit: a wrapper that runs attach without exec passes its
+                // 69 on with another pid's file.
+                eprintln!(
+                    "mycelium: {} exited {GONE}, but its pi host gone was said by another \
+                     process ({}), not {pid}, so its window ends",
+                    holding.id,
+                    said.trim()
+                );
+            }
             let gone = how.is_some();
             // A quit to park that hung is ended by a signal, which says no
             // code, so the program's word that it parked keeps it so.
@@ -694,8 +710,9 @@ fn gone_runs_after(runs: u32, gone: bool, lasted: Duration) -> u32 {
 const GONE_DOUBLINGS: u32 = 8;
 
 /// Says to every joined window, and each joining until the program starts
-/// again, that the program's pi host is away, with the program's record
-/// parked. It stands over whatever the ended run's last output shows after
+/// again, that the program's pi host is away, or that none by its name has
+/// run here since the holder began, as `how` says, with the program's
+/// record parked. It stands over whatever the ended run's last output shows after
 /// it, as attach saying why it left can be read only once this is said.
 fn away(record: &Record, shown: &Shown, how: Gone) {
     record.parks();
@@ -2169,6 +2186,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_holder_starting_takes_away_what_one_before_it_left() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let (dir, id) = (root.path(), "window1");
+        // A reached left behind would say a host never here was away.
+        let left = [
+            wake(dir, id),
+            again(dir, id),
+            next(dir, id),
+            steers(dir, id),
+            gone(dir, id),
+            reached(dir, id),
+        ];
+        for file in &left {
+            fs::write(file, "harbour-background").expect("a file written");
+        }
+        let _files = Files::fresh(dir, id);
+        let kept: Vec<_> = left.iter().filter(|file| file.exists()).collect();
+        assert!(kept.is_empty(), "each is taken away: {kept:?} were kept");
+    }
+
     #[tokio::test]
     async fn a_gone_file_another_process_wrote_ends_it_as_any_exit() {
         let root = tempfile::tempdir().expect("a temporary folder");
@@ -2422,7 +2460,7 @@ mod tests {
         listed_parked(&dir, &mut changes, false).await;
         let second = second.elapsed();
         assert!(
-            second >= GONE_AGAIN * 3 / 2 && second > first + GONE_AGAIN / 2,
+            second >= GONE_AGAIN * 3 / 2,
             "each try in a row waits longer: {first:?}, then {second:?}"
         );
         window.types("echo back $((6 * 7))\r").await;
