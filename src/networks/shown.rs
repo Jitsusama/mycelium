@@ -21,7 +21,8 @@ use std::fmt::Write as _;
 
 use super::{Cell, Is, MACHINES, Mycelium, Network, Shape, Share};
 use crate::swarm::{
-    BOLD, FAINT, GAP, Label, Look, NARROWEST, Standing, fit, header, padded, row, says_again,
+    BOLD, DOING_AT, FAINT, GAP, Label, Look, NARROWEST, Standing, fit, header, padded, row,
+    says_again, unmarked,
 };
 
 impl Shape {
@@ -559,7 +560,7 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
     let cells = if with_cells { " --cells" } else { "" };
     let command = format!("mycelium --realm {} networks{cells}", mycelium.realm);
     lines.extend(folding.hint(look, &command));
-    lines.join("\n")
+    look.joined(&lines)
 }
 
 /// The lines of `cells`' sessions, set in by `depth`, worst first, then
@@ -622,21 +623,30 @@ fn cell_line(
     let lead = indent.len() + said + GAP.len() + name_width + GAP.len();
     let room = look.width.saturating_sub(lead).max(NARROWEST);
     let doing = doing(cell);
-    let title_room = if doing.is_some() {
+    let title = unmarked(cell.title.as_deref().unwrap_or_default());
+    // Drawn whole, the title is as wide as it is, and what it does is
+    // lined up with the others' once they're drawn.
+    let title_room = if look.whole() {
+        title.chars().count()
+    } else if doing.is_some() {
         (room / 2).max(NARROWEST)
     } else {
         room
     };
-    let title = fit(cell.title.as_deref().unwrap_or_default(), title_room);
     let mut line = format!(
         "{indent}{}{GAP}{}{GAP}{}",
         look.paint(standing.colour(), &padded(standing.said(), said)),
         padded(&cell.name, name_width),
-        padded(&title, title_room)
+        padded(&fit(&title, title_room), title_room)
     );
     if let Some(doing) = doing {
         let left = room.saturating_sub(title_room + GAP.len()).max(NARROWEST);
-        let _ = write!(line, "{GAP}{}", look.paint(FAINT, &fit(doing, left)));
+        let _ = write!(
+            line,
+            "{}{GAP}{}",
+            look.mark(DOING_AT),
+            look.paint(FAINT, &fit(&unmarked(doing), left))
+        );
     }
     line.trim_end().to_owned()
 }
@@ -716,7 +726,7 @@ pub fn network(mycelium: &Mycelium, asked: &str, look: &Look, all: bool) -> Resu
     if let Some(hint) = folding.hint(look, &command) {
         lines.extend([String::new(), hint]);
     }
-    Ok(lines.join("\n"))
+    Ok(look.joined(&lines))
 }
 
 /// Every cell: each session, worst first, then each machine; or, where
@@ -821,7 +831,7 @@ pub fn cells(mycelium: &Mycelium, look: &Look, all: bool, standing: &[String]) -
         let _ = write!(command, " --standing {}", standing.join(","));
     }
     lines.extend(folding.hint(look, &command));
-    lines.join("\n")
+    look.joined(&lines)
 }
 
 /// That no session stands as `standing` says, as a person would say it:
@@ -952,5 +962,5 @@ pub fn cell(mycelium: &Mycelium, cell: &Cell, look: &Look) -> String {
             lines.push(format!("{line}{about}"));
         }
     }
-    lines.join("\n")
+    look.joined(&lines)
 }

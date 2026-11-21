@@ -349,11 +349,15 @@ const NAME_MOST: usize = 16;
 /// the names first, then the sender and the time, so
 /// the wait and the id a person answers by stay whole; only where even
 /// they don't fit are they cut from their end. Into a pipe nothing is
-/// cut.
+/// cut, and each time is [`stamped`].
 fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     use crate::swarm::fit;
     let since = record["since"].as_str().unwrap_or_default();
-    let when = look.when(since).unwrap_or_default();
+    let when = match width {
+        Some(_) => look.when(since),
+        None => stamped(look, since),
+    }
+    .unwrap_or_default();
     let capped = |text: &str| match width {
         Some(_) => fit(text, NAME_MOST),
         None => text.to_owned(),
@@ -381,7 +385,10 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     let (verb, named, after) = if record["intent"] == "hold" {
         let until = record["until"]
             .as_str()
-            .and_then(|until| lapses(look, until))
+            .and_then(|until| match width {
+                Some(_) => lapses(look, until),
+                None => stamped(look, until),
+            })
             .map_or_else(String::new, |until| format!(", until {until}"));
         ("holds", names(&record["groups"]), until)
     } else {
@@ -407,6 +414,17 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     } else {
         cut(&tail, Some(width))
     }
+}
+
+/// When `at` is, into a pipe: its day, date, time and zone, so a copy
+/// kept until tomorrow, or read on a machine in another zone, still says
+/// when.
+fn stamped(look: &Look, at: &str) -> Option<String> {
+    let at = at
+        .parse::<jiff::Timestamp>()
+        .ok()?
+        .to_zoned(look.now.time_zone().clone());
+    Some(at.strftime("%a %-d %b %Y %H:%M %Z").to_string())
 }
 
 /// The days ahead a lapse is said by its weekday alone.
@@ -1023,6 +1041,21 @@ mod tests {
     }
 
     #[test]
+    fn into_a_pipe_each_time_says_its_date_and_zone() {
+        let piped = drawn(&records(ASKED), &look(), None);
+        for line in [
+            "  Sun 15 Nov 2026 12:05 UTC  TERN01 asks SKIFF1 and KESTRL, 25 min so far  [c0cd280e]",
+            "  Sun 15 Nov 2026 12:02 UTC  OSPREY holds #all, until Sun 15 Nov 2026 14:02 UTC  \
+             [647648e1]",
+        ] {
+            assert!(
+                piped.lines().any(|each| each == line),
+                "no line {line:?}, so a kept copy can't say when:\n{piped}"
+            );
+        }
+    }
+
+    #[test]
     fn a_hold_lapsing_past_this_week_says_its_date() {
         let look = look();
         for (days, format) in [
@@ -1074,7 +1107,8 @@ mod tests {
         for width in [None, Some(80)] {
             let drawn = drawn(&[unnamed.clone()], &look(), width);
             assert!(
-                drawn.contains("  12:05  someone asks SKIFF1"),
+                drawn.contains("12:05  someone asks SKIFF1")
+                    || drawn.contains("12:05 UTC  someone asks SKIFF1"),
                 "a sender with no address left no asker at {width:?}:\n{drawn}"
             );
         }

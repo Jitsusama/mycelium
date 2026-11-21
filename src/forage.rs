@@ -1359,12 +1359,12 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// `text` as one line for a terminal: each control character, a newline
 /// or an escape among them, and each line or paragraph separator, which
 /// an editor or a viewer breaks a line at, as a space, and each mark that
-/// turns text's direction left out, so words read from a file can't draw
-/// lines of their own, steer the terminal, or read backwards past their
-/// own end.
+/// turns text's direction or draws nothing left out, so words read from a
+/// file can't draw lines of their own, steer the terminal, read backwards
+/// past their own end, or pass for another's name.
 pub(crate) fn one_line(text: &str) -> String {
     text.chars()
-        .filter(|each| !turns_direction(*each))
+        .filter(|each| !turns_direction(*each) && !draws_nothing(*each))
         .map(|each| {
             if each.is_control() || matches!(each, '\u{2028}' | '\u{2029}') {
                 ' '
@@ -1379,6 +1379,13 @@ pub(crate) fn one_line(text: &str) -> String {
 /// is drawn in, which a terminal may honour past the words they came in.
 pub(crate) const fn turns_direction(each: char) -> bool {
     matches!(each, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Whether `each` is one of Unicode's format characters that take no
+/// room, a soft hyphen, a zero-width space or joiner, a word joiner or a
+/// byte-order mark, which make two names that read the same differ.
+pub(crate) const fn draws_nothing(each: char) -> bool {
+    matches!(each, '\u{00AD}' | '\u{200B}'..='\u{200D}' | '\u{2060}'..='\u{2064}' | '\u{FEFF}')
 }
 
 /// The most lines a cell's purpose takes when drawn, so each block leads
@@ -3435,6 +3442,15 @@ mod tests {
         // Neither is a control, yet an editor or a viewer breaks a line
         // at each, so a title could draw a row of its own.
         assert_eq!(one_line("fly\u{2028}  plan\u{2029}done"), "fly   plan done");
+    }
+
+    #[test]
+    fn a_character_that_draws_nothing_is_left_out() {
+        // Each takes no room, so a name holding one reads as another's.
+        assert_eq!(
+            one_line("SK\u{200B}IFF\u{200C}1\u{200D} \u{00AD}tern\u{2060}\u{FEFF}"),
+            "SKIFF1 tern"
+        );
     }
 
     #[test]

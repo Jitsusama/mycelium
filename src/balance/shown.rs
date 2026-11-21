@@ -8,7 +8,7 @@ use super::{Flag, IMBALANCE, Load, Reading};
 use crate::swarm::{BOLD, FAINT, RESET};
 
 /// The table's columns after the machine's name and how it stands, each
-/// as wide as its header.
+/// as wide as its header or its widest figure.
 const COLUMNS: [&str; 8] = [
     "load",
     "memory",
@@ -62,29 +62,52 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
         .map(|one| one.machine.chars().count())
         .max()
         .unwrap_or(0);
+    let rows: Vec<(&Load, [String; 8])> = reading
+        .machines
+        .iter()
+        .map(|one| (one, figures(one)))
+        .collect();
+    let wides: Vec<usize> = COLUMNS
+        .iter()
+        .enumerate()
+        .map(|(at, column)| {
+            rows.iter()
+                .map(|(_, figures)| figures[at].chars().count())
+                .chain([column.len()])
+                .max()
+                .unwrap_or_default()
+        })
+        .collect();
+    // As many columns as fit whole, in their order, as the machines' table
+    // gives way, and a line naming the rest so none goes unsaid; a pipe
+    // has every one.
+    let mut reach = 2 + named + 2 + STANDS;
+    let shown = wides
+        .iter()
+        .take_while(|wide| {
+            reach += 2 + **wide;
+            reach <= width
+        })
+        .count();
     let mut header = format!("  {:named$}  {:STANDS$}", "", "");
-    for column in COLUMNS {
-        let _ = write!(header, "  {column}");
+    for (column, wide) in COLUMNS.iter().zip(&wides).take(shown) {
+        let _ = write!(header, "  {column:>wide$}");
     }
     let _ = writeln!(out, "{}", paint(FAINT, header.trim_end()));
-    for one in &reading.machines {
-        let figures = [
-            percent(one.load),
-            percent(one.memory),
-            percent(one.processor),
-            percent(one.stall),
-            one.busy.to_string(),
-            one.idle.to_string(),
-            one.busy_per_core
-                .map_or_else(|| "-".to_owned(), |each| format!("{each:.2}")),
-            one.age.map_or_else(|| "-".to_owned(), aged),
-        ];
+    for (one, figures) in &rows {
         let mut row = format!("  {:named$}  {:STANDS$}", one.machine, stands(one));
-        for (column, figure) in COLUMNS.iter().zip(figures) {
-            let wide = column.len();
+        for (figure, wide) in figures.iter().zip(&wides).take(shown) {
             let _ = write!(row, "  {figure:>wide$}");
         }
         let _ = writeln!(out, "{}", row.trim_end());
+    }
+    if shown < COLUMNS.len() {
+        let left = COLUMNS[shown..].join(", ");
+        let _ = writeln!(
+            out,
+            "{}",
+            paint(FAINT, &format!("  left out to fit: {left}"))
+        );
     }
     out.push('\n');
     let sentences: Vec<(&str, String)> = if reading.flags.is_empty() {
@@ -110,6 +133,21 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
         out.push_str(&wrapped(&paint(BOLD, "held"), "held", &rest, width));
     }
     out
+}
+
+/// One machine's figures, in the order of [`COLUMNS`].
+fn figures(one: &Load) -> [String; 8] {
+    [
+        percent(one.load),
+        percent(one.memory),
+        percent(one.processor),
+        percent(one.stall),
+        one.busy.to_string(),
+        one.idle.to_string(),
+        one.busy_per_core
+            .map_or_else(|| "-".to_owned(), |each| format!("{each:.2}")),
+        one.age.map_or_else(|| "-".to_owned(), aged),
+    ]
 }
 
 /// A share from 0 to 1 as a whole percent, or a dash where unknown.
@@ -439,5 +477,78 @@ mod tests {
         );
         assert!(shown.contains("\x1b[2m"), "{shown:?}");
         assert!(shown.contains("home · 1 machine"), "{shown}");
+    }
+
+    fn two() -> Reading {
+        reading(
+            vec![
+                machine("kestrel", 0.9, 28, 1.75),
+                machine("osprey", 0.4, 13, 1.08),
+            ],
+            Some(0.03),
+            vec![],
+        )
+    }
+
+    #[test]
+    fn at_eighty_columns_the_table_keeps_whole_columns_and_names_the_rest() {
+        let shown = said(&two(), "work", 80, false);
+        let long: Vec<&str> = shown
+            .lines()
+            .filter(|line| line.chars().count() > 80)
+            .collect();
+        assert!(long.is_empty(), "lines past 80 columns: {long:?}\n{shown}");
+        let lines: Vec<&str> = shown.lines().collect();
+        assert_eq!(
+            lines[2..5],
+            [
+                "                      load  memory  processors  stall  busy  idle  per core",
+                "  kestrel  no room     90%     50%         90%    10%    28     3      1.75",
+                "  osprey   no room     40%     50%         40%    10%    13     3      1.08",
+            ],
+            "the facts column, which would pass 80, is left out whole:\n{shown}"
+        );
+        assert_eq!(
+            lines[5], "  left out to fit: facts",
+            "and the line under the table says so:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn drawn_whole_every_column_is_there_and_none_is_said_left_out() {
+        let shown = said(&two(), "work", crate::swarm::WHOLE, false);
+        assert!(
+            shown
+                .lines()
+                .nth(2)
+                .is_some_and(|line| line.ends_with("per core  facts"))
+                && shown
+                    .lines()
+                    .nth(3)
+                    .is_some_and(|line| line.ends_with("1.75   20 s")),
+            "every column, the facts' age under its header:\n{shown}"
+        );
+        assert!(!shown.contains("left out"), "{shown}");
+    }
+
+    #[test]
+    fn a_figure_wider_than_its_header_widens_its_column() {
+        let mut many = machine("kestrel", 0.9, 12_345, 1.75);
+        many.idle = 7;
+        let shown = said(
+            &reading(vec![many, machine("osprey", 0.4, 13, 1.08)], None, vec![]),
+            "work",
+            crate::swarm::WHOLE,
+            false,
+        );
+        let lines: Vec<&str> = shown.lines().collect();
+        let busy = |line: &str| line.find("busy").map(|at| at + "busy".len());
+        assert!(
+            lines[2].contains(" busy  idle")
+                && lines[3].contains("12345     7")
+                && lines[4].contains("   13     3")
+                && busy(lines[2]) == lines[3].find("12345").map(|at| at + 5),
+            "busy right-aligned over its widest figure, idle still under its own:\n{shown}"
+        );
     }
 }
