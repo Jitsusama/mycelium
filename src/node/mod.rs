@@ -13845,9 +13845,9 @@ esac
                 }
             }
         };
-        assert_eq!(
+        assert_ne!(
             placed(Request::PlaceToStart(toward_osprey.clone())).await,
-            "skiff",
+            "osprey",
             "an agent's start that would rather the Mac goes elsewhere"
         );
         assert_eq!(

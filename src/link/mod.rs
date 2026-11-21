@@ -2032,8 +2032,10 @@ mod tests {
     #[tokio::test]
     async fn a_link_behind_takes_only_the_newest_facts() {
         let (sender, mut frames) = mpsc::unbounded_channel();
+        // Measured once, since each measuring reads the clock and the disk.
+        let tern = facts::measure("tern", &facts::Sources::nowhere());
         let facts = |cores: u32| {
-            let mut machine = facts::measure("tern", &facts::Sources::nowhere());
+            let mut machine = tern.clone();
             machine.cpu.cores = Some(cores);
             Ok(Frame::Machine(Box::new(machine)))
         };
