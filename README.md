@@ -163,9 +163,10 @@ The harness mesh's messages and presence, carried between machines:
   `mycelium cells --standing needs-you,stuck` lists only the cells
   standing so. Into a pipe, as `watch` and `less` read it, swarm's,
   networks', cells' and machines' tables are drawn whole: nothing is
-  cut or wrapped, every column is there, and each is as wide as what
-  is in it, but for a name past 48 characters, which runs on alone
-  rather than moving every row's counts.
+  cut, every column is there, and each is as wide as what is in it.
+  A row whose name would push its counts past 80 columns, or a cell's
+  past 48 before its doing, runs on alone and sets them on the next
+  line, under their column, rather than moving every row's.
   `-w` on either draws it again in place every two
   seconds, as it changes, until stopped. Both print JSON lines with
   `-o json`, networks first,

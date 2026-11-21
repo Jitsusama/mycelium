@@ -1861,7 +1861,38 @@ fn drawn_whole_the_tree_is_as_wide_as_its_widest_row_and_its_counts_line_up() {
 }
 
 #[test]
-fn drawn_whole_with_cells_each_network_s_sessions_line_up_under_it() {
+fn drawn_whole_a_cell_s_marks_and_breaks_move_no_column() {
+    let drawn = |title: &str, step: &str| {
+        let [teams, mut sessions, machines] = records();
+        for session in &mut sessions {
+            if session["address"] == "ASKS01" {
+                session["presence"]["questInfo"]["title"] = json!(title);
+            }
+            if session["address"] == "BUSY01" {
+                session["step"] = json!(step);
+            }
+        }
+        let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
+        [
+            overview(&mycelium, &whole(), true, false),
+            cells(&mycelium, &whole(), false, &[]),
+        ]
+        .join("\n")
+    };
+    let clean = drawn("Kelp's question", "running the  tests");
+    assert!(
+        clean.contains("running the  tests"),
+        "the step is drawn:\n{clean}"
+    );
+    assert_eq!(
+        drawn("Kelp's\u{fdd0} question\u{fdd1}", "running\u{fdd0} the\n\ntests"),
+        clean,
+        "a mark or a break in a cell's title or doing moved a column or split a block"
+    );
+}
+
+#[test]
+fn drawn_whole_with_cells_every_session_s_doing_shares_one_column_through_the_tree() {
     let shown = overview(&mycelium(), &whole(), true, false);
     let lines: Vec<&str> = shown.lines().collect();
     assert_eq!(

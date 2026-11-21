@@ -1362,20 +1362,43 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// turns text's direction or draws nothing left out, so words read from a
 /// file can't draw lines of their own, steer the terminal, read backwards
 /// past their own end, or pass for another's name.
+///
+/// A joiner or non-joiner between two characters past ASCII, and one
+/// variation selector straight after one, are kept, since Persian and
+/// Indic words are spelled with them and an emoji is drawn by them;
+/// beside ASCII, as in an address, or stacked, they only part names that
+/// read alike or carry what nobody sees. Each is judged by what is left
+/// once direction marks and controls are gone, in one pass, so no mark
+/// beside it can vouch for it and a long run costs no more than its
+/// length.
 pub(crate) fn one_line(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    chars
-        .iter()
-        .enumerate()
-        .filter(|&(at, each)| !turns_direction(*each) && !draws_nothing(&chars, at))
-        .map(|(_, &each)| {
+    let plain: Vec<char> = text
+        .chars()
+        .filter(|each| !turns_direction(*each))
+        .map(|each| {
             if each.is_control() || matches!(each, '\u{2028}' | '\u{2029}') {
                 ' '
             } else {
                 each
             }
         })
-        .collect()
+        .collect();
+    let mut kept: Vec<char> = Vec::with_capacity(plain.len());
+    for (at, &each) in plain.iter().enumerate() {
+        let before = kept.last().copied();
+        let keep = match each {
+            '\u{200C}' | '\u{200D}' => {
+                before.is_some_and(|before| spells(before) || selects(before))
+                    && plain.get(at + 1).is_some_and(|after| spells(*after))
+            }
+            each if selects(each) => before.is_some_and(spells),
+            each => !unseen(each),
+        };
+        if keep {
+            kept.push(each);
+        }
+    }
+    kept.into_iter().collect()
 }
 
 /// Whether `each` is one of Unicode's marks that turn the direction text
@@ -1410,34 +1433,21 @@ pub(crate) const fn unseen(each: char) -> bool {
     )
 }
 
-/// Whether the character at `at` in `chars` is [`unseen`] and spells
-/// nothing either, so two names that read the same can't differ by it.
-/// A joiner or non-joiner between two characters past ASCII, and a
-/// variation selector after one, are kept, since Persian and Indic words
-/// are spelled with them and an emoji is drawn by them; beside ASCII, as
-/// in an address, they only part names that read alike.
-fn draws_nothing(chars: &[char], at: usize) -> bool {
-    let spelt = |near: Option<usize>| {
-        near.filter(|near| *near < chars.len())
-            .is_some_and(|near| spells(chars, near))
-    };
-    match chars[at] {
-        '\u{200C}' | '\u{200D}' => !(spelt(at.checked_sub(1)) && spelt(Some(at + 1))),
-        '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}' => !spelt(at.checked_sub(1)),
-        each => unseen(each),
-    }
+/// Whether `each` is a variation selector, which picks how the character
+/// before it is drawn.
+const fn selects(each: char) -> bool {
+    matches!(each, '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
 }
 
-/// Whether the character at `at` is part of a word past ASCII that a
-/// joiner may join: one drawn, or a variation selector kept after one,
-/// as an emoji's is before the joiner that leads to its next part.
-fn spells(chars: &[char], at: usize) -> bool {
-    match chars[at] {
-        '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}' => {
-            at.checked_sub(1).is_some_and(|before| spells(chars, before))
-        }
-        each => !each.is_ascii() && !unseen(each),
-    }
+/// Whether `each` is drawn as part of a word past ASCII, so a joiner
+/// beside it or a selector after it may be part of the word too: not
+/// [`unseen`], not a space, and not a noncharacter, which no font draws
+/// and a table's marks are made of.
+fn spells(each: char) -> bool {
+    !each.is_ascii()
+        && !unseen(each)
+        && !each.is_whitespace()
+        && !matches!(each, '\u{FDD0}'..='\u{FDEF}' | '\u{FFFE}' | '\u{FFFF}')
 }
 
 /// The most lines a cell's purpose takes when drawn, so each block leads
@@ -3517,6 +3527,38 @@ mod tests {
         for spelt in ["\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}", "\u{2764}\u{FE0F}\u{200D}\u{1F525}"] {
             assert_eq!(one_line(spelt), spelt, "a joiner past ASCII was dropped");
         }
+    }
+
+    #[test]
+    fn a_joiner_or_selector_beside_ascii_is_left_out_whatever_vouches_for_it() {
+        for (said, read) in [
+            ("\u{D8}\u{200C}SKIFF", "\u{D8}SKIFF"),
+            ("SKIFF\u{200D}\u{E9}", "SKIFF\u{E9}"),
+            ("SKIFF1\u{202E}\u{FE0F}", "SKIFF1"),
+            ("SKIFF\u{2066}\u{200C}\u{2066}1", "SKIFF1"),
+            ("Reef\u{2028}\u{FE0F}", "Reef "),
+            ("Reef\u{FDD0}\u{FE0F}", "Reef\u{FDD0}"),
+            // A keycap's base is ASCII, so it loses its emoji form.
+            ("1\u{FE0F}\u{20E3}", "1\u{20E3}"),
+        ] {
+            assert_eq!(
+                one_line(said),
+                read,
+                "a joiner or selector with ASCII on one side, or vouched for only by \
+                 a mark, a break or a noncharacter, was kept from {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_one_selector_is_kept_and_a_long_run_costs_its_length() {
+        assert_eq!(
+            one_line("caf\u{E9}\u{FE00}\u{FE0F}\u{E0100}"),
+            "caf\u{E9}\u{FE00}",
+            "a selector after a selector was kept"
+        );
+        let long = format!("\u{E9}{}", "\u{FE0F}".repeat(200_000));
+        assert_eq!(one_line(&long), "\u{E9}\u{FE0F}", "a run of selectors was kept");
     }
 
     #[test]
