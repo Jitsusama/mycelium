@@ -116,7 +116,7 @@ pub fn one(machine: &Machine, look: &Look) -> String {
             look.when(&machine.measured_at).unwrap_or_default(),
         ),
     ];
-    let heading = format!("{}  {}", machine.name, state(machine.state));
+    let heading = format!("{}  {}", named(machine), state(machine.state));
     let mut out = fit(&heading, look.width);
     out.push('\n');
     out.push_str(&labelled(&lines, look));
@@ -198,7 +198,7 @@ fn columns(headings: &[&str], rows: &[Vec<String>], look: &Look) -> String {
 /// `machine`'s row, in [`MACHINE_COLUMNS`]' order.
 fn row(machine: &Machine, look: &Look) -> Vec<String> {
     vec![
-        machine.name.clone(),
+        named(machine),
         state(machine.state).to_owned(),
         machine.cpu.busy.map(percent).unwrap_or_default(),
         memory(machine),
@@ -206,6 +206,16 @@ fn row(machine: &Machine, look: &Look) -> Vec<String> {
         power(machine),
         updated(machine, look),
     ]
+}
+
+/// `machine`'s name as its row says it: marked where it is a worker, so
+/// its facts read as its own word wherever its name is read.
+fn named(machine: &Machine) -> String {
+    if machine.worker {
+        format!("{} (worker)", machine.name)
+    } else {
+        machine.name.clone()
+    }
 }
 
 /// `builder`'s row, in [`BUILDER_COLUMNS`]' order.
@@ -223,6 +233,12 @@ fn builder_row(builder: &Builder) -> Vec<String> {
 /// queue's limits it is at.
 fn worth_a_look(machine: &Machine, look: &Look) -> Vec<String> {
     let mut worth = Vec::new();
+    if machine.worker {
+        worth.push(format!(
+            "{} is a worker machine: all it says of itself, its costs included, is its own word",
+            machine.name
+        ));
+    }
     let update = machine.updated.as_ref();
     let step = update.and_then(|update| update["step"].as_str());
     if let Some(step) = step.filter(|step| !SETTLED.contains(step)) {
@@ -425,10 +441,12 @@ mod tests {
         .expect("a machine")
     }
 
-    /// Osprey as tern, its update failing on a word wider than a line.
+    /// Osprey as tern, a worker, its update failing on a word wider than a
+    /// line.
     fn tern() -> Machine {
         let mut tern = osprey();
         tern.name = "tern".to_owned();
+        tern.worker = true;
         tern.updated = Some(json!({"step": "failed", "at": "2026-11-12T16:29:02Z",
             "why": "/nix/store/0c3f4a9b2d1e8f7a6b5c4d3e2f1a0b9c-nixos-system-tern failed"}));
         tern
@@ -560,6 +578,29 @@ mod tests {
         ailing.health = serde_json::from_value(json!({"health": "good"})).expect("a health");
         ailing.updated = Some(json!({"step": "unchanged"}));
         assert_eq!(worth_a_look(&ailing, &look(100)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_worker_is_marked_and_its_facts_said_to_be_its_own_word() {
+        let mut worker = osprey();
+        worker.name = "tern".to_owned();
+        worker.worker = true;
+        worker.updated = None;
+        let label = "tern is a worker machine: all it says of itself, its costs included, is \
+                     its own word\n";
+        let drawn = table(&[worker.clone(), kestrel()], &[], &look(120));
+        let rows: Vec<&str> = drawn.lines().skip(1).take(2).collect();
+        assert!(
+            rows[0].starts_with("tern (worker)  ready")
+                && rows[1].starts_with("kestrel        ready"),
+            "{drawn}"
+        );
+        assert!(drawn.contains(&format!("\n{label}")), "{drawn}");
+        let drawn = one(&worker, &look(120));
+        assert!(
+            drawn.starts_with("tern (worker)  ready\n") && drawn.ends_with(&format!("  {label}")),
+            "{drawn}"
+        );
     }
 
     #[test]

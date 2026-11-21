@@ -102,6 +102,13 @@ pub struct Machine {
     /// the kit as it checked it at its start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kit: Option<Kit>,
+    /// Whether the node keeping these facts reached the machine as a
+    /// worker, one a provider made that may be administered by others, so
+    /// all it says of itself, its costs included, is its own word. Set by
+    /// that node's link alone, never taken from what the machine says;
+    /// measuring leaves it unset.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub worker: bool,
 }
 
 /// A realm's kit on one machine: a folder whose `bin` holds the tools
@@ -340,6 +347,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         updated: update::last(&sources.updated),
         health: None,
         kit: None,
+        worker: false,
     }
 }
 

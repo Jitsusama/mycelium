@@ -258,8 +258,8 @@ pub enum Ending {
 
 /// The exchange of what `places` shares between this end, which said
 /// `here`, and the other, which said `there`. A worker is sent and served
-/// only the quests it was given, and those it began, which this machine
-/// held none of.
+/// only the quests it was given, and nothing it says of any quest is
+/// taken.
 ///
 /// Any other end may be a worker too until it says what its machine is,
 /// which it does first of all when both ends take facts, so nothing above
@@ -913,6 +913,9 @@ impl<S: Store> End<S> {
                 self.has.extend(messages);
                 self.catch_up(writing).await?;
             }
+            Frame::Message { id, body } if self.worker => {
+                self.hear_message(&id, &said_on_worker(body, &self.other));
+            }
             Frame::Message { id, body } => self.hear_message(&id, &body),
             Frame::Presence {
                 session,
@@ -1038,8 +1041,10 @@ impl<S: Store> End<S> {
     }
 
     /// Why a worker's message `id` isn't taken, if it isn't: one this
-    /// machine already holds isn't written over, and one from a session
-    /// another machine holds would put words in that session's mouth.
+    /// machine already holds isn't written over, and only a session the
+    /// worker holds a presence for now speaks through it, so it can put
+    /// no words in the mouth of a session another machine holds, nor of
+    /// one between presences, nor say what no session said.
     fn message_refused(&self, id: &str, body: &Value) -> Option<Refused> {
         let other = &self.other;
         if self.store.message(id).is_some() {
@@ -1047,14 +1052,18 @@ impl<S: Store> End<S> {
                 "{other} said {id} again, which a worker can't write over"
             )));
         }
-        let from = body.get("from").and_then(Value::as_str)?;
-        let someone_elses = self.store.presences().iter().any(|presence| {
+        let Some(from) = body.get("from").and_then(Value::as_str) else {
+            return Some(Refused::Dropped(format!(
+                "{other} said {id} from no session, which a worker can't"
+            )));
+        };
+        let its_own = self.store.presences().iter().any(|presence| {
             presence.session.eq_ignore_ascii_case(from)
-                && presence.elsewhere.as_deref() != Some(other.as_str())
+                && presence.elsewhere.as_deref() == Some(other.as_str())
         });
-        someone_elses.then(|| {
+        (!its_own).then(|| {
             Refused::Dropped(format!(
-                "{other} said {id} as {from}, a session of another machine's, which a worker can't"
+                "{other} said {id} as {from}, which holds no presence through it, so a worker can't"
             ))
         })
     }
@@ -1484,6 +1493,9 @@ impl<S: Store> End<S> {
             return;
         }
         said.state = Readiness::Ready;
+        // Whether it is a worker is this end's to say: a worker saying it
+        // isn't one, or a peer saying it is, changes nothing.
+        said.worker = self.worker;
         if let Some(exchange) = self.exchange.as_mut() {
             exchange.withhold_above(
                 said.declared
@@ -1801,6 +1813,20 @@ fn millis(duration: Duration) -> i64 {
 fn speaks_for(body: &Value, worker: &str) -> bool {
     body.get(store::folders::MACHINE)
         .is_none_or(|machine| machine.as_str() == Some(worker))
+}
+
+/// A worker's message `body` as this machine keeps it: labelled by the
+/// link's own name for the worker, `worker`, never by anything the
+/// worker says, so every session reading it reads it as a worker's word.
+/// Its text opens with where it was said, and `worker` names the machine.
+fn said_on_worker(mut body: Value, worker: &str) -> Value {
+    if let Some(said) = body.as_object_mut() {
+        if let Some(Value::String(text)) = said.get_mut("text") {
+            *text = format!("[said on {worker}, a worker machine] {text}");
+        }
+        said.insert("worker".to_owned(), Value::String(worker.to_owned()));
+    }
+    body
 }
 
 /// Why a worker's frame isn't taken.
@@ -3297,7 +3323,7 @@ mod tests {
     /// What a worker, tern, says to the machine that dialled it: its hello,
     /// an ask for a file of `quest`, a presence of its own and one naming
     /// the dialler's, the message `message`, then a start, a steer, an
-    /// update, a run and a carry, asked as 1 to 5.
+    /// update, a run, a carry and an end the person asks, as 1 to 6.
     fn a_workers_frames(quest: &str, message: &str) -> Vec<Frame> {
         let start: Start =
             serde_json::from_value(json!({"work": {}, "command": ["pi"]})).expect("a start");
@@ -3322,7 +3348,8 @@ mod tests {
             presence("walgit", json!({"session": "walgit", "machine": "skiff"})),
             Frame::Message {
                 id: message.to_owned(),
-                body: json!({"id": message, "to": ["@WCJQSG"], "text": "done"}),
+                body: json!({"id": message, "from": "SAK9FZ", "to": ["@WCJQSG"],
+                             "text": "done"}),
             },
             Frame::Start { ask: 1, start },
             Frame::Steer {
@@ -3342,6 +3369,11 @@ mod tests {
                 quest: quest.to_owned(),
                 to: "tern".to_owned(),
                 checked: true,
+            },
+            Frame::End {
+                ask: 6,
+                held: "01J".to_owned(),
+                by: hold::end::Asker::Person,
             },
         ]
     }
@@ -3384,7 +3416,7 @@ mod tests {
         let mut ran = None;
         let mut said = Vec::new();
         tokio::time::timeout(PATIENCE, async {
-            while answers.len() < 4 || ran.is_none() {
+            while answers.len() < 5 || ran.is_none() {
                 let line = lines
                     .next_line()
                     .await
@@ -3409,8 +3441,10 @@ mod tests {
                 (2, Err("skiff takes no steers from a worker".to_owned())),
                 (3, Err("skiff updates nothing for a worker".to_owned())),
                 (5, Err("skiff carries nothing for a worker".to_owned())),
+                (6, Err("skiff ends nothing for a worker".to_owned())),
             ]),
-            "a worker can't start, steer, update or carry anything on the machine that dialled it"
+            "a worker can't start, steer, update, carry or end anything on the machine that \
+             dialled it, even said as the person"
         );
         assert_eq!(
             ran,
@@ -3505,6 +3539,7 @@ mod tests {
         );
 
         let (posing, own) = (recent(0, "OSPR01", 1), recent(0, "SAK9FZ", 2));
+        let (between, nobodys) = (recent(0, "WCJQSG", 3), recent(0, "SAK9FZ", 4));
         let message = |id: &str, from: &str, text: &str| Frame::Message {
             id: id.to_owned(),
             body: json!({"id": id, "from": from, "to": ["@WCJQSG"], "text": text}),
@@ -3519,6 +3554,11 @@ mod tests {
                 },
                 present("sak9fz"),
                 message(&posing, "OSPR01", "osprey says so"),
+                message(&between, "WCJQSG", "skiff's own, between presences"),
+                Frame::Message {
+                    id: nobodys.clone(),
+                    body: json!({"id": nobodys, "to": ["@WCJQSG"], "text": "nobody"}),
+                },
                 message(&held, "SAK9FZ", "theirs"),
                 message(&own, "SAK9FZ", "done"),
             ],
@@ -3530,6 +3570,16 @@ mod tests {
             skiff.message(&posing).is_none(),
             "a message from a session osprey holds isn't the worker's to say"
         );
+        assert!(
+            skiff.message(&between).is_none() && skiff.message(&nobodys).is_none(),
+            "nor one from a session it holds no presence for, nor one from no session"
+        );
+        let kept = skiff.message(&own).expect("its own session's message kept");
+        assert_eq!(
+            (kept["text"].as_str(), kept["worker"].as_str()),
+            (Some("[said on tern, a worker machine] done"), Some("tern")),
+            "a worker's own message is kept labelled as the worker's word, by the link's name"
+        );
         assert_eq!(
             skiff
                 .message(&held)
@@ -3537,6 +3587,51 @@ mod tests {
             Some("ours".to_owned()),
             "nor is a message skiff holds written over"
         );
+    }
+
+    #[tokio::test]
+    async fn whether_a_machine_is_a_worker_is_the_links_word_never_the_machines() {
+        for (worker, says_it_is) in [(true, false), (false, true)] {
+            let skiff = Memory::default();
+            let (_skiff_end, _far_reading, mut far_writing) = skiff_over(
+                skiff.clone(),
+                |connection| Connection {
+                    worker,
+                    ..connection
+                },
+                None,
+            );
+            let mut tern = tern_undeclared();
+            tern.worker = says_it_is;
+            says(
+                &mut far_writing,
+                &[
+                    Frame::Hello(realm("tern").hello()),
+                    Frame::Have {
+                        messages: Vec::new(),
+                        living: Some(Vec::new()),
+                    },
+                    Frame::Machine(Box::new(tern)),
+                ],
+            )
+            .await;
+            until(&skiff, |store| {
+                store
+                    .machines()
+                    .iter()
+                    .any(|machine| machine.name == "tern")
+            })
+            .await;
+            let kept = skiff
+                .machines()
+                .into_iter()
+                .find(|machine| machine.name == "tern");
+            assert_eq!(
+                kept.map(|machine| machine.worker),
+                Some(worker),
+                "tern said it was a worker: {says_it_is}, but the link's word is kept"
+            );
+        }
     }
 
     /// Starts as skiff's are carried, with its sessions' inboxes in

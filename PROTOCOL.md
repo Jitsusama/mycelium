@@ -317,18 +317,21 @@ Three seams shape a link:
   it ends when it can't. Its error output is passed on, and a line
   saying the other end "turned this machine away" is taken as a refused
   SSH key is. A machine reached so is a worker: it is asked and asks
-  nothing back. Its end's starts, steers and updates are refused, its
-  follows are ignored, and a presence of its naming another machine
-  isn't kept, nor a reply to an ask it wasn't sent, nor what it tells
-  of carries. It is said and
-  served only the quests it was given, each by a `mycelium share --to`
-  naming it, which gives that quest alone and none above it, and takes
-  back only those and
-  the quests it began, which this machine holds none of; it can end
-  no other. A message of its isn't kept when it names as its sender a
-  session another machine holds, or when this machine already holds
-  one by that id, while its own sessions' messages and presence cross
-  as any machine's do. The name it first says hello as is the one it
+  nothing back. Its end's starts, steers, updates, carries, ends and
+  runs are refused, its follows are ignored, and a presence of its
+  naming another machine isn't kept, nor a reply to an ask it wasn't
+  sent, nor what it tells of carries. It is said and served only the
+  quests it was given, each by a `mycelium share --to` naming it,
+  which gives that quest alone and none above it, and nothing it says
+  of any quest is taken: what it writes to one it was given stays on
+  it, as does a quest it began. A message of its is kept only when it
+  names as its sender a session it holds a presence for now, and this
+  machine holds none by that id. One kept opens its `text` with
+  `[said on <worker>, a worker machine] ` and gains `"worker"`, the
+  machine's name, both from the link's own name for it, never from
+  what the worker says, so each session reads it as the worker's word.
+  Its sessions' presence crosses as any machine's does. The name it
+  first says hello as is the one it
   is held to: a redial of the same place saying another is refused.
   Either way, the far `mycelium link` looks each minute at
   the `mycelium` its search path names, and once that is another build
