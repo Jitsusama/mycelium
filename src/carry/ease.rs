@@ -476,6 +476,23 @@ fn carried(
         may_wait: false,
         lasts: Some(SignedDuration::MAX),
     };
+    // The carry refuses a machine the start bringing a session back can't
+    // run on, whatever the session, so each is left out before placing
+    // and the next machine is placed instead.
+    let mut left_out = Vec::new();
+    let peers: Vec<Machine> = peers
+        .iter()
+        .filter(
+            |machine| match ground::brought_back(&machine.name, machine.declared.as_ref()) {
+                Some(why) => {
+                    left_out.push(why);
+                    false
+                }
+                None => true,
+            },
+        )
+        .cloned()
+        .collect();
     let mut smallest_first: Vec<&Cell> = cells.iter().collect();
     smallest_first.sort_by_key(|cell| cell.size.map_or((1, 0), |size| (0, size)));
     let mut why_not = Vec::new();
@@ -500,7 +517,7 @@ fn carried(
             why_not.push(format!("{who} moved within {} hours", PIN.as_hours()));
             continue;
         }
-        let to = match placement::decide(&work, peers, here.loads).placement {
+        let to = match placement::decide(&work, &peers, here.loads).placement {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 why_not.push(format!("{who}: {}", placement::said(&misses)));
@@ -509,12 +526,6 @@ fn carried(
         };
         let there = peers.iter().find(|machine| machine.name == to);
         if let Err(why) = ground::firm(cell.fence, here.declared, &to, there) {
-            why_not.push(format!("{who}: {why}"));
-            continue;
-        }
-        // The carry refuses a machine the start bringing it back can't
-        // run on, so the look never chooses one.
-        if let Some(why) = ground::brought_back(&to, there.and_then(|one| one.declared.as_ref())) {
             why_not.push(format!("{who}: {why}"));
             continue;
         }
@@ -528,6 +539,7 @@ fn carried(
     nothing(if why_not.is_empty() {
         format!("no session runs on {}", here.name)
     } else {
+        why_not.extend(left_out);
         why_not.join("; ")
     })
 }
@@ -877,20 +889,34 @@ pub(super) mod tests {
     // carry would refuse after spending the session's move for the day.
     #[test]
     fn a_look_never_chooses_a_machine_its_start_back_cant_run_on() {
-        let mut realm = realm();
-        let fences = realm[1]
-            .declared
+        // Tern, the roomiest, declares a strict fence too, which runs
+        // nothing, though the session runs fenced: the start back may be
+        // a strict asker's.
+        let mut alone = realm();
+        let mut strict = declaring(&[Kind::Fence, Kind::Strict]);
+        strict
+            .fence
             .as_mut()
-            .and_then(|declared| declared.fence.as_mut())
-            .expect("tern declares a fence");
-        for doors in fences.values_mut() {
-            doors.runs.clear();
-        }
-        let history = hot_for(&realm, 11);
+            .and_then(|fences| fences.get_mut(&Kind::Strict))
+            .expect("a strict fence")
+            .runs
+            .clear();
+        alone[1].declared = Some(strict);
+        let refused = "tern declares no way to run a command as its strictly fenced sessions \
+                       run that its launcher accepts, or its node is too old to say one";
+        let history = hot_for(&alone, 11);
+        let why = why_not(&chose(&alone, &[cell("s1")], &history)).to_owned();
+        assert!(
+            why.starts_with("S1: ") && why.ends_with(refused),
+            "with no other machine, nothing goes, saying why: {why}"
+        );
+        let mut beside = alone.clone();
+        beside.push(machine("osprey", 9.0));
+        let history = hot_for(&beside, 11);
         assert_eq!(
-            why_not(&chose(&realm, &[cell("s1")], &history)),
-            "S1: tern declares no way to run a command as its fenced sessions run that its \
-             launcher accepts, or its node is too old to say one"
+            carries(&chose(&beside, &[cell("s1")], &history)),
+            Some(("s1", "osprey")),
+            "the next machine is placed instead"
         );
     }
 
