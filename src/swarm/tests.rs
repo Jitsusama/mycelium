@@ -355,11 +355,19 @@ fn drawn_whole_a_long_name_is_never_cut_and_runs_on_alone() {
     swarm.teams[0]["title"] = json!(long);
     let shown = overview(&swarm, &whole());
     let lines: Vec<&str> = shown.lines().collect();
-    // Led by the short name a long title is given, its counts after it.
+    // Led by the short name a long title is given, its counts on the
+    // next line, under the column the other rows' counts are in, so its
+    // one is read as moving.
     let named = format!("reef  {long}");
-    assert!(
-        !shown.contains('…') && lines.contains(&format!("{named}{}1", " ".repeat(24)).as_str()),
-        "whole, the long name is drawn in full:\n{shown}"
+    let at = lines
+        .iter()
+        .position(|line| *line == named)
+        .unwrap_or_else(|| panic!("whole, the long name is drawn in full, alone:\n{shown}"));
+    assert!(!shown.contains('…'), "whole, nothing is cut:\n{shown}");
+    assert_eq!(
+        lines[at + 1],
+        format!("{}1", " ".repeat(38)),
+        "its count sits under its header, moving:\n{shown}"
     );
     assert!(
         lines
@@ -440,10 +448,44 @@ fn marks_line_up_within_a_block_and_each_kind_on_its_own() {
         "été 1\nab  2",
         "counted in characters, not bytes, and nothing trails"
     );
-    let long = "x".repeat(49);
+    // Swarm's four headers take 32 columns, so a lead of 48 keeps them
+    // within 80 and one of 49 doesn't.
+    let counts = "  need you  stuck  moving  quiet";
+    let (fits, runs_on) = ("x".repeat(48), "y".repeat(49));
     assert_eq!(
-        aligned(&format!("a\u{fdd0}  1\n{long}\u{fdd0}  2\nab\u{fdd0}\u{fdd0}  3")),
-        format!("a   1\n{long}  2\nab  3"),
-        "a line past 48 runs on alone, and a mark left over goes"
+        aligned(&format!(
+            "\u{fdd0}{counts}\n{fits}\u{fdd0}  1\n{runs_on}\u{fdd0}  2\nab\u{fdd0}\u{fdd0}  3"
+        )),
+        format!(
+            "{pad}{counts}\n{fits}  1\n{runs_on}\n{pad}  2\nab{}  3",
+            " ".repeat(46),
+            pad = " ".repeat(48)
+        ),
+        "a lead that keeps the counts within 80 lines up, a longer one sets its counts \
+         on the next line under the column, and a mark left over goes"
     );
+    assert_eq!(
+        aligned(&format!("\u{fdd0}  need you  stuck  moving  quiet  dormant\n{fits}\u{fdd0}  1")),
+        format!("  need you  stuck  moving  quiet  dormant\n{fits}\n  1"),
+        "with five headers, 41 columns, a lead of 48 runs on"
+    );
+}
+
+#[test]
+fn a_short_name_holding_what_draws_nothing_moves_no_title() {
+    let named = |short: &str| {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!(short);
+        swarm
+    };
+    let plain = overview(&named("dock"), &whole());
+    assert!(plain.contains("\ndock  "), "the short name is shown:\n{plain}");
+    for look in [look(), whole()] {
+        assert_eq!(
+            overview(&named("do\u{200B}ck\u{fdd0}"), &look),
+            overview(&named("dock"), &look),
+            "a character a short name loses moved its title at {}",
+            look.width
+        );
+    }
 }

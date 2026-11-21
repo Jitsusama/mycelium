@@ -215,17 +215,24 @@ pub(crate) fn without_marks(text: &str) -> String {
     text.replace(MARKS, "")
 }
 
-/// The widest text before a mark that the block's others line up after,
-/// the room a name has beside swarm's four counts at 80 columns (80 less
-/// their 32): a name past it, a pasted paragraph for a title, runs on
-/// alone rather than pushing every row's counts off a reader's screen.
-const LINES_UP_WITHIN: usize = 48;
+/// The columns a table lined up [`WHOLE`] keeps its counts within, as a
+/// terminal of the narrowest common width shows them.
+const KEPT_WITHIN: usize = 80;
+
+/// The room kept after the widest lead for a doing to begin in, so a
+/// doing starts by column 48 however long the titles before it.
+const DOING_ROOM: usize = 32;
 
 /// `text` drawn [`WHOLE`] with its marks lined up: in each block of
 /// lines between blank ones, what comes before each mark is padded to
-/// the widest of the block's up to [`LINES_UP_WITHIN`], counts and
-/// doings each on their own, and a mark left over is dropped. A pipe
-/// is never drawn in colour, so a character is a column.
+/// the widest of the block's that leaves what follows room within
+/// [`KEPT_WITHIN`] (a block's widest counts, or [`DOING_ROOM`] for a
+/// doing), counts and doings each on their own. A line whose lead is
+/// wider, a pasted paragraph for a title, runs on alone and sets what
+/// follows on the next line under the column, so one name moves no
+/// other row's counts and no count sits under another's header. A mark
+/// left over is dropped. A pipe is never drawn in colour, so a
+/// character is a column.
 pub(crate) fn aligned(text: &str) -> String {
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
     let blocks: Vec<(usize, usize)> = {
@@ -243,26 +250,45 @@ pub(crate) fn aligned(text: &str) -> String {
     for mark in [DOING_AT, COUNTS_AT] {
         for &(start, end) in &blocks {
             let block = &mut lines[start..end];
+            let split = |line: &str| {
+                line.find(mark).map(|at| {
+                    let after = &line[at + mark.len()..];
+                    (at, line[..at].chars().count(), after.chars().count())
+                })
+            };
+            let room = if mark == COUNTS_AT {
+                block
+                    .iter()
+                    .filter_map(|line| split(line).map(|(_, _, after)| after))
+                    .max()
+                    .unwrap_or_default()
+            } else {
+                DOING_ROOM
+            };
+            let within = KEPT_WITHIN.saturating_sub(room);
             let Some(widest) = block
                 .iter()
-                .filter_map(|line| Some(line[..line.find(mark)?].chars().count()))
-                .filter(|before| *before <= LINES_UP_WITHIN)
+                .filter_map(|line| split(line).map(|(_, before, _)| before))
+                .filter(|before| *before <= within)
                 .max()
             else {
                 continue;
             };
             for line in block.iter_mut() {
-                if let Some(at) = line.find(mark) {
-                    let before = line[..at].chars().count();
+                if let Some((at, before, _)) = split(line) {
                     let after = &line[at + mark.len()..];
-                    let pad = widest.saturating_sub(before);
-                    *line = format!("{}{}{after}", &line[..at], " ".repeat(pad));
+                    *line = if before > widest {
+                        format!("{}\n{}{after}", line[..at].trim_end(), " ".repeat(widest))
+                    } else {
+                        format!("{}{}{after}", &line[..at], " ".repeat(widest - before))
+                    };
                 }
             }
         }
     }
     lines
         .iter()
+        .flat_map(|line| line.split('\n'))
         .map(|line| line.replace(MARKS, "").trim_end().to_owned())
         .collect::<Vec<_>>()
         .join("\n")
@@ -441,7 +467,7 @@ fn shorts_width<'a>(
 ) -> usize {
     teams
         .filter_map(|team| names::shown(team, shorts))
-        .map(|short| short.chars().count())
+        .map(|short| unmarked(short).chars().count())
         .max()
         .unwrap_or_default()
 }
@@ -457,10 +483,18 @@ pub(crate) fn row(
     strong: bool,
 ) -> String {
     let columns: Vec<Standing> = counts.iter().map(|(each, _)| *each).collect();
-    let plain = unmarked(&label.short.map_or_else(
-        || label.title.to_owned(),
-        |short| format!("{}{GAP}{}", padded(short, label.width), label.title),
-    ));
+    // Each part is cleaned before it is padded, so a character a peer's
+    // name loses can't move its title off the column.
+    let plain = label.short.map_or_else(
+        || unmarked(label.title),
+        |short| {
+            format!(
+                "{}{GAP}{}",
+                padded(&unmarked(short), label.width),
+                unmarked(label.title)
+            )
+        },
+    );
     // Drawn whole, the name is as wide as it is, and its counts are lined
     // up with the table's once it's drawn.
     let room = if look.whole() {

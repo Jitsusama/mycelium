@@ -572,6 +572,47 @@ mod tests {
     }
 
     #[test]
+    fn drawn_whole_each_sentence_is_one_line() {
+        let flagged = reading(
+            vec![
+                machine("kestrel", 0.9, 28, 1.75),
+                machine("osprey", 0.4, 13, 1.08),
+            ],
+            Some(0.25),
+            vec![
+                Flag::Imbalanced,
+                Flag::HotWhileCool {
+                    hot: "kestrel".to_owned(),
+                    cool: "osprey".to_owned(),
+                },
+                Flag::Stranded {
+                    machine: "kestrel".to_owned(),
+                    spent: "processor".to_owned(),
+                },
+            ],
+        );
+        // The sentences follow the table's blank line, the second.
+        let sentences = |width: usize| -> Vec<String> {
+            said(&flagged, "work", width, false)
+                .split("\n\n")
+                .skip(2)
+                .flat_map(str::lines)
+                .map(str::to_owned)
+                .collect()
+        };
+        assert!(
+            sentences(40).iter().any(|line| line.starts_with(' ')),
+            "at 40 a sentence wraps: {:?}",
+            sentences(40)
+        );
+        let whole = sentences(crate::swarm::WHOLE);
+        assert!(
+            whole.len() == 3 && whole.iter().all(|line| !line.starts_with(' ')),
+            "whole, each of the three sentences is one line: {whole:?}"
+        );
+    }
+
+    #[test]
     fn a_figure_wider_than_its_header_widens_its_column() {
         let mut many = machine("kestrel", 0.9, 12_345, 1.75);
         many.idle = 7;

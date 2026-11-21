@@ -98,7 +98,7 @@ fn label<'a>(network: &'a Network, title: &'a str, width: usize) -> Label<'a> {
 fn shorts_width<'a>(networks: impl Iterator<Item = &'a Network>) -> usize {
     networks
         .filter_map(shown_short)
-        .map(|short| short.chars().count())
+        .map(|short| unmarked(short).chars().count())
         .max()
         .unwrap_or_default()
 }
@@ -511,7 +511,7 @@ pub fn overview(mycelium: &Mycelium, look: &Look, with_cells: bool, all: bool) -
         .cells
         .iter()
         .filter(|cell| matches!(cell.is, Is::Machine | Is::Builder))
-        .map(|cell| cell.name.chars().count())
+        .map(|cell| unmarked(&cell.name).chars().count())
         .chain([shorts_width(mycelium.networks.iter())])
         .max()
         .unwrap_or_default();
@@ -581,7 +581,7 @@ fn cell_lines<'a>(
     });
     let name_width = sessions
         .iter()
-        .map(|(_, cell)| cell.name.chars().count())
+        .map(|(_, cell)| unmarked(&cell.name).chars().count())
         .max()
         .unwrap_or_default();
     let mut lines: Vec<String> = sessions
