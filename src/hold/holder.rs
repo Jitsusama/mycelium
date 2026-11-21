@@ -552,9 +552,9 @@ pub async fn hold(
             // A quit to park that hung is ended by a signal, which says no
             // code, so the program's word that it parked keeps it so.
             let said_parked = fs::remove_file(&files.parked).is_ok();
-            let parks = said_parked || status.code() == Some(PARKED);
+            let parking = said_parked || status.code() == Some(PARKED);
             // Told to end, a program that parked as it saved stays down.
-            if telling || (!gone && !parks) {
+            if telling || (!gone && !parking) {
                 break status;
             }
             gone_runs = gone_runs_after(gone_runs, gone, began.elapsed());
