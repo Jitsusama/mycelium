@@ -3193,7 +3193,7 @@ impl<S: Store> Shared<S> {
     /// one, once the lock is let go. Work an agent asks, running in the fence `fence`, is refused
     /// every machine whose ground is looser than here, so nothing is carried
     /// to a machine that would refuse to run it once it got there; and an
-    /// agent's run, where `runs` says it is one, every machine whose fence
+    /// agent's run or held start, where `runs` says it is one, every machine whose fence
     /// runs no command, this one's as its launcher judges it and another's
     /// as it last said its fence, which refuses that run there. Those
     /// machines still count for what the realm reaches, and the record
@@ -5162,7 +5162,8 @@ impl<S: Store> Shared<S> {
     /// asking no provider for a machine to make.
     async fn here(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
         let admits = self.admits().await;
-        match self.place(&asked.work, Counts::Always, fence, false, &admits) {
+        let runs = held_in_launcher(fence);
+        match self.place(&asked.work, Counts::Always, fence, runs, &admits) {
             Placement::Placed { machine, .. } if machine == self.machine => {
                 self.start_on(machine, asked).await
             }
@@ -5183,10 +5184,12 @@ impl<S: Store> Shared<S> {
     /// nothing for any start, and one that costs only for a start that
     /// says it may. An agent's, asked in `fence`, is held to its own
     /// ground, as a run of its is, so a session it starts never lands
-    /// looser than the one asking.
+    /// looser than the one asking, nor where that fence runs no command
+    /// ([`held_in_launcher`]).
     async fn placed(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
         let admits = self.admits().await;
-        let (misses, nowhere) = match self.place(&asked.work, Counts::Always, fence, false, &admits)
+        let runs = held_in_launcher(fence);
+        let (misses, nowhere) = match self.place(&asked.work, Counts::Always, fence, runs, &admits)
         {
             Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
             Placement::Pending { misses } => {
@@ -5203,6 +5206,16 @@ impl<S: Store> Shared<S> {
                 ) {
                     return Err(format!(
                         "this asks as {}, so it starts nothing on looser ground: {why}",
+                        By::Agent(kind)
+                    ));
+                }
+                if let (Some(kind), Some(why)) = (
+                    fence,
+                    refused_named(&asked.work, &misses, placement::RUNS_NOTHING),
+                ) {
+                    return Err(format!(
+                        "this asks as {}, so it starts only where that fence runs a command: \
+                         {why}",
                         By::Agent(kind)
                     ));
                 }
@@ -5386,7 +5399,8 @@ impl<S: Store> Shared<S> {
         let mut there = asked.work.clone();
         there.needs.push(Need::Machine(made.machine.clone()));
         // Pinned to the machine made for it, which is booked for its asker.
-        match self.place(&there, Counts::Always, fence, false, &Admits::All) {
+        let runs = held_in_launcher(fence);
+        match self.place(&there, Counts::Always, fence, runs, &Admits::All) {
             Placement::Placed { machine, .. } => self.start_on(machine, asked).await,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 let its: Vec<Miss> = misses
@@ -5792,19 +5806,17 @@ impl<S: Store> Shared<S> {
     /// Places `work` as [`Node::place`] does for whoever asks, held to an
     /// agent's ground where an agent asks, as a run of its would be, so
     /// what it is told would take the work is where the work can run. Work
-    /// placed to start (`counts` other than [`Counts::Never`]) starts a
-    /// session, which needs no way to run a command in its fence there.
+    /// placed to start (`counts` other than [`Counts::Never`]) is held to
+    /// where its fence runs a command as a held start is
+    /// ([`held_in_launcher`]).
     async fn place_asked(&self, work: &Work, counts: Counts) -> Reply {
         let fence = self.fence_asked().await?;
         // Held to the machines booked for whoever asks, as its run is.
         let admits = self.admits().await;
-        Ok(Response::Placement(self.place(
-            work,
-            counts,
-            fence,
-            counts == Counts::Never,
-            &admits,
-        )))
+        let runs = counts == Counts::Never || held_in_launcher(fence);
+        Ok(Response::Placement(
+            self.place(work, counts, fence, runs, &admits),
+        ))
     }
 
     /// The fence whoever asks runs in, as [`Self::judged`] tells it and
@@ -6020,6 +6032,16 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
 /// it names a folder the asker chose.
 fn refused(why: &str) {
     eprintln!("a run is refused: {}", why.escape_debug());
+}
+
+/// Whether a session an agent starts held in the fence `fence` is placed
+/// only where that fence declares how a command runs, as the agent's runs
+/// are: in any fence but none. Its start doesn't go through that
+/// launcher, but a machine declaring none (a Mac, which has no Landlock)
+/// has nothing there to keep the session in its fence, so it would run
+/// looser than its asker.
+fn held_in_launcher(fence: Option<crate::declared::Kind>) -> bool {
+    fence.is_some_and(|kind| kind > crate::declared::Kind::None)
 }
 
 /// Why `machine` refused the work with the refusal `key`, where it did.
@@ -13266,13 +13288,36 @@ esac
             "skiff",
             "where a run would go is never where its fence runs nothing"
         );
-        // A start weighs the sessions here, so it is pinned to tern to be
-        // judged there alone.
+        // Nor would a session an agent starts there be kept in its fence, so
+        // a start is refused tern too, pinned there to be judged alone.
         let on_tern = work(vec![Need::Machine("tern".to_owned())]);
+        let answer =
+            placement_through(socket.clone(), Request::PlaceToStart(on_tern.clone())).await;
+        let Placement::Refused { misses } = answer else {
+            panic!("tern doesn't take an agent's start: {answer:?}");
+        };
+        assert!(
+            refused_on(&misses, "tern", placement::RUNS_NOTHING).is_some(),
+            "a session started there would run unfenced: {}",
+            placement::said(&misses)
+        );
+        let held = Start {
+            work: on_tern,
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
         assert_eq!(
-            placed(Request::PlaceToStart(on_tern)).await,
-            "tern",
-            "a session started there needs no way to run a command"
+            ask(socket.clone(), Request::Start(held)).await,
+            Err(
+                "this asks as a strictly fenced agent, so it starts only where that fence runs \
+                 a command: tern declares no way to run a command as its strictly fenced \
+                 sessions run that its launcher accepts, or its node is too old to say one"
+                    .to_owned()
+            ),
+            "an agent's start naming tern is told why not, as spawn quotes it"
         );
         asks_as_person(&socket);
         assert_eq!(
@@ -13495,6 +13540,8 @@ esac
         store
             .put_machine(&fenced("tern", &["remote", "cloud"]))
             .expect("what it said is kept");
+        // Here runs a command in its fence, so only tern's ground is judged.
+        declares_runs(&socket, true);
         let start = |needs: Vec<Need>, prefers: Vec<Need>| Start {
             work: Work {
                 prefers,
@@ -14370,6 +14417,15 @@ esac
     /// `FENCED=strict` to what it starts.
     fn declares_runs(socket: &Path, runs: bool) {
         declares_launcher(socket, runs.then_some("shift; FENCED=strict exec \"$@\""));
+    }
+
+    /// `shared`, its socket in `dir`, declaring fences that run a command,
+    /// as a Linux machine's do, so an agent's held start may land on it.
+    fn runs_commands(shared: &mut Shared<Memory>, dir: &Path) {
+        let socket = dir.join("node.sock");
+        declares_runs(&socket, true);
+        shared.declared = socket.with_file_name("declared.json");
+        shared.runs = Arc::new(runs_of(&socket));
     }
 
     /// As [`declares_runs`], the launcher's stand-in running `script`, or
@@ -15884,11 +15940,14 @@ esac
             scope: start::Scope::None,
             kit: Some(start::Kit::Carried(PathBuf::from("/nix/store/kit"))),
         };
-        let (stop, node) = alone_with(
-            &Memory::default(),
-            &socket,
-            bare(dir.path().join("steer"), Some(holds)),
-        );
+        // Its fences run a command, so an agent's held start may land here.
+        declares_runs(&socket, true);
+        let launching = Given {
+            declared: socket.with_file_name("declared.json"),
+            runs: runs_of(&socket),
+            ..bare(dir.path().join("steer"), Some(holds))
+        };
+        let (stop, node) = alone_with(&Memory::default(), &socket, launching);
 
         let folder = dir.path().to_owned();
         let answers = tokio::task::spawn_blocking(move || {
@@ -16631,6 +16690,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let unattended = Processes::Folder("/nowhere/proc".into()).unattended();
         let mut link = holding_skiff(dir.path(), Memory::default(), None, unattended);
+        runs_commands(&mut link, dir.path());
         // A `mycelium link` SSH started, never the node's own process.
         link.client = Some(1);
         let start = Start {
@@ -16745,6 +16805,7 @@ esac
         let dir = tempfile::tempdir().expect("a temporary folder");
         let processes = Processes::Folder("/nowhere/proc".into());
         let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        runs_commands(&mut link, dir.path());
         link.client = Some(1);
         let start = Start {
             work: work(vec![Need::Machine("skiff".to_owned())]),
