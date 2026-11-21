@@ -6,6 +6,7 @@ use super::kept::{RECORD, answered, paths, pruned};
 use super::made::asks;
 use super::{Is, Mycelium, Shape, cell, cells, network, overview};
 use crate::daemon::fields::{MOST_FIELDS, projected};
+use crate::forage::one_line;
 use crate::swarm::{ASKS_FIT, Look, Shapes, WHOLE, together};
 
 /// A look 80 columns wide, without colour, at 17:00 on Thursday
@@ -1891,6 +1892,69 @@ fn drawn_whole_a_cell_s_marks_and_breaks_move_no_column() {
         ),
         clean,
         "a mark or a break in a cell's title or doing moved a column or split a block"
+    );
+}
+
+#[test]
+fn a_peer_s_escape_break_or_mark_reaches_no_page() {
+    let pages = |title: &str, step: &str, machine: (&str, &str)| {
+        let [teams, mut sessions, mut machines] = records();
+        for session in &mut sessions {
+            if session["address"] == "ASKS01" {
+                session["presence"]["questInfo"]["title"] = json!(title);
+            }
+            if session["address"] == "BUSY01" {
+                session["step"] = json!(step);
+            }
+        }
+        machines[1]["name"] = json!(machine.0);
+        machines[1]["state"] = json!(machine.1);
+        let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
+        let page = |name: &str| {
+            let found = mycelium.cell(name).expect("the session is a cell");
+            cell(&mycelium, found, &look())
+        };
+        [
+            overview(&mycelium, &whole(), true, false),
+            cells(&mycelium, &whole(), false, &[]),
+            cells(&mycelium, &look(), false, &[]),
+            page("ASKS01"),
+            page("BUSY01"),
+        ]
+    };
+    let clean = pages("Kelp's question", "running the tests", ("dinghy", "ready"));
+    assert_eq!(
+        pages(
+            "Kelp's\u{200b} question\u{fdd0}",
+            "running\u{fdd1} the tests",
+            ("ding\u{200b}hy\u{fdd0}", "ready"),
+        ),
+        clean,
+        "what draws nothing, or a mark, in a peer's name, title, step or state moved a column"
+    );
+    // An escape's control goes and its visible rest stays, so these pages
+    // are held to the same words set on one line, which may run on as
+    // any long title does.
+    let (title, step, state) = (
+        "Kelp's \u{1b}]0;tide\u{7}question",
+        "running\u{1b}[2J the\n\ntests",
+        "ready\r\n\nlater",
+    );
+    let dirty = pages(title, step, ("dinghy", state));
+    for page in &dirty {
+        assert!(
+            !page.contains(['\u{1b}', '\u{7}', '\r']),
+            "a peer's escape reached the page:\n{page:?}"
+        );
+    }
+    assert_eq!(
+        dirty,
+        pages(
+            &one_line(title),
+            &one_line(step),
+            ("dinghy", &one_line(state))
+        ),
+        "a peer's escape or break drew otherwise than its words on one line"
     );
 }
 

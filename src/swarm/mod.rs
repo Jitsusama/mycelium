@@ -186,7 +186,8 @@ pub(crate) const NARROWEST: usize = 16;
 
 /// The width a pipe is drawn at: nothing is cut to it, and no column is
 /// padded out to it, so a reader that greps or saves the text has all of
-/// it, each table's columns as wide as what is in them.
+/// it, each table's columns as wide as what is in them; a row too long
+/// to line up sets its counts on the next line, as [`aligned`] says.
 pub const WHOLE: usize = usize::MAX;
 
 /// Where a row's counts begin, as a table is drawn [`WHOLE`], for
@@ -219,8 +220,9 @@ pub(crate) fn without_marks(text: &str) -> String {
 /// terminal of the narrowest common width shows them.
 const KEPT_WITHIN: usize = 80;
 
-/// The room kept after the widest lead for a doing to begin in, so a
-/// doing starts by column 48 however long the titles before it.
+/// The room kept after the widest lead for a doing, so what comes
+/// before a doing ends by column 48 however long the titles, and the
+/// doing begins after the gap that follows.
 const DOING_ROOM: usize = 32;
 
 /// `text` drawn [`WHOLE`] with its marks lined up: in each block of
@@ -230,7 +232,11 @@ const DOING_ROOM: usize = 32;
 /// doing), counts and doings each on their own. A line whose lead is
 /// wider, a pasted paragraph for a title, runs on alone and sets what
 /// follows on the next line under the column, so one name moves no
-/// other row's counts and no count sits under another's header. A mark
+/// other row's counts and no count sits under another's header; with
+/// nothing after its mark, it stays on its line. A doing's block where
+/// no lead fits sets its doings under the furthest column allowed. A
+/// line that runs on has each run of spaces after its indent drawn as
+/// one, so a title can't space a figure out under a header. A mark
 /// left over is dropped. A pipe is never drawn in colour, so a
 /// character is a column.
 pub(crate) fn aligned(text: &str) -> String {
@@ -266,19 +272,25 @@ pub(crate) fn aligned(text: &str) -> String {
                 DOING_ROOM
             };
             let within = KEPT_WITHIN.saturating_sub(room);
-            let Some(widest) = block
+            // A counts block always holds its header, whose lead fits, so
+            // only a doings block can find none.
+            let widest = block
                 .iter()
                 .filter_map(|line| split(line).map(|(_, before, _)| before))
                 .filter(|before| *before <= within)
                 .max()
-            else {
-                continue;
-            };
+                .unwrap_or(within);
             for line in block.iter_mut() {
                 if let Some((at, before, _)) = split(line) {
                     let after = &line[at + mark.len()..];
-                    *line = if before > widest {
-                        format!("{}\n{}{after}", line[..at].trim_end(), " ".repeat(widest))
+                    *line = if before > widest && after.trim().is_empty() {
+                        line[..at].to_owned()
+                    } else if before > widest {
+                        format!(
+                            "{}\n{}{after}",
+                            single_spaced(&line[..at]),
+                            " ".repeat(widest)
+                        )
                     } else {
                         format!("{}{}{after}", &line[..at], " ".repeat(widest - before))
                     };
@@ -292,6 +304,17 @@ pub(crate) fn aligned(text: &str) -> String {
         .map(|line| line.replace(MARKS, "").trim_end().to_owned())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `lead` as a line that runs on draws it: its indent kept, and each run
+/// of spaces after it drawn as one, with none at its end.
+fn single_spaced(lead: &str) -> String {
+    let body = lead.trim_start();
+    let indent = &lead[..lead.len() - body.len()];
+    format!(
+        "{indent}{}",
+        body.split_whitespace().collect::<Vec<_>>().join(" ")
+    )
 }
 
 impl Look {

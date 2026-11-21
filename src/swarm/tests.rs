@@ -355,10 +355,11 @@ fn drawn_whole_a_long_name_is_never_cut_and_runs_on_alone() {
     swarm.teams[0]["title"] = json!(long);
     let shown = overview(&swarm, &whole());
     let lines: Vec<&str> = shown.lines().collect();
-    // Led by the short name a long title is given, its counts on the
-    // next line, under the column the other rows' counts are in, so its
-    // one is read as moving.
-    let named = format!("reef  {long}");
+    // Led by the short name a long title is given, one space between as
+    // a line that runs on draws it, its counts on the next line, under
+    // the column the other rows' counts are in, so its one is read as
+    // moving.
+    let named = format!("reef {long}");
     let at = lines
         .iter()
         .position(|line| *line == named)
@@ -424,6 +425,14 @@ fn a_title_holding_a_mark_moves_no_column() {
     let mut swarm = bridged();
     swarm.teams[0]["title"] = json!("Re\u{fdd0}e\u{fdd0}f");
     swarm.sessions[2]["title"] = json!("Busy\u{fdd1} one");
+    // The head names the lead, and the line under it what landed, so a
+    // mark kept in both would line one up with the other.
+    for session in &mut swarm.sessions {
+        if session["id"] == "s-lead" {
+            session["title"] = json!("Harbour's\u{fdd0} lead");
+        }
+    }
+    swarm.teams[1]["landed"]["what"] = json!("Hear\u{fdd0} the Tide");
     assert_eq!(
         overview(&swarm, &whole()),
         overview(&bridged(), &whole()),
@@ -470,6 +479,62 @@ fn marks_line_up_within_a_block_and_each_kind_on_its_own() {
         )),
         format!("  need you  stuck  moving  quiet  dormant\n{fits}\n  1"),
         "with five headers, 41 columns, a lead of 48 runs on"
+    );
+}
+
+#[test]
+fn a_row_that_runs_on_leaves_no_gap_and_spaces_out_no_figure() {
+    let counts = "  need you  stuck  moving  quiet";
+    let pad = " ".repeat(48);
+    // A lead of 48 sets the column, as the widest that fits; a run-on
+    // row's lead never does.
+    let (fits, none) = ("x".repeat(48), "z".repeat(49));
+    assert_eq!(
+        aligned(&format!(
+            "\u{fdd0}{counts}\n{none}\u{fdd0}\n{fits}\u{fdd0}  1"
+        )),
+        format!("{pad}{counts}\n{none}\n{fits}  1"),
+        "a long row with no counts stays on its line, leaving no blank one to end \
+         the table early"
+    );
+    let spaced = format!("  Reef{}1{}x", " ".repeat(30), " ".repeat(20));
+    assert_eq!(
+        aligned(&format!(
+            "\u{fdd0}{counts}\n{spaced}\u{fdd0}  2\n{fits}\u{fdd0}  1"
+        )),
+        format!("{pad}{counts}\n  Reef 1 x\n{pad}  2\n{fits}  1"),
+        "a title that runs on draws each run of spaces as one, so it can't set a \
+         figure under a header"
+    );
+}
+
+#[test]
+fn a_doing_past_its_column_runs_on_under_it() {
+    // What comes before a doing ends by column 48, so a lead of 48 lines
+    // its doing up and one of 49 sets it on the next line.
+    let (fits, runs_on) = ("x".repeat(48), "y".repeat(49));
+    let pad = " ".repeat(48);
+    assert_eq!(
+        aligned(&format!(
+            "{fits}\u{fdd1}  tide\nab\u{fdd1}  ebb\n{runs_on}\u{fdd1}  flood"
+        )),
+        format!(
+            "{fits}  tide\nab{}  ebb\n{runs_on}\n{pad}  flood",
+            " ".repeat(46)
+        ),
+        "a doing past column 48 runs on, under the others"
+    );
+    assert_eq!(
+        aligned(&format!(
+            "{runs_on}\u{fdd1}  flood\n{runs_on}z\u{fdd1}  ebb"
+        )),
+        format!("{runs_on}\n{pad}  flood\n{runs_on}z\n{pad}  ebb"),
+        "where no lead fits, each doing runs on under column 48"
+    );
+    assert_eq!(
+        aligned(&format!("{runs_on}\u{fdd1}")),
+        runs_on,
+        "with no doing, the line stays as it is"
     );
 }
 
