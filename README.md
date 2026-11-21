@@ -125,9 +125,13 @@ The harness mesh's messages and presence, carried between machines:
   judged. An answer today's rules wouldn't give under the weights that
   gave it, as work on a worker that didn't name it, is counted as stale
   and left as it was, so a rule's change isn't read as the weights'.
-- `mycelium unanswered` prints what holds the mesh up as JSON lines,
-  oldest first: each question of the last two hours still waiting on a
-  peer it was put to, and each hold still standing. `mycelium said`
+- `mycelium unanswered` shows what holds the mesh up, oldest first:
+  each question of the last two hours still waiting on a peer it was
+  put to, with who asks whom and how long it has waited, and each hold
+  still standing, with until when, each with its id and how it opens.
+  It draws text into a pipe too, as `swarm` and `forage` do, so a
+  script reading the JSON lines it once printed asks for them with
+  `-o json`, which prints each whole as a JSON line. `mycelium said`
   prints what you said to sessions through this machine, with when each
   was taken up and answered.
 - `mycelium swarm` shows the realm's teams in a terminal, nested as

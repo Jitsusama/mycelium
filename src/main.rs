@@ -171,10 +171,12 @@ enum Action {
     /// Prints the questions and holds the mesh waits on.
     ///
     /// Each question of the last two hours still waiting on a peer it
-    /// was put to, and each hold still standing, oldest first, a JSON
-    /// line each, as the node holds it.
+    /// was put to, and each hold still standing, oldest first: who asks
+    /// whom and how long it has waited, or who holds whom and until
+    /// when, its id, and how it opens. `-o json` prints each whole, a
+    /// JSON line as the node holds it.
     #[command(after_help = "Example:\n  mycelium unanswered")]
-    Unanswered,
+    Unanswered(Output),
     /// Prints what you said to sessions through this machine.
     ///
     /// Oldest first, with when each was taken up and answered, a JSON
@@ -1493,7 +1495,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             carry(&socket, shares, carrying, why.as_deref())
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
-        Action::Unanswered => print_records(&socket, mycelium::unanswered::KIND),
+        Action::Unanswered(output) => unanswered(&socket, &output),
         Action::Said => print_records(&socket, mycelium::words::KIND),
         Action::Health { here } => health(&socket, here, realm),
         Action::Balance(asked) => balance(&socket, &realm, asked),
@@ -3050,6 +3052,39 @@ fn forage(socket: &Path, asked: &ForageAsked) -> io::Result<()> {
     write!(io::stdout().lock(), "{drawn}")
 }
 
+/// Draws what waits on the mesh for a person, to the terminal's width,
+/// or whole into a pipe; or, asked for JSON, prints each record as the
+/// node holds it.
+fn unanswered(socket: &Path, output: &Output) -> io::Result<()> {
+    if output.json() {
+        return print_records(socket, mycelium::unanswered::KIND);
+    }
+    let records = mycelium::swarm::records(socket, mycelium::unanswered::KIND, SWARM_WITHIN)?;
+    let drawn = mycelium::unanswered::drawn(&records, &look(), room());
+    io::stdout().lock().write_all(drawn.as_bytes())
+}
+
+/// The columns stdout has, as [`width`] finds them for a terminal; into
+/// a pipe, none, so nothing is cut.
+fn room() -> Option<usize> {
+    use std::io::IsTerminal as _;
+    let stdout = io::stdout();
+    let terminal = stdout.is_terminal();
+    room_of(
+        terminal,
+        std::env::var("COLUMNS").ok().as_deref(),
+        rustix::termios::tcgetwinsize(&stdout)
+            .ok()
+            .map(|size| size.ws_col),
+    )
+}
+
+/// [`room`] from what it reads: whether stdout is a `terminal`, the
+/// `columns` set in `COLUMNS`, and the terminal's own `size`.
+fn room_of(terminal: bool, columns: Option<&str>, size: Option<u16>) -> Option<usize> {
+    terminal.then(|| width(true, columns, size))
+}
+
 /// Prints each record of `kind` the node holds, a JSON line each, oldest
 /// first.
 fn print_records(socket: &Path, kind: &str) -> io::Result<()> {
@@ -3119,7 +3154,7 @@ mod tests {
 
     use super::{
         Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, in_place, kit,
-        processes_here, reader_left, said_text, swarm_asked, tree, width, write_line,
+        processes_here, reader_left, room_of, said_text, swarm_asked, tree, width, write_line,
     };
 
     #[test]
@@ -3140,6 +3175,23 @@ mod tests {
                 width(true, columns, said),
                 wide,
                 "COLUMNS {columns:?}, the terminal saying {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_room_is_a_terminal_s_width_and_none_into_a_pipe() {
+        for (terminal, columns, size, room) in [
+            (false, Some("60"), Some(100), None),
+            (true, Some("60"), Some(100), Some(60)),
+            (true, Some("200"), Some(100), Some(100)),
+            (true, Some("wide"), Some(100), Some(100)),
+            (true, None, None, Some(80)),
+        ] {
+            assert_eq!(
+                room_of(terminal, columns, size),
+                room,
+                "a terminal {terminal}, COLUMNS {columns:?}, its size {size:?}"
             );
         }
     }

@@ -34,7 +34,7 @@ The rest of the tests sit beside the code they prove, in `src/`.
   an allocator of its own, which only a program of its own may hold
 - `process/`: the `mycelium` command with its folders under a test's own
   home, and the wait for a path it makes, that `declared.rs`,
-  `named.rs` and `stopped.rs` share
+  `named.rs`, `stopped.rs` and `unanswered.rs` share
 - `realm/`: the realm of ten thousand cells both are built for, and the
   bar they are held to, with the counting allocator and thread time
   (`counting.rs`) that `ties.rs`, `forages.rs` and `murmurs.rs` share
@@ -58,5 +58,7 @@ The rest of the tests sit beside the code they prove, in `src/`.
 - `ssh.rs`: what another machine's link key may run, as SSH runs it
 - `stopped.rs`: a node told to stop while a client watches it, letting
   go, taking its socket away and ending well
+- `unanswered.rs`: what waits on the mesh into a pipe, text for a person
+  with nothing cut, and as JSON lines with `-o json` or `--json`
 - `unread.rs`: a command's failure said to a pipe nobody reads any more
   ending as a failure, not a panic
