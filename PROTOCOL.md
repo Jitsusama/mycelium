@@ -3136,6 +3136,15 @@ Before 19 November 2026 a holder ended on 69. It still ends on any
 code but 75 and such a 69, such as 3, an attach whose host let the
 conversation go back to plain pi, even with `<id>.gone` written.
 
+A program may also write `<id>.parked`, empty, just before it quits to
+park, told its path in `MYCELIUM_PARKED`. Its run is then kept parked
+however it ends, a signal's end included, as though it exited 75: a pi
+whose quit hangs, as one on a Mac did on a name lookup, is ended by a
+signal, which says no code, and its holder would otherwise end its
+window. The file is taken away after each run, so a later run's end is
+judged on its own word. A run ended by a signal with no such file
+written ends its holder, as before 21 November 2026.
+
 A joined terminal sends frames of a tag byte, a two-byte big-endian
 length and what it carries: tag 0 is bytes typed, and tag 1 is its size,
 rows then columns, two bytes each, sent on joining and on each change.
