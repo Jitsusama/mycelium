@@ -1360,17 +1360,18 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// or an escape among them, and each line or paragraph separator, which
 /// an editor or a viewer breaks a line at, as a space, and each mark that
 /// turns text's direction or draws nothing left out, so words read from a
-/// file can't draw lines of their own, steer the terminal, read backwards
-/// past their own end, or pass for another's name.
+/// file can't draw lines of their own, steer the terminal or read
+/// backwards past their own end. [`joins`] cleans each need with it too,
+/// so the needs a node serves in its forage records are cleaned the same.
 ///
 /// A joiner or non-joiner between two characters past ASCII, and one
 /// variation selector straight after one, are kept, since Persian and
 /// Indic words are spelled with them and an emoji is drawn by them;
 /// beside ASCII, as in an address, or stacked, they only part names that
-/// read alike or carry what nobody sees. Each is judged by what is left
-/// once direction marks and controls are gone, in one pass, so no mark
-/// beside it can vouch for it and a long run costs no more than its
-/// length.
+/// read alike or carry what nobody sees. Kept there, one can still part
+/// two names past ASCII that read alike, as a letter from another script
+/// can. Each is judged by what is left once direction marks and controls
+/// are gone, in one pass, so no mark beside it can vouch for it.
 pub(crate) fn one_line(text: &str) -> String {
     let plain: Vec<char> = text
         .chars()
@@ -3554,7 +3555,7 @@ mod tests {
     }
 
     #[test]
-    fn only_one_selector_is_kept_and_a_long_run_costs_its_length() {
+    fn only_one_selector_is_kept_even_from_a_long_run() {
         assert_eq!(
             one_line("caf\u{E9}\u{FE00}\u{FE0F}\u{E0100}"),
             "caf\u{E9}\u{FE00}",
