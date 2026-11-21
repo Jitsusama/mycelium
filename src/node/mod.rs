@@ -3222,13 +3222,14 @@ impl<S: Store> Shared<S> {
                 let mut refused = ground::looser(kind, here.as_ref(), &self.machine, &machines);
                 if runs {
                     // Told in the log, since a broken launcher sends an
-                    // agent's runs elsewhere that would have run here.
+                    // agent's runs and held starts elsewhere that would
+                    // have gone here.
                     let launches =
                         crate::declared::launcher(&self.declared, kind, &self.runs.declarers)
                             .map(drop)
                             .inspect_err(|why| {
                                 eprintln!(
-                                    "an agent's run isn't placed here: {}",
+                                    "an agent's run or held start isn't placed here: {}",
                                     why.escape_debug()
                                 );
                             });
@@ -5249,9 +5250,10 @@ impl<S: Store> Shared<S> {
 
     /// The `offers` a machine may be made of for a start asked in the
     /// fence `fence`: every one for the person's, and for an agent's only
-    /// those whose machine would declare ground as firm as here, judged
-    /// by what each says it would declare, so no machine is made, and
-    /// paid for, only to be refused once it links.
+    /// those whose machine would declare ground as firm as here, and a
+    /// fence that runs a command ([`held_in_launcher`]), judged by what
+    /// each says it would declare, so no machine is made, and paid for,
+    /// only to be refused once it links.
     ///
     /// # Errors
     ///
@@ -5269,7 +5271,9 @@ impl<S: Store> Shared<S> {
         let mut why = Vec::new();
         for offer in offers {
             let said = offer.facts.declared.as_ref();
-            match ground::looser_offered(kind, here.as_ref(), &offer.shape, said) {
+            let refused = ground::looser_offered(kind, here.as_ref(), &offer.shape, said)
+                .or_else(|| ground::runs_nothing_offered(kind, &offer.shape, said));
+            match refused {
                 None => firm.push(offer),
                 Some(looser) => why.push(looser),
             }
@@ -6034,14 +6038,17 @@ fn refused(why: &str) {
     eprintln!("a run is refused: {}", why.escape_debug());
 }
 
-/// Whether a session an agent starts held in the fence `fence` is placed
-/// only where that fence declares how a command runs, as the agent's runs
-/// are: in any fence but none. Its start doesn't go through that
-/// launcher, but a machine declaring none (a Mac, which has no Landlock)
-/// has nothing there to keep the session in its fence, so it would run
-/// looser than its asker.
+/// Whether a session started held in the fence `fence` is placed only
+/// where that fence declares how a command runs, as an agent's runs are:
+/// any agent's, which [`fence_of`] floors at the agent fence, never the
+/// person's. Its start doesn't go through that launcher yet, but a
+/// machine declaring none (a Mac, which has no Landlock) has nothing
+/// there to keep the session in its fence, so it would run looser than
+/// its asker. It stands in for that until held starts go through the
+/// launcher, so a Linux machine whose launcher is refused, or whose node
+/// is too old to say its `runs`, takes no agent's held start either.
 fn held_in_launcher(fence: Option<crate::declared::Kind>) -> bool {
-    fence.is_some_and(|kind| kind > crate::declared::Kind::None)
+    fence.is_some()
 }
 
 /// Why `machine` refused the work with the refusal `key`, where it did.
@@ -13310,7 +13317,7 @@ esac
             once: None,
         };
         assert_eq!(
-            ask(socket.clone(), Request::Start(held)).await,
+            ask(socket.clone(), Request::Start(held.clone())).await,
             Err(
                 "this asks as a strictly fenced agent, so it starts only where that fence runs \
                  a command: tern declares no way to run a command as its strictly fenced \
@@ -13321,9 +13328,14 @@ esac
         );
         asks_as_person(&socket);
         assert_eq!(
-            run_through(socket, run_of("tern", "true")).await.err(),
+            run_through(socket.clone(), run_of("tern", "true")).await.err(),
             Some("no link reaches tern now".to_owned()),
             "the person's run needs no fence, so it goes as far as the link"
+        );
+        assert_eq!(
+            ask(socket, Request::Start(held)).await,
+            Err("no link reaches tern now".to_owned()),
+            "nor does the person's start, which is held to no fence's launcher"
         );
     }
 
@@ -13392,7 +13404,7 @@ esac
             prefers: vec![Need::Machine("tern".to_owned())],
             ..work(Vec::new())
         };
-        let answer = placement_through(socket, Request::Place(toward_tern)).await;
+        let answer = placement_through(socket.clone(), Request::Place(toward_tern)).await;
         let Placement::Refused { misses } = answer else {
             panic!("no machine takes it: {answer:?}");
         };
@@ -13404,6 +13416,35 @@ esac
             ["skiff", "tern"],
             "neither here nor tern runs it: {}",
             placement::said(&misses)
+        );
+        // Nor does a session an agent starts land here, as on a Mac, whose
+        // node declares no launcher: it would run looser than its asker.
+        let held = |needs| {
+            Request::Start(Start {
+                work: work(needs),
+                folder: None,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+                once: None,
+            })
+        };
+        assert_eq!(
+            ask(socket.clone(), held(vec![Need::Machine("skiff".to_owned())])).await,
+            Err(
+                "this asks as a strictly fenced agent, so it starts only where that fence runs \
+                 a command: this machine declares no way to run a command as its strictly \
+                 fenced sessions run"
+                    .to_owned()
+            ),
+            "an agent's start pinned here is refused here, saying why"
+        );
+        let unnamed = ask(socket, held(Vec::new())).await;
+        assert!(
+            unnamed.as_ref().is_err_and(|why| why.contains(
+                "this machine declares no way to run a command as its strictly fenced sessions run"
+            )),
+            "and one naming no machine starts nowhere, saying why not here: {unnamed:?}"
         );
     }
 
@@ -14406,6 +14447,28 @@ esac
             shared.offered_on_ground(Vec::new(), strict),
             Ok(Vec::new()),
             "with nothing offered, nothing offered says so"
+        );
+        // A machine as firm whose fence would run no command, as a Mac's
+        // doesn't, would be refused an agent's held start once it linked.
+        let mut idle = offered("idle", Some(&["remote"]));
+        let fences = idle
+            .facts
+            .declared
+            .as_mut()
+            .and_then(|declared| declared.fence.as_mut())
+            .expect("its fences");
+        for doors in fences.values_mut() {
+            doors.runs.clear();
+        }
+        assert_eq!(
+            shared.offered_on_ground(vec![idle], strict),
+            Err(
+                "this asks as a strictly fenced agent, so no machine is made for it on looser \
+                 ground: idle declares no way to run a command as its strictly fenced sessions \
+                 run that its launcher accepts, or its node is too old to say one"
+                    .to_owned()
+            ),
+            "nor is one made of an offer whose fence would run no command"
         );
     }
 

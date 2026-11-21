@@ -142,30 +142,43 @@ pub fn runs_nothing(
         .iter()
         .filter(|machine| machine.name != this)
         .filter_map(|machine| {
-            let doors = machine
-                .declared
-                .as_ref()
-                .and_then(|declared| declared.fence.as_ref())
-                .and_then(|fences| fences.get(&kind))?;
-            let name = &machine.name;
-            let why = match crate::declared::unrunnable(&doors.runs)? {
-                Unrunnable::Nothing => format!(
-                    "{name} declares no way to run a command as its {kind} sessions run that \
-                     its launcher accepts, or its node is too old to say one"
-                ),
-                Unrunnable::SparesATree(spare) => format!(
-                    "{name}'s {kind} sessions' launcher says {}, which spares a tree shared \
-                     to the asker, so it runs no agent's command",
-                    said_word(&spare)
-                ),
-                Unrunnable::Unended => format!(
-                    "{name}'s {kind} sessions' launcher doesn't end with --, so it runs no \
-                     agent's command"
-                ),
-            };
-            Some(refused(name, why))
+            let why = runs_nothing_there(kind, &machine.name, machine.declared.as_ref())?;
+            Some(refused(&machine.name, why))
         });
     here.into_iter().chain(there).collect()
+}
+
+/// Why a machine made of the offer `to`, declaring itself as `there`
+/// says it would, runs no command an agent asks in the fence `kind`, as
+/// [`runs_nothing`] judges a machine of the realm by its words alone, so
+/// none is made, and paid for, only to be refused once it links. An offer
+/// that declares no `kind` fence is [`looser_offered`]'s to refuse.
+#[must_use]
+pub fn runs_nothing_offered(kind: Kind, to: &str, there: Option<&Declared>) -> Option<String> {
+    runs_nothing_there(kind, to, there)
+}
+
+/// Why `name`, declaring itself as `declared` says, runs no command in its
+/// `kind` fence by that fence's words alone, if it doesn't.
+fn runs_nothing_there(kind: Kind, name: &str, declared: Option<&Declared>) -> Option<String> {
+    let doors = declared
+        .and_then(|declared| declared.fence.as_ref())
+        .and_then(|fences| fences.get(&kind))?;
+    Some(match crate::declared::unrunnable(&doors.runs)? {
+        Unrunnable::Nothing => format!(
+            "{name} declares no way to run a command as its {kind} sessions run that its \
+             launcher accepts, or its node is too old to say one"
+        ),
+        Unrunnable::SparesATree(spare) => format!(
+            "{name}'s {kind} sessions' launcher says {}, which spares a tree shared to the \
+             asker, so it runs no agent's command",
+            said_word(&spare)
+        ),
+        Unrunnable::Unended => format!(
+            "{name}'s {kind} sessions' launcher doesn't end with --, so it runs no agent's \
+             command"
+        ),
+    })
 }
 
 /// The longest a word another machine says is quoted in a refusal.
