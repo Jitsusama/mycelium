@@ -4442,6 +4442,18 @@ impl<S: Store> Shared<S> {
             to,
             there.as_ref(),
         )?;
+        // The start that brings it back there is the orchestrator's, an
+        // agent's at least as strict as fence, so it is refused unless
+        // that fence runs a command there. Refused here first, judged as
+        // strictly as an agent may be, before any session is told to
+        // carry and ends.
+        let declared = there.as_ref().and_then(|machine| machine.declared.as_ref());
+        if let Some(why) = ground::runs_nothing_there(crate::declared::Kind::Strict, to, declared) {
+            return Err(format!(
+                "{address} isn't carried to {to}, as the start that brings it back there would \
+                 be refused: {why}"
+            ));
+        }
         let mut body = said.as_object().cloned().unwrap_or_default();
         body.insert("by".to_owned(), by.into());
         body.insert("from".to_owned(), by.into());
@@ -9489,6 +9501,17 @@ esac
                     .to_owned()
             ),
             "a machine whose fence opens a builder here's doesn't"
+        );
+        tern_runs_nothing(&store);
+        assert_eq!(
+            to("tern").await,
+            Err(
+                "HARBOR isn't carried to tern, as the start that brings it back there would be \
+                 refused: tern declares no way to run a command as its strictly fenced \
+                 sessions run that its launcher accepts, or its node is too old to say one"
+                    .to_owned()
+            ),
+            "nor one whose fence runs no command, before any session ends"
         );
         assert!(
             !socket.with_file_name("carries.jsonl").exists(),

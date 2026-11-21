@@ -710,7 +710,10 @@ session says of itself:
   session that names no fence, or a machine that declares none for it,
   is refused, since where it lands can't be told. A refusal names the
   doors that are wider, as `tern's strictly fenced session opens
-  builders cloud, which here's doesn't`.
+  builders cloud, which here's doesn't`. The start that brings it
+  back there is asked by the orchestrator, an agent, so `to`'s strict
+  fence must declare its `runs` too, or the carry is refused before any
+  session is told to carry and ends (The Socket).
 - The fence it names is never looser than its process shows. The
   node reads the proved owner's process: `PI_SANDBOX` in the
   environment it began with (`strict` or `fence`), and, for a pi that
@@ -1973,9 +1976,9 @@ made for it would cost. The node placing a start judges it, as a relay
 carries no asker's fence, so a machine stops taking these starts only
 once every node that may place on it judges so. Only placement is held
 so: an agent's session already held on a Mac wakes there as before,
-outside any fence, until it ends or the Mac boots again. What is judged is what a machine
-declares, never its system, so a Mac declaring `runs` would take such
-a start unfenced. The person's start is
+outside any fence, until it ends or the Mac boots again. What is
+judged is what a machine declares, never its system, so a Mac
+declaring `runs` would take such a start unfenced. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that
 machine's launcher too, and a refusal of any start judged so says it

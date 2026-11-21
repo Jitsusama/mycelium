@@ -171,7 +171,7 @@ pub fn runs_nothing_offered(kind: Kind, to: &str, there: Option<&Declared>) -> O
 
 /// Why `name`, declaring itself as `declared` says, runs no command in its
 /// `kind` fence by that fence's words alone, if it doesn't.
-fn runs_nothing_there(kind: Kind, name: &str, declared: Option<&Declared>) -> Option<String> {
+pub fn runs_nothing_there(kind: Kind, name: &str, declared: Option<&Declared>) -> Option<String> {
     let doors = declared
         .and_then(|declared| declared.fence.as_ref())
         .and_then(|fences| fences.get(&kind))?;
