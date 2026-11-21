@@ -505,34 +505,77 @@ mod here {
 mod here {
     //! macOS says what it is through `sysctl` and `sw_vers`.
 
-    use std::process::Command;
+    use std::io::Read as _;
+    use std::process::{Command, Stdio};
     use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
 
     use super::{Cpu, Power, Read, macos};
 
+    /// How long a program asked what this Mac is has to answer. A node
+    /// measures on the thread that serves it, so one that hangs, as one
+    /// did for 35 minutes under a load of 168 on 2026-11-21, stops the
+    /// node answering anything.
+    const SAID_WITHIN: Duration = Duration::from_secs(3);
+
     /// What Apple calls this Mac's kind, as `system_profiler` says it.
-    /// It is asked once, since it never changes and the asking takes a
-    /// good part of a second.
+    /// It is kept once said, since it never changes and the asking takes a
+    /// good part of a second, and asked again only while it hasn't been.
     fn model_name() -> Option<String> {
-        static NAME: OnceLock<Option<String>> = OnceLock::new();
-        NAME.get_or_init(|| {
-            said(
-                "/usr/sbin/system_profiler",
-                &["-json", "SPHardwareDataType"],
-            )
-            .and_then(|said| macos::model_name(&said))
-        })
-        .clone()
+        static NAME: OnceLock<String> = OnceLock::new();
+        said_once(
+            &NAME,
+            "/usr/sbin/system_profiler",
+            &["-json", "SPHardwareDataType"],
+        )
+        .and_then(|said| macos::model_name(&said))
     }
 
-    /// What `program` says, asked with `args`, or nothing where it fails.
+    /// What `program` says, asked with `args`, kept in `kept` from the
+    /// first time it answers, for what doesn't change while the node runs.
+    fn said_once(kept: &OnceLock<String>, program: &str, args: &[&str]) -> Option<String> {
+        if let Some(said) = kept.get() {
+            return Some(said.clone());
+        }
+        let answer = said(program, args)?;
+        Some(kept.get_or_init(|| answer).clone())
+    }
+
+    /// What `program` says, asked with `args`, or nothing where it fails
+    /// or hasn't answered within [`SAID_WITHIN`], when it is killed. What
+    /// it says is read beside the wait, so a long answer never fills the
+    /// pipe and stalls it; a reader still held open by something it
+    /// started is left to end with that.
     fn said(program: &str, args: &[&str]) -> Option<String> {
-        Command::new(program)
+        let mut child = Command::new(program)
             .args(args)
-            .output()
-            .ok()
-            .filter(|out| out.status.success())
-            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut stdout = child.stdout.take()?;
+        let reading = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            stdout.read_to_end(&mut out).map(|_| out)
+        });
+        let deadline = Instant::now() + SAID_WITHIN;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                Ok(Some(_)) | Err(_) => return None,
+            }
+        }
+        let out = reading.join().ok()?.ok()?;
+        String::from_utf8(out).ok()
     }
 
     /// What it runs on now, as `pmset` says.
@@ -643,7 +686,12 @@ mod here {
     }
 
     pub(super) fn read() -> Read {
-        let sysctl = said(
+        // Neither changes while the node runs, so each is asked until it
+        // answers once, and only `pmset` is asked each time.
+        static SYSCTL: OnceLock<String> = OnceLock::new();
+        static VERSION: OnceLock<String> = OnceLock::new();
+        let sysctl = said_once(
+            &SYSCTL,
             "/usr/sbin/sysctl",
             &[
                 "hw.model",
@@ -655,7 +703,7 @@ mod here {
         .unwrap_or_default();
         let value = |key| macos::sysctl(&sysctl, key);
         Read {
-            os: said("/usr/bin/sw_vers", &["-productVersion"])
+            os: said_once(&VERSION, "/usr/bin/sw_vers", &["-productVersion"])
                 .map(|version| format!("macOS {}", version.trim())),
             model: value("hw.model"),
             model_name: model_name(),
