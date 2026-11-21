@@ -972,7 +972,18 @@ mod tests {
                     stream.read_exact(&mut byte).await.expect("the attach");
                 }
                 send(&mut stream, &accepted()).await.expect("answered");
-                stream.readable().await.expect("the viewer typed");
+                // Readiness from the attach is still cached, so it waits on
+                // until a byte of what the viewer typed is read, leaving the
+                // rest of its frame unread.
+                let mut first = [0];
+                loop {
+                    stream.readable().await.expect("the viewer typed");
+                    match stream.try_read(&mut first) {
+                        Ok(1) => break,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                        other => panic!("the viewer left before typing: {other:?}"),
+                    }
+                }
             });
             let (_tell, mut sizes) = mpsc::unbounded_channel();
             let mut here = Script::typing(b"x");
