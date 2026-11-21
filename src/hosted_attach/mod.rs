@@ -223,8 +223,9 @@ pub async fn join_here(socket: &Path, session: &str) -> io::Result<Left> {
             left = joining => left,
             () = &mut watching => Ok(Left::Gone),
         } {
-            // A host stopped and not yet back, or one whose connection broke as
-            // it stopped or died, is one to wait for, not a fault.
+            // A host stopped and not yet back, or one that broke the join as
+            // it stopped before answering, is one to wait for, not a fault;
+            // one that broke it after answering has gone already.
             Err(error) if starting(&error) => Ok(Left::Unreachable),
             left => left,
         };
@@ -267,7 +268,9 @@ pub async fn join_again(
         let tried = tokio::time::timeout_at(until, connect(socket, session, size, &*here)).await;
         match tried {
             Err(_elapsed) => return Ok(Left::Gone),
-            Ok(Ok(Some(joined))) => return show(joined, here, output, sizes, patience.hold).await,
+            Ok(Ok(Some(joined))) => {
+                return gone_once_broken(show(joined, here, output, sizes, patience.hold).await);
+            }
             Ok(Err(error)) if !starting(&error) => return Err(error),
             Ok(Ok(None) | Err(_)) => {}
         }
@@ -337,7 +340,17 @@ async fn join_within(
     let Some(joined) = answered? else {
         return Ok(Left::Gone);
     };
-    show(joined, here, output, sizes, RESTART_PATIENCE.hold).await
+    gone_once_broken(show(joined, here, output, sizes, RESTART_PATIENCE.hold).await)
+}
+
+/// What a conversation the host answered left: a connection that broke,
+/// as one does when the host dies with what was typed still unread, is
+/// the host gone, not one never there to join.
+fn gone_once_broken(left: io::Result<Left>) -> io::Result<Left> {
+    match left {
+        Err(error) if starting(&error) => Ok(Left::Gone),
+        left => left,
+    }
 }
 
 /// A connection the host accepted a terminal on.

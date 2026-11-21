@@ -567,12 +567,12 @@ pub async fn hold(
             {
                 // Said on the node's log, since the window ends as on any
                 // exit: a wrapper that runs attach without exec passes its
-                // 69 on with another pid's file.
+                // 69 on with another pid's file. What the file held is
+                // quoted with its escapes, since a program wrote it.
                 eprintln!(
-                    "mycelium: {} exited {GONE}, but its pi host gone was said by another \
-                     process ({}), not {pid}, so its window ends",
+                    "mycelium: {} exited {GONE}, but its gone file ({said:?}) doesn't say \
+                     {pid} saw its pi host go, so its window ends",
                     holding.id,
-                    said.trim()
                 );
             }
             let gone = how.is_some();

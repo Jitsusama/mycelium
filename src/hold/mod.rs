@@ -298,21 +298,31 @@ pub fn say_reached(host: &str) {
 /// it was.
 #[must_use]
 pub fn reached_before(host: &str) -> bool {
-    std::env::var_os(REACHED_SAID)
-        .is_none_or(|reached| read_small(Path::new(&reached)).is_some_and(|said| said == host))
+    reached_in(
+        std::env::var_os(REACHED_SAID).as_deref().map(Path::new),
+        host,
+    )
+}
+
+/// Whether the file at `reached`, told to the program running this, says
+/// `host` answered it; with none told, no holder runs it, so it was.
+fn reached_in(reached: Option<&Path>, host: &str) -> bool {
+    reached.is_none_or(|reached| read_small(reached).is_some_and(|said| said == host))
 }
 
 /// The few bytes a program under a holder writes to tell it something,
 /// read without following a link and only from a plain file, so that
-/// nothing under the program can make the holder wait on a pipe or read
-/// without end; none when there's no such file.
+/// nothing under the program can make the holder wait on a pipe, read
+/// without end, or take a terminal as its own; none when there's no such
+/// file.
 #[must_use]
 pub fn read_small(path: &Path) -> Option<String> {
     use rustix::fs::{Mode, OFlags};
     use std::io::Read as _;
     // A pid and a word, or a host's name, with room to spare.
     const SAID_MOST: u64 = 256;
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let flags =
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
     let file = fs::File::from(rustix::fs::open(path, flags, Mode::empty()).ok()?);
     if !file.metadata().ok()?.is_file() {
         return None;
@@ -502,6 +512,29 @@ mod tests {
         assert!(made.success(), "a pipe made");
         assert_eq!(read_small(&pipe), None, "nor is a pipe waited on");
         assert_eq!(read_small(&root.path().join("none")), None);
+    }
+
+    #[test]
+    fn a_host_was_reached_only_as_the_file_names_it() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let reached = root.path().join("window1.reached");
+        assert!(
+            !reached_in(Some(&reached), "harbour-background"),
+            "none written says no host has answered"
+        );
+        fs::write(&reached, "harbour-background").expect("a file written");
+        assert!(
+            reached_in(Some(&reached), "harbour-background"),
+            "the host it names answered"
+        );
+        assert!(
+            !reached_in(Some(&reached), "harbour-attended"),
+            "another host never did"
+        );
+        assert!(
+            reached_in(None, "harbour-background"),
+            "a program no holder runs is never told, so says it was"
+        );
     }
 
     #[test]
