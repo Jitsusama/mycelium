@@ -740,8 +740,10 @@ session says of itself:
   as untold. It is never looser than its host's `PI_SANDBOX` either.
   At a carry, a `bwrap` running below the host shows it fenced too,
   unless another session the record names `fence` is proved on that
-  host and explains it; the look kept in `fences.json`, below, leaves
-  that out, since a sibling's `bwrap` can outlive its session.
+  host and explains it. The look kept in `fences.json`, below, leaves
+  that out where the record names another session, since a sibling's
+  `bwrap` can outlive its session, but weighs it where the record
+  names this session alone.
 - A fence missing from what a process shows proves nothing: a
   `bwrap` lives only while a command it fences runs, and a session
   may switch its fence on after its pi began. So the node looks at
