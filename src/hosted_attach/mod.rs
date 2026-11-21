@@ -347,10 +347,7 @@ async fn join_within(
 /// as one does when the host dies with what was typed still unread, is
 /// the host gone, not one never there to join.
 fn gone_once_broken(left: io::Result<Left>) -> io::Result<Left> {
-    match left {
-        Err(error) if starting(&error) => Ok(Left::Gone),
-        left => left,
-    }
+    left
 }
 
 /// A connection the host accepted a terminal on.
