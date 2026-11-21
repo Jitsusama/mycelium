@@ -1482,8 +1482,27 @@ it probes while its probe last answered, and lacks one whose probe
 didn't; it has a tool its `kit` lists, lacks one its kit doesn't, and
 hasn't said one where it says no kit, nor has a machine not yet made); the
 keys of the taints it `tolerates`; whether it `may_wait` for a machine
-out of reach; and how long it `lasts`, as an ISO 8601 duration such as
-`PT2H` (`2h` reads too). A machine carries the taints its configuration
+out of reach; how long it `lasts`, as an ISO 8601 duration such as
+`PT2H` (`2h` reads too); and, where its asker says, the `fence` a
+session started for it runs in, `{"kind", "from"}`. Its `kind` is
+`fence` or `strict`, never `none`. Its `from` is `spawn` (the spawn
+that asked), `quest` (the quest's README) or `default` (the harness's
+own choice, said for the record). A declaration naming any other kind
+is passed over, as an older node passes over the field, rather than
+refusing the ask; one naming any other source, or none, keeps its
+kind. The
+`from` is the asker's own word, which the node doesn't check, and it
+moves nothing. A declared fence raises an agent's fence when it is
+stricter than the node's judgement of the asker, and never lowers it,
+whatever declared it: the node can't tell the harness's start from one
+an agent asks itself, so a session started below a strict one runs
+strict. It moves only a start's judgement: a `Place` that starts
+nothing and a `Run` are judged without it, and a start relayed from
+another machine is judged by its link's end, its declaration neither
+weighed nor kept there. The person's work is judged as before, and
+each start keeps what it declared in its line in the book, as
+`declared`. A node older than the field ignores it, judging as before.
+A machine carries the taints its configuration
 declares, and while they last, `on-battery`, `memory-pressure` (past
 its queue's memory limit), `cpu-pressure` (past its queue's processor
 limit), `cpu-saturated` (its `room` `saturated`, or at processor

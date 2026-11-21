@@ -65,6 +65,93 @@ pub struct Work {
     /// is passed over, as one that has left always is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lasts: Option<jiff::SignedDuration>,
+    /// The fence a session started for it declares it runs in, where its
+    /// asker says: never looser than the agent fence, and only ever
+    /// raising the node's judgement of an agent, never lowering it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "declared_or_none"
+    )]
+    pub fence: Option<DeclaredFence>,
+}
+
+/// The fence a start declares its session runs in, and what declared it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclaredFence {
+    /// Which fence.
+    pub kind: FenceKind,
+    /// What declared it.
+    pub from: FenceFrom,
+}
+
+/// A fence a start may declare: none looser than the agent fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FenceKind {
+    /// The agent fence.
+    Fence,
+    /// The strict fence.
+    Strict,
+}
+
+impl From<FenceKind> for crate::declared::Kind {
+    fn from(kind: FenceKind) -> Self {
+        match kind {
+            FenceKind::Fence => Self::Fence,
+            FenceKind::Strict => Self::Strict,
+        }
+    }
+}
+
+/// What declared a start's fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FenceFrom {
+    /// The spawn that asked for the start.
+    Spawn,
+    /// The README of the quest it works on.
+    Quest,
+    /// Nothing: the fence the asker's harness runs it in by default,
+    /// said for the record, which vouches for nothing.
+    Default,
+    /// A source this build doesn't know, as a newer asker may name one.
+    /// What declared a fence moves nothing, since a declaration only
+    /// ever raises, so its kind still counts.
+    #[serde(other)]
+    Unknown,
+}
+
+/// A declared fence in the shape this build reads, or none: one naming a
+/// kind it doesn't know, as a newer asker or node may say it, is passed
+/// over, as a node older than the field passes it over, rather than
+/// refusing the ask or the line it is in. One naming a kind it knows
+/// keeps it whatever it says of its source, a source left out, null or
+/// not a word among them ([`FenceFrom::Unknown`]), since a source moves
+/// nothing and a kind only ever raises.
+///
+/// # Errors
+///
+/// Only where what is said can't be read at all.
+pub fn declared_or_none<'de, D: serde::Deserializer<'de>>(
+    said: D,
+) -> Result<Option<DeclaredFence>, D::Error> {
+    let Some(declared) = Option::<serde_json::Value>::deserialize(said)? else {
+        return Ok(None);
+    };
+    let Some(kind) = read_field::<FenceKind>(&declared, "kind") else {
+        return Ok(None);
+    };
+    let from = read_field(&declared, "from").unwrap_or(FenceFrom::Unknown);
+    Ok(Some(DeclaredFence { kind, from }))
+}
+
+/// `field` of `declared`, where it is there and reads as a `T`.
+fn read_field<T: serde::de::DeserializeOwned>(
+    declared: &serde_json::Value,
+    field: &str,
+) -> Option<T> {
+    serde_json::from_value(declared.get(field)?.clone()).ok()
 }
 
 impl Work {
@@ -1441,6 +1528,63 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_declared_fence_is_read_off_the_wire_and_none_can_be_declared() {
+        let work: Work = serde_json::from_value(serde_json::json!({
+            "needs": [], "fence": {"kind": "fence", "from": "spawn"},
+        }))
+        .expect("work");
+        assert_eq!(
+            work.fence,
+            Some(DeclaredFence {
+                kind: FenceKind::Fence,
+                from: FenceFrom::Spawn,
+            })
+        );
+        let unsaid: Work = serde_json::from_value(serde_json::json!({"needs": []})).expect("work");
+        assert_eq!(unsaid.fence, None, "an older asker's work declares nothing");
+        assert!(
+            serde_json::to_value(&unsaid)
+                .expect("said")
+                .get("fence")
+                .is_none(),
+            "and says nothing of it to an older node"
+        );
+        // No start declares itself unfenced, nor in a fence this build
+        // doesn't know, so each is passed over, judged as an older node
+        // judges it, rather than refusing the start.
+        let read = |fence: serde_json::Value| -> Option<DeclaredFence> {
+            let work: Work =
+                serde_json::from_value(serde_json::json!({"needs": [], "fence": fence}))
+                    .expect("the work still reads");
+            work.fence
+        };
+        for fence in [
+            serde_json::json!({"kind": "none", "from": "quest"}),
+            serde_json::json!({"kind": "sealed", "from": "spawn"}),
+        ] {
+            assert_eq!(read(fence.clone()), None, "{fence} is passed over");
+        }
+        // A source this build doesn't know moves nothing, so a strict
+        // kind it names still raises, as it does with its source left
+        // out, null or not a word.
+        for fence in [
+            serde_json::json!({"kind": "strict", "from": "orchestrator"}),
+            serde_json::json!({"kind": "strict"}),
+            serde_json::json!({"kind": "strict", "from": null}),
+            serde_json::json!({"kind": "strict", "from": 5}),
+        ] {
+            assert_eq!(
+                read(fence.clone()),
+                Some(DeclaredFence {
+                    kind: FenceKind::Strict,
+                    from: FenceFrom::Unknown,
+                }),
+                "{fence} still raises"
+            );
+        }
+    }
+
+    #[test]
     fn weights_kept_before_running_was_said_weigh_a_running_session_as_a_start() {
         let kept: Weights = serde_json::from_str(r#"{"session": 0.5}"#).expect("weights");
         assert_eq!(kept.running, None, "a record's weights without it say none");
@@ -1661,6 +1805,7 @@ pub(crate) mod tests {
             tolerates: Vec::new(),
             may_wait: false,
             lasts: None,
+            fence: None,
         }
     }
 

@@ -475,6 +475,7 @@ fn carried(
         tolerates: Vec::new(),
         may_wait: false,
         lasts: Some(SignedDuration::MAX),
+        fence: None,
     };
     // The carry refuses a machine the start bringing a session back can't
     // run on, whatever the session, so each is left out before placing

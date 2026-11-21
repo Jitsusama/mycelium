@@ -163,6 +163,17 @@ pub struct Kept {
     /// already, so this one doesn't.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub again: bool,
+    /// The fence it declared its session runs in, and what declared it,
+    /// where it declared one: kept whether or not it moved who asked, so
+    /// the book says what each start claimed. A start relayed from
+    /// another machine keeps none, since that machine weighed it. One
+    /// this build can't read is none, costing the line only that.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::placement::declared_or_none"
+    )]
+    pub declared: Option<crate::placement::DeclaredFence>,
 }
 
 /// Whether no ask joined a start, so its line says nothing of it.
@@ -187,9 +198,17 @@ impl Kept {
             && self.carried.is_none()
     }
 
-    /// Whether it was asked under the name `once`, by `by` for `cell`.
+    /// Whether it was asked under the name `once`, by an asker like `by`
+    /// for `cell`.
     fn under(&self, by: By, cell: Option<&str>, once: &str) -> bool {
-        self.once.as_deref() == Some(once) && self.by == by && self.started_by.as_deref() == cell
+        // The person apart from an agent, but not one fence from
+        // another, since the asker's fence may come out otherwise when it
+        // asks again; the cell and the name tell one agent's asks apart.
+        let alike = matches!(
+            (self.by, by),
+            (By::Person, By::Person) | (By::Agent(_), By::Agent(_))
+        );
+        self.once.as_deref() == Some(once) && alike && self.started_by.as_deref() == cell
     }
 }
 
@@ -887,6 +906,7 @@ mod tests {
             once: None,
             joined: 0,
             again: false,
+            declared: None,
         }
     }
 
@@ -1459,6 +1479,11 @@ mod tests {
             again.landed(by, Some("OSPREY"), "01J", NOW + 1),
             Some(("kestrel".to_owned(), "h-1".to_owned()))
         );
+        assert_eq!(
+            again.landed(By::Agent(Kind::Strict), Some("OSPREY"), "01J", NOW + 1),
+            Some(("kestrel".to_owned(), "h-1".to_owned())),
+            "an ask again whose fence came out otherwise is the same asker's"
+        );
         assert_eq!(again.landed(by, Some("OSPREY"), "01K", NOW + 1), None);
         assert_eq!(again.landed(by, Some("KESTRL"), "01J", NOW + 1), None);
         assert_eq!(again.landed(By::Person, None, "01J", NOW + 1), None);
@@ -1466,6 +1491,17 @@ mod tests {
             again.landed(by, Some("OSPREY"), "01J", NOW + HOUR + 1),
             None
         );
+    }
+
+    // A newer node may declare a fence this build doesn't know: the line
+    // still reads, so its start still counts toward the hour's limits.
+    #[test]
+    fn a_declared_fence_this_build_cant_read_costs_its_line_only_that() {
+        let mut line = serde_json::to_value(named("OSPREY", NOW, "01J")).expect("a line");
+        line["declared"] = serde_json::json!({"kind": "sealed", "from": "spawn"});
+        let kept: Kept = serde_json::from_value(line).expect("the line still reads");
+        assert_eq!(kept.declared, None);
+        assert_eq!(kept.started_by.as_deref(), Some("OSPREY"));
     }
 
     #[test]
