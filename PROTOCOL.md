@@ -1801,9 +1801,9 @@ agent naming the orchestrator's session could spend that session's free
 start, though only on the very start the carry gives it. Its line in
 `starts.jsonl` names the session, or the quest, as `carried`. A start
 relayed from another node is judged as before, so a carry to a machine
-where no person works counts each arrival on that machine's node. A node older than this
-reads a `carried` line as a counted start, so one rolled back counts
-those for the rest of their hour.
+where no person works counts each arrival on that machine's node. A
+node older than this reads a `carried` line as a counted start, so one
+rolled back counts those for the rest of their hour.
 
 A start may carry `once`, the asker's own name for it, 1 to 64 bytes,
 as `mycelium start --once NAME` gives it. An asker that heard no answer
