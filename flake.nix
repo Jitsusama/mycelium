@@ -1,5 +1,6 @@
 # Mycelium's package, its development shell and its one gate: `nix flake
-# check` runs every check there is, on Linux and macOS alike.
+# check` runs every check there is, on Linux and on a Mac that builds
+# outside Nix's sandbox (nix/checks.nix says why).
 {
   description = "A nimble core for agent networks";
 
@@ -53,7 +54,11 @@
 
       devShells = each (pkgs: {
         default = pkgs.mkShell {
-          inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+          # The package as its check builds it, since a Mac's runs no tests and
+          # so would bring none of what they need, Nix's git among them.
+          inputsFrom = [
+            (self.packages.${pkgs.stdenv.hostPlatform.system}.default.override { macTests = true; })
+          ];
           packages = [
             # Ahead of cargo itself, so an agent's whole suite goes to a lent
             # builder (nix/cargo-for-agents.sh).
