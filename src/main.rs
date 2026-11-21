@@ -1529,6 +1529,10 @@ fn orchestrates(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per action, each handing it on, reads best as one table"
+)]
 fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Result<ExitCode> {
     let realm = realm.ok_or_else(|| {
         io::Error::new(
@@ -1880,9 +1884,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let (dials, serves) = (node.dials(), node.serves(&machine)?);
     let providers = node.providers;
     let declared = node.declared.unwrap_or_else(place::declared);
-    let lends_from = node.lends_from;
     let processes = processes_here(node.unattended);
-    let kit = node.kit;
     let builders = builders::Given {
         files: node
             .builders
@@ -1960,13 +1962,13 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
             realm: membership.name.clone(),
             answers_within: carry::settle::ANSWERS_WITHIN,
         }),
-        lends_from,
+        lends_from: node.lends_from,
     };
     tell!(
         "mycelium: {}",
         mycelium::declared::said_at_start(&declared, &given.runs.declarers)
     );
-    if let (Some(kit), Some(starter)) = (kit, given.starter.as_mut()) {
+    if let (Some(kit), Some(starter)) = (node.kit, given.starter.as_mut()) {
         let checked = mycelium::declared::kit_checked(&kit, &given.runs.declarers);
         tell!(
             "mycelium: {}",
