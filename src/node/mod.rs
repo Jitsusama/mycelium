@@ -17251,7 +17251,7 @@ esac
             &basin,
             Counts::Always,
             None,
-            false,
+            Screen::Ground,
             &Admits::Asker(told.to_owned()),
         ) {
             Placement::Placed { machine, .. } => Some(machine),
@@ -17293,7 +17293,7 @@ esac
                 &anywhere,
                 Counts::Always,
                 None,
-                false,
+                Screen::Ground,
                 &Admits::Asker("P9R1KI".to_owned()),
             ) {
                 Placement::Placed { machine, .. } => Some(machine),
