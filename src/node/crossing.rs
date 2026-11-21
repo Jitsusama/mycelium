@@ -630,9 +630,10 @@ mod tests {
             panic!("a question crosses");
         };
         let there = work.store.message(&first.id).expect("it is in the mesh");
+        let taker = std::process::id();
         assert_eq!(
             (first.pid, there["pid"].as_u64()),
-            (Some(std::process::id()), Some(u64::from(std::process::id()))),
+            (Some(taker), Some(u64::from(taker))),
             "said and written as the taking node's own"
         );
         assert!(
