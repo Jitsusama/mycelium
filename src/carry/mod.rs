@@ -665,37 +665,14 @@ fn closed(hands: &mut impl Hands, here: &str, sessions: &[Session]) -> Result<()
 /// with no first prompt sits idle until a message wakes it. One an
 /// orchestrator ordered arrives as carried by it, for its reason, so it
 /// never reads as the person's own.
-fn arriving(quest: &str, from: &str, to: &str, one: &Done, ordered: Option<&Ordered>) -> Start {
-    let arrive = if ordered.is_some() {
-        // Each joined to its value, so a reason opening with a dash
-        // isn't read as an option of pi-carry's.
-        r#"pi-carry arrive "$1" --from "$2" --session "$3" --by="$5" --why="$6""#
-    } else {
-        r#"pi-carry arrive "$1" --from "$2" --session "$3""#
-    };
-    // The harness alone knows which trees came and where a quest's
-    // scratch is, so it says the folder: the session's own where a tree
-    // it brought holds it, else its quest's scratch, never a folder of
-    // the person's that no tree brought. That folder is entered as it
-    // stands, never made here. A session taken up again loads its quest
-    // only when told, as the shell's starts tell it, so pi is told which.
-    // It starts in the fence it ran in, as its done file says it, since
-    // the node's own environment names none: a move never loosens a
-    // session. One whose fence can't be told, as from a harness that
-    // can't say it, doesn't start, rather than start looser; one whose
-    // done file names none, from an older harness, starts as before.
-    let script = if one.session == quest {
-        arrive.to_owned()
-    } else {
-        [
-            arrive,
-            r#" || exit; folder=$(pi-carry where "$1" --from "$2" --session "$3") || exit; "#,
-            r#"fence=$(pi-carry fence "$1" --from "$2" --session "$3") || exit; "#,
-            r#"if [ -n "$fence" ]; then export PI_SANDBOX="$fence"; fi; "#,
-            r#"cd "$folder" && QUEST_WORKFLOW_AUTOLOAD_ID="$1" exec pi --session "$3" -- "$4""#,
-        ]
-        .concat()
-    };
+pub(crate) fn arriving(
+    quest: &str,
+    from: &str,
+    to: &str,
+    one: &Done,
+    ordered: Option<&Ordered>,
+) -> Start {
+    let script = arrival_script(one.session == quest, ordered.is_some());
     let told = carry_on(from);
     let mut command = [
         "sh",
@@ -726,6 +703,42 @@ fn arriving(quest: &str, from: &str, to: &str, one: &Done, ordered: Option<&Orde
         may_cost: false,
         carries: false,
         once: Some(arrival_name(quest, to, one)),
+    }
+}
+
+/// The script a session's start on its new machine runs, as [`arriving`]
+/// says: the quest's `own` trees' arriving alone, or a session's taken up
+/// after; one an orchestrator `ordered` saying who and why.
+fn arrival_script(own: bool, ordered: bool) -> String {
+    let arrive = if ordered {
+        // Each joined to its value, so a reason opening with a dash
+        // isn't read as an option of pi-carry's.
+        r#"pi-carry arrive "$1" --from "$2" --session "$3" --by="$5" --why="$6""#
+    } else {
+        r#"pi-carry arrive "$1" --from "$2" --session "$3""#
+    };
+    // The harness alone knows which trees came and where a quest's
+    // scratch is, so it says the folder: the session's own where a tree
+    // it brought holds it, else its quest's scratch, never a folder of
+    // the person's that no tree brought. That folder is entered as it
+    // stands, never made here. A session taken up again loads its quest
+    // only when told, as the shell's starts tell it, so pi is told which.
+    // It starts in the fence it ran in, as its done file says it, since
+    // the node's own environment names none: a move never loosens a
+    // session. One whose fence can't be told, as from a harness that
+    // can't say it, doesn't start, rather than start looser; one whose
+    // done file names none, from an older harness, starts as before.
+    if own {
+        arrive.to_owned()
+    } else {
+        [
+            arrive,
+            r#" || exit; folder=$(pi-carry where "$1" --from "$2" --session "$3") || exit; "#,
+            r#"fence=$(pi-carry fence "$1" --from "$2" --session "$3") || exit; "#,
+            r#"if [ -n "$fence" ]; then export PI_SANDBOX="$fence"; fi; "#,
+            r#"cd "$folder" && QUEST_WORKFLOW_AUTOLOAD_ID="$1" exec pi --session "$3" -- "$4""#,
+        ]
+        .concat()
     }
 }
 
@@ -776,6 +789,49 @@ pub(crate) fn arrives(command: &[String]) -> Option<Arrives<'_>> {
         quest,
         from,
         session,
+    })
+}
+
+/// A session's arrival an orchestrator ordered, as a start's command
+/// says it, with who it says ordered it and why.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct OrderedArrival<'a> {
+    /// The arrival itself.
+    pub(crate) arrives: Arrives<'a>,
+    /// The orchestrator it says carried it, by its address.
+    pub(crate) by: &'a str,
+    /// Why it says it was carried.
+    pub(crate) why: &'a str,
+}
+
+/// How long after a carry was ordered its arrival may start uncounted:
+/// an arrival follows its order within minutes, so a carry line older
+/// than this frees nothing more.
+pub(crate) const ORDERED_ARRIVES_WITHIN: jiff::SignedDuration = jiff::SignedDuration::from_hours(1);
+
+/// The ordered arrival `command` starts, where it is word for word what
+/// [`arriving`] gives a start for a carry an orchestrator ordered from
+/// `from`, and nothing more, so no other work hides behind one: a
+/// session's, or the quest's own trees', whose session is the quest; or
+/// none. Its words prove nothing of who ordered it: its caller holds
+/// them to the carry it kept.
+pub(crate) fn ordered_arrival(command: &[String]) -> Option<OrderedArrival<'_>> {
+    let [sh, c, script, name, quest, from, session, told, by, why] = command else {
+        return None;
+    };
+    let exact = sh == "sh"
+        && c == "-c"
+        && name == PI_CARRY
+        && *script == arrival_script(session == quest, true)
+        && *told == carry_on(from);
+    exact.then_some(OrderedArrival {
+        arrives: Arrives {
+            quest,
+            from,
+            session,
+        },
+        by,
+        why,
     })
 }
 
@@ -1437,6 +1493,59 @@ mod tests {
         ]});
         realm.sessions[0] = session("BUSY01", "skiff", QUEST, "busy", &harbour);
         realm
+    }
+
+    // Round 1 (2026-11-20): an ordered carry's every start, the quest's
+    // own trees' too, reads back as the arrival it is, and one shaped
+    // otherwise by a single word reads as none.
+    #[test]
+    fn an_ordered_arrival_is_read_from_its_start_word_for_word() {
+        let ordered = Ordered {
+            by: "WCJQSG".to_owned(),
+            why: "it needs the lens".to_owned(),
+        };
+        let done = |session: &str| Done {
+            session: session.to_owned(),
+            started_before: None,
+        };
+        for session in ["s-busy01", QUEST] {
+            let start = super::arriving(QUEST, "skiff", "tern", &done(session), Some(&ordered));
+            assert_eq!(
+                super::ordered_arrival(&start.command),
+                Some(super::OrderedArrival {
+                    arrives: super::Arrives {
+                        quest: QUEST,
+                        from: "skiff",
+                        session,
+                    },
+                    by: "WCJQSG",
+                    why: "it needs the lens",
+                }),
+                "{session}'s arrival reads back"
+            );
+            let mut other = start.command.clone();
+            other[2] = other[2].replace("--why=", "--reason=");
+            assert_eq!(
+                super::ordered_arrival(&other),
+                None,
+                "{session}'s, a word off"
+            );
+            // Pi takes word 7 as its first prompt, so one of the cell's
+            // own choosing is other work, however right the script.
+            let mut prompted = start.command.clone();
+            prompted[7] = "build the whole thing".to_owned();
+            assert_eq!(
+                super::ordered_arrival(&prompted),
+                None,
+                "{session}'s, told something else"
+            );
+            let unordered = super::arriving(QUEST, "skiff", "tern", &done(session), None);
+            assert_eq!(
+                super::ordered_arrival(&unordered.command),
+                None,
+                "{session}'s, unordered"
+            );
+        }
     }
 
     #[test]

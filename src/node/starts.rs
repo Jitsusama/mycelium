@@ -131,6 +131,13 @@ pub struct Kept {
     /// was counted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reopens: Option<String>,
+    /// The session it starts where a carry its cell ordered from here
+    /// took it, as the node holds it to the carry it kept: like
+    /// [`Kept::resumes`], the first in the hour counts toward no number,
+    /// since the session it starts already ran, and together they stay
+    /// within [`RESUMED_AN_HOUR`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried: Option<String>,
     /// The machine it started on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
@@ -177,6 +184,7 @@ impl Kept {
             && self.refused.is_none()
             && !self.again
             && self.resumes.is_none()
+            && self.carried.is_none()
     }
 
     /// Whether it was asked under the name `once`, by `by` for `cell`.
@@ -309,7 +317,10 @@ impl Book {
                                 || one.at <= since
                                 || one.at > ahead
                                 || one.again
-                                || !(one.counts() || one.reopens.is_some() || one.resumes.is_some())
+                                || !(one.counts()
+                                    || one.reopens.is_some()
+                                    || one.resumes.is_some()
+                                    || one.carried.is_some())
                         })
                 });
             match oldest {
@@ -489,31 +500,41 @@ impl Starts {
     /// or kept, so a burst of starts of one ended session counts from the
     /// second on, before the first has run long enough to say so; or
     /// where agents have brought back [`RESUMED_AN_HOUR`] uncounted in
-    /// that hour already.
+    /// that hour already. So too for one starting a session a carry
+    /// took, as [`Kept::carried`] says, the two sharing that ceiling.
     fn once_an_hour(book: &Book, asked: &mut Kept) {
         let since = asked.at - HOUR;
-        let Some(session) = asked.resumes.as_ref() else {
+        if asked.resumes.is_none() && asked.carried.is_none() {
             return;
-        };
-        let resumed: Vec<&Kept> = book
+        }
+        let free: Vec<&Kept> = book
             .kept
             .iter()
             .chain(book.going.iter().map(|(_, going)| going))
             .filter(|one| {
                 matches!(one.by, By::Agent(_))
                     && one.refused.is_none()
-                    && one.resumes.is_some()
+                    && (one.resumes.is_some() || one.carried.is_some())
                     && one.at > since
                     && one.at <= asked.at + HOUR
             })
             .collect();
         // One that failed brought nothing back, so it spends no session's
         // hour, though it still counts toward the node's ceiling.
-        let again = resumed
-            .iter()
-            .any(|one| one.failed.is_none() && one.resumes.as_ref() == Some(session));
-        if again || resumed.len() >= RESUMED_AN_HOUR {
+        let again = |of: fn(&Kept) -> Option<&String>| {
+            of(asked).is_some_and(|session| {
+                free.iter()
+                    .any(|one| one.failed.is_none() && of(one) == Some(session))
+            })
+        };
+        let full = free.len() >= RESUMED_AN_HOUR;
+        let resumed_again = full || again(|one| one.resumes.as_ref());
+        let carried_again = full || again(|one| one.carried.as_ref());
+        if resumed_again {
             asked.resumes = None;
+        }
+        if carried_again {
+            asked.carried = None;
         }
     }
 
@@ -858,6 +879,7 @@ mod tests {
             program: Some("pi".to_owned()),
             resumes: None,
             reopens: None,
+            carried: None,
             machine: None,
             held: None,
             failed: None,
@@ -866,6 +888,56 @@ mod tests {
             joined: 0,
             again: false,
         }
+    }
+
+    /// A start of `session` where a carry `cell` ordered took it, as the
+    /// node asks it once it has held it to that carry.
+    fn carrying(cell: &str, session: &str, at: i64) -> Kept {
+        Kept {
+            carried: Some(session.to_owned()),
+            ..agent(cell, at)
+        }
+    }
+
+    // WCJQSG (2026-11-19): an orchestrator carrying its quest's sessions
+    // to another machine begins no new work, so it spends none of its
+    // cell's eight; bringing one back and forth is still bounded.
+    #[test]
+    fn a_carry_an_orchestrator_ordered_starts_its_sessions_uncounted_once_an_hour() {
+        let (_dir, starts) = book();
+        // Past the cell's eight, as a quest of many sessions carries.
+        for one in 0..=CELL_AN_HOUR {
+            let at = NOW + i64::try_from(one).expect("few");
+            started(&starts, carrying("OSPREY", &format!("s-{one}"), at), "h");
+        }
+        for _ in 0..CELL_AN_HOUR {
+            started(&starts, agent("OSPREY", NOW + 100), "h");
+        }
+        starts
+            .admit(agent("OSPREY", NOW + 100))
+            .expect_err("new work still counts");
+        starts
+            .admit(carrying("OSPREY", "s-0", NOW + 100))
+            .expect_err("and so does carrying one again within the hour");
+        // The node's ceiling is shared with the sessions brought back.
+        let (_dir, starts) = book();
+        for one in 0..RESUMED_AN_HOUR {
+            let at = NOW + i64::try_from(one).expect("few");
+            let cell = format!("C{one:05}");
+            let kept = if one % 2 == 0 {
+                resuming(&cell, &format!("s-{one}"), at)
+            } else {
+                carrying(&cell, &format!("s-{one}"), at)
+            };
+            started(&starts, kept, "h");
+        }
+        let next = starts
+            .admit(carrying("OSPREY", "s-last", NOW + 200))
+            .expect("room in the cell");
+        assert_eq!(
+            next.asked.carried, None,
+            "past the ceiling, one more counts"
+        );
     }
 
     fn resuming(cell: &str, session: &str, at: i64) -> Kept {

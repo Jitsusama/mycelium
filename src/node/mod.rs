@@ -3311,6 +3311,9 @@ impl<S: Store> Shared<S> {
             Request::Orchestrates { .. } => {
                 Err("an orchestration is answered by `orchestrates`".to_owned())
             }
+            Request::Orchestrating => {
+                Err("an orchestration read is answered by `orchestrating`".to_owned())
+            }
             Request::Free { .. } => Err("freeing a quest is answered by `frees`".to_owned()),
             Request::Starts { .. } => Err("starts are answered by `starts_asked`".to_owned()),
             Request::Spawned { .. } => Err("a spawner is answered by `spawned`".to_owned()),
@@ -4165,6 +4168,33 @@ impl<S: Store> Shared<S> {
         .await
     }
 
+    /// What the session asking orchestrates by this node's record, as
+    /// the kernel and pi's records prove which session asks, changing
+    /// nothing. A claim lapsed as [`Self::orchestrates`] would lapse it
+    /// is shown as none, though the record keeps it until the next
+    /// change.
+    async fn orchestrating(&self) -> Reply {
+        let asker = self.asking_session().await?;
+        let standing: std::collections::BTreeSet<String> = self
+            .standing()
+            .into_iter()
+            .map(|presence| presence.session)
+            .collect();
+        let file = self.orchestrations.clone();
+        let mut record = tokio::task::spawn_blocking(move || chain::Orchestrations::read(&file))
+            .await
+            .map_err(|error| format!("the record of orchestrations couldn't be read: {error}"))?
+            .map_err(|error| format!("the record of orchestrations can't be read: {error}"))?;
+        record.lapse(|session| standing.contains(session));
+        let claim = record.sessions.get(&asker);
+        Ok(Response::Orchestrating {
+            heads: claim.map(|claim| claim.heads.clone()),
+            quests: claim
+                .map(|claim| claim.quests.iter().cloned().collect())
+                .unwrap_or_default(),
+        })
+    }
+
     /// Stops, resumes or lists agents' starts, where the person's own
     /// login asks: a list too, since it names the person's own folders.
     async fn starts_asked(&self, act: crate::wire::StartsAct) -> Reply {
@@ -4807,6 +4837,7 @@ impl<S: Store> Shared<S> {
             None => (None, None),
         };
         let resumes = Self::brought_there(reopened, on, &mut asked, whither);
+        let carried = self.carried_by_order(by, started_by.as_deref(), &asked, whither);
         let kept = starts::Kept {
             at,
             by,
@@ -4815,6 +4846,7 @@ impl<S: Store> Shared<S> {
             program: asked.command.first().cloned(),
             resumes,
             reopens,
+            carried,
             machine: None,
             held: None,
             failed: None,
@@ -4921,6 +4953,60 @@ impl<S: Store> Shared<S> {
                 .filter(|session| by != By::Person && inner.turns.holds(&session.id))
                 .map(|session| session.id.clone()),
         }
+    }
+
+    /// The session `asked` starts uncounted as the arrival of a carry its
+    /// own cell ordered from here: an agent's start asked of this node,
+    /// word for word the start such a carry gives its session
+    /// (`carry::ordered_arrival`), counted toward the very cell it says
+    /// ordered it, and matching the newest carry this node kept of that
+    /// session, ordered from here within the last
+    /// [`crate::carry::ORDERED_ARRIVES_WITHIN`] and never dated ahead of
+    /// now, in that quest, by that cell, to the one machine the start
+    /// needs, for the same reason. The
+    /// quest's own trees arrive held to the newest such carry of any of
+    /// its sessions. The carry was proved as it was ordered, so only the
+    /// sessions a cell was proved to orchestrate start uncounted, as each
+    /// carry arrives, and the book still counts a second of one within
+    /// the hour. `started_by` is the asker's fair share, never proved, so
+    /// this frees at most the one start the carry gives. None for any
+    /// other start, which counts as it would.
+    fn carried_by_order(
+        &self,
+        by: By,
+        started_by: Option<&str>,
+        asked: &Start,
+        whither: Whither,
+    ) -> Option<String> {
+        if !matches!(by, By::Agent(_)) || whither != Whither::Placed {
+            return None;
+        }
+        let ordered = crate::carry::ordered_arrival(&asked.command)?;
+        let cell = started_by.filter(|cell| cell.eq_ignore_ascii_case(ordered.by))?;
+        let [Need::Machine(to)] = asked.work.needs.as_slice() else {
+            return None;
+        };
+        let arrives = &ordered.arrives;
+        if arrives.from != self.machine {
+            return None;
+        }
+        let own = arrives.session == arrives.quest;
+        let now = jiff::Timestamp::now();
+        let since = now
+            .checked_sub(crate::carry::ORDERED_ARRIVES_WITHIN)
+            .unwrap_or(now);
+        let kept = settle::newest_each(self.carries_looked_at())
+            .into_iter()
+            .any(|carry| {
+                (since..=now).contains(&carry.at)
+                    && (own || carry.said("session") == arrives.session)
+                    && carry.said("by").eq_ignore_ascii_case(cell)
+                    && carry.said("from") == self.machine
+                    && carry.said("to") == to.as_str()
+                    && carry.said("quest") == arrives.quest
+                    && carry.said("why") == ordered.why
+            });
+        kept.then(|| arrives.session.to_owned())
     }
 
     /// Whether a start of `work`, going where `whither` says, would bring
@@ -6034,6 +6120,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
             Ok(Request::Orchestrates { heads, quests }) => {
                 shared.orchestrates(heads, quests).await.into()
             }
+            Ok(Request::Orchestrating) => shared.orchestrating().await.into(),
             Ok(Request::Free { quest }) => shared.frees(quest).await.into(),
             Ok(Request::Starts { act }) => shared.starts_asked(act).await.into(),
             Ok(Request::Spawned {
@@ -9573,11 +9660,30 @@ esac
             ),
             "and orders nothing"
         );
+        let read = |pid: i32| {
+            asks_below(&socket, pid);
+            ask(socket.clone(), Request::Orchestrating)
+        };
+        let none = Ok(Response::Orchestrating {
+            heads: None,
+            quests: Vec::new(),
+        });
+        assert_eq!(read(7002).await, none, "the refused claim is kept for none");
+        let held = Ok(Response::Orchestrating {
+            heads: Some("QEST-20261007-WCJQSG".to_owned()),
+            quests: vec![
+                "QEST-20261108-OSPHT4".to_owned(),
+                "QEST-20261115-HARBOR".to_owned(),
+            ],
+        });
+        assert_eq!(read(7001).await, held, "reading the claim keeps it");
+        assert_eq!(read(7001).await, held, "however often it is read");
         assert_eq!(
             claims(&socket, 7001, None, &[]).await,
             Ok(Response::Orchestrated),
             "the steward releases what it held"
         );
+        assert_eq!(read(7001).await, none, "and holds none once it lets go");
         assert_eq!(
             claims(
                 &socket,
@@ -10101,6 +10207,224 @@ esac
         assert!(
             store.told_carries().contains_key("kestrel"),
             "kestrel's stay"
+        );
+    }
+
+    /// The line `carries.jsonl` keeps for a carry of `session` in `quest`
+    /// from skiff to `to`, ordered by `by` for `why`, `ago` before now.
+    fn carry_line(
+        quest: &str,
+        session: &str,
+        to: &str,
+        (by, why): (&str, &str),
+        ago: jiff::SignedDuration,
+    ) -> Value {
+        let at = jiff::Timestamp::now()
+            .checked_sub(ago)
+            .expect("a time in range");
+        json!({"at": at.to_string(), "by": by, "session": session, "address": "HARBOR",
+               "from": "skiff", "to": to, "why": why, "quest": quest})
+    }
+
+    /// A node on skiff serving WCJQSG's orchestrations, keeping `lines` as
+    /// its carries, asked by WCJQSG's cell once it has started its eight
+    /// this hour, so each start it asks after counts but one uncounted.
+    async fn spent_cell(
+        dir: &Path,
+        lines: &[Value],
+    ) -> (
+        PathBuf,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<io::Result<()>>,
+        Speaking,
+    ) {
+        let socket = dir.join("skiff").join("work.sock");
+        let (stop, node, client) = orchestrated(&socket, &orchestrations(), &[]).await;
+        let kept: String = lines.iter().map(|line| line.to_string() + "\n").collect();
+        fs::write(socket.with_file_name("carries.jsonl"), kept).expect("the carries are kept");
+        declares_runs(&socket, true);
+        spends(&socket, 7001).await;
+        (socket, stop, node, client)
+    }
+
+    /// Has the cell of the pi that is process `pi` start its eight this
+    /// hour on the node at `socket`, asking as that pi from then on.
+    async fn spends(socket: &Path, pi: i32) {
+        asks_below(socket, pi);
+        for _ in 0..starts::CELL_AN_HOUR {
+            let plain = Start {
+                work: work(vec![Need::Machine("skiff".to_owned())]),
+                folder: None,
+                command: vec!["pi".to_owned()],
+                may_cost: false,
+                carries: false,
+                once: None,
+                strict: false,
+            };
+            let _ = ask(socket.to_path_buf(), Request::Start(plain)).await;
+        }
+    }
+
+    /// The start a carry WCJQSG ordered for `why` gives `session`'s
+    /// arrival in `quest`, from `from` to `to`, asked as often as wanted.
+    fn ordered_start(quest: &str, session: &str, (from, to): (&str, &str), why: &str) -> Start {
+        let ordered = crate::carry::Ordered {
+            by: "WCJQSG".to_owned(),
+            why: why.to_owned(),
+        };
+        let one = crate::carry::Done {
+            session: session.to_owned(),
+            started_before: None,
+        };
+        let mut start = crate::carry::arriving(quest, from, to, &one, Some(&ordered));
+        start.once = None;
+        start
+    }
+
+    /// Whether `start`, asked on `socket`, is refused as one more of
+    /// WCJQSG's starts this hour.
+    async fn counts(socket: &Path, start: Start) -> bool {
+        ask(socket.to_path_buf(), Request::Start(start))
+            .await
+            .is_err_and(|why| why.starts_with("WCJQSG started"))
+    }
+
+    // WCJQSG (2026-11-19): an orchestrator carrying its quest's sessions
+    // begins no new work, so their arrivals spend none of its eight; a
+    // start that differs from its carry in any one thing still counts.
+    #[tokio::test]
+    async fn a_carry_an_orchestrator_ordered_starts_its_sessions_uncounted() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let harbour = "QEST-20261115-HARBOR";
+        let why = "it needs the camera";
+        let now = jiff::SignedDuration::ZERO;
+        let lines = [
+            carry_line(harbour, "s-harbour", "tern", ("WCJQSG", why), now),
+            carry_line(harbour, "s-ferry-1", "tern", ("XUBK2E", why), now),
+        ];
+        let (socket, _stop, _node, _client) = spent_cell(dir.path(), &lines).await;
+        let skiff_to = |to| ("skiff", to);
+        let mut one_word_off = ordered_start(harbour, "s-harbour", skiff_to("tern"), why);
+        one_word_off.command[2] = one_word_off.command[2].replace("--why=", "--reason=");
+        for (unlike, start) in [
+            (
+                "why",
+                ordered_start(harbour, "s-harbour", skiff_to("tern"), "for no carry"),
+            ),
+            (
+                "to",
+                ordered_start(harbour, "s-harbour", skiff_to("skiff"), why),
+            ),
+            (
+                "quest",
+                ordered_start("QEST-20261115-OTHERQ", "s-harbour", skiff_to("tern"), why),
+            ),
+            (
+                "from",
+                ordered_start(harbour, "s-harbour", ("kestrel", "tern"), why),
+            ),
+            (
+                "cell",
+                ordered_start(harbour, "s-ferry-1", skiff_to("tern"), why),
+            ),
+            ("script", one_word_off),
+        ] {
+            assert!(counts(&socket, start).await, "another {unlike} counts");
+        }
+        assert!(
+            !counts(
+                &socket,
+                ordered_start(harbour, "s-harbour", skiff_to("tern"), why)
+            )
+            .await,
+            "the carry's arrival is uncounted"
+        );
+        assert!(
+            !counts(
+                &socket,
+                ordered_start(harbour, harbour, skiff_to("tern"), why)
+            )
+            .await,
+            "so are the quest's own trees, arriving with it"
+        );
+        let newest = booked(socket).await;
+        for carried in ["s-harbour", harbour] {
+            assert!(
+                newest.iter().any(|kept| kept["carried"] == carried),
+                "{carried} is booked as carried: {newest:?}"
+            );
+        }
+    }
+
+    // Round 1 (2026-11-20): a carry frees only its newest arrival, and
+    // only within the hour, so an old or superseded line frees nothing.
+    // Round 2: nor one dated ahead, or asked by a cell that didn't order
+    // it.
+    #[tokio::test]
+    async fn only_a_sessions_newest_carry_this_hour_starts_it_uncounted() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let harbour = "QEST-20261115-HARBOR";
+        let minutes = jiff::SignedDuration::from_mins;
+        let lines = [
+            carry_line(
+                harbour,
+                "s-harbour",
+                "tern",
+                ("WCJQSG", "long ago"),
+                minutes(61),
+            ),
+            carry_line(
+                harbour,
+                "s-ferry-1",
+                "tern",
+                ("WCJQSG", "at first"),
+                minutes(10),
+            ),
+            carry_line(harbour, "s-ferry-1", "tern", ("WCJQSG", "then"), minutes(5)),
+            carry_line(
+                harbour,
+                "s-ferry-2",
+                "tern",
+                ("WCJQSG", "ahead"),
+                -minutes(5),
+            ),
+            carry_line(harbour, "s-ferry-3", "tern", ("WCJQSG", "mine"), minutes(5)),
+        ];
+        let (socket, _stop, _node, _client) = spent_cell(dir.path(), &lines).await;
+        let start = |session, why| ordered_start(harbour, session, ("skiff", "tern"), why);
+        assert!(
+            counts(&socket, start("s-harbour", "long ago")).await,
+            "a carry over an hour old counts"
+        );
+        assert!(
+            counts(&socket, start("s-ferry-1", "at first")).await,
+            "one a later carry of its session superseded counts"
+        );
+        assert!(
+            counts(&socket, start("s-ferry-2", "ahead")).await,
+            "one dated ahead of now counts"
+        );
+        assert!(
+            !counts(&socket, start("s-ferry-1", "then")).await,
+            "the newest is uncounted"
+        );
+        spends(&socket, 7002).await;
+        let asked = ask(socket.clone(), Request::Start(start("s-ferry-3", "mine"))).await;
+        assert!(
+            asked
+                .as_ref()
+                .is_err_and(|why| why.starts_with("OSPHT4 started")),
+            "WCJQSG's carry asked by OSPHT4's cell counts toward it: {asked:?}"
+        );
+        let newest = booked(socket).await;
+        let carried: Vec<_> = newest
+            .iter()
+            .filter_map(|kept| kept["carried"].as_str())
+            .collect();
+        assert_eq!(
+            carried,
+            ["s-ferry-1"],
+            "only the newest, asked by the cell that ordered it: {newest:?}"
         );
     }
 

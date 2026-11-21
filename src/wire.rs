@@ -128,6 +128,11 @@ pub enum Request {
         /// What to do.
         act: StartsAct,
     },
+    /// What the session asking, as the kernel and pi's records prove it,
+    /// orchestrates by the node's record, changing nothing. Its own
+    /// request, so a node too old to know it refuses it rather than
+    /// reading it as an `Orchestrates` naming nothing, which forgets.
+    Orchestrating,
     /// Frees `quest` from the session holding it by the node's record of
     /// orchestrations, taken only from the person's own login.
     Free {
@@ -454,6 +459,16 @@ pub enum Response {
     Carried(serde_json::Value),
     /// The orchestrations asked for, recorded.
     Orchestrated,
+    /// What the session asking orchestrates by the node's record: the
+    /// quest it heads and those below it, or none where it claims none.
+    Orchestrating {
+        /// The orchestrating quest it heads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heads: Option<String>,
+        /// The quests it orchestrates.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        quests: Vec<String>,
+    },
     /// Whether agents' starts are stopped, after the act asked, and the
     /// newest starts the node keeps, newest last, as its book writes them.
     Starts {
