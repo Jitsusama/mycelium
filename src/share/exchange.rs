@@ -1190,11 +1190,7 @@ impl Exchange {
         let mut held = ledgers.hold(id)?;
         held.ledger.above = above;
         held.ledger.aside = self.places.record(id).exists();
-        if held.ledger.aside {
-            // Named as sharing it, so a share refused while the record
-            // waits can say whose copy it waits for.
-            held.ledger.theirs.entry(self.other.clone()).or_default();
-        }
+        held.ledger.waits_for = held.ledger.aside.then(|| self.other.clone());
         held.keep()?;
         Ok(true)
     }
@@ -1208,6 +1204,7 @@ impl Exchange {
         }
         self.move_aside(&self.places.record(id), id, "record")?;
         held.ledger.aside = false;
+        held.ledger.waits_for = None;
         held.keep()
     }
 
@@ -1769,21 +1766,16 @@ fn is_journey(shared: &Shared) -> bool {
 }
 
 /// Refuses sharing `quest` from here while `ledger` says its record waits
-/// for the copy of the machines it was heard from, naming them, since a
-/// share from here would be one of a record that is about to move aside.
+/// for the copy of the machine it was heard from, naming it, since a
+/// share or carry from here would be one of a record about to move aside.
 fn waits(quest: &str, ledger: &Ledger) -> io::Result<()> {
     if !ledger.aside {
         return Ok(());
     }
-    let from: Vec<&str> = ledger.theirs.keys().map(String::as_str).collect();
-    let from = if from.is_empty() {
-        "another machine".to_owned()
-    } else {
-        from.join(", ")
-    };
+    let from = ledger.waits_for.as_deref().unwrap_or("another machine");
     Err(io::Error::other(format!(
-        "{quest} is shared from {from}, so the copy here moves aside as that one's comes; \
-         share it from here once it has"
+        "{quest} is shared from {from}, so the copy here moves aside as {from}'s comes; \
+         share or carry it from here once it has"
     )))
 }
 
@@ -2002,6 +1994,28 @@ mod tests {
                 && refused.to_string().contains("moves aside"),
             "the refusal says why, naming the machine: {refused}"
         );
+        assert!(
+            kestrel
+                .places
+                .shareable(QUEST)
+                .is_err_and(|why| why.to_string().contains("shared from skiff")),
+            "a carry is refused the same way, before it begins"
+        );
+        assert!(
+            Machine::new("osprey").places.shareable(QUEST).is_ok(),
+            "a quest never shared may be carried"
+        );
+        assert!(
+            !kestrel
+                .places
+                .ledgers()
+                .read(QUEST)
+                .expect("read")
+                .theirs
+                .contains_key("skiff"),
+            "skiff is named as the copy waited for, not as sharing it, so none of its runs \
+             is let into kestrel's trees"
+        );
 
         let note = kestrel.places.scratch.join(QUEST).join("notes/mine.md");
         fs::create_dir_all(note.parent().expect("a file has a folder")).expect("made");
@@ -2098,7 +2112,33 @@ mod tests {
             kestrel.places.state.join("before-share").exists(),
             "the first of the record's files that comes moves it aside"
         );
+        assert_eq!(
+            kestrel.read("README.md").as_deref(),
+            Some("# Shared\n"),
+            "and skiff's README stands in its place"
+        );
+        let aside = fs::read_dir(kestrel.places.state.join("before-share"))
+            .expect("something moved aside")
+            .next()
+            .expect("one move")
+            .expect("read")
+            .path();
+        assert_eq!(
+            fs::read_to_string(aside.join(QUEST).join("record").join("README.md")).expect("kept"),
+            "# Live here\n",
+            "with kestrel's own kept aside"
+        );
         assert!(!waiting(&kestrel), "and the wait is over");
+        assert_eq!(
+            kestrel
+                .places
+                .ledgers()
+                .read(QUEST)
+                .expect("read")
+                .waits_for,
+            None,
+            "for no one"
+        );
     }
 
     #[test]

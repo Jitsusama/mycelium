@@ -90,6 +90,12 @@ pub struct Ledger {
     /// first leaves it where it was.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub aside: bool,
+    /// The machine whose copy the record waits for, while it does, so a
+    /// share refused meanwhile can name it. Kept apart from `theirs`,
+    /// which lets a machine's runs into this one's trees, since nothing
+    /// of its copy has come.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waits_for: Option<String>,
 }
 
 /// A shared file's key in a ledger and on a link: its place and its path.
