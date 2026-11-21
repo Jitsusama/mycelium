@@ -59,7 +59,7 @@ impl<S: Store> Shared<S> {
             return Answer::Err(format!("the store refused the message: {error}"));
         }
         message.for_realm = Some(realm);
-        Answer::Ok(Response::Sent(message))
+        Answer::Ok(Response::Sent(Box::new(message)))
     }
 
     /// Hands `message` to `realm`'s node on this machine, keeping how that
@@ -95,10 +95,15 @@ impl<S: Store> Shared<S> {
             message,
             from_realm,
         } = crossing;
+        // Said as the file written here says it: by this node's process,
+        // which hosts no conversation and invites no one.
         let taken = Message {
             from_realm: Some(from_realm.clone()),
             for_realm: None,
             supersedes: None,
+            pid: Some(std::process::id()),
+            hosted: false,
+            invite: None,
             ..message
         };
         let verdict = self.may_take(&taken, &from_realm);
@@ -107,14 +112,14 @@ impl<S: Store> Shared<S> {
             return refusal.into();
         }
         if self.store.message(&taken.id).is_some() {
-            return Answer::Ok(Response::Sent(taken));
+            return Answer::Ok(Response::Sent(Box::new(taken)));
         }
         let body = mesh::crossed(&taken, &from_realm, std::process::id());
         if let Err(error) = self.store.put_message(&taken.id, &body) {
             return Answer::Err(format!("the store refused the message: {error}"));
         }
         self.keep(&taken, &from_realm, &self.realm, Ok(()));
-        Answer::Ok(Response::Sent(taken))
+        Answer::Ok(Response::Sent(Box::new(taken)))
     }
 
     /// Whether this realm takes `message` from `from_realm`: only under a
@@ -464,7 +469,7 @@ mod tests {
             let _ = watching.send(());
             loop {
                 match watch.next_event().expect("the watch reads") {
-                    Some(Event::Message { message }) => return message,
+                    Some(Event::Message { message }) => return *message,
                     Some(_) => {}
                     None => panic!("the node hung up before the message came"),
                 }
@@ -594,6 +599,9 @@ mod tests {
             from_realm: None,
             for_realm: None,
             ends_hold: false,
+            pid: None,
+            hosted: false,
+            invite: None,
         };
         let crossing = crate::flow::Crossing {
             message: hold.clone(),
@@ -609,6 +617,9 @@ mod tests {
         );
 
         hold.intent = Some(Intent::Question);
+        hold.pid = Some(1);
+        hold.hosted = true;
+        hold.invite = Some("#harness".to_owned());
         let crossing = crate::flow::Crossing {
             message: hold.clone(),
             from_realm: "personal".to_owned(),
@@ -618,6 +629,21 @@ mod tests {
         else {
             panic!("a question crosses");
         };
+        let there = work.store.message(&first.id).expect("it is in the mesh");
+        let taker = std::process::id();
+        assert_eq!(
+            (first.pid, there["pid"].as_u64()),
+            (Some(taker), Some(u64::from(taker))),
+            "said and written as the taking node's own"
+        );
+        assert!(
+            !first.hosted && first.invite.is_none(),
+            "the sender's conversation and invite stay behind: {first:?}"
+        );
+        assert!(
+            there.get("hosted").is_none() && there.get("invite").is_none(),
+            "none written: {there}"
+        );
         let Answer::Ok(Response::Sent(again)) =
             answer(&work.socket, Request::Cross(crossing)).await
         else {
@@ -645,6 +671,9 @@ mod tests {
                     from_realm: None,
                     for_realm: None,
                     ends_hold: false,
+                    pid: None,
+                    hosted: false,
+                    invite: None,
                 },
                 from_realm: "personal".to_owned(),
             };

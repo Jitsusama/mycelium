@@ -152,6 +152,9 @@ pub fn message(body: &Value) -> Option<Message> {
         from_realm: sent.from_realm,
         for_realm: sent.for_realm,
         ends_hold,
+        pid: sent.pid,
+        hosted: sent.hosted.unwrap_or(false),
+        invite: sent.invite,
     })
 }
 
@@ -330,6 +333,24 @@ struct Sent {
     for_realm: Option<String>,
     #[serde(default, rename = "endsHold")]
     ends_hold: bool,
+    // Read leniently, so a file whose sender says these oddly still reads.
+    #[serde(default, deserialize_with = "lenient")]
+    pid: Option<u32>,
+    #[serde(default, deserialize_with = "lenient")]
+    hosted: Option<bool>,
+    #[serde(default, deserialize_with = "lenient")]
+    invite: Option<String>,
+}
+
+/// A field read as `T`, or none where it says something else, so an odd
+/// field costs only itself, never its message.
+fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 #[derive(Deserialize)]
@@ -573,6 +594,56 @@ mod tests {
             ["peer.wcjqsg", "machine"]
         );
         assert_eq!(message.intent, Some(Intent::Fyi));
+        assert_eq!(message.pid, Some(875_563), "the process that wrote it");
+        assert!(!message.hosted, "a whole process's own");
+        assert_eq!(message.invite, None);
+    }
+
+    #[test]
+    fn a_message_keeps_who_sent_it_and_what_it_invites_to() {
+        let body = json!({
+            "v": 1, "id": "1793046604647-OSPHT4-101-1", "at": "2026-11-21T18:00:00.000Z",
+            "from": "OSPHT4", "to": ["@WCJQSG"], "intent": "question", "text": "join?",
+            "pid": 101, "hosted": true, "invite": "#harness",
+        });
+        let hosted = message(&body).expect("a hosted message reads");
+        assert_eq!(hosted.pid, Some(101));
+        assert!(hosted.hosted, "a hosted conversation's, not its process's");
+        assert_eq!(hosted.invite.as_deref(), Some("#harness"));
+        let said = serde_json::to_value(&hosted).expect("a message is said");
+        assert_eq!(
+            (&said["pid"], &said["hosted"], &said["invite"]),
+            (&json!(101), &json!(true), &json!("#harness")),
+            "a watch says them as the file did"
+        );
+        let odd = json!({
+            "v": 1, "id": "1793046604647-OSPHT4-101-2", "at": "2026-11-21T18:00:00.000Z",
+            "from": "OSPHT4", "to": ["@WCJQSG"], "text": "odd",
+            "pid": "101", "hosted": {"key": "work-background"}, "invite": 3,
+        });
+        let oddly = message(&odd).expect("odd fields cost only themselves");
+        assert_eq!((oddly.pid, oddly.hosted, oddly.invite), (None, false, None));
+        let plain = message(&json!({
+            "v": 1, "id": "x", "at": "2026-11-21T18:00:00.000Z",
+            "from": "OSPHT4", "to": ["@WCJQSG"], "text": "plain",
+        }))
+        .expect("a plain message reads");
+        let plain = serde_json::to_value(plain).expect("a message is said");
+        assert!(
+            ["pid", "hosted", "invite"]
+                .iter()
+                .all(|field| plain.get(field).is_none()),
+            "none said where the file named none: {plain}"
+        );
+        let event = serde_json::to_value(crate::wire::Event::Message {
+            message: Box::new(hosted),
+        })
+        .expect("an event is said");
+        assert_eq!(
+            event["Message"]["message"],
+            said,
+            "a boxed message is said as a bare one"
+        );
     }
 
     #[test]

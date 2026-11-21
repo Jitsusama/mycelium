@@ -558,6 +558,9 @@ mod tests {
             from_realm: None,
             for_realm: None,
             ends_hold: false,
+            pid: None,
+            hosted: false,
+            invite: None,
         }
     }
 
