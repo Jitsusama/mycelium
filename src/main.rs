@@ -2878,7 +2878,7 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
     let left = left?;
     // A socket nobody listens on, as a host that crashed leaves, says no
     // host ran; any that answered, however late, did.
-    let answered = !matches!(left, hosted_attach::Left::Unreachable);
+    let answered = !matches!(left, hosted_attach::Left::Unreachable) || socket.exists();
     if answered {
         hold::say_reached(host);
     }
