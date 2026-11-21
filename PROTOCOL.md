@@ -1964,12 +1964,16 @@ missed as `runs-nothing`, so it starts only where that fence runs a
 command: its session doesn't run through that launcher yet, but a
 machine declaring none, as a Mac does, would run it looser than its
 asker. What is judged is what a machine declares, never its system, so
-a Mac declaring `runs` would take such a start unfenced. The person's
-start is relayed as theirs, but a machine no person works at, or one
-where the link's end can't be named, judges it an agent's, so there it
-needs that machine's launcher too, and a refusal there says it was so
-judged. An agent's run
-naming no machine that every machine refuses, this one for its
+a Mac declaring `runs` would take such a start unfenced. So an agent's
+session that ran on a Mac isn't brought back there after a restart,
+since its start is pinned to that machine. The person's start is
+relayed as theirs, but a machine no person works at, or one where the
+link's end can't be named, judges it an agent's, so there it needs that
+machine's launcher too, and a refusal of any start judged so says it
+was, and why. A machine made from a basin is one no person works at,
+and an offer is screened for `runs` only for an agent's start, so the
+person's start may yet be refused on a machine made and paid for it.
+An agent's run naming no machine that every machine refuses, this one for its
 launcher, is told this one's reason and then every other's; one a
 link carried here is told this machine by name, not as here. Each
 machine so refused still counts for what the person's lasting machines

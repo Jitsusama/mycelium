@@ -5085,6 +5085,11 @@ impl<S: Store> Shared<S> {
                 ));
             }
             let persons_carry = asked.carries;
+            let judged = judged_as(
+                by,
+                &claims,
+                asker::unclaimed_because(self.client, &self.processes),
+            );
             let why = if unattended {
                 "no person works on this machine, so its link's end can't be told from an \
                  agent's login"
@@ -5102,9 +5107,10 @@ impl<S: Store> Shared<S> {
             let started = self.counted((by, charged), pinned, 0, Whither::Here).await;
             // The person's carry, taken as an agent's start where no
             // person works, is the person's to read: no orchestrator of
-            // theirs paces it. Any other start refused there says it was
-            // judged an agent's, since the person's may be among them and
-            // would otherwise read a refusal for a fence it never asked.
+            // theirs paces it. Any other start refused says it was judged
+            // an agent's, and why, since the person's may be among them
+            // and would otherwise read a refusal for a fence it never
+            // asked.
             return started.map_err(|why| {
                 if persons_carry {
                     self.carry_refused(&why)
@@ -5115,7 +5121,11 @@ impl<S: Store> Shared<S> {
                         self.machine
                     )
                 } else {
-                    why
+                    format!(
+                        "{} takes a relayed start as an agent's where {judged}, and refused \
+                         it: {why}",
+                        self.machine
+                    )
                 }
             });
         }
@@ -14370,7 +14380,7 @@ esac
             .await
             .expect_err("a relayed start is never placed elsewhere");
         assert!(
-            refused.contains("starts here or nowhere") || refused.starts_with("skiff doesn't take"),
+            refused.contains("starts here or nowhere") || refused.contains("skiff doesn't take"),
             "{refused}"
         );
         // Judged by what skiff is now, not by what tern last heard of it.
@@ -16924,8 +16934,10 @@ esac
             .await
             .expect_err("a relayed start never starts elsewhere");
         assert!(
-            refused.starts_with("skiff doesn't take it now"),
-            "{refused}"
+            refused.starts_with(
+                "skiff takes a relayed start as an agent's where its link's end is judged"
+            ) && refused.contains("and refused it: skiff doesn't take it now"),
+            "saying how it was judged: {refused}"
         );
         // That one counted, as any agent's start that failed does.
         for _ in 1..starts::CELL_AN_HOUR {
@@ -16939,7 +16951,7 @@ esac
             .await
             .expect_err("and is counted here, as an agent's");
         assert!(
-            refused.starts_with("agents of no known cell started 8 sessions"),
+            refused.contains("and refused it: agents of no known cell started 8 sessions"),
             "{refused}"
         );
         assert!(
@@ -16976,7 +16988,8 @@ esac
             .await
             .expect_err("an agent's relayed start is refused here");
         assert!(
-            refused.starts_with("skiff doesn't take it now")
+            refused.starts_with("skiff takes a relayed start as an agent's where")
+                && refused.contains("and refused it: skiff doesn't take it now")
                 && refused.contains(
                     "declares no way to run a command as its strictly fenced sessions run"
                 ),
@@ -17015,8 +17028,9 @@ esac
             .await
             .expect_err("it starts nowhere here");
         assert!(
-            refused.starts_with(
-                "a start relayed here starts here or nowhere, and it was asked of tern"
+            refused.contains(
+                "and refused it: a start relayed here starts here or nowhere, and it was \
+                 asked of tern"
             ),
             "{refused}"
         );
