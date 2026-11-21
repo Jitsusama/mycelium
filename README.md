@@ -37,8 +37,13 @@ The harness mesh's messages and presence, carried between machines:
   the host lets it go. It exits 3 when the host let the conversation go
   back to plain pi, as a release does, so whatever runs in the window
   next can carry on as that pi, and 69 when the host stayed gone past
-  its two minutes for a restart, so it can wait for the host to come
-  back; any other leaving exits 0.
+  its two minutes for a restart, never answered the join, or couldn't be
+  reached at all, telling its holder so first; any other leaving exits
+  0. A holder on the pi host's own machine keeps the window on such a
+  69 as it does on 75, saying the host is away, and starts attach
+  again at a key, a focus or its wake file, and by itself after a pause
+  that doubles from 15 seconds to two minutes while the host stays away.
+  A window on another machine's session, through SSH, still closes.
 - A session on another machine linked over SSH is joined with
   `mycelium attach --on <MACHINE>`, the words the node serves for it,
   which runs SSH there and runs it again each time the link drops,
@@ -120,9 +125,13 @@ The harness mesh's messages and presence, carried between machines:
   judged. An answer today's rules wouldn't give under the weights that
   gave it, as work on a worker that didn't name it, is counted as stale
   and left as it was, so a rule's change isn't read as the weights'.
-- `mycelium unanswered` prints what holds the mesh up as JSON lines,
-  oldest first: each question of the last two hours still waiting on a
-  peer it was put to, and each hold still standing. `mycelium said`
+- `mycelium unanswered` shows what holds the mesh up, oldest first:
+  each question of the last two hours still waiting on a peer it was
+  put to, with who asks whom and how long it has waited, and each hold
+  still standing, with until when, each with its id and how it opens.
+  It draws text into a pipe too, as `swarm` and `forage` do, so a
+  script reading the JSON lines it once printed asks for them with
+  `-o json`, which prints each whole as a JSON line. `mycelium said`
   prints what you said to sessions through this machine, with when each
   was taken up and answered.
 - `mycelium swarm` shows the realm's teams in a terminal, nested as
@@ -169,10 +178,14 @@ The harness mesh's messages and presence, carried between machines:
   machine whose quest, of the node's realm, claims it and lists them.
 - `mycelium forage` says what each cell is for: its purpose, the first
   sentence of its quest's Summary, and each of its plans, research and
-  reports with its stage and how many steps are ticked. Named by its
-  address or its quest's id, it says one cell's; `-o json` prints a
-  JSON line each. Each node serves its own cells' forages as the
-  `forage` kind, read from its quest store as it changes.
+  reports with its stage and how many steps are ticked. The cells
+  that wait on the person come first, each purpose takes two lines at
+  most, and closed documents are counted rather than listed. Named by
+  its address or its quest's id, it says one cell's, its purpose as
+  far as its node read it and every document listed, as it says every
+  cell's into a pipe; `-o json` prints a JSON line each, whole.
+  Each node serves its own cells' forages as the `forage` kind, read
+  from its quest store as it changes.
 - `mycelium swarm say <NAME> <WORDS>` says something as the person to
   a team, which its lead hears, or to one session;
   `mycelium swarm pause|resume <NAME>` pauses or resumes every session

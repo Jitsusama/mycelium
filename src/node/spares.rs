@@ -147,7 +147,9 @@ fn judged(
     let (mut unshared, mut above) = (Vec::new(), Vec::new());
     for quest in &quests {
         match ledgers.read(quest) {
-            Ok(ledger) if ledger.theirs.contains_key(asker) => {
+            // A record waiting for another machine's copy is still this
+            // one's alone, so no far machine's run is let in for it.
+            Ok(ledger) if !ledger.aside && ledger.theirs.contains_key(asker) => {
                 // A quest shared only as one above another crosses as its
                 // README alone, so none of its trees is the far machine's.
                 if ledger.above {
@@ -562,6 +564,31 @@ mod tests {
                 .ground(&machine.tree("others"), "tern")
                 .is_err_and(|why| why.contains("none of which is shared with tern")),
             "s-else's own record says it works {OTHER}"
+        );
+    }
+
+    #[test]
+    fn a_quest_whose_record_waits_for_anothers_copy_spares_none_of_its_trees() {
+        let machine = Machine::new();
+        // As though tern's Holds came while kestrel's record waited: tern
+        // is named, but nothing of its copy has come.
+        let ledger = machine
+            .places
+            .state
+            .join("shared")
+            .join(format!("{SHARED}.json"));
+        fs::create_dir_all(ledger.parent().expect("a file has a folder")).expect("made");
+        fs::write(
+            &ledger,
+            json!({"files": {}, "theirs": {"tern": {}}, "aside": true, "waits_for": "tern"})
+                .to_string(),
+        )
+        .expect("written");
+        assert!(
+            machine
+                .ground(&machine.tree("harbor"), "tern")
+                .is_err_and(|why| why.contains("none of which is shared with tern")),
+            "a waiting record is this machine's own"
         );
     }
 

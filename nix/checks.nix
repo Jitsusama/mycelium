@@ -59,8 +59,20 @@ let
           touch $out
         '';
 
-    # The crate builds and its tests pass.
-    mycelium = package;
+    # The crate builds and its tests pass, on a Mac too, where the package
+    # alone runs none (nix/package.nix). On a Mac it asks to be built
+    # outside Nix's sandbox, which refuses FSEvents and listeners there, so
+    # a Mac whose sandbox is on refuses it by name rather than failing 80
+    # tests; the lent Mac builds with no sandbox. The assertions keep the
+    # split: a Mac's package runs no tests, and this runs them all.
+    mycelium =
+      let
+        tested = package.override { macTests = true; };
+        mac = pkgs.stdenv.hostPlatform.isDarwin;
+      in
+      assert tested.doCheck;
+      assert mac -> !package.doCheck;
+      if mac then tested.overrideAttrs { __noChroot = true; } else tested;
 
     # clippy finds nothing, tests included, at the lints Cargo.toml sets.
     mycelium-passes-clippy = package.overrideAttrs (old: {

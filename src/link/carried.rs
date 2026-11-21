@@ -284,6 +284,7 @@ mod tests {
                 lasts: None,
             },
             folder: None,
+            strict: false,
             command: vec!["pi".to_owned(), "--session".to_owned(), "s-gone".to_owned()],
             may_cost: false,
             carries: false,

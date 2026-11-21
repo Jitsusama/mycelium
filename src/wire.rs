@@ -128,6 +128,11 @@ pub enum Request {
         /// What to do.
         act: StartsAct,
     },
+    /// What the session asking, as the kernel and pi's records prove it,
+    /// orchestrates by the node's record, changing nothing. Its own
+    /// request, so a node too old to know it refuses it rather than
+    /// reading it as an `Orchestrates` naming nothing, which forgets.
+    Orchestrating,
     /// Frees `quest` from the session holding it by the node's record of
     /// orchestrations, taken only from the person's own login.
     Free {
@@ -140,6 +145,21 @@ pub enum Request {
     /// ends. The process is the one the kernel says is at the other end, so
     /// no process can speak for another. It says nothing more.
     Present,
+    /// A pi host's word that its child `pid`, started `started` clock
+    /// ticks after boot as the host read it before handing it any command,
+    /// is the pi-spawner it started for `session`, so a command asking
+    /// below it asks for that session alone. Taken only from the host
+    /// itself, as the kernel names the process at the other end, and only
+    /// for a session it proves; see PROTOCOL.md's A Hosted Session's
+    /// Spawner.
+    Spawned {
+        /// The spawner's process.
+        pid: i32,
+        /// When it started, in clock ticks since boot.
+        started: u64,
+        /// The session it serves.
+        session: String,
+    },
     /// What this node asks of `machine`, handed to the connection one ask
     /// a line for as long as it stays, each answered on a line of its own:
     /// a link `machine` dialled, which runs outside the node, carries them.
@@ -185,9 +205,15 @@ pub struct Start {
     /// The folder it starts in on that machine: a full path, or a path
     /// within its home, since only that machine knows where its home is.
     /// It starts in its home when this names none or names no folder
-    /// there.
+    /// there, unless `strict`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<PathBuf>,
+    /// Whether a `folder` named that the machine hasn't refuses the start
+    /// rather than beginning it at home, as a sprout's must, its folder
+    /// being the work's. Left out when not, so an older node still reads
+    /// the start, and begins it at home.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
     /// The program and its arguments, run through the login shell there.
     pub command: Vec<String>,
     /// Whether a machine may be made for it from a provider's offer, which
@@ -437,6 +463,16 @@ pub enum Response {
     Carried(serde_json::Value),
     /// The orchestrations asked for, recorded.
     Orchestrated,
+    /// What the session asking orchestrates by the node's record: the
+    /// quest it heads and those below it, or none where it claims none.
+    Orchestrating {
+        /// The orchestrating quest it heads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heads: Option<String>,
+        /// The quests it orchestrates.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        quests: Vec<String>,
+    },
     /// Whether agents' starts are stopped, after the act asked, and the
     /// newest starts the node keeps, newest last, as its book writes them.
     Starts {
@@ -449,6 +485,8 @@ pub enum Response {
     Watching,
     /// The process is counted present until it hangs up.
     Present,
+    /// The spawner said, registered for its session.
+    Spawned,
     /// Asks follow, one per line, each to be answered on a line back.
     Carrying,
     /// This machine's own health, or none while it is unknown: one at
@@ -528,6 +566,55 @@ mod tests {
         assert!(
             serde_json::from_str::<Request>(r#"{"Watch":{"groups":[]}}"#).is_err(),
             "a pattern is one string, never a list"
+        );
+    }
+
+    #[test]
+    fn a_spawner_is_said_and_answered_as_the_protocol_writes_it() {
+        let said = r#"{"Spawned":{"pid":82,"started":5,"session":"s-one"}}"#;
+        assert_eq!(
+            serde_json::from_str::<Request>(said).expect("a spawner's word reads"),
+            Request::Spawned {
+                pid: 82,
+                started: 5,
+                session: "s-one".to_owned(),
+            },
+            "{said}"
+        );
+        assert_eq!(
+            serde_json::to_string(&Response::Spawned).expect("its answer writes"),
+            r#""Spawned""#,
+            "the answer is the bare word"
+        );
+    }
+
+    #[test]
+    fn a_start_not_strict_says_nothing_of_it_so_an_older_node_reads_it() {
+        let said = r#"{"work":{},"folder":"src/skiff","command":["pi"]}"#;
+        let start = serde_json::from_str::<Start>(said).expect("a start reads");
+        assert!(!start.strict, "a start that doesn't say is not strict");
+        assert!(
+            !serde_json::to_string(&start)
+                .expect("a start writes")
+                .contains("strict"),
+            "one not strict is written as before it was said"
+        );
+        let strict = Start {
+            strict: true,
+            ..start
+        };
+        let written = serde_json::to_string(&strict).expect("a start writes");
+        assert!(written.contains(r#""strict":true"#), "{written}");
+        assert_eq!(
+            serde_json::from_str::<Start>(&written).expect("a strict start reads"),
+            strict
+        );
+        // A field this end doesn't know is passed over, as an older end
+        // passes over strict.
+        let later = r#"{"work":{},"folder":"src/skiff","command":["pi"],"said_later":true}"#;
+        assert!(
+            serde_json::from_str::<Start>(later).is_ok(),
+            "a start saying more than this end knows still reads"
         );
     }
 }

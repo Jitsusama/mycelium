@@ -171,10 +171,12 @@ enum Action {
     /// Prints the questions and holds the mesh waits on.
     ///
     /// Each question of the last two hours still waiting on a peer it
-    /// was put to, and each hold still standing, oldest first, a JSON
-    /// line each, as the node holds it.
+    /// was put to, and each hold still standing, oldest first: who asks
+    /// whom and how long it has waited, or who holds whom and until
+    /// when, its id, and how it opens. `-o json` prints each whole, a
+    /// JSON line as the node holds it.
     #[command(after_help = "Example:\n  mycelium unanswered")]
-    Unanswered,
+    Unanswered(Output),
     /// Prints what you said to sessions through this machine.
     ///
     /// Oldest first, with when each was taken up and answered, a JSON
@@ -228,8 +230,12 @@ enum Action {
     ///
     /// Each cell working on a quest, by its address, with its purpose, the
     /// first sentence of its quest's Summary, and each of its documents:
-    /// kind, stage, how many steps are ticked, and title. Named by its
-    /// address or its quest's id, one cell's forage.
+    /// kind, stage, how many steps are ticked, and title. Those that wait
+    /// on you come first. In a terminal each purpose takes two lines at
+    /// most, closed documents are counted, and each row is cut to fit.
+    /// Named by its address or its quest's id, one cell's forage, with
+    /// its purpose as far as its node read it and every document. Into a
+    /// pipe nothing more is cut.
     #[command(after_help = "Example:\n  mycelium forage HARBOR")]
     Forage(ForageAsked),
     /// Says how a receptor stands, as the receptor.
@@ -442,8 +448,9 @@ enum Action {
     /// Run by an orchestrator's session, from its own process, as it loads
     /// the orchestrating quest HEADS and whenever the quests below it
     /// change; the node proves which session runs it and records the
-    /// claim, refusing a quest another session holds. Without HEADS, it
-    /// forgets what the session claimed, as it unloads or concludes.
+    /// claim, refusing a quest another session holds. Bare, it prints
+    /// what the session claims, changing nothing; `--forget` forgets it,
+    /// as the session unloads or concludes.
     ///
     /// `--free QUEST`, from the person's own login, frees a quest from
     /// the session holding it, such as one another session took while its
@@ -454,11 +461,14 @@ enum Action {
     )]
     Orchestrates {
         /// The orchestrating quest the session has loaded.
-        #[arg(long, conflicts_with = "free")]
+        #[arg(long, conflicts_with_all = ["free", "forget"])]
         heads: Option<String>,
         /// The quests it orchestrates.
-        #[arg(conflicts_with = "free")]
+        #[arg(conflicts_with_all = ["free", "forget"])]
         quests: Vec<String>,
+        /// Forgets what the session claimed.
+        #[arg(long, conflicts_with = "free")]
+        forget: bool,
         /// A quest to free from whichever session holds it, as the person.
         #[arg(long)]
         free: Option<String>,
@@ -1460,6 +1470,22 @@ fn reader_left(error: &io::Error, out: impl AsFd) -> bool {
             .intersects(PollFlags::ERR | PollFlags::HUP)
 }
 
+/// What `mycelium orchestrates` asks: to free a quest, to read what the
+/// session claims where it names nothing, or else to claim what it names,
+/// nothing where it forgets.
+fn orchestrates(
+    heads: Option<String>,
+    quests: Vec<String>,
+    forget: bool,
+    free: Option<String>,
+) -> Request {
+    match free {
+        Some(quest) => Request::Free { quest },
+        None if heads.is_none() && quests.is_empty() && !forget => Request::Orchestrating,
+        None => Request::Orchestrates { heads, quests },
+    }
+}
+
 fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Result<ExitCode> {
     let realm = realm.ok_or_else(|| {
         io::Error::new(
@@ -1489,7 +1515,7 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
             carry(&socket, shares, carrying, why.as_deref())
         }
         Action::Sessions => print_reply(&socket, &Request::Sessions),
-        Action::Unanswered => print_records(&socket, mycelium::unanswered::KIND),
+        Action::Unanswered(output) => unanswered(&socket, &output),
         Action::Said => print_records(&socket, mycelium::words::KIND),
         Action::Health { here } => health(&socket, here, realm),
         Action::Balance(asked) => balance(&socket, &realm, asked),
@@ -1515,11 +1541,11 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Run(asked) => return run_there(&socket, asked),
         Action::Steer { address } => steer(&socket, address),
         Action::Orchestrates {
-            free: Some(quest), ..
-        } => print_reply(&socket, &Request::Free { quest }),
-        Action::Orchestrates { heads, quests, .. } => {
-            print_reply(&socket, &Request::Orchestrates { heads, quests })
-        }
+            heads,
+            quests,
+            forget,
+            free,
+        } => print_reply(&socket, &orchestrates(heads, quests, forget, free)),
         Action::Messages { groups, limit } => {
             print_reply(&socket, &Request::Messages { groups, limit })
         }
@@ -2241,8 +2267,13 @@ const SWARM_WITHIN: std::time::Duration = std::time::Duration::from_secs(4);
 /// seconds a link gives another machine to say it was told.
 const STEER_WITHIN: std::time::Duration = std::time::Duration::from_secs(35);
 
-/// How wide the swarm is drawn where its output isn't a terminal that says.
+/// How wide the swarm is drawn into a pipe, until its tables can be drawn
+/// whole there, as every command's should be.
 const SWARM_WIDTH: usize = 100;
+
+/// How wide a terminal is drawn on where neither `COLUMNS` nor the
+/// terminal says.
+const WIDTH_UNSAID: usize = 80;
 
 /// Prints the swarm's teams, or the one `team` names, as
 /// [`mycelium::swarm`] draws them, or each team's record as a JSON line.
@@ -2259,16 +2290,39 @@ fn swarm(socket: &Path, realm: &str, team: Option<&str>, json: bool) -> io::Resu
     writeln!(io::stdout().lock(), "{shown}")
 }
 
-/// How a person's terminal is drawn on: as wide as it says, in colour
+/// How wide stdout is drawn on: into a terminal, `COLUMNS`, then what the
+/// terminal `said`, then [`WIDTH_UNSAID`], as core.nix's commands read it;
+/// `COLUMNS` first because no shell exports it, so it's mostly there only
+/// when someone asked for that width; an editor's terminal can pass on a
+/// stale one, which, where the terminal says its width, can only draw
+/// narrower. It's read as a terminal's own width is, at most a `u16`,
+/// and no wider than a terminal that says, since a line past its edge
+/// only wraps. Into a pipe `COLUMNS` isn't read, as the
+/// kit's commands don't read it there, and the width is [`SWARM_WIDTH`].
+fn width(terminal: bool, columns: Option<&str>, said: Option<u16>) -> usize {
+    if !terminal {
+        return SWARM_WIDTH;
+    }
+    let said = said.filter(|cells| *cells > 0);
+    columns
+        .and_then(|columns| columns.trim().parse::<u16>().ok())
+        .filter(|cells| *cells > 0)
+        .map(|cells| said.map_or(cells, |said| cells.min(said)))
+        .or(said)
+        .map_or(WIDTH_UNSAID, usize::from)
+}
+
+/// How a person's terminal is drawn on: as [`width`] finds it, in colour
 /// unless it isn't one or `NO_COLOR` is set, with the theme's marks.
 fn look() -> mycelium::swarm::Look {
     use std::io::IsTerminal as _;
     let stdout = io::stdout();
     let terminal = stdout.is_terminal();
-    let width = rustix::termios::tcgetwinsize(&stdout)
+    let columns = std::env::var("COLUMNS").ok();
+    let said = rustix::termios::tcgetwinsize(&stdout)
         .ok()
-        .filter(|size| terminal && size.ws_col > 0)
-        .map_or(SWARM_WIDTH, |size| usize::from(size.ws_col));
+        .map(|size| size.ws_col);
+    let width = width(terminal, columns.as_deref(), said);
     mycelium::swarm::Look {
         width,
         colour: terminal && std::env::var_os("NO_COLOR").is_none(),
@@ -2553,6 +2607,7 @@ fn start(socket: &Path, asked: Starting) -> io::Result<()> {
     let start = Start {
         work: asked.work.into(),
         folder: said_within_home(asked.folder)?,
+        strict: false,
         command: asked.command,
         may_cost: asked.may_cost,
         carries: false,
@@ -2813,8 +2868,10 @@ fn attach(dir: &Path, id: &str) -> io::Result<()> {
 /// Joins `session` through the pi host `host` of `realm` on this machine
 /// until the host lets it go, exiting [`hold::holder::RELEASED`] when it
 /// lets the conversation go back to plain pi, and [`hold::holder::GONE`]
-/// when it stayed gone past its patience for a restart or never answered
-/// the first join.
+/// when it stayed gone past its patience for a restart, never answered
+/// the first join, isn't running here, or can't be reached, so a holder
+/// keeps the window for it to come back, told so first
+/// ([`hold::say_gone`]).
 fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode> {
     let runtime_dir = place::login_runtime().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "this login has no runtime folder")
@@ -2822,10 +2879,9 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
     let socket = hosted_attach::socket(&runtime_dir, realm, host)
         .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
     if !socket.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("no pi host {host} is running here"),
-        ));
+        tell!("mycelium: no pi host {host} is running here");
+        hold::say_gone();
+        return Ok(ExitCode::from(hold::holder::GONE));
     }
     let runtime = runtime()?;
     let left = runtime.block_on(hosted_attach::join_here(&socket, session));
@@ -2839,11 +2895,15 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
             tell!("mycelium: the pi host {host} let the conversation go back to plain pi");
         }
         hosted_attach::Left::Gone => tell!("mycelium: the pi host {host} has gone"),
+        hosted_attach::Left::Unreachable => tell!("mycelium: the pi host {host} can't be reached"),
         hosted_attach::Left::Unanswered(within) => {
             tell!("mycelium: the pi host {host} didn't answer the join in {within:?}");
         }
         // Joining here comes back from a suspend or a restart by itself.
         hosted_attach::Left::Suspended | hosted_attach::Left::Restarting => {}
+    }
+    if left.exit_code() == hold::holder::GONE {
+        hold::say_gone();
     }
     Ok(ExitCode::from(left.exit_code()))
 }
@@ -2997,16 +3057,53 @@ fn web(asked: WebAsked) -> io::Result<()> {
 /// names, drawn for a person or a JSON line each.
 fn forage(socket: &Path, asked: &ForageAsked) -> io::Result<()> {
     use mycelium::forage;
+    use std::io::IsTerminal as _;
     let records = mycelium::swarm::records(socket, forage::KIND, SWARM_WITHIN)?;
     let chosen = forage::chosen(records, asked.cell.as_deref());
     if asked.output.json() {
         return chosen.iter().try_for_each(print_line);
     }
-    write!(
-        io::stdout().lock(),
-        "{}",
+    // Into a pipe nothing gives way, so a reader that greps or saves it
+    // has every word and every document.
+    let drawn = if io::stdout().is_terminal() {
         forage::draw(&chosen, asked.cell.as_deref(), look().width)
+    } else {
+        forage::draw_for_a_pipe(&chosen, asked.cell.as_deref())
+    };
+    write!(io::stdout().lock(), "{drawn}")
+}
+
+/// Draws what waits on the mesh for a person, to the terminal's width,
+/// or whole into a pipe; or, asked for JSON, prints each record as the
+/// node holds it.
+fn unanswered(socket: &Path, output: &Output) -> io::Result<()> {
+    if output.json() {
+        return print_records(socket, mycelium::unanswered::KIND);
+    }
+    let records = mycelium::swarm::records(socket, mycelium::unanswered::KIND, SWARM_WITHIN)?;
+    let drawn = mycelium::unanswered::drawn(&records, &look(), room());
+    io::stdout().lock().write_all(drawn.as_bytes())
+}
+
+/// The columns stdout has, as [`width`] finds them for a terminal; into
+/// a pipe, none, so nothing is cut.
+fn room() -> Option<usize> {
+    use std::io::IsTerminal as _;
+    let stdout = io::stdout();
+    let terminal = stdout.is_terminal();
+    room_of(
+        terminal,
+        std::env::var("COLUMNS").ok().as_deref(),
+        rustix::termios::tcgetwinsize(&stdout)
+            .ok()
+            .map(|size| size.ws_col),
     )
+}
+
+/// [`room`] from what it reads: whether stdout is a `terminal`, the
+/// `columns` set in `COLUMNS`, and the terminal's own `size`.
+fn room_of(terminal: bool, columns: Option<&str>, size: Option<u16>) -> Option<usize> {
+    terminal.then(|| width(true, columns, size))
 }
 
 /// Prints each record of `kind` the node holds, a JSON line each, oldest
@@ -3076,10 +3173,82 @@ mod tests {
 
     use std::io;
 
+    use mycelium::wire::Request;
+
     use super::{
-        Action, Command, HELP_WIDTH, SAID_MOST, SwarmAsked, Tree, in_place, kit, processes_here,
-        reader_left, said_text, swarm_asked, tree, write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, in_place, kit,
+        orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked, tree, width,
+        write_line,
     };
+
+    #[test]
+    fn a_terminal_is_as_wide_as_columns_says_then_as_it_says_then_eighty() {
+        for (columns, said, wide) in [
+            (Some("60"), Some(120), 60),
+            (None, Some(120), 120),
+            (Some("wide"), Some(90), 90),
+            (Some("0"), Some(0), 80),
+            (None, None, 80),
+            (Some("0"), Some(120), 120),
+            (None, Some(0), 80),
+            (Some(" 60 "), Some(120), 60),
+            (Some("200"), None, 200),
+            (Some("60"), Some(0), 60),
+        ] {
+            assert_eq!(
+                width(true, columns, said),
+                wide,
+                "COLUMNS {columns:?}, the terminal saying {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_room_is_a_terminal_s_width_and_none_into_a_pipe() {
+        for (terminal, columns, size, room) in [
+            (false, Some("60"), Some(100), None),
+            (true, Some("60"), Some(100), Some(60)),
+            (true, Some("200"), Some(100), Some(100)),
+            (true, Some("wide"), Some(100), Some(100)),
+            (true, None, None, Some(80)),
+        ] {
+            assert_eq!(
+                room_of(terminal, columns, size),
+                room,
+                "a terminal {terminal}, COLUMNS {columns:?}, its size {size:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_terminal_is_drawn_no_wider_than_it_is() {
+        for (columns, said, wide) in [
+            (Some("200"), Some(120), 120),
+            (Some("65535"), Some(120), 120),
+        ] {
+            assert_eq!(
+                width(true, columns, said),
+                wide,
+                "COLUMNS {columns:?}, the terminal saying {said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn columns_past_what_a_terminal_could_say_is_ignored() {
+        for columns in ["65536", "99999999999", "18446744073709551615"] {
+            assert_eq!(
+                width(true, Some(columns), None),
+                80,
+                "COLUMNS {columns:?}, the terminal saying nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn into_a_pipe_columns_is_not_read() {
+        assert_eq!(width(false, Some("60"), Some(120)), SWARM_WIDTH);
+    }
 
     #[test]
     fn a_message_is_read_from_input_so_its_words_sit_in_no_command_line() {
@@ -3142,6 +3311,56 @@ mod tests {
         assert!(
             parsed.is_err(),
             "its words are named, or `-` asks for input, so an open input never holds it"
+        );
+    }
+
+    // A bare `orchestrates` once forgot what the session claimed, so a
+    // person reading it lost the claim; it reads now, and forgets only
+    // with `--forget`.
+    #[test]
+    fn a_bare_orchestrates_reads_and_only_forget_forgets() {
+        let asked = |words: &[&str]| match Command::try_parse_from(
+            [["mycelium", "orchestrates"].as_slice(), words].concat(),
+        )
+        .map(|asked| asked.action)
+        {
+            Ok(Some(Action::Orchestrates {
+                heads,
+                quests,
+                forget,
+                free,
+            })) => Ok(orchestrates(heads, quests, forget, free)),
+            Ok(_) => panic!("{words:?} is no orchestrates"),
+            Err(error) => Err(error.kind()),
+        };
+        assert_eq!(asked(&[]), Ok(Request::Orchestrating), "bare, it reads");
+        assert_eq!(
+            asked(&["--forget"]),
+            Ok(Request::Orchestrates {
+                heads: None,
+                quests: Vec::new()
+            }),
+            "--forget forgets"
+        );
+        assert_eq!(
+            asked(&["--heads", "QEST-20261007-WCJQSG", "QEST-20261108-OSPHT4"]),
+            Ok(Request::Orchestrates {
+                heads: Some("QEST-20261007-WCJQSG".to_owned()),
+                quests: vec!["QEST-20261108-OSPHT4".to_owned()]
+            }),
+            "and naming quests claims them"
+        );
+        assert_eq!(
+            asked(&["--free", "QEST-20261108-OSPHT4"]),
+            Ok(Request::Free {
+                quest: "QEST-20261108-OSPHT4".to_owned()
+            }),
+            "--free frees"
+        );
+        assert_eq!(
+            asked(&["--forget", "QEST-20261108-OSPHT4"]),
+            Err(clap::error::ErrorKind::ArgumentConflict),
+            "forgetting and claiming at once is refused"
         );
     }
 

@@ -575,12 +575,13 @@ impl Settler {
             );
             return None;
         };
-        if code == 2 {
-            // A pi-carry from before settling refuses the form as asked
-            // wrongly, so nothing was asked.
+        if code == 2 || code == 64 {
+            // A pi-carry that refuses the form as asked wrongly asked
+            // nothing: one from before settling exits 2, and once pi-carry
+            // keeps core.nix's exit table it gives 64 for that refusal.
             eprintln!(
-                "{PI_CARRY} here can't settle {}'s carry; it is asked again once the node \
-                 starts afresh",
+                "{PI_CARRY} here can't settle {}'s carry: it exited {code}, and is asked \
+                 again once the node starts afresh",
                 carry.said("address")
             );
             return None;
@@ -1420,14 +1421,49 @@ mod tests {
     #[test]
     fn a_settling_that_asks_nothing_keeps_no_line_and_is_asked_again_afresh() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        // One that can't run, and one from before settling, which refuses
-        // the form as asked wrongly.
-        let (too_old, _) = stand_in(dir.path(), "exit 2");
-        for program in [dir.path().join("no-such"), too_old] {
+        // One that can't run, and two that refuse the form as asked
+        // wrongly: with 2, as one from before settling does, and with 64,
+        // as core.nix's exit table spells it. Each keeps a folder of its own.
+        let mut programs = vec![(dir.path().join("no-such"), None)];
+        for code in [2, 64] {
+            let own = dir.path().join(format!("exits-{code}"));
+            fs::create_dir(&own).expect("the stand-in's folder is made");
+            let (program, given) = stand_in(&own, &format!("exit {code}"));
+            programs.push((program, Some(given)));
+        }
+        for (program, given) in programs {
             let carry = ends_keeping_nothing(dir.path(), &program);
+            // A stand-in that never ran would end the same way as one
+            // that can't run, so each that refuses must have been asked.
+            if let Some(given) = given {
+                assert!(given.exists(), "{} ran", program.display());
+            }
             assert!(
                 settler(dir.path(), program, PATIENCE).settle(&carry, |_| ()),
                 "a node started afresh asks it again"
+            );
+        }
+    }
+
+    #[test]
+    fn a_settling_ending_with_another_code_is_held_saying_it() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        // 3 beside 2, and 63 and 65 beside 64, so a check widened past
+        // 2 and 64 fails here. Each keeps its settlings apart.
+        for code in [3, 63, 65] {
+            let own = dir.path().join(format!("exits-{code}"));
+            fs::create_dir(&own).expect("the stand-in's folder is made");
+            let (program, given) = stand_in(&own, &format!("exit {code}"));
+            let said = settled(&settler(&own, program, PATIENCE), &carried(40));
+            assert!(given.exists(), "pi-carry is asked");
+            assert_eq!(
+                (&said["did"], &said["why"], &said["again"]),
+                (
+                    &json!("kept"),
+                    &json!(format!("pi-carry settle ended with {code}")),
+                    &json!(true)
+                ),
+                "only 2 and 64 ask nothing: {said}"
             );
         }
     }

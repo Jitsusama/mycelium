@@ -171,7 +171,8 @@ same code, each line a JSON value:
    stops waiting on its answer within 30 seconds. Where no person
    works, an agent's SSH login can't be told from a link's end, so
    every relay but its own process's is taken so, and a machine made
-   from a basin still takes the starts placed on it. Elsewhere, a
+   from a basin still takes the starts placed on it, where its strict
+   fence declares `runs` (The Socket). Elsewhere, a
    link's end an agent ran is taken so too, as is one whose owner the
    kernel can't tell, but one marked as the person's carry is refused,
    so the person hears the carry failed rather than finding its
@@ -411,8 +412,12 @@ hearing the other end is said at the next look:
   whose README says `concluded` or `retired`, and those it shares only
   as quests above others, which the other end shares so too and doesn't
   take up once none is under them. The other end starts sharing
-  any quest or folder it didn't, first moving its own copy aside to
-  `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. It is said
+  any quest or folder it didn't, moving its own copy aside to
+  `~/.local/state/mycelium/before-share/<when>/<QUEST>/`. A quest's
+  own record moves only once the first of the sharing end's files
+  comes to be written in its place; until then it stays where it was,
+  neither read nor said, so a link that drops first leaves it there.
+  A scratch folder named moves aside as it is named. It is said
   before the files, so a folder's files are carried once heard of.
   An ended quest's record still crosses, so the README saying it ended
   reaches the other end, but its scratch is let be. Once a quest has
@@ -674,7 +679,10 @@ session says of itself:
   `quests`, in place of what it said before. Pi says it as a session
   loads an orchestrating quest and whenever the quests below it change,
   and says it with neither as it unloads or concludes, which forgets
-  what that session held. A quest another session holds is refused:
+  what that session held; `"Orchestrating"` asks what the session
+  asking holds, changing nothing, answered
+  `{"Orchestrating": {"heads", "quests"}}`, each left out where it holds
+  none. A quest another session holds is refused:
   only that session hands it on, by forgetting it, or by being
   continued, as a session whose log's first line, `<time>_<id>.jsonl`
   under pi's `sessions` folder, names it as `parentSession`. What a
@@ -707,7 +715,12 @@ session says of itself:
   session that names no fence, or a machine that declares none for it,
   is refused, since where it lands can't be told. A refusal names the
   doors that are wider, as `tern's strictly fenced session opens
-  builders cloud, which here's doesn't`.
+  builders cloud, which here's doesn't`. The start that brings it
+  back there is an agent's, the orchestrator's or the node's own, so
+  each of `to`'s `fence` and `strict` fences it declares must declare
+  its `runs` too, or the carry is refused before any session is told
+  to carry and ends (The Socket). A node easing itself never chooses
+  such a machine.
 - The fence it names is never looser than its process shows. The
   node reads the proved owner's process: `PI_SANDBOX` in the
   environment it began with (`strict` or `fence`), and, for a pi that
@@ -717,9 +730,28 @@ session says of itself:
   fenced, so where it may land can't be told`; one naming a stricter
   stands, since the strict fence leaves nothing lasting to show. A
   process that can't be read, one that ends while it is read, or an
-  owner that can't be proved, is refused too, and so is a session a
-  pi host runs, since the host's environment says nothing of each
-  session's fence.
+  owner that can't be proved, is refused too.
+- A session a pi host runs shows the fence its host's record names for
+  it, since the host's environment and commands are every session's:
+  the `fence` (`none`, `fence` or `strict`) of its entry in the record's
+  `sessions`, which the host rewrites as that session's fence changes.
+  The record is read only where nothing but this account could have put
+  it there: its folder reached through no link, this account's own and
+  writable by no group or other account, and the record a plain file,
+  opened without following a link, this account's and readable by it
+  alone. Its `owner` must still name the host's process, by `pid` and
+  `startTicks`, as it is read and after. A record failing any of that,
+  naming no entry for the session, or naming another word, is refused,
+  since the fence can't be told. The harness names a session's fence
+  in the record only where no fenced command could have replaced the
+  record, so one a command could have written names none, and reads
+  as untold. It is never looser than its host's `PI_SANDBOX` either.
+  At a carry, a `bwrap` running below the host shows it fenced too,
+  unless another session the record names `fence` is proved on that
+  host and explains it. The look kept in `fences.json`, below, leaves
+  that out where the record names another session, since a sibling's
+  `bwrap` can outlive its session, but weighs it where the record
+  names this session alone.
 - A fence missing from what a process shows proves nothing: a
   `bwrap` lives only while a command it fences runs, and a session
   may switch its fence on after its pi began. So the node looks at
@@ -863,11 +895,12 @@ answer kept once it was seen back, since only a node that saw it come
 back knows; a session back and ended again while the node was stopped
 isn't seen. Trees let go don't come back if the node or `pi-carry` is
 rolled back, though each one's branch still names its commits. What
-asked nothing keeps no line: a
-`pi-carry` that didn't run, or one that can't settle (its exit 2, as
-one from before settling gives). That, and an answer lost, as when a
-signal ends the settling or its line can't be kept, is asked again
-only once the node starts afresh, which settling allows. Where the
+asked nothing keeps no line: a `pi-carry` that didn't run, or one
+that refuses the form as asked wrongly, with its exit 2, as one from
+before settling gives, or 64, as core.nix's exit table spells that
+refusal. That, and an answer lost, as when a signal ends the settling
+or its line can't be kept, is asked again only once the node starts
+afresh, which settling allows. Where the
 file can't be read, nothing is settled. The carry's record then holds
 `settle`, `{"did", "let" or "why", "again", "at"}`, its newest line,
 and is shown for a day after it settled as well as a day after it was
@@ -1091,7 +1124,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Offers"` | `{"Offers": {"offers", "unanswered"}}`, asked of each provider now |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
-| `{"Start": {"work", "folder", "command", "may_cost", "once"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
+| `{"Start": {"work", "folder", "strict", "command", "may_cost", "once"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
 | `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
@@ -1107,6 +1140,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Cross": {"message", "from_realm"}}` | `{"Sent": message}`, or refused |
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
+| `{"Spawned": {"pid", "started", "session"}}` | `"Spawned"`, from a pi host, of its own spawner (A Hosted Session's Spawner) |
 | `{"Carry": {"machine", "reopens"}}` | `"Carrying"`, then what it asks of `machine` |
 | `"Health"` | `{"Health": health}`, then another each time it moves |
 | `{"Turn": {"session"}}` | `"Turn"`, once a holder may resume `session` (A Held Session) |
@@ -1563,7 +1597,7 @@ A processor reading that isn't a number counts as none, so every
 `headroom` is a number.
 
 `"Start"` places `work` as `"PlaceToStart"` does (as `"Place"`,
-though an agent's start needs no `runs`) and starts `command` held
+an agent's start held to `runs` too) and starts `command` held
 there through the person's login shell (`$SHELL -lic`), so it has their
 environment rather than the node's, and the realm's kit's tools first on
 its path where its node is given a kit (`--kit`) and carries it, having
@@ -1575,7 +1609,16 @@ file adding the person's own. It begins in `folder`: a full path
 on that machine, or a path within its home, such as `src/core.nix`,
 since each machine's home is its own; `mycelium start --folder` says a
 folder under home that way. It begins in its home when `folder` is
-none or names no folder there. The answer is the `machine`, the `held`
+none or names no folder there, unless `strict` is true: then a `folder`
+that machine hasn't, or can't look at, is refused, as `tern has no
+folder src/elsewhere, which the start names` (a path within tern's
+home), since the work it's for is there and home won't do. A sprout's
+start is strict; any asker may make one so. `strict` is false where it
+isn't said and isn't written when false, so a node, or a link's end,
+from before it reads the start as ever, dropping `strict`, and it
+begins in that machine's home; a sprout's command then ends itself
+there ten seconds on, saying that machine has no such folder. The
+answer is the `machine`, the `held`
 id, the `folder` it began in, and `attach`, the words that join it from
 a terminal on the asking machine, to be run as given. A start that
 isn't placed, or doesn't start, is an error saying why, such as
@@ -1647,7 +1690,9 @@ seconds.
 
 A start that no machine of the realm takes has a machine made for it.
 The node asks its providers what they offer and judges each offer as
-it would a machine, by the facts it promises: a fact it doesn't promise
+it would a machine, by the facts it promises, and for an agent's start
+by the fence its `declared` says the machine would run, which must be
+as firm as here and name its `runs`: a fact it doesn't promise
 meets no need, and none is a machine already named. An offer whose
 `hourly` is nothing, written with any number of zeros, may be made for
 any start, so a provider lending machines that cost nothing is as easy
@@ -1708,45 +1753,90 @@ offer's reasons, and each program that couldn't say what it offers.
 An agent starts sessions within limits the node keeps, so a cell gone
 wrong can't start without end. Each start an agent asks counts toward
 the nearest session claiming the asker's process, by its address, and
-toward every agent's starts through the node: in any hour a cell
-starts at most 8 and every agent together at most 32, and one past
-either is refused, saying which. A claim proves nothing, so the 8 are
-a cell's fair share, and the 32 the bound no agent gets round. A
-start counts whether it started or failed, since a failed one may
+toward every agent's starts through the node. A pi host's sessions
+all claim its one process, so there it counts toward the one the
+asker names in `PI_SESSION_ID`, if it is among them, and otherwise
+toward the agents of no known cell, who share one cell's number, as
+on a Mac, whose `ps` won't say it. An agent sets its own environment,
+so one on a host may name another of its sessions and charge that cell
+instead. In any hour a cell starts at most 8
+and every agent together at most 32, and one past either is refused,
+saying which. A claim proves nothing, so the 8 are a cell's fair
+share, and the 32, with the ended sessions below, the bound no agent
+gets round. A start counts whether it started or failed, since a failed one may
 still have spent, and so does one still starting, so starts asked at
 once can't pass the limit; a refused one doesn't. The person's own
 starts are never counted or refused. An agent's first start in the
-hour that brings back a session the node knows has ended counts toward
-the 32 but not its cell's 8, so a wave brought back starts whole and
-no agent brings back more than 32 an hour; a cell brings back at most
-9 an hour beside its 8, and the tenth is refused, saying which. It is
-pi itself, named bare or under `/run/current-system/sw/bin/` or
-`/etc/profiles/per-user/`, given one session after `--session` or
-`--session-id`, by its id or by a file whose name ends in `_` and
-the id. A bare `pi` is the one the
-login finds, so it fences habit alone. A second bringing back the same
-one within the hour counts toward both, and one running or on a
-machine out of reach is never brought back. A start past the limits
-with room again within a minute waits for it and goes through; one
-further off is refused, saying in how many minutes and at what time
-there is room, and that it goes to the agent's orchestrator as a
-finding, since pacing is never the person's to lift. The person stops
-the agents' starts asked of a node in one act, `mycelium starts stop`, which
-holds through a restart till `mycelium starts resume`, and while
-whether it stands can't be told; an agent asking either, or the list,
-is refused. The stop is `starts.stopped` in the node's state folder,
-so an agent able to write there could lift it, as it could stop the
-node. Every start, refused ones too, is kept in
-`starts.jsonl` beside `runs.jsonl` as a JSON line, `{"at", "by",
-"started_by", "folder", "program", "resumes", "machine", "held",
+hour that brings back a session the node knows has ended, on the
+machine it ran on, counts toward neither, up to 128 through the node
+in the hour, so every session a restarted machine held comes back at
+once; past that, each counts as new work. A node knows only its own
+machine's sessions as ended, since another's presence goes when it
+ends, so a wave is asked of the restarted machine's own node. One
+naming no machine stays on the session's, and one naming no folder
+begins in the `cwd` its last presence said, where that folder is
+still there, so pi opens it in its own project; one naming another
+machine or another folder is new work there, and counts, since pi
+takes its project from the folder. One naming no machine goes to the
+session's whether it counts or not, since pi finds its log only
+there. It is pi itself, named bare or under
+`/run/current-system/sw/bin/` or `/etc/profiles/per-user/`, with no
+word but `--session` and the session's id, so no prompt or flag gives
+it new work, nor a file an agent wrote; never `--session-id`, with
+which pi begins a new session under an id it finds none of. A bare
+`pi` is the one the login finds, so it fences habit alone, and each
+ended session once an hour through each node, and the 128, bound what
+it hides. A second bringing back the same one within the hour counts
+as new work, unless the first failed, which brought nothing back. An
+agent's start bringing back a session on its own machine while
+another start of it is going, or within two minutes of one that
+didn't fail, counted or not, is refused, and kept as refused, as is
+one parked with a holder a steer would wake, which wakes it instead,
+and one whose holder already waits in the node's queue for its turn
+to come back or runs it, since each would open the session's log
+twice. A turn ends as the session is heard from or after a minute.
+This guards only while the node holds the session as ended, not
+against a holder asking its turn after the start or starting with
+no node to ask, only for a start asked of the session's own node,
+and only for a start in the form above
+naming the session's whole id: one relayed from another node isn't
+judged so, and one naming the session otherwise, with a prompt, a
+flag or its file, counts as new work and isn't refused for this.
+One whose id begins another session's known on its machine counts
+too, since pi may open that one instead, and is still judged by the
+one it names. Once its pi says it runs, nothing here refuses a
+second. A
+park is judged as a wake judges it: of this boot where both the
+machine and the presence name it, or where either names none, and
+with a holder here still running. One from an earlier boot, or whose
+holder has gone, comes back by a start. An ask again under the same
+name is answered the first start rather than refused for it, and the
+person's own start is never refused. An id beginning
+`-` is never one, and one running or on a machine out of reach is
+never brought back. A
+start past the limits with room again within a minute waits for it
+and goes through; one further off is refused, saying in how many
+minutes and at what time there is room, and that it goes to the
+agent's orchestrator as a finding, since pacing is never the person's
+to lift. The person stops the agents' starts asked of a node in one
+act, `mycelium starts stop`, which holds through a restart till
+`mycelium starts resume`, and while whether it stands can't be told;
+an agent asking either, or the list, is refused. The stop is
+`starts.stopped` in the node's state folder, so an agent able to
+write there could lift it, as it could stop the node. Every start,
+refused ones too, is kept in `starts.jsonl` beside `runs.jsonl` as a
+JSON line, `{"at", "by", "started_by", "folder", "program",
+"resumes", "reopens", "carried", "machine", "held",
 "failed", "refused"}`: `at` in milliseconds, `started_by` null for the
-person's, `resumes` the id of the session it brings back, spared its
-cell's 8,
+person's, `resumes` the id of the session it brings back uncounted,
+`reopens` the id of the session it brings back, counted or not,
+`carried` the id of the session a carry takes uncounted, as below,
 `program` the command's first word alone, so no argument is kept,
 `failed` the node's reason alone, before the words naming the command,
 and the rest only where they apply. The node reads it again as it
 starts, passing over a line it can't read, and holds the newest 2,048,
-never letting one go that counts within the hour; once the file has
+never letting one go within the hour that counts or brings a session
+back; once the file has
 grown by 8 MiB and doubled since, it writes it again from those. A start
 dated up to an hour ahead of an ask counts, as a clock set back leaves
 it; one further ahead doesn't. `mycelium starts` prints whether
@@ -1757,6 +1847,28 @@ relayed from another machine's node through the person's link is that
 node's to count, book and stop, so the machine it runs on does none of
 these again; one relayed by an agent is counted, booked and stopped
 there as that agent's own start.
+
+A session an orchestrator's carry takes to another machine begins no
+new work there, so on the node that ordered the carry its start counts
+toward neither limit, once an hour
+for each session, sharing the 128 with the sessions brought back. The
+node asked judges it so only for a start counted toward the very cell
+that ordered the carry, word for word the start the carry gives its
+session, and matching the newest carry of that session this node kept
+in `carries.jsonl`, ordered from here within the hour, in that quest,
+by that cell, to the one machine the start names, for the same reason.
+The quest's own trees, which arrive as a session named for the quest,
+match the newest such carry of any of its sessions. The carry was
+proved as it was ordered, so only the sessions a cell was proved to
+orchestrate start uncounted, as each carry arrives. The cell a start is
+counted toward is still the asker's fair share, never proved, so an
+agent naming the orchestrator's session could spend that session's free
+start, though only on the very start the carry gives it. Its line in
+`starts.jsonl` names the session, or the quest, as `carried`. A start
+relayed from another node is judged as before, so a carry to a machine
+where no person works counts each arrival on that machine's node. A
+node older than this reads a `carried` line as a counted start, so one
+rolled back counts those for the rest of their hour.
 
 A start may carry `once`, the asker's own name for it, 1 to 64 bytes,
 as `mycelium start --once NAME` gives it. An asker that heard no answer
@@ -1800,7 +1912,19 @@ in no window: the node makes the `"Start"` and starts it as above, under
 the same limits. `words` is the work, a link alone or words, which
 become the session's first words; `from` the address of the cell it
 comes from; `on` the machine, this one when it's none or names this
-one; and all but `words` may be left out. Its folder is
+one; and all but `words` may be left out. Beside its first words the
+session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
+JSON object such as `{"v": 1, "link": "https://...", "from": "HARBOR"}`:
+`v` the number 1; exactly one of `link`, a string, for a link alone,
+or `words`, a string, for words; and `from`, a string, only where
+`from` is an address, so its harness makes and ties the quest itself.
+It's left out where the link or words run past 4000 UTF-16 units, the
+most a session reads, and the first words alone stand. That address
+and that length are what the node sends, never a guarantee: any agent
+starting pi can set the variable itself, so a harness checks every
+field again and treats it as a seed. Where a harness reads it, the
+seed wins over the first words. It's a seed, as the words are, never
+a command. Its folder is
 `folder`, the checkout a link's repository has under home, or where the
 asker is when that's inside a repository, never home itself, and the
 session begins in it as the node names it, within home. Starting here,
@@ -1829,8 +1953,10 @@ fence made of Landlock or file permissions is judged as though the
 folder were reachable. The folder is judged by its path and begun in by
 that path a moment later, so a folder the asker can write could be
 swapped for a link in between. On another machine, the folder is that
-machine's, and its node starts it as a `"Start"`, which judges no
-folder; nor does a `"Start"` asked for directly. A `"Sprout"` is the
+machine's, and its node starts it as a strict `"Start"`, which judges
+only that the folder is there, so one it can't enter or write still
+starts; a `"Start"` asked for directly judges none, beyond that where
+it's strict. A `"Sprout"` is the
 bound only for an asker that says one. The asker's start ticks are read
 when the node begins serving its connection, not at the accept itself,
 so an id taken again in that moment would pass; that is out of reach in
@@ -1934,9 +2060,30 @@ not sealed or a program missing or outside the store among them; this
 machine logs each refusal of its own. A machine whose node is too old
 to say its `runs` says none, so it is refused so until it is upgraded.
 A `"Place"` an agent asks is judged the same way, as a run, so where
-it is told the work would go is where the work may run, though a start
-placed (`"PlaceToStart"`, `"Start"`) needs no `runs`. An agent's run
-naming no machine that every machine refuses, this one for its
+it is told the work would go is where the work may run. An agent's
+start placed (`"PlaceToStart"`, `"Start"`) is held to `runs` too,
+missed as `runs-nothing`, so it starts only where that fence runs a
+command: its session doesn't run through that launcher yet, but a
+machine declaring none, as a Mac does, would run it looser than its
+asker. Since a Mac declares none, an agent's session that ran on a Mac
+isn't brought back there after a restart, as its start is pinned to
+that machine, and an agent's start on a Mac that names no machine goes
+to one that runs its fence. There it begins in its home where its
+folder isn't, unless it asks `"strict"`, or it is told what a machine
+made for it would cost. The node placing a start judges it, as a relay
+carries no asker's fence, so a machine stops taking these starts only
+once every node that may place on it judges so. Only placement is held
+so: an agent's session already held on a Mac wakes there as before,
+outside any fence, until it ends or the Mac boots again. What is
+judged is what a machine declares, never its system, so a Mac
+declaring `runs` would take such a start unfenced. The person's start is
+relayed as theirs, but a machine no person works at, or one where the
+link's end can't be named, judges it an agent's, so there it needs that
+machine's launcher too, and a refusal of any start judged so says it
+was, and why. A machine made from a basin is one no person works at,
+and an offer is screened for `runs` only for an agent's start, so the
+person's start may yet be refused on a machine made and paid for it.
+An agent's run naming no machine that every machine refuses, this one for its
 launcher, is told this one's reason and then every other's; one a
 link carried here is told this machine by name, not as here. Each
 machine so refused still counts for what the person's lasting machines
@@ -1974,9 +2121,13 @@ the node's link to that machine says so. A run is told no
 that session alone, as the kernel and pi's records prove it, since
 pi-fence grants the work trees that session holds. Alone counts
 every session claimed there, proved or not, and every one its host's
-record lists, so the sessions of a pi
-host holding more than one, the person's, one on a Mac and one asked
-from another machine are told none. The node takes `runs`
+record lists. A pi host's sessions share its process, so one of them
+is proved instead by the pi-spawner its command runs below, where
+the host said that spawner serves it (A Hosted Session's Spawner).
+Otherwise the sessions of a host holding more than one, the
+person's, one on a Mac, where the node can't read when a process
+started, and
+one asked from another machine are told none. The node takes `runs`
 only from a declaration reached through folders and links root owns
 and no one else may write, each followed as written, with any part
 within the Nix store taken as the store's, and only where its first
@@ -1991,8 +2142,10 @@ up stops it: its process group is sent the terminate signal, then the
 kill signal if any of it still runs 10 seconds on. Each machine a run
 crosses keeps it in `runs.jsonl` in mycelium's folder, and logs each
 line: `{"run", "at", "by", "sessions", "from", "on", "folder",
-"command", "spared"}` as it starts, `"spared"` only where the node
-spared it a shared quest's tree, then `{"run", "at", "ended"}`, the last `Ran`
+"command", "spared", "untold"}` as it starts, `"spared"` only where
+the node spared it a shared quest's tree and `"untold"`, why, only
+where an agent's run here was told no session, then
+`{"run", "at", "ended"}`, the last `Ran`
 or `{"Stopped": why}` where its asker let go.
 `mycelium run` prints what it writes as it comes and exits with its
 code, or 255 when it couldn't run.
@@ -2005,6 +2158,122 @@ again for the whole state.
 A group is named by dot-separated tokens: the mesh's `#quest/4uhc5q` is
 `quest.4uhc5q`, and a peer's `@4UHC5Q` is `peer.4uhc5q`. A pattern takes
 `*` for any one token and a final `>` for one or more.
+
+### A Hosted Session's Spawner
+
+A pi host runs many sessions in one process, so its process alone
+can't say which of them asked for a run. It starts a pi-spawner for
+the commands of each, and says so on a connection of its own:
+`{"Spawned": {"pid", "started", "session"}}` names the spawner by
+its process and its start, in clock ticks since boot as the kernel's
+`stat` counts them, and the session it serves. The node takes it
+only where the kernel names the connection's other end as a process
+that proves `session` as its host, by its claim at its own start,
+and only of that process's own child, named `pi-spawner` by the
+kernel and started when it says. It answers `"Spawned"`, or refuses,
+saying why there and, once for each reason, in its log. A session is
+named in at most 256 bytes. A spawner serves one session, and a
+session's spawners are one host's at a time, since a session proves
+under one host at a time: once it proves under another, that host's
+word is taken, though the first's spawners run on.
+Of 4096 kept at most, those ended, or whose host has, are let go
+first, and none more is taken until some end.
+
+The node keeps what hosts said only while it runs. A host says each
+of its live spawners again every 30 seconds, and saying one again is
+answered as the first time was, so a node that restarts knows them
+all again within 30 seconds; until then a command below one is told
+no session.
+
+The host says it before the spawner runs anything, waiting up to about
+four seconds for the answer and then going ahead; a command run meanwhile
+is told no session, as is one below a spawner said before its session
+proved, until the host says it again. A command below that spawner,
+each process between them started no earlier than the one above it,
+and the host and the asker unchanged from when the node took their
+connections, is then proved as that session. Nothing a command runs
+can say it for another: it holds none of the host's connection, which
+the host opens closed on exec, and the node knows the speaker from the
+kernel, not from what it says. Where the node is older and refuses the
+ask, a command is told what such a node tells: the host's session
+where the host proves just one, and none where it holds more. A command below
+a pi-spawner the host started but the node holds no word for is told
+no session, even where the host holds only one, since that spawner
+may serve a session gone since. So too is one whose forebears, read
+again, no longer reach the host or name the child below it. So a
+harness that says no spawners, as one older than this rule, keeps
+none of its sessions' work trees where the node takes its host's
+word: the node and the harness land together and roll back together.
+A
+command the host starts as its own
+child, as it does once a spawner is lost, runs below no spawner: it
+is told the host's session where the host proves just one, and none
+where it holds more. A spawner a command starts below a said one
+changes nothing: what runs below it is told the said one's session.
+Where the node would take no host's word, as below, no spawner is
+ever said, so what runs below one is told as the host's own child
+is, as before spawners were said.
+
+The node checks for itself that no other process can speak as the
+host. It takes the
+word only where the kernel lets a process trace no more than its own
+descendants, Yama's `ptrace_scope` at 1 or more, since otherwise a
+command could write the host's memory and speak as the host;
+elsewhere, or where the kernel doesn't say, it refuses every
+spawner. For the same reason it takes it only from a host whose
+node can't be opened from outside: its command line must give
+`--disable-sigusr1` as node's first option, since otherwise any
+process of its user may send SIGUSR1 and open node's inspector, and
+an option taking a value could take a later one as its own; that
+line, read with its quotes and escapes dropped, which only refuses
+more, may name neither
+`--inspect` in any form nor `--no-disable-sigusr1`, which undoes the
+first; and its environment may give no `NODE_OPTIONS` but a blank
+one, since `--require` or `--import` there runs code as the host,
+nor any `NODE_PATH`, where a require that finds nothing beside it
+looks, nor any `NODE_COMPILE_CACHE`, whose compiled code node runs as
+the host's modules, nor any `LD_PRELOAD`, `LD_AUDIT` or
+`LD_LIBRARY_PATH`, which load a library's code into it as it starts,
+or `OPENSSL_CONF` or `OPENSSL_MODULES`, whose configuration has
+OpenSSL load a module. Blank or not, each of these is refused, since
+node and the loader take a blank path as a folder of its own.
+A host whose environment can't be read is refused. The kernel's
+word is read again at each proof, so a spawner taken while tracing
+was shut proves nothing once it opens, and its commands are told as
+the host's own child is.
+
+It rests too on four things the node doesn't prove. It can't tell
+the host's own code from code an agent brought into
+the host's process, an extension a project carries or a reload onto
+another tree among it, which can say any spawner serves any session
+the host proves. No fence closes this one today: pi loads a trusted
+project's own `.pi/extensions`, and an agent's work tree is writable
+to it by design, so an agent that writes an extension there has the
+host run it at its next reload or restart. Until a host loads a
+project's extensions only from a checkout its sessions can't write,
+or loads none, an agent of a trusted project can say any spawner.
+And a command that can write the harness's files, the folder node
+caches the host's compiled code in, or the host's unit and
+environment through the user's service manager, can change the code
+a host loads, then end the host, which runs that code when it starts
+again and may say any spawner. The host turns that cache on itself,
+so it must sit in pi's own state, which the fence keeps read-only,
+never in the temporary folder node picks when given none, which a
+fenced command can write. So the word proves a session only where
+the host's sessions run their commands fenced from the harness, and
+the host loads no extension they can write; where either fails, it
+tells a command apart from its host only by accident. So too a
+command of the same user can open another session's spawner's pipe
+again through `/proc/<pid>/fd`, which Yama's scope 1 doesn't stop,
+and have it start a command for that session. And a command that
+can reach the host's own socket, which joins a terminal to any
+conversation the host holds, can type into another session, whose
+commands are then that session's. On Linux the fence closes these
+last two for a fenced session: it gives the command its own process
+namespace, where no spawner's `/proc` shows, and lays an empty
+folder over the one holding the host's socket, since a socket in a
+read-only folder still connects. A Mac's fence must deny connecting
+to that socket for the same.
 
 ### The Daemon Interface
 
@@ -2870,6 +3139,26 @@ found; the record says the program, not the shell. One that can't
 start again stays parked and says why on its terminal, and the next
 wake tries again, with any command named since. A parked program is no
 work: it keeps no machine awake and holds up no handover.
+
+A program that exits with 69 (sysexits' `EX_UNAVAILABLE`) having
+written `<id>.gone`, told its path in `MYCELIUM_GONE`, is kept as a
+parked one is, with its windows, and each window joining meanwhile,
+told the pi host is away; the line is drawn again over anything the
+ended run shows after it. `attach --host` writes it and exits so once
+its pi host stays gone past its patience for a restart, never answers
+its first join, or isn't there to join at all. A program exiting 69
+with no such file written, as a tool that is unavailable may, ends as
+any other. The program starts again as a
+parked one does, at a key, a focus or `<id>.wake`, with any command
+named since in `<id>.next` or `<id>.again`, and also by itself: 15
+seconds on, doubling after each try that finds the host still away, to
+at most two minutes. So a window held on the machine of the pi host
+it attaches to joins that host again once it is back rather than
+closing. A window on another machine's session, through SSH or
+`attach --on`, carries no `MYCELIUM_GONE` there, so it still closes.
+Before 19 November 2026 a holder ended on 69. It still ends on any
+code but 75 and such a 69, such as 3, an attach whose host let the
+conversation go back to plain pi, even with `<id>.gone` written.
 
 A joined terminal sends frames of a tag byte, a two-byte big-endian
 length and what it carries: tag 0 is bytes typed, and tag 1 is its size,

@@ -219,10 +219,40 @@ impl Starter {
 /// place under each machine's home is found on either.
 #[must_use]
 pub fn begins_in(folder: Option<&Path>, home: &Path) -> PathBuf {
+    found(folder, home).unwrap_or_else(|| home.to_owned())
+}
+
+/// The folder `folder` names on a machine whose home is `home`, where it
+/// is one there; one that can't be looked at is none.
+fn found(folder: Option<&Path>, home: &Path) -> Option<PathBuf> {
     // Joining a full path gives that path, so both kinds read alike.
-    match folder.map(|folder| home.join(folder)) {
-        Some(wanted) if wanted.is_dir() => wanted,
-        _ => home.to_owned(),
+    folder
+        .map(|folder| home.join(folder))
+        .filter(|wanted| wanted.is_dir())
+}
+
+/// The folder a start begins in on `machine`, as [`begins_in`] finds it,
+/// or, where it's `strict`, why it's refused: it names a folder there is
+/// none of there, which the work it's for is in, so home won't do. The
+/// folder is looked at once, so one gone in between can't send a strict
+/// start home; one it can't look at counts as none.
+///
+/// # Errors
+///
+/// A strict start naming a folder `machine` hasn't.
+pub fn begins_strictly(
+    folder: Option<&Path>,
+    strict: bool,
+    home: &Path,
+    machine: &str,
+) -> Result<PathBuf, String> {
+    match (found(folder, home), folder) {
+        (Some(wanted), _) => Ok(wanted),
+        (None, Some(named)) if strict => Err(format!(
+            "{machine} has no folder {}, which the start names",
+            named.display()
+        )),
+        _ => Ok(home.to_owned()),
     }
 }
 
@@ -633,5 +663,58 @@ mod tests {
         for (asked, begins) in cases {
             assert_eq!(begins_in(asked, home), begins, "asked for {asked:?}");
         }
+    }
+
+    #[test]
+    fn a_strict_start_refuses_a_folder_the_machine_hasnt_naming_both() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let home = home.path();
+        let src = home.join("src").join("core.nix");
+        fs::create_dir_all(&src).expect("a checkout is made");
+        let begun = |folder: Option<&Path>, strict| begins_strictly(folder, strict, home, "tern");
+        assert_eq!(
+            begun(Some(Path::new("src/core.nix")), true),
+            Ok(src.clone())
+        );
+        assert_eq!(
+            begun(None, true),
+            Ok(home.to_owned()),
+            "none named, it begins at home"
+        );
+        assert_eq!(
+            begun(Some(Path::new("src/elsewhere")), false),
+            Ok(home.to_owned()),
+            "one not strict begins at home"
+        );
+        assert_eq!(
+            begun(Some(Path::new("src/core.nix")), false),
+            Ok(src.clone()),
+            "one not strict begins in a folder that's there"
+        );
+        fs::write(home.join("notes"), "").expect("a file is made");
+        assert_eq!(
+            begun(Some(Path::new("notes")), true),
+            Err("tern has no folder notes, which the start names".to_owned()),
+            "a file is no folder"
+        );
+        assert_eq!(
+            begun(Some(&src), true),
+            Ok(src.clone()),
+            "a full path is that path"
+        );
+        assert_eq!(
+            begun(Some(Path::new("src/elsewhere")), true),
+            Err("tern has no folder src/elsewhere, which the start names".to_owned()),
+            "the refusal names the machine and the folder"
+        );
+        let gone = home.join("gone");
+        assert_eq!(
+            begun(Some(&gone), true),
+            Err(format!(
+                "tern has no folder {}, which the start names",
+                gone.display()
+            )),
+            "a full path it hasn't, too"
+        );
     }
 }
