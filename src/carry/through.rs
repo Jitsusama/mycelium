@@ -163,6 +163,12 @@ impl Hands for Through {
         }
     }
 
+    fn shareable(&mut self, quest: &str) -> Result<(), String> {
+        self.shares
+            .shareable(quest)
+            .map_err(|error| error.to_string())
+    }
+
     fn share(&mut self, quest: &str) -> Result<(), String> {
         debug_assert_eq!(quest, self.quest, "a carry shares its own quest");
         self.shares

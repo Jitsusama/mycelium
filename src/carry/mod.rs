@@ -243,6 +243,14 @@ pub trait Hands {
     ///
     /// When it fails, with what it said.
     fn carry_rest(&mut self, quest: &str, to: &str) -> Result<(), String>;
+    /// Whether the quest may be shared from here once its sessions have
+    /// carried, asked before any is told, since a share refused after
+    /// they have ended leaves nothing running here or there.
+    ///
+    /// # Errors
+    ///
+    /// When it may not, with why.
+    fn shareable(&mut self, quest: &str) -> Result<(), String>;
     /// Shares the quest, with its handover.
     ///
     /// # Errors
@@ -454,6 +462,7 @@ fn find(
             }
         ));
     }
+    hands.shareable(quest)?;
     let boot = hands.boot();
     let sessions: Vec<Session> = hands
         .sessions()?
@@ -913,6 +922,8 @@ mod tests {
         brought: Vec<(Brought, usize)>,
         /// The sessions, by id, with a cell in the handover.
         cells: BTreeSet<String>,
+        /// Why the quest may not be shared from here, where it may not.
+        unshareable: Option<String>,
         /// Why an earlier carry's cells can't be taken away, where not.
         unforgotten: Option<String>,
         /// The sessions whose old cells were taken away, with how many
@@ -1048,6 +1059,9 @@ mod tests {
             }
             self.rest = Some(format!("{quest} {to}"));
             Ok(())
+        }
+        fn shareable(&mut self, _quest: &str) -> Result<(), String> {
+            self.unshareable.clone().map_or(Ok(()), Err)
         }
         fn share(&mut self, quest: &str) -> Result<(), String> {
             self.shared.push(quest.to_owned());
@@ -1867,6 +1881,27 @@ mod tests {
             );
             assert!(realm.steered.is_empty(), "before any session is told");
         }
+    }
+
+    #[test]
+    fn a_carry_of_a_quest_that_may_not_be_shared_is_refused_before_any_session_is_told() {
+        let why = "HARBOR is shared from kestrel, so the copy here moves aside as that one's comes";
+        let mut realm = Realm {
+            unshareable: Some(why.to_owned()),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Find }),
+            "refused at the find"
+        );
+        assert_eq!(last_said(&lines), why, "saying why");
+        assert!(
+            realm.steered.is_empty() && realm.shared.is_empty() && realm.started.is_empty(),
+            "no session told, and nothing shared or started"
+        );
+        assert!(realm.rest.is_none(), "and nothing carried");
     }
 
     #[test]

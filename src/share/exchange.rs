@@ -206,15 +206,12 @@ impl Places {
             ));
         }
         let ledgers = self.ledgers();
-        if ledgers.read(quest).is_ok_and(|ledger| ledger.aside) {
-            return Err(io::Error::other(format!(
-                "{quest} is shared from another machine, so the copy here moves aside as \
-                 that one's comes; share it once it has"
-            )));
-        }
         {
             // Shared on its own, it no longer stops with the quests under it.
+            // Whether its record waits is read under the same hold, so a
+            // share heard from another machine meanwhile can't slip between.
             let mut held = ledgers.hold(quest)?;
+            waits(quest, &held.ledger)?;
             held.ledger.above = false;
             held.keep()?;
         }
@@ -247,6 +244,21 @@ impl Places {
         Ok(format!(
             "{quest} is shared, with {with}; each link carries it from its next look"
         ))
+    }
+
+    /// Whether `quest` may be shared from here, as [`Self::offer`] would
+    /// refuse it, asked before anything that can't be taken back.
+    ///
+    /// # Errors
+    ///
+    /// When its record waits for another machine's copy, or its ledger
+    /// can't be read.
+    pub fn shareable(&self, quest: &str) -> io::Result<()> {
+        match self.ledgers().read(quest) {
+            Ok(ledger) => waits(quest, &ledger),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     /// Shares `quest` as [`Self::offer`] does, asked for machine `to`,
@@ -301,9 +313,16 @@ impl Places {
     /// README of a `shared` quest that hasn't arrived yet may name it, as
     /// a quest's README may land before its parent's.
     fn may_name_above(&self, quest: &str, id: &str, shared: &BTreeSet<String>) -> bool {
+        let ledgers = self.ledgers();
         let mut at = quest.to_owned();
         for _ in 0..MOST_NESTED {
-            let Ok(readme) = fs::read_to_string(self.record(&at).join("README.md")) else {
+            // A record waiting for another machine's copy is none of the
+            // shared quest's, so it counts as not arrived.
+            let waiting = ledgers.read(&at).is_ok_and(|ledger| ledger.aside);
+            let read = (!waiting)
+                .then(|| fs::read_to_string(self.record(&at).join("README.md")).ok())
+                .flatten();
+            let Some(readme) = read else {
                 return shared.contains(&at);
             };
             let Some(parent) = parent(&readme).filter(|parent| is_quest(parent)) else {
@@ -1171,6 +1190,11 @@ impl Exchange {
         let mut held = ledgers.hold(id)?;
         held.ledger.above = above;
         held.ledger.aside = self.places.record(id).exists();
+        if held.ledger.aside {
+            // Named as sharing it, so a share refused while the record
+            // waits can say whose copy it waits for.
+            held.ledger.theirs.entry(self.other.clone()).or_default();
+        }
         held.keep()?;
         Ok(true)
     }
@@ -1744,6 +1768,25 @@ fn is_journey(shared: &Shared) -> bool {
     shared.place == Place::Record && shared.path == "JOURNEY.md"
 }
 
+/// Refuses sharing `quest` from here while `ledger` says its record waits
+/// for the copy of the machines it was heard from, naming them, since a
+/// share from here would be one of a record that is about to move aside.
+fn waits(quest: &str, ledger: &Ledger) -> io::Result<()> {
+    if !ledger.aside {
+        return Ok(());
+    }
+    let from: Vec<&str> = ledger.theirs.keys().map(String::as_str).collect();
+    let from = if from.is_empty() {
+        "another machine".to_owned()
+    } else {
+        from.join(", ")
+    };
+    Err(io::Error::other(format!(
+        "{quest} is shared from {from}, so the copy here moves aside as that one's comes; \
+         share it from here once it has"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1955,8 +1998,9 @@ mod tests {
             .offer(QUEST, &[])
             .expect_err("a quest whose record waits isn't shared from here");
         assert!(
-            refused.to_string().contains("moves aside"),
-            "the refusal says why: {refused}"
+            refused.to_string().contains("shared from skiff")
+                && refused.to_string().contains("moves aside"),
+            "the refusal says why, naming the machine: {refused}"
         );
 
         let note = kestrel.places.scratch.join(QUEST).join("notes/mine.md");
@@ -1983,8 +2027,47 @@ mod tests {
     }
 
     #[test]
+    fn a_scratch_file_coming_first_leaves_a_waiting_record_where_it_is() {
+        let (_skiff, kestrel, mut far) = waiting_at_kestrel();
+        let body = b"skiff's notes\n";
+        let theirs = State {
+            hash: Some(content(body).hash),
+            version: super::super::version::Version::default(),
+        };
+        far.take_file(QUEST, "scratch/notes/plan.md", &theirs, Some(body), None)
+            .expect("the note is taken");
+        assert_eq!(
+            fs::read_to_string(kestrel.places.scratch.join(QUEST).join("notes/plan.md"))
+                .expect("the note came"),
+            "skiff's notes\n",
+            "skiff's note came"
+        );
+        assert_eq!(
+            kestrel.read("README.md").as_deref(),
+            Some("# Live here\n"),
+            "but a scratch file is none of the record, so kestrel's own record stays"
+        );
+        assert!(
+            !kestrel.places.state.join("before-share").exists(),
+            "nothing moved aside"
+        );
+        assert!(waiting(&kestrel), "and the record still waits");
+    }
+
+    /// Whether kestrel's ledger says its record of the quest waits.
+    fn waiting(kestrel: &Machine) -> bool {
+        kestrel
+            .places
+            .ledgers()
+            .read(QUEST)
+            .expect("kestrel's ledger")
+            .aside
+    }
+
+    #[test]
     fn a_deletion_coming_first_leaves_a_waiting_record_where_it_is() {
         let (_skiff, kestrel, mut far) = waiting_at_kestrel();
+        assert!(waiting(&kestrel), "kestrel's record waits");
         far.take_file(
             QUEST,
             "record/plans/PLAN-20261026-IZH11J.md",
@@ -2002,6 +2085,20 @@ mod tests {
             !kestrel.places.state.join("before-share").exists(),
             "nothing moved aside"
         );
+        assert!(waiting(&kestrel), "and it still waits");
+
+        let body = b"# Shared\n";
+        let theirs = State {
+            hash: Some(content(body).hash),
+            version: super::super::version::Version::default(),
+        };
+        far.take_file(QUEST, "record/README.md", &theirs, Some(body), None)
+            .expect("the README is taken");
+        assert!(
+            kestrel.places.state.join("before-share").exists(),
+            "the first of the record's files that comes moves it aside"
+        );
+        assert!(!waiting(&kestrel), "and the wait is over");
     }
 
     #[test]
@@ -3121,6 +3218,41 @@ mod tests {
             fs::read_to_string(skiff.places.quests.join(top).join("README.md")).ok(),
             Some("---\nparent: null\n---\n# Top\n".to_owned()),
             "and its files arrive"
+        );
+    }
+
+    #[test]
+    fn a_parent_named_by_a_quest_whose_record_waits_is_taken_up_by_its_readme_to_come() {
+        let kestrel = Machine::new("kestrel");
+        let skiff = Machine::new("skiff");
+        let (top, child) = child_of_top_offered(&kestrel);
+        // Skiff's own record of the child names no parent, so it reads
+        // as the child's only while it is skiff's, until kestrel's comes.
+        written(&skiff, child, "# Child on skiff\n");
+        let (mut near, mut far) = (kestrel.exchange(&skiff), skiff.exchange(&kestrel));
+        near.watch.hear_anything();
+        far.watch.hear_anything();
+        // The child's files are held back, so the parent's come first.
+        let is_child = |say: &Say| matches!(say, Say::Holds { quest, .. } if quest == child);
+        let (held_back, to_far): (Vec<Say>, Vec<Say>) =
+            near.look().expect("looks").into_iter().partition(is_child);
+        carry(to_far, &mut near, &mut far);
+        assert_eq!(
+            fs::read_to_string(skiff.places.quests.join(child).join("README.md")).ok(),
+            Some("# Child on skiff\n".to_owned()),
+            "skiff's own record of the child waits where it is"
+        );
+        assert!(
+            skiff.places.ledgers().shares(top),
+            "the parent is taken up, as the child's README to come names it"
+        );
+
+        carry(held_back, &mut near, &mut far);
+        talk(&mut near, &mut far);
+        assert_eq!(
+            fs::read_to_string(skiff.places.quests.join(top).join("README.md")).ok(),
+            Some("---\nparent: null\n---\n# Top\n".to_owned()),
+            "and its README arrives"
         );
     }
 

@@ -372,6 +372,30 @@ mod tests {
     }
 
     #[test]
+    fn a_quest_whose_record_waits_holds_its_scratch_here_and_none_of_its_record() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let places = kestrel(dir.path());
+        put(
+            places.record(QUEST).join("plans/PLAN-20261026-IZH11J.md"),
+            "mine\n",
+        );
+        {
+            // Shared from another machine, whose copy hasn't come.
+            let mut held = places.ledgers().hold(QUEST).expect("held");
+            held.ledger.aside = true;
+            held.keep().expect("kept");
+        }
+        assert_eq!(
+            holds_here(&places, QUEST, "kestrel")
+                .expect("read")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["scratch/handover/kestrel/one.done.json"],
+            "its scratch, and nothing of the record waiting to move aside"
+        );
+    }
+
+    #[test]
     fn a_wait_counts_the_readmes_of_the_quests_above() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let places = places(dir.path());
