@@ -476,6 +476,28 @@ fn carried(
         may_wait: false,
         lasts: Some(SignedDuration::MAX),
     };
+    // The carry refuses a machine the start bringing a session back can't
+    // run on, whatever the session, so each is left out before placing
+    // and the next machine is placed instead.
+    let mut left_out = Vec::new();
+    let peers: Vec<Machine> = peers
+        .iter()
+        .filter(
+            |machine| match ground::brought_back(&machine.name, machine.declared.as_ref()) {
+                Some(why) => {
+                    left_out.push(why);
+                    false
+                }
+                None => true,
+            },
+        )
+        .cloned()
+        .collect();
+    // With none left, placement would say the realm knows no machine, so
+    // the look says why each was left out instead.
+    if peers.is_empty() {
+        return nothing(left_out.join("; "));
+    }
     let mut smallest_first: Vec<&Cell> = cells.iter().collect();
     smallest_first.sort_by_key(|cell| cell.size.map_or((1, 0), |size| (0, size)));
     let mut why_not = Vec::new();
@@ -500,7 +522,7 @@ fn carried(
             why_not.push(format!("{who} moved within {} hours", PIN.as_hours()));
             continue;
         }
-        let to = match placement::decide(&work, peers, here.loads).placement {
+        let to = match placement::decide(&work, &peers, here.loads).placement {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 why_not.push(format!("{who}: {}", placement::said(&misses)));
@@ -522,6 +544,7 @@ fn carried(
     nothing(if why_not.is_empty() {
         format!("no session runs on {}", here.name)
     } else {
+        why_not.extend(left_out);
         why_not.join("; ")
     })
 }
@@ -565,7 +588,10 @@ pub(super) mod tests {
             builders: ["big".to_owned()].into(),
             forges: ["github".to_owned()].into(),
             secrets: ["forge".to_owned()].into(),
-            runs: Vec::new(),
+            runs: vec![
+                "/nix/store/0000-fence/bin/fence".to_owned(),
+                "--".to_owned(),
+            ],
         };
         Declared {
             fence: Some(kinds.iter().map(|&kind| (kind, open.clone())).collect()),
@@ -861,6 +887,45 @@ pub(super) mod tests {
             Some(("s2", "tern")),
             "one that stays leaves the next free to go"
         );
+    }
+
+    // The start that brings a carried session back is an agent's, so a
+    // look never chooses a machine whose fence runs no command, which the
+    // carry would refuse after spending the session's move for the day.
+    #[test]
+    fn a_look_never_chooses_a_machine_its_start_back_cant_run_on() {
+        // Tern, the roomiest, declares both fences, and one runs nothing.
+        // The session runs fenced, but the start back may be either kind
+        // of asker's, so either refuses tern.
+        for (kind, runs_as) in [(Kind::Fence, "fenced"), (Kind::Strict, "strictly fenced")] {
+            let mut alone = realm();
+            let mut declared = declaring(&[Kind::Fence, Kind::Strict]);
+            declared
+                .fence
+                .as_mut()
+                .and_then(|fences| fences.get_mut(&kind))
+                .expect("both fences")
+                .runs
+                .clear();
+            alone[1].declared = Some(declared);
+            let history = hot_for(&alone, 11);
+            assert_eq!(
+                why_not(&chose(&alone, &[cell("s1")], &history)),
+                format!(
+                    "tern declares no way to run a command as its {runs_as} sessions run that \
+                     its launcher accepts, or its node is too old to say one"
+                ),
+                "with no other machine, nothing goes, saying why"
+            );
+            let mut beside = alone.clone();
+            beside.push(machine("osprey", 9.0));
+            let history = hot_for(&beside, 11);
+            assert_eq!(
+                carries(&chose(&beside, &[cell("s1")], &history)),
+                Some(("s1", "osprey")),
+                "the next machine is placed instead"
+            );
+        }
     }
 
     #[test]

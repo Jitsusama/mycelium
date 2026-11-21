@@ -142,30 +142,67 @@ pub fn runs_nothing(
         .iter()
         .filter(|machine| machine.name != this)
         .filter_map(|machine| {
-            let doors = machine
-                .declared
-                .as_ref()
-                .and_then(|declared| declared.fence.as_ref())
-                .and_then(|fences| fences.get(&kind))?;
-            let name = &machine.name;
-            let why = match crate::declared::unrunnable(&doors.runs)? {
-                Unrunnable::Nothing => format!(
-                    "{name} declares no way to run a command as its {kind} sessions run that \
-                     its launcher accepts, or its node is too old to say one"
-                ),
-                Unrunnable::SparesATree(spare) => format!(
-                    "{name}'s {kind} sessions' launcher says {}, which spares a tree shared \
-                     to the asker, so it runs no agent's command",
-                    said_word(&spare)
-                ),
-                Unrunnable::Unended => format!(
-                    "{name}'s {kind} sessions' launcher doesn't end with --, so it runs no \
-                     agent's command"
-                ),
-            };
-            Some(refused(name, why))
+            let why = runs_nothing_there(kind, &machine.name, machine.declared.as_ref())?;
+            Some(refused(&machine.name, why))
         });
     here.into_iter().chain(there).collect()
+}
+
+/// Why a machine made of the offer `to`, declaring itself as `there`
+/// says it would, runs no command an agent asks in the fence `kind`, as
+/// [`runs_nothing`] judges a machine of the realm by its words alone, so
+/// none is made, and paid for, only to be refused once it links. An offer
+/// that declares no `kind` fence is [`looser_offered`]'s to refuse. One
+/// naming no `runs` is told as its provider's to mend, since no node of
+/// it runs yet to be too old.
+#[must_use]
+pub fn runs_nothing_offered(kind: Kind, to: &str, there: Option<&Declared>) -> Option<String> {
+    let doors = there
+        .and_then(|declared| declared.fence.as_ref())
+        .and_then(|fences| fences.get(&kind))?;
+    match crate::declared::unrunnable(&doors.runs)? {
+        Unrunnable::Nothing => Some(format!(
+            "{to}'s provider promises no way to run a command as its {kind} sessions run, so \
+             its offer must name the fence's runs"
+        )),
+        _ => runs_nothing_there(kind, to, there),
+    }
+}
+
+/// Why the start that brings a session carried to `to`, declaring itself
+/// as `declared` says, back would be refused there, if it would. That
+/// start is an agent's, the orchestrator's or the node's own, judged in
+/// whichever of fence and strict its asker runs, and each kind declares
+/// its own `runs`, so a carry is refused when either declared runs
+/// nothing.
+#[must_use]
+pub fn brought_back(to: &str, declared: Option<&Declared>) -> Option<String> {
+    [Kind::Fence, Kind::Strict]
+        .into_iter()
+        .find_map(|kind| runs_nothing_there(kind, to, declared))
+}
+
+/// Why `name`, declaring itself as `declared` says, runs no command in its
+/// `kind` fence by that fence's words alone, if it doesn't.
+fn runs_nothing_there(kind: Kind, name: &str, declared: Option<&Declared>) -> Option<String> {
+    let doors = declared
+        .and_then(|declared| declared.fence.as_ref())
+        .and_then(|fences| fences.get(&kind))?;
+    Some(match crate::declared::unrunnable(&doors.runs)? {
+        Unrunnable::Nothing => format!(
+            "{name} declares no way to run a command as its {kind} sessions run that its \
+             launcher accepts, or its node is too old to say one"
+        ),
+        Unrunnable::SparesATree(spare) => format!(
+            "{name}'s {kind} sessions' launcher says {}, which spares a tree shared to the \
+             asker, so it runs no agent's command",
+            said_word(&spare)
+        ),
+        Unrunnable::Unended => format!(
+            "{name}'s {kind} sessions' launcher doesn't end with --, so it runs no agent's \
+             command"
+        ),
+    })
 }
 
 /// The longest a word another machine says is quoted in a refusal.

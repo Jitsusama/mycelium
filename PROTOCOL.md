@@ -169,7 +169,8 @@ same code, each line a JSON value:
    stops waiting on its answer within 30 seconds. Where no person
    works, an agent's SSH login can't be told from a link's end, so
    every relay but its own process's is taken so, and a machine made
-   from a basin still takes the starts placed on it. Elsewhere, a
+   from a basin still takes the starts placed on it, where its strict
+   fence declares `runs` (The Socket). Elsewhere, a
    link's end an agent ran is taken so too, as is one whose owner the
    kernel can't tell, but one marked as the person's carry is refused,
    so the person hears the carry failed rather than finding its
@@ -709,7 +710,12 @@ session says of itself:
   session that names no fence, or a machine that declares none for it,
   is refused, since where it lands can't be told. A refusal names the
   doors that are wider, as `tern's strictly fenced session opens
-  builders cloud, which here's doesn't`.
+  builders cloud, which here's doesn't`. The start that brings it
+  back there is an agent's, the orchestrator's or the node's own, so
+  each of `to`'s `fence` and `strict` fences it declares must declare
+  its `runs` too, or the carry is refused before any session is told
+  to carry and ends (The Socket). A node easing itself never chooses
+  such a machine.
 - The fence it names is never looser than its process shows. The
   node reads the proved owner's process: `PI_SANDBOX` in the
   environment it began with (`strict` or `fence`), and, for a pi that
@@ -1563,7 +1569,7 @@ A processor reading that isn't a number counts as none, so every
 `headroom` is a number.
 
 `"Start"` places `work` as `"PlaceToStart"` does (as `"Place"`,
-though an agent's start needs no `runs`) and starts `command` held
+an agent's start held to `runs` too) and starts `command` held
 there through the person's login shell (`$SHELL -lic`), so it has their
 environment rather than the node's, and the realm's kit's tools first on
 its path where its node is given a kit (`--kit`) and carries it, having
@@ -1611,7 +1617,9 @@ seconds.
 
 A start that no machine of the realm takes has a machine made for it.
 The node asks its providers what they offer and judges each offer as
-it would a machine, by the facts it promises: a fact it doesn't promise
+it would a machine, by the facts it promises, and for an agent's start
+by the fence its `declared` says the machine would run, which must be
+as firm as here and name its `runs`: a fact it doesn't promise
 meets no need, and none is a machine already named. An offer whose
 `hourly` is nothing, written with any number of zeros, may be made for
 any start, so a provider lending machines that cost nothing is as easy
@@ -1956,9 +1964,30 @@ not sealed or a program missing or outside the store among them; this
 machine logs each refusal of its own. A machine whose node is too old
 to say its `runs` says none, so it is refused so until it is upgraded.
 A `"Place"` an agent asks is judged the same way, as a run, so where
-it is told the work would go is where the work may run, though a start
-placed (`"PlaceToStart"`, `"Start"`) needs no `runs`. An agent's run
-naming no machine that every machine refuses, this one for its
+it is told the work would go is where the work may run. An agent's
+start placed (`"PlaceToStart"`, `"Start"`) is held to `runs` too,
+missed as `runs-nothing`, so it starts only where that fence runs a
+command: its session doesn't run through that launcher yet, but a
+machine declaring none, as a Mac does, would run it looser than its
+asker. Since a Mac declares none, an agent's session that ran on a Mac
+isn't brought back there after a restart, as its start is pinned to
+that machine, and an agent's start on a Mac that names no machine goes
+to one that runs its fence. There it begins in its home where its
+folder isn't, unless it asks `"strict"`, or it is told what a machine
+made for it would cost. The node placing a start judges it, as a relay
+carries no asker's fence, so a machine stops taking these starts only
+once every node that may place on it judges so. Only placement is held
+so: an agent's session already held on a Mac wakes there as before,
+outside any fence, until it ends or the Mac boots again. What is
+judged is what a machine declares, never its system, so a Mac
+declaring `runs` would take such a start unfenced. The person's start is
+relayed as theirs, but a machine no person works at, or one where the
+link's end can't be named, judges it an agent's, so there it needs that
+machine's launcher too, and a refusal of any start judged so says it
+was, and why. A machine made from a basin is one no person works at,
+and an offer is screened for `runs` only for an agent's start, so the
+person's start may yet be refused on a machine made and paid for it.
+An agent's run naming no machine that every machine refuses, this one for its
 launcher, is told this one's reason and then every other's; one a
 link carried here is told this machine by name, not as here. Each
 machine so refused still counts for what the person's lasting machines
