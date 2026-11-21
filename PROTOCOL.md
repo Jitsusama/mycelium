@@ -93,7 +93,7 @@ same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
    "steers", "releases", "updates", "runs", "carries", "shows",
-   "ends"}}`, first,
+   "ends", "reopens"}}`, first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -106,7 +106,9 @@ same code, each line a JSON value:
    older than any of them is asked none of it. `shows` says it tells of
    the carries its node ordered and keeps those the other end tells of;
    an end older than it is told none. `ends` says it carries an end of a
-   session held there; an end older than it is asked none.
+   session held there; an end older than it is asked none. `reopens`
+   says its node judges a reopening relayed to it (`"Start"`); an end
+   older than it is asked none.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -1139,7 +1141,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Watch": {"groups", "recent"}}` | `"Watching"`, then events; no `groups`, no messages |
 | `"Present"` | `"Present"`, then held open while its process runs |
 | `{"Spawned": {"pid", "started", "session"}}` | `"Spawned"`, from a pi host, of its own spawner (A Hosted Session's Spawner) |
-| `{"Carry": {"machine"}}` | `"Carrying"`, then what it asks of `machine` |
+| `{"Carry": {"machine", "reopens"}}` | `"Carrying"`, then what it asks of `machine` |
 | `"Health"` | `{"Health": health}`, then another each time it moves |
 | `{"Turn": {"session"}}` | `"Turn"`, once a holder may resume `session` (A Held Session) |
 
@@ -1164,12 +1166,16 @@ refuses.
 
 A `Carry` connection is how the end of a link another machine dialled
 carries what its node asks of that machine. The node writes each ask as
-`{"ask", "asked"}`, where `asked` is `{"Start": start}`, `{"Steer":
-{"address", "steer", "checked"}}` or `"Update"`, and the link writes
-back `{"ask", "reply"}` with the other end's reply. A run isn't carried:
-it goes only where this machine dialled. It lasts until either
-hangs up, or until another link reaching the machine takes its place;
-an ask still waiting then hears that the link dropped.
+`{"ask", "asked"}`, where `asked` is `{"Start": start}`, `{"Reopen":
+start}`, `{"Steer": {"address", "steer", "checked"}}` or `"Update"`,
+and the link writes back `{"ask", "reply"}` with the other end's reply.
+A link says `reopens` as it connects, since one older can't read a
+`Reopen`; to one that doesn't, the node hands none, and answers it
+itself as `<machine>'s link here is too old to carry a reopening`. A
+run isn't carried: it goes only where this machine dialled. It lasts
+until either hangs up, or until another link reaching the machine
+takes its place; an ask still waiting then hears that the link
+dropped.
 
 A `Health` connection is how the end of a link another machine dialled
 says this machine's own health in its facts. The node answers with the
@@ -1622,7 +1628,52 @@ missed as `looser-ground`, `never`, naming the machine and the fence
 it lacks, and a start naming one is told only that, as `this asks as a
 strictly fenced agent, so it starts nothing on looser ground: ...`. A
 machine made for it is held to the same once it links, and let go
-where it is looser. The person's starts aren't. A start relayed from
+where it is looser. The person's starts aren't, nor is an agent's
+reopening: the person's `pi` given `--session` and a bare id, with at
+most `--model` and a model after them, and nothing more, in no folder
+of the asker's, naming one machine alone. It begins where a start in
+no folder begins, in the home folder. An agent may reopen so only a
+session of its own quest, or one this node's book says it or its
+orchestrator started, judged as the session its process owns alone,
+as the kernel and pi's records prove it, as a run's work trees are,
+never by the nearest claim, since a pi host's sessions share its
+process. Any other is held to its ground, and a refusal for looser
+ground then ends `; <id> is reopened from fenced ground only by an
+agent of <quest>, one its orchestrator started, or the person`, with
+`, and this asks as no session proved alone: <why>` after it where
+none is proved. A session whose node said it `Ended` is judged as it
+was last carried here, kept for a week once let go, in the node's own
+state rather than the mesh's folders, so no session here sees it; one
+this node keeps no record of from the last week is reopened from fenced
+ground only by the person. A name a reopening took there without its
+asker's fence and that went unanswered is asked there again only by
+a reopening of a session there, let through without its fence again.
+A reopening let
+through to a machine on looser ground goes there without its asker's
+fence, and makes no machine, since it brings back a session where
+and as it was rather than starting the asker's work there; one whose
+machine is no looser keeps its fence and goes as any start, which a
+node of any age takes. Only the session's own
+node knows it ended, so a start relayed from another machine's node in
+that shape, whether or not it says it carries, is taken only for a
+session that ended on this machine, and otherwise refused as `no
+session <id> ended on <machine>, so nothing is reopened here`, whoever
+asked. Nor is one taken for a session that comes back by itself: one
+still live (`<id> is still live on <machine>`), parked for its holder
+to wake as its `standing` says (one it doesn't has nothing to wake
+it, so is reopened as any ended session), held by a holder there,
+carried away or waiting for its turn, each refused with why, nor
+while the carries can't be read. Once taken, the session is
+held as being reopened while its start runs, and another reopening of
+it meanwhile is refused as `<id> is being reopened on <machine>
+already`; a start whose asker hung up holds it at most two minutes. A
+reopening let through without its asker's fence is asked only of a
+node whose link says `reopens`, since one older would take it as any
+relayed start, so one asked of an older node is refused as
+`<machine>'s mycelium is too old to judge a reopening`, and one no
+link reaches as `no link reaches <machine> now to judge a
+reopening`. The person's, one held to its asker's ground, and one on
+ground no looser go as any start. A start relayed from
 another machine's node is pinned to this one, which is never looser
 than itself. A node run as a systemd unit
 starts each holder in a scope of its own, `mycelium-pi-<held>.scope` in
@@ -2259,8 +2310,10 @@ interface's, beside the record's own `source` where it has one. A
 session also says
 whether it runs `here`, and how it stands, as `standing`: `running` while
 its process runs, here or on a machine heard of this boot; `parked` here,
-ended for its holder to start again, its park marked this boot; `closed`
-here, ended this boot unparked; and no `standing` for one passed over.
+ended for its holder to start again, its park marked this boot (where
+the machine names no boot, as a Mac doesn't, its session changed since
+the boot began, or the machine can't say when it began); `closed` here,
+ended this boot unparked; and no `standing` for one passed over.
 Its `told` is a digest of the record without what only an open launcher
 shows (its step, usage and times), so a
 change whose records carry no new `told` tells a shut one nothing it
