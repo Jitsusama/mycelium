@@ -162,6 +162,17 @@ pub fn kit(folder: &Path) -> Option<Kit> {
     })
 }
 
+/// The system a machine measured here says it is, as Rust names it.
+#[cfg(not(test))]
+const SYSTEM: &str = std::env::consts::OS;
+
+/// The system every machine measured in a test says it is, whatever
+/// builds the tests: a Mac takes no agent's held start, so a test node
+/// and its stand-ins measured on one would refuse every such start the
+/// tests make. A test's Mac says its system itself.
+#[cfg(test)]
+const SYSTEM: &str = "linux";
+
 /// Where a machine's facts are read from, beyond the machine itself.
 #[derive(Debug, Clone)]
 pub struct Sources {
@@ -327,7 +338,7 @@ pub fn measure(name: &str, sources: &Sources) -> Machine {
         measured_at: now.to_string(),
         state: Readiness::Ready,
         os: read.os,
-        system: Some(std::env::consts::OS.to_owned()),
+        system: Some(SYSTEM.to_owned()),
         arch: std::env::consts::ARCH.to_owned(),
         model: read.model,
         model_name: read.model_name,
@@ -505,9 +516,10 @@ mod here {
 mod here {
     //! macOS says what it is through `sysctl` and `sw_vers`.
 
+    use std::collections::BTreeMap;
     use std::io::Read as _;
     use std::process::{Command, Stdio};
-    use std::sync::OnceLock;
+    use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
     use super::{Cpu, Power, Read, macos};
@@ -533,13 +545,33 @@ mod here {
 
     /// What `program` says, asked with `args`, kept in `kept` from the
     /// first time it answers, for what doesn't change while the node runs.
-    fn said_once(kept: &OnceLock<String>, program: &str, args: &[&str]) -> Option<String> {
+    /// One that failed isn't asked again for [`ASKED_AGAIN_AFTER`], so a
+    /// loaded Mac waits out its deadline once in that while rather than at
+    /// every measuring.
+    fn said_once(kept: &OnceLock<String>, program: &'static str, args: &[&str]) -> Option<String> {
+        static FAILED: Mutex<BTreeMap<&str, Instant>> = Mutex::new(BTreeMap::new());
         if let Some(said) = kept.get() {
             return Some(said.clone());
         }
-        let answer = said(program, args)?;
+        let lately = |failed: &BTreeMap<&str, Instant>| {
+            failed
+                .get(program)
+                .is_some_and(|at| at.elapsed() < ASKED_AGAIN_AFTER)
+        };
+        if FAILED.lock().is_ok_and(|failed| lately(&failed)) {
+            return None;
+        }
+        let Some(answer) = said(program, args) else {
+            if let Ok(mut failed) = FAILED.lock() {
+                failed.insert(program, Instant::now());
+            }
+            return None;
+        };
         Some(kept.get_or_init(|| answer).clone())
     }
+
+    /// How long a fact that failed to be said is left unasked.
+    const ASKED_AGAIN_AFTER: Duration = Duration::from_secs(600);
 
     /// What `program` says, asked with `args`, or nothing where it fails
     /// or hasn't answered within [`SAID_WITHIN`], when it is killed. What
@@ -555,9 +587,12 @@ mod here {
             .spawn()
             .ok()?;
         let mut stdout = child.stdout.take()?;
-        let reading = std::thread::spawn(move || {
+        let (read, reading) = std::sync::mpsc::channel();
+        // Its output is waited on no longer than the program, since a
+        // program it left behind may hold it open after it ends.
+        std::thread::spawn(move || {
             let mut out = Vec::new();
-            stdout.read_to_end(&mut out).map(|_| out)
+            let _ = read.send(stdout.read_to_end(&mut out).map(|_| out));
         });
         let deadline = Instant::now() + SAID_WITHIN;
         loop {
@@ -574,7 +609,8 @@ mod here {
                 Ok(Some(_)) | Err(_) => return None,
             }
         }
-        let out = reading.join().ok()?.ok()?;
+        let left = deadline.saturating_duration_since(Instant::now());
+        let out = reading.recv_timeout(left).ok()?.ok()?;
         String::from_utf8(out).ok()
     }
 

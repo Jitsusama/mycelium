@@ -175,6 +175,19 @@ pub fn lifts_fence(kind: Kind, machines: &[Machine]) -> Vec<Miss> {
         .collect()
 }
 
+/// Why a machine made of the offer `to`, a `system` machine, would take
+/// no agent's held start in the fence `kind`, if it wouldn't: a Mac, as
+/// [`lifts_fence`] judges one of the realm, so none is made, and paid
+/// for, only to be refused once it links.
+#[must_use]
+pub fn lifts_fence_offered(kind: Kind, to: &str, system: Option<&str>) -> Option<String> {
+    (system == Some(MAC)).then(|| {
+        format!(
+            "{to} would be a Mac, where a {kind} session started held would run outside any fence"
+        )
+    })
+}
+
 /// The system a Mac says it is, as Rust names macOS.
 const MAC: &str = "macos";
 

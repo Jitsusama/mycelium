@@ -5427,7 +5427,10 @@ impl<S: Store> Shared<S> {
         for offer in offers {
             let said = offer.facts.declared.as_ref();
             let refused = ground::looser_offered(kind, here.as_ref(), &offer.shape, said)
-                .or_else(|| ground::runs_nothing_offered(kind, &offer.shape, said));
+                .or_else(|| ground::runs_nothing_offered(kind, &offer.shape, said))
+                .or_else(|| {
+                    ground::lifts_fence_offered(kind, &offer.shape, offer.facts.system.as_deref())
+                });
             match refused {
                 None => firm.push(offer),
                 Some(looser) => why.push(looser),
@@ -15251,6 +15254,25 @@ esac
                     .to_owned()
             ),
             "nor is one made of an offer whose fence would run no command"
+        );
+        // Our council on #359 (2026-11-21): a Mac would be made, and paid
+        // for, then refused the agent's held start as lifts-fence.
+        let mut mac = offered("mac", Some(&["remote"]));
+        mac.facts.system = Some("macos".to_owned());
+        assert_eq!(
+            shared.offered_on_ground(vec![mac.clone()], strict),
+            Err(
+                "this asks as a strictly fenced agent, so no machine is made for it where it \
+                 would land looser or run nothing: mac would be a Mac, where a strictly fenced \
+                 session started held would run outside any fence"
+                    .to_owned()
+            ),
+            "nor is a Mac made for it"
+        );
+        assert_eq!(
+            shared.offered_on_ground(vec![mac.clone()], None),
+            Ok(vec![mac]),
+            "though one may be for the person"
         );
     }
 

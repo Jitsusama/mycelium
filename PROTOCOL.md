@@ -2053,8 +2053,8 @@ outside any fence, until it ends or the Mac boots again. A Mac's
 holder starts a held session outside its fence even where the Mac
 declares `runs`, so an agent's start is refused every machine whose
 facts say `system` `macos` too, missed as `lifts-fence`, `never`, and
-its refusal says so; an agent's run there still goes through its
-launcher. The person's start is
+its refusal says so, nor is a Mac made of an offer for one; an agent's
+run there still goes through its launcher. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that
 machine's launcher too, and a refusal of any start judged so says it
