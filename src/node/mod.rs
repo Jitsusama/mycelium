@@ -5257,7 +5257,8 @@ impl<S: Store> Shared<S> {
     ///
     /// # Errors
     ///
-    /// When an agent asks and every offer is looser, each named with why.
+    /// When an agent asks and every offer is looser or would run nothing,
+    /// each named with why.
     fn offered_on_ground(
         &self,
         offers: Vec<Offer>,
@@ -5282,7 +5283,8 @@ impl<S: Store> Shared<S> {
             return Ok(firm);
         }
         Err(format!(
-            "this asks as {}, so no machine is made for it on looser ground: {}",
+            "this asks as {}, so no machine is made for it where it would land looser or run \
+             nothing: {}",
             By::Agent(kind),
             why.join("; ")
         ))
@@ -6040,13 +6042,17 @@ fn refused(why: &str) {
 
 /// Whether a session started held in the fence `fence` is placed only
 /// where that fence declares how a command runs, as an agent's runs are:
-/// any agent's, which [`fence_of`] floors at the agent fence, never the
-/// person's. Its start doesn't go through that launcher yet, but a
-/// machine declaring none (a Mac, which has no Landlock) has nothing
-/// there to keep the session in its fence, so it would run looser than
-/// its asker. It stands in for that until held starts go through the
-/// launcher, so a Linux machine whose launcher is refused, or whose node
-/// is too old to say its `runs`, takes no agent's held start either.
+/// any start judged an agent's, which [`fence_of`] floors at the agent
+/// fence. The person's start is spared by having no fence, not by this,
+/// so where a relay's end is judged an agent's, as where no person works,
+/// even the person's relayed start is held to it. Its start doesn't go
+/// through that launcher yet, and declaring one doesn't keep the session
+/// in its fence: pi's own fence does that on Linux. But a machine
+/// declaring none (a Mac, which has no Landlock) lifts pi's fence, so the
+/// session would run looser than its asker. It stands in for that until
+/// held starts go through the launcher, so a Linux machine whose launcher
+/// is refused, or whose node is too old to say its `runs`, takes no
+/// agent's held start either.
 fn held_in_launcher(fence: Option<crate::declared::Kind>) -> bool {
     fence.is_some()
 }
@@ -14447,8 +14453,8 @@ esac
         assert_eq!(
             shared.offered_on_ground(vec![loose, bare_shape], strict),
             Err(
-                "this asks as a strictly fenced agent, so no machine is made for it on looser \
-                 ground: loose's strictly fenced session opens builders cloud, which here's \
+                "this asks as a strictly fenced agent, so no machine is made for it where it \
+                 would land looser or run nothing: loose's strictly fenced session opens builders cloud, which here's \
                  doesn't, so the session would land looser there; bare declares no fence, so \
                  the session can't be told to land as strictly fenced there"
                     .to_owned()
@@ -14475,9 +14481,10 @@ esac
         assert_eq!(
             shared.offered_on_ground(vec![idle], strict),
             Err(
-                "this asks as a strictly fenced agent, so no machine is made for it on looser \
-                 ground: idle declares no way to run a command as its strictly fenced sessions \
-                 run that its launcher accepts, or its node is too old to say one"
+                "this asks as a strictly fenced agent, so no machine is made for it where it \
+                 would land looser or run nothing: idle's provider promises no way to run a \
+                 command as its strictly fenced sessions run, so its offer must name the \
+                 fence's runs"
                     .to_owned()
             ),
             "nor is one made of an offer whose fence would run no command"
@@ -16924,6 +16931,34 @@ esac
         assert!(
             began.elapsed() < Duration::from_millis(u64::try_from(START_WAITS_MOST).unwrap_or(0)),
             "refused at once, never waiting for room"
+        );
+    }
+
+    // A machine declaring no launcher, as a Mac doesn't, takes no agent's
+    // start relayed to it, which would run looser there than its asker,
+    // as the machine that took it judges by its own launcher.
+    #[tokio::test]
+    async fn a_relay_from_an_agent_starts_nothing_where_its_fence_runs_no_command() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let processes = Processes::Folder("/nowhere/proc".into());
+        let mut link = holding_skiff(dir.path(), Memory::default(), None, processes);
+        link.client = Some(1);
+        let start = Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let refused = link
+            .relayed("tern", start)
+            .await
+            .expect_err("an agent's relayed start is refused here");
+        assert!(
+            refused.starts_with("skiff doesn't take it now")
+                && refused.contains("declares no way to run a command"),
+            "{refused}"
         );
     }
 

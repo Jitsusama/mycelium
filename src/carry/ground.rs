@@ -152,10 +152,21 @@ pub fn runs_nothing(
 /// says it would, runs no command an agent asks in the fence `kind`, as
 /// [`runs_nothing`] judges a machine of the realm by its words alone, so
 /// none is made, and paid for, only to be refused once it links. An offer
-/// that declares no `kind` fence is [`looser_offered`]'s to refuse.
+/// that declares no `kind` fence is [`looser_offered`]'s to refuse. One
+/// naming no `runs` is told as its provider's to mend, since no node of
+/// it runs yet to be too old.
 #[must_use]
 pub fn runs_nothing_offered(kind: Kind, to: &str, there: Option<&Declared>) -> Option<String> {
-    runs_nothing_there(kind, to, there)
+    let doors = there
+        .and_then(|declared| declared.fence.as_ref())
+        .and_then(|fences| fences.get(&kind))?;
+    match crate::declared::unrunnable(&doors.runs)? {
+        Unrunnable::Nothing => Some(format!(
+            "{to}'s provider promises no way to run a command as its {kind} sessions run, so \
+             its offer must name the fence's runs"
+        )),
+        _ => runs_nothing_there(kind, to, there),
+    }
 }
 
 /// Why `name`, declaring itself as `declared` says, runs no command in its

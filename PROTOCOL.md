@@ -1563,7 +1563,7 @@ A processor reading that isn't a number counts as none, so every
 `headroom` is a number.
 
 `"Start"` places `work` as `"PlaceToStart"` does (as `"Place"`,
-though an agent's start needs no `runs`) and starts `command` held
+an agent's start held to `runs` too) and starts `command` held
 there through the person's login shell (`$SHELL -lic`), so it has their
 environment rather than the node's, and the realm's kit's tools first on
 its path where its node is given a kit (`--kit`) and carries it, having
@@ -1611,7 +1611,9 @@ seconds.
 
 A start that no machine of the realm takes has a machine made for it.
 The node asks its providers what they offer and judges each offer as
-it would a machine, by the facts it promises: a fact it doesn't promise
+it would a machine, by the facts it promises, and for an agent's start
+by the fence its `declared` says the machine would run, which must be
+as firm as here and name its `runs`: a fact it doesn't promise
 meets no need, and none is a machine already named. An offer whose
 `hourly` is nothing, written with any number of zeros, may be made for
 any start, so a provider lending machines that cost nothing is as easy
@@ -1956,8 +1958,14 @@ not sealed or a program missing or outside the store among them; this
 machine logs each refusal of its own. A machine whose node is too old
 to say its `runs` says none, so it is refused so until it is upgraded.
 A `"Place"` an agent asks is judged the same way, as a run, so where
-it is told the work would go is where the work may run, though a start
-placed (`"PlaceToStart"`, `"Start"`) needs no `runs`. An agent's run
+it is told the work would go is where the work may run. An agent's
+start placed (`"PlaceToStart"`, `"Start"`) is held to `runs` too,
+missed as `runs-nothing`, so it starts only where that fence runs a
+command: its session doesn't run through that launcher yet, but a
+machine declaring none, as a Mac does, would run it looser than its
+asker. The person's start is relayed as theirs, but a machine no person
+works at, or one where the link's end can't be named, judges it an
+agent's, so there it needs that machine's launcher too. An agent's run
 naming no machine that every machine refuses, this one for its
 launcher, is told this one's reason and then every other's; one a
 link carried here is told this machine by name, not as here. Each
