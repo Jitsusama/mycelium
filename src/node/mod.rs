@@ -16864,6 +16864,10 @@ esac
     // placed there, the person's carry too, and says how it judged them.
     #[tokio::test]
     async fn a_cell_declaring_no_launcher_refuses_the_starts_placed_on_it() {
+        // Placement refuses it, or, where the build's file owners leave the
+        // asker judged unfenced, the cell's own launcher does; both say so.
+        const NO_LAUNCHER: &str =
+            "declares no way to run a command as its strictly fenced sessions run";
         let dir = tempfile::tempdir().expect("a temporary folder");
         let unattended = Processes::Folder("/nowhere/proc".into()).unattended();
         let mut link = holding_skiff(dir.path(), Memory::default(), None, unattended);
@@ -16894,7 +16898,7 @@ esac
             refused.starts_with(
                 "no person works on skiff, so it takes a relayed start as an agent's, and \
                  refused it:"
-            ) && refused.contains("starts only where that fence runs a command"),
+            ) && refused.contains(NO_LAUNCHER),
             "and says it was judged an agent's, and why: {refused}"
         );
         let refused = link
@@ -16903,7 +16907,7 @@ esac
             .expect_err("the person's carry is refused the same");
         assert!(
             refused.starts_with("no person works on skiff, so it takes the person's carry")
-                && refused.contains("starts only where that fence runs a command"),
+                && refused.contains(NO_LAUNCHER),
             "the person reads why: {refused}"
         );
         assert_eq!(link.arrivals.carrying(), 0, "and nothing arrives");
