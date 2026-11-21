@@ -86,22 +86,24 @@ impl Places {
     /// reads as one caught partway through being written, so neither is
     /// known: what moves a record aside, says a quest reopened or stops
     /// it waits for a reading rather than taking it as live. A README
-    /// unchanged for [`TORN_FOR`] and still read so is no write caught
-    /// partway but one left that way, so it reads as live, as it did
-    /// before a torn read was told apart, and its quest is shared still.
+    /// unchanged for [`TORN_FOR`], or dated ahead, and still read so is
+    /// no write caught partway but one left that way, so it reads as it
+    /// did before a torn read was told apart: ended where a status it
+    /// holds says so, else live. One that can't be read at all stays
+    /// unknown, however long, since a failed read says nothing of it.
     #[must_use]
     pub fn standing(&self, id: &str) -> Option<bool> {
         let readme = self.record(id).join("README.md");
-        let read = match fs::read_to_string(&readme) {
-            Ok(text) => has_ended(&text),
+        let text = match fs::read_to_string(&readme) {
+            Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Some(false),
-            Err(_) => None,
+            Err(_) => return None,
         };
-        read.or_else(|| {
+        has_ended(&text).or_else(|| {
             let left = fs::metadata(&readme)
                 .and_then(|metadata| metadata.modified())
-                .is_ok_and(|at| at.elapsed().is_ok_and(|age| age >= TORN_FOR));
-            left.then_some(false)
+                .is_ok_and(|at| !at.elapsed().is_ok_and(|age| age < TORN_FOR));
+            left.then(|| ended_as_left(&text))
         })
     }
 
@@ -1037,8 +1039,9 @@ impl Exchange {
             let read = standing.is_some();
             if read && ended && self.has_ended_there(&id) && self.swept(&id) {
                 let why = format!("has ended here and on {}", self.other);
-                self.stop(&ledgers, &id, &why, true)?;
-                continue;
+                if self.stop(&ledgers, &id, &why, true)? {
+                    continue;
+                }
             }
             self.empty_here(&id, ended);
             self.above_again |= decide && !read;
@@ -1046,8 +1049,9 @@ impl Exchange {
             // like any ended quest, so a stale Holds can't take it up.
             if decide && read && self.spent_here(&ledgers, &id)? {
                 let why = "was shared for the quests under it, and none is shared now";
-                self.stop(&ledgers, &id, why, ended)?;
-                continue;
+                if self.stop(&ledgers, &id, why, ended)? {
+                    continue;
+                }
             }
             let mut held = ledgers.hold(&id)?;
             if self.withholds(&held.ledger) {
@@ -1141,14 +1145,16 @@ impl Exchange {
     /// heard of it; a quest above it may be spent now, so the next look
     /// decides again. One that `ended` here, or reads ended now, keeps its
     /// README's version as it stands on the disk now, scanned first, since
-    /// the look may not yet have seen it conclude; one whose README can't
-    /// be read now keeps the version last scanned, since a torn read
-    /// would raise it.
-    fn stop(&mut self, ledgers: &Ledgers, id: &str, why: &str, ended: bool) -> io::Result<()> {
-        let now = self.places.standing(id);
-        let ended = ended || now == Some(true);
-        if now == Some(true)
-            && let Some(readme) = shared_of(README)
+    /// the look may not yet have seen it conclude. One whose README reads
+    /// torn now isn't stopped, since the version it would keep may predate
+    /// its end: the next look decides again. Says whether it stopped.
+    fn stop(&mut self, ledgers: &Ledgers, id: &str, why: &str, ended: bool) -> io::Result<bool> {
+        let Some(now) = self.places.standing(id) else {
+            self.above_again = true;
+            return Ok(false);
+        };
+        let ended = ended || now;
+        if now && let Some(readme) = shared_of(README)
         {
             let mut held = ledgers.hold(id)?;
             let quest = self.quest(id, &held.ledger);
@@ -1162,7 +1168,7 @@ impl Exchange {
         self.watch.forget(id);
         self.above_again = true;
         eprintln!("{id} {why}, so it is shared no longer");
-        Ok(())
+        Ok(true)
     }
 
     /// Takes what the other end said, returning what this end says back.
@@ -2013,6 +2019,17 @@ fn has_ended(readme: &str) -> Option<bool> {
             .is_some_and(|status| matches!(status.trim(), "concluded" | "retired"));
     }
     None
+}
+
+/// Whether a README [`has_ended`] can't tell, left so, has ended, as it
+/// read before a torn read was told apart: where any status line after
+/// its opening says so.
+fn ended_as_left(readme: &str) -> bool {
+    readme
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.strip_prefix("status:"))
+        .any(|status| matches!(status.trim(), "concluded" | "retired"))
 }
 
 fn is_journey(shared: &Shared) -> bool {
