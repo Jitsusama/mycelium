@@ -2860,7 +2860,7 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
     let socket = hosted_attach::socket(&runtime_dir, realm, host)
         .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
     if !socket.exists() {
-        let how = if hold::reached_before() {
+        let how = if hold::reached_before(host) {
             tell!("mycelium: no pi host {host} is running here");
             hold::Gone::Away
         } else {
@@ -2870,13 +2870,18 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
         hold::say_gone(how);
         return Ok(ExitCode::from(hold::holder::GONE));
     }
-    hold::say_reached();
     let runtime = runtime()?;
     let left = runtime.block_on(hosted_attach::join_here(&socket, session));
     // Typing is read on a thread of its own, waiting on a key nobody will
     // press now.
     runtime.shutdown_background();
     let left = left?;
+    // A socket nobody listens on, as a host that crashed leaves, says no
+    // host ran; any that answered, however late, did.
+    let answered = !matches!(left, hosted_attach::Left::Unreachable);
+    if answered {
+        hold::say_reached(host);
+    }
     match &left {
         hosted_attach::Left::Detached(why) => tell!("mycelium: {why}"),
         hosted_attach::Left::Released => {
@@ -2891,7 +2896,11 @@ fn attach_hosted(realm: &str, host: &str, session: &str) -> io::Result<ExitCode>
         hosted_attach::Left::Suspended | hosted_attach::Left::Restarting => {}
     }
     if left.exit_code() == hold::holder::GONE {
-        hold::say_gone(hold::Gone::Away);
+        hold::say_gone(if answered || hold::reached_before(host) {
+            hold::Gone::Away
+        } else {
+            hold::Gone::Unseen
+        });
     }
     Ok(ExitCode::from(left.exit_code()))
 }

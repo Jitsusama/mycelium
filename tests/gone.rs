@@ -26,6 +26,11 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// itself, so only the key can meet it.
 const KEY_PATIENCE: Duration = Duration::from_secs(10);
 
+/// How long a window shows nothing before what it showed is taken as
+/// done: far longer than a run's late words take to arrive, and far
+/// shorter than its holder's next try by itself.
+const STILL: Duration = Duration::from_secs(2);
+
 // A key is told apart from the pause only while the pause is the longer.
 const _: () = assert!(KEY_PATIENCE.as_secs() < GONE_AGAIN.as_secs());
 
@@ -156,6 +161,19 @@ impl Window {
         }
     }
 
+    /// Reads, and lets go of, everything the window shows until it has
+    /// shown nothing for `still`, so that a later look reads only what
+    /// comes after: a run's late words, and the holder's line drawn again
+    /// after them, are never taken for the next run's.
+    fn quiets(&mut self, still: Duration) {
+        self.stream
+            .set_read_timeout(Some(still))
+            .expect("the window's patience is set");
+        let mut buffer = [0u8; 4096];
+        while self.stream.read(&mut buffer).is_ok_and(|read| read > 0) {}
+        self.unseen.clear();
+    }
+
     /// Types a Return.
     fn types_return(&mut self) {
         self.stream
@@ -270,6 +288,7 @@ fn a_window_whose_pi_host_never_ran_here_says_so_and_joins_one_once_it_starts() 
     // Joined after its first try may have ended, the window is told by the
     // holder itself; a key tries again with it there to see attach say so.
     window.sees(NEVER, PATIENCE);
+    window.quiets(STILL);
     window.types_return();
     window.sees_then(NEVER_HOST, NEVER, KEY_PATIENCE);
     assert!(

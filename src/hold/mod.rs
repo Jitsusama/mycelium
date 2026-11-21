@@ -240,12 +240,17 @@ impl Gone {
     }
 
     /// How the gone file `said` says the host is gone, if the process
-    /// `pid` wrote it: one another process wrote, or one written as
-    /// nothing, says nothing.
+    /// `pid` wrote it: one another process wrote says nothing. One
+    /// written as nothing is an older attach's, which named no writer,
+    /// as one still on the path after a rollback writes it, and says the
+    /// host is away, as that attach meant.
     #[must_use]
     pub fn heard(said: &str, pid: u32) -> Option<Self> {
         let mut words = said.split_whitespace();
-        if words.next()?.parse::<u32>().ok()? != pid {
+        let Some(writer) = words.next() else {
+            return Some(Self::Away);
+        };
+        if writer.parse::<u32>().ok()? != pid {
             return None;
         }
         Some(match words.next() {
@@ -268,31 +273,53 @@ pub fn say_gone(how: Gone) {
 /// What a held program is told the path of [`gone`] in.
 pub const GONE_SAID: &str = "MYCELIUM_GONE";
 
-/// The file a program held as `id` in `dir` writes once it finds its pi
-/// host's socket ([`say_reached`]), kept until the holder ends, so a
-/// later run that finds none knows its host was here and is away, rather
-/// than never here at all.
+/// The file a program held as `id` in `dir` writes, naming its pi host,
+/// once that host answers it ([`say_reached`]), kept until the holder
+/// ends, so a later run that finds none knows its host was here and is
+/// away, rather than never here at all.
 #[must_use]
 pub fn reached(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.reached"))
 }
 
 /// Says to the holder of the program running this, if any, that its pi
-/// host's socket is here.
-pub fn say_reached() {
+/// host `host` answered it.
+pub fn say_reached(host: &str) {
     if let Some(reached) = std::env::var_os(REACHED_SAID) {
         // Unsaid, a later run finding no socket says its host was never
         // here, and the window still waits for it.
-        let _ = fs::write(reached, b"");
+        let _ = fs::write(reached, host);
     }
 }
 
-/// Whether the pi host of the program running this was here in an
-/// earlier run since its holder started ([`say_reached`]); one no holder
-/// runs is never told, so says it was.
+/// Whether the pi host `host` answered the program running this in an
+/// earlier run since its holder started ([`say_reached`]); one another
+/// host answered says no, and one no holder runs is never told, so says
+/// it was.
 #[must_use]
-pub fn reached_before() -> bool {
-    std::env::var_os(REACHED_SAID).is_none_or(|reached| Path::new(&reached).exists())
+pub fn reached_before(host: &str) -> bool {
+    std::env::var_os(REACHED_SAID)
+        .is_none_or(|reached| read_small(Path::new(&reached)).is_some_and(|said| said == host))
+}
+
+/// The few bytes a program under a holder writes to tell it something,
+/// read without following a link and only from a plain file, so that
+/// nothing under the program can make the holder wait on a pipe or read
+/// without end; none when there's no such file.
+#[must_use]
+pub fn read_small(path: &Path) -> Option<String> {
+    use rustix::fs::{Mode, OFlags};
+    use std::io::Read as _;
+    // A pid and a word, or a host's name, with room to spare.
+    const SAID_MOST: u64 = 256;
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let file = fs::File::from(rustix::fs::open(path, flags, Mode::empty()).ok()?);
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut said = String::new();
+    file.take(SAID_MOST).read_to_string(&mut said).ok()?;
+    Some(said)
 }
 
 /// What a held program is told the path of [`reached`] in.
@@ -439,7 +466,42 @@ mod tests {
             None,
             "one another process wrote says nothing"
         );
-        assert_eq!(Gone::heard("", 7), None, "nor does one written as nothing");
+        assert_eq!(
+            Gone::heard("\n", 7),
+            Some(Gone::Away),
+            "one written as nothing is an older attach's, saying its host is away"
+        );
+        assert_eq!(
+            Gone::heard("7 lost\n", 7),
+            Some(Gone::Away),
+            "and a word it doesn't know says away, as an attach of before did"
+        );
+    }
+
+    #[test]
+    fn what_a_held_program_says_is_read_only_from_a_plain_file_and_only_so_far() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let plain = root.path().join("plain");
+        fs::write(&plain, "4100 away\n").expect("a file written");
+        assert_eq!(read_small(&plain).as_deref(), Some("4100 away\n"));
+        let long = root.path().join("long");
+        fs::write(&long, "7".repeat(100_000)).expect("a file written");
+        assert_eq!(
+            read_small(&long).map(|said| said.len()),
+            Some(256),
+            "one that goes on is read only so far"
+        );
+        let linked = root.path().join("linked");
+        std::os::unix::fs::symlink(&plain, &linked).expect("a link made");
+        assert_eq!(read_small(&linked), None, "a link is never followed");
+        let pipe = root.path().join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success(), "a pipe made");
+        assert_eq!(read_small(&pipe), None, "nor is a pipe waited on");
+        assert_eq!(read_small(&root.path().join("none")), None);
     }
 
     #[test]
