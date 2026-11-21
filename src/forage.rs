@@ -3524,7 +3524,10 @@ mod tests {
     fn a_joiner_that_spells_a_word_or_an_emoji_is_kept() {
         // Persian spells "I want" with a non-joiner, and a heart on fire
         // is a heart, its emoji selector, a joiner and a fire.
-        for spelt in ["\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}", "\u{2764}\u{FE0F}\u{200D}\u{1F525}"] {
+        for spelt in [
+            "\u{645}\u{6CC}\u{200C}\u{62E}\u{648}\u{627}\u{647}\u{645}",
+            "\u{2764}\u{FE0F}\u{200D}\u{1F525}",
+        ] {
             assert_eq!(one_line(spelt), spelt, "a joiner past ASCII was dropped");
         }
     }
@@ -3558,7 +3561,11 @@ mod tests {
             "a selector after a selector was kept"
         );
         let long = format!("\u{E9}{}", "\u{FE0F}".repeat(200_000));
-        assert_eq!(one_line(&long), "\u{E9}\u{FE0F}", "a run of selectors was kept");
+        assert_eq!(
+            one_line(&long),
+            "\u{E9}\u{FE0F}",
+            "a run of selectors was kept"
+        );
     }
 
     #[test]

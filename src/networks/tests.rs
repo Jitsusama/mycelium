@@ -1885,7 +1885,10 @@ fn drawn_whole_a_cell_s_marks_and_breaks_move_no_column() {
         "the step is drawn:\n{clean}"
     );
     assert_eq!(
-        drawn("Kelp's\u{fdd0} question\u{fdd1}", "running\u{fdd0} the\n\ntests"),
+        drawn(
+            "Kelp's\u{fdd0} question\u{fdd1}",
+            "running\u{fdd0} the\n\ntests"
+        ),
         clean,
         "a mark or a break in a cell's title or doing moved a column or split a block"
     );
