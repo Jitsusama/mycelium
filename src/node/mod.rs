@@ -2,7 +2,7 @@
 //! stores of the machines discovery finds, holds the sessions and messages
 //! in memory, and serves the local socket every client reads.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -3913,7 +3913,7 @@ impl<S: Store> Shared<S> {
         let mut unread = None;
         // What it asked to park; whatever an earlier node asked no longer
         // stands, since what made it ask isn't known to hold now.
-        let mut parking = BTreeSet::new();
+        let mut parking = std::collections::BTreeSet::new();
         if let Some(folder) = eases.sleeps.clone() {
             let taken = tokio::task::spawn_blocking(move || sleep::withdraw_all(&folder))
                 .await
@@ -3983,14 +3983,17 @@ impl<S: Store> Shared<S> {
         &self,
         folder: &Path,
         line: &mut serde_json::Value,
-        parking: &mut BTreeSet<String>,
+        parking: &mut std::collections::BTreeSet<String>,
         now: jiff::Timestamp,
     ) {
         let Some(chosen) = sleep::chosen(line) else {
             return;
         };
         let sessions = self.lock().state.sessions();
-        let why = format!("{} is over its room while another machine has some", self.machine);
+        let why = format!(
+            "{} is over its room while another machine has some",
+            self.machine
+        );
         let asks = sleep::asks(&self.machine, &sessions, &chosen);
         let folder = folder.to_owned();
         let asked = tokio::task::spawn_blocking(move || {
@@ -4014,7 +4017,10 @@ impl<S: Store> Shared<S> {
 
     /// Takes back the asks to park `parking` in `folder`, answering those
     /// still asked for, to take back at the next look.
-    async fn unpark(folder: &Path, parking: BTreeSet<String>) -> BTreeSet<String> {
+    async fn unpark(
+        folder: &Path,
+        parking: std::collections::BTreeSet<String>,
+    ) -> std::collections::BTreeSet<String> {
         let folder = folder.to_owned();
         let kept = parking.clone();
         tokio::task::spawn_blocking(move || sleep::withdraw(&folder, &parking))

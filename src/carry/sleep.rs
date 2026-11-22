@@ -267,7 +267,11 @@ mod tests {
         let mut line = json!({"choice": "sleep", "would": true, "sessions": ["s1", "s2"]});
         assert_eq!(chosen(&line), Some(vec!["s1".to_owned(), "s2".to_owned()]));
         assert_eq!(chosen(&json!({"choice": "carry", "session": "s1"})), None);
-        acted(&mut line, &["s1-own".to_owned()], &["S2 is in a turn".to_owned()]);
+        acted(
+            &mut line,
+            &["s1-own".to_owned()],
+            &["S2 is in a turn".to_owned()],
+        );
         assert_eq!(
             line,
             json!({
