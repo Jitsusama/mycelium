@@ -704,7 +704,7 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
             if names::one_word(&typed) {
                 Some(typed)
             } else {
-                crate::forage::is_address(address(team)).then(|| address(team).to_owned())
+                typeable(address(team)).then(|| address(team).to_owned())
             }
         })
         .unwrap_or_else(|| "<team>".to_owned());
@@ -1057,7 +1057,7 @@ pub(crate) fn told_apart(named: Vec<(String, &str)>) -> Vec<String> {
         .iter()
         .map(|(name, address)| {
             if alike(name) {
-                if crate::forage::is_address(address) {
+                if typeable(address) {
                     format!("{name} ({address})")
                 } else {
                     format!("{name} (no address to type)")
@@ -1067,6 +1067,13 @@ pub(crate) fn told_apart(named: Vec<(String, &str)>) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// Whether a peer's `address` can be typed after `swarm` to reach what
+/// it names: letters and digits, as a cell's is, and one word `swarm`
+/// reads as a name, not `PAUSE` or `TEAM`.
+fn typeable(address: &str) -> bool {
+    crate::forage::is_address(address) && names::one_word(address)
 }
 
 /// `names` as a sentence offers a choice of them: two joined by or, or

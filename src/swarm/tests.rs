@@ -240,7 +240,23 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
         Some("HARBOR"),
         "or one a shell acts on"
     );
+    for (given, said) in [
+        ("--names", "one swarm reads as an option"),
+        ("-ojson", "or as its output"),
+        ("team", "or as the person saying what follows"),
+        ("pa\u{200B}use", "or as an act once it is cleaned"),
+    ] {
+        acting.teams[1]["swarm"] = json!(given);
+        assert_eq!(hint(&acting).as_deref(), Some("HARBOR"), "{said}");
+    }
     // Kelp stays within it, so Harbour still leads.
+    acting.teams[2]["within"] = json!("PAUSE");
+    acting.teams[1]["key"] = json!("team:PAUSE");
+    assert_eq!(
+        hint(&acting).as_deref(),
+        Some("<team>"),
+        "an address swarm reads as an act is no example either"
+    );
     acting.teams[1]["key"] = json!("team:HAR BOR");
     acting.teams[2]["within"] = json!("HAR BOR");
     assert_eq!(
