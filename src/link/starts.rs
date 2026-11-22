@@ -388,10 +388,15 @@ pub(super) const RUN_WINDOW: usize = 8;
 pub(super) enum RunSaid {
     /// What a run asked of this machine says.
     Ran(u64, Ran),
-    /// A piece of a run asked of the other machine has been taken.
+    /// A piece of a run or a lend asked of the other machine has been
+    /// taken.
     Taken(u64),
     /// A run asked of the other machine has been let go.
     Unrun(u64),
+    /// What this machine's lender answers a lend the other end asked.
+    Lent(u64, Lent),
+    /// A lend asked of the other machine has been let go.
+    Unlend(u64),
 }
 
 /// A run the other end asked of this machine, while it runs.

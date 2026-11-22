@@ -58,3 +58,11 @@ pub enum Lent {
         why: String,
     },
 }
+
+impl Lent {
+    /// Whether nothing follows it.
+    #[must_use]
+    pub fn ends(&self) -> bool {
+        matches!(self, Self::Done | Self::Refused { .. })
+    }
+}

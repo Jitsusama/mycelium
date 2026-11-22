@@ -563,7 +563,7 @@ enum Action {
 /// What `mycelium lend` is asked to do.
 #[derive(Subcommand)]
 enum LendAct {
-    /// Serves pi's model requests, each lent through this machine's node.
+    /// Serves pi's model requests through this machine's node.
     ///
     /// It listens on `--listen` as a machine's model relay does, so a pi
     /// whose `PI_PROXY_RELAY` names its folder sends there. Each request
@@ -583,10 +583,12 @@ enum LendAct {
         #[arg(long)]
         budget: Option<String>,
     },
-    /// Cuts a machine off from this machine's lend, at once: each lend it
-    /// asks from now is refused, and each it is being answered ends
-    /// within a second. It holds until `lend uncut`.
-    #[command(after_help = "Example:\n  mycelium lend cut agents-1\n  mycelium lend cut --all")]
+    /// Cuts a machine off from this machine's lend, at once.
+    ///
+    /// Each lend it asks from now is refused, and each it is being
+    /// answered ends within a second; `--all` cuts every machine. It
+    /// holds until `lend uncut`.
+    #[command(after_help = "Example:\n  mycelium lend cut agents-1")]
     Cut(Cutting),
     /// Lets a machine cut off borrow again; `--all` lets every one.
     #[command(after_help = "Example:\n  mycelium lend uncut agents-1")]

@@ -93,7 +93,7 @@ same code, each line a JSON value:
 
 1. `{"Hello": {"machine", "realm", "version", "facts", "starts",
    "steers", "releases", "updates", "runs", "carries", "shows",
-   "ends"}}`, first,
+   "ends", "lends"}}`, first,
    from each end. Each end's
    membership admits the other or refuses it, and nothing else crosses
    until it has. `facts` says the end hears and says what a machine is; an end
@@ -106,7 +106,8 @@ same code, each line a JSON value:
    older than any of them is asked none of it. `shows` says it tells of
    the carries its node ordered and keeps those the other end tells of;
    an end older than it is told none. `ends` says it carries an end of a
-   session held there; an end older than it is asked none.
+   session held there; an end older than it is asked none. `lends`
+   says it carries lends, as below; an end older than it is asked none.
    `machine` is the name the end's machine goes by, one name for every
    command there: the node's `--machine`, else the system's name up to
    its first dot, which the node records in its folder's `machine` file
@@ -277,10 +278,23 @@ same code, each line a JSON value:
     saying why. It ends the hold itself, as `"End"` on the socket does.
     No time limits the answer, since the session has ten seconds to
     save what it holds and what is killed past them two more to go.
+19. `{"Lend": {"ask", "lend"}}`: answer a model call through the other
+    end's lender, as a `"Lend"` request says it (Borrowing a Lend).
+    The other end takes it only where this end is its worker, known by
+    the link alone, and its node was started with `--lend`; otherwise
+    it refuses 403, saying why. Its lender names the borrowing machine
+    by the link's other end, never by what the lend says. It answers
+    `{"Lent": {"ask", "lent"}}` a line for each `Lent`, the last its
+    `"Done"` or `"Refused"`, at most four ahead of `{"Taken": {"ask"}}`,
+    which the asking end sends as its asker takes each, as for a run.
+    `{"Unlend": {"ask"}}` says the asker let go, and the lend is let
+    go; a link that drops lets go every lend it carried, and the
+    asker hears it refused 503.
 
 Only one link joins two machines, and whichever dialled first holds it,
 so each end carries what its own node asks of the other machine: starts,
-steers, updates, carries and ends, and runs from the dialling end only. The
+steers, updates, carries, ends and lends, and runs from the dialling end
+only. The
 dialling end runs in its node and takes them there. The dialled end runs
 in a process SSH started, outside its node, so it holds a `Carry`
 connection to its node's socket (see The Socket), asked again every
