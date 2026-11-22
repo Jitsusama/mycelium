@@ -3903,10 +3903,10 @@ impl<S: Store> Shared<S> {
     /// it makes the carries it chooses where `eases.carries` says so,
     /// asks the harness to park the sessions it chooses to sleep where
     /// `eases.sleeps` names a folder, taking each back once the machine
-    /// is no longer over, and otherwise does none of it. It begins once
-    /// the carries kept here, which
-    /// say what moved lately, and its own lines of the last two days can
-    /// be read, saying why while they can't.
+    /// is no longer over while another has room, and otherwise does none
+    /// of it. It begins once the carries kept here, which say what moved
+    /// lately, and its own lines of the last two days can be read, saying
+    /// why while they can't.
     async fn ease(self, eases: Eases) {
         let mut easing = None;
         let mut sampler = easing::Sampler::default();
@@ -4032,8 +4032,13 @@ impl<S: Store> Shared<S> {
                     let (record, own) = ask.map_err(|why| (None, why))?;
                     match sleep::ask(&folder, &own, now, &why) {
                         Ok(()) => {
-                            lent.asked(record.clone(), own.clone());
+                            lent.asked(record.clone(), &own);
                             Ok((record, own))
+                        }
+                        // A file of its name that isn't an ask stays so,
+                        // so asking again would only be refused again.
+                        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                            Err((None, format!("{own} can't be asked to park ({error})")))
                         }
                         Err(error) => {
                             let why = format!("{own} can't be asked to park ({error})");

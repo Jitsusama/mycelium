@@ -6,8 +6,7 @@
 //! leaves a file named for each session in a folder the harness reads,
 //! asking it to park that one sooner than it would, and takes the file
 //! back once its machine is no longer over while another has room. The
-//! harness takes it back
-//! too, once the session wakes or closes.
+//! harness takes it back too, once the session wakes or closes.
 //!
 //! A session parks only where a holder or a host keeps it, since that is
 //! what wakes it, so the node asks for none that neither keeps.
@@ -94,12 +93,14 @@ fn named_safely(id: &str) -> bool {
 /// reads it, and is written whole before it appears under its name, so
 /// the harness never reads half of one. A file of that name that isn't an
 /// ask is left as it is, since a session says its own id and could name
-/// one the harness keeps.
+/// one the harness keeps; only one there as this looks, since one made
+/// while the ask is written is still replaced.
 ///
 /// # Errors
 ///
-/// Where the folder can't be made, the file written, or a file of its
-/// name that isn't an ask is there.
+/// Where the folder can't be made, the file written or what is at its
+/// name read, or, as [`io::ErrorKind::AlreadyExists`], what is there
+/// isn't an ask.
 pub fn ask(folder: &Path, id: &str, at: Timestamp, why: &str) -> io::Result<()> {
     if !named_safely(id) {
         return Err(io::Error::new(
@@ -109,11 +110,15 @@ pub fn ask(folder: &Path, id: &str, at: Timestamp, why: &str) -> io::Result<()> 
     }
     own_folder(folder)?;
     let named = folder.join(id);
-    if fs::symlink_metadata(&named).is_ok() && !reads_as_ask(&named, false) {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{id} there isn't an ask, so it isn't replaced"),
-        ));
+    match found(&named, false) {
+        Found::Gone | Found::Ask => {}
+        Found::Other => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{id} there isn't an ask, so it isn't replaced"),
+            ));
+        }
+        Found::Unread(error) => return Err(error),
     }
     let writing = folder.join(format!(".{id}.{}", std::process::id()));
     let mut text = serde_json::to_string(&json!({"at": at.to_string(), "why": why}))?;
@@ -178,36 +183,57 @@ fn standing(folder: &Path) -> io::Result<bool> {
 /// The most an ask can hold: a time and a reason.
 const ASK_AT_MOST: u64 = 4096;
 
-/// Whether the file at `path`, never followed if a link, reads as an ask
-/// this node writes, a line saying `at` and `why` and nothing else, or,
-/// `writing` one, nothing yet.
-fn reads_as_ask(path: &Path, writing: bool) -> bool {
-    let Ok(file) = rustix::fs::open(
+/// What is at a name in the folder, as an ask is judged by it.
+#[derive(Debug)]
+enum Found {
+    /// Nothing.
+    Gone,
+    /// An ask this node writes.
+    Ask,
+    /// Something else: a link, a folder, a pipe, or a file saying more.
+    Other,
+    /// What can't be told, since it couldn't be opened or read.
+    Unread(io::Error),
+}
+
+/// What is at `path`, never followed if a link and never waited on if a
+/// pipe: an ask if a file this node writes, a line saying `at` and `why`
+/// and nothing else, or, `writing` one, nothing yet.
+fn found(path: &Path, writing: bool) -> Found {
+    let file = match rustix::fs::open(
         path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
         Mode::empty(),
-    ) else {
-        return false;
+    ) {
+        Ok(file) => fs::File::from(file),
+        Err(rustix::io::Errno::NOENT) => return Found::Gone,
+        Err(rustix::io::Errno::LOOP) => return Found::Other,
+        Err(error) => return Found::Unread(error.into()),
     };
+    match file.metadata() {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Found::Other,
+        Err(error) => return Found::Unread(error),
+    }
     let mut text = String::new();
-    if fs::File::from(file)
-        .take(ASK_AT_MOST)
-        .read_to_string(&mut text)
-        .is_err()
-    {
-        return false;
+    match file.take(ASK_AT_MOST).read_to_string(&mut text) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => return Found::Other,
+        Err(error) => return Found::Unread(error),
     }
-    if text.is_empty() {
-        return writing;
-    }
-    serde_json::from_str::<Value>(&text)
-        .ok()
-        .and_then(|said| said.as_object().cloned())
-        .is_some_and(|said| {
-            said.len() == 2
-                && said.get("at").is_some_and(Value::is_string)
-                && said.get("why").is_some_and(Value::is_string)
-        })
+    let ask = if text.is_empty() {
+        writing
+    } else {
+        serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|said| said.as_object().cloned())
+            .is_some_and(|said| {
+                said.len() == 2
+                    && said.get("at").is_some_and(Value::is_string)
+                    && said.get("why").is_some_and(Value::is_string)
+            })
+    };
+    if ask { Found::Ask } else { Found::Other }
 }
 
 /// Whether `name`, in the folder, is one this node writes: an ask, or
@@ -234,15 +260,19 @@ pub fn withdraw(folder: &Path, ids: &BTreeSet<String>) -> BTreeSet<String> {
         Ok(false) => return BTreeSet::new(),
         Err(_) => return ids.clone(),
     }
-    // One gone, or no longer an ask, is nothing of this node's to take.
+    // One gone, or no longer an ask, is nothing of this node's to take;
+    // one that can't be read is tried again.
     ids.iter()
         .filter(|id| {
             let named = folder.join(id);
-            reads_as_ask(&named, false)
-                && match fs::remove_file(named) {
+            match found(&named, false) {
+                Found::Gone | Found::Other => false,
+                Found::Unread(_) => true,
+                Found::Ask => match fs::remove_file(named) {
                     Ok(()) => false,
                     Err(error) => error.kind() != io::ErrorKind::NotFound,
-                }
+                },
+            }
         })
         .cloned()
         .collect()
@@ -270,7 +300,7 @@ pub fn withdraw_all(folder: &Path) -> io::Result<(usize, BTreeSet<String>)> {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !written_here(&name)
             || !entry.file_type().is_ok_and(|kind| kind.is_file())
-            || !reads_as_ask(&entry.path(), name.starts_with('.'))
+            || !matches!(found(&entry.path(), name.starts_with('.')), Found::Ask)
         {
             continue;
         }
@@ -323,8 +353,8 @@ impl Parking {
 
     /// Notes the session `record`, its own id `own`, asked to park; an
     /// ask it made under another own id is still taken back.
-    pub fn asked(&mut self, record: String, own: String) {
-        if let Some(before) = self.asked.insert(record, own.clone())
+    pub fn asked(&mut self, record: String, own: &str) {
+        if let Some(before) = self.asked.insert(record, own.to_owned())
             && before != own
         {
             self.left.insert(before);
@@ -385,7 +415,7 @@ pub fn acted(line: &mut Value, asked: &BTreeMap<String, String>, refused: &[Stri
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
     use super::*;
 
@@ -538,13 +568,20 @@ mod tests {
         );
         assert!(
             withdraw(&folder, &BTreeSet::from(["state".to_owned()])).is_empty(),
-            "nor is it taken as an ask"
+            "it isn't kept to take back"
         );
         assert_eq!(
             fs::read_to_string(folder.join("state")).expect("still there"),
-            "the harness's own\n"
+            "the harness's own\n",
+            "nor is it taken as an ask"
         );
         fs::remove_file(folder.join("state")).expect("tidied");
+        ask(&folder, "s1-own", at, "over again").expect("its own ask is replaced");
+        assert!(
+            fs::read_to_string(folder.join("s1-own"))
+                .expect("the ask")
+                .contains("over again")
+        );
 
         fs::remove_file(folder.join("s2-own")).expect("its harness took it back");
         let ids = BTreeSet::from(["s1-own".to_owned(), "s2-own".to_owned()]);
@@ -583,6 +620,46 @@ mod tests {
     }
 
     #[test]
+    fn an_ask_that_cant_be_read_is_tried_again_and_a_pipe_is_never_waited_on() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let folder = dir.path().join("ease");
+        let at: Timestamp = "2026-11-22T07:00:00Z".parse().expect("a time");
+        ask(&folder, "s1-own", at, "over").expect("asked");
+        let named = folder.join("s1-own");
+        fs::set_permissions(&named, fs::Permissions::from_mode(0o000)).expect("unreadable");
+        // An account that reads past modes can't see this case.
+        if fs::File::open(&named).is_err() {
+            let ids = BTreeSet::from(["s1-own".to_owned()]);
+            assert_eq!(withdraw(&folder, &ids), ids, "kept to take back later");
+            assert!(named.exists(), "and left until it can be read");
+        }
+        fs::set_permissions(&named, fs::Permissions::from_mode(0o600)).expect("readable");
+        assert!(withdraw(&folder, &BTreeSet::from(["s1-own".to_owned()])).is_empty());
+        assert!(!named.exists(), "taken back once it can be read");
+
+        let made = std::process::Command::new("mkfifo")
+            .arg(folder.join("s2-own"))
+            .status()
+            .expect("mkfifo ran");
+        assert!(made.success(), "mkfifo made no pipe: {made}");
+        assert_eq!(
+            ask(&folder, "s2-own", at, "over")
+                .expect_err("a pipe isn't an ask")
+                .kind(),
+            io::ErrorKind::AlreadyExists,
+            "refused for good, and never waited on"
+        );
+        assert!(withdraw(&folder, &BTreeSet::from(["s2-own".to_owned()])).is_empty());
+        assert!(
+            fs::symlink_metadata(folder.join("s2-own"))
+                .expect("still there")
+                .file_type()
+                .is_fifo(),
+            "nor taken"
+        );
+    }
+
+    #[test]
     fn nothing_is_taken_from_a_folder_another_can_write_in_or_that_links_elsewhere() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let at: Timestamp = "2026-11-22T07:00:00Z".parse().expect("a time");
@@ -600,8 +677,8 @@ mod tests {
 
         let mut parking = Parking::new(dir.path().join("ease"), BTreeSet::new());
         ask(parking.folder(), "old-own", at, "over").expect("asked");
-        parking.asked("s1".to_owned(), "old-own".to_owned());
-        parking.asked("s1".to_owned(), "new-own".to_owned());
+        parking.asked("s1".to_owned(), "old-own");
+        parking.asked("s1".to_owned(), "new-own");
         drop(parking);
         assert!(
             !dir.path().join("ease/old-own").exists(),
@@ -618,11 +695,11 @@ mod tests {
             ask(&folder, own, at, "over").expect("asked");
         }
         let mut parking = Parking::new(folder.clone(), BTreeSet::from(["old-own".to_owned()]));
-        parking.asked("s1".to_owned(), "s1-own".to_owned());
+        parking.asked("s1".to_owned(), "s1-own");
         assert_eq!(parking.withdraw(), BTreeSet::from(["s1".to_owned()]));
         assert!(parking.is_empty(), "what an earlier node left goes too");
         assert!(!folder.join("old-own").exists());
-        parking.asked("s2".to_owned(), "s2-own".to_owned());
+        parking.asked("s2".to_owned(), "s2-own");
         drop(parking);
         assert!(
             !folder.join("s2-own").exists(),
