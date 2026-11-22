@@ -929,9 +929,28 @@ fn a_cut_or_pad_keeps_to_cells_and_never_splits_a_wide_character() {
         (
             within("\u{1b}[1mabc", 2),
             "\u{1b}[1mab",
-            "a colour's escape is taken whole",
+            "an escape is never left half written",
         ),
-        (within("ab👩\u{200D}💻", 2), "ab", "a cut ends on no joiner"),
+        (
+            within("\u{1b}[38;2;255;255;255mab", 1),
+            "\u{1b}[38;2;255;255;255ma",
+            "an escape longer than a cut's steps is one step",
+        ),
+        (
+            within("ab👩\u{200D}💻", 2),
+            "ab",
+            "a joined emoji past the edge is left whole",
+        ),
+        (
+            within("👩\u{200D}x", 2),
+            "👩",
+            "a joiner left at the cut goes",
+        ),
+        (
+            within("港\u{200D}湾", 3),
+            "港",
+            "a joiner between two Han characters goes at the cut",
+        ),
     ] {
         if cut != kept {
             split.push(format!("{what}: {cut:?}"));
@@ -971,6 +990,36 @@ fn a_cut_or_pad_keeps_to_cells_and_never_splits_a_wide_character() {
         wrapped("港湾", "", "", 1),
         "港\n湾\n",
         "a line too narrow for a wide character still takes one"
+    );
+}
+
+#[test]
+fn a_long_text_costs_what_its_room_does_and_a_pile_of_marks_is_cut() {
+    use std::time::{Duration, Instant};
+    // A peer's message may be 256 KiB on one line; measured to its end
+    // at each start, cutting it takes minutes and wrapping it longer.
+    let budget = Duration::from_secs(5);
+    let started = Instant::now();
+    let cut = fit(&"港".repeat(60_000), 80);
+    let took = started.elapsed();
+    assert!(
+        took < budget && drawn_width(&cut) <= 80,
+        "cutting a long text took {took:?}, as if each start were measured to its end"
+    );
+    let started = Instant::now();
+    let lines = wrapped(&"a".repeat(20_000), "", "", 80).lines().count();
+    let took = started.elapsed();
+    assert!(
+        took < budget && lines == 250,
+        "wrapping one long word took {took:?} into {lines} lines"
+    );
+    // A name buried in marks that draw nothing measures one cell, so
+    // only the cap on steps keeps it from putting them all on the line.
+    let buried = format!("a{}", "\u{301}".repeat(10_000));
+    let kept = fit(&buried, 10).chars().count();
+    assert!(
+        kept <= 10 * 8 + 1,
+        "a pile of marks passed a cut whole: {kept} characters kept"
     );
 }
 
