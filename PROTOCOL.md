@@ -972,13 +972,17 @@ realm's balance as `mycelium balance --follow` does and holds what
 is seen in most of the last ten readings. Once its readings have said
 for ten minutes that its machine is over its limits, whether or not
 another has room, it would put its sessions that wait to sleep where
-they are. A lone reading saying otherwise, between hot ones, breaks
-nothing, a sleep before it or not, though nothing is done on that
-reading itself; a second in a row starts the ten minutes again, as
-does a reading five minutes or more after the lone one. If the
-readings five minutes after the sleep still say over, and it is held
-over while another has room, it would carry one session to a peer
-with room, as it does straight away where its waiting sessions are
+they are: while it is held over while another has room, in the
+latest reading too, or while it is past its memory limit in eight of
+the last ten readings, since a sleep frees memory and needs no other
+machine but eases a busy processor nothing. A lone reading saying
+otherwise, between hot ones, breaks nothing, a sleep before it or
+not, though nothing is done on that reading itself; a second in a row
+starts the ten minutes again, as does a reading five minutes or more
+after the lone one. If the readings five minutes after the sleep
+still say over, and it is held over while another has room, it would
+carry one session to a peer with room in the watch and in the latest
+reading, as it does straight away where its waiting sessions are
 asleep already; while none has room it carries nothing. It
 carries the smallest log first, placed as any work is and onto
 ground as firm. A session in a turn, on the person's screen,

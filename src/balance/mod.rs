@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::facts::{Machine, Readiness};
 use crate::record::{Session, State};
+use crate::room::Limit;
 
 mod shown;
 
@@ -130,6 +131,12 @@ pub struct Load {
     /// Whether it is over: its queue says it is past a limit, or its
     /// processor pressure is at [`OVER_CPU_PRESSURE`].
     pub over: bool,
+    /// The limits it is past: those its queue says, and its processor
+    /// where its pressure is at [`OVER_CPU_PRESSURE`]. It is
+    /// [`over`](Self::over) exactly when this isn't empty; a reading kept
+    /// before it was said has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub past: Vec<Limit>,
     /// Whether it has room for more: not over, stalling under
     /// [`ROOM_STALL`] and using under [`ROOM_MEMORY`] of its memory.
     pub room: bool,
@@ -242,10 +249,13 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
         .into_iter()
         .flatten()
         .reduce(f64::max);
-    let over = room.is_some_and(|room| {
-        room.over.as_ref().is_some_and(|over| !over.is_empty())
-            || room.pressure.cpu >= OVER_CPU_PRESSURE
-    });
+    let mut past: Vec<Limit> = room.and_then(|room| room.over.clone()).unwrap_or_default();
+    if room.is_some_and(|room| room.pressure.cpu >= OVER_CPU_PRESSURE)
+        && !past.contains(&Limit::Cpu)
+    {
+        past.push(Limit::Cpu);
+    }
+    let over = !past.is_empty();
     let has_room = !over
         && stall.is_some_and(|stall| stall < ROOM_STALL)
         && processor.is_some_and(|processor| processor < ROOM_PROCESSOR)
@@ -276,6 +286,7 @@ fn load(machine: &Machine, sessions: &[Session], now: jiff::Timestamp) -> Load {
         processor,
         load,
         over,
+        past,
         room: has_room,
         busy,
         idle: count(State::Idle),
@@ -401,7 +412,7 @@ pub fn keep_latest(folder: &Path, reading: &Reading) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::facts::{self, Sources};
-    use crate::room::{Limit, Pressure, Room, Takes};
+    use crate::room::{Pressure, Room, Takes};
     use serde_json::json;
 
     const NOW: &str = "2026-11-15T23:39:00Z";

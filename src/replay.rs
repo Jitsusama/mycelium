@@ -222,6 +222,7 @@ mod tests {
                     processor: Some(0.0),
                     load: Some(load),
                     over: false,
+                    past: Vec::new(),
                     room: true,
                     busy: 0,
                     idle: 0,

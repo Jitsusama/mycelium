@@ -101,8 +101,8 @@ The harness mesh's messages and presence, carried between machines:
   a day, and the latest whole in `now.json` beside them, written and
   renamed into place, for a node to serve as a kind.
 - `mycelium node --eases` has the node say what its machine would do to
-  ease itself while over its limits and another has room: put its
-  waiting sessions to sleep, then carry one to a peer, each choice a
+  ease itself while over its limits: put its waiting sessions to sleep,
+  then, while another has room, carry one to a peer, each choice a
   line in the state folder's `eases`, one file a day. It does none of
   it yet; PROTOCOL.md says how it chooses.
 - `mycelium placements` judges in hindsight how well this node placed

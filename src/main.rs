@@ -709,7 +709,7 @@ struct Node {
     #[arg(long)]
     health_socket: Option<PathBuf>,
     /// Look each minute at what this machine would do to ease itself
-    /// while over its limits and another has room, keeping each choice
+    /// while over its limits, sleeping or carrying, keeping each choice
     /// in the state folder's `eases`, a file each day; it does none of
     /// it.
     #[arg(long)]

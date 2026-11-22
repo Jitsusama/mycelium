@@ -5,10 +5,14 @@
 //! over by its own pressure, through lone readings saying otherwise,
 //! whether or not another machine has room, and only while a
 //! [`Watch`](crate::balance::Watch) follows them. It first puts its
-//! waiting sessions to sleep where they are, counting them, which needs
-//! no other machine. It carries one only while its node's watch holds it
-//! over while another has room, and only once the readings [`SETTLE`]
-//! after a sleep still say it is over. Then it carries one session at a
+//! waiting sessions to sleep where they are, counting them: while its
+//! node's watch holds it over while another has room, and the latest
+//! reading says so too, or while it is past its memory limit in
+//! [`HELD_FROM`] of its last [`WINDOW`] readings, since a sleep frees
+//! memory and needs no other machine, but eases a processor nothing. It
+//! carries one only while held over while another has room, and only
+//! once the readings [`SETTLE`] after a sleep still say it is over. Then
+//! it carries one session at a
 //! time to a peer with room, placed as any work is, onto ground as firm as
 //! here's, never one in a turn, on the person's screen, orchestrating
 //! other sessions, part way through something a carry would break, or
@@ -20,15 +24,18 @@
 //! nothing goes to a machine a session came here from within
 //! [`NO_RETURN`]. This module only chooses; the node acts on its choice.
 
+use std::collections::VecDeque;
+
 use jiff::{SignedDuration, Timestamp};
 use serde::Serialize;
 
 use super::ground;
-use crate::balance::{Flag, Reading};
+use crate::balance::{Flag, HELD_FROM, Reading, WINDOW};
 use crate::declared::{Declared, Kind};
 use crate::facts::Machine;
 use crate::placement::{self, Loads, Placement, Work};
 use crate::record::{Session, State};
+use crate::room::Limit;
 
 /// How long the readings must say a machine is over by its own pressure
 /// before it eases itself, through lone readings saying otherwise
@@ -190,6 +197,9 @@ pub struct History {
     last_hot: Option<Timestamp>,
     /// When the latest reading of any came.
     last_at: Option<Timestamp>,
+    /// Whether each of the last [`WINDOW`] readings said the machine is
+    /// past its memory limit, oldest first.
+    short: VecDeque<bool>,
     slept_at: Option<Timestamp>,
     sleeps: usize,
     moved: Vec<Moved>,
@@ -203,6 +213,7 @@ impl Default for History {
             cool_since: None,
             last_hot: None,
             last_at: None,
+            short: VecDeque::new(),
             slept_at: None,
             sleeps: 0,
             moved: Vec::new(),
@@ -226,6 +237,10 @@ impl History {
     /// this, since a lone cool reading after one may be a session parking
     /// for a moment as easily as the machine eased.
     pub fn read(&mut self, here: &str, reading: &Reading) {
+        self.short.push_back(short_of_memory(here, reading));
+        while self.short.len() > WINDOW {
+            self.short.pop_front();
+        }
         let Ok(at) = reading.at.parse::<Timestamp>() else {
             // A reading whose time can't be told can't say for how long,
             // nor end what was asked to park, which waits on readings
@@ -253,6 +268,13 @@ impl History {
         } else if self.hot_since.is_some() {
             self.cool_since.get_or_insert(at);
         }
+    }
+
+    /// Whether the machine has been past its memory limit in
+    /// [`HELD_FROM`] of its last [`WINDOW`] readings, as the watch holds a
+    /// flag, so readings flapping about the line put nothing to sleep.
+    fn held_short(&self) -> bool {
+        self.short.iter().filter(|short| **short).count() >= HELD_FROM
     }
 
     /// Notes `count` sessions put to sleep `at`.
@@ -400,6 +422,14 @@ pub fn choose(
         Ok(since) => since,
         Err(why) => return nothing(why),
     };
+    let carries = held_over_while_cool(here.name, reading);
+    if !carries && !history.held_short() {
+        return nothing(format!(
+            "{} isn't held past its memory limit, which a sleep would ease, nor over while \
+             another machine has room",
+            here.name
+        ));
+    }
     let sleepy: Vec<String> = cells
         .iter()
         .filter(|cell| !cell.asleep && cell.stays(here.name).is_none())
@@ -407,6 +437,13 @@ pub fn choose(
         .collect();
     if !sleepy.is_empty() {
         return Choice::Sleep { sessions: sleepy };
+    }
+    if !carries {
+        return nothing(format!(
+            "{} puts no more sessions to sleep, and isn't held over while another machine \
+             has room to carry one to",
+            here.name
+        ));
     }
     if let Some(slept) = history.slept_at
         && slept >= since
@@ -437,20 +474,6 @@ pub fn choose(
         Ok(_) => {}
         Err(why) => return nothing(why),
     }
-    // A sleep needs no other machine, but a carry needs one with room,
-    // held so over the last readings rather than in one.
-    if !reading
-        .held
-        .iter()
-        .flatten()
-        .any(|flag| matches!(flag, Flag::HotWhileCool { hot, .. } if hot == here.name))
-    {
-        return nothing(format!(
-            "{} has no session left to put to sleep, and isn't held over while another \
-             machine has room to carry one to",
-            here.name
-        ));
-    }
     let peers = peers(here, reading, history, now);
     if peers.is_empty() {
         return nothing(
@@ -470,6 +493,22 @@ fn pressed(here: &str, reading: &Reading) -> bool {
         .machines
         .iter()
         .any(|load| load.machine == here && load.ready && load.over)
+}
+
+/// Whether `reading` says `here` takes work and is past its memory limit.
+fn short_of_memory(here: &str, reading: &Reading) -> bool {
+    reading
+        .machines
+        .iter()
+        .any(|load| load.machine == here && load.ready && load.past.contains(&Limit::Memory))
+}
+
+/// Whether `here` is over while another machine has room, both as the
+/// watch holds it over the last readings and in `reading` itself, so a
+/// peer that has just filled up is carried nothing.
+fn held_over_while_cool(here: &str, reading: &Reading) -> bool {
+    let hot = |flag: &Flag| matches!(flag, Flag::HotWhileCool { hot, .. } if hot == here);
+    reading.held.iter().flatten().any(hot) && reading.flags.iter().any(hot)
 }
 
 /// Since when `here` has been over by its own pressure, or why it doesn't
@@ -492,7 +531,7 @@ fn over(
     }
     if reading.held.is_none() {
         return Err(format!(
-            "no watch follows {here}'s readings, so whether it stays over can't be told"
+            "no watch follows {here}'s readings, so whether it is held over can't be told"
         ));
     }
     // A lone cool reading keeps the run, but nothing is done on one: the
@@ -517,22 +556,23 @@ fn over(
     }
 }
 
-/// The machines `here` may carry to: those the watch holds cool while it
-/// is hot, peers rather than workers, and none a session came from within
-/// the hour.
+/// The machines `here` may carry to: those with room while it is over,
+/// as the watch holds it and in `reading` itself, peers rather than
+/// workers, and none a session came from within the hour.
 fn peers(here: &Here, reading: &Reading, history: &History, now: Timestamp) -> Vec<Machine> {
-    let cool: Vec<&str> = reading
-        .held
-        .iter()
-        .flatten()
-        .filter_map(|flag| match flag {
-            Flag::HotWhileCool { hot, cool } if hot == here.name => Some(cool.as_str()),
-            _ => None,
-        })
-        .collect();
+    let cool = |flags: &[Flag], name: &str| {
+        flags.iter().any(
+            |flag| matches!(flag, Flag::HotWhileCool { hot, cool } if hot == here.name && cool == name),
+        )
+    };
+    let held = reading.held.as_deref().unwrap_or_default();
     here.machines
         .iter()
-        .filter(|machine| machine.name != here.name && cool.contains(&machine.name.as_str()))
+        .filter(|machine| {
+            machine.name != here.name
+                && cool(held, &machine.name)
+                && cool(&reading.flags, &machine.name)
+        })
         .filter(|machine| {
             machine
                 .declared
@@ -731,6 +771,27 @@ pub(super) mod tests {
         vec![machine("skiff", 86.0), machine("tern", 4.6)]
     }
 
+    /// A machine past its memory limit, its processor idle.
+    fn short(name: &str) -> Machine {
+        let mut machine = machine(name, 4.6);
+        let room = machine.room.as_mut().expect("a room");
+        room.pressure.memory = 12.0;
+        room.over = Some(vec![Limit::Memory]);
+        machine
+    }
+
+    /// What skiff's node remembers after reading each realm a minute
+    /// apart, the last now.
+    fn minutely(realms: &[&[Machine]]) -> History {
+        let mut history = History::default();
+        let first = i64::try_from(realms.len()).expect("a few") - 1;
+        for (mins, machines) in (0..=first).rev().zip(realms) {
+            history.read("skiff", &reading(machines, ago(mins)));
+        }
+        history.kept_eases(Ok(0));
+        history
+    }
+
     /// The realm read at `at`, held as the watch holds it.
     fn reading(machines: &[Machine], at: Timestamp) -> Reading {
         let mut reading = balance::read(machines, &[], at);
@@ -781,7 +842,8 @@ pub(super) mod tests {
             carries(&chose(&realm, &[cell("s1")], &slept)).is_some(),
             "a lone cool reading after a sleep may be a session parking, so it breaks nothing"
         );
-        // A sleep in a run before this one eased that run alone.
+        // A sleep in a run before this one is no reason to wait for this
+        // one's readings to settle.
         let mut earlier = read_all(&[(&realm, 40), (&realm, 36)]);
         earlier.slept(1, ago(35));
         for (machines, mins) in [
@@ -795,7 +857,7 @@ pub(super) mod tests {
         earlier.read("skiff", &reading(&realm, now()));
         assert!(
             carries(&chose(&realm, &[cell("s1")], &earlier)).is_some(),
-            "a lone cool reading after an earlier run's sleep breaks nothing"
+            "a sleep in an earlier run holds back no carry in this one"
         );
     }
 
@@ -867,22 +929,33 @@ pub(super) mod tests {
             "skiff's latest reading doesn't say it is over, so it waits for one that does"
         );
         let full = [machine("skiff", 86.0), machine("tern", 86.0)];
-        let crowded = hot_for(&full, 11);
         let awake = Cell {
             asleep: false,
             ..cell("s2")
         };
         assert_eq!(
-            chose(&full, &[cell("s1"), awake], &crowded),
+            why_not(&chose(
+                &full,
+                &[cell("s1"), awake.clone()],
+                &hot_for(&full, 11)
+            )),
+            "skiff isn't held past its memory limit, which a sleep would ease, nor over while \
+             another machine has room",
+            "a busy processor with no machine to spare puts nothing to sleep"
+        );
+        let tight = [short("skiff"), machine("tern", 86.0)];
+        let crowded = minutely(&[&tight[..]; 11]);
+        assert_eq!(
+            chose(&tight, &[cell("s1"), awake], &crowded),
             Choice::Sleep {
                 sessions: vec!["s2".to_owned()]
             },
-            "over with no machine to spare, it still puts its waiting session to sleep"
+            "short of memory with no machine to spare, it still puts its waiting session to sleep"
         );
         assert_eq!(
-            why_not(&chose(&full, &[cell("s1")], &crowded)),
-            "skiff has no session left to put to sleep, and isn't held over while another \
-             machine has room to carry one to"
+            why_not(&chose(&tight, &[cell("s1")], &crowded)),
+            "skiff puts no more sessions to sleep, and isn't held over while another machine \
+             has room to carry one to"
         );
         let declared = declaring(&[Kind::Fence]);
         let here = Here {
@@ -901,7 +974,73 @@ pub(super) mod tests {
         unwatched.held = None;
         assert_eq!(
             why_not(&choose(&here, &[cell("s1")], &unwatched, &history, now())),
-            "no watch follows skiff's readings, so whether it stays over can't be told"
+            "no watch follows skiff's readings, so whether it is held over can't be told"
+        );
+    }
+
+    #[test]
+    fn memory_short_in_most_of_the_last_ten_readings_sleeps_and_flapping_does_not() {
+        let calm = [machine("skiff", 4.6), machine("tern", 86.0)];
+        let tight = [short("skiff"), machine("tern", 86.0)];
+        let awake = [Cell {
+            asleep: false,
+            ..cell("s1")
+        }];
+        let flapping: Vec<&[Machine]> = (0..11)
+            .map(|one| if one % 2 == 0 { &tight[..] } else { &calm[..] })
+            .collect();
+        assert!(
+            why_not(&chose(&tight, &awake, &minutely(&flapping)))
+                .starts_with("skiff isn't held past its memory limit"),
+            "over in every other reading keeps the run but is never held over"
+        );
+        let mostly: Vec<&[Machine]> = (0..11)
+            .map(|one| {
+                if one == 3 || one == 7 {
+                    &calm[..]
+                } else {
+                    &tight[..]
+                }
+            })
+            .collect();
+        assert!(
+            matches!(
+                chose(&tight, &awake, &minutely(&mostly)),
+                Choice::Sleep { .. }
+            ),
+            "short in eight of the last ten readings is held so"
+        );
+    }
+
+    #[test]
+    fn a_carry_needs_room_both_as_the_watch_holds_it_and_in_the_latest_reading() {
+        let realm = realm();
+        let full = [machine("skiff", 86.0), machine("tern", 86.0)];
+        let history = hot_for(&realm, 11);
+        let declared = declaring(&[Kind::Fence]);
+        let here = Here {
+            name: "skiff",
+            declared: Some(&declared),
+            machines: &full,
+            loads: &Loads::new(),
+        };
+        let not_held = "skiff isn't held past its memory limit, which a sleep would ease, nor over \
+                        while another machine has room";
+        // The watch still holds tern cool, as it does for a few readings
+        // after tern fills up.
+        let mut filled = reading(&full, now());
+        filled.held = reading(&realm, now()).held;
+        assert_eq!(
+            why_not(&choose(&here, &[cell("s1")], &filled, &history, now())),
+            not_held,
+            "a peer that has just filled up is carried nothing"
+        );
+        let mut opened = reading(&realm, now());
+        opened.held = Some(Vec::new());
+        assert_eq!(
+            why_not(&choose(&here, &[cell("s1")], &opened, &history, now())),
+            not_held,
+            "nor is one with room in a reading the watch doesn't hold yet"
         );
     }
 
@@ -911,17 +1050,20 @@ pub(super) mod tests {
     fn a_machine_stays_over_until_its_readings_say_otherwise_for_five_minutes() {
         let realm = realm();
         let calm = [machine("skiff", 4.6), machine("tern", 4.6)];
+        let full = [machine("skiff", 86.0), machine("tern", 86.0)];
+        let mut crowded = History::default();
+        for mins in [0, 3, 6] {
+            crowded.read(
+                "skiff",
+                &reading(&full, now() + SignedDuration::from_mins(mins)),
+            );
+        }
+        assert!(
+            crowded.over(),
+            "over for six minutes with no machine to spare is still over"
+        );
         let mut history = hot_for(&realm, 11);
         assert!(history.over(), "over while its readings say so");
-        let full = [machine("skiff", 86.0), machine("tern", 86.0)];
-        history.read(
-            "skiff",
-            &reading(&full, now() + SignedDuration::from_secs(30)),
-        );
-        assert!(
-            history.over(),
-            "over with no machine to spare is still over"
-        );
         history.slept(1, now());
         history.read(
             "skiff",
