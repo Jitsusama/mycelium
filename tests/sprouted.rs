@@ -2,10 +2,15 @@
 //! told to begin in one, it refuses before asking the node anything, so
 //! no session is started where it would have none of its repository's
 //! skills. Its home is a checkout here, as a home kept in git is, since
-//! that is when a home could pass for a repository.
+//! that is when a home could pass for a repository. Asked of a node
+//! standing in, it says what its seed left out only where that node is
+//! from before `"Sprout"`, and only once the session started.
 
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 /// A home kept in git, with a folder of notes in it that isn't a
 /// repository of its own.
@@ -19,9 +24,15 @@ fn home_in_git() -> tempfile::TempDir {
 /// `mycelium sprout` run from `cwd` with `args`, its home `home` and its
 /// node's socket where no node listens.
 fn sprout(home: &Path, cwd: &Path, args: &[&str]) -> (bool, String) {
+    sprout_asking(home, &home.join("no-node.sock"), cwd, args)
+}
+
+/// `mycelium sprout` run from `cwd` with `args`, its home `home` and its
+/// node's socket `socket`.
+fn sprout_asking(home: &Path, socket: &Path, cwd: &Path, args: &[&str]) -> (bool, String) {
     let ran = Command::new(env!("CARGO_BIN_EXE_mycelium"))
         .args(["--realm", "work", "--socket"])
-        .arg(home.join("no-node.sock"))
+        .arg(socket)
         .arg("sprout")
         .args(args)
         .current_dir(cwd)
@@ -87,6 +98,143 @@ fn a_sprout_on_another_machine_needs_no_name_for_this_one() {
         !said.contains("Is a directory"),
         "it asked the node rather than reading this machine's name: {said}"
     );
+}
+
+/// A node at `socket` answering its asks in turn with `answers`, one ask
+/// a connection as the client makes them, keeping each ask it was given.
+fn node_answering(socket: &Path, answers: &[serde_json::Value]) -> Arc<Mutex<Vec<String>>> {
+    let listener = UnixListener::bind(socket).expect("the node's socket");
+    let answers: Vec<String> = answers.iter().map(ToString::to_string).collect();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&asked);
+    std::thread::spawn(move || {
+        for answer in answers {
+            let Ok((client, _)) = listener.accept() else {
+                return;
+            };
+            let mut ask = String::new();
+            let _ = BufReader::new(&client).read_line(&mut ask);
+            kept.lock().expect("the asks kept").push(ask);
+            let _ = writeln!(&client, "{answer}");
+        }
+    });
+    asked
+}
+
+/// A checkout in a home whose node records this machine as tern, so a
+/// sprout from it is judged here.
+fn checkout_on_tern() -> (tempfile::TempDir, std::path::PathBuf) {
+    let home = home_in_git();
+    let rows = home.path().join("src/rows");
+    std::fs::create_dir_all(rows.join(".git")).expect("a checkout");
+    let state = home.path().join("s/mycelium");
+    std::fs::create_dir_all(&state).expect("the node's state");
+    std::fs::write(state.join("machine"), "tern").expect("this machine's name");
+    (home, rows)
+}
+
+/// What a node answers a start that started, in `folder`.
+fn started_in(folder: &Path) -> serde_json::Value {
+    serde_json::json!({"Ok": {"Started": {
+        "machine": "tern",
+        "held": "5e55",
+        "folder": folder,
+        "attach": ["mycelium", "--realm", "work", "attach", "5e55"],
+    }}})
+}
+
+/// What a node from before `"Sprout"` answers a sprout.
+fn sprout_unknown() -> serde_json::Value {
+    serde_json::json!({
+        "Err": "not a request: unknown variant `Sprout`, expected one of `Hello`, `Start`"
+    })
+}
+
+/// The lines of `said` saying what a seed left out.
+fn left_out_lines(said: &str) -> Vec<&str> {
+    said.lines()
+        .filter(|line| line.contains("its seed leaves out"))
+        .collect()
+}
+
+#[test]
+fn a_node_from_before_sprout_is_asked_to_start_and_what_the_seed_left_out_is_said() {
+    let (home, rows) = checkout_on_tern();
+    let socket = home.path().join("old.sock");
+    let asked = node_answering(&socket, &[sprout_unknown(), started_in(&rows)]);
+
+    let (ran, said) = sprout_asking(
+        home.path(),
+        &socket,
+        &rows,
+        &["--from", "QEST-20261116-42P0R4", "make", "tea"],
+    );
+
+    assert!(ran, "it started: {said}");
+    let lines = left_out_lines(&said);
+    assert_eq!(lines.len(), 1, "said once: {said}");
+    let line = lines[0];
+    assert!(
+        line.starts_with("mycelium sprout: sprout sprout-"),
+        "as the command, naming the sprout: {line}"
+    );
+    assert!(
+        line.contains(" on tern: its seed leaves out the cell it came from"),
+        "naming its machine and why: {line}"
+    );
+    let asked = asked.lock().expect("the asks kept");
+    assert_eq!(asked.len(), 2, "a sprout, then the start it judged");
+    assert!(asked[0].starts_with(r#"{"Sprout":"#), "{}", asked[0]);
+    assert!(asked[1].starts_with(r#"{"Start":"#), "{}", asked[1]);
+    let id = line
+        .strip_prefix("mycelium sprout: sprout ")
+        .and_then(|rest| rest.split_once(' '))
+        .map(|(id, _)| id)
+        .expect("the sprout's id");
+    assert!(
+        asked[1].contains(id),
+        "the id named is the one its seed was sent with: {id} in {}",
+        asked[1]
+    );
+}
+
+#[test]
+fn a_start_an_old_node_refuses_says_nothing_of_what_was_left_out() {
+    let (home, rows) = checkout_on_tern();
+    let socket = home.path().join("old.sock");
+    let refused = serde_json::json!({"Err": "no room on tern"});
+    let _asked = node_answering(&socket, &[sprout_unknown(), refused]);
+
+    let (ran, said) = sprout_asking(
+        home.path(),
+        &socket,
+        &rows,
+        &["--from", "QEST-20261116-42P0R4", "make", "tea"],
+    );
+
+    assert!(!ran, "it was refused: {said}");
+    assert!(said.contains("no room on tern"), "saying why: {said}");
+    assert_eq!(left_out_lines(&said), Vec::<&str>::new(), "{said}");
+}
+
+/// A node of now logs what the seed it made left out, naming its own id,
+/// so the command, whose id was never sent, says none of it.
+#[test]
+fn a_node_of_now_is_left_to_say_what_its_seed_left_out() {
+    let (home, rows) = checkout_on_tern();
+    let socket = home.path().join("now.sock");
+    let asked = node_answering(&socket, &[started_in(&rows)]);
+
+    let (ran, said) = sprout_asking(
+        home.path(),
+        &socket,
+        &rows,
+        &["--from", "QEST-20261116-42P0R4", "make", "tea"],
+    );
+
+    assert!(ran, "it started: {said}");
+    assert_eq!(left_out_lines(&said), Vec::<&str>::new(), "{said}");
+    assert_eq!(asked.lock().expect("the asks kept").len(), 1, "one ask");
 }
 
 #[test]

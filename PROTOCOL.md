@@ -2260,7 +2260,9 @@ and `id`, a string of at most 64 letters, digits, dots, dashes and
 underscores, the sprout's own, made where the `"Start"` is made (by
 the node, or by `mycelium sprout` where a node from before `"Sprout"`
 is asked for the `"Start"` it judged), so a session of it started
-again makes its quest once. The id is a hint, never proof: any agent
+again makes its quest once. A node that knows `"Sprout"` but is from
+before the id sends a seed with none, so a harness takes a seed with
+no `id` as it would one whose id it never saw. The id is a hint, never proof: any agent
 on the account can read a live sprout's id in its holder's `command`
 and start pi with it, so a harness that finds its quest by the id
 gives that session nothing an agent couldn't take with the quest
@@ -2278,7 +2280,9 @@ quest untied to that cell. What was left out is said once the session
 has started, naming the sprout by its id and machine: in the log of
 the node asked, or by `mycelium sprout` on its error stream where a
 node from before `"Sprout"` is asked, since that node knows nothing
-of it. Nothing is said for a start refused, nor for one whose answer
+of it. Where a node of now is asked, `mycelium sprout` says none of
+it, since its own id isn't the one sent, so its asker finds it only
+in that node's log; a node from before the id says it nowhere. Nothing is said for a start refused, nor for one whose answer
 was lost on its way back from another machine, though it may have
 started there; one that started is said even where its guard then
 ends it for beginning in home. That address
