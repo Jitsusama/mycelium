@@ -4033,7 +4033,7 @@ impl<S: Store> Shared<S> {
                 .map(|id| Err((Some(id), why.clone())))
                 .collect()
         });
-        let mut asked = std::collections::BTreeMap::new();
+        let mut asked = BTreeMap::new();
         let (mut refused, mut retry) = (Vec::new(), Vec::new());
         for one in tried {
             match one {

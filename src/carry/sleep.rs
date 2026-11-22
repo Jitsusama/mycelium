@@ -12,12 +12,13 @@
 //! what wakes it, so the node asks for none that neither keeps.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, DirBuilder, OpenOptions};
+use std::fs::{self, DirBuilder};
 use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
+use rustix::fs::{Mode, OFlags};
 use serde_json::{Value, json};
 
 use crate::record::{Session, State};
@@ -111,12 +112,11 @@ pub fn ask(folder: &Path, id: &str, at: Timestamp, why: &str) -> io::Result<()> 
         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
         _ => {}
     }
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&writing)?;
+    let mut file = fs::File::from(rustix::fs::open(
+        &writing,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )?);
     file.write_all(text.as_bytes())?;
     file.sync_all()?;
     fs::rename(&writing, folder.join(id))
