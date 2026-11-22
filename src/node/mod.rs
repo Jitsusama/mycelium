@@ -17298,7 +17298,13 @@ esac
         // An ask to park an earlier node left no longer stands.
         let parks = dir.path().join("parks");
         fs::create_dir(&parks).expect("the harness's folder");
-        fs::write(parks.join("s1-own"), "{}\n").expect("an earlier ask");
+        fs::write(
+            parks.join("s1-own"),
+            "{\"at\":\"2026-11-22T12:00:00Z\",\"why\":\"skiff is over\"}\n",
+        )
+        .expect("an earlier ask");
+        // A file that doesn't read as an ask isn't the node's to take.
+        fs::write(parks.join("s2-own"), "{}\n").expect("another's file");
         let eases = Eases {
             folder: folder.clone(),
             every: Duration::from_millis(10),
@@ -17351,6 +17357,10 @@ esac
         assert!(
             !parks.join("s1-own").exists(),
             "an ask an earlier node left is taken back before it looks"
+        );
+        assert!(
+            parks.join("s2-own").exists(),
+            "a file that doesn't read as an ask is left"
         );
         let kept = fs::read_to_string(&day).expect("the day's file");
         assert_eq!(
