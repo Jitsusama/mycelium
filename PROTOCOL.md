@@ -959,8 +959,9 @@ is seen in most of the last ten readings. Once its machine
 is held over while another has room, and its readings have said so
 for ten minutes, it would (a spell of readings saying otherwise starts
 the ten minutes again only once five have passed from its first to the
-next reading, so a lone cool reading between hot ones breaks nothing)
-put its sessions that wait to sleep where they are. If the readings
+next reading, so a lone cool reading between hot ones breaks nothing,
+though nothing is done on that reading itself) put its sessions
+that wait to sleep where they are. If the readings
 five minutes on still say over, with none saying otherwise since the
 sleep, it would carry one session to a peer
 with room: the smallest log first, placed as any work is and onto

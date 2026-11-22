@@ -210,7 +210,8 @@ impl History {
     /// the first of a run of readings saying so, or not over. A spell of
     /// readings saying otherwise ends the run once [`COOL_FOR`] has passed
     /// from its first to the next reading, whichever that says, so a gap
-    /// in the readings counts as cool. Once sessions were put to sleep in
+    /// after a reading saying otherwise counts as cool; one after a hot
+    /// reading doesn't. Once sessions were put to sleep in
     /// the run, any reading saying otherwise ends it, since that is the
     /// sleep easing the machine.
     pub fn read(&mut self, here: &str, reading: &Reading) {
@@ -451,6 +452,17 @@ fn over(
     {
         return Err(format!(
             "{here} isn't held over while another machine has room"
+        ));
+    }
+    // A lone cool reading keeps the run, but nothing is done on one: the
+    // reading that chooses must itself say over.
+    if !reading
+        .flags
+        .iter()
+        .any(|flag| matches!(flag, Flag::HotWhileCool { hot, .. } if hot == here))
+    {
+        return Err(format!(
+            "{here}'s latest reading doesn't say it is over, so it waits for one that does"
         ));
     }
     match history.hot_since {
@@ -716,9 +728,12 @@ pub(super) mod tests {
             why_not(&chose(&realm, &[cell("s1")], &gap)).ends_with("not 10 minutes"),
             "twenty minutes with no reading after a cool one is a cool spell"
         );
+        // The hot reading comes within five minutes of the cool one, so
+        // only the sleep can end the run: without it this would carry.
         let mut slept = read_all(&[(&realm, 20), (&realm, 9)]);
         slept.slept(1, ago(8));
         slept.read("skiff", &reading(&calm, ago(6)));
+        slept.read("skiff", &reading(&realm, ago(2)));
         slept.read("skiff", &reading(&realm, now()));
         assert!(
             why_not(&chose(&realm, &[cell("s1")], &slept)).ends_with("not 10 minutes"),
@@ -832,7 +847,66 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_machine_eases_only_once_over_ten_minutes_straight() {
+    fn a_spell_of_five_minutes_ends_the_run_and_one_a_second_short_does_not() {
+        let realm = realm();
+        let calm = [machine("skiff", 4.6), machine("tern", 4.6)];
+        let spell = |cool_for: SignedDuration| {
+            let mut history = History::default();
+            history.kept_eases(Ok(0));
+            history.read("skiff", &reading(&realm, ago(20)));
+            history.read("skiff", &reading(&calm, ago(10)));
+            history.read("skiff", &reading(&realm, ago(10) + cool_for));
+            history.read("skiff", &reading(&realm, now()));
+            chose(&realm, &[cell("s1")], &history)
+        };
+        assert!(
+            why_not(&spell(COOL_FOR)).ends_with("not 10 minutes"),
+            "five minutes from the cool reading to the next ends the run"
+        );
+        assert!(
+            carries(&spell(COOL_FOR - SignedDuration::from_secs(1))).is_some(),
+            "a second short of five keeps it"
+        );
+    }
+
+    #[test]
+    fn a_reading_whose_time_cannot_be_told_ends_the_run() {
+        let realm = realm();
+        let mut history = read_all(&[(&realm, 20), (&realm, 9)]);
+        let mut untimed = reading(&realm, ago(8));
+        untimed.at = "later".to_owned();
+        history.read("skiff", &untimed);
+        history.read("skiff", &reading(&realm, now()));
+        assert!(
+            why_not(&chose(&realm, &[cell("s1")], &history)).ends_with("not 10 minutes"),
+            "a reading that can't say when breaks the run rather than being skipped"
+        );
+    }
+
+    #[test]
+    fn nothing_is_done_on_a_reading_that_does_not_itself_say_over() {
+        let realm = realm();
+        let calm = [machine("skiff", 4.6), machine("tern", 4.6)];
+        let history = hot_for(&realm, 11);
+        let declared = declaring(&[Kind::Fence]);
+        let here = Here {
+            name: "skiff",
+            declared: Some(&declared),
+            machines: &realm,
+            loads: &Loads::new(),
+        };
+        // The watch still holds it over, as it does just after one cool
+        // reading among hot ones.
+        let mut lone = reading(&calm, now());
+        lone.held = reading(&realm, now()).held;
+        assert_eq!(
+            why_not(&choose(&here, &[cell("s1")], &lone, &history, now())),
+            "skiff's latest reading doesn't say it is over, so it waits for one that does"
+        );
+    }
+
+    #[test]
+    fn a_machine_eases_only_once_over_ten_minutes_through_short_cool_spells() {
         let realm = realm();
         assert!(
             why_not(&chose(&realm, &[cell("s1")], &hot_for(&realm, 9))).ends_with("not 10 minutes"),
@@ -857,7 +931,7 @@ pub(super) mod tests {
         );
         assert!(
             carries(&chose(&realm, &[cell("s1")], &hot_for(&realm, 10))).is_some(),
-            "ten minutes straight eases"
+            "ten minutes over eases"
         );
     }
 
@@ -1279,20 +1353,22 @@ pub(super) mod tests {
     }
 
     // No session goes to a Mac while a start bringing it back would run
-    // there held, outside any fence. That keeps a strictly fenced session
-    // off a Mac too, whose strict fence still reads the rest of its home,
-    // so lifting this must keep strict sessions off until that fence is
-    // narrowed.
+    // there held, outside any fence. Lifting this must still keep strict
+    // sessions off a Mac, whose strict fence reads the rest of its home,
+    // until that fence is narrowed; this tests only a plain fence.
     #[test]
     fn a_mac_with_room_is_passed_over_for_the_next_machine() {
         let mut realm = realm();
         realm[1].system = Some("macos".to_owned());
+        // The Mac has clearly the most room, so were it not passed over
+        // first, placement would always pick it.
+        realm[1].room.as_mut().expect("room").pressure.cpu = 0.0;
         let history = hot_for(&realm, 11);
         assert_eq!(
             why_not(&chose(&realm, &[cell("s1")], &history)),
             "tern is a Mac, where a session brought back held would run outside any fence"
         );
-        realm.push(machine("osprey", 4.6));
+        realm.push(machine("osprey", 30.0));
         let history = hot_for(&realm, 11);
         assert_eq!(
             carries(&chose(&realm, &[cell("s1")], &history)),
