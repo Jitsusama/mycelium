@@ -3306,6 +3306,9 @@ impl<S: Store> Shared<S> {
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
             Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
+            Request::Takes(_) => {
+                Err("whether a start is taken is answered by `would_take`".to_owned())
+            }
             Request::Relayed { .. } => Err("a relayed start is answered by `relayed`".to_owned()),
             Request::Sprout(_) => Err("a sprout is answered by `sprout`".to_owned()),
             Request::Run(_) => Err("a run is answered by `run`".to_owned()),
@@ -5331,12 +5334,31 @@ impl<S: Store> Shared<S> {
         if let Some(above) = &unfenced {
             eprintln!("{}", told_unfenced_held(above, &asked));
         }
-        let screen = if unfenced.is_some() {
-            Screen::Run
-        } else {
-            held_screen(fence_of(by))
-        };
+        let screen = held_or_run(unfenced.is_some(), by);
         self.placed(asked, fence_of(by), screen).await
+    }
+
+    /// Where `asked` would be placed as [`Self::started`] places it,
+    /// starting and counting nothing: the machine, or the refusal its
+    /// start would answer. It judges the realm's machines alone, so work
+    /// none of them takes is refused here even where a start of it would
+    /// make a machine from an offer; nor does it weigh the hour's limits,
+    /// which a start meets only as it is asked.
+    async fn would_take(&self, asked: &Start) -> Reply {
+        if asked.command.is_empty() {
+            return Err("nothing to start: name a program".to_owned());
+        }
+        let (by, _, _) = self.judged_declaring(asked.work.fence).await?;
+        let unfenced = self.unfenced_asking(by, asked.work.fence).await;
+        let screen = held_or_run(unfenced.is_some(), by);
+        let fence = fence_of(by);
+        let admits = self.admits().await;
+        match self.place(&asked.work, Counts::Never, fence, screen, &admits) {
+            placed @ Placement::Placed { .. } => Ok(Response::Placement(placed)),
+            Placement::Pending { misses } => Err(nowhere_now(&misses)),
+            Placement::Refused { misses } => Err(fenced_out(&asked.work, &misses, fence)
+                .unwrap_or_else(|| format!("nowhere: {}", placement::said(&misses)))),
+        }
     }
 
     /// Starts a program held on the machine placement chooses, answering
@@ -5361,40 +5383,12 @@ impl<S: Store> Shared<S> {
             match self.place(&asked.work, Counts::Always, fence, screen, &admits) {
                 Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
                 Placement::Pending { misses } => {
-                    let nowhere = format!(
-                        "nowhere now, though a machine out of reach would do: {}",
-                        placement::said(&misses)
-                    );
+                    let nowhere = nowhere_now(&misses);
                     (misses, nowhere)
                 }
                 Placement::Refused { misses } => {
-                    if let (Some(kind), Some(why)) = (
-                        fence,
-                        refused_named(&asked.work, &misses, placement::LOOSER_GROUND),
-                    ) {
-                        return Err(format!(
-                            "this asks as {}, so it starts nothing on looser ground: {why}",
-                            By::Agent(kind)
-                        ));
-                    }
-                    if let (Some(kind), Some(why)) = (
-                        fence,
-                        refused_named(&asked.work, &misses, placement::RUNS_NOTHING),
-                    ) {
-                        return Err(format!(
-                            "this asks as {}, so it starts only where that fence runs a command: \
-                         {why}",
-                            By::Agent(kind)
-                        ));
-                    }
-                    if let (Some(kind), Some(why)) = (
-                        fence,
-                        refused_named(&asked.work, &misses, placement::LIFTS_FENCE),
-                    ) {
-                        return Err(format!(
-                            "this asks as {}, so it starts nothing held on a Mac: {why}",
-                            By::Agent(kind)
-                        ));
+                    if let Some(why) = fenced_out(&asked.work, &misses, fence) {
+                        return Err(why);
                     }
                     let nowhere = format!("nowhere: {}", placement::said(&misses));
                     (misses, nowhere)
@@ -6282,6 +6276,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
         }
         let reply: Answer = match request {
             Ok(Request::Start(asked)) => shared.start(asked).await.into(),
+            Ok(Request::Takes(asked)) => shared.would_take(&asked).await.into(),
             Ok(Request::Relayed { from, start }) => shared.relayed(&from, start).await.into(),
             Ok(Request::Sprout(asked)) => shared.sprout(asked).await.into(),
             Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
@@ -6398,6 +6393,49 @@ fn refused_on(misses: &[Miss], machine: &str, key: &str) -> Option<String> {
             placement::Because::Refuses(taint) if taint.key == key => Some(taint.why.clone()),
             _ => None,
         })
+}
+
+/// The screen a held start asked `by` is placed through: a run's, where
+/// the agent asking is shown `unfenced`, else a held one's.
+fn held_or_run(unfenced: bool, by: By) -> Screen {
+    if unfenced {
+        Screen::Run
+    } else {
+        held_screen(fence_of(by))
+    }
+}
+
+/// Why work that `misses` say only a machine out of reach would take
+/// starts nowhere now.
+fn nowhere_now(misses: &[Miss]) -> String {
+    format!(
+        "nowhere now, though a machine out of reach would do: {}",
+        placement::said(misses)
+    )
+}
+
+/// Why an agent's `work`, asked in `fence`, starts nowhere, where the
+/// machine it names refused it for that fence: looser ground, a fence
+/// that runs no command there, or a Mac that lifts it. None where the
+/// person asks, or no such refusal was the named machine's.
+fn fenced_out(
+    work: &Work,
+    misses: &[Miss],
+    fence: Option<crate::declared::Kind>,
+) -> Option<String> {
+    let asks = By::Agent(fence?);
+    if let Some(why) = refused_named(work, misses, placement::LOOSER_GROUND) {
+        return Some(format!(
+            "this asks as {asks}, so it starts nothing on looser ground: {why}"
+        ));
+    }
+    if let Some(why) = refused_named(work, misses, placement::RUNS_NOTHING) {
+        return Some(format!(
+            "this asks as {asks}, so it starts only where that fence runs a command: {why}"
+        ));
+    }
+    refused_named(work, misses, placement::LIFTS_FENCE)
+        .map(|why| format!("this asks as {asks}, so it starts nothing held on a Mac: {why}"))
 }
 
 /// Why the machine `work` names refused it with the refusal `key` (its
@@ -14019,6 +14057,51 @@ esac
             ask(socket, Request::Start(held)).await,
             Err("no link reaches osprey now".to_owned()),
             "the person's start is no agent's, so it goes as far as the link"
+        );
+    }
+
+    // A2VLJN (2026-11-21): a carry asks whether its sessions' starts are
+    // taken before it tells any to end, so the ask gives the refusal a
+    // start would, and starts nothing where it would be taken.
+    #[tokio::test]
+    async fn whether_a_start_is_taken_is_judged_as_its_start_and_starts_nothing() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let osprey = facts::Machine {
+            system: Some("macos".to_owned()),
+            ..fenced("osprey", &["remote"])
+        };
+        store.put_machine(&osprey).expect("what it said is kept");
+        declares_runs(&socket, true);
+        asks_below(&socket, 7001);
+        let held = Start {
+            work: work(vec![Need::Machine("osprey".to_owned())]),
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+            strict: false,
+        };
+        assert_eq!(
+            ask(socket.clone(), Request::Takes(held.clone())).await,
+            ask(socket.clone(), Request::Start(held.clone())).await,
+            "an agent's is refused as its start is"
+        );
+        asks_as_person(&socket);
+        let Ok(Response::Placement(Placement::Placed { machine, .. })) =
+            ask(socket.clone(), Request::Takes(held.clone())).await
+        else {
+            panic!("the person's start is taken");
+        };
+        assert_eq!(machine, "osprey", "by the machine it names");
+        assert_eq!(
+            ask(socket, Request::Start(held)).await,
+            Err("no link reaches osprey now".to_owned()),
+            "which a start of it would reach for, as the ask didn't"
         );
     }
 

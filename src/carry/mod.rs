@@ -263,6 +263,15 @@ pub trait Hands {
     ///
     /// When the node can't start it.
     fn start(&mut self, start: Start) -> Result<Started, String>;
+    /// Whether `start` would be placed as [`Hands::start`] places it,
+    /// starting nothing, asked before any session is told, since a start
+    /// refused after they have ended leaves nothing running here or
+    /// there.
+    ///
+    /// # Errors
+    ///
+    /// When it wouldn't be, with the refusal its start would answer.
+    fn takes(&mut self, start: &Start) -> Result<(), String>;
     /// Waits a moment before what is waited for is looked at again, and
     /// says whether there is patience left for another look.
     fn wait(&mut self) -> bool;
@@ -463,6 +472,15 @@ fn find(
         ));
     }
     hands.shareable(quest)?;
+    // Each arrival is placed alike, held to `to` and asked by this one
+    // carrying, so the quest's own answers for every session's.
+    let own = Done {
+        session: quest.to_owned(),
+        started_before: None,
+    };
+    hands
+        .takes(&arriving(quest, here, to, &own, None))
+        .map_err(|why| format!("{quest}'s sessions wouldn't start on {to}: {why}"))?;
     let boot = hands.boot();
     let sessions: Vec<Session> = hands
         .sessions()?
@@ -982,6 +1000,10 @@ mod tests {
         cells: BTreeSet<String>,
         /// Why the quest may not be shared from here, where it may not.
         unshareable: Option<String>,
+        /// Why `to` wouldn't take the sessions' starts, where it wouldn't.
+        untaken: Option<String>,
+        /// Each start asked whether it would be taken.
+        asked_takes: Vec<Start>,
         /// Why an earlier carry's cells can't be taken away, where not.
         unforgotten: Option<String>,
         /// The sessions whose old cells were taken away, with how many
@@ -1151,6 +1173,10 @@ mod tests {
                 folder: "/home/joel".into(),
                 attach: vec!["mycelium".to_owned(), "attach".to_owned(), held],
             })
+        }
+        fn takes(&mut self, start: &Start) -> Result<(), String> {
+            self.asked_takes.push(start.clone());
+            self.untaken.clone().map_or(Ok(()), Err)
         }
         fn wait(&mut self) -> bool {
             let more = self.patience > 0;
@@ -2013,6 +2039,50 @@ mod tests {
             "no session told, and nothing shared or started"
         );
         assert!(realm.rest.is_none(), "and nothing carried");
+    }
+
+    // A2VLJN (2026-11-21): a start refused only once every session had
+    // ended here left them running nowhere; the carry asks first.
+    #[test]
+    fn a_carry_whose_starts_would_be_refused_there_tells_no_session() {
+        let why = "this asks as a fenced agent, so it starts nothing held on a Mac: tern is a Mac";
+        let mut realm = Realm {
+            untaken: Some(why.to_owned()),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Find }),
+            "refused at the find"
+        );
+        assert_eq!(
+            last_said(&lines),
+            format!("{QUEST}'s sessions wouldn't start on tern: {why}"),
+            "saying why"
+        );
+        assert!(
+            realm.steered.is_empty() && realm.shared.is_empty() && realm.started.is_empty(),
+            "no session told, and nothing shared or started"
+        );
+        assert!(realm.rest.is_none(), "and nothing carried");
+    }
+
+    #[test]
+    fn a_carry_asks_whether_its_starts_are_taken_as_they_would_be_asked() {
+        let mut realm = realm();
+        let (done, _) = carried(&mut realm, "tern");
+        assert!(done.is_ok(), "it carries: {done:?}");
+        let [asked] = realm.asked_takes.as_slice() else {
+            panic!("asked once: {:?}", realm.asked_takes);
+        };
+        let first = realm.started.first().expect("a session started");
+        assert_eq!(asked.work, first.work, "held to the same machine");
+        assert_eq!(
+            (asked.may_cost, asked.strict, &asked.folder),
+            (first.may_cost, first.strict, &first.folder),
+            "and asked alike"
+        );
     }
 
     #[test]

@@ -43,6 +43,12 @@ pub enum Request {
     PlaceToStart(Work),
     /// Start a program held where placement chooses.
     Start(Start),
+    /// Where [`Request::Start`] would place this start, starting and
+    /// counting nothing, or the refusal it would answer: asked before a
+    /// carry tells any session to end here. A variant of its own, since a
+    /// node too old to know it refuses it, where one would start a start
+    /// whose field it didn't know.
+    Takes(Start),
     /// Start a program here that the node of the linked machine `from`
     /// was asked to start, has judged, counted and booked, and placed
     /// here, so it starts here alone, where this machine's facts as they

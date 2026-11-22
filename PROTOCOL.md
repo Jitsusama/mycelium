@@ -508,7 +508,13 @@ in order and says each step:
 
 1. `find`: the quest's sessions on this machine that can carry their own
    work, those running and those parked this boot. A machine not in reach,
-   or this one, is refused.
+   or this one, is refused. So is a carry whose sessions' starts the
+   machine wouldn't take: each arrival is placed alike, held to it and
+   asked by whoever carries, so the node is asked `"Takes"` once, with
+   the quest's own arrival, and its refusal is said, as `HARBOR's
+   sessions wouldn't start on osprey: this asks as a fenced agent, so
+   it starts nothing held on a Mac: ...`, before any session is told
+   to carry and end.
 2. `push`: before any is told, the node takes away each
    `<session>.cell.json` in the quest's scratch, under
    `handover/<this machine's short hostname>/` (up to its first dot),
@@ -1130,6 +1136,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
 | `{"Start": {"work", "folder", "strict", "command", "may_cost", "once"}}` | `{"Started": {"machine", "held", "folder", "attach"}}` |
+| `{"Takes": start}` | `{"Placement": placement}`, placed as `"Start"` would, or its refusal; starts nothing |
 | `{"Sprout": {"words", "folder", "from", "on", "cwd"}}` | `{"Started": {"machine", "held", "folder", "attach"}}`, as for `"Start"` |
 | `{"Steer": {"address", "steer"}}` | `{"Steered": {"machine", "by"}}`, where it was put, and who ordered a carry |
 | `{"Orchestrates": {"heads", "quests"}}` | `"Orchestrated"`, recorded (A Carry an Orchestrator Orders) |
@@ -1627,6 +1634,14 @@ first written, the files of days more than 14 before it are let go, so
 the log holds about two weeks.
 A processor reading that isn't a number counts as none, so every
 `headroom` is a number.
+
+`"Takes"` judges a start as `"Start"` would place it, by the same
+asker and screen, and answers the placement, or the refusal that start
+would answer, starting and counting nothing. It weighs the realm's
+machines alone, never a machine made from an offer, nor the hour's
+limits, which a start meets only as it is asked. A carry asks it before
+any session is told (Carrying a Quest); a node from before it refuses
+it as a request it doesn't know, which refuses the carry too.
 
 `"Start"` places `work` as `"PlaceToStart"` does (as `"Place"`,
 an agent's start held to `runs` too) and starts `command` held

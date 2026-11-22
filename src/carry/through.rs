@@ -184,6 +184,15 @@ impl Hands for Through {
         }
     }
 
+    fn takes(&mut self, start: &Start) -> Result<(), String> {
+        match self.ask(&Request::Takes(start.clone()))? {
+            Response::Placement(_) => Ok(()),
+            other => Err(format!(
+                "the node answered {other:?} for whether a start is taken"
+            )),
+        }
+    }
+
     fn wait(&mut self) -> bool {
         if Instant::now() >= self.until {
             return false;
