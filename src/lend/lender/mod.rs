@@ -46,6 +46,16 @@ const CUTS_LOOKED_AT: Duration = Duration::from_secs(1);
 /// How long a budget's key command has to say the key.
 const KEY_WITHIN: Duration = Duration::from_secs(30);
 
+/// How long the model has to begin its answer once it was asked: as
+/// long as a whole answer not streamed may take, so a relay that takes
+/// a lend and never answers ends the turn rather than hanging it.
+const HEAD_WITHIN: Duration = Duration::from_secs(10 * 60);
+
+/// How long a lend waits for another node's hold on the day's counts,
+/// a moment at a time, before refusing, so a node stopped holding them
+/// never stops this one.
+const COUNTS_WITHIN: Duration = Duration::from_millis(200);
+
 /// The methods a lend may ask with.
 const METHODS: [&str; 2] = ["POST", "GET"];
 
@@ -296,21 +306,47 @@ impl Lender {
     }
 
     /// The folder's `counts.lock`, held for as long as what it answers
-    /// lives, waiting for any other node holding it.
+    /// lives, waiting at most [`COUNTS_WITHIN`] for another node holding
+    /// it, since this runs on the node's only thread.
     fn locked(&self) -> io::Result<fs::File> {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&self.folder)?;
-        let lock = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(self.folder.join("counts.lock"))?;
-        rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
-        Ok(lock)
+        let lock = lock_file(&self.folder, "counts.lock")?;
+        let began = Instant::now();
+        loop {
+            match rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return Ok(lock),
+                Err(rustix::io::Errno::WOULDBLOCK) if began.elapsed() < COUNTS_WITHIN => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(rustix::io::Errno::WOULDBLOCK) => {
+                    return Err(io::Error::other("another node holds them"));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
+}
+
+/// `name` in `folder`, opened to be locked, the folder made for this
+/// account alone.
+fn lock_file(folder: &Path, name: &str) -> io::Result<fs::File> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(folder)?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(folder.join(name))
+}
+
+/// The folder's `cuts.lock`, held while the cuts are changed, so two
+/// cuts made at once both hold.
+fn cutting(folder: &Path) -> io::Result<fs::File> {
+    let lock = lock_file(folder, "cuts.lock")?;
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
+    Ok(lock)
 }
 
 /// Where this machine keeps its lend's counts and cuts.
@@ -339,6 +375,7 @@ fn cuts(folder: &Path) -> io::Result<Vec<String>> {
 /// When the cuts can't be read, but for cutting every machine, or can't
 /// be written.
 pub fn cut(folder: &Path, cut: &Cut) -> io::Result<Vec<String>> {
+    let _held = cutting(folder)?;
     let mut cuts = match (cuts(folder), cut) {
         (Err(_), Cut::All) => Vec::new(),
         (cuts, _) => cuts?,
@@ -364,6 +401,7 @@ pub fn cut(folder: &Path, cut: &Cut) -> io::Result<Vec<String>> {
 /// can't be written; and when one machine is let back while every
 /// machine is cut off, which would leave it cut off.
 pub fn uncut(folder: &Path, cut: &Cut) -> io::Result<Vec<String>> {
+    let _held = cutting(folder)?;
     let mut cuts = match (cuts(folder), cut) {
         (Err(_), Cut::All) => Vec::new(),
         (cuts, _) => cuts?,
@@ -476,10 +514,11 @@ async fn lent(
         Ok(day) => day,
         Err(refusal) => return Ended::Refused(refusal),
     };
-    // Given back where its key can't be had, its relay can't be reached
-    // or asked, or it says no head, so a lender's own outage spends
-    // nobody's day; and where it was cut off meanwhile, before anything
-    // went upstream.
+    // Given back where its key can't be had or its relay can't be
+    // reached or asked, so a lender's own outage spends nobody's day,
+    // and where it was cut off meanwhile: each before the whole ask went
+    // upstream. Never after, since an answer that fails may still have
+    // been made.
     let (stream, key) = match reached(lender, &budget).await {
         Ok(reached) => reached,
         Err(refusal) => {
@@ -498,14 +537,10 @@ async fn lent(
             return Ended::Refused(refusal);
         }
     };
-    let ended = tokio::select! {
+    tokio::select! {
         ended = answered(reading, sending, used) => ended,
         ended = watched(lender, machine, sending) => ended,
-    };
-    if used.status.is_none() && matches!(&ended, Ended::Refused(refusal) if refusal.status == 502) {
-        lender.uncount(machine, &day);
     }
-    ended
 }
 
 /// How a lend being answered ends without its answer: its borrower
@@ -531,9 +566,20 @@ async fn answered(
     sending: &mpsc::Sender<Lent>,
     used: &mut Used,
 ) -> Ended {
-    let (status, headers, framing) = match head(&mut reading).await {
-        Ok(head) => head,
-        Err(why) => return Ended::Refused(refused(502, format!("the model's answer {why}"))),
+    let (status, headers, framing) = match tokio::time::timeout(HEAD_WITHIN, head(&mut reading))
+        .await
+    {
+        Ok(Ok(head)) => head,
+        Ok(Err(why)) => return Ended::Refused(refused(502, format!("the model's answer {why}"))),
+        Err(_) => {
+            return Ended::Refused(refused(
+                504,
+                format!(
+                    "the model's answer didn't begin within {} minutes",
+                    HEAD_WITHIN.as_secs() / 60
+                ),
+            ));
+        }
     };
     used.status = Some(status);
     if sending.send(Lent::Head { status, headers }).await.is_err() {
@@ -659,18 +705,23 @@ fn spoken(said: &str) -> bool {
         && !said.ends_with(' ')
 }
 
-/// Whether `path` is `allowed` or below it, and climbs out of nowhere:
-/// its path only letters, digits, `/`, `_`, `-` and `.`, its query only
-/// those but `/` and with `=` and `&`, and nothing else, so no relay can
-/// read it as climbing by a separator or an escape of its own.
+/// Whether `path` is `allowed`, or below it where `allowed` ends `/*`,
+/// and climbs out of nowhere: its path only letters, digits, `/`, `_`,
+/// `-` and `.`, its query only those but `/` and with `=` and `&`, and
+/// nothing else, so no relay can read it as climbing by a separator or
+/// an escape of its own. Only exactly, unless asked, since below a
+/// path a model serves can lie another that spends far more, as a batch
+/// of thousands does below `/v1/messages`.
 fn within(path: &str, allowed: &str) -> bool {
     let (bare, query) = path.split_once('?').unwrap_or((path, ""));
     let plain = |byte: u8| byte.is_ascii_alphanumeric() || b"_-.".contains(&byte);
-    let below = bare
-        .strip_prefix(allowed)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || allowed.ends_with('/'));
-    below
-        && bare.starts_with('/')
+    let lent = match allowed.strip_suffix("/*") {
+        Some(above) => bare
+            .strip_prefix(above)
+            .is_some_and(|rest| rest.len() > 1 && rest.starts_with('/')),
+        None => bare == allowed,
+    };
+    lent && bare.starts_with('/')
         && bare.bytes().all(|byte| plain(byte) || byte == b'/')
         && query
             .bytes()

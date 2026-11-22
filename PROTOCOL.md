@@ -2183,7 +2183,9 @@ so a `prefix` trusts the machines its provider makes. A lend is
 refused 403 for a
 machine cut off, one no `prefix` starts or more than one does, a
 budget asked that isn't the machine's, a method but `POST` or `GET`,
-or a path not at or below one of `paths`, or holding a `.` or `..`
+or a path not one of `paths`, nor below one of them ending `/*`
+(a path names only itself, since below one a model serves can lie
+another that spends far more, as a batch does), or holding a `.` or `..`
 segment or anything but letters, digits, `/`, `_`, `-` and `.`, with
 a query of those but `/`, and `=` and `&` besides; 400 for a header
 or body that
@@ -2193,12 +2195,15 @@ many requests and to which paths, not what each costs. The count is
 kept in `counts-DAY.json` in `lend/` under the account's state folder,
 whatever the node's `--state`, since `mycelium lend cut` asks no node,
 and changed under a lock on `lend/counts.lock`, so two nodes lending
-from one account lose no count. A lend is counted before it is carried
-and given back, to the day it was counted in, where its key can't be
-had, its upstream can't be reached or asked, the upstream ends before
-any head, or the machine is cut off before it is asked, so a lender's
-outage spends no machine's day; never once a head has come or the
-borrower has let it go. One that passes goes to `upstream`, a
+from one account lose no count; a lend waiting more than a moment for
+another node's hold on it is refused 503. A lend is counted before it
+is carried and given back, to the day it was counted in, where its key
+can't be had, its upstream can't be reached or asked, or the machine
+is cut off before it is asked, so a lender's outage spends no
+machine's day; never once it was asked whole, since an answer that
+fails may still have been made. An upstream that hasn't begun its
+answer within ten minutes is answered 504. One that passes goes to
+`upstream`, a
 socket's path, or
 where relative one in the account's runtime folder, for `host`, with
 only the headers the shim hands on and `key`'s command's output in
@@ -2209,7 +2214,8 @@ upstream not answering is 503, and a key that
 can't be had is 502. An interim head the upstream sends, 1xx but 101,
 is passed over for the one after it, and a 204 or 304 has no body.
 `mycelium lend cut MACHINE`, or `--all`, cuts a machine off at once,
-kept in `lend/cuts.json`: each lend it asks is refused, and each being
+kept in `lend/cuts.json`, changed under a lock on `lend/cuts.lock` so
+cuts made at once all hold: each lend it asks is refused, and each being
 answered ends short within a second, until `mycelium lend uncut` lets
 it back. Each prints a line of JSON, `cuts`, the file it wrote, and
 `cut`, the machines cut off now, and the node says in its log at start

@@ -253,7 +253,7 @@ async fn a_lend_is_carried_with_this_machines_key_and_none_of_the_borrowers() {
 #[tokio::test]
 async fn an_answer_of_a_length_is_streamed_whole_as_it_comes() {
     let mut lending = Lending::new();
-    let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages/count"));
+    let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     let asked = lending.relay.asked().await;
     asked
         .answer
@@ -350,6 +350,9 @@ async fn a_path_or_a_budget_or_a_method_not_lent_is_refused() {
     let mut asks = Vec::new();
     for path in [
         "/v1/messagesx",
+        // Below a path lent, a batch spends thousands of requests as one.
+        "/v1/messages/batches",
+        "/v1/messages/count",
         "/v1/models",
         "/v1/messages/../../admin",
         "/v1/messages/%2e%2e/admin",
@@ -528,9 +531,9 @@ async fn a_lend_with_no_relay_answering_is_refused_as_unavailable() {
 }
 
 #[tokio::test]
-async fn a_relay_that_says_no_head_spends_no_machines_day() {
+async fn a_relay_that_says_no_head_once_asked_still_spends_the_day() {
     let mut lending = Lending::new();
-    for _ in 0..4 {
+    for _ in 0..3 {
         let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
         let asked = lending.relay.asked().await;
         asked
@@ -540,9 +543,56 @@ async fn a_relay_that_says_no_head_spends_no_machines_day() {
         drop(asked);
         assert_eq!(refusal(&mut answers).await, 502);
     }
-    // Four the relay failed spend none of the day's three.
-    let _answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
-    lending.relay.asked().await;
+    // Each was asked whole, so the model may have made its answer.
+    let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+    assert_eq!(refusal(&mut answers).await, 429);
+    assert!(!lending.relay.was_asked(), "a fourth isn't carried");
+}
+
+#[tokio::test]
+async fn a_path_ending_in_a_star_lends_only_what_is_below_it() {
+    let mut lending = Lending::with(&json!({
+        "vms": [{"prefix": "agents-", "budget": "models", "requests_a_day": 3}],
+        "budgets": {"models": {
+            "upstream": "relay/agents.sock",
+            "host": "models.example",
+            "paths": ["/v1/*"],
+            "auth_header": "authorization",
+            "key": ["/bin/sh", "-c", "printf 'Bearer lent-key\\n'"],
+        }},
+    }));
+    for path in ["/v1", "/v1/", "/v1x/messages", "/v2/messages"] {
+        let mut answers = answer(&lending.lender, "agents-1", lend(path));
+        assert_eq!(refusal(&mut answers).await, 403, "{path}");
+    }
+    assert!(!lending.relay.was_asked(), "none of those is below /v1");
+    let _answers = answer(&lending.lender, "agents-1", lend("/v1/messages/batches"));
+    let asked = lending.relay.asked().await;
+    let head = asked.head.to_ascii_lowercase();
+    assert!(
+        head.starts_with("post /v1/messages/batches http/1.1\r\n"),
+        "{head}"
+    );
+}
+
+#[test]
+fn cuts_made_at_once_each_hold() {
+    let folder = tempfile::tempdir().expect("a folder");
+    let state = folder.path().join("state");
+    let cutting: Vec<_> = (0..16)
+        .map(|n| {
+            let state = state.clone();
+            std::thread::spawn(move || cut(&state, &Cut::Machine(format!("agents-{n}"))))
+        })
+        .collect();
+    for one in cutting {
+        one.join().expect("the cut runs").expect("the cut is kept");
+    }
+    let mut kept = uncut(&state, &Cut::Machine("agents-0".to_owned())).expect("read");
+    kept.sort();
+    let mut wanted: Vec<_> = (1..16).map(|n| format!("agents-{n}")).collect();
+    wanted.sort();
+    assert_eq!(kept, wanted, "no cut made beside another is lost");
 }
 
 #[tokio::test]
