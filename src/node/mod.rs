@@ -4875,6 +4875,9 @@ impl<S: Store> Shared<S> {
             "from": self.machine,
             "to": steer.body.get("to"),
             "why": steer.body.get("why"),
+            // What the start bringing it back declares at least
+            // ([`Self::carried_declaring`]).
+            "fence": kind,
         });
         if let (Some(kept), serde_json::Value::Object(extra)) = (kept.as_object_mut(), extra) {
             kept.extend(extra);
@@ -5197,22 +5200,32 @@ impl<S: Store> Shared<S> {
 
     /// `asked` declaring at least the fence its session ran in here, where
     /// it brings one carried from here back ([`declaring_carried`]): the
-    /// stricter of what the session claimed and the strictest it was seen
-    /// in, as its carry was judged, or strict where that can't be read.
+    /// fence its carry was judged by, as the newest carry of it kept here
+    /// says, since the session has ended by the time it arrives. A carry
+    /// keeping none, as the person's, takes the stricter of what the
+    /// session claims and the strictest it was seen in while it is still
+    /// here, and strict once it is gone or that can't be read.
     fn carried_declaring(&self, mut asked: Start) -> Start {
         use crate::declared::Kind;
         asked.work.fence =
             declaring_carried(&asked.command, &self.machine, asked.work.fence, |session| {
-                let claimed = self
-                    .lock()
-                    .state
-                    .sessions()
-                    .iter()
-                    .find(|one| easing::id(one) == session)
-                    .and_then(|one| one.presence.get("fence").cloned())
-                    .and_then(|kind| serde_json::from_value::<Kind>(kind).ok());
+                let kind_of = |said: Option<&serde_json::Value>| -> Option<Kind> {
+                    serde_json::from_value(said?.clone()).ok()
+                };
+                let judged = self
+                    .carries_looked_at()
+                    .into_iter()
+                    .find(|kept| kept.said("session") == session)
+                    .and_then(|kept| kind_of(kept.line.get("fence")));
+                if let Some(judged) = judged {
+                    return judged;
+                }
+                let sessions = self.lock().state.sessions();
+                let Some(one) = sessions.iter().find(|one| easing::id(one) == session) else {
+                    return Kind::Strict;
+                };
                 let shown = self.fences.strictest(session).unwrap_or(Kind::Strict);
-                shown.max(claimed.unwrap_or(Kind::None))
+                shown.max(kind_of(one.presence.get("fence")).unwrap_or(Kind::Strict))
             });
         asked
     }
@@ -18677,6 +18690,71 @@ esac
             declaring_carried(&["pi".to_owned()], "skiff", None, strict),
             None,
             "any other start declares as it was asked"
+        );
+    }
+
+    // A carried session has ended by the time its arrival is asked for,
+    // so what it ran in is read from the carry kept for it.
+    #[tokio::test]
+    async fn an_arrival_declares_the_fence_its_carry_was_judged_by() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let carries = dir.path().join("carries.jsonl");
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            Given {
+                carries: carries.clone(),
+                ..bare("/nowhere/steer".into(), None)
+            },
+            to_dial,
+        );
+        let arriving = |session: &str| {
+            let one = crate::carry::Done {
+                session: session.to_owned(),
+                started_before: None,
+            };
+            crate::carry::arriving("QEST-20261107-HARBOR", "skiff", "tern", &one, None)
+        };
+        let declared = |kind| {
+            Some(DeclaredFence {
+                kind,
+                from: FenceFrom::Default,
+            })
+        };
+        let kept = |session: &str, fence: &str| {
+            ordered::keep(
+                &carries,
+                &serde_json::json!({
+                    "at": jiff::Timestamp::now().to_string(),
+                    "session": session,
+                    "from": "skiff",
+                    "to": "tern",
+                    "fence": fence,
+                }),
+            )
+            .expect("the carry is kept");
+        };
+        kept("s-harbour", "fence");
+        kept("s-quay", "strict");
+        assert_eq!(
+            shared.carried_declaring(arriving("s-harbour")).work.fence,
+            declared(FenceKind::Fence),
+            "in the fence its carry was judged in"
+        );
+        assert_eq!(
+            shared.carried_declaring(arriving("s-quay")).work.fence,
+            declared(FenceKind::Strict),
+            "a strict one arrives strict, though its carrier runs looser"
+        );
+        assert_eq!(
+            shared.carried_declaring(arriving("s-wharf")).work.fence,
+            declared(FenceKind::Strict),
+            "one gone with no carry kept arrives strict, never unfenced"
         );
     }
 

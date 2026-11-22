@@ -3340,10 +3340,44 @@ mod tests {
     use mycelium::wire::Request;
 
     use super::{
-        Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, in_place, kit,
-        orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked, tree, width,
-        write_line,
+        Action, Command, HELP_WIDTH, SAID_MOST, SWARM_WIDTH, SwarmAsked, Tree, held_through,
+        in_place, kit, orchestrates, processes_here, reader_left, room_of, said_text, swarm_asked,
+        tree, width, within, write_line,
     };
+
+    #[test]
+    fn a_held_program_starts_within_its_fence_outside_the_login_shell() {
+        let fence = ["pi-fence", "--kind", "strict", "--"].map(str::to_owned);
+        let through = held_through(&fence, true, "harbour", None);
+        assert_eq!(
+            through[..fence.len()],
+            fence,
+            "the launcher first, so the profile runs inside it: {through:?}"
+        );
+        assert_eq!(
+            through[fence.len()..],
+            mycelium::hold::start::login_shell("harbour", None),
+            "then the login shell, as without one"
+        );
+        assert_eq!(
+            held_through(&fence, false, "harbour", None),
+            fence,
+            "a hold with no login shell runs within it alone"
+        );
+        assert!(
+            held_through(&[], false, "harbour", None).is_empty(),
+            "a terminal's hold, as ever, within nothing"
+        );
+    }
+
+    #[test]
+    fn a_launcher_is_given_as_a_json_list_naming_a_program() {
+        let said = within(r#"["pi-fence","--kind","strict","--"]"#).expect("a launcher");
+        assert_eq!(said.0, ["pi-fence", "--kind", "strict", "--"]);
+        for refused in ["[]", r#"[""]"#, "pi-fence --kind strict", r#"{"runs":[]}"#] {
+            assert!(within(refused).is_err(), "{refused} names no launcher");
+        }
+    }
 
     #[test]
     fn a_terminal_is_as_wide_as_columns_says_then_as_it_says_then_eighty() {
