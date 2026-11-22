@@ -2251,12 +2251,20 @@ become the session's first words; `from` the address of the cell it
 comes from; `on` the machine, this one when it's none or names this
 one; and all but `words` may be left out. Beside its first words the
 session is given `QUEST_WORKFLOW_SPROUT`, the same work as data, a
-JSON object such as `{"v": 1, "link": "https://...", "from": "HARBOR"}`:
+JSON object such as
+`{"v": 1, "link": "https://...", "from": "HARBOR", "id": "sprout-..."}`:
 `v` the number 1; exactly one of `link`, a string, for a link alone,
-or `words`, a string, for words; and `from`, a string, only where
-`from` is an address, so its harness makes and ties the quest itself.
+or `words`, a string, for words; `from`, a string, only where
+`from` is an address, so its harness makes and ties the quest itself;
+and `id`, a string of at most 64 letters, digits, dots, dashes and
+underscores, the sprout's own, made as the node makes the `"Start"`,
+so a session of it started again makes its quest once. `from` is the
+asker's word, tied as said with no model in between: the same trust
+the first words give it, naming a cell the asker could name there.
 It's left out where the link or words run past 4000 UTF-16 units, the
-most a session reads, and the first words alone stand. That address
+most a session reads, and the first words alone stand; the node's log
+says so, and says where a `from` that isn't an address is left out of
+it and tied by the first words alone. That address
 and that length are what the node sends, never a guarantee: any agent
 starting pi can set the variable itself, so a harness checks every
 field again and treats it as a seed. Where a harness reads it, the

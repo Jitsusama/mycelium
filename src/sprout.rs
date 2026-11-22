@@ -10,6 +10,8 @@
 //! refusing a home folder, and leaves nothing to the session it starts but
 //! the work itself.
 
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
 use std::path::{Component, Path, PathBuf};
 
 use crate::placement::{Need, Work};
@@ -41,6 +43,14 @@ impl Seed {
     pub fn is_empty(&self) -> bool {
         match self {
             Self::Link(said) | Self::Words(said) => said.is_empty(),
+        }
+    }
+
+    /// What it is, as its seed's key names it, and what it says.
+    fn said(&self) -> (&'static str, &str) {
+        match self {
+            Self::Link(link) => ("link", link),
+            Self::Words(words) => ("words", words),
         }
     }
 }
@@ -308,27 +318,70 @@ const SEED_VERSION: u8 = 1;
 const SEED_MOST: usize = 4000;
 
 /// The seed a sprouted session makes its quest from, as JSON: its
-/// version, the link or the words, and the cell it came from, only where
+/// version, the link or the words, the cell it came from, only where
 /// that's an address, since a quest's id ties through the first words
-/// alone. Nothing where it says nothing or runs past [`SEED_MOST`]. It
-/// is an agent's word, as the link and words are: the session reads it
-/// as a seed, never as a command.
+/// alone, and the sprout's own `id`, which its harness makes the quest
+/// once by, so the same sprout started again makes no second. Nothing
+/// where it says nothing or runs past [`SEED_MOST`]. It is an agent's
+/// word, as the link and words are: the session reads it as a seed,
+/// never as a command.
 #[must_use]
-pub fn seed_data(seed: &Seed, from: Option<&str>) -> Option<String> {
-    let (key, said) = match seed {
-        Seed::Link(link) => ("link", link),
-        Seed::Words(words) => ("words", words),
-    };
-    if said.is_empty() || said.encode_utf16().count() > SEED_MOST {
+pub fn seed_data(seed: &Seed, from: Option<&str>, id: &str) -> Option<String> {
+    let (key, said) = seed.said();
+    if said.is_empty() || too_long(said) {
         return None;
     }
     let mut data = serde_json::Map::new();
     data.insert("v".to_owned(), SEED_VERSION.into());
-    data.insert(key.to_owned(), said.as_str().into());
+    data.insert(key.to_owned(), said.into());
     if let Some(from) = from.filter(|from| crate::forage::is_address(from)) {
         data.insert("from".to_owned(), from.into());
     }
+    data.insert("id".to_owned(), id.into());
     Some(serde_json::Value::Object(data).to_string())
+}
+
+/// Whether `said` runs past the most a session reads, [`SEED_MOST`],
+/// counted in UTF-16 units as the harness counts a string.
+fn too_long(said: &str) -> bool {
+    said.encode_utf16().count() > SEED_MOST
+}
+
+/// What the seed of a sprout of `seed` from `from` leaves out, each said
+/// for the node's log, so a seed or a `from` dropped isn't dropped
+/// without a word: the whole seed where its link or words run past
+/// [`SEED_MOST`], and `from` where it isn't an address, which the first
+/// words alone then tie.
+#[must_use]
+pub fn dropped(seed: &Seed, from: Option<&str>) -> Vec<String> {
+    let (key, said) = seed.said();
+    let mut left_out = Vec::new();
+    if too_long(said) {
+        left_out.push(format!(
+            "a sprout's seed is left out: its {key} run {} UTF-16 units, past the {SEED_MOST} a \
+             session reads, so its first words alone make the quest",
+            said.encode_utf16().count()
+        ));
+    } else if let Some(from) = from.filter(|from| !crate::forage::is_address(from)) {
+        left_out.push(format!(
+            "a sprout's seed leaves out the cell it came from: {from:?} isn't an address, so \
+             its first words alone tie the quest to it"
+        ));
+    }
+    left_out
+}
+
+/// A fresh id for a sprout, fit for its harness's alias of it: when it
+/// was made, and a random tail keeping two made at once apart.
+#[must_use]
+pub fn sprout_id() -> String {
+    // Each `RandomState` is seeded afresh, so its hash of nothing is a
+    // random number without a dependency to draw one.
+    let tail = RandomState::new().hash_one(()) & 0xffff_ffff;
+    format!(
+        "sprout-{}-{tail:08x}",
+        jiff::Timestamp::now().as_millisecond()
+    )
 }
 
 /// The shell words that end a session before it starts where it would
@@ -399,7 +452,13 @@ pub fn starting(
         found
     };
     let machine = asked.on.as_deref().unwrap_or(here);
-    Ok(start(machine, Some(within_home(found, home)), &seed, from))
+    Ok(start(
+        machine,
+        Some(within_home(found, home)),
+        &seed,
+        from,
+        &sprout_id(),
+    ))
 }
 
 /// `folder` as a path within `home` where it's there, so the machine it
@@ -414,9 +473,16 @@ pub fn within_home(folder: PathBuf, home: &Path) -> PathBuf {
 
 /// What a sprout asks the node to start: its session on `machine` and
 /// nowhere else, in `folder` and never at home where that machine hasn't
-/// it (`strict`), never on a machine that costs money.
+/// it (`strict`), never on a machine that costs money, its seed carrying
+/// the sprout's own `id`.
 #[must_use]
-pub fn start(machine: &str, folder: Option<PathBuf>, seed: &Seed, from: Option<&str>) -> Start {
+pub fn start(
+    machine: &str,
+    folder: Option<PathBuf>,
+    seed: &Seed,
+    from: Option<&str>,
+    id: &str,
+) -> Start {
     Start {
         work: Work {
             needs: vec![Need::Machine(machine.to_owned())],
@@ -428,7 +494,10 @@ pub fn start(machine: &str, folder: Option<PathBuf>, seed: &Seed, from: Option<&
         },
         folder,
         strict: true,
-        command: command(&first_words(seed, from), seed_data(seed, from).as_deref()),
+        command: command(
+            &first_words(seed, from),
+            seed_data(seed, from, id).as_deref(),
+        ),
         may_cost: false,
         carries: false,
         once: None,
@@ -708,6 +777,7 @@ mod tests {
             Some(PathBuf::from("src/skiff")),
             &words("make tea"),
             None,
+            ID,
         );
         assert_eq!(asked.work.needs, [Need::Machine("kestrel".to_owned())]);
         assert!(asked.work.prefers.is_empty() && !asked.work.may_wait);
@@ -858,9 +928,12 @@ mod tests {
         );
     }
 
+    /// The id the tests' sprouts are given.
+    const ID: &str = "sprout-1795000000000-0a1b2c3d";
+
     /// The seed `seed_data` makes, read back as JSON.
     fn seed_read(seed: &Seed, from: Option<&str>) -> Option<serde_json::Value> {
-        seed_data(seed, from).map(|data| serde_json::from_str(&data).expect("it's JSON"))
+        seed_data(seed, from, ID).map(|data| serde_json::from_str(&data).expect("it's JSON"))
     }
 
     #[test]
@@ -868,13 +941,13 @@ mod tests {
         let issue = "https://example.org/owner/skiff/issues/3";
         assert_eq!(
             seed_read(&link(issue), None),
-            Some(serde_json::json!({ "v": 1, "link": issue }))
+            Some(serde_json::json!({ "v": 1, "link": issue, "id": ID }))
         );
         // Quotes, a newline and a would-be command stay words, escaped.
         let said = "make \"tea\"\nthen $(id); rm -rf ~";
         assert_eq!(
             seed_read(&words(said), Some("HARBOR")),
-            Some(serde_json::json!({ "v": 1, "words": said, "from": "HARBOR" }))
+            Some(serde_json::json!({ "v": 1, "words": said, "from": "HARBOR", "id": ID }))
         );
     }
 
@@ -885,10 +958,23 @@ mod tests {
         for not in ["QEST-20261116-42P0R4", &"A".repeat(33)] {
             assert_eq!(
                 seed_read(&words("make tea"), Some(not)),
-                Some(serde_json::json!({ "v": 1, "words": "make tea" })),
+                Some(serde_json::json!({ "v": 1, "words": "make tea", "id": ID })),
                 "{not:?}"
             );
+            assert_eq!(
+                dropped(&words("make tea"), Some(not)),
+                [format!(
+                    "a sprout's seed leaves out the cell it came from: {not:?} isn't an \
+                     address, so its first words alone tie the quest to it"
+                )],
+                "the node's log says so"
+            );
         }
+        assert_eq!(
+            dropped(&words("make tea"), Some("HARBOR")),
+            Vec::<String>::new()
+        );
+        assert_eq!(dropped(&words("make tea"), None), Vec::<String>::new());
     }
 
     #[test]
@@ -896,23 +982,119 @@ mod tests {
         let longest = "a".repeat(SEED_MOST);
         assert_eq!(
             seed_read(&words(&longest), None),
-            Some(serde_json::json!({ "v": 1, "words": longest }))
+            Some(serde_json::json!({ "v": 1, "words": longest, "id": ID }))
         );
-        assert_eq!(seed_data(&words(&"a".repeat(SEED_MOST + 1)), None), None);
+        assert_eq!(dropped(&words(&longest), None), Vec::<String>::new());
+        let longer = "a".repeat(SEED_MOST + 1);
+        assert_eq!(seed_data(&words(&longer), None, ID), None);
+        assert_eq!(
+            dropped(&words(&longer), Some("QEST-20261116-42P0R4")),
+            [format!(
+                "a sprout's seed is left out: its words run {} UTF-16 units, past the \
+                 {SEED_MOST} a session reads, so its first words alone make the quest",
+                SEED_MOST + 1
+            )],
+            "one line says the whole seed went, the cell with it"
+        );
         // Counted as the session counts, in UTF-16 units: each of these
         // is two, so half as many fit.
         let wide = "\u{1F331}".repeat(SEED_MOST / 2);
-        assert!(seed_data(&words(&wide), None).is_some());
-        assert_eq!(seed_data(&words(&format!("{wide}a")), None), None);
-        assert_eq!(seed_data(&words(""), None), None);
+        assert!(seed_data(&words(&wide), None, ID).is_some());
+        assert_eq!(seed_data(&words(&format!("{wide}a")), None, ID), None);
+        assert_eq!(dropped(&words(&format!("{wide}a")), None).len(), 1);
+        assert_eq!(seed_data(&words(""), None, ID), None);
+    }
+
+    /// The seed a start's command gives pi, read back as JSON, or none.
+    fn seed_given(asked: &Start) -> Option<serde_json::Value> {
+        asked
+            .command
+            .iter()
+            .find_map(|word| word.strip_prefix("QUEST_WORKFLOW_SPROUT="))
+            .map(|data| serde_json::from_str(data).expect("it's JSON"))
     }
 
     #[test]
     fn a_start_carries_its_seed_beside_its_first_words() {
-        let asked = start("kestrel", None, &words("make tea"), Some("HARBOR"));
+        let asked = start("kestrel", None, &words("make tea"), Some("HARBOR"), ID);
         assert_eq!(
-            asked.command[6],
-            r#"QUEST_WORKFLOW_SPROUT={"from":"HARBOR","v":1,"words":"make tea"}"#
+            seed_given(&asked),
+            Some(serde_json::json!({ "v": 1, "words": "make tea", "from": "HARBOR", "id": ID }))
         );
+    }
+
+    #[test]
+    fn a_start_whose_words_run_past_the_most_a_session_reads_carries_no_seed() {
+        let said = "a".repeat(SEED_MOST + 1);
+        let asked = start("kestrel", None, &words(&said), Some("HARBOR"), ID);
+        assert_eq!(seed_given(&asked), None);
+        assert!(asked.command[5].starts_with("QUEST_WORKFLOW_FIRST_TEXT="));
+        assert_eq!(asked.command[6], "pi", "the first words alone stand");
+    }
+
+    #[test]
+    fn the_seed_a_shell_gives_pi_is_the_work_as_said() {
+        let home = tempfile::tempdir().expect("a home");
+        let work = home.path().join("src");
+        std::fs::create_dir(&work).expect("a folder");
+        let said = "make \"tea\" 'now'\nthen $(id); `id` & rm -rf ~ \\ $HOME";
+        let asked = start("kestrel", None, &words(said), Some("HARBOR"), ID);
+        let mut command = asked.command.clone();
+        // pi's place takes one that says what it was given, and the guard
+        // waits for nothing.
+        command.pop();
+        command.extend(["printenv".to_owned(), SEED_VARIABLE.to_owned()]);
+        command[2] = guard(0);
+        let ran = std::process::Command::new(&command[0])
+            .args(&command[1..])
+            .current_dir(&work)
+            .env("HOME", home.path())
+            .output()
+            .expect("sh runs");
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        let given: serde_json::Value = serde_json::from_slice(&ran.stdout).expect("it's JSON");
+        assert_eq!(
+            given,
+            serde_json::json!({ "v": 1, "words": said, "from": "HARBOR", "id": ID })
+        );
+    }
+
+    #[test]
+    fn each_sprout_has_an_id_of_its_own_fit_for_an_alias() {
+        let (one, two) = (sprout_id(), sprout_id());
+        assert_ne!(one, two);
+        for id in [&one, &two] {
+            assert!((1..=64).contains(&id.len()), "{id}");
+            assert!(
+                id.bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sprout_gives_its_session_an_id_of_its_own() {
+        let ask = || {
+            starting(
+                &sprouting("tidy the rows", Some("src/rows"), Some("tern")),
+                Path::new("/home/kestrel"),
+                Path::new("/home/kestrel"),
+                "osprey",
+                &Held::of(&[], &[]),
+            )
+            .expect("it starts")
+        };
+        let id = |asked: &Start| {
+            seed_given(asked).expect("a seed")["id"]
+                .as_str()
+                .expect("a string")
+                .to_owned()
+        };
+        assert_ne!(id(&ask()), id(&ask()), "each ask is a sprout of its own");
     }
 }

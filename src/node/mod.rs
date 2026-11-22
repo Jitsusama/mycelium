@@ -6022,11 +6022,15 @@ impl<S: Store> Shared<S> {
         let here = self.machine.clone();
         let (client, started, processes) =
             (self.client, self.client_started, self.processes.clone());
+        let left_out = sprout::dropped(&sprout::Seed::of(&asked.words), asked.from.as_deref());
         let start = tokio::task::spawn_blocking(move || {
             sprouted(&asked, by, client.zip(started), &processes, &home, &here)
         })
         .await
         .map_err(|error| format!("the sprout couldn't be judged: {error}"))??;
+        for said in left_out {
+            eprintln!("{said}");
+        }
         self.start(start).await
     }
 
