@@ -55,6 +55,7 @@ use crate::steer::{self, Steer};
 use crate::store::{self, Change, Store};
 use crate::wire::{
     Answer, By, Draft, Event, Offers, Ran, Reply, Request, Response, Run, Sprout, Start, Started,
+    Taking,
 };
 use crate::within;
 use crate::{unanswered, words};
@@ -97,6 +98,10 @@ const STARTS_LISTED: usize = 100;
 /// The longest an agent's start waits for room under its limits, in
 /// milliseconds, before it is refused and told when to ask again.
 const START_WAITS_MOST: i64 = 60_000;
+
+/// The most starts one `Takes` weighs, so one line can't ask the node to
+/// place, and log, without end: past all a cell's resumes in an hour.
+const TAKES_MOST: usize = starts::RESUMED_AN_HOUR;
 
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
@@ -3306,6 +3311,9 @@ impl<S: Store> Shared<S> {
             Request::Watch { .. } => Err("a watch is answered by `watch`".to_owned()),
             Request::Present => Err("being present is answered by `be_present`".to_owned()),
             Request::Start(_) => Err("a start is answered by `start`".to_owned()),
+            Request::Takes(_) => {
+                Err("whether a start is taken is answered by `would_take`".to_owned())
+            }
             Request::Relayed { .. } => Err("a relayed start is answered by `relayed`".to_owned()),
             Request::Sprout(_) => Err("a sprout is answered by `sprout`".to_owned()),
             Request::Run(_) => Err("a run is answered by `run`".to_owned()),
@@ -5331,12 +5339,145 @@ impl<S: Store> Shared<S> {
         if let Some(above) = &unfenced {
             eprintln!("{}", told_unfenced_held(above, &asked));
         }
-        let screen = if unfenced.is_some() {
-            Screen::Run
-        } else {
-            held_screen(fence_of(by))
-        };
+        let screen = held_or_run(unfenced.is_some(), by);
         self.placed(asked, fence_of(by), screen).await
+    }
+
+    /// Where each of `asked`'s starts would be placed as
+    /// [`Self::started`] places it, one after another, starting and
+    /// counting nothing: the last one's machine, or the refusal the first
+    /// refused would answer. Each is judged as its start is, by its own
+    /// declared fence, then by the book of starts, waiting for room up to
+    /// [`START_WAITS_MOST`] from when the one before it would have gone,
+    /// then by placement. An agent's arrival in a carry said to be
+    /// ordered is weighed as the carry line kept as the order is taken
+    /// would free it, since that line is kept only after the ask. It
+    /// judges the realm's machines alone, so work none of them takes is
+    /// refused here even where a start of it would make a machine from an
+    /// offer; and this node alone, so a machine it relays a start to may
+    /// still refuse it. At most [`TAKES_MOST`] starts are asked at once.
+    async fn would_take(&self, asked: &Taking) -> Reply {
+        if asked.starts.is_empty() {
+            return Err("nothing to start: name a start".to_owned());
+        }
+        if asked.starts.len() > TAKES_MOST {
+            return Err(format!(
+                "{} starts asked at once, past the {TAKES_MOST} an ask weighs",
+                asked.starts.len()
+            ));
+        }
+        if asked.starts.iter().any(|one| one.command.is_empty()) {
+            return Err("nothing to start: name a program".to_owned());
+        }
+        // Each start's fence and line in the book first, up to the first
+        // either refuses, then the book weighed once over all of them, so
+        // an ask costs one pass however many it holds; then each placed
+        // up to the first refused, which answers the same refusal as
+        // starting them one after another would.
+        let mut weighed = Vec::with_capacity(asked.starts.len());
+        let mut book = Vec::with_capacity(asked.starts.len());
+        let mut unweighed = None;
+        for one in &asked.starts {
+            let judged = match self.judged_declaring(one.work.fence).await {
+                Ok((by, _, charged)) => self
+                    .booked_as((by, charged), one, asked.ordered)
+                    .map(|(one, kept)| (by, one, kept)),
+                Err(why) => Err(why),
+            };
+            match judged {
+                Ok((by, one, kept)) => {
+                    weighed.push((by, one));
+                    book.push(kept);
+                }
+                Err(why) => {
+                    unweighed = Some(why);
+                    break;
+                }
+            }
+        }
+        let unbooked = self.starts.would_refuse(&book, START_WAITS_MOST);
+        let booked = unbooked.as_ref().map_or(weighed.len(), |(first, _)| *first);
+        let admits = self.admits().await;
+        let mut answer = Err("nothing to start: name a start".to_owned());
+        for (by, one) in &weighed[..booked] {
+            let fence = fence_of(*by);
+            let unfenced = self.unfenced_asking(*by, one.work.fence).await;
+            let screen = held_or_run(unfenced.is_some(), *by);
+            answer = match self.place(&one.work, Counts::Never, fence, screen, &admits) {
+                placed @ Placement::Placed { .. } => Ok(Response::Placement(placed)),
+                Placement::Pending { misses } => return Err(nowhere_now(&misses)),
+                Placement::Refused { misses } => {
+                    return Err(fenced_out(&one.work, &misses, fence)
+                        .unwrap_or_else(|| format!("nowhere: {}", placement::said(&misses))));
+                }
+            };
+        }
+        match (unbooked, unweighed) {
+            (Some((_, why)), _) | (None, Some(why)) => Err(why),
+            (None, None) => answer,
+        }
+    }
+
+    /// `asked`, as [`Self::would_take`] weighs one of its starts, from
+    /// the asker judged `by` whose starts count toward `charged`'s cell:
+    /// pinned as it would start, as [`Self::counted`] pins a session it
+    /// brings back, with the line the book would keep of it; or why it
+    /// is left to its holder. Nothing is kept, counted or held as going.
+    fn booked_as(
+        &self,
+        (by, charged): (By, Option<String>),
+        asked: &Start,
+        ordered: bool,
+    ) -> Result<(Start, starts::Kept), String> {
+        let mut asked = asked.clone();
+        asked.carries = marks_a_carry(by, &asked.command);
+        let Judged {
+            started_by,
+            reopened,
+            reopens,
+            on,
+            parked,
+            turning,
+        } = self.weighed((by, charged), &asked, Whither::Placed);
+        if let Some(why) = left_to_its_holder(parked, turning) {
+            return Err(why);
+        }
+        let started_by = started_by.filter(|_| by != By::Person);
+        let resumes = Self::brought_there(reopened, on, &mut asked, Whither::Placed);
+        // An arrival of an ordered carry from here to the one machine it
+        // names, as Start frees it, but for the carry line, which is kept
+        // only after the ask, and the orchestrator who ordered it, which
+        // is proved only then.
+        let carried = match crate::carry::unordered_arrival(&asked.command) {
+            Some(arrives)
+                if ordered
+                    && matches!(by, By::Agent(_))
+                    && arrives.from == self.machine
+                    && matches!(asked.work.needs.as_slice(), [Need::Machine(_)]) =>
+            {
+                Some(arrives.session.to_owned())
+            }
+            _ => self.carried_by_order(by, started_by.as_deref(), &asked, Whither::Placed),
+        };
+        let kept = starts::Kept {
+            at: jiff::Timestamp::now().as_millisecond(),
+            by,
+            started_by,
+            folder: asked.folder.clone(),
+            program: asked.command.first().cloned(),
+            resumes,
+            reopens,
+            carried,
+            machine: None,
+            held: None,
+            failed: None,
+            refused: None,
+            once: None,
+            joined: 0,
+            again: false,
+            declared: asked.work.fence,
+        };
+        Ok((asked, kept))
     }
 
     /// Starts a program held on the machine placement chooses, answering
@@ -5361,40 +5502,12 @@ impl<S: Store> Shared<S> {
             match self.place(&asked.work, Counts::Always, fence, screen, &admits) {
                 Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
                 Placement::Pending { misses } => {
-                    let nowhere = format!(
-                        "nowhere now, though a machine out of reach would do: {}",
-                        placement::said(&misses)
-                    );
+                    let nowhere = nowhere_now(&misses);
                     (misses, nowhere)
                 }
                 Placement::Refused { misses } => {
-                    if let (Some(kind), Some(why)) = (
-                        fence,
-                        refused_named(&asked.work, &misses, placement::LOOSER_GROUND),
-                    ) {
-                        return Err(format!(
-                            "this asks as {}, so it starts nothing on looser ground: {why}",
-                            By::Agent(kind)
-                        ));
-                    }
-                    if let (Some(kind), Some(why)) = (
-                        fence,
-                        refused_named(&asked.work, &misses, placement::RUNS_NOTHING),
-                    ) {
-                        return Err(format!(
-                            "this asks as {}, so it starts only where that fence runs a command: \
-                         {why}",
-                            By::Agent(kind)
-                        ));
-                    }
-                    if let (Some(kind), Some(why)) = (
-                        fence,
-                        refused_named(&asked.work, &misses, placement::LIFTS_FENCE),
-                    ) {
-                        return Err(format!(
-                            "this asks as {}, so it starts nothing held on a Mac: {why}",
-                            By::Agent(kind)
-                        ));
+                    if let Some(why) = fenced_out(&asked.work, &misses, fence) {
+                        return Err(why);
                     }
                     let nowhere = format!("nowhere: {}", placement::said(&misses));
                     (misses, nowhere)
@@ -5831,12 +5944,7 @@ impl<S: Store> Shared<S> {
         let admits = self.admits().await;
         let machine = match self.place(&asked.work, Counts::Never, fence, Screen::Run, &admits) {
             Placement::Placed { machine, .. } => machine,
-            Placement::Pending { misses } => {
-                return Err(format!(
-                    "nowhere now, though a machine out of reach would do: {}",
-                    placement::said(&misses)
-                ));
-            }
+            Placement::Pending { misses } => return Err(nowhere_now(&misses)),
             Placement::Refused { misses } => return Err(self.run_refused(&asked, by, &misses)),
         };
         let from = asked.from.clone().unwrap_or_else(|| self.machine.clone());
@@ -6282,6 +6390,7 @@ async fn serve<S: Store>(stream: UnixStream, mut shared: Shared<S>) {
         }
         let reply: Answer = match request {
             Ok(Request::Start(asked)) => shared.start(asked).await.into(),
+            Ok(Request::Takes(asked)) => shared.would_take(&asked).await.into(),
             Ok(Request::Relayed { from, start }) => shared.relayed(&from, start).await.into(),
             Ok(Request::Sprout(asked)) => shared.sprout(asked).await.into(),
             Ok(Request::Steer { address, steer }) => shared.steer(&address, &steer).await.into(),
@@ -6398,6 +6507,49 @@ fn refused_on(misses: &[Miss], machine: &str, key: &str) -> Option<String> {
             placement::Because::Refuses(taint) if taint.key == key => Some(taint.why.clone()),
             _ => None,
         })
+}
+
+/// The screen a held start asked `by` is placed through: a run's, where
+/// the agent asking is shown `unfenced`, else a held one's.
+fn held_or_run(unfenced: bool, by: By) -> Screen {
+    if unfenced {
+        Screen::Run
+    } else {
+        held_screen(fence_of(by))
+    }
+}
+
+/// Why work that `misses` say only a machine out of reach would take
+/// starts nowhere now.
+fn nowhere_now(misses: &[Miss]) -> String {
+    format!(
+        "nowhere now, though a machine out of reach would do: {}",
+        placement::said(misses)
+    )
+}
+
+/// Why an agent's `work`, asked in `fence`, starts nowhere, where the
+/// machine it names refused it for that fence: looser ground, a fence
+/// that runs no command there, or a Mac that lifts it. None where the
+/// person asks, or no such refusal was the named machine's.
+fn fenced_out(
+    work: &Work,
+    misses: &[Miss],
+    fence: Option<crate::declared::Kind>,
+) -> Option<String> {
+    let asks = By::Agent(fence?);
+    if let Some(why) = refused_named(work, misses, placement::LOOSER_GROUND) {
+        return Some(format!(
+            "this asks as {asks}, so it starts nothing on looser ground: {why}"
+        ));
+    }
+    if let Some(why) = refused_named(work, misses, placement::RUNS_NOTHING) {
+        return Some(format!(
+            "this asks as {asks}, so it starts only where that fence runs a command: {why}"
+        ));
+    }
+    refused_named(work, misses, placement::LIFTS_FENCE)
+        .map(|why| format!("this asks as {asks}, so it starts nothing held on a Mac: {why}"))
 }
 
 /// Why the machine `work` names refused it with the refusal `key` (its
@@ -14019,6 +14171,171 @@ esac
             ask(socket, Request::Start(held)).await,
             Err("no link reaches osprey now".to_owned()),
             "the person's start is no agent's, so it goes as far as the link"
+        );
+    }
+
+    // A2VLJN (2026-11-21): a carry asks whether its sessions' starts are
+    // taken before it tells any to end, so the ask gives the refusal a
+    // start would, and starts nothing where it would be taken.
+    #[tokio::test]
+    async fn whether_a_start_is_taken_is_judged_as_its_start_and_starts_nothing() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        let osprey = facts::Machine {
+            system: Some("macos".to_owned()),
+            ..fenced("osprey", &["remote"])
+        };
+        store.put_machine(&osprey).expect("what it said is kept");
+        declares_runs(&socket, true);
+        asks_below(&socket, 7001);
+        let held = Start {
+            work: work(vec![Need::Machine("osprey".to_owned())]),
+            folder: None,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+            strict: false,
+        };
+        let asking = || {
+            Request::Takes(Taking {
+                starts: vec![held.clone()],
+                ordered: false,
+            })
+        };
+        let book = socket.with_file_name("starts.jsonl");
+        let kept = || fs::read_to_string(&book).map_or(0, |kept| kept.lines().count());
+        let before = kept();
+        let taken = ask(socket.clone(), asking()).await;
+        assert_eq!(kept(), before, "the ask keeps nothing in the book");
+        assert!(
+            matches!(&taken, Err(why) if why.contains("starts nothing held on a Mac")),
+            "an agent's is refused for the Mac it names: {taken:?}"
+        );
+        assert_eq!(
+            taken,
+            ask(socket.clone(), Request::Start(held.clone())).await,
+            "as its start is"
+        );
+        assert!(kept() > before, "which the start keeps");
+        let stop = socket.with_file_name("starts.stopped");
+        fs::write(&stop, "").expect("the person's stop");
+        let stopped = ask(socket.clone(), asking()).await;
+        assert!(
+            matches!(&stopped, Err(why) if why.starts_with("the person stopped agents")),
+            "the person's stop on agents' starts is weighed first: {stopped:?}"
+        );
+        fs::remove_file(&stop).expect("resumed");
+        asks_as_person(&socket);
+        let Ok(Response::Placement(Placement::Placed { machine, .. })) =
+            ask(socket.clone(), asking()).await
+        else {
+            panic!("the person's start is taken");
+        };
+        assert_eq!(machine, "osprey", "by the machine it names");
+        assert_eq!(
+            ask(socket, Request::Start(held)).await,
+            Err("no link reaches osprey now".to_owned()),
+            "which a start of it would reach for, as the ask didn't"
+        );
+    }
+
+    // An orchestrator past its eight starts an hour still carries, since
+    // its ordered arrivals start uncounted, and the ask weighs a carry's
+    // starts together, so one past the limit is refused before any
+    // session ends.
+    #[tokio::test]
+    async fn an_ordered_carrys_arrivals_are_weighed_uncounted_and_together() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        asks_below(&socket, 7001);
+        let new_work = || Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let unstarted = Err("skiff's node starts no sessions".to_owned());
+        for _ in 0..starts::CELL_AN_HOUR - 1 {
+            assert_eq!(
+                ask(socket.clone(), Request::Start(new_work())).await,
+                unstarted
+            );
+        }
+        let arrival = |session: &str| {
+            let one = crate::carry::Done {
+                session: session.to_owned(),
+                started_before: None,
+            };
+            // From this machine, as an ordered carry's are; to it as
+            // well, so placement here measures nothing of a link.
+            crate::carry::arriving("QEST-20261107-HARBOR", "skiff", "skiff", &one, None)
+        };
+        let takes = |starts, ordered| {
+            let socket = socket.clone();
+            async move { ask(socket, Request::Takes(Taking { starts, ordered })).await }
+        };
+        let book = socket.with_file_name("starts.jsonl");
+        let kept = || fs::read_to_string(&book).map_or(0, |kept| kept.lines().count());
+        let before = kept();
+        let one = takes(vec![arrival("s-a")], false).await;
+        assert!(
+            matches!(&one, Ok(Response::Placement(Placement::Placed { machine, .. })) if machine == "skiff"),
+            "one more start fits the cell's eight: {one:?}"
+        );
+        let two = takes(vec![arrival("s-a"), arrival("s-b")], false).await;
+        assert!(
+            matches!(&two, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "two don't, weighed together: {two:?}"
+        );
+        assert_eq!(kept(), before, "neither ask kept anything in the book");
+        assert_eq!(
+            ask(socket.clone(), Request::Start(new_work())).await,
+            unstarted
+        );
+        let before = kept();
+        let full = takes(vec![arrival("s-a")], false).await;
+        assert!(
+            matches!(&full, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "the cell's eight leave no room: {full:?}"
+        );
+        let ordered = takes(vec![arrival("s-a"), arrival("s-b"), arrival("s-c")], true).await;
+        assert!(
+            matches!(&ordered, Ok(Response::Placement(Placement::Placed { .. }))),
+            "an ordered carry's arrivals go uncounted: {ordered:?}"
+        );
+        let elsewhere = |session: &str| {
+            let one = crate::carry::Done {
+                session: session.to_owned(),
+                started_before: None,
+            };
+            crate::carry::arriving("QEST-20261107-HARBOR", "kestrel", "skiff", &one, None)
+        };
+        let not_from_here = takes(vec![elsewhere("s-a")], true).await;
+        assert!(
+            matches!(&not_from_here, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "an arrival from another machine is no carry from here: {not_from_here:?}"
+        );
+        let fooled = takes(vec![new_work(), new_work()], true).await;
+        assert!(
+            matches!(&fooled, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "but ordered frees only a carry's arrival, word for word: {fooled:?}"
+        );
+        assert_eq!(kept(), before, "no ask keeps anything in the book");
+        let many = takes(vec![arrival("s-a"); TAKES_MOST + 1], true).await;
+        assert!(
+            matches!(&many, Err(why) if why.contains("past the 128 an ask weighs")),
+            "an ask is bounded: {many:?}"
         );
     }
 
