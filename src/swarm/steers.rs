@@ -499,8 +499,7 @@ mod tests {
         swarm.teams[1]["swarm"] = json!("dock");
         swarm.teams[0]["swarm"] = json!("do\u{200B}ck");
         let why = aim(&swarm, Act::Pause, "dock")
-            .err()
-            .expect("a steer to two teams drawn alike is refused");
+            .expect_err("a steer to two teams drawn alike is refused");
         assert!(why.starts_with("dock could be "), "{why}");
     }
 
