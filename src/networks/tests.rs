@@ -892,6 +892,8 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         json!({"key": "quest:joined", "for": "👩\u{200D}💻 Harbour", "folder": "/j"}),
         json!({"key": "quest:persian", "for": "می\u{200C}خواهم", "folder": "/p"}),
         json!({"key": "quest:hidden", "for": "Tide\u{200B} plan\u{FDD0}", "folder": "/h"}),
+        json!({"key": "quest:unchars", "for": "\u{2800}Tide\u{FDD5} \u{FFFE}plan\u{1FFFF}",
+               "folder": "/x"}),
         json!({"key": "quest:untitled", "for": "", "folder": "/u"}),
         json!({"key": "quest:unsaid", "folder": "/u"}),
         json!({"key": "quest:nulled", "for": null, "folder": "/n"}),
@@ -913,13 +915,15 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
             titled("quest:tabbed", "Tab here"),
             titled("quest:titled", &"t".repeat(120)),
             titled("quest:turned", "flynwod"),
+            titled("quest:unchars", "Tide plan"),
             untitled("quest:unsaid"),
             untitled("quest:untitled"),
         ],
         "a title past 120 characters is cut to them, however many bytes each is, counting \
          what is drawn; a control character or separator in it is a space and a mark \
-         turning its direction is gone, as is what draws nothing or a mark, and a cut ends in \
-         no space; the joiners an emoji or a script spells with stay; and a share saying \
+         turning its direction is gone, as is what draws nothing or a noncharacter, a braille \
+         blank at either end too, and a cut ends in no space; the joiners an emoji or a \
+         script spells with stay; and a share saying \
          nothing or null it is for is kept, \
          untitled"
     );
@@ -1951,7 +1955,10 @@ fn a_peer_s_escape_break_or_mark_reaches_no_page() {
     );
     assert_eq!(
         pages(
-            ("Kelp: Ti\u{200b}des\u{fdd0}", "Kelp's\u{200b} question\u{fdd0}"),
+            (
+                "Kelp: Ti\u{200b}des\u{fdd0}",
+                "Kelp's\u{200b} question\u{fdd0}"
+            ),
             "running\u{fdd1} the tests",
             ("ding\u{200b}hy\u{fdd0}", "ready"),
             "nothing\u{200b} is lent\u{fdd0}",

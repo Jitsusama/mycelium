@@ -782,7 +782,10 @@ impl Mycelium {
 /// That `asked` could be any of `many`, each by its `name`, held to one
 /// line, since a cell's name is a peer's text.
 fn several<T>(asked: &str, many: &[&T], name: impl Fn(&T) -> &str) -> String {
-    let names: Vec<String> = many.iter().map(|each| swarm::unmarked(name(each))).collect();
+    let names: Vec<String> = many
+        .iter()
+        .map(|each| swarm::unmarked(name(each)))
+        .collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     format!("{asked} could be {}", swarm::either(&names))
 }

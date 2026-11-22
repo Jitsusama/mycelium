@@ -74,7 +74,8 @@ fn paused(session: &Value) -> bool {
 /// name, then a living session by its address, then a team by a part of
 /// its name, then a living session by a part of its. Several are each
 /// named as they're typed, a team by its short name, so one can be
-/// picked.
+/// picked; two teams whose short names clean alike are several, as
+/// `picked` finds them, so neither takes a steer meant for the other.
 fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     let living = || {
         swarm
@@ -88,28 +89,35 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     // cleaned on both sides, as `picked` matches them, so the name a page
     // shows steers the team it names.
     let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
-    if let Some(team) = swarm.teams.iter().find(|team| {
-        address(team).eq_ignore_ascii_case(asked)
-            || shorts
-                .get(address(team))
-                .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
-    }) {
-        return Ok(Named::Team(team));
-    }
-    if let Some(session) = living().find(|session| {
-        session["address"]
-            .as_str()
-            .is_some_and(|address| address.eq_ignore_ascii_case(asked))
-    }) {
-        return Ok(Named::Session(session));
-    }
-    let lower = unmarked(asked).to_lowercase();
-    let matches = |record: &&Value| unmarked(title(record)).to_lowercase().contains(&lower);
-    let teams: Vec<&Value> = swarm.teams.iter().filter(matches).collect();
-    let mut found: Vec<Named<'_>> = if teams.is_empty() {
-        living().filter(matches).map(Named::Session).collect()
+    let whole: Vec<Named<'_>> = swarm
+        .teams
+        .iter()
+        .filter(|team| {
+            address(team).eq_ignore_ascii_case(asked)
+                || shorts
+                    .get(address(team))
+                    .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
+        })
+        .map(Named::Team)
+        .collect();
+    let mut found: Vec<Named<'_>> = if whole.is_empty() {
+        if let Some(session) = living().find(|session| {
+            session["address"]
+                .as_str()
+                .is_some_and(|address| address.eq_ignore_ascii_case(asked))
+        }) {
+            return Ok(Named::Session(session));
+        }
+        let lower = unmarked(asked).to_lowercase();
+        let matches = |record: &&Value| unmarked(title(record)).to_lowercase().contains(&lower);
+        let teams: Vec<&Value> = swarm.teams.iter().filter(matches).collect();
+        if teams.is_empty() {
+            living().filter(matches).map(Named::Session).collect()
+        } else {
+            teams.into_iter().map(Named::Team).collect()
+        }
     } else {
-        teams.into_iter().map(Named::Team).collect()
+        whole
     };
     if found.len() == 1
         && let Some(one) = found.pop()
@@ -483,6 +491,17 @@ mod tests {
                 "{asked} steered another than Harbour"
             );
         }
+    }
+
+    #[test]
+    fn two_teams_whose_short_names_clean_alike_are_each_named() {
+        let mut swarm = swarm();
+        swarm.teams[1]["swarm"] = json!("dock");
+        swarm.teams[0]["swarm"] = json!("do\u{200B}ck");
+        let why = aim(&swarm, Act::Pause, "dock")
+            .err()
+            .expect("a steer to two teams drawn alike is refused");
+        assert!(why.starts_with("dock could be "), "{why}");
     }
 
     #[test]

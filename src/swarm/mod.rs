@@ -205,15 +205,25 @@ const MARKS: [char; 2] = ['\u{fdd0}', '\u{fdd1}'];
 
 /// `text` from a peer as a marked row draws it: on one line, as
 /// [`one_line`](crate::forage::one_line) says, so a break in a title can't
-/// split the block its counts line up in, with no mark [`aligned`]
-/// reads, so a title can't move a column, and with no space of its own
-/// at either end, so a title's leading spaces can't pass for a row's
-/// indent once it runs on and set a figure under a header.
+/// split the block its counts line up in, with no noncharacter, so no
+/// mark [`aligned`] reads and a title can't move a column, and with no
+/// space or [`BRAILLE_BLANK`] of its own at either end, so a title's
+/// leading spaces can't pass for a row's indent once it runs on and set
+/// a figure under a header.
 pub(crate) fn unmarked(text: &str) -> String {
     crate::forage::one_line(text)
-        .replace(MARKS, "")
+        .chars()
+        .filter(|each| !noncharacter(*each))
+        .collect::<String>()
         .trim_matches(|each: char| each.is_whitespace() || each == BRAILLE_BLANK)
         .to_owned()
+}
+
+/// Whether `each` is one of Unicode's 66 noncharacters, which no font
+/// draws and no text from outside should hold: U+FDD0 to U+FDEF, and the
+/// last two code points of each plane.
+const fn noncharacter(each: char) -> bool {
+    matches!(each, '\u{FDD0}'..='\u{FDEF}') || (each as u32) & 0xFFFE == 0xFFFE
 }
 
 /// `text` with no mark left in it, for a page that lines nothing up.
@@ -833,7 +843,11 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
     let found = if whole.is_empty() {
         things
             .iter()
-            .filter(|thing| unmarked(naming(thing).title).to_lowercase().contains(&lower))
+            .filter(|thing| {
+                unmarked(naming(thing).title)
+                    .to_lowercase()
+                    .contains(&lower)
+            })
             .collect()
     } else {
         whole
