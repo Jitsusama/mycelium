@@ -1450,10 +1450,14 @@ const fn selects(each: char) -> bool {
 /// [`unseen`], not a space, and not a noncharacter, which no font draws
 /// and a table's marks are made of.
 fn spells(each: char) -> bool {
-    !each.is_ascii()
-        && !unseen(each)
-        && !each.is_whitespace()
-        && !matches!(each, '\u{FDD0}'..='\u{FDEF}' | '\u{FFFE}' | '\u{FFFF}')
+    !each.is_ascii() && !unseen(each) && !each.is_whitespace() && !noncharacter(each)
+}
+
+/// Whether `each` is one of Unicode's 66 noncharacters, which no font
+/// draws and no text from outside should hold: U+FDD0 to U+FDEF, and the
+/// last two code points of each plane.
+pub(crate) const fn noncharacter(each: char) -> bool {
+    matches!(each, '\u{FDD0}'..='\u{FDEF}') || (each as u32) & 0xFFFE == 0xFFFE
 }
 
 /// The most lines a cell's purpose takes when drawn, so each block leads
@@ -3556,6 +3560,12 @@ mod tests {
             ("Reef\u{A0}\u{FE0F}", "Reef\u{A0}"),
             ("\u{E9}\u{3000}\u{200D}\u{E9}", "\u{E9}\u{3000}\u{E9}"),
             ("Reef\u{FDD0}\u{FE0F}", "Reef\u{FDD0}"),
+            // So does one past the first plane, which a cleaning drops.
+            ("Reef\u{1FFFF}\u{FE0F}", "Reef\u{1FFFF}"),
+            (
+                "do\u{10FFFE}\u{200D}\u{10FFFE}ck",
+                "do\u{10FFFE}\u{10FFFE}ck",
+            ),
             // A keycap's base is ASCII, so it loses its emoji form.
             ("1\u{FE0F}\u{20E3}", "1\u{20E3}"),
         ] {

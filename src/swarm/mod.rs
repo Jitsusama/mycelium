@@ -213,17 +213,10 @@ const MARKS: [char; 2] = ['\u{fdd0}', '\u{fdd1}'];
 pub(crate) fn unmarked(text: &str) -> String {
     crate::forage::one_line(text)
         .chars()
-        .filter(|each| !noncharacter(*each))
+        .filter(|each| !crate::forage::noncharacter(*each))
         .collect::<String>()
         .trim_matches(|each: char| each.is_whitespace() || each == BRAILLE_BLANK)
         .to_owned()
-}
-
-/// Whether `each` is one of Unicode's 66 noncharacters, which no font
-/// draws and no text from outside should hold: U+FDD0 to U+FDEF, and the
-/// last two code points of each plane.
-const fn noncharacter(each: char) -> bool {
-    matches!(each, '\u{FDD0}'..='\u{FDEF}') || (each as u32) & 0xFFFE == 0xFFFE
 }
 
 /// `text` with no mark left in it, for a page that lines nothing up.
@@ -784,10 +777,11 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
         Picked::None => Err(format!("no team is named {asked}")),
         Picked::Several(many) => {
             // Each is a peer's text, so it is held to one line.
-            let named: Vec<String> = many
-                .iter()
-                .map(|team| unmarked(names::typed(team, &shorts)))
-                .collect();
+            let named = told_apart(
+                many.iter()
+                    .map(|team| (unmarked(names::typed(team, &shorts)), address(team)))
+                    .collect(),
+            );
             Err(format!(
                 "{asked} could be {}",
                 either(&named.iter().map(String::as_str).collect::<Vec<_>>())
@@ -1039,6 +1033,29 @@ fn meetings(
 /// with commas and a last and.
 pub(crate) fn listed(names: &[&str]) -> String {
     joined(names, "and")
+}
+
+/// Each of several choices by the name it's drawn with, and by its
+/// address too where another draws alike, so a refusal offering both
+/// still names something to type for each.
+pub(crate) fn told_apart(named: Vec<(String, &str)>) -> Vec<String> {
+    let alike = |name: &str| {
+        named
+            .iter()
+            .filter(|(other, _)| other.eq_ignore_ascii_case(name))
+            .count()
+            > 1
+    };
+    named
+        .iter()
+        .map(|(name, address)| {
+            if alike(name) {
+                format!("{name} ({address})")
+            } else {
+                name.clone()
+            }
+        })
+        .collect()
 }
 
 /// `names` as a sentence offers a choice of them: two joined by or, or

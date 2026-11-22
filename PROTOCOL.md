@@ -3407,8 +3407,9 @@ a space and each mark turning text's direction is dropped. `for` also
 drops each character that draws nothing and each of Unicode's 66
 noncharacters, keeping a joiner only between two characters past
 ASCII and one selector only after one, and then is trimmed of spaces
-and braille blanks (U+2800), and cut to its first 120 characters with
-any space it then ends in dropped; `folder` is 1 to 1024 bytes. A
+and braille blanks (U+2800), and cut to its first 120 characters, then
+cleaned again, so it ends in no space and no joiner left joining
+nothing; `folder` is 1 to 1024 bytes. A
 `for` said as null or as anything but text is unsaid, and one unsaid,
 empty or cleaned to nothing is left out of the cell record. A cell's
 first 16 shares are read, those past these bounds are passed over,
