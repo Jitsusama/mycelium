@@ -359,6 +359,7 @@ pub async fn run(
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
     let (answering, mut answered) = mpsc::unbounded_channel();
     let (runs, mut run_said) = Runs::new();
+    let (starters, mut learned) = started::Starters::new();
     let inboxes = starting.as_ref().map(|starting| starting.steers.clone());
     let mut end = End {
         store,
@@ -382,7 +383,7 @@ pub async fn run(
         declared: declared_of(starting.as_ref()),
         lender: lender_of(starting.as_ref()),
         node: starting.map(|starting| starting.node),
-        starters: started::Starters::default(),
+        starters,
         answering,
         asks: HashMap::new(),
         runs,
@@ -417,6 +418,7 @@ pub async fn run(
                 send(&mut writing, &Frame::Started { ask, reply }).await
             }
             Some(said) = run_said.recv() => end.run_said(said, &mut writing).await,
+            Some(found) = learned.recv() => end.learned(found, &mut writing).await,
             _ = looking.tick() => end.look(&mut writing).await,
             () = own_health::moved(&mut end.health.told) => end.send_machine(&mut writing).await,
             change = changes.changes.recv() => match change {
@@ -1444,6 +1446,10 @@ impl<S: Store> End<S> {
         held: Option<String>,
         started_by: Option<String>,
     ) {
+        // A starter means something only for a hold, and a worker's node is
+        // whoever runs on the machine lent, so its word is no book's.
+        let started_by =
+            started_by.filter(|by| held.is_some() && !self.worker && crate::forage::is_address(by));
         // The held id and the starter are the link's to say, never the
         // presence's.
         if let Some(fields) = body.as_object_mut() {
@@ -1453,7 +1459,7 @@ impl<S: Store> End<S> {
                 fields.insert(mesh::HELD_AS.to_owned(), Value::String(held));
             }
             // Only an address is a cell's, so nothing longer is kept.
-            if let Some(started_by) = started_by.filter(|by| crate::forage::is_address(by)) {
+            if let Some(started_by) = started_by {
                 fields.insert(mesh::STARTED_BY_AS.to_owned(), Value::String(started_by));
             }
         }
@@ -1790,8 +1796,40 @@ impl<S: Store> End<S> {
             ));
         }
         self.keep_carried()?;
+        // A starter the node named none for is asked about again here too,
+        // so one booked late still crosses while no presence changes.
+        self.ask_starters(&self.living());
         self.send_machine(writing).await?;
         self.hand_over(writing).await
+    }
+
+    /// Asks this machine's node, away from the link's loop, who started
+    /// those of the `living` sessions held here that are due an ask.
+    fn ask_starters(&mut self, living: &BTreeMap<String, (Arc<Value>, Option<String>)>) {
+        if let Some(node) = self.node.as_deref() {
+            let held: Vec<&str> = living
+                .values()
+                .filter_map(|(_, held)| held.as_deref())
+                .collect();
+            self.starters.ask(node, &held);
+        }
+    }
+
+    /// Keeps what an ask of this machine's node found of who started its
+    /// held sessions, telling once of each way it couldn't say, and sends
+    /// the presences whose starter it named.
+    async fn learned(
+        &mut self,
+        found: started::Learned,
+        writing: &mut (impl AsyncWrite + Unpin),
+    ) -> io::Result<()> {
+        if let Some(why) = self.starters.learned(found, tokio::time::Instant::now()) {
+            eprintln!(
+                "who started {}'s held sessions goes unsaid to {} until its node says: {why}",
+                self.here, self.other
+            );
+        }
+        self.send_presence(writing).await
     }
 
     /// Tells an end that can release this machine that it has handed over
@@ -1916,13 +1954,7 @@ impl<S: Store> End<S> {
             self.sent.remove(&session);
             send(writing, &Frame::Ended { session }).await?;
         }
-        if let Some(node) = self.node.as_deref() {
-            let held: Vec<&str> = living
-                .values()
-                .filter_map(|(_, held)| held.as_deref())
-                .collect();
-            self.starters.learn(node, &held).await;
-        }
+        self.ask_starters(&living);
         let holdings = self.store.holdings();
         for (session, (body, held)) in living {
             let started_by = held
@@ -2994,48 +3026,205 @@ mod tests {
         })
     }
 
+    /// The presence of `session`, held unless `held` says not, as a far
+    /// end says it with `started_by`, the presence itself naming a starter
+    /// of its own.
+    fn started(session: &str, held: bool, started_by: Option<&str>) -> Frame {
+        Frame::Presence {
+            session: session.to_owned(),
+            body: json!({"session": session, mesh::STARTED_BY_AS: "FORGED"}),
+            leases: None,
+            held: held.then(|| format!("held-{session}")),
+            started_by: started_by.map(str::to_owned),
+        }
+    }
+
+    /// The starter `store` keeps beside the presence of `session`.
+    fn starter_kept(store: &Memory, session: &str) -> Value {
+        store
+            .presences()
+            .into_iter()
+            .find(|presence| presence.session == session)
+            .map(|presence| presence.body[mesh::STARTED_BY_AS].clone())
+            .expect("its presence is kept")
+    }
+
     // A session's starter is the far end's to say beside its presence, as
     // its node's book names it, so a presence naming one of its own is
-    // never believed, and the far end's word is kept only as an address.
+    // never believed, and the far end's word is kept only as an address,
+    // and only for a hold.
     #[tokio::test]
     async fn a_starter_is_kept_as_the_far_end_says_it_never_as_the_presence_does() {
         let skiff = Memory::default();
         let (near, far) = tokio::io::duplex(1 << 16);
         let _skiff_end = end(&skiff, "skiff", near);
         let (_far_reading, mut far_writing) = tokio::io::split(far);
-        let started = |session: &str, started_by: Option<&str>| Frame::Presence {
-            session: session.to_owned(),
-            body: json!({"session": session, mesh::STARTED_BY_AS: "FORGED"}),
-            leases: None,
-            held: Some(format!("held-{session}")),
-            started_by: started_by.map(str::to_owned),
-        };
+        let longest = "A".repeat(32);
+        let longer = "A".repeat(33);
         says(
             &mut far_writing,
             &[
                 Frame::Hello(realm("kestrel").hello()),
                 Frame::Have {
                     messages: Vec::new(),
-                    living: Some(["booked", "unbooked", "long"].map(str::to_owned).to_vec()),
+                    living: Some(
+                        [
+                            "booked", "unbooked", "spaced", "longest", "longer", "unheld",
+                        ]
+                        .map(str::to_owned)
+                        .to_vec(),
+                    ),
                 },
-                started("booked", Some("OAR001")),
-                started("unbooked", None),
-                started("long", Some("not an address at all")),
+                started("booked", true, Some("OAR001")),
+                started("unbooked", true, None),
+                started("spaced", true, Some("not an address")),
+                started("longest", true, Some(&longest)),
+                started("longer", true, Some(&longer)),
+                started("unheld", false, Some("OAR001")),
             ],
         )
         .await;
-        until(&skiff, |store| store.presences().len() == 3).await;
-        let said = |session: &str| {
-            skiff
-                .presences()
-                .into_iter()
-                .find(|presence| presence.session == session)
-                .map(|presence| presence.body[mesh::STARTED_BY_AS].clone())
-                .expect("its presence is kept")
-        };
+        until(&skiff, |store| store.presences().len() == 6).await;
+        let said = |session: &str| starter_kept(&skiff, session);
         assert_eq!(said("booked"), json!("OAR001"), "the far end's starter");
         assert_eq!(said("unbooked"), Value::Null, "none, not the presence's");
-        assert_eq!(said("long"), Value::Null, "none, as it is no address");
+        assert_eq!(said("spaced"), Value::Null, "none, as it is no address");
+        assert_eq!(
+            said("longest"),
+            json!(longest),
+            "an address as long as one goes"
+        );
+        assert_eq!(
+            said("longer"),
+            Value::Null,
+            "none, as it is longer than an address"
+        );
+        assert_eq!(
+            said("unheld"),
+            Value::Null,
+            "none for a session nothing holds"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worker_names_no_starter() {
+        let skiff = Memory::default();
+        let (_skiff_end, _far_reading, mut far_writing) = skiff_over(
+            skiff.clone(),
+            |connection| Connection {
+                worker: true,
+                ..connection
+            },
+            None,
+        );
+        says(
+            &mut far_writing,
+            &[
+                Frame::Hello(realm("tern").hello()),
+                Frame::Have {
+                    messages: Vec::new(),
+                    living: Some(vec!["lent".to_owned()]),
+                },
+                started("lent", true, Some("OAR001")),
+            ],
+        )
+        .await;
+        until(&skiff, |store| !store.presences().is_empty()).await;
+        assert_eq!(
+            starter_kept(&skiff, "lent"),
+            Value::Null,
+            "whoever runs on a lent machine runs its node, so its book is nobody's word"
+        );
+    }
+
+    // A node slow to say who started a held session holds back nothing on
+    // the link: its presence goes at once, and again with the starter
+    // once the node names one.
+    #[tokio::test]
+    async fn a_held_sessions_presence_goes_before_its_node_names_its_starter_and_again_after() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let kestrel = Memory::default();
+        let held = dir.path().join("held");
+        std::fs::create_dir(&held).expect("the held folder");
+        let holds = hold::Held {
+            id: "5e551011".to_owned(),
+            command: vec!["pi".to_owned()],
+            folder: dir.path().to_owned(),
+            holder: std::process::id(),
+            pid: 4242,
+            parked: false,
+            since: "2026-11-22T06:00:00Z".to_owned(),
+            windows: Vec::new(),
+        };
+        std::fs::write(
+            held.join("5e551011.json"),
+            serde_json::to_vec(&holds).expect("a record"),
+        )
+        .expect("the hold is kept");
+        std::fs::write(held.join("5e551011.sock"), "").expect("its socket stands");
+        kestrel.start_here(
+            "0e50",
+            json!({"session": "0e50", "owner": {"pid": 4242}}),
+            true,
+        );
+        let node = dir.path().join("node.sock");
+        let (answer, answered) = oneshot::channel::<()>();
+        let listener = tokio::net::UnixListener::bind(&node).expect("the node listens");
+        tokio::spawn(async move {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            // The node answers only once the test lets it.
+            let _ = answered.await;
+            let (_reading, mut writing) = stream.into_split();
+            let reply: Reply = Ok(Response::StartedBy(std::collections::BTreeMap::from([(
+                "5e551011".to_owned(),
+                "OAR001".to_owned(),
+            )])));
+            let mut said = serde_json::to_vec(&reply).expect("a reply");
+            said.push(b'\n');
+            let _ = writing.write_all(&said).await;
+        });
+        let skiff = Memory::default();
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let _near = end(&skiff, "skiff", near);
+        let starting = Starting {
+            node,
+            held,
+            asking: None,
+            steers: dir.path().join("steer"),
+            health: None,
+            declared: None,
+            kit: None,
+            saturation: None,
+        };
+        let (reading, writing) = tokio::io::split(far);
+        let _far = tokio::spawn(async move {
+            run(
+                kestrel,
+                &realm("kestrel"),
+                connection(reading, writing),
+                None,
+                Some(starting),
+            )
+            .await
+            .map(|_| ())
+        });
+
+        until(&skiff, |store| !store.presences().is_empty()).await;
+        assert_eq!(
+            starter_kept(&skiff, "0e50"),
+            Value::Null,
+            "the presence goes before the node has said"
+        );
+        answer.send(()).expect("the node is let answer");
+        until(&skiff, |store| {
+            store
+                .presences()
+                .iter()
+                .any(|presence| presence.body[mesh::STARTED_BY_AS] == "OAR001")
+        })
+        .await;
     }
 
     #[tokio::test]

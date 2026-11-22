@@ -13163,21 +13163,27 @@ esac
         let near_socket = dir.path().join("skiff").join("work.sock");
         // Made as the node makes it, open to nobody else, so its socket goes
         // there.
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir.path().join("kestrel"))
-            .expect("the node's folder");
-        // Kestrel's book says OAR001 asked for the hold SAK9FZ runs in.
-        let started = json!({
-            "at": jiff::Timestamp::now().as_millisecond(), "by": {"Agent": "fence"},
-            "started_by": "OAR001", "machine": "kestrel", "held": "5e551011",
-        });
-        fs::write(
-            far_socket.with_file_name("starts.jsonl"),
-            format!("{started}\n"),
-        )
-        .expect("a book");
+        for machine in ["kestrel", "skiff"] {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir.path().join(machine))
+                .expect("the node's folder");
+        }
+        // Kestrel's book says OAR001 asked for the hold SAK9FZ runs in, and
+        // skiff's that OAR002 did, as a start skiff relayed there would
+        // book it, so each machine's node says its own book's word first.
+        for (socket, by) in [(&far_socket, "OAR001"), (&near_socket, "OAR002")] {
+            let started = json!({
+                "at": jiff::Timestamp::now().as_millisecond(), "by": {"Agent": "fence"},
+                "started_by": by, "machine": "kestrel", "held": "5e551011",
+            });
+            fs::write(
+                socket.with_file_name("starts.jsonl"),
+                format!("{started}\n"),
+            )
+            .expect("a book");
+        }
         let far_store = Memory::default();
         let held = hold_a_session(dir.path(), &far_store);
         // Kestrel's node reads its holds where its link's end does.
@@ -13197,11 +13203,27 @@ esac
         let carried = listed_as(near_socket.clone(), "0e50", |one| one.started_by.is_some()).await;
         assert_eq!(
             carried.started_by.as_deref(),
-            Some("OAR001"),
-            "the session carried says the starter kestrel's book holds"
+            Some("OAR002"),
+            "the session carried says the starter skiff's own book holds"
         );
+        // Kestrel's word crossed all the same, beside the presence.
+        let crossed = |store: &Memory| {
+            store.presences().iter().any(|presence| {
+                presence.session == "0e50" && presence.body[crate::mesh::STARTED_BY_AS] == "OAR001"
+            })
+        };
+        let mut changes = near_store
+            .changes()
+            .expect("a memory store tells its changes");
+        tokio::time::timeout(PATIENCE, async {
+            while !crossed(&near_store) {
+                changes.changes.recv().await;
+            }
+        })
+        .await
+        .expect("kestrel's end says the starter kestrel's book holds");
 
-        for socket in [&far_socket, &near_socket] {
+        for (socket, by) in [(&far_socket, "OAR001"), (&near_socket, "OAR002")] {
             let (mut client, _hello) = Speaking::hello(socket).await;
             client
                 .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
@@ -13215,8 +13237,8 @@ esac
             .await
             .unwrap_or_else(|_| panic!("{} says SAK9FZ's starter in time", socket.display()));
             assert_eq!(
-                cell["started_by"], "OAR001",
-                "each machine's cell record says its starter, from the book: {cell}"
+                cell["started_by"], by,
+                "each machine's cell record says its starter, from its book: {cell}"
             );
         }
     }

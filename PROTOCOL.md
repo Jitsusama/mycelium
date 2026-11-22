@@ -132,11 +132,17 @@ same code, each line a JSON value:
    leases, its `held` id or its starter change. `held` is the id a
    holder there keeps it by, which the other end writes into the carried
    presence as `heldAs`. `started_by` is the cell that machine's node's
-   book of starts says asked for that hold, which the end asks its node
-   with `{"StartedBy": [held]}` and the other end writes into the
-   presence as `startedByAs`, only where it is an address. Either field
-   a presence says of itself is dropped first, so neither is ever the
-   session's own word. An end older than `started_by` says none.
+   book of starts says asked for that hold, which the other end writes
+   into the presence as `startedByAs`, only where it is an address, the
+   presence names a `held` id, and the sending end is no worker, whose
+   node is whoever runs on the machine lent. Either field a presence
+   says of itself is dropped first, so neither is ever the session's own
+   word. The end asks its node with `{"StartedBy": [held]}` apart from
+   the link's other work, sending each presence with the starters known
+   so far and again once one more is named; a hold named none is asked
+   about again after 30 seconds, with the next presence or the next
+   minute's keep, and a node that can't say is told of once on the
+   end's standard error. An end older than `started_by` says none.
    `leases` are the mesh's `change` leases it and its hands hold on a
    repository's files, named as `core.nix:flake.nix`, so a session in
    another clone there is told it overlaps; one named by an absolute
@@ -1312,7 +1318,9 @@ known by the holder's program being the session's own process, which
 only its own machine sees, so a link carries it with the presence. A
 held session says `started_by` where a book of starts names who asked
 for its hold: this node's, for a start asked of it here or relayed to
-another machine, else that machine's node's, as its link carried it. A
+another machine, else that machine's node's, as its link carried it.
+A start relayed is booked only where it was asked, so only that
+machine's records name its starter by a book. A
 held session of this machine's has as its `window` the latest window
 joined to its holder that is still joined, or none. A held session says
 `attach` too, the words that join it from a terminal on this machine, to
@@ -2643,8 +2651,9 @@ same records as the `network` kind, less its `kind`: its `type`
 characters a terminal draws as plain text), `usage`, the networks it
 `leads`, `machine`, `since`, `quest`, `started_by` (the cell its
 session's record says a book of starts names, else the orchestrator it
-names, each only as an address) with `started_by_from` (`book` or
-`presence`), `plan`, `cwd`, the
+names, each only as an address other than its own) with
+`started_by_from` (`book` or `presence`; only `book` is a node's word,
+as `presence` is the session's own claim), `plan`, `cwd`, the
 `trees` it holds, the folders it `shares`, a machine's or a
 receptor's `state`, a machine's `busy` and the sessions it `runs`, a
 receptor's `counts`, and the `networks` it joined. A session's `quest`
