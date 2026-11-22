@@ -5183,6 +5183,18 @@ impl<S: Store> Shared<S> {
             .await
     }
 
+    /// The fence a start relayed as the person's is judged in here: none,
+    /// unless this node fences its held starts, where it takes the one it
+    /// was sent declaring, which its sender placed it in, so it starts in
+    /// that fence or not at all. Elsewhere pi fences itself.
+    fn persons_relay_fence(&self, asked: &Start) -> Option<crate::declared::Kind> {
+        asked
+            .work
+            .fence
+            .filter(|_| self.fences_held)
+            .map(|declared| declared.kind.into())
+    }
+
     /// `asked` declaring at least the fence its session ran in here, where
     /// it brings one carried from here back ([`declaring_carried`]): the
     /// stricter of what the session claimed and the strictest it was seen
@@ -5688,15 +5700,7 @@ impl<S: Store> Shared<S> {
             },
             None => None,
         };
-        // The person's relay is otherwise judged in no fence. A node that
-        // fences its held starts takes the one it was sent declaring,
-        // which its sender placed it in, so it starts there in that
-        // fence or not at all; elsewhere pi fences itself.
-        let fence = asked
-            .work
-            .fence
-            .filter(|_| self.fences_held)
-            .map(|declared| declared.kind.into());
+        let fence = self.persons_relay_fence(&asked);
         let started = match self.here(asked, fence).await {
             Ok(Response::Started(started)) => Ok(started),
             Ok(_) => Err("it answered with no session".to_owned()),
