@@ -34,13 +34,17 @@ const ACTS: [&str; 3] = ["say", "pause", "resume"];
 
 /// Whether `name`, copied after `swarm` into a shell, reads as one name
 /// and nothing more: one word of letters, digits, `-`, `_` and `.`,
-/// which no shell splits or acts on, and no act, which `swarm` would do.
+/// which no shell splits or acts on, led by a letter or digit, so no
+/// option is read from it, and neither an act, which `swarm` would do,
+/// nor `team`, which it reads as the person saying what follows.
 pub(super) fn one_word(name: &str) -> bool {
-    !name.is_empty()
+    let lower = name.to_lowercase();
+    name.chars().next().is_some_and(char::is_alphanumeric)
         && name
             .chars()
             .all(|each| each.is_alphanumeric() || matches!(each, '-' | '_' | '.'))
-        && !ACTS.contains(&name.to_lowercase().as_str())
+        && !ACTS.contains(&lower.as_str())
+        && lower != "team"
 }
 
 /// The most words before a colon that still read as a name.
