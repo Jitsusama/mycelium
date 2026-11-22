@@ -1763,9 +1763,10 @@ never placed unfenced, not even by a node that is handed one so. Its
 `screen` is what that work was placed through beside its fence: `"run"`,
 or `"held"`, which no Mac takes. An agent's start whose asker is shown
 unfenced is placed through `"run"`, which a Mac may take, so a start
-saying `"run"` is that exemption, not a mistake. Both are left out where the work was placed unfenced: the person's
-work, and a start relayed here that this node took as the person's, on
-the asking machine's word. A start relayed here that this node took as
+saying `"run"` is that exemption, not a mistake. Both are left out
+where the work was placed unfenced: the person's work, and a start
+relayed here that this node took as the person's, on the asking
+machine's word. A start relayed here that this node took as
 an agent's says its fence, and `"held"`. A word a build doesn't know,
 in either, as does a `null`, reads as `"unknown"`, never as unfenced,
 and spares the rest of the record.
