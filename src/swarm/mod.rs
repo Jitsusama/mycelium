@@ -360,37 +360,94 @@ pub(crate) fn drawn_width(text: &str) -> usize {
 /// the cut goes, as it would join nothing, and a pile of marks past
 /// [`STEPS_PER_CELL`] steps to a cell is cut.
 pub(crate) fn within(text: &str, room: usize) -> &str {
-    // Each start is measured whole rather than summed a character at a
-    // time: a selector widens the heart before it, and a joiner makes
-    // two emoji one, so a start can draw wider or narrower than its
-    // characters. None narrows what came before it by more than a cell,
-    // so once a start is two cells past the room no longer one fits and
-    // the walk stops. With its steps capped too, a cut costs what its
-    // room does, never what its text does, which may be a peer's
-    // message of 256 KiB.
-    let most = room.saturating_add(1).saturating_mul(STEPS_PER_CELL);
-    let mut kept = "";
-    let mut at = 0;
-    let mut steps = 0;
-    while at < text.len() && steps < most {
-        steps += 1;
-        let rest = &text[at..];
-        at += rest.strip_prefix("\u{1b}[").map_or_else(
-            || rest.chars().next().map_or(1, char::len_utf8),
+    // A selector widens the heart before it and a joiner makes two emoji
+    // one, so a start can draw wider or narrower than its characters
+    // summed. Unicode's width rules join a character to what's before it
+    // only in the cases `starts_afresh` names, so the cells up to any
+    // other are settled and only the run since is measured again: a cut
+    // costs what it walks, even into a pipe, where the room is the whole
+    // text, which may be a peer's message of 256 KiB. The one sequence
+    // narrower than its characters, a text selector after an emoji,
+    // narrows by a cell, so a start two cells past the room never comes
+    // back within it and the walk stops there.
+    let mut kept = 0;
+    let (mut at, mut from, mut settled, mut since) = (0, 0, 0, 0);
+    let mut before: Option<char> = None;
+    for step in steps(text).take(most_steps(room)) {
+        if let Some(each) = step.chars().next().filter(|_| !step.starts_with("\u{1b}[")) {
+            if starts_afresh(before, each) || (since >= LONGEST_RUN && splits(before, each)) {
+                settled += drawn_width(&text[from..at]);
+                from = at;
+                since = 0;
+            }
+            before = Some(each);
+        }
+        since += 1;
+        at += step.len();
+        let drawn = settled + drawn_width(&text[from..at]);
+        if drawn <= room {
+            kept = at;
+        } else if drawn > room.saturating_add(2) {
+            break;
+        }
+    }
+    text[..kept].trim_end_matches('\u{200D}')
+}
+
+/// Each step a cut takes through `text`: a colour's escape whole, else
+/// one character.
+fn steps(text: &str) -> impl Iterator<Item = &str> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        let step = rest.strip_prefix("\u{1b}[").map_or_else(
+            || rest.chars().next().map_or(0, char::len_utf8),
             |after| {
                 2 + after
                     .find(|each: char| ('@'..='~').contains(&each))
                     .map_or(after.len(), |end| end + 1)
             },
         );
-        let drawn = drawn_width(&text[..at]);
-        if drawn <= room {
-            kept = &text[..at];
-        } else if drawn > room.saturating_add(2) {
-            break;
-        }
-    }
-    kept.trim_end_matches('\u{200D}')
+        let (taken, left) = rest.split_at(step);
+        rest = left;
+        (step > 0).then_some(taken)
+    })
+}
+
+/// Whether no width rule of Unicode's joins `each` to what's before it:
+/// it takes a cell of its own, isn't a modifier, a flag's half or a
+/// letter of a script whose ligatures narrow, and follows no joiner.
+fn starts_afresh(before: Option<char>, each: char) -> bool {
+    let follows_a_joiner = matches!(before, Some('\u{200D}' | '\u{2D7F}' | '\u{17D2}' | '\r'));
+    let joins_what_is_before = matches!(
+        each,
+        // Emoji modifiers and regional indicators.
+        '\u{1F3FB}'..='\u{1F3FF}' | '\u{1F1E6}'..='\u{1F1FF}'
+        // Arabic, where an alef joins the lam before it.
+        | '\u{0600}'..='\u{08FF}' | '\u{FB50}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFF}'
+        // Lisu's tone letters, Kirat Rai's vowels and Tifinagh's joiner.
+        | '\u{A4F8}'..='\u{A4FF}' | '\u{16D40}'..='\u{16D7F}' | '\u{2D7F}'
+    );
+    !follows_a_joiner
+        && !joins_what_is_before
+        && unicode_width::UnicodeWidthChar::width(each).is_some_and(|cells| cells > 0)
+}
+
+/// Whether a run measured apart before `each` counts at least the cells
+/// it draws: split anywhere else a sequence only counts more, so a cut
+/// keeps less, but a selector split from what it selects counts less.
+fn splits(before: Option<char>, each: char) -> bool {
+    let selector = |each: char| matches!(each, '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}');
+    !selector(each) || before.is_some_and(selector)
+}
+
+/// The most steps measured together before a cut settles them, which only
+/// a run with no fresh start reaches: a pile of marks, or many emoji
+/// joined with no space between. Anything Unicode joins is shorter.
+const LONGEST_RUN: usize = 32;
+
+/// The most steps a cut to `room` takes.
+const fn most_steps(room: usize) -> usize {
+    room.saturating_add(1).saturating_mul(STEPS_PER_CELL)
 }
 
 /// The most steps, a character or a colour's escape, a cut keeps for
@@ -447,10 +504,8 @@ impl Look {
 /// one an ellipsis where cut.
 pub(crate) fn fit(text: &str, width: usize) -> String {
     // What draws within the width is kept whole, unless it piles more
-    // steps on its cells than a cut keeps.
-    if drawn_width(text) <= width
-        && within(text, width).len() == text.trim_end_matches('\u{200D}').len()
-    {
+    // steps on its cells than a cut keeps, joiners as much as marks.
+    if drawn_width(text) <= width && steps(text).nth(most_steps(width)).is_none() {
         return text.to_owned();
     }
     format!("{}…", within(text, width.saturating_sub(1)).trim_end())
@@ -466,13 +521,17 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
         width.saturating_sub(drawn_width(indent)).max(1)
     };
     let mut lines: Vec<String> = Vec::new();
+    // The cells the last line takes, added to as it grows rather than
+    // measured again for each word, as no sequence spans a space, so a
+    // long text drawn whole costs what it does once.
+    let mut drawn = 0;
     for word in text.split_whitespace() {
-        let joins = lines
-            .last()
-            .is_some_and(|line| drawn_width(line) + 1 + drawn_width(word) <= room(lines.len() - 1));
+        let cells = drawn_width(word);
+        let joins = !lines.is_empty() && drawn + 1 + cells <= room(lines.len() - 1);
         if let Some(line) = lines.last_mut().filter(|_| joins) {
             line.push(' ');
             line.push_str(word);
+            drawn += 1 + cells;
             continue;
         }
         let mut left = word;
@@ -487,6 +546,7 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
             if taken.is_empty() {
                 taken = &left[..left.chars().next().map_or(0, char::len_utf8)];
             }
+            drawn = drawn_width(taken);
             lines.push(taken.to_owned());
             left = &left[taken.len()..];
         }

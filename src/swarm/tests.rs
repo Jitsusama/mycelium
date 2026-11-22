@@ -904,6 +904,11 @@ fn a_cut_or_pad_keeps_to_cells_and_never_splits_a_wide_character() {
             "港",
             "a joiner between two Han characters goes at the cut",
         ),
+        (
+            within("⌚\u{FE0E}x", 1),
+            "⌚\u{FE0E}",
+            "a start past the edge comes back within it once a text selector follows",
+        ),
     ] {
         if cut != kept {
             split.push(format!("{what}: {cut:?}"));
@@ -947,33 +952,129 @@ fn a_cut_or_pad_keeps_to_cells_and_never_splits_a_wide_character() {
 }
 
 #[test]
-fn a_long_text_costs_what_its_room_does_and_a_pile_of_marks_is_cut() {
-    use std::time::{Duration, Instant};
+fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
+    // Measured by Unicode's widths directly, a start at a time, as the
+    // cut measured before it settled what it had walked.
+    fn longest(text: &str, room: usize) -> &str {
+        let mut kept = "";
+        for (at, each) in text.char_indices() {
+            let start = &text[..at + each.len_utf8()];
+            if drawn_width(start) <= room {
+                kept = start;
+            }
+        }
+        kept.trim_end_matches('\u{200D}')
+    }
+    let mut wrong = Vec::new();
+    for text in [
+        "❤\u{FE0F}x❤\u{FE0E}y",
+        "⌚\u{FE0E}ab⌚c",
+        "👩\u{200D}💻👩\u{200D}💻a👍\u{1F3FD}b",
+        "🇨🇦🇺🇸 1\u{FE0F}\u{20E3}x",
+        "لا ab لآ",
+        "ꓹꓼ a ⵏ\u{2D7F}ⴾ b",
+        "港\u{200D}湾 e\u{301}\u{302}x",
+        "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}b",
+    ] {
+        for room in 0..16 {
+            let (cut, whole) = (within(text, room), longest(text, room));
+            if cut != whole {
+                wrong.push(format!("{text:?} to {room}: {cut:?}, not {whole:?}"));
+            }
+        }
+    }
+    // Past a run of steps with no fresh start the cut settles anyway,
+    // which may count more than is drawn but never less.
+    let joined = "👩\u{200D}".repeat(40);
+    for room in 0..16 {
+        if drawn_width(within(&joined, room)) > room {
+            wrong.push(format!("a long joined run to {room} passed it"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "cuts that weren't the longest start: {wrong:#?}"
+    );
+}
+
+#[test]
+fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut() {
+    use std::{sync::mpsc, thread, time::Duration};
+    /// A cut by what it is, and whether it came out right.
+    type Cut = (&'static str, fn() -> bool);
     // A peer's message may be 256 KiB on one line; measured to its end
     // at each start, cutting it takes minutes and wrapping it longer.
+    // Into a pipe the room is the whole text, so neither its room nor a
+    // cap on steps bounds it there.
     let budget = Duration::from_secs(5);
-    let started = Instant::now();
-    let cut = fit(&"港".repeat(60_000), 80);
-    let took = started.elapsed();
+    // Each cut runs on a thread of its own, so one that costs what its
+    // text does fails at the budget rather than holding the run for
+    // hours; the test's process ends what it leaves running.
+    let within_budget = |cut: fn() -> bool| {
+        let (sent, heard) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sent.send(cut());
+        });
+        heard.recv_timeout(budget)
+    };
+    let cases: [Cut; 7] = [
+        ("Han cut to 80", || {
+            drawn_width(&fit(&"港".repeat(60_000), 80)) <= 80
+        }),
+        ("one word wrapped to 80", || {
+            wrapped(&"a".repeat(20_000), "", "", 80).lines().count() == 250
+        }),
+        ("Han cut to its own width", || {
+            let han = "港".repeat(60_000);
+            within(&han, drawn_width(&han)) == han
+        }),
+        ("one word fitted whole", || {
+            let word = "a".repeat(256 * 1024);
+            fit(&word, WHOLE) == word
+        }),
+        ("one word wrapped whole", || {
+            wrapped(&"a".repeat(256 * 1024), "  ", "    ", WHOLE)
+                .lines()
+                .count()
+                == 1
+        }),
+        ("many words wrapped whole", || {
+            wrapped(&"ab ".repeat(80_000), "", "", WHOLE)
+                .lines()
+                .count()
+                == 1
+        }),
+        // Each emoji starts afresh, so a cut settles at each and counts
+        // exactly: forty of them take eighty cells.
+        ("joined emoji cut to 80", || {
+            within(&"👩\u{200D}💻".repeat(20_000), 80).chars().count() == 40 * 3
+        }),
+    ];
+    let slow: Vec<String> = cases
+        .iter()
+        .filter_map(|(what, cut)| match within_budget(*cut) {
+            Ok(true) => None,
+            Ok(false) => Some(format!("{what}: cut wrong")),
+            Err(_) => Some(format!("{what}: still cutting after {budget:?}")),
+        })
+        .collect();
     assert!(
-        took < budget && drawn_width(&cut) <= 80,
-        "cutting a long text took {took:?}, as if each start were measured to its end"
+        slow.is_empty(),
+        "cuts that cost what their text does: {slow:#?}"
     );
-    let started = Instant::now();
-    let lines = wrapped(&"a".repeat(20_000), "", "", 80).lines().count();
-    let took = started.elapsed();
-    assert!(
-        took < budget && lines == 250,
-        "wrapping one long word took {took:?} into {lines} lines"
-    );
-    // A name buried in marks that draw nothing measures one cell, so
-    // only the cap on steps keeps it from putting them all on the line.
-    let buried = format!("a{}", "\u{301}".repeat(10_000));
-    let kept = fit(&buried, 10).chars().count();
-    assert!(
-        kept <= 10 * 8 + 1,
-        "a pile of marks passed a cut whole: {kept} characters kept"
-    );
+    // A name buried in marks or joiners that draw nothing measures one
+    // cell, so only the cap on steps keeps it from putting them all on
+    // the line.
+    for buried in [
+        format!("a{}", "\u{301}".repeat(10_000)),
+        format!("a{}", "\u{200D}".repeat(10_000)),
+    ] {
+        let kept = fit(&buried, 10).chars().count();
+        assert!(
+            kept <= 10 * 8 + 1,
+            "a pile passed a cut whole: {kept} characters kept"
+        );
+    }
 }
 
 #[test]
