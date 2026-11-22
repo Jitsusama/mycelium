@@ -8983,7 +8983,7 @@ esac
                 "/nix/store/0000-fence/bin/fence".to_owned(),
                 "--".to_owned(),
             ],
-            accepts: std::collections::BTreeMap::new(),
+            accepts: BTreeMap::new(),
         };
         facts::Machine {
             declared: Some(crate::declared::Declared {
