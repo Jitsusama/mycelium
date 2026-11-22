@@ -890,7 +890,7 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
         things
             .iter()
             .filter(|thing| {
-                by_address.iter().any(|one| std::ptr::eq(*one, *thing)) || by_short(*thing)
+                by_address.iter().any(|one| std::ptr::eq(*one, *thing)) || by_short(thing)
             })
             .collect()
     };
