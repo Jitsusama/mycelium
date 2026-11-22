@@ -1699,7 +1699,9 @@ mod tests {
             4,
             "each carried session starts there, and the quest's trees arrive"
         );
-        let trees = &realm.started[3];
+        // After the sessions told, and before those found only after the
+        // ask, as start_each orders them.
+        let trees = &realm.started[2];
         assert_eq!(
             &trees.command[3..7],
             [PI_CARRY, QUEST, "skiff", QUEST],

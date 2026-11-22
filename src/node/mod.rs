@@ -5369,30 +5369,53 @@ impl<S: Store> Shared<S> {
         if asked.starts.iter().any(|one| one.command.is_empty()) {
             return Err("nothing to start: name a program".to_owned());
         }
-        let admits = self.admits().await;
+        // Each start's fence and line in the book first, up to the first
+        // either refuses, then the book weighed once over all of them, so
+        // an ask costs one pass however many it holds; then each placed
+        // up to the first refused, which answers the same refusal as
+        // starting them one after another would.
+        let mut weighed = Vec::with_capacity(asked.starts.len());
         let mut book = Vec::with_capacity(asked.starts.len());
-        let mut answer = Err("nothing to start: name a start".to_owned());
+        let mut unweighed = None;
         for one in &asked.starts {
-            let (by, _, charged) = self.judged_declaring(one.work.fence).await?;
-            let (one, kept) = self.booked_as((by, charged), one, asked.ordered)?;
-            book.push(kept);
-            if let Some(why) = self.starts.would_refuse(&book, START_WAITS_MOST) {
-                return Err(why);
-            }
-            let fence = fence_of(by);
-            let unfenced = self.unfenced_asking(by, one.work.fence).await;
-            let screen = held_or_run(unfenced.is_some(), by);
-            answer = match self.place(&one.work, Counts::Never, fence, screen, &admits) {
-                placed @ Placement::Placed { .. } => Ok(Response::Placement(placed)),
-                Placement::Pending { misses } => Err(nowhere_now(&misses)),
-                Placement::Refused { misses } => Err(fenced_out(&one.work, &misses, fence)
-                    .unwrap_or_else(|| format!("nowhere: {}", placement::said(&misses)))),
+            let judged = match self.judged_declaring(one.work.fence).await {
+                Ok((by, _, charged)) => self
+                    .booked_as((by, charged), one, asked.ordered)
+                    .map(|(one, kept)| (by, one, kept)),
+                Err(why) => Err(why),
             };
-            if answer.is_err() {
-                break;
+            match judged {
+                Ok((by, one, kept)) => {
+                    weighed.push((by, one));
+                    book.push(kept);
+                }
+                Err(why) => {
+                    unweighed = Some(why);
+                    break;
+                }
             }
         }
-        answer
+        let unbooked = self.starts.would_refuse(&book, START_WAITS_MOST);
+        let booked = unbooked.as_ref().map_or(weighed.len(), |(first, _)| *first);
+        let admits = self.admits().await;
+        let mut answer = Err("nothing to start: name a start".to_owned());
+        for (by, one) in &weighed[..booked] {
+            let fence = fence_of(*by);
+            let unfenced = self.unfenced_asking(*by, one.work.fence).await;
+            let screen = held_or_run(unfenced.is_some(), *by);
+            answer = match self.place(&one.work, Counts::Never, fence, screen, &admits) {
+                placed @ Placement::Placed { .. } => Ok(Response::Placement(placed)),
+                Placement::Pending { misses } => return Err(nowhere_now(&misses)),
+                Placement::Refused { misses } => {
+                    return Err(fenced_out(&one.work, &misses, fence)
+                        .unwrap_or_else(|| format!("nowhere: {}", placement::said(&misses))));
+                }
+            };
+        }
+        match (unbooked, unweighed) {
+            (Some((_, why)), _) | (None, Some(why)) => Err(why),
+            (None, None) => answer,
+        }
     }
 
     /// `asked`, as [`Self::would_take`] weighs one of its starts, from
@@ -5421,8 +5444,17 @@ impl<S: Store> Shared<S> {
         }
         let started_by = started_by.filter(|_| by != By::Person);
         let resumes = Self::brought_there(reopened, on, &mut asked, Whither::Placed);
+        // An arrival of an ordered carry from here to the one machine it
+        // names, as Start frees it, but for the carry line, which is kept
+        // only after the ask, and the orchestrator who ordered it, which
+        // is proved only then.
         let carried = match crate::carry::unordered_arrival(&asked.command) {
-            Some(arrives) if ordered && matches!(by, By::Agent(_)) => {
+            Some(arrives)
+                if ordered
+                    && matches!(by, By::Agent(_))
+                    && arrives.from == self.machine
+                    && matches!(asked.work.needs.as_slice(), [Need::Machine(_)]) =>
+            {
                 Some(arrives.session.to_owned())
             }
             _ => self.carried_by_order(by, started_by.as_deref(), &asked, Whither::Placed),
@@ -14245,7 +14277,9 @@ esac
                 session: session.to_owned(),
                 started_before: None,
             };
-            crate::carry::arriving("QEST-20261107-HARBOR", "kestrel", "skiff", &one, None)
+            // From this machine, as an ordered carry's are; to it as
+            // well, so placement here measures nothing of a link.
+            crate::carry::arriving("QEST-20261107-HARBOR", "skiff", "skiff", &one, None)
         };
         let takes = |starts, ordered| {
             let socket = socket.clone();
@@ -14264,10 +14298,33 @@ esac
             matches!(&two, Err(why) if why.contains("a cell starts at most 8 an hour")),
             "two don't, weighed together: {two:?}"
         );
+        assert_eq!(kept(), before, "neither ask kept anything in the book");
+        assert_eq!(
+            ask(socket.clone(), Request::Start(new_work())).await,
+            unstarted
+        );
+        let before = kept();
+        let full = takes(vec![arrival("s-a")], false).await;
+        assert!(
+            matches!(&full, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "the cell's eight leave no room: {full:?}"
+        );
         let ordered = takes(vec![arrival("s-a"), arrival("s-b"), arrival("s-c")], true).await;
         assert!(
             matches!(&ordered, Ok(Response::Placement(Placement::Placed { .. }))),
             "an ordered carry's arrivals go uncounted: {ordered:?}"
+        );
+        let elsewhere = |session: &str| {
+            let one = crate::carry::Done {
+                session: session.to_owned(),
+                started_before: None,
+            };
+            crate::carry::arriving("QEST-20261107-HARBOR", "kestrel", "skiff", &one, None)
+        };
+        let not_from_here = takes(vec![elsewhere("s-a")], true).await;
+        assert!(
+            matches!(&not_from_here, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "an arrival from another machine is no carry from here: {not_from_here:?}"
         );
         let fooled = takes(vec![new_work(), new_work()], true).await;
         assert!(
