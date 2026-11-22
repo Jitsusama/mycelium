@@ -2164,6 +2164,17 @@ mod tests {
         );
     }
 
+    // A session that had ended before the carry is found only as
+    // `pi-carry` carries what no running session held, after the ask: its
+    // start is asked of as its kind, the same work as every arrival, but
+    // isn't among those counted.
+    fn ended_before(start: &Start) -> bool {
+        start
+            .command
+            .get(6)
+            .is_some_and(|session| session == "s-gone")
+    }
+
     #[test]
     fn a_carry_asks_whether_its_starts_are_taken_as_they_would_be_asked() {
         let mut realm = realm();
@@ -2173,18 +2184,35 @@ mod tests {
             panic!("asked once: {:?}", realm.asked_takes);
         };
         assert!(!asked.ordered, "for a carry nobody ordered");
-        assert!(!realm.started.is_empty(), "sessions started");
+        assert!(
+            realm.started.iter().any(ended_before),
+            "a session that had ended started too"
+        );
         for start in &realm.started {
             assert!(
-                asked
-                    .starts
-                    .iter()
-                    .any(|one| one.command == start.command && one.work == start.work),
-                "each start asked first, word for word: {start:?} in {:?}",
-                asked.starts
+                asked.starts.iter().any(|one| one.work == start.work),
+                "each start's work asked of: {start:?}"
             );
             assert!(unordered_arrival(&start.command).is_some(), "as an arrival");
+            if ended_before(start) {
+                continue;
+            }
+            assert!(
+                asked.starts.iter().any(|one| one.command == start.command),
+                "each running session's and the quest's own asked first, word for word: \
+                 {start:?} in {:?}",
+                asked.starts
+            );
         }
+        assert_eq!(
+            asked.starts.len(),
+            realm
+                .started
+                .iter()
+                .filter(|one| !ended_before(one))
+                .count(),
+            "nothing asked that doesn't start"
+        );
         let mut ordering = Realm {
             by: Some("WCJQSG".to_owned()),
             ..super::tests::realm()
@@ -2194,7 +2222,7 @@ mod tests {
             panic!("asked once: {:?}", ordering.asked_takes);
         };
         assert!(asked.ordered, "an ordered carry says so");
-        for start in &ordering.started {
+        for start in ordering.started.iter().filter(|one| !ended_before(one)) {
             let unordered = &start.command[..8];
             assert!(
                 asked

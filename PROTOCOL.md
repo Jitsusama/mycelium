@@ -513,7 +513,10 @@ in order and says each step:
    session's arrival and the quest's own, and its refusal is said, as
    `HARBOR's sessions wouldn't start on osprey: this asks as a fenced
    agent, so it starts nothing held on a Mac: ...`, before any session
-   is told to carry and end.
+   is told to carry and end. A session that had ended before the carry
+   is found only as `pi-carry` carries what no running session held,
+   after the ask: its start is the same work as those asked, so it is
+   placed and screened alike, but the hour's limits don't count it.
 2. `push`: before any is told, the node takes away each
    `<session>.cell.json` in the quest's scratch, under
    `handover/<this machine's short hostname>/` (up to its first dot),
