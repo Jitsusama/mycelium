@@ -73,9 +73,12 @@ fn paused(session: &Value) -> bool {
     session["presence"]["paused"] == json!(true)
 }
 
-/// The team or session `asked` names: a team by its address or its short
-/// name, then a living session by its address, then a team by a part of
-/// its name, then a living session by a part of its. Several are each
+/// The team or session `asked` names: a team by its address, then a
+/// living session by its address, then a team by its short name, then a
+/// team by a part of its name, then a living session by a part of its.
+/// An address comes before a short name because a peer picks its team's
+/// short name, and could otherwise pick another session's address and
+/// take the words meant for that session. Several are each
 /// named as they're typed, a team by its short name, so one can be
 /// picked; two teams whose short names clean alike are several, as
 /// `picked` finds them, so neither takes a steer meant for the other.
@@ -92,6 +95,18 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     // cleaned on both sides, as `picked` matches them, so the name a page
     // shows steers the team it names.
     let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
+    if !swarm
+        .teams
+        .iter()
+        .any(|team| address(team).eq_ignore_ascii_case(asked))
+        && let Some(session) = living().find(|session| {
+            session["address"]
+                .as_str()
+                .is_some_and(|address| address.eq_ignore_ascii_case(asked))
+        })
+    {
+        return Ok(Named::Session(session));
+    }
     let whole: Vec<Named<'_>> = swarm
         .teams
         .iter()
@@ -104,13 +119,6 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
         .map(Named::Team)
         .collect();
     let mut found: Vec<Named<'_>> = if whole.is_empty() {
-        if let Some(session) = living().find(|session| {
-            session["address"]
-                .as_str()
-                .is_some_and(|address| address.eq_ignore_ascii_case(asked))
-        }) {
-            return Ok(Named::Session(session));
-        }
         let lower = unmarked(asked).to_lowercase();
         let matches = |record: &&Value| unmarked(title(record)).to_lowercase().contains(&lower);
         let teams: Vec<&Value> = swarm.teams.iter().filter(matches).collect();
@@ -502,6 +510,22 @@ mod tests {
                 "{asked} steered another than Harbour"
             );
         }
+    }
+
+    #[test]
+    fn a_short_name_never_takes_a_session_s_address() {
+        let mut swarm = swarm();
+        swarm.teams[0]["swarm"] = json!("busy");
+        let say = Act::Say {
+            words: "Stop that".to_owned(),
+            now: false,
+        };
+        let aimed = aim(&swarm, say, "BUSY").expect("aimed");
+        assert_eq!(
+            addresses(&aimed),
+            ["BUSY"],
+            "a team named for a session's address took its words"
+        );
     }
 
     #[test]
