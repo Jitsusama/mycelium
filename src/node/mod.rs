@@ -1506,6 +1506,7 @@ impl<S: Clone> Clone for Shared<S> {
             carrying: self.carrying.clone(),
             updater: self.updater.clone(),
             starter: self.starter.clone(),
+            fences_held: self.fences_held,
             asks: self.asks.clone(),
             inner: self.inner.clone(),
             said: self.said.clone(),
