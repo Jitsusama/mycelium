@@ -981,15 +981,19 @@ or not, though nothing is done on that reading itself; a second in a
 row starts the ten minutes again, as does a reading five minutes or
 more after the lone one. While it is held over while another has
 room, in the latest reading too, and the readings five minutes after
-any sleep still say over, it would carry one session to a peer with
-room in the watch and in the latest reading, straight away where it
-put none to sleep; while none has room it carries nothing. It
-carries the smallest log first, placed as any work is and onto
-ground as firm. A session in a turn, on the person's screen,
-orchestrating other sessions, holding a lease or a heavy run, or whose
-quest runs elsewhere too stays. So does one it can't tell any of these
-of. A session waiting on a secret's release or a password prompt waits
-inside its turn, so it stays as one in a turn. What a session is part
+the first sleep of its spell over still say over, it would carry one
+session to a peer with room in the watch and in the latest reading,
+straight away where it put none to sleep; while none has room it
+carries nothing. Sessions that wait anew meanwhile sleep too without
+putting the carry off, and once the five minutes are past they sleep
+only where nothing is carried; while it is short of memory, one that
+has never slept is never carried. It carries the smallest log first,
+placed as any work is and onto ground as firm. A session in a turn,
+on the person's screen, orchestrating other sessions, holding a lease
+or a heavy run, or whose quest runs elsewhere too stays. So does one
+it can't tell any of these of. A session waiting on a secret's release
+or a password prompt waits inside its turn, so it stays as one in a
+turn. What a session is part
 way through is told only once its presence says `"leases":
 {"background": true}`, its harness keeping a lease for each background
 run. After a carry it would carry none for half an hour, and it would
@@ -1002,7 +1006,9 @@ is a JSON line in the state folder's `eases`, a file each day of at
 most 8 MiB but for carries, the folder its owner's alone. Each line
 holds `at`, `would: true`, `choice` (`nothing` with `why`, `sleep`
 with `sessions`, or `carry` with `session`, `to` and `why`) and the
-`reading` it was chosen by. A carry's line adds `holds`, what the
+`reading` it was chosen by. A sleep made only because no carry could
+go adds `why`, why none of those already asleep was carried. A
+carry's line adds `holds`, what the
 session's own process holds where it has one: `memory` resident in
 bytes, and `cpu` in cores over the last ten minutes. What it would
 have done counts in its memory, and a carry in its lines too, so a
