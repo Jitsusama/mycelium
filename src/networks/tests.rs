@@ -894,6 +894,7 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         json!({"key": "quest:hidden", "for": "Tide\u{200B} plan\u{FDD0}", "folder": "/h"}),
         json!({"key": "quest:unchars", "for": "\u{2800}Tide\u{FDD5} \u{FFFE}plan\u{1FFFF}",
                "folder": "/x"}),
+        json!({"key": "quest:brailled", "for": "Tide\u{2800}\u{200D}\u{2800}", "folder": "/r"}),
         json!({"key": "quest:hinged", "for": format!("{}\u{200D}é", "é".repeat(119)),
                "folder": "/g"}),
         json!({"key": "quest:untitled", "for": "", "folder": "/u"}),
@@ -908,6 +909,7 @@ fn a_shares_title_is_cut_and_cleaned_to_draw_and_never_refuses_its_folder() {
         [
             titled("quest:accented", &"é".repeat(120)),
             untitled("quest:blank"),
+            titled("quest:brailled", "Tide"),
             titled("quest:cut", &"c".repeat(119)),
             titled("quest:hidden", "Tide plan"),
             titled("quest:hinged", &"é".repeat(119)),

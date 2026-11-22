@@ -14,6 +14,8 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 
+use crate::forage::BRAILLE_BLANK;
+
 mod asks;
 mod names;
 mod shapes;
@@ -313,10 +315,6 @@ pub(crate) fn aligned(text: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-
-/// A braille blank, which draws as a space though no text calls it one,
-/// so a name may hold it to look empty.
-const BRAILLE_BLANK: char = '\u{2800}';
 
 /// `lead` as a line that runs on draws it: its indent kept, and each run
 /// of spaces after it drawn as one, with none at its end. A
@@ -1037,7 +1035,8 @@ pub(crate) fn listed(names: &[&str]) -> String {
 
 /// Each of several choices by the name it's drawn with, and by its
 /// address too where another draws alike, so a refusal offering both
-/// still names something to type for each.
+/// still names something to type for each. An address is a peer's text
+/// too, so it is cleaned as a name is.
 pub(crate) fn told_apart(named: Vec<(String, &str)>) -> Vec<String> {
     let alike = |name: &str| {
         named
@@ -1050,7 +1049,7 @@ pub(crate) fn told_apart(named: Vec<(String, &str)>) -> Vec<String> {
         .iter()
         .map(|(name, address)| {
             if alike(name) {
-                format!("{name} ({address})")
+                format!("{name} ({})", unmarked(address))
             } else {
                 name.clone()
             }
