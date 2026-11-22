@@ -2,8 +2,9 @@
 //! and how: as its own node judges it, never on an agent's word.
 //!
 //! A machine eases only while its node's [`Watch`](crate::balance::Watch)
-//! holds it over while another has room, and only once every reading for
-//! [`HOT_FOR`] has said so. It first puts its waiting sessions to sleep
+//! holds it over while another has room, and only once the readings for
+//! [`HOT_FOR`] have said so, none saying otherwise for [`COOL_FOR`]. It
+//! first puts its waiting sessions to sleep
 //! where they are, counting them, and carries one only once the readings
 //! [`SETTLE`] after still say it is over. Then it carries one session at a
 //! time to a peer with room, placed as any work is, onto ground as firm as
@@ -30,6 +31,14 @@ use crate::record::{Session, State};
 /// How long every reading must say a machine is over while another has
 /// room before it eases itself.
 pub const HOT_FOR: SignedDuration = SignedDuration::from_mins(10);
+
+/// How long readings must say a machine isn't over before the time it
+/// has been over starts again. A machine as busy as it gets reads cool now
+/// and then between its hot readings, a few minutes apart, and a lone one
+/// starting the [`HOT_FOR`] again kept such a machine from ever easing
+/// itself: on 21 November one read over for hours and carried nothing,
+/// over only since its last cool reading 27 times.
+pub const COOL_FOR: SignedDuration = SignedDuration::from_mins(5);
 
 /// How long after putting sessions to sleep the readings must still say
 /// the machine is over before it carries one.
@@ -171,6 +180,7 @@ pub struct Moved {
 #[derive(Debug)]
 pub struct History {
     hot_since: Option<Timestamp>,
+    cool_since: Option<Timestamp>,
     slept_at: Option<Timestamp>,
     sleeps: usize,
     moved: Vec<Moved>,
@@ -181,6 +191,7 @@ impl Default for History {
     fn default() -> Self {
         Self {
             hot_since: None,
+            cool_since: None,
             slept_at: None,
             sleeps: 0,
             moved: Vec::new(),
@@ -195,17 +206,29 @@ impl Default for History {
 
 impl History {
     /// Takes in `reading`, the realm as `here`'s node read it: over since
-    /// the first of an unbroken run of readings saying so, or not over.
+    /// the first of a run of readings saying so, which readings saying
+    /// otherwise end only once they have for [`COOL_FOR`], or not over.
     pub fn read(&mut self, here: &str, reading: &Reading) {
-        let at = reading.at.parse::<Timestamp>().ok();
+        let Ok(at) = reading.at.parse::<Timestamp>() else {
+            // A reading whose time can't be told can't say for how long.
+            self.hot_since = None;
+            self.cool_since = None;
+            return;
+        };
         let hot = reading
             .flags
             .iter()
             .any(|flag| matches!(flag, Flag::HotWhileCool { hot, .. } if hot == here));
-        self.hot_since = match (hot, at) {
-            (true, Some(at)) => Some(self.hot_since.unwrap_or(at)),
-            _ => None,
-        };
+        if hot {
+            self.hot_since.get_or_insert(at);
+            self.cool_since = None;
+            return;
+        }
+        let cool_since = *self.cool_since.get_or_insert(at);
+        if self.hot_since.is_none() || at.duration_since(cool_since) >= COOL_FOR {
+            self.hot_since = None;
+            self.cool_since = None;
+        }
     }
 
     /// Notes `count` sessions put to sleep `at`.
@@ -762,15 +785,24 @@ pub(super) mod tests {
                 .ends_with("not 10 minutes straight"),
             "nine minutes over isn't ten"
         );
-        let mut broken = hot_for(&realm, 30);
-        broken.read(
-            "skiff",
-            &reading(&[machine("skiff", 4.6), machine("tern", 4.6)], ago(5)),
+        let calm = [machine("skiff", 4.6), machine("tern", 4.6)];
+        let mut flickered = History::default();
+        flickered.kept_eases(Ok(0));
+        flickered.read("skiff", &reading(&realm, ago(14)));
+        flickered.read("skiff", &reading(&calm, ago(9)));
+        flickered.read("skiff", &reading(&realm, ago(4)));
+        flickered.read("skiff", &reading(&realm, now()));
+        assert!(
+            carries(&chose(&realm, &[cell("s1")], &flickered)).is_some(),
+            "a lone reading not over between hot ones, minutes apart, breaks nothing"
         );
+        let mut broken = hot_for(&realm, 30);
+        broken.read("skiff", &reading(&calm, ago(9)));
+        broken.read("skiff", &reading(&calm, ago(4)));
         broken.read("skiff", &reading(&realm, now()));
         assert!(
             why_not(&chose(&realm, &[cell("s1")], &broken)).ends_with("not 10 minutes straight"),
-            "a reading not over between starts the ten minutes again"
+            "readings not over for five minutes start the ten minutes again"
         );
         assert!(
             carries(&chose(&realm, &[cell("s1")], &hot_for(&realm, 10))).is_some(),
@@ -1192,6 +1224,29 @@ pub(super) mod tests {
             why_not(&chose(&realm, &[unsaid], &history)),
             "S1: the session doesn't say which fence it runs in, so where it lands can't be \
              judged"
+        );
+    }
+
+    // No session goes to a Mac while a start bringing it back would run
+    // there held, outside any fence. That keeps a strictly fenced session
+    // off a Mac too, whose strict fence still reads the rest of its home,
+    // so lifting this must keep strict sessions off until that fence is
+    // narrowed.
+    #[test]
+    fn a_mac_with_room_is_passed_over_for_the_next_machine() {
+        let mut realm = realm();
+        realm[1].system = Some("macos".to_owned());
+        let history = hot_for(&realm, 11);
+        assert_eq!(
+            why_not(&chose(&realm, &[cell("s1")], &history)),
+            "tern is a Mac, where a session brought back held would run outside any fence"
+        );
+        realm.push(machine("osprey", 4.6));
+        let history = hot_for(&realm, 11);
+        assert_eq!(
+            carries(&chose(&realm, &[cell("s1")], &history)),
+            Some(("s1", "osprey")),
+            "the next machine with room takes it"
         );
     }
 

@@ -957,6 +957,8 @@ but where `--eases-carry` says to make its carries. It reads the
 realm's balance as `mycelium balance --follow` does and holds what
 is seen in most of the last ten readings. Once its machine
 has been held over for ten minutes while another has room, it would
+(readings saying otherwise start the ten minutes again only once they
+have for five, so a lone cool reading between hot ones breaks nothing),
 put its sessions that wait to sleep where they are. If the readings
 five minutes on still say over, it would carry one session to a peer
 with room: the smallest log first, placed as any work is and onto
