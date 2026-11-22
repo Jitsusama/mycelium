@@ -543,7 +543,7 @@ fn sprouted(
     processes: &Processes,
     home: &Path,
     here: &str,
-) -> Result<Start, String> {
+) -> Result<sprout::Sprouted, String> {
     #[cfg(target_os = "linux")]
     let unseen = match (connected, processes.kernel()) {
         (Some((pid, ticks)), Processes::Folder(procs)) => {
@@ -6022,16 +6022,16 @@ impl<S: Store> Shared<S> {
         let here = self.machine.clone();
         let (client, started, processes) =
             (self.client, self.client_started, self.processes.clone());
-        let left_out = sprout::dropped(&sprout::Seed::of(&asked.words), asked.from.as_deref());
-        let start = tokio::task::spawn_blocking(move || {
+        let sprout::Sprouted { start, left_out } = tokio::task::spawn_blocking(move || {
             sprouted(&asked, by, client.zip(started), &processes, &home, &here)
         })
         .await
         .map_err(|error| format!("the sprout couldn't be judged: {error}"))??;
-        for said in left_out {
+        let reply = self.start(start).await;
+        for said in sprout::told(&left_out, &reply) {
             eprintln!("{said}");
         }
-        self.start(start).await
+        reply
     }
 
     /// Starts a program held where placement chooses, as [`Self::placed`]

@@ -2844,7 +2844,8 @@ fn sprout(socket: &Path, asked: Sprouting) -> io::Result<()> {
         Some(_) => place::machine(None, &place::state()).unwrap_or_default(),
     };
     let start = sprout::starting(&sprouting, &cwd, &home, &here, &sprout::ThisDisk)
-        .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?;
+        .map_err(|why| io::Error::new(io::ErrorKind::InvalidInput, why))?
+        .start;
     let mut reply = Client::connect(socket)?.ask(&Request::Sprout(sprouting))?;
     // A node from before sprouts were its own to judge is asked for the
     // Start judged here, as it was then.

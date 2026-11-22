@@ -2257,14 +2257,23 @@ JSON object such as
 or `words`, a string, for words; `from`, a string, only where
 `from` is an address, so its harness makes and ties the quest itself;
 and `id`, a string of at most 64 letters, digits, dots, dashes and
-underscores, the sprout's own, made as the node makes the `"Start"`,
-so a session of it started again makes its quest once. `from` is the
+underscores, the sprout's own, made where the `"Start"` is made (by
+the node, or by `mycelium sprout` where a node from before `"Sprout"`
+is asked for the `"Start"` it judged), so a session of it started
+again makes its quest once. The id is a hint, never proof: any agent
+on the account can read a live sprout's id in its holder's `command`
+and start pi with it, so a harness that finds its quest by the id
+gives that session nothing an agent couldn't take with the quest
+tool, and must grant nothing on the id alone. `from` is the
 asker's word, tied as said with no model in between: the same trust
 the first words give it, naming a cell the asker could name there.
-It's left out where the link or words run past 4000 UTF-16 units, the
-most a session reads, and the first words alone stand; the node's log
-says so, and says where a `from` that isn't an address is left out of
-it and tied by the first words alone. That address
+The seed, its id with it, is left out where the link or words run
+past 4000 UTF-16 units, the most a session reads, and the first words
+alone stand, so a session of it started again can't tell it made its
+quest. Where a seed is sent, a `from` that isn't an address is left
+out of it and tied by the first words alone. The node's log says what
+was left out once the session has started, naming the sprout by its
+id and machine, and says nothing for a start refused. That address
 and that length are what the node sends, never a guarantee: any agent
 starting pi can set the variable itself, so a harness checks every
 field again and treats it as a seed. Where a harness reads it, the
