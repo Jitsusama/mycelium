@@ -3912,16 +3912,20 @@ impl<S: Store> Shared<S> {
         let mut sampler = easing::Sampler::default();
         let mut unread = None;
         // What it asked to park; whatever an earlier node asked no longer
-        // stands, since what made it ask isn't known to hold now.
-        let mut parking = std::collections::BTreeSet::new();
+        // stands, since what made it ask isn't known to hold now, and
+        // what of it can't be taken back now is taken back later.
+        let mut parking = None;
         if let Some(folder) = eases.sleeps.clone() {
-            let taken = tokio::task::spawn_blocking(move || sleep::withdraw_all(&folder))
+            let sweeping = folder.clone();
+            let taken = tokio::task::spawn_blocking(move || sleep::withdraw_all(&sweeping))
                 .await
                 .map_err(|error| io::Error::other(error.to_string()))
                 .and_then(|taken| taken);
-            if let Err(error) = taken {
+            let left = taken.unwrap_or_else(|error| {
                 eprintln!("the asks to park an earlier node left can't be taken back: {error}");
-            }
+                (0, std::collections::BTreeSet::new())
+            });
+            parking = Some(sleep::Parking::new(folder, left.1));
         }
         let mut every = tokio::time::interval(eases.every);
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -3940,7 +3944,13 @@ impl<S: Store> Shared<S> {
                     .await
                     .and_then(|kept| Ok((kept, own_lines?)))
                 {
-                    Ok((kept, own_lines)) => easing = Some(Easing::after(&kept, own_lines)),
+                    Ok((kept, own_lines)) => {
+                        let mut after = Easing::after(&kept, own_lines);
+                        if parking.is_some() {
+                            after.acts_on_sleep();
+                        }
+                        easing = Some(after);
+                    }
                     Err(why) if unread.as_ref() == Some(&why) => continue,
                     Err(why) => {
                         let line = serde_json::json!({
@@ -3959,31 +3969,33 @@ impl<S: Store> Shared<S> {
                 .look_to_ease(easing, std::mem::take(&mut sampler), now)
                 .await;
             sampler = back;
-            if let Some(folder) = &eases.sleeps
-                && !easing.over()
-                && !parking.is_empty()
+            if !easing.over()
+                && let Some(held) = parking.take_if(|held| !held.is_empty())
             {
-                parking = Self::unpark(folder, std::mem::take(&mut parking)).await;
+                let (back, woken) = Self::unpark(held).await;
+                easing.woken(&woken);
+                parking = Some(back);
             }
             if let Some(line) = line {
                 let mut line = self.act_to_ease(eases.carries, line).await;
-                if let Some(folder) = &eases.sleeps {
-                    self.sleep_to_ease(folder, &mut line, &mut parking, now)
-                        .await;
+                if let Some(parking) = &mut parking {
+                    self.sleep_to_ease(&mut line, parking, easing, now).await;
                 }
                 self.keep_easing(&eases.folder, now, line).await;
             }
         }
     }
 
-    /// Asks the harness, in `folder`, to park the sessions a sleep `line`
-    /// chose, saying on it which were asked and why each other wasn't,
-    /// and noting those asked in `parking`.
+    /// Asks the harness, in `parking`'s folder, to park the sessions a
+    /// sleep `line` chose, saying on it which were asked and why each
+    /// other wasn't, noting those asked in `parking`, and telling
+    /// `easing` how many were asked and which to choose again, whose
+    /// asks couldn't be written.
     async fn sleep_to_ease(
         &self,
-        folder: &Path,
         line: &mut serde_json::Value,
-        parking: &mut std::collections::BTreeSet<String>,
+        parking: &mut sleep::Parking,
+        easing: &mut Easing,
         now: jiff::Timestamp,
     ) {
         let Some(chosen) = sleep::chosen(line) else {
@@ -3995,37 +4007,71 @@ impl<S: Store> Shared<S> {
             self.machine
         );
         let asks = sleep::asks(&self.machine, &sessions, &chosen);
-        let folder = folder.to_owned();
-        let asked = tokio::task::spawn_blocking(move || {
+        let folder = parking.folder().to_owned();
+        let unasked = chosen.clone();
+        // Each ask written, by its record's id to its own, or why not and,
+        // where only writing it failed, whose it was, to choose again.
+        let tried = tokio::task::spawn_blocking(move || {
             asks.into_iter()
                 .map(|ask| {
-                    let id = ask?;
-                    sleep::ask(&folder, &id, now, &why)
-                        .map(|()| id.clone())
-                        .map_err(|error| format!("{id} can't be asked to park ({error})"))
+                    let (record, own) = ask.map_err(|why| (None, why))?;
+                    match sleep::ask(&folder, &own, now, &why) {
+                        Ok(()) => Ok((record, own)),
+                        Err(error) => {
+                            let why = format!("{own} can't be asked to park ({error})");
+                            Err((Some(record), why))
+                        }
+                    }
                 })
                 .collect::<Vec<_>>()
         })
         .await
-        .unwrap_or_else(|error| vec![Err(error.to_string())]);
-        let (asked, refused): (Vec<_>, Vec<_>) = asked.into_iter().partition(Result::is_ok);
-        let asked: Vec<String> = asked.into_iter().filter_map(Result::ok).collect();
-        let refused: Vec<String> = refused.into_iter().filter_map(Result::err).collect();
-        parking.extend(asked.iter().cloned());
+        .unwrap_or_else(|error| {
+            let why = format!("none could be asked to park ({error})");
+            unasked
+                .into_iter()
+                .map(|id| Err((Some(id), why.clone())))
+                .collect()
+        });
+        let mut asked = std::collections::BTreeMap::new();
+        let (mut refused, mut retry) = (Vec::new(), Vec::new());
+        for one in tried {
+            match one {
+                Ok((record, own)) => {
+                    parking.asked(record.clone(), own.clone());
+                    asked.insert(record, own);
+                }
+                Err((again, why)) => {
+                    retry.extend(again);
+                    refused.push(why);
+                }
+            }
+        }
+        easing.slept(asked.len(), &retry, now);
         sleep::acted(line, &asked, &refused);
     }
 
-    /// Takes back the asks to park `parking` in `folder`, answering those
-    /// still asked for, to take back at the next look.
+    /// Takes back the asks `parking` holds, answering it with those that
+    /// couldn't be, to take back at the next look, and the sessions whose
+    /// asks are gone, by their record's id.
     async fn unpark(
-        folder: &Path,
-        parking: std::collections::BTreeSet<String>,
-    ) -> std::collections::BTreeSet<String> {
-        let folder = folder.to_owned();
-        let kept = parking.clone();
-        tokio::task::spawn_blocking(move || sleep::withdraw(&folder, &parking))
-            .await
-            .unwrap_or(kept)
+        mut parking: sleep::Parking,
+    ) -> (sleep::Parking, std::collections::BTreeSet<String>) {
+        let folder = parking.folder().to_owned();
+        tokio::task::spawn_blocking(move || {
+            let woken = parking.withdraw();
+            (parking, woken)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            // Only a panic ends it so, and dropping it took back what it
+            // could.
+            eprintln!("the asks to park can't be taken back: {error}");
+            (
+                sleep::Parking::new(folder, std::collections::BTreeSet::new()),
+                std::collections::BTreeSet::new(),
+            )
+        })
     }
 
     /// `line`, a look's choice, once its carry is made where `carries`
@@ -9997,6 +10043,59 @@ esac
             json!({"cpu": 0.97}),
             "with the reading its look chose it by"
         );
+    }
+
+    #[tokio::test]
+    async fn a_node_asks_to_park_what_it_chose_to_sleep_and_takes_it_back() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("sleeps").join("work.sock");
+        let hosted = json!({"hosted": {"host": "work-background", "conversation": "c-harbour"}});
+        let shared = easing_skiff_with(&socket, &["remote"], &hosted, &harbour_quests()).await;
+        let mut easing = Easing::default();
+        easing.acts_on_sleep();
+        let now: jiff::Timestamp = "2026-11-19T07:00:00Z".parse().expect("a time");
+        let slept = json!({"at": "2026-11-19T07:00:00Z", "would": true,
+                           "choice": "sleep", "sessions": ["s-harbour", "s-gone"]});
+
+        let blocked = dir.path().join("blocked");
+        fs::write(&blocked, "").expect("a file where the folder would be");
+        let mut unwritable = sleep::Parking::new(blocked, std::collections::BTreeSet::new());
+        let mut line = slept.clone();
+        shared
+            .sleep_to_ease(&mut line, &mut unwritable, &mut easing, now)
+            .await;
+        assert_eq!(line["asked"], json!({}), "none is asked where none can be");
+        assert_eq!(
+            (easing.sleeps(), unwritable.is_empty()),
+            (0, true),
+            "and none counts as put to sleep"
+        );
+
+        let folder = dir.path().join("ease");
+        let mut parking = sleep::Parking::new(folder.clone(), std::collections::BTreeSet::new());
+        let mut line = slept;
+        shared
+            .sleep_to_ease(&mut line, &mut parking, &mut easing, now)
+            .await;
+        assert_eq!(
+            (&line["would"], &line["asked"], &line["refused"]),
+            (
+                &json!(false),
+                &json!({"s-harbour": "s-harbour"}),
+                &json!(["s-gone no longer runs here, so it isn't put to sleep"])
+            ),
+            "the line says who was asked and why the other wasn't"
+        );
+        assert!(folder.join("s-harbour").exists(), "its harness is asked");
+        assert_eq!(easing.sleeps(), 1, "only the one asked counts");
+
+        let (parking, woken) = Shared::<Memory>::unpark(parking).await;
+        assert_eq!(
+            woken,
+            std::collections::BTreeSet::from(["s-harbour".to_owned()])
+        );
+        assert!(parking.is_empty());
+        assert!(!folder.join("s-harbour").exists(), "and the ask taken back");
     }
 
     #[tokio::test]

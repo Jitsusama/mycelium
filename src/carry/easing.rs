@@ -453,7 +453,12 @@ fn resident(procs: &Path, pid: i32) -> Option<u64> {
 pub struct Easing {
     watch: Watch,
     history: History,
+    /// Each session put to sleep, or chosen to be, until it is next seen
+    /// in a turn or its ask is taken back.
     asleep: BTreeSet<String>,
+    /// Whether the node asks the harness to park what it chooses to
+    /// sleep, so that only those it asked count as put to sleep.
+    acts_on_sleep: bool,
     /// Each session a look chose to carry, with when.
     gone: BTreeMap<String, Timestamp>,
     /// The reason of the last line kept for doing nothing, with the doubt
@@ -503,6 +508,41 @@ impl Easing {
             history,
             ..Self::default()
         }
+    }
+
+    /// Says the node asks the harness to park the sessions its looks
+    /// choose to sleep, so a look no longer counts them put to sleep
+    /// itself; [`Easing::slept`] counts those asked.
+    pub fn acts_on_sleep(&mut self) {
+        self.acts_on_sleep = true;
+    }
+
+    /// Notes `asked` sessions put to sleep `at`, where any were, so the
+    /// next sleep waits its settling only after one; and passes over
+    /// no more those in `retry`, by their record's id, whose ask
+    /// couldn't be written, so a later look may choose them again. One
+    /// refused for good, such as one kept by no holder, stays passed
+    /// over until it is seen in a turn, so looks move on past it.
+    pub fn slept(&mut self, asked: usize, retry: &[String], at: Timestamp) {
+        for id in retry {
+            self.asleep.remove(id);
+        }
+        if asked > 0 {
+            self.history.slept(asked, at);
+        }
+    }
+
+    /// How many sessions it has put to sleep.
+    #[must_use]
+    pub fn sleeps(&self) -> usize {
+        self.history.sleeps()
+    }
+
+    /// Forgets `woken`, by their record's id, as asleep, their asks taken
+    /// back once the machine was no longer over, so a later spell over
+    /// may ask for them again.
+    pub fn woken(&mut self, woken: &BTreeSet<String>) {
+        self.asleep.retain(|id| !woken.contains(id));
     }
 
     /// Whether its last look still held the machine over, as
@@ -571,7 +611,9 @@ impl Easing {
             Choice::Sleep { sessions } => {
                 self.said = None;
                 self.asleep.extend(sessions.iter().cloned());
-                self.history.slept(sessions.len(), now);
+                if !self.acts_on_sleep {
+                    self.history.slept(sessions.len(), now);
+                }
             }
             Choice::Carry { session, to, .. } => {
                 self.said = None;

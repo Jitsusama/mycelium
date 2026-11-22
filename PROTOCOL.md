@@ -1043,17 +1043,32 @@ park each session it chose to sleep, rather than only saying so. The
 folder is the harness's: for each session it writes a file named by
 the session's own id, as its presence's `session` says it, holding a
 line of `at` and `why` for whoever reads it, the file mode 600 and
-written whole before it takes its name. The harness parks such a
+written whole before it takes its name, never through a link. It
+makes the folder mode 700 where it isn't there, and asks nothing in
+one there that isn't this account's or that another can write in; it
+changes no mode of one there. A session's harness reads only the
+file named for its own session. The harness parks such a
 session once it is idle and its own park rule holds, so one with
 anything running, queued or waiting on the person stays awake, and it
 takes the file back once the session wakes or closes. The node asks
-for no session in a turn, none of another machine, none whose id
-names more than letters, digits, dashes and underscores, and none
-that neither a holder nor a host keeps, since that is what would wake
-it. It takes back what it asked once its machine is no longer over,
-and everything in the folder as it starts, since what made an earlier
-node ask isn't known to hold. The sleep's line then says
-`would: false`, the ids `asked`, and why each other was `refused`.
+for no session in a turn, none of another machine, none whose
+presence names no id of its own or one another session's names too,
+none whose id names more than letters, digits, dashes and
+underscores, and none that neither a holder nor a host keeps, since
+that is what would wake it. It takes back what it asked once its
+machine is no longer over, as it is while the readings hold it hot,
+and as its easing task ends; and as it starts, every ask and
+half-written ask in the folder, since what made an earlier node ask
+isn't known to hold, leaving any other file there. What it can't take
+back it tries again at the next look. Only sessions it asked count as
+put to sleep, so the next sleep waits its settling only after one; a
+session whose ask couldn't be written may be chosen again, while one
+refused for good is passed over until it is next seen in a turn. A
+session whose ask was taken back may be asked again in a later spell
+over. The sleep's line then says `would: false`, `asked` by each
+session's record id to its own, and why each other was `refused`.
+A node no longer run with `--eases-sleep` takes nothing back, so empty
+the folder when dropping it, or start the node with it once more.
 
 Whether its own machine is over it judges only from what the kernel
 says, read afresh each look and kept in memory: the `some` `avg10`

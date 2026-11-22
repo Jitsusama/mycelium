@@ -860,6 +860,28 @@ pub(super) mod tests {
         );
     }
 
+    // What it asked to park is taken back only once the machine is no
+    // longer over, so a lone cool reading takes back nothing.
+    #[test]
+    fn a_machine_stays_over_until_its_readings_say_otherwise_for_five_minutes() {
+        let realm = realm();
+        let calm = [machine("skiff", 4.6), machine("tern", 4.6)];
+        let mut history = hot_for(&realm, 11);
+        assert!(history.over(), "over while its readings say so");
+        history.read("skiff", &reading(&calm, now()));
+        assert!(history.over(), "a lone reading not over doesn't end it");
+        let later = now() + COOL_FOR - SignedDuration::from_secs(1);
+        history.read("skiff", &reading(&calm, later));
+        assert!(
+            history.over(),
+            "nor do readings not over for under five minutes"
+        );
+        history.read("skiff", &reading(&calm, now() + COOL_FOR));
+        assert!(!history.over(), "five minutes of them do");
+        history.read("skiff", &reading(&calm, now() + COOL_FOR * 2));
+        assert!(!history.over(), "and one never over isn't");
+    }
+
     #[test]
     fn a_machine_is_judged_by_what_its_own_configuration_says() {
         let mut tern = machine("tern", 4.6);
