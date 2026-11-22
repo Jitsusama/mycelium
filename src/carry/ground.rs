@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::declared::{Declared, Doors, Effect, Kind, Taint, Unrunnable};
+use crate::declared::{Accepted, Declared, Doors, Effect, Kind, Taint, Unrunnable};
 use crate::facts::{Machine, Readiness};
 use crate::placement::{Because, LIFTS_FENCE, LOOSER_GROUND, Miss, RUNS_NOTHING};
 
@@ -281,7 +281,8 @@ fn said_word(word: &str) -> String {
 
 /// Whether `there`, what `to` declares as it last said itself, runs
 /// sessions in the fence `kind` with no door wider than this machine's,
-/// as `here` declares it.
+/// as `here` declares it, but those here's `accepts` allows for `to` by
+/// name.
 fn stands(
     kind: Option<Kind>,
     here: Option<&Declared>,
@@ -305,7 +306,7 @@ fn stands(
         .ok_or_else(|| {
             format!("this machine declares no {kind} session, so {to}'s can't be judged against it")
         })?;
-    let opened = wider(theirs, ours);
+    let opened = wider(theirs, ours, ours.accepts.get(to));
     if opened.is_empty() {
         Ok(())
     } else {
@@ -317,20 +318,33 @@ fn stands(
     }
 }
 
-/// What `there` opens that `here` doesn't, each kind of door named with
-/// its names, such as `builders big`.
-fn wider(there: &Doors, here: &Doors) -> Vec<String> {
-    let beyond = |theirs: &BTreeSet<String>, ours: &BTreeSet<String>| {
-        theirs
-            .difference(ours)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+/// What `there` opens that `here` doesn't and `accepted` doesn't allow,
+/// each kind of door named with its names, such as `builders big`.
+fn wider(there: &Doors, here: &Doors, accepted: Option<&Accepted>) -> Vec<String> {
+    let none = Accepted::default();
+    let accepted = accepted.unwrap_or(&none);
+    let beyond =
+        |theirs: &BTreeSet<String>, ours: &BTreeSet<String>, allowed: &BTreeSet<String>| {
+            theirs
+                .iter()
+                .filter(|name| !ours.contains(*name) && !allowed.contains(*name))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
     [
-        ("builders", beyond(&there.builders, &here.builders)),
-        ("forges", beyond(&there.forges, &here.forges)),
-        ("secrets", beyond(&there.secrets, &here.secrets)),
+        (
+            "builders",
+            beyond(&there.builders, &here.builders, &accepted.builders),
+        ),
+        (
+            "forges",
+            beyond(&there.forges, &here.forges, &accepted.forges),
+        ),
+        (
+            "secrets",
+            beyond(&there.secrets, &here.secrets, &accepted.secrets),
+        ),
     ]
     .into_iter()
     .filter(|(_, names)| !names.is_empty())
@@ -408,6 +422,7 @@ mod tests {
             forges: names(forges),
             secrets: names(secrets),
             runs: Vec::new(),
+            accepts: BTreeMap::new(),
         }
     }
 
@@ -536,6 +551,55 @@ mod tests {
                     .to_owned()
             ),
             "a machine whose doors are wider names each"
+        );
+    }
+
+    #[test]
+    fn a_carry_gains_only_the_doors_here_accepts_for_that_machine() {
+        let mut ours = doors(&[], &["github"], &[]);
+        ours.accepts = BTreeMap::from([(
+            "tern".to_owned(),
+            Accepted {
+                secrets: BTreeSet::from(["tokens".to_owned()]),
+                ..Accepted::default()
+            },
+        )]);
+        let here = declaring(Some(BTreeMap::from([(Kind::None, ours)])));
+        let unfenced = |builders: &[&str], secrets: &[&str]| {
+            Some(BTreeMap::from([(
+                Kind::None,
+                doors(builders, &["github"], secrets),
+            )]))
+        };
+        let tokens = tern(unfenced(&[], &["tokens"]), Readiness::Ready);
+        assert_eq!(
+            firm(Some(Kind::None), Some(&here), "tern", Some(&tokens)),
+            Ok(()),
+            "the door accepted for tern is no wider there"
+        );
+        assert_eq!(
+            firm(
+                Some(Kind::None),
+                Some(&here),
+                "wren",
+                Some(&named("wren", tokens.clone()))
+            ),
+            Err(
+                "wren's unfenced session opens secrets tokens, which here's doesn't, so the \
+                 session would land looser there"
+                    .to_owned()
+            ),
+            "what is accepted for tern is accepted for no other machine"
+        );
+        let more = tern(unfenced(&["big"], &["tokens", "cloud"]), Readiness::Ready);
+        assert_eq!(
+            firm(Some(Kind::None), Some(&here), "tern", Some(&more)),
+            Err(
+                "tern's unfenced session opens builders big and secrets cloud, which here's \
+                 doesn't, so the session would land looser there"
+                    .to_owned()
+            ),
+            "any door beyond what is accepted still refuses, named alone"
         );
     }
 

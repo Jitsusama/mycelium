@@ -742,7 +742,8 @@ session says of itself:
   in the fence the carried session's presence names as its `fence`
   (`none`, `fence` or `strict`), and this machine's own declaration
   runs that fence too, with no door of it there wider than here: each
-  of its `builders`, `forges` and `secrets` is one here's opens. A
+  of its `builders`, `forges` and `secrets` is one here's opens, or
+  one here's fence `accepts` for `to` by name. A
   session that names no fence, or a machine that declares none for it,
   is refused, since where it lands can't be told. A refusal names the
   doors that are wider, as `tern's strictly fenced session opens
@@ -1490,7 +1491,12 @@ kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,
 each door by the name the machine's configuration gives it, and with
 `runs`, the words that start a command as that fence runs its
-sessions, such as its launcher and the fence's rules. A node says a
+sessions, such as its launcher and the fence's rules. With
+`accepts`, `{"<machine>": {"secrets": [...]}}`, it names the doors
+another machine may open beyond these for a session carried from
+here in that fence, each allowed by the person; the machine there
+still declares every door it opens, so a gain is said, never hidden.
+A node says a
 fence's `runs` in its `Machine` only where its own launcher takes them
 (below), and none where it refuses them, so another machine judges it
 as a run there is judged. A fence

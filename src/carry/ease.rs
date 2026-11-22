@@ -692,6 +692,7 @@ pub(super) mod tests {
                 "/nix/store/0000-fence/bin/fence".to_owned(),
                 "--".to_owned(),
             ],
+            accepts: std::collections::BTreeMap::new(),
         };
         Declared {
             fence: Some(kinds.iter().map(|&kind| (kind, open.clone())).collect()),
