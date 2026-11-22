@@ -14105,8 +14105,28 @@ esac
         let store = Memory::default();
         let (_stop, _node, _client) =
             orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        // Its room is said now and unpressed, and it says no battery, so it
+        // ranks with skiff whatever the machine running the test has: skiff
+        // reads the queue's record of the test's own machine, heard where
+        // one is kept, as on a Mac or a Linux desktop outside the sandbox.
         let osprey = facts::Machine {
             system: Some("macos".to_owned()),
+            power: None,
+            room: Some(room::Room {
+                said_at: jiff::Timestamp::now().to_string(),
+                memory_available: 32 << 30,
+                pressure: room::Pressure {
+                    cpu: 0.0,
+                    memory: 0.0,
+                    io: 0.0,
+                },
+                takes: room::Takes {
+                    builds: 1,
+                    vm_tests: 1,
+                },
+                over: Some(Vec::new()),
+                saturated: Some(false),
+            }),
             ..fenced("osprey", &["remote"])
         };
         store.put_machine(&osprey).expect("what it said is kept");
