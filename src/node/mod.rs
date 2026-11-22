@@ -2023,7 +2023,8 @@ fn says_who(answered: Reply, within: Option<Result<(), String>>) -> Reply {
 /// (WCJQSG, 19 November): only a session of its own quest, or one this
 /// node's book of `starts` says it or its orchestrator started, read as
 /// every reader of the book reads it, naming a hold's starter only where
-/// one of the living `sessions` claims that hold. The
+/// one of the living `sessions` claims that hold, the reopened one
+/// counted among them though it has ended. The
 /// nearest claim above the asker isn't enough: a pi host's sessions share
 /// its process, so any of them could be named. A proved session's quest,
 /// address and orchestrator are its presence's, which its pi host writes
@@ -2063,7 +2064,18 @@ fn reopens_within(
         )
     })?;
     let same_quest = asker.quest.is_some() && asker.quest == reopened.quest;
-    let starters = starts.starters().but_shared(claims(sessions));
+    // One that ended still claims its hold beside a living twin.
+    let living = sessions
+        .iter()
+        .any(|one| one.id == reopened.id && one.machine == reopened.machine);
+    let ended: &[Session] = if living {
+        &[]
+    } else {
+        std::slice::from_ref(reopened)
+    };
+    let starters = starts
+        .starters()
+        .but_shared(claims(sessions).chain(claims(ended)));
     let started_by = reopened
         .held
         .as_deref()
@@ -16783,7 +16795,11 @@ esac
                 "{}\n{}\n",
                 booked("h-led", "WCJQSG"),
                 booked("h-own", "HARBOR")
-            ) + &format!("{}\n", booked("h-shared", "WCJQSG")),
+            ) + &format!(
+                "{}\n{}\n",
+                booked("h-shared", "WCJQSG"),
+                booked("h-ended", "WCJQSG")
+            ),
         )
         .expect("the book is written");
         let store = Memory::default();
@@ -16799,6 +16815,8 @@ esac
             ("s-theirs", "THEIRS", "QEST-20261108-OSPHT4", "h-theirs"),
             ("s-shared", "SHARED", "QEST-20261108-OSPHT4", "h-shared"),
             ("s-twin", "TWIN01", "QEST-20261108-OSPHT4", "h-shared"),
+            ("s-ended", "ENDED1", "QEST-20261108-OSPHT4", "h-ended"),
+            ("s-left", "LEFT01", "QEST-20261108-OSPHT4", "h-ended"),
         ] {
             let presence = json!({"session": session, "addresses": [address], "quest": quest,
                                   "heldAs": held, "at": "2026-11-19T06:00:00Z"});
@@ -16852,6 +16870,20 @@ esac
                  QEST-20261108-OSPHT4, one its orchestrator started, or the person"
             )),
             "a hold the book can't tie to one claimant is no orchestrator's start: {shared:?}"
+        );
+        // KP0L6A's review (2026-11-22): one that ended still shares its
+        // hold with the twin it left.
+        store
+            .remove_presence("s-ended", "tern")
+            .expect("tern's node said it ended");
+        unlisted(socket.clone(), "s-ended").await;
+        let ended = ask(socket.clone(), reopen("s-ended")).await;
+        assert!(
+            matches!(&ended, Err(why) if why.ends_with(
+                "s-ended is reopened from fenced ground only by an agent of \
+                 QEST-20261108-OSPHT4, one its orchestrator started, or the person"
+            )),
+            "an ended session's hold counts beside its living twin's: {ended:?}"
         );
         // Round 3 of our council (2026-11-20): a claim proves nothing, so
         // one naming the asker's process lends it no quest. This one's
