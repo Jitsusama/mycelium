@@ -1737,7 +1737,11 @@ work was placed and a replay can place it again under other weights:
 `at`, `start` (whether it was a start, or an ask to start answered
 here), the `work`, every machine's facts as placing read them
 (`machines`), each machine's `loads` (`sessions` and `placed` starts
-beyond what its room says), and the `decision`: the `placement`
+beyond what its room says), the machines `refused` before they were
+judged and why, left out where none was, the `fence` the node judged
+the asker to run in (`"fence"` or `"strict"`), left out for the person
+and in a record kept before it was said, and the `decision`: the
+`placement`
 answered and, for each machine, how it was `judged` (`machine`,
 `qualifies`, `over`, `unheard`, how many preferences it met as
 `preferred`, its `headroom`, and its `chance` of being the one chosen,

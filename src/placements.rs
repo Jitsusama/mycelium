@@ -40,6 +40,11 @@ pub struct Record {
     /// too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refused: Vec<Miss>,
+    /// The fence the node judged the asker to run in, none for the
+    /// person, so a refusal for looser ground, or its absence, reads off
+    /// the record. None too in a record kept before it was said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fence: Option<crate::declared::Kind>,
     /// How each machine was judged, and where the work went.
     pub decision: Decision,
 }
@@ -126,6 +131,7 @@ mod tests {
             machines: Vec::new(),
             loads: Loads::new(),
             refused: Vec::new(),
+            fence: None,
             decision: Decision {
                 placement: Placement::Placed {
                     machine: machine.to_owned(),
@@ -211,5 +217,26 @@ mod tests {
             [record("tern")],
             "the next day's in its own file"
         );
+    }
+
+    #[test]
+    fn a_record_says_the_askers_fence_only_where_the_asker_was_fenced() {
+        let person = serde_json::to_value(record("kestrel")).expect("a record");
+        assert_eq!(
+            person.get("fence"),
+            None,
+            "the person's says none: {person}"
+        );
+        let kept: Record = serde_json::from_value(person).expect("a record");
+        assert_eq!(kept.fence, None, "and one kept before it was said reads");
+
+        let fenced = Record {
+            fence: Some(crate::declared::Kind::Strict),
+            ..record("kestrel")
+        };
+        let said = serde_json::to_value(&fenced).expect("a record");
+        assert_eq!(said["fence"], "strict", "{said}");
+        let kept: Record = serde_json::from_value(said).expect("a record");
+        assert_eq!(kept, fenced, "read back whole");
     }
 }

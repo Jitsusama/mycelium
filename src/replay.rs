@@ -202,6 +202,7 @@ mod tests {
             machines,
             loads,
             refused: Vec::new(),
+            fence: None,
             decision,
         }
     }
@@ -289,6 +290,7 @@ mod tests {
             machines,
             loads,
             refused: Vec::new(),
+            fence: None,
             decision,
         };
         let said = serde_json::to_value(&record).expect("a record");

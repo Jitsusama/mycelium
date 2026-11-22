@@ -3339,6 +3339,7 @@ impl<S: Store> Shared<S> {
             machines,
             loads,
             refused,
+            fence,
             decision,
         };
         let day = now.to_zoned(jiff::tz::TimeZone::system()).date();
@@ -17682,6 +17683,11 @@ esac
             "with the machines it placed among"
         );
         assert_eq!(record.decision.judged.len(), 1, "and how it judged each");
+        assert_eq!(
+            record.fence,
+            Some(crate::declared::Kind::Strict),
+            "and the fence it judged the asker in, strict where nothing of it can be read"
+        );
         stop.send(()).expect("the node is still running");
         node.await
             .expect("the node runs to its end")
