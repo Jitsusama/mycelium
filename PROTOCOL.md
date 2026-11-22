@@ -17,6 +17,15 @@ implementation today and room for the next.
 - **Session, peer, group, address:** as the harness mesh means them. A
   session is a session wherever it runs; one on another machine is a
   session whose machine is elsewhere.
+- **Fold:** a provider's asker cut to lowercase letters and digits, at
+  most 16, as a made machine's name holds it. A fold is held for one
+  asker until its VM end, so no two askers share one.
+- **VM end:** the second a made machine's run ends, which its provider
+  keeps and tells the machine, so it can declare when it leaves.
+- **Logged image:** the image a provider boots, named by the id its image
+  maker logged, so a machine is never made of another of the same name.
+- **Openings:** a provider's record of each run on a made machine, and
+  each one refused, with its time, place and asker.
 
 ## What Is Kept
 
