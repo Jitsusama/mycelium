@@ -49,6 +49,20 @@ pub struct Message {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub ends_hold: bool,
+    /// The process that wrote its file, as the file says, so a sender
+    /// reading through a node knows its own message come back; none
+    /// where the file names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// That its sender is a conversation in a shared host, whose process
+    /// its other conversations share, so the process alone isn't its
+    /// sender.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hosted: bool,
+    /// A group it invites those it names to join, which each joins on
+    /// hearing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<String>,
 }
 
 /// What a message asks of those who hear it, in the mesh's words.

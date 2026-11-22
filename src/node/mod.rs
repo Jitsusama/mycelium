@@ -3298,7 +3298,7 @@ impl<S: Store> Shared<S> {
             Request::Messages { groups, limit } => {
                 Ok(Response::Messages(self.lock().state.recent(&groups, limit)))
             }
-            Request::Send(draft) => self.send(&draft).map(Response::Sent),
+            Request::Send(draft) => self.send(&draft).map(|sent| Response::Sent(Box::new(sent))),
             Request::Flows => Ok(Response::Flows {
                 to: self.flows.to.iter().cloned().collect(),
             }),
@@ -6203,7 +6203,9 @@ impl<S: Store> Shared<S> {
 impl Inner {
     fn send_message(&mut self, message: Message) {
         let heard = self.routes.listeners(&message.groups);
-        let event = Event::Message { message };
+        let event = Event::Message {
+            message: Box::new(message),
+        };
         for id in heard {
             self.send(id, &event);
         }
