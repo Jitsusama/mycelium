@@ -207,15 +207,10 @@ impl Lender {
             })
     }
 
-    /// Whether `machine` is cut off, as the cuts say now. Cuts that can't
-    /// be read cut every machine off, since a lend can't be told apart
-    /// from one meant to have ended.
-    fn cut_off(&self, machine: &str) -> bool {
-        self.cut_off_why(machine).is_some()
-    }
-
     /// Why `machine` is cut off, as the cuts say now, where it is: cuts
-    /// that can't be read say so, and why goes to this machine's log.
+    /// that can't be read say so, and cut every machine off, since a
+    /// lend can't be told apart from one meant to have ended; why goes
+    /// to this machine's log.
     fn cut_off_why(&self, machine: &str) -> Option<String> {
         match cuts(&self.folder) {
             Ok(cuts) => cuts
@@ -234,10 +229,10 @@ impl Lender {
     }
 
     /// Counts a request of `machine`'s against its `most` a day, refusing
-    /// it once the day's are spent. Only one node on a machine may lend,
-    /// since the count is kept whole within one node alone.
-    fn count(&self, machine: &str, most: u64) -> Result<(), Refusal> {
-        self.counted(machine, |made| {
+    /// it once the day's are spent, and answering the day it counted in.
+    fn count(&self, machine: &str, most: u64) -> Result<String, Refusal> {
+        let day = jiff::Timestamp::now().strftime("%Y-%m-%d").to_string();
+        self.counted(machine, &day, |made| {
             if *made >= most {
                 return Err(refused(
                     429,
@@ -246,13 +241,15 @@ impl Lender {
             }
             *made += 1;
             Ok(())
-        })
+        })?;
+        Ok(day)
     }
 
-    /// Gives back a request of `machine`'s counted today, which the
-    /// lender couldn't carry for a fault of its own.
-    fn uncount(&self, machine: &str) {
-        if let Err(refusal) = self.counted(machine, |made| {
+    /// Gives back a request of `machine`'s counted on `day`, which the
+    /// lender couldn't carry for a fault of its own; to that day, though
+    /// another has begun since.
+    fn uncount(&self, machine: &str, day: &str) {
+        if let Err(refusal) = self.counted(machine, day, |made| {
             *made = made.saturating_sub(1);
             Ok(())
         }) {
@@ -263,18 +260,23 @@ impl Lender {
         }
     }
 
-    /// Changes `machine`'s count of the day's requests as `changing`
-    /// says, keeping it whole.
+    /// Changes `machine`'s count of `day`'s requests as `changing` says,
+    /// keeping it whole: within this node by its lock, and across every
+    /// node on the machine by a lock on the folder's `counts.lock`, so
+    /// two lending nodes, which only one should be, lose no count.
     fn counted(
         &self,
         machine: &str,
+        day: &str,
         changing: impl FnOnce(&mut u64) -> Result<(), Refusal>,
     ) -> Result<(), Refusal> {
         let _held = self
             .counting
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let day = jiff::Timestamp::now().strftime("%Y-%m-%d").to_string();
+        let _locked = self
+            .locked()
+            .map_err(|error| refused(503, format!("the day's counts can't be locked: {error}")))?;
         let file = self.folder.join(format!("counts-{day}.json"));
         let mut counts: BTreeMap<String, u64> = match fs::read(&file) {
             Ok(text) => serde_json::from_slice(&text).map_err(|error| {
@@ -291,6 +293,23 @@ impl Lender {
         changing(counts.entry(machine.to_owned()).or_default())?;
         write_whole(&self.folder, &file, &counts)
             .map_err(|error| refused(503, format!("the day's count can't be kept: {error}")))
+    }
+
+    /// The folder's `counts.lock`, held for as long as what it answers
+    /// lives, waiting for any other node holding it.
+    fn locked(&self) -> io::Result<fs::File> {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.folder)?;
+        let lock = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(self.folder.join("counts.lock"))?;
+        rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
+        Ok(lock)
     }
 }
 
@@ -453,26 +472,40 @@ async fn lent(
         Ok(allowed) => allowed,
         Err(refusal) => return Ended::Refused(refusal),
     };
-    if let Err(refusal) = lender.count(machine, most) {
-        return Ended::Refused(refusal);
-    }
-    // Given back where its key can't be had or its relay doesn't answer,
-    // so a lender's own outage spends nobody's day.
+    let day = match lender.count(machine, most) {
+        Ok(day) => day,
+        Err(refusal) => return Ended::Refused(refusal),
+    };
+    // Given back where its key can't be had, its relay can't be reached
+    // or asked, or it says no head, so a lender's own outage spends
+    // nobody's day; and where it was cut off meanwhile, before anything
+    // went upstream.
     let (stream, key) = match reached(lender, &budget).await {
         Ok(reached) => reached,
         Err(refusal) => {
-            lender.uncount(machine);
+            lender.uncount(machine, &day);
             return Ended::Refused(refusal);
         }
     };
+    if let Some(why) = lender.cut_off_why(machine) {
+        lender.uncount(machine, &day);
+        return Ended::Refused(refused(403, why));
+    }
     let reading = match asked(stream, key, &asking, &budget).await {
         Ok(reading) => reading,
-        Err(refusal) => return Ended::Refused(refusal),
+        Err(refusal) => {
+            lender.uncount(machine, &day);
+            return Ended::Refused(refusal);
+        }
     };
-    tokio::select! {
+    let ended = tokio::select! {
         ended = answered(reading, sending, used) => ended,
         ended = watched(lender, machine, sending) => ended,
+    };
+    if used.status.is_none() && matches!(&ended, Ended::Refused(refusal) if refusal.status == 502) {
+        lender.uncount(machine, &day);
     }
+    ended
 }
 
 /// How a lend being answered ends without its answer: its borrower

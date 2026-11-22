@@ -813,8 +813,7 @@ impl Runs {
     }
 
     /// Lets the run or lend asked as `ask` of this machine send one more
-    /// piece.
-    /// Widens `ask`'s window by a piece the other end took; a lend's never
+    /// piece, widening its window by one the other end took; a lend's never
     /// past [`BACKLOG`], so a worker saying it took what it was never sent
     /// holds back no more of the lender's answer.
     fn taken(&self, ask: u64) {

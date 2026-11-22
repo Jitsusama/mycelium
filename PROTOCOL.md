@@ -2177,21 +2177,29 @@ sealed as `declared.json` is, read again at every lend:
 `{"vms": [{"prefix", "budget", "requests_a_day"}], "budgets": {NAME:
 {"upstream", "host", "paths", "auth_header", "key"}}}`. A link's end
 answers each lend the other machine asks by it, and a node started
-without one refuses every lend 403. A lend is refused 403 for a
+without one refuses every lend 403. A machine is known by its link's
+name, which a worker reached by `--via` says itself in its first hello,
+so a `prefix` trusts the machines its provider makes. A lend is
+refused 403 for a
 machine cut off, one no `prefix` starts or more than one does, a
 budget asked that isn't the machine's, a method but `POST` or `GET`,
 or a path not at or below one of `paths`, or holding a `.` or `..`
 segment or anything but letters, digits, `/`, `_`, `-` and `.`, with
-a query of those but `/`, `=` and `&`; 400 for a header or body that
+a query of those but `/`, and `=` and `&` besides; 400 for a header
+or body that
 can't be read, 413 for a body past 32 MiB, and 429 once the machine
 has made its `requests_a_day` that day, by UTC. A budget bounds how
 many requests and to which paths, not what each costs. The count is
 kept in `counts-DAY.json` in `lend/` under the account's state folder,
-whatever the node's `--state`, since `mycelium lend cut` asks no node;
-only one node on a machine may lend, since its count is whole within
-one node. A lend whose key can't be had or whose upstream doesn't
-answer is given back, so a lender's outage spends no machine's day. One that
-passes goes to `upstream`, a socket's path, or
+whatever the node's `--state`, since `mycelium lend cut` asks no node,
+and changed under a lock on `lend/counts.lock`, so two nodes lending
+from one account lose no count. A lend is counted before it is carried
+and given back, to the day it was counted in, where its key can't be
+had, its upstream can't be reached or asked, the upstream ends before
+any head, or the machine is cut off before it is asked, so a lender's
+outage spends no machine's day; never once a head has come or the
+borrower has let it go. One that passes goes to `upstream`, a
+socket's path, or
 where relative one in the account's runtime folder, for `host`, with
 only the headers the shim hands on and `key`'s command's output in
 `auth_header`, where a key is named: the borrower's own credentials

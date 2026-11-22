@@ -354,6 +354,9 @@ async fn a_path_or_a_budget_or_a_method_not_lent_is_refused() {
         "/v1/messages/../../admin",
         "/v1/messages/%2e%2e/admin",
         "/v1/messages#/../../admin",
+        // Past the prefix, so only the characters refuse these.
+        "/v1/messages/x#y",
+        "/v1/messages?a=1#/../../admin",
         "/v1/messages/..\\..\\v1/files",
         "/v1/messages?to=%2e%2e",
         "/v1/messages?to=/admin",
@@ -382,7 +385,44 @@ async fn a_path_or_a_budget_or_a_method_not_lent_is_refused() {
 }
 
 #[tokio::test]
-async fn a_machine_past_its_days_count_is_refused_until_the_next() {
+async fn a_path_with_a_query_is_lent_as_it_was_asked() {
+    let mut lending = Lending::new();
+    let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages?beta=true"));
+    let asked = lending.relay.asked().await;
+    let head = asked.head.to_ascii_lowercase();
+    assert!(
+        head.starts_with("post /v1/messages?beta=true http/1.1\r\n"),
+        "{head}"
+    );
+    asked
+        .answer
+        .send(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n".to_vec())
+        .expect("the relay answers");
+    let (lent, _) = whole(&mut answers).await;
+    assert_eq!(lent.last(), Some(&Lent::Done), "{lent:?}");
+}
+
+#[tokio::test]
+async fn a_header_that_would_say_more_than_itself_is_refused() {
+    let mut lending = Lending::new();
+    for value in [
+        "application/json\r\ncontent-length: 0\r\n\r\nPOST /v1/anything HTTP/1.1",
+        "a\r\nx: y",
+        " application/json",
+    ] {
+        let mut asked = lend("/v1/messages");
+        asked.headers[0].1 = value.to_owned();
+        let mut answers = answer(&lending.lender, "agents-1", asked);
+        assert_eq!(refusal(&mut answers).await, 400, "{value:?}");
+    }
+    assert!(
+        !lending.relay.was_asked(),
+        "no header smuggles a request to the relay"
+    );
+}
+
+#[tokio::test]
+async fn a_machine_past_its_days_count_is_refused_while_another_still_borrows() {
     let mut lending = Lending::new();
     for _ in 0..3 {
         let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
@@ -417,10 +457,9 @@ async fn a_machine_cut_off_is_refused_by_name_or_with_every_other_until_let_back
         refused.to_string().contains("let every machine back first"),
         "{refused}"
     );
-    assert!(
-        uncut(&state, &Cut::All)
-            .expect("let every one back")
-            .is_empty()
+    assert_eq!(
+        uncut(&state, &Cut::All).expect("let every one back"),
+        Vec::<String>::new()
     );
     cut(&state, &Cut::Machine("agents-2".to_owned())).expect("cut");
     assert_eq!(
@@ -486,6 +525,24 @@ async fn a_lend_with_no_relay_answering_is_refused_as_unavailable() {
     let mut relay = Relay::at(&lending.folder.path().join("relay/agents.sock"));
     let _answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
     relay.asked().await;
+}
+
+#[tokio::test]
+async fn a_relay_that_says_no_head_spends_no_machines_day() {
+    let mut lending = Lending::new();
+    for _ in 0..4 {
+        let mut answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+        let asked = lending.relay.asked().await;
+        asked
+            .answer
+            .send(b"not a head at all\r\n\r\n".to_vec())
+            .expect("the relay says nonsense");
+        drop(asked);
+        assert_eq!(refusal(&mut answers).await, 502);
+    }
+    // Four the relay failed spend none of the day's three.
+    let _answers = answer(&lending.lender, "agents-1", lend("/v1/messages"));
+    lending.relay.asked().await;
 }
 
 #[tokio::test]
