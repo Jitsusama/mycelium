@@ -3273,14 +3273,10 @@ impl<S: Store> Shared<S> {
         screen: Screen,
         admits: &Admits,
     ) -> Placement {
-        // Every caller raises an agent to at least a fence, which is what
-        // the record's readers are told; a later caller breaking that is
-        // told here, and its record still says what placing used.
-        debug_assert_ne!(
-            fence,
-            Some(crate::declared::Kind::None),
-            "an agent placed unfenced"
-        );
+        // An agent is placed at least in a fence, in every build, as each
+        // caller raises it already, so a later caller that doesn't places
+        // nothing looser, and the record never says it unfenced.
+        let fence = fence.map(|kind| kind.max(crate::declared::Kind::Fence));
         // Measured before the lock is taken, since measuring reads this
         // machine and the store. This machine, first, is never booked.
         let mut machines = self.machines();
@@ -17677,18 +17673,19 @@ esac
         let Ok(Response::Placement(placement)) = answer else {
             panic!("a placement: {answer:?}");
         };
-        let days: Vec<PathBuf> = fs::read_dir(&kept)
+        // A day's file each, so asks crossing midnight are put back in
+        // order.
+        let mut records: Vec<placements::Record> = fs::read_dir(&kept)
             .expect("the log's folder")
-            .map(|entry| entry.expect("an entry").path())
+            .flat_map(|entry| {
+                fs::read_to_string(entry.expect("an entry").path())
+                    .expect("the day's file")
+                    .lines()
+                    .map(|line| serde_json::from_str(line).expect("a record"))
+                    .collect::<Vec<placements::Record>>()
+            })
             .collect();
-        let [day] = days.as_slice() else {
-            panic!("one day's file: {days:?}");
-        };
-        let records: Vec<placements::Record> = fs::read_to_string(day)
-            .expect("the day's file")
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("a record"))
-            .collect();
+        records.sort_by_key(|one| one.at.parse::<jiff::Timestamp>().expect("a time"));
         let [record, start] = records.as_slice() else {
             panic!("two placements kept, in the order asked: {records:?}");
         };
@@ -17713,7 +17710,9 @@ esac
             "and the fence it judged the asker in, strict where nothing of it can be read, \
              with the run's screen, which an ask where is placed through"
         );
-        assert!(start.start, "the ask to start is kept as a start");
+        // Whether it counts as a start turns on where it lands, which
+        // `an_ask_to_start_counts_as_a_start_only_where_its_asker_starts_it`
+        // pins; here it is the screen.
         assert_eq!(
             (start.fence, start.screen),
             (

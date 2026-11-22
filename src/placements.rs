@@ -48,7 +48,7 @@ pub struct Record {
     /// person's, on the asking machine's word. A start relayed here that
     /// this node took as an agent's says the fence it held it to. None
     /// too in a record kept before it was said; a word this build doesn't
-    /// know reads as [`Fence::Unknown`], never as unfenced.
+    /// know, or a `null`, reads as [`Fence::Unknown`], never as unfenced.
     #[serde(
         default,
         deserialize_with = "or_unknown",
@@ -70,14 +70,12 @@ pub struct Record {
     pub decision: Decision,
 }
 
-/// The fence a record says placement held an agent's work to. Its words
-/// are spelled out one by one, so the file's words stay put whatever the
+/// The fence a record says placement held an agent's work to, which is
+/// never none, as an agent is never placed unfenced. Its words are
+/// spelled out one by one, so the file's words stay put whatever the
 /// fences are named in the code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Fence {
-    /// No fence, which placing is never handed for an agent.
-    #[serde(rename = "none")]
-    None,
     /// The agent fence.
     #[serde(rename = "fence")]
     Fence,
@@ -90,11 +88,12 @@ pub enum Fence {
     Unknown,
 }
 
+/// An agent's fence as a record says it, no looser than the agent fence,
+/// as placing floors it.
 impl From<crate::declared::Kind> for Fence {
     fn from(kind: crate::declared::Kind) -> Self {
         match kind {
-            crate::declared::Kind::None => Self::None,
-            crate::declared::Kind::Fence => Self::Fence,
+            crate::declared::Kind::None | crate::declared::Kind::Fence => Self::Fence,
             crate::declared::Kind::Strict => Self::Strict,
         }
     }
@@ -135,14 +134,16 @@ impl Unknowable for Screen {
     const UNKNOWN: Self = Self::Unknown;
 }
 
-/// A field as said, none where it isn't, and unknown where it is in a
-/// shape this build doesn't read, which spoils only that field, never
-/// the rest of the record.
+/// A field as said, and unknown where it is in a shape this build doesn't
+/// read, `null` among them, which spoils only that field, never the rest
+/// of the record. A field left out never comes here: `default` makes it
+/// none.
 fn or_unknown<'de, D: serde::Deserializer<'de>, T: Unknowable>(
     said: D,
 ) -> Result<Option<T>, D::Error> {
-    Ok(Option::<serde_json::Value>::deserialize(said)?
-        .map(|field| serde_json::from_value(field).unwrap_or(T::UNKNOWN)))
+    Ok(Some(
+        serde_json::from_value(serde_json::Value::deserialize(said)?).unwrap_or(T::UNKNOWN),
+    ))
 }
 
 /// Where a node keeps its placements: a folder of `<date>.jsonl` files,
@@ -378,6 +379,34 @@ mod tests {
             read(json!("strict"), json!("sideways")),
             (Some(Fence::Strict), Some(Screen::Unknown)),
             "and a known fence beside an unknown screen keeps both said"
+        );
+        assert_eq!(
+            read(Value::Null, Value::Null),
+            (Some(Fence::Unknown), Some(Screen::Unknown)),
+            "a null said is no word, and never reads as left out"
+        );
+        assert_eq!(
+            read(json!("none"), json!("ground")),
+            (Some(Fence::Unknown), Some(Screen::Ground)),
+            "no record says an agent unfenced, so none is no word of its"
+        );
+        assert_eq!(
+            [Screen::Ground, Screen::Unknown].map(|screen| serde_json::to_value(screen).ok()),
+            [Some(json!("ground")), Some(json!("unknown"))],
+            "and the other words are spelled as kept"
+        );
+        assert_eq!(
+            serde_json::to_value(Fence::Unknown).ok(),
+            Some(json!("unknown"))
+        );
+    }
+
+    #[test]
+    fn an_agents_fence_is_said_no_looser_than_the_agent_fence() {
+        use crate::declared::Kind;
+        assert_eq!(
+            [Kind::None, Kind::Fence, Kind::Strict].map(Fence::from),
+            [Fence::Fence, Fence::Fence, Fence::Strict]
         );
     }
 }

@@ -1754,19 +1754,21 @@ same. When a day's file is
 first written, the files of days more than 14 before it are let go, so
 the log holds about two weeks.
 
+A processor reading that isn't a number counts as none, so every
+`headroom` is a number.
+
 A record's `fence` is the fence placement held the asker's work to, as
 the node judged the asker: `"fence"` or `"strict"`, since an agent is
-never placed unfenced. Its `screen` is what that work was placed
-through beside its fence: `"run"`, or `"held"`, which no Mac takes.
-Both are left out where the work was placed unfenced: the person's
+never placed unfenced, not even by a node that is handed one so. Its
+`screen` is what that work was placed through beside its fence: `"run"`,
+or `"held"`, which no Mac takes. An agent's start whose asker is shown
+unfenced is placed through `"run"`, which a Mac may take, so a start
+saying `"run"` is that exemption, not a mistake. Both are left out where the work was placed unfenced: the person's
 work, and a start relayed here that this node took as the person's, on
 the asking machine's word. A start relayed here that this node took as
 an agent's says its fence, and `"held"`. A word a build doesn't know,
-in either, reads as `"unknown"`, never as unfenced, and spares the
-rest of the record.
-
-A processor reading that isn't a number counts as none, so every
-`headroom` is a number.
+in either, as does a `null`, reads as `"unknown"`, never as unfenced,
+and spares the rest of the record.
 
 `"Takes"` judges each of `starts`, one after another, as `"Start"`
 would: by the asker as its own declared fence makes it, then the book
