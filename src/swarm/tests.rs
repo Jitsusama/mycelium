@@ -202,6 +202,14 @@ fn a_name_matching_none_or_several_is_said_plainly() {
         Err("r could be reef or harbour".to_owned()),
         "several, each as it's typed, as the node lists them"
     );
+    let mut alike = swarm();
+    alike.teams[1]["swarm"] = json!("dock");
+    alike.teams[0]["swarm"] = json!("do\u{200B}ck");
+    assert_eq!(
+        team(&alike, "dock", &look()),
+        Err("dock could be dock (REEF01) or dock (HARBOR)".to_owned()),
+        "two drawn alike are each named by their address too, so one can be typed"
+    );
 }
 
 /// Teams titled as people title them: two sharing Harbour, one a

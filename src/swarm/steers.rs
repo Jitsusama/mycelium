@@ -15,7 +15,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Standing, Swarm, address, asked, either, listed, names, short_names, title, unmarked};
+use super::{
+    Standing, Swarm, address, asked, either, listed, names, short_names, title, told_apart,
+    unmarked,
+};
 
 /// Who a steer is from: the person, as the harness's steers name them.
 const FROM: &str = "person";
@@ -128,13 +131,20 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
         [] => Err(format!("nothing in the swarm is named {asked}")),
         many => {
             // Each is a peer's text, so each is held to one line.
-            let typed: Vec<String> = many
-                .iter()
-                .map(|one| match one {
-                    Named::Team(record) => unmarked(names::typed(record, &shorts)),
-                    Named::Session(record) => unmarked(title(record)),
-                })
-                .collect();
+            // Two drawn alike are each given their address too.
+            let typed = told_apart(
+                many.iter()
+                    .map(|one| match one {
+                        Named::Team(record) => {
+                            (unmarked(names::typed(record, &shorts)), address(record))
+                        }
+                        Named::Session(record) => (
+                            unmarked(title(record)),
+                            record["address"].as_str().unwrap_or_default(),
+                        ),
+                    })
+                    .collect(),
+            );
             let typed: Vec<&str> = typed.iter().map(String::as_str).collect();
             Err(format!("{asked} could be {}", either(&typed)))
         }
@@ -500,7 +510,10 @@ mod tests {
         swarm.teams[0]["swarm"] = json!("do\u{200B}ck");
         let why = aim(&swarm, Act::Pause, "dock")
             .expect_err("a steer to two teams drawn alike is refused");
-        assert!(why.starts_with("dock could be "), "{why}");
+        assert_eq!(
+            why, "dock could be dock (REEF01) or dock (HARBOR)",
+            "each is named with what to type to reach it"
+        );
     }
 
     #[test]

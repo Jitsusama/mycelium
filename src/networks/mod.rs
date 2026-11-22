@@ -90,14 +90,13 @@ fn shares_of(presence: &Value) -> Vec<Share> {
         // A title is a name read and voted on, so it drops what draws
         // nothing too, as every peer's text on a page does; a folder is
         // a path, kept to the letter but for what would act on a terminal.
-        swarm::unmarked(&share.about)
-            .trim()
-            .clone_into(&mut share.about);
+        share.about = swarm::unmarked(&share.about);
         share.folder = drawable(&share.folder);
         if let Some((cut, _)) = share.about.char_indices().nth(SHARE_FOR_MOST) {
             share.about.truncate(cut);
-            // Trimmed again, so a cut falling after a space ends in none.
-            share.about.truncate(share.about.trim_end().len());
+            // Cleaned again, so a cut falling after a space ends in none,
+            // and one falling after a joiner leaves none joining nothing.
+            share.about = swarm::unmarked(&share.about);
         }
         // Cleaning and a cut keep what was read, so a long `for` held in
         // every cell would still cost its whole length without this.
