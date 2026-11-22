@@ -273,7 +273,8 @@ mod tests {
             &home,
             "osprey",
         )
-        .expect("it starts");
+        .expect("it starts")
+        .start;
 
         assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
     }
@@ -302,7 +303,8 @@ mod tests {
             &home,
             "osprey",
         )
-        .expect("it starts");
+        .expect("it starts")
+        .start;
 
         assert_eq!(start.folder, Some(PathBuf::from("src/rows")));
     }
@@ -381,7 +383,7 @@ mod tests {
         };
 
         let refused = sprout(&hidden);
-        let started = sprout(&seen).expect("it starts where it sees");
+        let started = sprout(&seen).expect("it starts where it sees").start;
 
         assert_eq!(
             refused,
