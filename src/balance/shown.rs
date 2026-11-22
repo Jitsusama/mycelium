@@ -750,7 +750,7 @@ mod tests {
         );
         // Measured by Unicode's widths directly, not by the code under test,
         // as nothing here is coloured.
-        let cells = unicode_width::UnicodeWidthStr::width;
+        let cells = <str as unicode_width::UnicodeWidthStr>::width;
         let long: Vec<&str> = shown.lines().filter(|line| cells(line) > 80).collect();
         assert!(long.is_empty(), "lines past 80 cells: {long:?}\n{shown}");
         let stands = |name: &str| {
