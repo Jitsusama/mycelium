@@ -2966,6 +2966,13 @@ mod tests {
             at("Hover").is_some() && at("Hover") == at("Wind"),
             "a wide kind or stage moved its title out of line:\n{drawn}"
         );
+        // Two, the kinds' 4 cells, two, the stages' 5, two, the steps'
+        // 16 and two: counted in bytes, the kinds and stages take 6 each.
+        assert_eq!(
+            at("Hover"),
+            Some(33),
+            "the kind and stage columns were not as wide as they draw:\n{drawn}"
+        );
     }
 
     #[test]
