@@ -136,13 +136,16 @@ same code, each line a JSON value:
    into the presence as `startedByAs`, only where it is an address, the
    presence names a `held` id, and the sending end is no worker, whose
    node is whoever runs on the machine lent. Either field a presence
-   says of itself is dropped first, so neither is ever the session's own
-   word. The end asks its node with `{"StartedBy": [held]}` apart from
+   says of itself is dropped first, by the sender and again by the
+   other end, so neither is ever the session's own word. The end asks its node with `{"StartedBy": [held]}` apart from
    the link's other work, sending each presence with the starters known
    so far and again once one more is named; a hold named none is asked
    about again after 30 seconds, with the next presence or the next
    minute's keep, and a node that can't say is told of once on the
-   end's standard error. An end older than `started_by` says none.
+   end's standard error, and told again once it answers. A link opened
+   afresh knows no starter until its node first answers, so the other
+   end says none for that long: about 5 seconds, or for a node that
+   can't answer, until it can. An end older than `started_by` says none.
    `leases` are the mesh's `change` leases it and its hands hold on a
    repository's files, named as `core.nix:flake.nix`, so a session in
    another clone there is told it overlaps; one named by an absolute
@@ -2656,7 +2659,10 @@ names, each only as an address other than its own) with
 as `presence` is the session's own claim; for a session elsewhere,
 `book` is its own machine's node's word as this machine's store keeps
 it, which its link writes there, so whatever can write that store can
-say it, as it can any presence), `plan`, `cwd`, the
+say it, as it can any presence; a hold two living sessions claim
+takes no starter from this node's book, which can't say which of them
+it started),
+`plan`, `cwd`, the
 `trees` it holds, the folders it `shares`, a machine's or a
 receptor's `state`, a machine's `busy` and the sessions it `runs`, a
 receptor's `counts`, and the `networks` it joined. A session's `quest`

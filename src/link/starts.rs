@@ -181,6 +181,13 @@ impl Asks {
                 .send(machine, Asked::Start(start), Some(ANSWERED_WITHIN))
                 .await?
             {
+                // A start relayed there starts there or nowhere, so an
+                // answer naming another machine is refused: its node's
+                // book would keep it as that machine's session's start.
+                Ok(Response::Started(started)) if started.machine != machine => Err(format!(
+                    "{machine} answered a start as {}'s, which it can't start",
+                    started.machine
+                )),
                 Ok(Response::Started(started)) => Ok(Response::Started(Started {
                     attach: there(machine, &started.attach),
                     ..started

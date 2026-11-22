@@ -143,10 +143,15 @@ impl Starters {
     /// that are due an ask, in a task of its own, unless an ask is out
     /// already; its answer comes out where [`Self::new`] said.
     pub(super) fn ask(&mut self, node: &Path, living: &[&str]) {
+        self.ask_at(node, living, Instant::now());
+    }
+
+    /// [`Self::ask`], as at `now`.
+    fn ask_at(&mut self, node: &Path, living: &[&str], now: Instant) {
         if self.asking {
             return;
         }
-        let due = self.due(living, Instant::now());
+        let due = self.due(living, now);
         if due.is_empty() {
             return;
         }
@@ -274,8 +279,13 @@ mod tests {
                                 .collect(),
                         ))
                     }
-                    // What an older node says of an ask it can't read.
-                    _ => Err(format!("not a request: {line}")),
+                    // What an older node says of an ask it can't read,
+                    // word for word, as serde names the variant it lacks.
+                    _ => Err(
+                        "not a request: unknown variant `StartedBy`, expected one of \
+                               `Health`, `Place`"
+                            .to_owned(),
+                    ),
                 };
                 let mut said = serde_json::to_vec(&answer).expect("an answer");
                 said.push(b'\n');
@@ -284,18 +294,21 @@ mod tests {
         });
     }
 
-    /// What `starters` tells, asking the node on `socket` of `living`, as
-    /// the link's loop takes the answer, kept as answered long enough ago
-    /// that each id it names no starter for is due again.
+    /// What `starters` tells, asking the node on `socket` of `living` at
+    /// `at`, as the link's loop takes the answer; `at` then moves on by
+    /// [`ASKED_AGAIN_AFTER`], so each id named no starter is due again.
     async fn learn(
         starters: &mut Starters,
         learned: &mut mpsc::UnboundedReceiver<Learned>,
         socket: &Path,
         living: &[&str],
+        at: &mut Instant,
     ) -> Option<Told> {
-        starters.ask(socket, living);
+        starters.ask_at(socket, living, *at);
         let answer = learned.recv().await.expect("the ask is answered");
-        starters.learned(answer, Instant::now() - ASKED_AGAIN_AFTER)
+        let told = starters.learned(answer, *at);
+        *at += ASKED_AGAIN_AFTER;
+        told
     }
 
     #[test]
@@ -333,7 +346,8 @@ mod tests {
         let named = Arc::new(Mutex::new(BTreeMap::new()));
         node(&socket, Answers::Naming(Arc::clone(&named)));
         let (mut starters, mut learned) = Starters::new();
-        let why = learn(&mut starters, &mut learned, &socket, &["h-1"]).await;
+        let mut at = Instant::now();
+        let why = learn(&mut starters, &mut learned, &socket, &["h-1"], &mut at).await;
         assert_eq!(
             (starters.of("h-1"), why),
             (None, None),
@@ -343,7 +357,7 @@ mod tests {
             .lock()
             .expect("the stand-in's starters")
             .insert("h-1".to_owned(), "OAR001".to_owned());
-        learn(&mut starters, &mut learned, &socket, &["h-1"]).await;
+        learn(&mut starters, &mut learned, &socket, &["h-1"], &mut at).await;
         assert_eq!(
             starters.of("h-1"),
             Some("OAR001"),
@@ -375,13 +389,14 @@ mod tests {
     async fn a_node_that_cant_say_names_no_starter_and_says_why_once_until_it_says_again() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let (mut starters, mut learned) = Starters::new();
+        let mut at = Instant::now();
         let nobody = dir.path().join("nobody.sock");
-        let first = learn(&mut starters, &mut learned, &nobody, &["h-1"]).await;
+        let first = learn(&mut starters, &mut learned, &nobody, &["h-1"], &mut at).await;
         assert_eq!(
             (starters.of("h-1"), first),
             (None, Some(Told::Unasked(Unasked::NoNode)))
         );
-        let again = learn(&mut starters, &mut learned, &nobody, &["h-1"]).await;
+        let again = learn(&mut starters, &mut learned, &nobody, &["h-1"], &mut at).await;
         assert_eq!(again, None, "told once, not with every ask");
 
         for (answers, why, said) in [
@@ -398,7 +413,7 @@ mod tests {
         ] {
             let socket = dir.path().join(format!("{why:?}.sock"));
             node(&socket, answers);
-            let told = learn(&mut starters, &mut learned, &socket, &["h-2"]).await;
+            let told = learn(&mut starters, &mut learned, &socket, &["h-2"], &mut at).await;
             assert_eq!(
                 (starters.of("h-2"), told),
                 (None, Some(Told::Unasked(why))),
@@ -407,17 +422,19 @@ mod tests {
         }
         let hanging_up = dir.path().join("hanging-up.sock");
         node(&hanging_up, Answers::HangingUp);
-        let told = learn(&mut starters, &mut learned, &hanging_up, &["h-2"]).await;
         assert_eq!(
-            told, None,
-            "a node letting the ask go is as no node, told already"
+            asked(&hanging_up, vec!["h-2".to_owned()]).await,
+            Err(Unasked::NoNode),
+            "a node letting the ask go is as no node"
         );
+        let told = learn(&mut starters, &mut learned, &hanging_up, &["h-2"], &mut at).await;
+        assert_eq!(told, None, "and as no node, it is told already");
 
         let back = dir.path().join("back.sock");
         node(&back, Answers::Naming(Arc::default()));
-        let told = learn(&mut starters, &mut learned, &back, &["h-2"]).await;
+        let told = learn(&mut starters, &mut learned, &back, &["h-2"], &mut at).await;
         assert_eq!(told, Some(Told::Again), "a node answering again is told");
-        let told = learn(&mut starters, &mut learned, &nobody, &["h-2"]).await;
+        let told = learn(&mut starters, &mut learned, &nobody, &["h-2"], &mut at).await;
         assert_eq!(
             told,
             Some(Told::Unasked(Unasked::NoNode)),

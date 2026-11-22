@@ -1205,6 +1205,20 @@ fn a_cells_starter_is_its_machines_books_else_its_orchestrators_and_only_an_addr
                 "presence": {"addresses": ["ALSO01", "ALSO02"]},
             }),
         ),
+        saying(
+            "CASE01",
+            7,
+            json!({
+                "started_by": "case01",
+                "orchestrated_by": "case02",
+                "presence": {"addresses": ["CASE01", "CASE02"]},
+            }),
+        ),
+        saying(
+            "OWNS01",
+            8,
+            json!({"started_by": "OWNS01", "orchestrated_by": "WCJQSG"}),
+        ),
     ];
     let mycelium = Mycelium::of("work", &[], &sessions, &[]);
     let starter = |address: &str| {
@@ -1229,6 +1243,12 @@ fn a_cells_starter_is_its_machines_books_else_its_orchestrators_and_only_an_addr
     );
     assert_eq!(starter("SELF01"), (None, None), "no cell starts itself");
     assert_eq!(starter("ALSO01"), (None, None), "by any address it goes by");
+    assert_eq!(starter("CASE01"), (None, None), "in any case");
+    assert_eq!(
+        starter("OWNS01"),
+        (Some("WCJQSG"), Some("presence")),
+        "a book naming the cell itself gives way to its orchestrator"
+    );
     let line = mycelium
         .lines()
         .into_iter()

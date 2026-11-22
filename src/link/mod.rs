@@ -1983,11 +1983,19 @@ impl<S: Store> End<S> {
                 started_by,
             );
             if self.sent.get(&session) != Some(&said) {
+                // What a session says of itself under the link's fields
+                // never goes, so no hearer, however old, keeps it as the
+                // link's word.
+                let mut body = (*said.0).clone();
+                if let Some(fields) = body.as_object_mut() {
+                    fields.remove(mesh::HELD_AS);
+                    fields.remove(mesh::STARTED_BY_AS);
+                }
                 send(
                     writing,
                     &Frame::Presence {
                         session: session.clone(),
-                        body: (*said.0).clone(),
+                        body,
                         leases: Some(said.1.clone()),
                         held: said.2.clone(),
                         started_by: said.3.clone(),
@@ -3172,7 +3180,7 @@ mod tests {
     fn naming_node(
         node: &std::path::Path,
         naming: tokio::sync::watch::Receiver<Naming>,
-        holding: tokio::sync::mpsc::UnboundedSender<()>,
+        holding: mpsc::UnboundedSender<()>,
     ) {
         let listener = tokio::net::UnixListener::bind(node).expect("the node listens");
         tokio::spawn(async move {
@@ -3212,7 +3220,7 @@ mod tests {
     /// node on `node` holds `0e50` as `5e551011`.
     fn holding_kestrel(
         dir: &std::path::Path,
-        node: std::path::PathBuf,
+        node: PathBuf,
     ) -> (Memory, [tokio::task::JoinHandle<io::Result<()>>; 2]) {
         let kestrel = Memory::default();
         let held = dir.join("held");
@@ -3250,6 +3258,7 @@ mod tests {
             declared: None,
             kit: None,
             saturation: None,
+            lender: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let far = tokio::spawn(async move {
@@ -3276,20 +3285,20 @@ mod tests {
 
     // A node slow to say who started a held session holds back nothing on
     // the link: its presence goes while the ask is out, and again with the
-    // starter once the node names one.
-    #[tokio::test]
+    // starter once the node names one. On a paused clock, time moves only
+    // while nothing can run, so a link holding the presence back for the
+    // ask would wait out the whole of its answering time, and one that
+    // doesn't waits none.
+    #[tokio::test(start_paused = true)]
     async fn a_held_sessions_presence_goes_before_its_node_names_its_starter_and_again_after() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let node = dir.path().join("node.sock");
         let (naming, named_as) = tokio::sync::watch::channel(Naming::Waiting);
-        let (holding, mut held) = tokio::sync::mpsc::unbounded_channel();
+        let (holding, mut held) = mpsc::unbounded_channel();
         naming_node(&node, named_as, holding);
         let (skiff, _ends) = holding_kestrel(dir.path(), node);
 
-        tokio::time::timeout(PATIENCE, held.recv())
-            .await
-            .expect("the end asks its node in time")
-            .expect("the node hears the ask");
+        held.recv().await.expect("the node hears the ask");
         let asked_at = tokio::time::Instant::now();
         until(&skiff, |store| !store.presences().is_empty()).await;
         assert!(
@@ -3312,7 +3321,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let node = dir.path().join("node.sock");
         let (naming, named_as) = tokio::sync::watch::channel(Naming::Nobody);
-        let (holding, mut held) = tokio::sync::mpsc::unbounded_channel();
+        let (holding, mut held) = mpsc::unbounded_channel();
         naming_node(&node, named_as, holding);
         let (skiff, _ends) = holding_kestrel(dir.path(), node);
 
@@ -3327,7 +3336,8 @@ mod tests {
             .send(Naming::Named)
             .expect("the book's line is written");
         let mut changes = skiff.changes().expect("a memory store tells its changes");
-        tokio::time::timeout(KEEP_EVERY + PATIENCE, async {
+        // Two keeps, so an ask a keep's answer outran is asked again.
+        tokio::time::timeout(2 * KEEP_EVERY + PATIENCE, async {
             while !named(&skiff) {
                 changes.changes.recv().await;
             }

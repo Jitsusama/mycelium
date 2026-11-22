@@ -702,6 +702,7 @@ where
                 shared.read_sessions();
                 shared.keep_awake(&mut awake, power.as_ref());
             }
+            () = shared.rejudge.notified() => shared.read_sessions(),
             // A park's marker says nothing of the session itself, so only
             // how it stands, which records read from the markers, moves.
             Some(()) = parks.recv() => shared.said.sessions_moved(),
@@ -1237,6 +1238,9 @@ struct Shared<S> {
     runs: Arc<run::Given>,
     /// Each session it started or refused to, beside its runs.
     starts: Arc<starts::Starts>,
+    /// Told when a start's book line may name a session's starter, so the
+    /// node's loop, the one judge of sessions, judges them again.
+    rejudge: Arc<Notify>,
     /// Each start asked under a name, so an ask again joins it.
     onces: Arc<once::Onces>,
     /// Why runs here were told no session, said once for each reason.
@@ -1445,6 +1449,7 @@ impl<S: Clone> Clone for Shared<S> {
             unreadable: Arc::clone(&self.unreadable),
             runs: self.runs.clone(),
             starts: Arc::clone(&self.starts),
+            rejudge: Arc::clone(&self.rejudge),
             onces: Arc::clone(&self.onces),
             untold: Arc::clone(&self.untold),
             spawners: Arc::clone(&self.spawners),
@@ -2152,6 +2157,7 @@ impl<S: Store> Shared<S> {
             hostname: rustix::system::uname().nodename().to_string_lossy().into(),
             unreadable: Arc::default(),
             starts,
+            rejudge: Arc::default(),
             onces: Arc::default(),
             runs: Arc::new(runs),
             untold: Arc::default(),
@@ -2252,26 +2258,40 @@ impl<S: Store> Shared<S> {
     fn read_sessions(&self) {
         let held = hold::held(&self.held);
         let starters = self.starts.starters();
-        let sessions = self
+        let mut sessions: Vec<_> = self
             .store
             .presences()
             .iter()
             .filter_map(|presence| {
                 let mut session = session_held(presence, &self.machine, &held)?;
                 session.attach = self.attach(&session);
-                // This node's own book names the starts it was asked, on
-                // this machine or relayed to another; past it, a session
-                // elsewhere is told its starter by its own machine's book,
-                // as the link carried it.
-                let booked = session
-                    .held
-                    .as_deref()
-                    .and_then(|held| starters.of(&session.machine, held))
-                    .map(str::to_owned);
-                session.started_by = booked.or(session.started_by.take());
                 Some(session)
             })
             .collect();
+        // This node's own book names the starts it was asked, on this
+        // machine or relayed to another; past it, a session elsewhere is
+        // told its starter by its own machine's book, as the link carried
+        // it. A hold two sessions claim is named by neither, since the
+        // book can't say which of them it started.
+        let mut claims: HashMap<(&str, &str), usize> = HashMap::new();
+        for session in &sessions {
+            if let Some(held) = session.held.as_deref() {
+                *claims.entry((&session.machine, held)).or_default() += 1;
+            }
+        }
+        let booked: Vec<Option<String>> = sessions
+            .iter()
+            .map(|session| {
+                let held = session.held.as_deref()?;
+                (claims.get(&(session.machine.as_str(), held)) == Some(&1))
+                    .then(|| starters.of(&session.machine, held))
+                    .flatten()
+                    .map(str::to_owned)
+            })
+            .collect();
+        for (session, booked) in sessions.iter_mut().zip(booked) {
+            session.started_by = booked.or(session.started_by.take());
+        }
         let mut inner = self.lock();
         let events = inner.state.set_sessions(sessions);
         if !events.is_empty() {
@@ -5128,8 +5148,9 @@ impl<S: Store> Shared<S> {
         if started.is_ok() {
             // Its session may be judged already, its presence written
             // before its holder answered, so it is judged again now its
-            // book's line names its starter.
-            self.read_sessions();
+            // book's line names its starter, by the node's loop, so no
+            // older judgement lands after it.
+            self.rejudge.notify_one();
         }
         started.map(Response::Started)
     }
@@ -13229,13 +13250,8 @@ esac
         let near_store = Memory::default();
         let _near = node(&near_store, "skiff", vec![dial], None, &near_socket);
         known_to(&near_store, "kestrel").await;
-        let carried = listed_as(near_socket.clone(), "0e50", |one| one.started_by.is_some()).await;
-        assert_eq!(
-            carried.started_by.as_deref(),
-            Some(near),
-            "the session carried says the starter skiff's own book holds, else kestrel's"
-        );
-        // Kestrel's word crossed all the same, beside the presence.
+        // Kestrel's word crosses beside the presence, whatever skiff's book
+        // says, and skiff's own book outranks it once it has.
         let crossed = |store: &Memory| {
             store.presences().iter().any(|presence| {
                 presence.session == "0e50" && presence.body[mesh::STARTED_BY_AS] == "OAR001"
@@ -13251,6 +13267,12 @@ esac
         })
         .await
         .expect("kestrel's end says the starter kestrel's book holds");
+        let carried = listed_as(near_socket.clone(), "0e50", |one| one.started_by.is_some()).await;
+        assert_eq!(
+            carried.started_by.as_deref(),
+            Some(near),
+            "the session carried says the starter skiff's own book holds, else kestrel's"
+        );
 
         for (socket, by) in [(&far_socket, "OAR001"), (&near_socket, near)] {
             let (mut client, _hello) = Speaking::hello(socket).await;
