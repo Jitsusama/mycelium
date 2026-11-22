@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
+use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::forage::BRAILLE_BLANK;
 
@@ -269,7 +270,7 @@ pub(crate) fn aligned(text: &str) -> String {
             let split = |line: &str| {
                 line.find(mark).map(|at| {
                     let after = &line[at + mark.len()..];
-                    (at, columns(&line[..at]), columns(after))
+                    (at, drawn_width(&line[..at]), drawn_width(after))
                 })
             };
             let room = if mark == COUNTS_AT {
@@ -330,26 +331,49 @@ fn single_spaced(lead: &str) -> String {
     format!("{indent}{}", words.join(" "))
 }
 
-/// The columns `text` takes in a terminal, counting no colour's escape,
-/// which [`Look::paint`] writes and no peer's text keeps once
-/// [`unmarked`].
-fn columns(text: &str) -> usize {
+/// The cells `text` takes in a terminal, as Unicode's East Asian Width
+/// and emoji presentation say: two for a wide character or an emoji,
+/// none for a joiner or a combining mark, one for the rest. A colour's
+/// escape, which [`Look::paint`] writes and no peer's text keeps once
+/// [`unmarked`], takes none.
+pub(crate) fn drawn_width(text: &str) -> usize {
     let mut count = 0;
-    let mut chars = text.chars().peekable();
-    while let Some(each) = chars.next() {
-        if each == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            // An escape ends at its first letter or other final byte.
-            for each in chars.by_ref() {
-                if ('@'..='~').contains(&each) {
-                    break;
-                }
-            }
-        } else {
-            count += 1;
+    let mut rest = text;
+    while let Some(at) = rest.find("\u{1b}[") {
+        count += rest[..at].width();
+        let after = &rest[at + 2..];
+        // An escape ends at its first letter or other final byte, each
+        // one byte long.
+        let end = after
+            .find(|each: char| ('@'..='~').contains(&each))
+            .map_or(after.len(), |end| end + 1);
+        rest = &after[end..];
+    }
+    count + rest.width()
+}
+
+/// The longest start of `text` that takes at most `room` cells, as
+/// [`drawn_width`] counts them, so a wide character that would straddle
+/// the edge is left for what follows.
+pub(crate) fn within(text: &str, room: usize) -> &str {
+    let mut taken = 0;
+    let mut end = text.len();
+    for (at, each) in text.char_indices() {
+        taken += each.width().unwrap_or_default();
+        if taken > room {
+            end = at;
+            break;
         }
     }
-    count
+    // A character can widen the one before it, as a selector turns a
+    // heart into an emoji, so what was kept is measured whole.
+    let mut kept = &text[..end];
+    while drawn_width(kept) > room {
+        let mut chars = kept.chars();
+        chars.next_back();
+        kept = chars.as_str();
+    }
+    kept
 }
 
 impl Look {
@@ -396,37 +420,44 @@ impl Look {
     }
 }
 
-/// `text` cut to `width` characters, its last one an ellipsis where cut.
+/// `text` cut to `width` cells, as [`drawn_width`] counts them, its last
+/// one an ellipsis where cut.
 pub(crate) fn fit(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+    if drawn_width(text) <= width {
         return text.to_owned();
     }
-    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
-    format!("{}…", kept.trim_end())
+    format!("{}…", within(text, width.saturating_sub(1)).trim_end())
 }
 
-/// `text` wrapped at its spaces to `width` columns, its first line after
-/// `first` and each after it after `rest`. A word wider than a whole line's
-/// room, such as a path, is broken across lines rather than passing it.
+/// `text` wrapped at its spaces to `width` cells, as [`drawn_width`]
+/// counts them, its first line after `first` and each after it after
+/// `rest`. A word wider than a whole line's room, such as a path, is
+/// broken across lines rather than passing it.
 pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> String {
     let room = |at: usize| {
         let indent = if at == 0 { first } else { rest };
-        width.saturating_sub(indent.chars().count()).max(1)
+        width.saturating_sub(drawn_width(indent)).max(1)
     };
     let mut lines: Vec<String> = Vec::new();
     for word in text.split_whitespace() {
-        let joins = lines.last().is_some_and(|line| {
-            line.chars().count() + 1 + word.chars().count() <= room(lines.len() - 1)
-        });
+        let joins = lines
+            .last()
+            .is_some_and(|line| drawn_width(line) + 1 + drawn_width(word) <= room(lines.len() - 1));
         if let Some(line) = lines.last_mut().filter(|_| joins) {
             line.push(' ');
             line.push_str(word);
             continue;
         }
-        let mut left: Vec<char> = word.chars().collect();
+        let mut left = word;
         while !left.is_empty() {
-            let taken = room(lines.len()).min(left.len());
-            lines.push(left.drain(..taken).collect());
+            let mut taken = within(left, room(lines.len()));
+            // A wide character a line of one cell can't hold still takes
+            // a line of its own, so the word ends.
+            if taken.is_empty() {
+                taken = &left[..left.chars().next().map_or(0, char::len_utf8)];
+            }
+            lines.push(taken.to_owned());
+            left = &left[taken.len()..];
         }
     }
     lines
@@ -440,9 +471,10 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
         })
 }
 
-/// `text` padded with spaces to `width` characters.
+/// `text` padded with spaces to `width` cells, as [`drawn_width`] counts
+/// them.
 pub(crate) fn padded(text: &str, width: usize) -> String {
-    let short = width.saturating_sub(text.chars().count());
+    let short = width.saturating_sub(drawn_width(text));
     format!("{text}{}", " ".repeat(short))
 }
 
@@ -568,7 +600,7 @@ fn shorts_width<'a>(
 ) -> usize {
     teams
         .filter_map(|team| names::shown(team, shorts))
-        .map(|short| unmarked(short).chars().count())
+        .map(|short| drawn_width(&unmarked(short)))
         .max()
         .unwrap_or_default()
 }
@@ -599,7 +631,7 @@ pub(crate) fn row(
     // Drawn whole, the name is as wide as it is, and its counts are lined
     // up with the table's once it's drawn.
     let room = if look.whole() {
-        plain.chars().count()
+        drawn_width(&plain)
     } else {
         look.width
             .saturating_sub(counts_width(&columns) + depth * STEP)
@@ -607,13 +639,13 @@ pub(crate) fn row(
     };
     let lead = label.short.map_or(room, |_| label.width + GAP.len());
     let name = padded(&fit(&plain, room), room);
-    let head: String = name.chars().take(lead).collect();
-    let tail: String = name.chars().skip(lead).collect();
+    let head = within(&name, lead);
+    let tail = &name[head.len()..];
     let mut line = format!(
         "{}{}{}{}",
         " ".repeat(depth * STEP),
-        look.paint(if strong { BOLD } else { "" }, &head),
-        look.paint(FAINT, &tail),
+        look.paint(if strong { BOLD } else { "" }, head),
+        look.paint(FAINT, tail),
         look.mark(COUNTS_AT)
     );
     for &(each, count) in counts {
@@ -1032,7 +1064,7 @@ fn member(look: &Look, standing: Standing, session: &Value) -> String {
     // Drawn whole, the name is as wide as it is, and what it does is lined
     // up with the others' once they're drawn.
     let name_room = if look.whole() {
-        name.chars().count()
+        drawn_width(&name)
     } else if doing.is_some() {
         (room / 2).max(NARROWEST)
     } else {

@@ -7,7 +7,7 @@ use crate::builders::Builder;
 use crate::disk::Band;
 use crate::facts::{Machine, Readiness};
 use crate::room::Limit;
-use crate::swarm::{GAP, Look, fit, padded, unmarked, wrapped};
+use crate::swarm::{GAP, Look, drawn_width, fit, padded, unmarked, wrapped};
 
 /// How far a line's later lines are set in beneath its first.
 const HANGING: &str = "  ";
@@ -153,7 +153,7 @@ fn labelled(lines: &[(&str, String)], look: &Look) -> String {
         .filter(|(_, said)| !said.is_empty())
         .map(|(label, said)| {
             let first = format!("{HANGING}{label:<LABEL_WIDTH$}{GAP}");
-            let rest = " ".repeat(first.chars().count());
+            let rest = " ".repeat(drawn_width(&first));
             wrapped(&said, &first, &rest, look.width)
         })
         .collect()
@@ -172,8 +172,8 @@ fn columns(headings: &[&str], rows: &[Vec<String>], look: &Look) -> String {
     let widths: Vec<usize> = (0..headings.len())
         .map(|column| {
             rows.iter()
-                .map(|row| row[column].chars().count())
-                .chain(std::iter::once(headings[column].chars().count()))
+                .map(|row| drawn_width(&row[column]))
+                .chain(std::iter::once(drawn_width(headings[column])))
                 .max()
                 .unwrap_or_default()
         })
@@ -187,8 +187,8 @@ fn columns(headings: &[&str], rows: &[Vec<String>], look: &Look) -> String {
         })
         .count()
         .max(1);
-    let line = |cells: Vec<&str>| {
-        let drawn: Vec<String> = cells
+    let line = |said: Vec<&str>| {
+        let drawn: Vec<String> = said
             .iter()
             .zip(&widths)
             .take(shown)

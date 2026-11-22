@@ -6,7 +6,10 @@
 
 use serde_json::{Value, json};
 
-use super::{Look, Swarm, WHOLE, aligned, overview, team, typed, unmarked};
+use super::{
+    Look, Swarm, WHOLE, aligned, drawn_width, fit, overview, padded, team, typed, unmarked,
+    within, wrapped,
+};
 
 /// A look 72 columns wide, without colour, at 17:00 on Thursday
 /// 12 November 2026, in UTC.
@@ -878,6 +881,55 @@ fn a_colour_s_escape_takes_no_column_where_marks_line_up() {
         aligned("\u{1b}[1mab\u{1b}[0m\u{fdd0}  1\nabcd\u{fdd0}  2"),
         "\u{1b}[1mab\u{1b}[0m    1\nabcd  2",
         "a painted lead was padded by its characters rather than the columns it takes"
+    );
+}
+
+#[test]
+fn width_is_counted_in_the_cells_a_terminal_draws() {
+    for (text, wide, what) in [
+        ("tide", 4, "a letter takes one"),
+        ("港湾", 4, "a Han character takes two"),
+        ("e\u{301}", 1, "a combining accent takes none"),
+        ("👩\u{200D}💻", 2, "an emoji joined from two takes two"),
+        ("❤\u{FE0F}", 2, "a heart made an emoji takes two"),
+        ("\u{1b}[1m港\u{1b}[0m", 2, "a colour's escape takes none"),
+    ] {
+        assert_eq!(drawn_width(text), wide, "{what}: {text:?}");
+    }
+}
+
+#[test]
+fn a_cut_or_pad_keeps_to_cells_and_never_splits_a_wide_character() {
+    assert_eq!(
+        fit("港湾港", 4),
+        "港…",
+        "a wide character that would pass the edge goes"
+    );
+    assert_eq!(fit("港湾", 4), "港湾", "what fits is kept whole");
+    assert_eq!(padded("港", 4), "港  ", "padding counts the cells taken");
+    assert_eq!(
+        within("❤\u{FE0F}x", 1),
+        "❤",
+        "a selector that widens a heart past the edge is left out"
+    );
+    assert_eq!(
+        wrapped("港湾港 湾", "", "", 5),
+        "港湾\n港 湾\n",
+        "a word past a line is broken by cells, and words join by them"
+    );
+    assert_eq!(
+        wrapped("港湾", "", "", 1),
+        "港\n湾\n",
+        "a line too narrow for a wide character still takes one"
+    );
+}
+
+#[test]
+fn a_wide_title_lines_its_counts_up_by_cells() {
+    assert_eq!(
+        aligned("港湾\u{fdd0}  1\nab\u{fdd0}  2"),
+        "港湾  1\nab    2",
+        "a wide lead was padded by its characters rather than its cells"
     );
 }
 

@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 
 use super::{Flag, IMBALANCE, Load, Reading};
-use crate::swarm::{BOLD, FAINT, RESET, unmarked};
+use crate::swarm::{BOLD, FAINT, RESET, drawn_width, padded, unmarked};
 
 /// The table's columns after the machine's name and how it stands, each
 /// as wide as its header or its widest figure.
@@ -68,7 +68,7 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
         .collect();
     let named = rows
         .iter()
-        .map(|(_, name, _)| name.chars().count())
+        .map(|(_, name, _)| drawn_width(name))
         .max()
         .unwrap_or(0);
     let wides: Vec<usize> = COLUMNS
@@ -76,7 +76,7 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
         .enumerate()
         .map(|(at, column)| {
             rows.iter()
-                .map(|(_, _, figures)| figures[at].chars().count())
+                .map(|(_, _, figures)| drawn_width(&figures[at]))
                 .chain([column.len()])
                 .max()
                 .unwrap_or_default()
@@ -102,7 +102,9 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
         let _ = writeln!(out, "{}", paint(FAINT, header.trim_end()));
     }
     for (one, name, figures) in &rows {
-        let mut row = format!("  {name:named$}  {:STANDS$}", stands(one));
+        // Padded by the cells it takes, which a format's width doesn't
+        // count, so a wide name keeps the columns after it in line.
+        let mut row = format!("  {}  {:STANDS$}", padded(name, named), stands(one));
         for (figure, wide) in figures.iter().zip(&wides).take(shown) {
             let _ = write!(row, "  {figure:>wide$}");
         }
@@ -276,12 +278,12 @@ fn short(flag: &Flag) -> String {
 /// `word: rest` wrapped to `width`, each later line under the first word
 /// of `rest`; `drawn` is `word` as it is drawn, which may hold escapes.
 fn wrapped(drawn: &str, word: &str, rest: &str, width: usize) -> String {
-    let indent = word.chars().count() + 2;
+    let indent = drawn_width(word) + 2;
     let mut out = format!("{drawn}:");
     let mut column = indent - 1;
     let mut first = true;
     for each in rest.split_whitespace() {
-        let wide = each.chars().count();
+        let wide = drawn_width(each);
         if !first && column + 1 + wide > width {
             let _ = write!(out, "\n{:indent$}{each}", "");
             column = indent + wide;
@@ -726,6 +728,40 @@ mod tests {
         assert!(
             whole.len() == 3 && whole.iter().all(|line| !line.starts_with(' ')),
             "whole, each of the three sentences is one line: {whole:?}"
+        );
+    }
+
+    #[test]
+    fn a_wide_name_keeps_the_columns_in_line_and_within_the_edge() {
+        // Seven characters, each two cells wide, as a name in Han takes.
+        let wide = "港湾港湾港湾港";
+        let shown = said(
+            &reading(
+                vec![
+                    machine(wide, 0.9, 28, 1.75),
+                    machine("osprey", 0.4, 13, 1.08),
+                ],
+                None,
+                vec![],
+            ),
+            "work",
+            80,
+            false,
+        );
+        let long: Vec<&str> = shown
+            .lines()
+            .filter(|line| drawn_width(line) > 80)
+            .collect();
+        assert!(long.is_empty(), "lines past 80 cells: {long:?}\n{shown}");
+        let stands = |name: &str| {
+            shown
+                .lines()
+                .find(|line| line.starts_with(&format!("  {name}")))
+                .and_then(|line| line.find("no room").map(|at| drawn_width(&line[..at])))
+        };
+        assert!(
+            stands(wide).is_some() && stands(wide) == stands("osprey"),
+            "a wide name moved the columns after it:\n{shown}"
         );
     }
 

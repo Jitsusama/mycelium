@@ -1496,7 +1496,7 @@ fn read_cut(purpose: &str) -> Option<&str> {
 /// drawn `whole`; a purpose cut there, or read already cut at its length,
 /// ends in one ellipsis after a whole word.
 fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
-    use crate::swarm::wrapped;
+    use crate::swarm::{drawn_width, within, wrapped};
     // Judged as its node counted it, before the marks one_line drops.
     let length = read_cut(said).map(|kept| kept.chars().count());
     let cleaned = one_line(said);
@@ -1523,7 +1523,7 @@ fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
         return drawn;
     }
     let mut kept: Vec<String> = drawn.lines().take(most).map(str::to_owned).collect();
-    let holds_the_mark = |line: &str| line.chars().count() + 2 <= width;
+    let holds_the_mark = |line: &str| drawn_width(line) + 2 <= width;
     // Drawn whole, every word read stays, so a mark with no room left on
     // the last line takes one of its own.
     if whole && kept.last().is_some_and(|last| !holds_the_mark(last)) {
@@ -1533,7 +1533,7 @@ fn purpose_drawn(said: &str, width: usize, whole: bool) -> String {
             if let Some(at) = last.trim_end().rfind(' ').filter(|at| *at > 2) {
                 last.truncate(at);
             } else {
-                *last = last.chars().take(width.saturating_sub(2)).collect();
+                *last = within(last, width.saturating_sub(2)).to_owned();
                 break;
             }
         }

@@ -405,7 +405,7 @@ fn headed(record: &Value, look: &Look, width: Option<usize>) -> String {
     let Some(width) = width else {
         return format!("{lead}{named}{tail}");
     };
-    let tail_cells = tail.chars().count();
+    let tail_cells = crate::swarm::drawn_width(&tail);
     if width > tail_cells {
         format!(
             "{}{tail}",
