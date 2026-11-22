@@ -2692,8 +2692,9 @@ mod tests {
     #[tokio::test]
     async fn a_kept_end_says_its_nodes_verdict_in_the_room_it_measures() {
         let dir = tempfile::tempdir().expect("a temporary folder");
-        // Its host tells it a room at pressure 90 with no verdict, as a host
-        // older than the band does, so the room it measures is known here.
+        // Its host tells it a room, at a pressure each reading sets and
+        // mostly with no verdict, as a host older than the band does, so
+        // the room it measures is known here.
         let host_says = dir.path().join("osprey.json");
         std::fs::write(
             dir.path().join("declared.json"),
@@ -2704,31 +2705,34 @@ mod tests {
             .to_string(),
         )
         .expect("declared");
-        let now = jiff::Timestamp::now();
-        let room = crate::room::Room {
-            said_at: now.to_string(),
-            memory_available: 8 << 30,
-            pressure: crate::room::Pressure {
-                cpu: 90.0,
-                memory: 0.0,
-                io: 0.0,
-            },
-            takes: crate::room::Takes {
-                builds: 1,
-                vm_tests: 1,
-            },
-            over: Some(Vec::new()),
-            saturated: None,
+        let telling = |cpu: f64, saturated: Option<bool>| {
+            let now = jiff::Timestamp::now();
+            let room = crate::room::Room {
+                said_at: now.to_string(),
+                memory_available: 8 << 30,
+                pressure: crate::room::Pressure {
+                    cpu,
+                    memory: 0.0,
+                    io: 0.0,
+                },
+                takes: crate::room::Takes {
+                    builds: 1,
+                    vm_tests: 1,
+                },
+                over: Some(Vec::new()),
+                saturated,
+            };
+            let said = crate::within::Said {
+                at: now,
+                power: None,
+                room: Some(room),
+            };
+            crate::within::tell(&host_says, &said).expect("told");
         };
-        let said = crate::within::Said {
-            at: now,
-            power: None,
-            room: Some(room),
-        };
-        crate::within::tell(&host_says, &said).expect("told");
+        telling(crate::placement::SATURATES_AT + 5.0, None);
         let band = Arc::new(crate::placement::Saturation::default());
         assert_eq!(
-            saturated_heard(dir.path(), Some(band)).await,
+            saturated_heard(dir.path(), Some(band.clone())).await,
             Some(true),
             "a link its node keeps says the node's verdict"
         );
@@ -2736,6 +2740,33 @@ mod tests {
             saturated_heard(dir.path(), None).await,
             None,
             "where it holds no band, it says none"
+        );
+        telling(
+            f64::midpoint(
+                crate::placement::UNSATURATES_UNDER,
+                crate::placement::SATURATES_AT,
+            ),
+            None,
+        );
+        assert_eq!(
+            saturated_heard(dir.path(), Some(band.clone())).await,
+            Some(true),
+            "inside the band, the link holds the verdict the band last judged"
+        );
+        assert_eq!(
+            saturated_heard(
+                dir.path(),
+                Some(Arc::new(crate::placement::Saturation::default()))
+            )
+            .await,
+            Some(false),
+            "and a band that never saturated holds it free there"
+        );
+        telling(crate::placement::SATURATES_AT + 5.0, Some(false));
+        assert_eq!(
+            saturated_heard(dir.path(), Some(band)).await,
+            Some(false),
+            "a host that says its own verdict is heard, not the band's"
         );
     }
 
