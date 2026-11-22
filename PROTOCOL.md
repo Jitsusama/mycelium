@@ -2054,7 +2054,16 @@ holder starts a held session outside its fence even where the Mac
 declares `runs`, so an agent's start is refused every machine whose
 facts say `system` `macos` too, missed as `lifts-fence`, `never`, and
 its refusal says so, nor is a Mac made of an offer for one; an agent's
-run there still goes through its launcher. The person's start is
+run there still goes through its launcher. Only an agent shown
+unfenced is let through to a Mac, screened then as a run is: its start
+declares nothing strict, every session claiming it says it runs
+unfenced and was never seen stricter, and the kernel shows it so, from
+the asker's own process (no `no_new_privs` the node lacks, and the
+node's own mounts) and from each of those sessions, a hosted one's
+record read only from the harness's own state. Anything that can't be
+read refuses, as on a Mac itself, and each start let through is told
+in the node's log with who asked, their quests, what it declared, its
+folder and its program. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that
 machine's launcher too, and a refusal of any start judged so says it

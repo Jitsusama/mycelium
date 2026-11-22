@@ -4882,7 +4882,7 @@ impl<S: Store> Shared<S> {
         };
         let answered = match (whither, again) {
             (Whither::Placed, Some(machine)) => self.start_on(machine, asked).await,
-            (Whither::Placed, None) => self.placed(asked, fence_of(by)).await,
+            (Whither::Placed, None) => self.placed_held(asked, by).await,
             // One relayed here starts here or nowhere, so a name another
             // machine hasn't answered under stays held for asking there.
             (Whither::Here, Some(machine)) if machine != self.machine => {
@@ -5320,6 +5320,25 @@ impl<S: Store> Shared<S> {
         }
     }
 
+    /// Starts a held program `by` asks, placed as [`Self::placed`] places
+    /// it: off every Mac for an agent, but where the agent is shown
+    /// unfenced ([`Self::unfenced_asking`]), where a Mac may take it, as
+    /// it did before agents' fences were weighed there. Each start let so
+    /// is told in the log, so the fence's next step on a Mac knows which
+    /// to move.
+    async fn placed_held(&self, asked: Start, by: By) -> Reply {
+        let unfenced = self.unfenced_asking(by, asked.work.fence).await;
+        if let Some(above) = &unfenced {
+            eprintln!("{}", told_unfenced_held(above, &asked));
+        }
+        let screen = if unfenced.is_some() {
+            Screen::Run
+        } else {
+            held_screen(fence_of(by))
+        };
+        self.placed(asked, fence_of(by), screen).await
+    }
+
     /// Starts a program held on the machine placement chooses, answering
     /// where and how to join it, or why it didn't start. Where none of the
     /// realm's machines takes it, on a machine made for it: one that costs
@@ -5328,10 +5347,16 @@ impl<S: Store> Shared<S> {
     /// as a run of its is: the asker as judged with the fence its start
     /// declared, which only ever raises it ([`asker::declaring`]), so a
     /// session it starts never lands looser than the one asking, nor
-    /// where that fence runs no command, nor on a Mac ([`held_screen`]).
-    async fn placed(&self, asked: Start, fence: Option<crate::declared::Kind>) -> Reply {
+    /// where that fence runs no command, nor on a Mac ([`held_screen`]),
+    /// unless `screen` lets a Mac take it, for an agent shown unfenced
+    /// ([`Self::placed_held`]).
+    async fn placed(
+        &self,
+        asked: Start,
+        fence: Option<crate::declared::Kind>,
+        screen: Screen,
+    ) -> Reply {
         let admits = self.admits().await;
-        let screen = held_screen(fence);
         let (misses, nowhere) =
             match self.place(&asked.work, Counts::Always, fence, screen, &admits) {
                 Placement::Placed { machine, .. } => return self.start_on(machine, asked).await,
@@ -6014,22 +6039,7 @@ impl<S: Store> Shared<S> {
     /// tells them, and the session a start it asks counts toward, as
     /// [`asker::charged`] tells it, all from one reading.
     async fn judged_charging(&self) -> Result<(By, Vec<String>, Option<String>), String> {
-        let standing = self.standing();
-        let claims: Vec<asker::Claim> = standing
-            .iter()
-            .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
-            .collect();
-        // A fence this node doesn't know is none it can read.
-        let fences: HashMap<String, Option<crate::declared::Kind>> = standing
-            .into_iter()
-            .map(|presence| {
-                let fence = presence
-                    .body
-                    .get("fence")
-                    .and_then(|said| serde_json::from_value(said.clone()).ok());
-                (presence.session, fence)
-            })
-            .collect();
+        let (claims, fences) = self.claims_saying_fences();
         let (client, processes) = (self.client, self.processes.clone());
         tokio::task::spawn_blocking(move || {
             let above = asker::claimed_above(client, &processes, &claims);
@@ -6042,6 +6052,107 @@ impl<S: Store> Shared<S> {
         })
         .await
         .map_err(|error| format!("who asks couldn't be told: {error}"))
+    }
+
+    /// What the presences standing here claim of who owns each session,
+    /// and the fence each says it runs in, none where it names one this
+    /// node doesn't know, since that is none it can read.
+    fn claims_saying_fences(
+        &self,
+    ) -> (
+        Vec<asker::Claim>,
+        HashMap<String, Option<crate::declared::Kind>>,
+    ) {
+        let standing = self.standing();
+        let claims = standing
+            .iter()
+            .filter_map(|presence| asker::Claim::of(&presence.session, &presence.body))
+            .collect();
+        let fences = standing
+            .into_iter()
+            .map(|presence| {
+                let fence = presence
+                    .body
+                    .get("fence")
+                    .and_then(|said| serde_json::from_value(said.clone()).ok());
+                (presence.session, fence)
+            })
+            .collect();
+        (claims, fences)
+    }
+
+    /// The sessions claiming the agent that asks `by` for a held start
+    /// declaring `declared`, each with the quest its presence names, where
+    /// a Mac may take that start by ISXEG8's terms of 21 November: the
+    /// start isn't strict, by what it declares or who asks; every session
+    /// claiming the asker says it runs unfenced and was never seen
+    /// stricter; the kernel shows it unfenced too, from the asker's own
+    /// process and each of those sessions' ([`asker::shows_unfenced`]);
+    /// and the hosts' records it reads lie in the harness's own state.
+    /// None where any of it fails or can't be told, so the start is held
+    /// off every Mac as [`held_screen`] says.
+    async fn unfenced_asking(
+        &self,
+        by: By,
+        declared: Option<DeclaredFence>,
+    ) -> Option<Vec<(String, serde_json::Value)>> {
+        use crate::declared::Kind;
+        let By::Agent(kind) = by else {
+            return None;
+        };
+        if kind == Kind::Strict
+            || declared.is_some_and(|declared| Kind::from(declared.kind) == Kind::Strict)
+        {
+            return None;
+        }
+        let home = PathBuf::from(std::env::var_os("HOME")?);
+        if !asker::hosts_are_the_harnesses(&self.hosts, &home) {
+            return None;
+        }
+        let quests: HashMap<String, serde_json::Value> = self
+            .standing()
+            .into_iter()
+            .map(|presence| {
+                let quest = presence
+                    .body
+                    .get("quest")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                (presence.session, quest)
+            })
+            .collect();
+        let (claims, said) = self.claims_saying_fences();
+        let (client, processes, hosts, logs, seen) = (
+            self.client,
+            self.processes.clone(),
+            self.hosts.clone(),
+            self.logs.clone(),
+            self.fences.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            let above = asker::claimed_above(client, &processes, &claims);
+            let loose = above.iter().all(|session| {
+                said.get(session).copied().flatten() == Some(Kind::None)
+                    && seen.strictest(session) == Ok(Kind::None)
+            });
+            (loose && asker::shows_unfenced(client, &processes, &claims, &hosts, &logs)).then(
+                || {
+                    above
+                        .into_iter()
+                        .map(|session| {
+                            let quest = quests
+                                .get(&session)
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
+                            (session, quest)
+                        })
+                        .collect()
+                },
+            )
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// Who asks a start that declares `declared`, as [`asker::declaring`]
@@ -6223,6 +6334,20 @@ fn refused(why: &str) {
     eprintln!("a run is refused: {}", why.escape_debug());
 }
 
+/// The log's line for `asked`, a held start an agent shown unfenced asks,
+/// claimed by the sessions `above`, each with its quest: who asks, the
+/// quests, the fence it declares and what it starts.
+fn told_unfenced_held(above: &[(String, serde_json::Value)], asked: &Start) -> String {
+    let line = serde_json::json!({
+        "asker": above.iter().map(|(session, _)| session).collect::<Vec<_>>(),
+        "quests": above.iter().map(|(_, quest)| quest).collect::<Vec<_>>(),
+        "declared": asked.work.fence.map(|declared| declared.kind),
+        "folder": asked.folder,
+        "program": asked.command.first(),
+    });
+    format!("an unfenced agent's held start, which a Mac may take: {line}")
+}
+
 /// How a session started held in the fence `fence` is screened: placed
 /// only where that fence declares how a command runs, as an agent's runs are:
 /// any start judged an agent's, which [`fence_of`] floors at the agent
@@ -6238,7 +6363,8 @@ fn refused(why: &str) {
 /// agent's held start either. What a machine declares can't stand in
 /// on a Mac, since a Mac declaring its fence's `runs` would pass, so a
 /// held start judged an agent's is refused every Mac by its system too
-/// ([`ground::lifts_fence`]).
+/// ([`ground::lifts_fence`]), unless the agent is shown unfenced
+/// ([`Shared::placed_held`]).
 fn held_screen(fence: Option<crate::declared::Kind>) -> Screen {
     if fence.is_some() {
         Screen::Held
@@ -13062,9 +13188,17 @@ esac
     /// each a process that ends as it's told to, answering their pids.
     fn holds_for_real(folder: &Path, id: &str) -> (u32, u32) {
         use std::os::unix::process::CommandExt;
+        // Neither holds the output the build reads from, so one a test
+        // leaves running, failed or not, never keeps the build waiting
+        // on it for as long as it sleeps, as two did on a Mac (EWUL44, 21
+        // November).
         let sleeps = || {
             let mut sleep = std::process::Command::new("sleep");
-            sleep.arg("1000");
+            sleep
+                .arg("1000")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
             sleep
         };
         let holder = reaped(sleeps().spawn().expect("the holder starts"));
