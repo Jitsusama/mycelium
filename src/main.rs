@@ -2811,11 +2811,11 @@ fn lend_cuts(
 ) -> io::Result<()> {
     let folder = mycelium::lend::lender::folder();
     let cuts = changing(&folder, cut)?;
-    println!(
+    writeln!(
+        io::stdout().lock(),
         "{}",
         serde_json::json!({"cuts": folder.join("cuts.json"), "cut": cuts})
-    );
-    Ok(())
+    )
 }
 
 /// Serves pi's model requests on `listen`, each lent through the node at
