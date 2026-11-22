@@ -133,7 +133,8 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
             // Each is a peer's text, so each is held to one line.
             // Two drawn alike are each given their address too.
             let typed = told_apart(
-                many.iter()
+                &many
+                    .iter()
                     .map(|one| match one {
                         Named::Team(record) => {
                             (unmarked(names::typed(record, &shorts)), address(record))
@@ -143,7 +144,7 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
                             record["address"].as_str().unwrap_or_default(),
                         ),
                     })
-                    .collect(),
+                    .collect::<Vec<_>>(),
             );
             let typed: Vec<&str> = typed.iter().map(String::as_str).collect();
             Err(format!("{asked} could be {}", either(&typed)))

@@ -783,9 +783,10 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
         Picked::Several(many) => {
             // Each is a peer's text, so it is held to one line.
             let named = told_apart(
-                many.iter()
+                &many
+                    .iter()
                     .map(|team| (unmarked(names::typed(team, &shorts)), address(team)))
-                    .collect(),
+                    .collect::<Vec<_>>(),
             );
             Err(format!(
                 "{asked} could be {}",
@@ -1045,7 +1046,7 @@ pub(crate) fn listed(names: &[&str]) -> String {
 /// still names something to type for each. An address is a peer's text
 /// too, so it is named only when it is one, letters and digits as a
 /// cell's is, and typing it reaches the team.
-pub(crate) fn told_apart(named: Vec<(String, &str)>) -> Vec<String> {
+pub(crate) fn told_apart(named: &[(String, &str)]) -> Vec<String> {
     let alike = |name: &str| {
         named
             .iter()
