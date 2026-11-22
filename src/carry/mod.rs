@@ -40,7 +40,7 @@ use serde_json::{Value, json};
 
 use crate::placement::{Need, Work};
 use crate::record::{Session, State};
-use crate::wire::{Start, Started};
+use crate::wire::{Start, Started, Taking};
 
 /// The program the harness carries with and arrives with.
 pub const PI_CARRY: &str = "pi-carry";
@@ -282,7 +282,7 @@ pub trait Hands {
     ///
     /// When it wouldn't be, with the refusal its start would answer, or
     /// when this machine's node couldn't say.
-    fn takes(&mut self, start: &Start) -> Result<(), Untaken>;
+    fn takes(&mut self, taking: &Taking) -> Result<(), Untaken>;
     /// Waits a moment before what is waited for is looked at again, and
     /// says whether there is patience left for another look.
     fn wait(&mut self) -> bool;
@@ -483,21 +483,6 @@ fn find(
         ));
     }
     hands.shareable(quest)?;
-    // Each arrival is placed alike, held to `to` and asked by this one
-    // carrying, so the quest's own answers for every session's.
-    let own = Done {
-        session: quest.to_owned(),
-        started_before: None,
-    };
-    hands
-        .takes(&arriving(quest, here, to, &own, None))
-        .map_err(|untaken| match untaken {
-            Untaken::Refused(why) => format!("{quest}'s sessions wouldn't start on {to}: {why}"),
-            Untaken::Unasked(why) => format!(
-                "{quest} isn't carried, since this machine's node couldn't say whether {to} \
-                 would start its sessions: {why}"
-            ),
-        })?;
     let boot = hands.boot();
     let sessions: Vec<Session> = hands
         .sessions()?
@@ -511,6 +496,28 @@ fn find(
              only the person carries what it left"
         ));
     }
+    // Each session's arrival and the quest's own trees', as the carry
+    // would start them; an ordered carry's order is proved only as it
+    // is taken, so the node is told it is ordered.
+    let starts = sessions
+        .iter()
+        .filter_map(session_id)
+        .chain([quest])
+        .map(|session| Done {
+            session: session.to_owned(),
+            started_before: None,
+        })
+        .map(|one| arriving(quest, here, to, &one, None))
+        .collect();
+    hands
+        .takes(&Taking { starts, ordered })
+        .map_err(|untaken| match untaken {
+            Untaken::Refused(why) => format!("{quest}'s sessions wouldn't start on {to}: {why}"),
+            Untaken::Unasked(why) => format!(
+                "{quest} isn't carried, since this machine's node couldn't say whether {to} \
+                 would start its sessions: {why}"
+            ),
+        })?;
     Ok(sessions)
 }
 
@@ -880,6 +887,26 @@ fn carry_on(from: &str) -> String {
     )
 }
 
+/// The arrival `command` starts, where it is word for word what
+/// [`arriving`] gives a start for a carry nobody ordered from `from`,
+/// and nothing more: a session's, or the quest's own trees', whose
+/// session is the quest; or none.
+pub(crate) fn unordered_arrival(command: &[String]) -> Option<Arrives<'_>> {
+    let [sh, c, script, name, quest, from, session, told] = command else {
+        return None;
+    };
+    let exact = sh == "sh"
+        && c == "-c"
+        && name == PI_CARRY
+        && *script == arrival_script(session == quest, false)
+        && *told == carry_on(from);
+    exact.then_some(Arrives {
+        quest,
+        from,
+        session,
+    })
+}
+
 /// Whether a session's process runs.
 fn runs(session: &Session) -> bool {
     matches!(session.state, State::Busy | State::Idle)
@@ -954,10 +981,11 @@ mod tests {
     use super::cell::Brought;
     use super::{
         Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, Untaken, carry, runs_on,
+        unordered_arrival,
     };
     use crate::placement::Need;
     use crate::record::{Session, State};
-    use crate::wire::{Start, Started};
+    use crate::wire::{Start, Started, Taking};
 
     const QUEST: &str = "QEST-20261107-HARBOR";
 
@@ -1022,7 +1050,7 @@ mod tests {
         /// Why `to` wouldn't take the sessions' starts, where it wouldn't.
         untaken: Option<Untaken>,
         /// Each start asked whether it would be taken.
-        asked_takes: Vec<Start>,
+        asked_takes: Vec<Taking>,
         /// Why an earlier carry's cells can't be taken away, where not.
         unforgotten: Option<String>,
         /// The sessions whose old cells were taken away, with how many
@@ -1193,8 +1221,8 @@ mod tests {
                 attach: vec!["mycelium".to_owned(), "attach".to_owned(), held],
             })
         }
-        fn takes(&mut self, start: &Start) -> Result<(), Untaken> {
-            self.asked_takes.push(start.clone());
+        fn takes(&mut self, taking: &Taking) -> Result<(), Untaken> {
+            self.asked_takes.push(taking.clone());
             self.untaken.clone().map_or(Ok(()), Err)
         }
         fn wait(&mut self) -> bool {
@@ -1590,6 +1618,28 @@ mod tests {
                 super::ordered_arrival(&unordered.command),
                 None,
                 "{session}'s, unordered"
+            );
+            let arrives = super::Arrives {
+                quest: QUEST,
+                from: "skiff",
+                session,
+            };
+            assert_eq!(
+                unordered_arrival(&unordered.command),
+                Some(arrives),
+                "{session}'s unordered arrival reads back as one"
+            );
+            assert_eq!(
+                unordered_arrival(&start.command),
+                None,
+                "{session}'s, ordered"
+            );
+            let mut prompted = unordered.command.clone();
+            prompted[7] = "build the whole thing".to_owned();
+            assert_eq!(
+                unordered_arrival(&prompted),
+                None,
+                "{session}'s unordered, told something else"
             );
         }
     }
@@ -2122,13 +2172,38 @@ mod tests {
         let [asked] = realm.asked_takes.as_slice() else {
             panic!("asked once: {:?}", realm.asked_takes);
         };
-        let first = realm.started.first().expect("a session started");
-        assert_eq!(asked.work, first.work, "held to the same machine");
-        assert_eq!(
-            (asked.may_cost, asked.strict, &asked.folder),
-            (first.may_cost, first.strict, &first.folder),
-            "and asked alike"
-        );
+        assert!(!asked.ordered, "for a carry nobody ordered");
+        assert!(!realm.started.is_empty(), "sessions started");
+        for start in &realm.started {
+            assert!(
+                asked
+                    .starts
+                    .iter()
+                    .any(|one| one.command == start.command && one.work == start.work),
+                "each start asked first, word for word: {start:?} in {:?}",
+                asked.starts
+            );
+            assert!(unordered_arrival(&start.command).is_some(), "as an arrival");
+        }
+        let mut realm = Realm {
+            by: Some("WCJQSG".to_owned()),
+            ..realm()
+        };
+        ordered(&mut realm).0.expect("carried");
+        let [asked] = realm.asked_takes.as_slice() else {
+            panic!("asked once: {:?}", realm.asked_takes);
+        };
+        assert!(asked.ordered, "an ordered carry says so");
+        for start in &realm.started {
+            let unordered = &start.command[..8];
+            assert!(
+                asked
+                    .starts
+                    .iter()
+                    .any(|one| one.command[3..] == unordered[3..] && one.work == start.work),
+                "each asked as its arrival were nobody to order it: {start:?}"
+            );
+        }
     }
 
     #[test]

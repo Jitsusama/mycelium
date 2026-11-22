@@ -20,7 +20,7 @@ use crate::client::Client;
 use crate::placement::Placement;
 use crate::record::Session;
 use crate::share::exchange::Places;
-use crate::wire::{Reply, Request, Response, Start, Started};
+use crate::wire::{Reply, Request, Response, Start, Started, Taking};
 
 /// How long between looks at what a carry waits for.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
@@ -185,9 +185,9 @@ impl Hands for Through {
         }
     }
 
-    fn takes(&mut self, start: &Start) -> Result<(), Untaken> {
+    fn takes(&mut self, taking: &Taking) -> Result<(), Untaken> {
         let answer = Client::connect(&self.socket)
-            .and_then(|mut client| client.ask(&Request::Takes(start.clone())))
+            .and_then(|mut client| client.ask(&Request::Takes(taking.clone())))
             .map_err(|error| Untaken::Unasked(format!("it didn't answer: {error}")))?;
         untaken(answer)
     }
@@ -540,7 +540,8 @@ fn untaken(answer: Reply) -> Result<(), Untaken> {
         Ok(Response::Placement(Placement::Placed { .. })) => Ok(()),
         Err(why) if why.starts_with("not a request") && why.contains("`Takes`") => {
             Err(Untaken::Unasked(
-                "it runs a mycelium too old to know the ask, so update it and carry again"
+                "it runs a mycelium too old to know the ask, so restart it on the new build \
+                 and carry again"
                     .to_owned(),
             ))
         }
@@ -567,7 +568,7 @@ mod tests {
     use crate::carry::cell::Brought;
     use crate::carry::{Refused, Untaken};
     use crate::placement::Placement;
-    use crate::wire::Response;
+    use crate::wire::{Request, Response, Taking};
 
     #[test]
     fn only_a_placement_on_a_machine_finds_starts_taken() {
@@ -594,8 +595,21 @@ mod tests {
 
     #[test]
     fn a_node_too_old_to_know_the_ask_is_said_as_this_machines() {
-        let old = "not a request: unknown variant `Takes`, expected one of `Start`, `Run`";
-        let Err(Untaken::Unasked(why)) = untaken(Err(old.to_owned())) else {
+        // A node from before the ask reads requests as this one, with no
+        // `Takes` among them, and refuses as it refuses any line.
+        #[derive(Debug, serde::Deserialize)]
+        enum Old {
+            Start,
+            Run,
+        }
+        let line = serde_json::to_string(&Request::Takes(Taking {
+            starts: Vec::new(),
+            ordered: false,
+        }))
+        .expect("a line");
+        let error = serde_json::from_str::<Old>(&line).expect_err("unknown to it");
+        let old = format!("not a request: {error}");
+        let Err(Untaken::Unasked(why)) = untaken(Err(old)) else {
             panic!("an older node's refusal is no refusal of the machine");
         };
         assert!(why.contains("too old"), "saying why: {why}");
