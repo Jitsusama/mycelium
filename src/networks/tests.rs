@@ -1925,6 +1925,29 @@ fn every_cell_lists_worst_first_and_one_says_its_networks() {
     );
 }
 
+#[test]
+fn a_wide_machine_name_keeps_what_follows_in_line() {
+    let [teams, sessions, mut machines] = records();
+    machines[1]["name"] = json!("港湾港");
+    let mycelium = Mycelium::of("work", &teams, &sessions, &machines);
+    let shown = cells(&mycelium, &look(), false, &[]);
+    // Measured by Unicode's widths directly, not by the code under test,
+    // as nothing here is coloured.
+    let at = |name: &str| {
+        shown
+            .lines()
+            .find(|line| line.starts_with(&format!("  {name}")))
+            .and_then(|line| {
+                line.find("ready")
+                    .map(|at| <str as unicode_width::UnicodeWidthStr>::width(&line[..at]))
+            })
+    };
+    assert!(
+        at("skiff").is_some() && at("skiff") == at("港湾港"),
+        "a wide machine name moved what follows it:\n{shown}"
+    );
+}
+
 /// The look a pipe is drawn with: whole, never in colour.
 fn whole() -> Look {
     Look {

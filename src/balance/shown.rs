@@ -763,6 +763,17 @@ mod tests {
             stands(wide).is_some() && stands(wide) == stands("osprey"),
             "a wide name moved the columns after it:\n{shown}"
         );
+        // The name takes 14 cells, so per core is the first column past
+        // 80, and no column that fits is left out with it.
+        assert!(
+            shown
+                .lines()
+                .any(|line| line.trim_end().ends_with(" busy  idle"))
+                && shown
+                    .lines()
+                    .any(|line| line == "  left out to fit: per core, facts"),
+            "the columns kept were not those 80 cells hold:\n{shown}"
+        );
     }
 
     #[test]
