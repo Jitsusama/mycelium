@@ -748,7 +748,7 @@ impl Mycelium {
     pub fn named_network(&self, asked: &str) -> Result<&Network, String> {
         let mesh_spelt = asked.trim_start_matches('#').replace('/', ".");
         if mesh_spelt != asked {
-            match swarm::picked(&self.networks, &mesh_spelt, Network::naming) {
+            match swarm::picked(&self.networks, &mesh_spelt, false, Network::naming) {
                 swarm::Picked::One(one) => return Ok(one),
                 swarm::Picked::Several(many) => {
                     return Err(several(asked, &many, |each| &each.name));
@@ -756,7 +756,7 @@ impl Mycelium {
                 swarm::Picked::None => {}
             }
         }
-        match swarm::picked(&self.networks, asked, Network::naming) {
+        match swarm::picked(&self.networks, asked, false, Network::naming) {
             swarm::Picked::One(one) => Ok(one),
             swarm::Picked::None => Err(format!("no network is named {asked}")),
             swarm::Picked::Several(many) => Err(several(asked, &many, |each| &each.name)),
@@ -770,7 +770,7 @@ impl Mycelium {
     ///
     /// When no cell, or more than one, goes by what was asked.
     pub fn named_cell(&self, asked: &str) -> Result<&Cell, String> {
-        match swarm::picked(&self.cells, asked, Cell::naming) {
+        match swarm::picked(&self.cells, asked, false, Cell::naming) {
             swarm::Picked::One(one) => Ok(one),
             swarm::Picked::None => Err(format!("no cell is named {asked}")),
             swarm::Picked::Several(many) => Err(several(asked, &many, |each| &each.name)),

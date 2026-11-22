@@ -1835,6 +1835,20 @@ fn a_name_matching_none_or_several_networks_is_said_plainly() {
         Ok("quest.harbor"),
         "the whole name picks one"
     );
+    // A group's name is a peer's to pick, as a short name is, so one
+    // named like another's short name leaves the two to choose between.
+    let mut grouped = mycelium();
+    let mut group = grouped.networks[0].clone();
+    group.name = "harbor".to_owned();
+    group.short = "harbor".to_owned();
+    group.title = None;
+    grouped.networks.push(group);
+    assert!(
+        grouped
+            .named_network("harbor")
+            .is_err_and(|why| why.starts_with("harbor could be ") && why.contains("quest.harbor")),
+        "a peer's group took a network's short name"
+    );
 }
 
 #[test]

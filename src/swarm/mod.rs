@@ -472,6 +472,33 @@ pub(crate) fn address(team: &Value) -> &str {
         .unwrap_or_default()
 }
 
+/// Each team's short name, as [`short_names`] gives it, unless it cleans
+/// to the address of another team or of a living session. A steer or a
+/// page typed with such a name reaches what has that address first, so
+/// a page never draws, nor a hint offers, a name that reaches another.
+pub(crate) fn shorts_of(swarm: &Swarm) -> BTreeMap<String, String> {
+    let taken: Vec<&str> = swarm
+        .teams
+        .iter()
+        .map(address)
+        .chain(
+            swarm
+                .sessions
+                .iter()
+                .filter(|session| Standing::of(session).is_some())
+                .filter_map(|session| session["address"].as_str()),
+        )
+        .collect();
+    let mut shorts = short_names(&swarm.teams);
+    shorts.retain(|team, short| {
+        let short = unmarked(short);
+        !taken
+            .iter()
+            .any(|other| !other.eq_ignore_ascii_case(team) && other.eq_ignore_ascii_case(&short))
+    });
+    shorts
+}
+
 /// How many of a team's sessions stand as `each`.
 fn count(team: &Value, each: Standing) -> u64 {
     team["counts"][each.counted()].as_u64().unwrap_or_default()
@@ -672,7 +699,7 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
             .or_default()
             .push(team);
     }
-    let shorts = short_names(&swarm.teams);
+    let shorts = shorts_of(swarm);
     let shown = Shorts {
         width: shorts_width(swarm.teams.iter(), &shorts),
         by: &shorts,
@@ -722,7 +749,7 @@ pub fn overview(swarm: &Swarm, look: &Look) -> String {
 /// the order the overview lists them, for a shell to complete.
 #[must_use]
 pub fn typed(swarm: &Swarm) -> Vec<String> {
-    let shorts = short_names(&swarm.teams);
+    let shorts = shorts_of(swarm);
     ordered(swarm.teams.iter())
         .into_iter()
         .map(|team| names::typed(team, &shorts).to_owned())
@@ -771,13 +798,13 @@ fn nest<'a>(
 /// its title, or why none or several are, naming each of several as it's
 /// typed, so one can be picked.
 fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<&'a Value, String> {
-    let shorts = short_names(&swarm.teams);
+    let shorts = shorts_of(swarm);
     let naming = |team: &'a Value| Naming {
         address: address(team),
         short: shorts.get(address(team)).map(String::as_str),
         title: title(team),
     };
-    match picked(&swarm.teams, asked, naming) {
+    match picked(&swarm.teams, asked, true, naming) {
         Picked::One(team) => Ok(team),
         Picked::None => Err(format!("no team is named {asked}")),
         Picked::Several(many) => {
@@ -822,35 +849,50 @@ pub(crate) enum Picked<'a, T> {
     Several(Vec<&'a T>),
 }
 
-/// The one of `things` that `asked` names: by its address whole, then by
-/// its short name whole, in either case, and else by a part of its
-/// title, as `naming` says each; or none, or each of several. An address
-/// comes first because a peer picks its short name, which could clean to
-/// another's address and hide it. A short name and a title are matched
-/// as they are drawn, cleaned on both sides, so what a page or hint
-/// shows finds what it names.
+/// The one of `things` that `asked` names: by its address or its short
+/// name whole, in either case, and else by a part of its title, as
+/// `naming` says each; or none, or each of several. Where the address is
+/// `first`, as a team's is, it comes before a short name, which a peer
+/// picks and could clean to another's address to hide it; a network's
+/// name is a group a peer may pick as well, so it isn't. An address
+/// matched in its own case comes before one matched in another, so two
+/// keyed alike but for case are each reached by the address told apart.
+/// A short name and a title are matched as they are drawn, cleaned on
+/// both sides, so what a page or hint shows finds what it names.
 pub(crate) fn picked<'a: 'n, 'n, T>(
     things: &'a [T],
     asked: &str,
+    first: bool,
     naming: impl Fn(&'a T) -> Naming<'n>,
 ) -> Picked<'a, T> {
     // A short name's words may be typed apart, as `part deux`.
     let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
-    let by_address: Vec<&T> = things
+    let exactly: Vec<&T> = things
         .iter()
-        .filter(|thing| naming(thing).address.eq_ignore_ascii_case(asked))
+        .filter(|thing| naming(thing).address == asked)
         .collect();
-    let whole: Vec<&T> = if by_address.is_empty() {
+    let by_address: Vec<&T> = if exactly.is_empty() {
+        things
+            .iter()
+            .filter(|thing| naming(thing).address.eq_ignore_ascii_case(asked))
+            .collect()
+    } else {
+        exactly
+    };
+    let by_short = |thing: &&T| {
+        naming(thing)
+            .short
+            .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
+    };
+    let whole: Vec<&T> = if first && !by_address.is_empty() {
+        by_address
+    } else {
         things
             .iter()
             .filter(|thing| {
-                naming(thing)
-                    .short
-                    .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
+                by_address.iter().any(|one| std::ptr::eq(*one, *thing)) || by_short(thing)
             })
             .collect()
-    } else {
-        by_address
     };
     let lower = unmarked(asked).to_lowercase();
     let found = if whole.is_empty() {
@@ -911,7 +953,7 @@ pub fn team(swarm: &Swarm, asked: &str, look: &Look) -> Result<String, String> {
             .filter(|other| other["within"] == json!(address(team))),
     );
     if !inner.is_empty() {
-        let shorts = short_names(&swarm.teams);
+        let shorts = shorts_of(swarm);
         let width = shorts_width(inner.iter().copied(), &shorts);
         lines.extend([String::new(), header(look, 0, &Standing::EACH)]);
         for other in inner {

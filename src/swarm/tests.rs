@@ -434,6 +434,18 @@ fn drawn_whole_the_counts_line_up_after_the_widest_name_and_nothing_trails() {
 }
 
 #[test]
+fn a_short_name_that_is_another_s_address_is_never_drawn_or_offered() {
+    // Typed, it would reach the session BUSY, not Reef.
+    let mut swarm = swarm();
+    swarm.teams[0]["swarm"] = json!("busy");
+    let shown = overview(&swarm, &look());
+    assert!(
+        !shown.contains("busy"),
+        "a page drew a name that reaches another:\n{shown}"
+    );
+}
+
+#[test]
 fn drawn_whole_a_long_name_is_never_cut_and_runs_on_alone() {
     let mut swarm = swarm();
     let long = "A reef whose name runs far past every column it was given";
