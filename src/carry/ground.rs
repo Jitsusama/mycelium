@@ -218,12 +218,21 @@ pub fn runs_nothing_offered(kind: Kind, to: &str, there: Option<&Declared>) -> O
 /// whichever of fence and strict its asker runs, and each kind declares
 /// its own `runs`, so a carry is refused when either declared runs
 /// nothing. It is held too, so a carry to a Mac, a `system` machine as
-/// [`lifts_fence`] judges one, is refused whatever it declares.
+/// [`lifts_fence`] judges one, is refused whatever it declares, unless
+/// the session runs in `kind` [`Kind::None`]: one already unfenced here
+/// runs no looser unfenced there, and [`firm`] still holds its doors to
+/// this machine's. A session whose fence can't be told is refused.
 #[must_use]
-pub fn brought_back(to: &str, declared: Option<&Declared>, system: Option<&str>) -> Option<String> {
-    if system == Some(MAC) {
+pub fn brought_back(
+    to: &str,
+    declared: Option<&Declared>,
+    system: Option<&str>,
+    kind: Option<Kind>,
+) -> Option<String> {
+    if system == Some(MAC) && kind != Some(Kind::None) {
         return Some(format!(
-            "{to} is a Mac, where a session brought back held would run outside any fence"
+            "{to} is a Mac, where a fenced session brought back held would run outside any \
+             fence"
         ));
     }
     [Kind::Fence, Kind::Strict]
@@ -728,18 +737,41 @@ mod tests {
             (Kind::Strict, running(&[FENCE, "--"])),
         ]);
         let declared = declaring(Some(runs));
+        let fenced = Some(Kind::Fence);
         assert_eq!(
-            brought_back("osprey", Some(&declared), Some("linux")),
+            brought_back("osprey", Some(&declared), Some("linux"), fenced),
             None,
             "a machine whose fences run a command takes the carry"
         );
+        let refused = Some(
+            "osprey is a Mac, where a fenced session brought back held would run outside any \
+             fence"
+                .to_owned(),
+        );
         assert_eq!(
-            brought_back("osprey", Some(&declared), Some(MAC)),
-            Some(
-                "osprey is a Mac, where a session brought back held would run outside any fence"
-                    .to_owned()
-            ),
+            brought_back("osprey", Some(&declared), Some(MAC), fenced),
+            refused,
             "but a Mac declaring the same is refused by its system"
+        );
+        assert_eq!(
+            brought_back("osprey", Some(&declared), Some(MAC), Some(Kind::Strict)),
+            refused,
+            "as is a strict session"
+        );
+        assert_eq!(
+            brought_back("osprey", Some(&declared), Some(MAC), None),
+            refused,
+            "and one whose fence can't be told"
+        );
+        assert_eq!(
+            brought_back("osprey", Some(&declared), Some(MAC), Some(Kind::None)),
+            None,
+            "but an unfenced session runs no looser there"
+        );
+        let shut = declaring(Some(BTreeMap::from([(Kind::Fence, running(&[]))])));
+        assert!(
+            brought_back("osprey", Some(&shut), Some(MAC), Some(Kind::None)).is_some(),
+            "though a Mac whose fence runs nothing still refuses it"
         );
     }
 }

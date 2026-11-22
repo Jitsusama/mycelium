@@ -558,27 +558,10 @@ fn carried(
         fence: None,
     };
     // The carry refuses a machine the start bringing a session back can't
-    // run on, whatever the session, so each is left out before placing
-    // and the next machine is placed instead.
-    let mut left_out = Vec::new();
-    let peers: Vec<Machine> = peers
-        .iter()
-        .filter(|machine| {
-            let back = ground::brought_back(
-                &machine.name,
-                machine.declared.as_ref(),
-                machine.system.as_deref(),
-            );
-            match back {
-                Some(why) => {
-                    left_out.push(why);
-                    false
-                }
-                None => true,
-            }
-        })
-        .cloned()
-        .collect();
+    // run on, so each is left out before placing and the next machine is
+    // placed instead. A Mac takes only an unfenced session, so the
+    // machines are first screened as for one, and again for each cell.
+    let (peers, left_out) = bringing_back(peers, Some(Kind::None));
     // With none left, placement would say the realm knows no machine, so
     // the look says why each was left out instead.
     if peers.is_empty() {
@@ -608,6 +591,11 @@ fn carried(
             why_not.push(format!("{who} moved within {} hours", PIN.as_hours()));
             continue;
         }
+        let (peers, refused) = bringing_back(&peers, cell.fence);
+        if peers.is_empty() {
+            why_not.push(format!("{who}: {}", refused.join("; ")));
+            continue;
+        }
         let to = match placement::decide(&work, &peers, here.loads).placement {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } | Placement::Refused { misses } => {
@@ -633,6 +621,32 @@ fn carried(
         why_not.extend(left_out);
         why_not.join("; ")
     })
+}
+
+/// Those of `peers` the start bringing back a session in the fence `kind`
+/// would run on, and why each other is left out.
+fn bringing_back(peers: &[Machine], kind: Option<Kind>) -> (Vec<Machine>, Vec<String>) {
+    let mut left_out = Vec::new();
+    let taken = peers
+        .iter()
+        .filter(|machine| {
+            let back = ground::brought_back(
+                &machine.name,
+                machine.declared.as_ref(),
+                machine.system.as_deref(),
+                kind,
+            );
+            match back {
+                Some(why) => {
+                    left_out.push(why);
+                    false
+                }
+                None => true,
+            }
+        })
+        .cloned()
+        .collect();
+    (taken, left_out)
 }
 
 /// Why `here` carries a session to `to`, in one line.
@@ -819,7 +833,7 @@ pub(super) mod tests {
     }
 
     fn chose(machines: &[Machine], cells: &[Cell], history: &History) -> Choice {
-        let declared = declaring(&[Kind::Fence]);
+        let declared = declaring(&[Kind::None, Kind::Fence]);
         let here = Here {
             name: "skiff",
             declared: Some(&declared),
@@ -1464,10 +1478,10 @@ pub(super) mod tests {
         );
     }
 
-    // No session goes to a Mac while a start bringing it back would run
-    // there held, outside any fence. Lifting this must still keep strict
-    // sessions off a Mac, whose strict fence reads the rest of its home,
-    // until that fence is narrowed; this tests only a plain fence.
+    // No fenced session goes to a Mac while a start bringing it back would
+    // run there held, outside any fence. Lifting this must still keep
+    // strict sessions off a Mac, whose strict fence reads the rest of its
+    // home, until that fence is narrowed.
     #[test]
     fn a_mac_with_room_is_passed_over_for_the_next_machine() {
         let mut realm = realm();
@@ -1478,7 +1492,8 @@ pub(super) mod tests {
         let history = hot_for(&realm, 11);
         assert_eq!(
             why_not(&chose(&realm, &[cell("s1")], &history)),
-            "tern is a Mac, where a session brought back held would run outside any fence"
+            "S1: tern is a Mac, where a fenced session brought back held would run outside \
+             any fence"
         );
         // Less room than the Mac, but room: under a quarter's stall.
         realm.push(machine("osprey", 20.0));
@@ -1487,6 +1502,44 @@ pub(super) mod tests {
             carries(&chose(&realm, &[cell("s1")], &history)),
             Some(("s1", "osprey")),
             "the next machine with room takes it"
+        );
+    }
+
+    // Joel's sessions mostly run unfenced, and one unfenced here runs no
+    // looser unfenced on a Mac, so the Mac with the most room takes it.
+    #[test]
+    fn an_unfenced_session_goes_to_a_mac_with_room_and_a_fenced_one_doesnt() {
+        let mut realm = vec![
+            machine("skiff", 86.0),
+            machine("tern", 4.6),
+            machine("osprey", 20.0),
+        ];
+        realm[1].system = Some("macos".to_owned());
+        realm[1].room.as_mut().expect("room").pressure.cpu = 0.0;
+        for one in &mut realm {
+            one.declared = Some(declaring(&[Kind::None, Kind::Fence]));
+        }
+        let history = hot_for(&realm, 11);
+        let mut unfenced = cell("s1");
+        unfenced.fence = Some(Kind::None);
+        assert_eq!(
+            carries(&chose(&realm, &[unfenced.clone()], &history)),
+            Some(("s1", "tern")),
+            "the Mac takes an unfenced session"
+        );
+        assert_eq!(
+            carries(&chose(&realm, &[cell("s2")], &history)),
+            Some(("s2", "osprey")),
+            "but a fenced one goes to the next machine with room"
+        );
+        // With the Mac alone beside it, the fenced session stays and the
+        // unfenced one goes.
+        realm.pop();
+        let history = hot_for(&realm, 11);
+        assert_eq!(
+            carries(&chose(&realm, &[cell("s2"), unfenced], &history)),
+            Some(("s1", "tern")),
+            "the unfenced session is carried past the fenced one"
         );
     }
 

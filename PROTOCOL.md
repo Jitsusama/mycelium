@@ -991,7 +991,8 @@ way through is told only once its presence says `"leases":
 run. After a carry it would carry none for half an hour, and it would
 carry at most six in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
-came from within the hour.
+came from within the hour, nor to a Mac but a session shown unfenced
+(see The Socket).
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at
@@ -2176,7 +2177,10 @@ node's own mounts) and from each of those sessions, a hosted one's
 record read only from the harness's own state. Anything that can't be
 read refuses, as on a Mac itself, and each start let through is told
 in the node's log with who asked, their quests, what it declared, its
-folder and its program. The person's start is
+folder and its program. A carry to a Mac, ordered or made by a node
+easing itself, is refused before any session ends unless the session
+claims and has shown no fence and was never seen stricter, and the
+Mac's `none` fence is still judged as firm as here. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that
 machine's launcher too, and a refusal of any start judged so says it
