@@ -645,7 +645,7 @@ fn cell_line(
         "{indent}{}{GAP}{}{GAP}{}",
         look.paint(standing.colour(), &padded(standing.said(), said)),
         padded(&unmarked(&cell.name), name_width),
-        padded(&fit(&title, title_room), title_room)
+        padded(&look.fitted(&title, title_room), title_room)
     );
     if let Some(doing) = doing {
         let left = room.saturating_sub(title_room + GAP.len()).max(NARROWEST);

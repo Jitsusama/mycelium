@@ -7,8 +7,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    Look, Swarm, WHOLE, aligned, drawn_width, fit, overview, padded, team, typed, unmarked,
-    within, wrapped,
+    Look, Swarm, WHOLE, aligned, drawn_width, fit, most_steps, overview, padded, team, typed,
+    unmarked, within, wrapped,
 };
 
 /// A look 72 columns wide, without colour, at 17:00 on Thursday
@@ -657,6 +657,20 @@ fn two_short_names_that_clean_alike_go_to_neither_and_swarm_names_say_them_clean
 }
 
 #[test]
+fn drawn_whole_a_title_heavy_with_marks_is_never_cut() {
+    // More marks on its cells than a cut keeps, which a terminal's row
+    // would cut, yet a pipe keeps all of it.
+    let mut swarm = swarm();
+    let heavy = format!("Reef{}", "\u{301}".repeat(40));
+    swarm.teams[0]["title"] = json!(heavy);
+    let shown = overview(&swarm, &whole());
+    assert!(
+        shown.contains(&heavy),
+        "a title was cut into a pipe:\n{shown}"
+    );
+}
+
+#[test]
 fn drawn_whole_a_long_name_is_never_cut_and_runs_on_alone() {
     let mut swarm = swarm();
     let long = "A reef whose name runs far past every column it was given";
@@ -996,6 +1010,26 @@ fn a_cut_or_pad_keeps_to_cells_and_never_splits_a_wide_character() {
         "港\n湾\n",
         "a line too narrow for a wide character still takes one"
     );
+    assert_eq!(
+        wrapped("abcd❤\u{FE0F} ef", "", "", 5),
+        "abcd\n❤\u{FE0F} ef\n",
+        "a heart that its selector widens past a line goes to the next with it"
+    );
+}
+
+#[test]
+fn a_peer_s_name_chained_from_emoji_counts_a_cell_pair_for_each_four() {
+    // Unicode's widths count a joined run of any length as two cells, so
+    // cleaned, a run keeps three joiners at most, as a family of four
+    // does, and a cut takes the rest at the cells they count.
+    let cells = <str as unicode_width::UnicodeWidthStr>::width;
+    let chained = vec!["\u{1F469}"; 84].join("\u{200D}");
+    let cleaned = unmarked(&chained);
+    assert_eq!(cells(cleaned.as_str()), 2 * 84 / 4, "{cleaned:?}");
+    assert!(
+        fit(&cleaned, 20).ends_with('…'),
+        "a name chained from emoji passed a cut whole"
+    );
 }
 
 #[test]
@@ -1006,7 +1040,7 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
         let mut kept = "";
         for (at, each) in text.char_indices() {
             let start = &text[..at + each.len_utf8()];
-            if drawn_width(start) <= room {
+            if <str as unicode_width::UnicodeWidthStr>::width(start) <= room {
                 kept = start;
             }
         }
@@ -1022,8 +1056,11 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
         "ꓹꓼ a ⵏ\u{2D7F}ⴾ b",
         "港\u{200D}湾 e\u{301}\u{302}x",
         "a\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}b",
+        // A selector past a run of steps with no fresh start, where a cut
+        // that settled between it and its heart would count a cell less.
+        &format!("{}\u{200D}❤\u{FE0F}x", "ب".repeat(30)),
     ] {
-        for room in 0..16 {
+        for room in 0..36 {
             let (cut, whole) = (within(text, room), longest(text, room));
             if cut != whole {
                 wrong.push(format!("{text:?} to {room}: {cut:?}, not {whole:?}"));
@@ -1034,8 +1071,12 @@ fn a_cut_keeps_the_longest_start_that_fits_as_measured_whole() {
     // which may count more than is drawn but never less.
     let joined = "👩\u{200D}".repeat(40);
     for room in 0..16 {
-        if drawn_width(within(&joined, room)) > room {
+        let cut = within(&joined, room);
+        if <str as unicode_width::UnicodeWidthStr>::width(cut) > room {
             wrong.push(format!("a long joined run to {room} passed it"));
+        }
+        if room >= 2 && cut.is_empty() {
+            wrong.push(format!("a long joined run to {room} kept nothing"));
         }
     }
     assert!(
@@ -1064,7 +1105,7 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
         });
         heard.recv_timeout(budget)
     };
-    let cases: [Cut; 7] = [
+    let cases: [Cut; 8] = [
         ("Han cut to 80", || {
             drawn_width(&fit(&"港".repeat(60_000), 80)) <= 80
         }),
@@ -1075,12 +1116,20 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
             let han = "港".repeat(60_000);
             within(&han, drawn_width(&han)) == han
         }),
-        ("one word fitted whole", || {
+        ("one word fitted whole, measured once", || {
             let word = "a".repeat(256 * 1024);
             fit(&word, WHOLE) == word
         }),
         ("one word wrapped whole", || {
             wrapped(&"a".repeat(256 * 1024), "  ", "    ", WHOLE)
+                .lines()
+                .count()
+                == 1
+        }),
+        // Marks start nothing afresh, so only settling past a long run
+        // keeps a cut through them from measuring them all again.
+        ("a pile of marks wrapped whole", || {
+            wrapped(&format!("a{}", "\u{301}".repeat(256 * 1024)), "", "", WHOLE)
                 .lines()
                 .count()
                 == 1
@@ -1102,7 +1151,10 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
         .filter_map(|(what, cut)| match within_budget(*cut) {
             Ok(true) => None,
             Ok(false) => Some(format!("{what}: cut wrong")),
-            Err(_) => Some(format!("{what}: still cutting after {budget:?}")),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Some(format!("{what}: still cutting after {budget:?}"))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Some(format!("{what}: panicked")),
         })
         .collect();
     assert!(
@@ -1116,12 +1168,21 @@ fn a_long_text_costs_what_it_walks_into_a_pipe_or_not_and_a_pile_of_marks_is_cut
         format!("a{}", "\u{301}".repeat(10_000)),
         format!("a{}", "\u{200D}".repeat(10_000)),
     ] {
-        let kept = fit(&buried, 10).chars().count();
+        let kept = fit(&buried, 10);
+        let count = kept.chars().count();
         assert!(
-            kept <= 10 * 8 + 1,
-            "a pile passed a cut whole: {kept} characters kept"
+            kept.starts_with('a') && count <= most_steps(10 - 1) + 1,
+            "a pile passed a cut whole, or its name went: {count} characters kept"
         );
     }
+    // Wrapped, the rest of a pile goes too, rather than taking lines of
+    // nothing that push the words after it out of what is shown.
+    let wrap = wrapped(&format!("a{} b", "\u{301}".repeat(10_000)), "", "", 80);
+    assert!(
+        wrap.lines().count() == 1 && wrap.ends_with(" b\n"),
+        "a pile spread over lines: {} of them",
+        wrap.lines().count()
+    );
 }
 
 #[test]
