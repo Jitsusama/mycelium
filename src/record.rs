@@ -136,6 +136,10 @@ pub struct Session {
     /// `mycelium attach` takes up there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
+    /// The cell its machine's node booked as starting it, if that node
+    /// started it for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
     /// The words that join it from a terminal on this machine, to be run
     /// as given, when it is held and its machine is in reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]

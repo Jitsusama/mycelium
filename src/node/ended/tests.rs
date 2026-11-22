@@ -36,6 +36,7 @@ fn session(id: &str, machine: &str, state: State, presence: Value) -> Session {
         events: Vec::new(),
         window: None,
         held: None,
+        started_by: None,
         attach: None,
         host: None,
         conversation: None,
