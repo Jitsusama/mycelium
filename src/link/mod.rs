@@ -977,7 +977,12 @@ impl<S: Store> End<S> {
                 store::let_go(&self.store, &self.other, |session| living.contains(session));
                 self.has.extend(messages);
                 self.catch_up(writing).await?;
-                self.hearing.caught_up = true;
+                self.hearing.caught_up = Some(now());
+                // Marked at once, so a link killed outright before its
+                // first minute's keep still leaves a mark.
+                if let Err(error) = self.settle() {
+                    eprintln!("what is settled with {} wasn't kept: {error}", self.other);
+                }
             }
             Frame::Message { id, body } if self.worker => {
                 self.hear_message(&id, &said_on_worker(body, &self.other));
@@ -1798,28 +1803,34 @@ impl<S: Store> End<S> {
     }
 
     /// Says again that every session this link carried here still stands,
-    /// and marks what is settled with the other end.
+    /// and marks what is settled with the other end. A mark that can't be
+    /// kept leaves an older one, which only widens the next reach, so the
+    /// link goes on.
     fn keep_carried(&self) -> io::Result<()> {
         for session in &self.carried {
             if let Err(error) = self.store.keep_presence(session, &self.other) {
                 eprintln!("couldn't keep {session} from {}: {error}", self.other);
             }
         }
-        self.settle()
+        if let Err(error) = self.settle() {
+            eprintln!("what is settled with {} wasn't kept: {error}", self.other);
+        }
+        Ok(())
     }
 
     /// Marks the link as last heard when this end last heard the other,
-    /// once the two have caught up. A message sent after that may have gone
-    /// into a link already dead, whose writes land in a pipe nobody reads
-    /// until a keepalive gives up, so the next link reaches back past it
-    /// and sends it again. Before they have caught up, nothing said is
-    /// known to have crossed, so the earlier mark stands.
+    /// once it has heard it a minute after sending its catch-up. A message
+    /// sent after that may have gone into a link already dead, whose writes
+    /// land in a pipe nobody reads until a keepalive gives up, so the next
+    /// link reaches back past it and sends it again. Until then, even the
+    /// catch-up may sit in such a pipe, so the link marks only as far as it
+    /// reached itself, and the next reaches as far back: a first link, which
+    /// reached nothing before it began, so marks when it began. Hearing
+    /// the other is taken to mean the other hears this end too, as an ssh
+    /// connection's two ways fail together.
     fn settle(&self) -> io::Result<()> {
-        if self.hearing.caught_up {
-            self.store.mark_linked(&self.other, self.hearing.heard)
-        } else {
-            Ok(())
-        }
+        let until = self.hearing.settled(self.reach, now());
+        self.store.mark_linked(&self.other, until)
     }
 }
 
@@ -1859,9 +1870,9 @@ struct Hearing {
     /// When this end last heard the other say anything, in milliseconds
     /// of the wall clock.
     heard: i64,
-    /// Whether the other end has said what it holds and this end has sent
-    /// it what it lacked, so what was said before is settled between them.
-    caught_up: bool,
+    /// When this end, the other having said what it holds, had written it
+    /// what it lacked, in milliseconds of the wall clock.
+    caught_up: Option<i64>,
 }
 
 impl Hearing {
@@ -1870,7 +1881,18 @@ impl Hearing {
         Self {
             watched,
             heard: now(),
-            caught_up: false,
+            caught_up: None,
+        }
+    }
+
+    /// Until when what was said is settled between the two ends by `now`,
+    /// for a link that reached back to `reach`, as [`End::settle`] says.
+    fn settled(&self, reach: i64, now: i64) -> i64 {
+        let heard_since = |at: i64| self.heard >= at.saturating_add(millis(KEEP_EVERY));
+        if self.caught_up.is_some_and(heard_since) {
+            self.heard
+        } else {
+            reach.saturating_add(millis(KEEP_EVERY)).min(now)
         }
     }
 
@@ -2203,11 +2225,13 @@ mod tests {
     }
 
     /// Carries what `from` says to `to` while `wire` is open, swallows it
-    /// while silent, and stops once it's gone or either end closes.
+    /// while silent, telling `swallowed` what it swallowed, and stops once
+    /// it's gone or either end closes.
     async fn carry(
         mut from: ReadHalf<DuplexStream>,
         mut to: WriteHalf<DuplexStream>,
         mut wire: tokio::sync::watch::Receiver<Wire>,
+        swallowed: mpsc::UnboundedSender<Vec<u8>>,
     ) {
         let mut bytes = vec![0; 1 << 16];
         loop {
@@ -2219,8 +2243,9 @@ mod tests {
                 }
                 read = from.read(&mut bytes) => {
                     let Ok(n @ 1..) = read else { return };
-                    let open = *wire.borrow() == Wire::Open;
-                    if open && to.write_all(&bytes[..n]).await.is_err() {
+                    if *wire.borrow() != Wire::Open {
+                        let _ = swallowed.send(bytes[..n].to_vec());
+                    } else if to.write_all(&bytes[..n]).await.is_err() {
                         return;
                     }
                 }
@@ -2228,28 +2253,61 @@ mod tests {
         }
     }
 
-    /// Two stores linked through a wire the sender returned can silence
-    /// and then close, with each end's task.
-    fn linked_by_wire(
-        skiff: &Memory,
-        kestrel: &Memory,
-    ) -> (
-        tokio::sync::watch::Sender<Wire>,
-        tokio::task::JoinHandle<io::Result<()>>,
-        tokio::task::JoinHandle<io::Result<()>>,
-    ) {
+    /// Two linked ends and the wire between them.
+    struct Wired {
+        /// Silences the wire, and then closes it.
+        wire: tokio::sync::watch::Sender<Wire>,
+        /// What the silent wire swallowed of skiff's.
+        swallowed: mpsc::UnboundedReceiver<Vec<u8>>,
+        ends: [tokio::task::JoinHandle<io::Result<()>>; 2],
+    }
+
+    impl Wired {
+        /// Waits until the silent wire has swallowed what holds `text`.
+        async fn swallows(&mut self, text: &str) {
+            let mut taken = Vec::new();
+            tokio::time::timeout(PATIENCE, async {
+                while !String::from_utf8_lossy(&taken).contains(text) {
+                    taken.extend(self.swallowed.recv().await.expect("the wire runs"));
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("the wire never swallowed {text:?}"));
+        }
+
+        /// Closes the wire, and waits for both ends to end without fault.
+        async fn close(self) {
+            self.wire.send(Wire::Gone).expect("the wire is carrying");
+            for ended in self.ends {
+                let ended = tokio::time::timeout(PATIENCE, ended)
+                    .await
+                    .expect("an end whose wire closed ends");
+                assert!(ended.is_ok(), "an end ran without panicking: {ended:?}");
+            }
+        }
+    }
+
+    /// Two stores linked through a wire that can be silenced and then
+    /// closed.
+    fn linked_by_wire(skiff: &Memory, kestrel: &Memory) -> Wired {
         let (near, skiffs_side) = tokio::io::duplex(1 << 16);
         let (far, kestrels_side) = tokio::io::duplex(1 << 16);
         let (wire, open) = tokio::sync::watch::channel(Wire::Open);
         let (from_skiff, to_skiff) = tokio::io::split(skiffs_side);
         let (from_kestrel, to_kestrel) = tokio::io::split(kestrels_side);
-        tokio::spawn(carry(from_skiff, to_kestrel, open.clone()));
-        tokio::spawn(carry(from_kestrel, to_skiff, open));
-        (
+        let (swallowing, swallowed) = mpsc::unbounded_channel();
+        tokio::spawn(carry(from_skiff, to_kestrel, open.clone(), swallowing));
+        tokio::spawn(carry(
+            from_kestrel,
+            to_skiff,
+            open,
+            mpsc::unbounded_channel().0,
+        ));
+        Wired {
             wire,
-            end(skiff, "skiff", near),
-            end(kestrel, "kestrel", far),
-        )
+            swallowed,
+            ends: [end(skiff, "skiff", near), end(kestrel, "kestrel", far)],
+        }
     }
 
     /// Waits on `store`'s changes until `holds` is true of it.
@@ -2349,12 +2407,51 @@ mod tests {
         until(&kestrel, |store| store.message_ids(0).len() == 2 * many).await;
     }
 
+    #[test]
+    fn a_link_settles_as_far_as_it_heard_only_once_it_heard_a_minute_past_catching_up() {
+        let minute = millis(KEEP_EVERY);
+        // A link that reached back to 0, its catch-up written at 10
+        // minutes, and the other last heard at `heard`.
+        let (reach, caught) = (0, 10 * minute);
+        let hearing = |caught_up: Option<i64>, heard: i64| Hearing {
+            watched: true,
+            heard,
+            caught_up,
+        };
+        assert_eq!(
+            hearing(Some(caught), 12 * minute).settled(reach, 20 * minute),
+            12 * minute,
+            "heard two minutes past its catch-up, it settles to when it last heard"
+        );
+        assert_eq!(
+            hearing(Some(caught), 11 * minute).settled(reach, 20 * minute),
+            11 * minute,
+            "a minute past is enough"
+        );
+        assert_eq!(
+            hearing(Some(caught), 11 * minute - 1).settled(reach, 20 * minute),
+            minute,
+            "short of it, the catch-up may sit in a dead pipe, so the next reaches as far"
+        );
+        assert_eq!(
+            hearing(None, 12 * minute).settled(reach, 20 * minute),
+            minute,
+            "and so does a link that never caught up, however late it heard"
+        );
+        assert_eq!(
+            hearing(None, 12 * minute).settled(5 * minute, 5 * minute + 3),
+            5 * minute + 3,
+            "a first link marks no later than now, so the next reaches from before it began"
+        );
+    }
+
     #[tokio::test]
     async fn a_message_said_into_a_silent_link_crosses_on_the_next() {
         let skiff = Memory::default();
         let kestrel = Memory::default();
         apart_since(&skiff, &kestrel, 60_000);
-        let (wire, skiffs, kestrels) = linked_by_wire(&skiff, &kestrel);
+        let seeded = skiff.linked_until("kestrel");
+        let mut wired = linked_by_wire(&skiff, &kestrel);
         let theirs = recent(0, "20KSI7", 0);
         said(&kestrel, &theirs, "@WCJQSG");
         until(&skiff, |store| store.message(&theirs).is_some()).await;
@@ -2363,25 +2460,19 @@ mod tests {
         said(&skiff, &first, "@20KSI7");
         until(&kestrel, |store| store.message(&first).is_some()).await;
 
-        wire.send(Wire::Silent).expect("the wire is carrying");
-        // Long enough for skiff to have taken whatever crossed before.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        wired.wire.send(Wire::Silent).expect("the wire is carrying");
         let lost_at = now();
         let lost = format!("{lost_at}-WCJQSG-1-1");
         said(&skiff, &lost, "@20KSI7");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        wire.send(Wire::Gone).expect("the wire is carrying");
-        for ended in [skiffs, kestrels] {
-            let _ = tokio::time::timeout(PATIENCE, ended)
-                .await
-                .expect("an end whose wire closed ends");
-        }
+        wired.swallows(&lost).await;
+        wired.close().await;
         assert_eq!(kestrel.message(&lost), None, "the silent wire swallowed it");
-        assert!(
-            skiff
-                .linked_until("kestrel")
-                .is_some_and(|until| until < lost_at),
-            "the link is marked as last heard, not as it ended"
+        // Within a minute of the catch-up, the link marks only as far as
+        // it reached, as if the catch-up too had gone into a dead pipe.
+        assert_eq!(
+            skiff.linked_until("kestrel"),
+            seeded,
+            "a link not heard a minute past its catch-up leaves the mark it reached from"
         );
 
         let _link = linked(&skiff, &kestrel, 1 << 16);

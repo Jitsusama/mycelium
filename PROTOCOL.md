@@ -120,14 +120,17 @@ same code, each line a JSON value:
    sessions. An end older than `living` names none, and every session of
    its machine out of reach is let go, to come again as it sends each.
    The reach goes back a minute before this end last heard the other,
-   on a link where both had said their `Have`, and never past the
-   mesh's week, so a link never hands back what the other end has let
-   go. It goes by what was heard, not by when the link ended, since a
-   link whose network has gone takes every write until its keepalive
-   gives up, and what was said meanwhile crosses on the next. A first
-   link reaches back to nothing, since a session takes every message
-   that arrives as new, and a week of talk from before the machines were
-   linked was never its to hear.
+   on a link that heard it a minute after sending its catch-up, and
+   otherwise as far as that link reached, a first link to when it
+   began; never past the mesh's week, so a link never hands back what
+   the other end has let go. It goes by what was heard, not by when the
+   link ended, since a link whose network has gone takes every write
+   until its keepalive gives up, and what was said meanwhile crosses on
+   the next. Hearing the other is taken to mean it hears this end, as
+   an ssh connection's two ways fail together. A first link reaches
+   back to nothing, since a session takes every message that arrives as
+   new, and a week of talk from before the machines were linked was
+   never its to hear.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first
    for each the Have didn't list, then each new one as it lands.
 4. `{"Presence": {"session", "body", "leases", "held"}}`: a living

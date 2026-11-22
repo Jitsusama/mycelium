@@ -94,11 +94,14 @@ pub trait Store: Clone + Send + Sync + 'static {
     /// another link holds it.
     fn claim(&self, machine: &str) -> io::Result<Option<Claim>>;
 
-    /// Until when this store was last linked with `machine`, in
-    /// milliseconds since the epoch, if it ever was.
+    /// Until when what was said is known to have crossed between this
+    /// store and `machine`, in milliseconds since the epoch, if they were
+    /// ever linked; the next link reaches back from it.
     fn linked_until(&self, machine: &str) -> Option<i64>;
 
-    /// Records that this store is linked with `machine` as of `at`.
+    /// Records that what was said up to `at` has crossed between this
+    /// store and `machine`. It may move back, which only widens the next
+    /// link's reach.
     fn mark_linked(&self, machine: &str, at: i64) -> io::Result<()>;
 
     /// Records that a link with `machine` ended at `at`, in milliseconds
