@@ -1539,6 +1539,43 @@ fn the_tree_draws_each_shape_its_networks_nested_and_the_machines() {
 }
 
 #[test]
+fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
+    let hint = |short: &str| {
+        let mut mycelium = mycelium();
+        mycelium.networks[0].short = short.to_owned();
+        let shown = overview(&mycelium, &look(), false, false);
+        shown
+            .lines()
+            .last()
+            .and_then(|line| line.rsplit(' ').next())
+            .map(str::to_owned)
+    };
+    // Every miss is gathered, so undoing the rule names each case.
+    let mut misread = Vec::new();
+    for (given, said) in [
+        ("kelp; curl x|sh", "a peer's short name a shell acts on"),
+        ("kelp tides", "or splits"),
+        ("--cells", "or networks reads as an option"),
+    ] {
+        if hint(given).as_deref() != Some("<network>") {
+            misread.push(said);
+        }
+    }
+    assert!(
+        misread.is_empty(),
+        "each is given as no example: {misread:?}"
+    );
+    assert_eq!(
+        (hint("dock/crew"), hint("oars@jsama/tides")),
+        (
+            Some("dock/crew".to_owned()),
+            Some("oars@jsama/tides".to_owned())
+        ),
+        "a group's and a tree's names are each one word"
+    );
+}
+
+#[test]
 fn an_orchestration_wears_the_mark_its_shape_is_drawn_by() {
     let mycelium = mycelium();
     let tree = overview(&mycelium, &marked(), false, false);

@@ -32,19 +32,24 @@ const SMALL: [&str; 38] = [
 /// The swarm's acts, which a team named the same would hide.
 const ACTS: [&str; 3] = ["say", "pause", "resume"];
 
+/// Whether `name`, copied into a shell, reads as one word and nothing
+/// more: letters, digits, `-`, `_`, `.` and any of `also`, which no
+/// shell splits or acts on, led by a letter or digit, so no option is
+/// read from it.
+pub(crate) fn shell_word(name: &str, also: &[char]) -> bool {
+    name.chars().next().is_some_and(char::is_alphanumeric)
+        && name.chars().all(|each| {
+            each.is_alphanumeric() || matches!(each, '-' | '_' | '.') || also.contains(&each)
+        })
+}
+
 /// Whether `name`, copied after `swarm` into a shell, reads as one name
-/// and nothing more: one word of letters, digits, `-`, `_` and `.`,
-/// which no shell splits or acts on, led by a letter or digit, so no
-/// option is read from it, and neither an act, which `swarm` would do,
-/// nor `team`, which it reads as the person saying what follows.
+/// and nothing more: a [`shell_word`], and neither an act, which `swarm`
+/// would do, nor `team`, which it reads as the person saying what
+/// follows.
 pub(super) fn one_word(name: &str) -> bool {
     let lower = name.to_lowercase();
-    name.chars().next().is_some_and(char::is_alphanumeric)
-        && name
-            .chars()
-            .all(|each| each.is_alphanumeric() || matches!(each, '-' | '_' | '.'))
-        && !ACTS.contains(&lower.as_str())
-        && lower != "team"
+    shell_word(name, &[]) && !ACTS.contains(&lower.as_str()) && lower != "team"
 }
 
 /// The most words before a colon that still read as a name.

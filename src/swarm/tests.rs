@@ -222,6 +222,13 @@ fn a_name_matching_none_or_several_is_said_plainly() {
         Err("dock could be dock (no address to type) or dock (HARBOR)".to_owned()),
         "an address swarm reads as an act is not said, as typing it does no steer"
     );
+    let mut hidden = swarm();
+    hidden.teams[1]["swarm"] = json!("harbor");
+    hidden.teams[0]["swarm"] = json!("har\u{200B}bor");
+    assert!(
+        team(&hidden, "HARBOR", &look()).is_ok(),
+        "a short name cleaned to a team's address does not hide it"
+    );
 }
 
 #[test]
@@ -253,6 +260,10 @@ fn the_hint_gives_only_an_example_a_shell_reads_as_one_name() {
         ("-ojson", "or as its output"),
         ("team", "or as the person saying what follows"),
         ("pa\u{200B}use", "or as an act once it is cleaned"),
+        (
+            "pa\u{3164}use",
+            "or once a filler that counts as a letter is",
+        ),
     ] {
         acting.teams[1]["swarm"] = json!(given);
         if hint(&acting).as_deref() != Some("HARBOR") {
