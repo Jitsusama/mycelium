@@ -299,6 +299,23 @@ impl Starters {
             .get(&(machine.to_owned(), held.to_owned()))
             .map(String::as_str)
     }
+
+    /// These starters but for each hold that more than one of `claims`,
+    /// each a living session's machine and hold, names, since the book
+    /// can't say which of its claimants it started.
+    #[must_use]
+    pub fn but_shared<'a>(mut self, claims: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        let mut claimed: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+        for claim in claims {
+            *claimed.entry(claim).or_default() += 1;
+        }
+        self.0.retain(|(machine, held), _| {
+            claimed
+                .get(&(machine.as_str(), held.as_str()))
+                .is_none_or(|claimants| *claimants < 2)
+        });
+        self
+    }
 }
 
 /// The node's book of starts.
@@ -900,6 +917,30 @@ mod tests {
     use crate::declared::Kind;
 
     const NOW: i64 = 1_800_000_000_000;
+
+    #[test]
+    fn a_hold_two_living_sessions_claim_takes_no_starter_from_the_book() {
+        let booked = |machine: &str, held: &str| {
+            ((machine.to_owned(), held.to_owned()), "OAR001".to_owned())
+        };
+        let starters = Starters(BTreeMap::from([
+            booked("kestrel", "h-1"),
+            booked("kestrel", "h-2"),
+            booked("skiff", "h-1"),
+        ]))
+        .but_shared([
+            ("kestrel", "h-1"),
+            ("kestrel", "h-1"),
+            ("kestrel", "h-2"),
+            ("skiff", "h-1"),
+        ]);
+        assert_eq!(starters.of("kestrel", "h-1"), None, "claimed twice");
+        assert_eq!(
+            [starters.of("kestrel", "h-2"), starters.of("skiff", "h-1")],
+            [Some("OAR001"); 2],
+            "claimed once, and the same hold on another machine is its own"
+        );
+    }
 
     #[test]
     fn a_failure_keeps_the_nodes_reason_and_no_argument() {

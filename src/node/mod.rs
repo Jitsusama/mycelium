@@ -1966,6 +1966,14 @@ fn judged_as(by: By, claims: &[String], unclaimed: &str) -> String {
     }
 }
 
+/// The machine and hold of each of `sessions` that names one, which the
+/// book's starters are held to ([`starts::Starters::but_shared`]).
+fn claims(sessions: &[Session]) -> impl Iterator<Item = (&str, &str)> {
+    sessions
+        .iter()
+        .filter_map(|session| Some((session.machine.as_str(), session.held.as_deref()?)))
+}
+
 /// The cells of `machine` that work on a quest, each with what its forage
 /// is made of, ordered by address. A cell was started by the cell this
 /// node's book of `starts` says asked for its hold, by the session that
@@ -1974,10 +1982,11 @@ fn judged_as(by: By, claims: &[String], unclaimed: &str) -> String {
 /// cells its presence names, and serves and relies on the needs it lists,
 /// each kept only where it reads.
 fn forage_cells(inner: &Inner, machine: &str, starts: &starts::Starts) -> Vec<forage::Cell> {
-    let starters = starts.starters();
-    let mut cells: Vec<forage::Cell> = inner
-        .state
-        .sessions()
+    // The book names a hold's starter only where one living session
+    // claims it, as every reader of it here does.
+    let sessions = inner.state.sessions();
+    let starters = starts.starters().but_shared(claims(&sessions));
+    let mut cells: Vec<forage::Cell> = sessions
         .into_iter()
         .filter(|session| session.machine == machine)
         .filter_map(|session| {
@@ -2257,7 +2266,6 @@ impl<S: Store> Shared<S> {
     /// held on this machine, which the node also watches.
     fn read_sessions(&self) {
         let held = hold::held(&self.held);
-        let starters = self.starts.starters();
         let mut sessions: Vec<_> = self
             .store
             .presences()
@@ -2273,20 +2281,12 @@ impl<S: Store> Shared<S> {
         // told its starter by its own machine's book, as the link carried
         // it. A hold two sessions claim is named by neither, since the
         // book can't say which of them it started.
-        let mut claims: HashMap<(&str, &str), usize> = HashMap::new();
-        for session in &sessions {
-            if let Some(held) = session.held.as_deref() {
-                *claims.entry((&session.machine, held)).or_default() += 1;
-            }
-        }
+        let starters = self.starts.starters().but_shared(claims(&sessions));
         let booked: Vec<Option<String>> = sessions
             .iter()
             .map(|session| {
                 let held = session.held.as_deref()?;
-                (claims.get(&(session.machine.as_str(), held)) == Some(&1))
-                    .then(|| starters.of(&session.machine, held))
-                    .flatten()
-                    .map(str::to_owned)
+                starters.of(&session.machine, held).map(str::to_owned)
             })
             .collect();
         for (session, booked) in sessions.iter_mut().zip(booked) {
@@ -3357,7 +3357,8 @@ impl<S: Store> Shared<S> {
             Request::Machines => Ok(Response::Machines(self.machines())),
             Request::Builders => Ok(Response::Builders(self.builders.builders())),
             Request::StartedBy(held) => {
-                let starters = self.starts.starters();
+                let sessions = self.lock().state.sessions();
+                let starters = self.starts.starters().but_shared(claims(&sessions));
                 Ok(Response::StartedBy(
                     held.into_iter()
                         .filter_map(|held| {

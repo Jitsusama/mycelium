@@ -137,8 +137,9 @@ same code, each line a JSON value:
    presence names a `held` id, and the sending end is no worker, whose
    node is whoever runs on the machine lent. Either field a presence
    says of itself is dropped first, by the sender and again by the
-   other end, so neither is ever the session's own word. The end asks its node with `{"StartedBy": [held]}` apart from
-   the link's other work, sending each presence with the starters known
+   other end, so neither is ever the session's own word. The end asks
+   its node with `{"StartedBy": [held]}` apart from the link's other
+   work, sending each presence with the starters known
    so far and again once one more is named; a hold named none is asked
    about again after 30 seconds, with the next presence or the next
    minute's keep, and a node that can't say is told of once on the
