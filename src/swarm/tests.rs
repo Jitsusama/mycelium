@@ -210,6 +210,12 @@ fn a_name_matching_none_or_several_is_said_plainly() {
         Err("dock could be dock (REEF01) or dock (HARBOR)".to_owned()),
         "two drawn alike are each named by their address too, so one can be typed"
     );
+    alike.teams[0]["key"] = json!("team:RE\u{1b}]52;c;eA==\u{7}EF");
+    let why = team(&alike, "dock", &look()).expect_err("still two");
+    assert!(
+        !why.chars().any(char::is_control) && why.ends_with("or dock (HARBOR)"),
+        "a peer's address is cleaned before it is said: {why:?}"
+    );
 }
 
 /// Teams titled as people title them: two sharing Harbour, one a

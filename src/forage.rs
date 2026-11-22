@@ -1447,11 +1447,20 @@ const fn selects(each: char) -> bool {
 
 /// Whether `each` is drawn as part of a word past ASCII, so a joiner
 /// beside it or a selector after it may be part of the word too: not
-/// [`unseen`], not a space, and not a noncharacter, which no font draws
-/// and a table's marks are made of.
+/// [`unseen`], not a space or a [`BRAILLE_BLANK`], which a cleaning may
+/// trim from either end, and not a noncharacter, which no font draws, a
+/// table's marks are made of and a cleaning drops.
 fn spells(each: char) -> bool {
-    !each.is_ascii() && !unseen(each) && !each.is_whitespace() && !noncharacter(each)
+    !each.is_ascii()
+        && !unseen(each)
+        && !each.is_whitespace()
+        && each != BRAILLE_BLANK
+        && !noncharacter(each)
 }
+
+/// A braille blank, which draws as a space though no text calls it one,
+/// so a name may hold it to look empty.
+pub(crate) const BRAILLE_BLANK: char = '\u{2800}';
 
 /// Whether `each` is one of Unicode's 66 noncharacters, which no font
 /// draws and no text from outside should hold: U+FDD0 to U+FDEF, and the
@@ -3562,6 +3571,9 @@ mod tests {
             ("Reef\u{FDD0}\u{FE0F}", "Reef\u{FDD0}"),
             // So does one past the first plane, which a cleaning drops.
             ("Reef\u{1FFFF}\u{FE0F}", "Reef\u{1FFFF}"),
+            // As does a braille blank, which a cleaning may trim.
+            ("\u{E9}\u{200D}\u{2800}", "\u{E9}\u{2800}"),
+            ("\u{2800}\u{FE0F}\u{E9}", "\u{2800}\u{E9}"),
             (
                 "do\u{10FFFE}\u{200D}\u{10FFFE}ck",
                 "do\u{10FFFE}\u{10FFFE}ck",
