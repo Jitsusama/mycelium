@@ -124,9 +124,10 @@ same code, each line a JSON value:
    mesh's week, so a link never hands back what the other end has let
    go. It goes by what was heard, not by when the link ended, since a
    link whose network has gone takes every write until its keepalive
-   gives up, and what was said meanwhile crosses on the next. A first link reaches back to nothing, since a
-   session takes every message that arrives as new, and a week of talk
-   from before the machines were linked was never its to hear.
+   gives up, and what was said meanwhile crosses on the next. A first
+   link reaches back to nothing, since a session takes every message
+   that arrives as new, and a week of talk from before the machines were
+   linked was never its to hear.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first
    for each the Have didn't list, then each new one as it lands.
 4. `{"Presence": {"session", "body", "leases", "held"}}`: a living

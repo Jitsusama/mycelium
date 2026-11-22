@@ -347,7 +347,6 @@ pub async fn run(
         // minute, so either hearing nothing for longer knows the other
         // is gone.
         hearing: Hearing::from_now(membership.hello().facts && other.facts),
-        caught_up: false,
         following: inboxes.clone().map(Following::new),
         inboxes,
         held: starting.as_ref().map(|starting| starting.held.clone()),
@@ -742,11 +741,9 @@ struct End<S> {
     shows: bool,
     /// Where either machine's handover stands.
     handover: Handover,
-    /// When this end last heard the other, and whether it should have.
+    /// When this end last heard the other, whether it should have, and
+    /// whether the two have caught up.
     hearing: Hearing,
-    /// Whether the other end has said what it holds and this end has sent
-    /// it what it lacked, so what was said before is settled between them.
-    caught_up: bool,
     /// This machine's sessions' steer inboxes, if this end carries steers.
     inboxes: Option<PathBuf>,
     /// The talks this end carries back to the other.
@@ -980,7 +977,7 @@ impl<S: Store> End<S> {
                 store::let_go(&self.store, &self.other, |session| living.contains(session));
                 self.has.extend(messages);
                 self.catch_up(writing).await?;
-                self.caught_up = true;
+                self.hearing.caught_up = true;
             }
             Frame::Message { id, body } if self.worker => {
                 self.hear_message(&id, &said_on_worker(body, &self.other));
@@ -1818,7 +1815,7 @@ impl<S: Store> End<S> {
     /// and sends it again. Before they have caught up, nothing said is
     /// known to have crossed, so the earlier mark stands.
     fn settle(&self) -> io::Result<()> {
-        if self.caught_up {
+        if self.hearing.caught_up {
             self.store.mark_linked(&self.other, self.hearing.heard)
         } else {
             Ok(())
@@ -1862,6 +1859,9 @@ struct Hearing {
     /// When this end last heard the other say anything, in milliseconds
     /// of the wall clock.
     heard: i64,
+    /// Whether the other end has said what it holds and this end has sent
+    /// it what it lacked, so what was said before is settled between them.
+    caught_up: bool,
 }
 
 impl Hearing {
@@ -1870,6 +1870,7 @@ impl Hearing {
         Self {
             watched,
             heard: now(),
+            caught_up: false,
         }
     }
 
