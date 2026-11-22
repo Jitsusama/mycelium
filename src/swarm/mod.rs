@@ -366,10 +366,11 @@ pub(crate) fn within(text: &str, room: usize) -> &str {
     // only in the cases `starts_afresh` names, so the cells up to any
     // other are settled and only the run since is measured again: a cut
     // costs what it walks, even into a pipe, where the room is the whole
-    // text, which may be a peer's message of 256 KiB. The one sequence
-    // narrower than its characters, a text selector after an emoji,
-    // narrows by a cell, so a start two cells past the room never comes
-    // back within it and the walk stops there.
+    // text, which may be a peer's message of 256 KiB. A character narrows
+    // the start it ends by at most a cell, by those rules: a text
+    // selector after an emoji, or the letter that closes a Tifinagh,
+    // Lisu or Kirat Rai ligature. So a start two cells past the room
+    // never comes back within it, and the walk stops there.
     let mut kept = 0;
     let (mut at, mut from, mut settled, mut since) = (0, 0, 0, 0);
     let mut before: Option<char> = None;
