@@ -756,24 +756,7 @@ where
                     break Err(io::Error::other("the store stopped telling its changes"));
                 };
                 for change in gathered {
-                    match change {
-                        Change::Message(id) => shared.read_message(&id),
-                        Change::Presence => {
-                            shared.read_sessions();
-                            // A session seen arriving where it was carried
-                            // may let the trees it left here go.
-                            shared.settle_moved();
-                            // A held session going idle, or busy, may let it
-                            // sleep.
-                            shared.keep_awake(&mut awake, power.as_ref());
-                        }
-                        Change::Rescan => {
-                            shared.read_store();
-                            shared.said.machines_moved();
-                        }
-                        Change::Machine(_) => shared.said.machines_moved(),
-                        Change::Carries(_) => shared.said.sessions_moved(),
-                    }
+                    shared.changed(change, &mut awake, power.as_ref());
                 }
             }
         }
@@ -3140,6 +3123,28 @@ impl<S: Store> Shared<S> {
     /// Keeps this machine awake while what it holds is at work and it has
     /// the charge, as `power` last read, and lets it sleep once it isn't
     /// or hasn't.
+    /// Takes in one change the store told, keeping `awake` as a session
+    /// coming or going moves it.
+    fn changed(&self, change: Change, awake: &mut Awake, power: Option<&facts::Power>) {
+        match change {
+            Change::Message(id) => self.read_message(&id),
+            Change::Presence => {
+                self.read_sessions();
+                // A session seen arriving where it was carried may let the
+                // trees it left here go.
+                self.settle_moved();
+                // A held session going idle, or busy, may let it sleep.
+                self.keep_awake(awake, power);
+            }
+            Change::Rescan => {
+                self.read_store();
+                self.said.machines_moved();
+            }
+            Change::Machine(_) => self.said.machines_moved(),
+            Change::Carries(_) => self.said.sessions_moved(),
+        }
+    }
+
     fn keep_awake(&self, awake: &mut Awake, power: Option<&facts::Power>) {
         let held = hold::held(&self.held);
         let sessions = self.lock().state.sessions();
