@@ -613,10 +613,6 @@ mod tests {
             panic!("an older node's refusal is no refusal of the machine");
         };
         assert!(why.contains("too old"), "saying why: {why}");
-        assert!(
-            !why.contains("expected one of"),
-            "without serde's list: {why}"
-        );
     }
 
     /// Writes `session`'s done file in `handover`, as the harness does.

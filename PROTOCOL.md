@@ -511,12 +511,13 @@ in order and says each step:
    or this one, is refused. So is a carry whose sessions' starts the
    machine wouldn't take: the node is asked `"Takes"` once, with each
    session's arrival and the quest's own, and its refusal is said, as
-   `HARBOR's sessions wouldn't start on osprey: this asks as a fenced
+   `HARBOR's sessions can't start on osprey now: this asks as a fenced
    agent, so it starts nothing held on a Mac: ...`, before any session
-   is told to carry and end. A session that had ended before the carry
-   is found only as `pi-carry` carries what no running session held,
-   after the ask: its start is the same work as those asked, so it is
-   placed and screened alike, but the hour's limits don't count it.
+   is told to carry and end. Some starts are known only after the ask:
+   a session that had ended before the carry, found as `pi-carry`
+   carries what no running session held, and one an earlier carry left
+   unstarted. The ask doesn't weigh those, and the hour's limits may
+   still refuse them, so they start last (step 4).
 2. `push`: before any is told, the node takes away each
    `<session>.cell.json` in the quest's scratch, under
    `handover/<this machine's short hostname>/` (up to its first dot),
@@ -626,8 +627,11 @@ in order and says each step:
    that cell.
 3. `share`: the quest is shared with `handover`, as `mycelium share
    --scratch handover` does.
-4. `start`: each carried session starts again on the machine, held, as
-   `mycelium start` starts one, running `pi-carry arrive QEST-... --from
+4. `start`: each carried session starts again on the machine, held:
+   those told to carry first, then the quest's own, then those the find
+   couldn't ask of, so a refusal the ask couldn't foresee meets no
+   session this carry ended. Each starts as `mycelium start` starts one,
+   running `pi-carry arrive QEST-... --from
    <this machine> --session <id>`, which waits for the handover, fetches
    or clones each tree at its path and places the session's file, and
    then `pi --session <id>` in the folder `pi-carry where QEST-... --from
@@ -1637,23 +1641,27 @@ the log holds about two weeks.
 A processor reading that isn't a number counts as none, so every
 `headroom` is a number.
 
-`"Takes"` judges each of `starts` as `"Start"` would place it, by the
-same asker and screen, and answers the last one's placement, or the
+`"Takes"` judges each of `starts`, one after another, as `"Start"`
+would: by the asker as its own declared fence makes it, then the book
+of starts, then placement. It answers the last one's placement, or the
 refusal the first refused would answer. It starts, counts and books
-nothing; each placement is logged, as a placement and not a start. It
-weighs the book of starts as `"Start"` does, the starts together as
-though started one after another: the person's stop on agents' starts,
-a session coming back already, and the hour's limits, past which a
-start would wait longer than a minute. With `ordered`, an agent's start
-that is word for word a carry's arrival is weighed uncounted, as the
-carry line its order keeps would free it; that line is kept only after
-the ask, and the start itself is still held to it. It weighs the
-realm's machines alone, never a machine made from an offer, and only
-this node's judgement: a machine a start is relayed to judges it again,
-and may still refuse it once the carry's sessions have ended. A carry
-asks it before any session is told (Carrying a Quest). A node from
-before it refuses it as a request it doesn't know, which refuses the
-carry too, saying this machine's node is too old.
+nothing; each placement is logged, as a placement and not a start. The
+book weighs the starts together: the person's stop on agents' starts, a
+session coming back already, and the hour's limits, past which a start
+would wait longer than a minute from when the one before it would have
+gone. With `ordered`, an agent's start that is word for word a carry's
+arrival is weighed uncounted, as the carry line its order keeps would
+free it; that line is kept only after the ask, and the start itself is
+still held to it. At most 128 starts are weighed in one ask. It weighs
+the realm's machines alone, never a machine made from an offer. It
+holds no room either: the carry's starts follow it by as long as its
+sessions take to end, up to 15 minutes, and other starts in that time
+may use the hour's room it found. It is this node's judgement alone,
+too: a machine a start is relayed to judges it again, and may still
+refuse it once the carry's sessions have ended. A carry asks it before
+any session is told (Carrying a Quest). A node from before it refuses
+it as a request it doesn't know, which refuses the carry too, saying
+this machine's node is too old.
 
 `"Start"` places `work` as `"PlaceToStart"` does (as `"Place"`,
 an agent's start held to `runs` too) and starts `command` held

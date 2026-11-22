@@ -420,7 +420,11 @@ impl<F: FnMut(&Value)> Saying<'_, F> {
 /// failure starts it twice. The quest's own
 /// done file, holding the trees no session held, arrives there too, but
 /// no session starts for it, so it isn't among those answered. Each
-/// arrives as `ordered` says, where an orchestrator ordered it.
+/// arrives as `ordered` says, where an orchestrator ordered it. The
+/// sessions told to carry start first, then the quest's own, as the
+/// find asked of them, and only then those it couldn't ask of: a
+/// session that had ended, or one an earlier carry left, so a refusal
+/// none asked of meets no session ended for this carry.
 fn start_each(
     hands: &mut impl Hands,
     quest: &str,
@@ -430,7 +434,18 @@ fn start_each(
     sessions: &[Session],
     ordered: Option<&Ordered>,
 ) -> Result<Vec<Arrived>, String> {
-    done.iter()
+    let told: BTreeSet<&str> = sessions.iter().filter_map(session_id).collect();
+    let mut done: Vec<&Done> = done.iter().collect();
+    done.sort_by_key(|one| {
+        if told.contains(one.session.as_str()) {
+            0
+        } else if one.session == quest {
+            1
+        } else {
+            2
+        }
+    });
+    done.into_iter()
         .map(|one| {
             let address = sessions
                 .iter()
@@ -512,7 +527,7 @@ fn find(
     hands
         .takes(&Taking { starts, ordered })
         .map_err(|untaken| match untaken {
-            Untaken::Refused(why) => format!("{quest}'s sessions wouldn't start on {to}: {why}"),
+            Untaken::Refused(why) => format!("{quest}'s sessions can't start on {to} now: {why}"),
             Untaken::Unasked(why) => format!(
                 "{quest} isn't carried, since this machine's node couldn't say whether {to} \
                  would start its sessions: {why}"
@@ -2127,7 +2142,7 @@ mod tests {
         );
         assert_eq!(
             last_said(&lines),
-            format!("{QUEST}'s sessions wouldn't start on tern: {why}"),
+            format!("{QUEST}'s sessions can't start on tern now: {why}"),
             "saying why"
         );
         assert!(
@@ -2166,8 +2181,7 @@ mod tests {
 
     // A session that had ended before the carry is found only as
     // `pi-carry` carries what no running session held, after the ask: its
-    // start is asked of as its kind, the same work as every arrival, but
-    // isn't among those counted.
+    // start isn't among those asked of, so it starts after them all.
     fn ended_before(start: &Start) -> bool {
         start
             .command
@@ -2188,11 +2202,16 @@ mod tests {
             realm.started.iter().any(ended_before),
             "a session that had ended started too"
         );
+        let first_unasked = realm
+            .started
+            .iter()
+            .position(ended_before)
+            .expect("one unasked");
+        assert!(
+            realm.started[first_unasked..].iter().all(ended_before),
+            "what wasn't asked of starts after all that was"
+        );
         for start in &realm.started {
-            assert!(
-                asked.starts.iter().any(|one| one.work == start.work),
-                "each start's work asked of: {start:?}"
-            );
             assert!(unordered_arrival(&start.command).is_some(), "as an arrival");
             if ended_before(start) {
                 continue;
@@ -2383,7 +2402,7 @@ mod tests {
         done.expect("taken again, it goes through");
         assert_eq!(
             arrivals(&realm.started),
-            ["s-busy01", "s-naps02", "s-gone", QUEST],
+            ["s-busy01", "s-naps02", QUEST, "s-gone"],
             "the one that landed unanswered starts once, joined when asked again: {lines:?}"
         );
     }
@@ -2432,7 +2451,7 @@ mod tests {
         done.expect("taken again, it goes through");
         assert_eq!(
             arrivals(&realm.started),
-            ["s-busy01", "s-naps02", "s-gone", QUEST],
+            ["s-busy01", "s-naps02", QUEST, "s-gone"],
             "each carried session starts once, those not yet started now: {lines:?}"
         );
     }

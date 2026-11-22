@@ -454,25 +454,33 @@ impl Starts {
         Err(refused.unwrap_or_default())
     }
 
-    /// Why one of `asked` would be refused as [`Self::admit`] judges each
-    /// now, admitted one after another, where waiting `waits`
-    /// milliseconds for the limits to let it wouldn't do: keeping,
-    /// counting and holding nothing as going, so a carry can ask for all
-    /// its starts before it tells any session to end.
+    /// Why one of `asked` would be refused as [`Self::admit`] judges each,
+    /// admitted one after another, where waiting `waits` milliseconds for
+    /// the limits to let it wouldn't do: each asked no sooner than the
+    /// one before it would have gone, as a caller waiting on each does,
+    /// and gone when there is room. It keeps, counts and holds nothing as
+    /// going, so a carry can ask for all its starts before it tells any
+    /// session to end.
     pub fn would_refuse(&self, asked: &[Kept], waits: i64) -> Option<String> {
         let mut book = Book::clone(&self.lock());
+        let mut gone = i64::MIN;
         for one in asked {
             let mut one = bounded(one.clone());
+            one.at = one.at.max(gone);
             let refused = Self::coming_back(&book, &one).or_else(|| {
                 Self::once_an_hour(&book, &mut one);
                 match self.refusal(&book, &one)? {
-                    (_, Some(room)) if room <= one.at + waits => None,
+                    (_, Some(room)) if room <= one.at + waits => {
+                        one.at = room;
+                        None
+                    }
                     (why, _) => Some(why),
                 }
             });
             if refused.is_some() {
                 return refused;
             }
+            gone = one.at;
             book.going.push((book.next, one));
             book.next += 1;
         }
@@ -1047,6 +1055,39 @@ mod tests {
             .expect("one session brought back twice");
         assert!(coming.contains("coming back already"), "{coming}");
     }
+
+    #[test]
+    fn each_start_asked_waits_its_minute_from_when_the_one_before_it_went() {
+        let (_dir, starts) = book();
+        // The cell's eight: the oldest leaves the hour 30 s after the ask,
+        // the next 70 s after it, which is 40 s after the first asked goes,
+        // and the rest twenty minutes on.
+        started(&starts, agent("OSPREY", NOW), "h");
+        started(&starts, agent("OSPREY", NOW + 40_000), "h");
+        for one in 0..CELL_AN_HOUR - 2 {
+            let at = NOW + 1_200_000 + i64::try_from(one).expect("few");
+            started(&starts, agent("OSPREY", at), "h");
+        }
+        let ask = NOW + HOUR - 30_000;
+        let two = [agent("OSPREY", ask), agent("OSPREY", ask)];
+        assert_eq!(
+            starts.would_refuse(&two, START_WAITS_MOST_HERE),
+            None,
+            "the second waits from when the first went, not from the ask"
+        );
+        let three = [
+            agent("OSPREY", ask),
+            agent("OSPREY", ask),
+            agent("OSPREY", ask),
+        ];
+        assert!(
+            starts.would_refuse(&three, START_WAITS_MOST_HERE).is_some(),
+            "a third, with no room for minutes after, doesn't"
+        );
+    }
+
+    /// The longest the node lets an agent's start wait, as its ask weighs.
+    const START_WAITS_MOST_HERE: i64 = 60_000;
 
     fn resuming(cell: &str, session: &str, at: i64) -> Kept {
         Kept {

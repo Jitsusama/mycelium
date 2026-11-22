@@ -99,6 +99,10 @@ const STARTS_LISTED: usize = 100;
 /// milliseconds, before it is refused and told when to ask again.
 const START_WAITS_MOST: i64 = 60_000;
 
+/// The most starts one `Takes` weighs, so one line can't ask the node to
+/// place, and log, without end: past all a cell's resumes in an hour.
+const TAKES_MOST: usize = starts::RESUMED_AN_HOUR;
+
 /// How long a link waits before dialling again after it dropped, at first
 /// and at most; each failure in a row doubles the wait.
 const REDIAL_FIRST: Duration = Duration::from_secs(2);
@@ -5340,27 +5344,42 @@ impl<S: Store> Shared<S> {
     }
 
     /// Where each of `asked`'s starts would be placed as
-    /// [`Self::started`] places it, starting and counting nothing: the
-    /// last one's machine, or the refusal the first refused would
-    /// answer, the book of starts' among them, weighing them all as
-    /// started one after another and waiting for room as long as each
-    /// would. It judges the realm's machines alone, so work none of them
-    /// takes is refused here even where a start of it would make a
-    /// machine from an offer; and this node alone, so a machine it
-    /// relays a start to may still refuse it.
+    /// [`Self::started`] places it, one after another, starting and
+    /// counting nothing: the last one's machine, or the refusal the first
+    /// refused would answer. Each is judged as its start is, by its own
+    /// declared fence, then by the book of starts, waiting for room up to
+    /// [`START_WAITS_MOST`] from when the one before it would have gone,
+    /// then by placement. An agent's arrival in a carry said to be
+    /// ordered is weighed as the carry line kept as the order is taken
+    /// would free it, since that line is kept only after the ask. It
+    /// judges the realm's machines alone, so work none of them takes is
+    /// refused here even where a start of it would make a machine from an
+    /// offer; and this node alone, so a machine it relays a start to may
+    /// still refuse it. At most [`TAKES_MOST`] starts are asked at once.
     async fn would_take(&self, asked: &Taking) -> Reply {
-        let Some(first) = asked.starts.first() else {
+        if asked.starts.is_empty() {
             return Err("nothing to start: name a start".to_owned());
-        };
+        }
+        if asked.starts.len() > TAKES_MOST {
+            return Err(format!(
+                "{} starts asked at once, past the {TAKES_MOST} an ask weighs",
+                asked.starts.len()
+            ));
+        }
         if asked.starts.iter().any(|one| one.command.is_empty()) {
             return Err("nothing to start: name a program".to_owned());
         }
-        let (by, _, charged) = self.judged_declaring(first.work.fence).await?;
-        let booked = self.booked((by, charged), asked)?;
-        let fence = fence_of(by);
         let admits = self.admits().await;
+        let mut book = Vec::with_capacity(asked.starts.len());
         let mut answer = Err("nothing to start: name a start".to_owned());
-        for one in booked {
+        for one in &asked.starts {
+            let (by, _, charged) = self.judged_declaring(one.work.fence).await?;
+            let (one, kept) = self.booked_as((by, charged), one, asked.ordered)?;
+            book.push(kept);
+            if let Some(why) = self.starts.would_refuse(&book, START_WAITS_MOST) {
+                return Err(why);
+            }
+            let fence = fence_of(by);
             let unfenced = self.unfenced_asking(by, one.work.fence).await;
             let screen = held_or_run(unfenced.is_some(), by);
             answer = match self.place(&one.work, Counts::Never, fence, screen, &admits) {
@@ -5376,37 +5395,11 @@ impl<S: Store> Shared<S> {
         answer
     }
 
-    /// `asked`'s starts, from the asker judged `by` whose starts count
-    /// toward `charged`'s cell, as [`Self::counted`] would place each,
-    /// pinned to the machine of a session it brings back; or why it
-    /// would refuse one before placing it: left to its holder, or by the
-    /// book of starts, weighing them all as started one after another and
-    /// waiting for room up to [`START_WAITS_MOST`] each. An agent's
-    /// arrival in a carry said to be ordered is weighed as the carry
-    /// line kept as the order is taken would free it, since that line is
-    /// kept only after the ask. Nothing is kept, counted or held as
-    /// going.
-    fn booked(
-        &self,
-        (by, charged): (By, Option<String>),
-        asked: &Taking,
-    ) -> Result<Vec<Start>, String> {
-        let mut booked = Vec::with_capacity(asked.starts.len());
-        let mut book = Vec::with_capacity(asked.starts.len());
-        for one in &asked.starts {
-            let (one, kept) = self.booked_as((by, charged.clone()), one, asked.ordered)?;
-            booked.push(one);
-            book.push(kept);
-        }
-        match self.starts.would_refuse(&book, START_WAITS_MOST) {
-            Some(why) => Err(why),
-            None => Ok(booked),
-        }
-    }
-
-    /// `asked`, as [`Self::booked`] weighs one of its starts: pinned as
-    /// it would start, with the line the book would keep of it; or why
-    /// it is left to its holder.
+    /// `asked`, as [`Self::would_take`] weighs one of its starts, from
+    /// the asker judged `by` whose starts count toward `charged`'s cell:
+    /// pinned as it would start, as [`Self::counted`] pins a session it
+    /// brings back, with the line the book would keep of it; or why it
+    /// is left to its holder. Nothing is kept, counted or held as going.
     fn booked_as(
         &self,
         (by, charged): (By, Option<String>),
@@ -14215,6 +14208,77 @@ esac
             ask(socket, Request::Start(held)).await,
             Err("no link reaches osprey now".to_owned()),
             "which a start of it would reach for, as the ask didn't"
+        );
+    }
+
+    // An orchestrator past its eight starts an hour still carries, since
+    // its ordered arrivals start uncounted, and the ask weighs a carry's
+    // starts together, so one past the limit is refused before any
+    // session ends.
+    #[tokio::test]
+    async fn an_ordered_carrys_arrivals_are_weighed_uncounted_and_together() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let socket = dir.path().join("skiff").join("work.sock");
+        let store = Memory::default();
+        let (_stop, _node, _client) =
+            orchestrated_in(&store, &socket, &orchestrations(), &[]).await;
+        declares_runs(&socket, true);
+        asks_below(&socket, 7001);
+        let new_work = || Start {
+            work: work(vec![Need::Machine("skiff".to_owned())]),
+            folder: None,
+            strict: false,
+            command: vec!["pi".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let unstarted = Err("skiff's node starts no sessions".to_owned());
+        for _ in 0..starts::CELL_AN_HOUR - 1 {
+            assert_eq!(
+                ask(socket.clone(), Request::Start(new_work())).await,
+                unstarted
+            );
+        }
+        let arrival = |session: &str| {
+            let one = crate::carry::Done {
+                session: session.to_owned(),
+                started_before: None,
+            };
+            crate::carry::arriving("QEST-20261107-HARBOR", "kestrel", "skiff", &one, None)
+        };
+        let takes = |starts, ordered| {
+            let socket = socket.clone();
+            async move { ask(socket, Request::Takes(Taking { starts, ordered })).await }
+        };
+        let book = socket.with_file_name("starts.jsonl");
+        let kept = || fs::read_to_string(&book).map_or(0, |kept| kept.lines().count());
+        let before = kept();
+        let one = takes(vec![arrival("s-a")], false).await;
+        assert!(
+            matches!(&one, Ok(Response::Placement(Placement::Placed { machine, .. })) if machine == "skiff"),
+            "one more start fits the cell's eight: {one:?}"
+        );
+        let two = takes(vec![arrival("s-a"), arrival("s-b")], false).await;
+        assert!(
+            matches!(&two, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "two don't, weighed together: {two:?}"
+        );
+        let ordered = takes(vec![arrival("s-a"), arrival("s-b"), arrival("s-c")], true).await;
+        assert!(
+            matches!(&ordered, Ok(Response::Placement(Placement::Placed { .. }))),
+            "an ordered carry's arrivals go uncounted: {ordered:?}"
+        );
+        let fooled = takes(vec![new_work(), new_work()], true).await;
+        assert!(
+            matches!(&fooled, Err(why) if why.contains("a cell starts at most 8 an hour")),
+            "but ordered frees only a carry's arrival, word for word: {fooled:?}"
+        );
+        assert_eq!(kept(), before, "no ask keeps anything in the book");
+        let many = takes(vec![arrival("s-a"); TAKES_MOST + 1], true).await;
+        assert!(
+            matches!(&many, Err(why) if why.contains("past the 128 an ask weighs")),
+            "an ask is bounded: {many:?}"
         );
     }
 
