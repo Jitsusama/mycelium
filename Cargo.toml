@@ -53,6 +53,11 @@ tokio = { version = "1", features = [
   "sync",
   "time",
 ] }
+# How many of a terminal's cells a name or line takes, as Unicode's East
+# Asian Width and emoji presentation say: two for a wide character or an
+# emoji, none for a joiner or combining mark, so a table lines up in any
+# script.
+unicode-width = "0.2"
 
 # When a process started on macOS, which only libproc's proc_pidinfo says:
 # `ps` is setuid and can't run inside a Nix build. Its bindings are written
