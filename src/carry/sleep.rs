@@ -192,7 +192,11 @@ mod tests {
             session("s4", "idle", &json!({})),
             session("s5", "ended", &json!({"held": "h5"})),
             elsewhere,
-            session("s7", "idle", &json!({"held": "h7", "presence": {"session": "../x"}})),
+            session(
+                "s7",
+                "idle",
+                &json!({"held": "h7", "presence": {"session": "../x"}}),
+            ),
         ];
         let chosen: Vec<String> = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]
             .into_iter()
@@ -204,9 +208,11 @@ mod tests {
                 Ok("s1-own".to_owned()),
                 Ok("s2-own".to_owned()),
                 Err("S3 is in a turn, so it isn't put to sleep".to_owned()),
-                Err("S4 is kept by no holder or host, which is what would wake it, so it isn't \
+                Err(
+                    "S4 is kept by no holder or host, which is what would wake it, so it isn't \
                      put to sleep"
-                    .to_owned()),
+                        .to_owned()
+                ),
                 Err("S5 isn't running, so it isn't put to sleep".to_owned()),
                 Err("s6 no longer runs here, so it isn't put to sleep".to_owned()),
                 Err("S7's id \"../x\" can't name a file, so it isn't put to sleep".to_owned()),
@@ -231,7 +237,13 @@ mod tests {
         );
         let names: BTreeSet<String> = fs::read_dir(&folder)
             .expect("the folder")
-            .map(|entry| entry.expect("an entry").file_name().into_string().expect("a name"))
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .into_string()
+                    .expect("a name")
+            })
             .collect();
         assert_eq!(
             names,
@@ -250,7 +262,10 @@ mod tests {
 
         fs::remove_file(folder.join("s2-own")).expect("its harness took it back");
         let ids = BTreeSet::from(["s1-own".to_owned(), "s2-own".to_owned()]);
-        assert!(withdraw(&folder, &ids).is_empty(), "one taken back already is gone");
+        assert!(
+            withdraw(&folder, &ids).is_empty(),
+            "one taken back already is gone"
+        );
         assert!(!folder.join("s1-own").exists());
 
         ask(&folder, "s3-own", at, "over").expect("asked");
