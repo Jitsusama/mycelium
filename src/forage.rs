@@ -1411,8 +1411,10 @@ pub(crate) const fn turns_direction(each: char) -> bool {
 /// Whether `each` draws as nothing: a soft hyphen, a zero-width space or
 /// joiner, a word joiner or invisible operator, a grapheme joiner, a
 /// Hangul or Khmer filler, a variation selector, Mongolian or not, a byte
-/// order mark, or a tag, any of which hides text from the person or
-/// smuggles it past them.
+/// order mark, a tag, or a format control of the old shaping, interlinear
+/// annotation, shorthand or musical kinds, any of which hides text from
+/// the person or smuggles it past them. It holds what the terminal kit's
+/// list of Unicode's default-ignorables holds.
 pub(crate) const fn unseen(each: char) -> bool {
     matches!(
         each,
@@ -1425,12 +1427,15 @@ pub(crate) const fn unseen(each: char) -> bool {
             | '\u{180B}'..='\u{180F}'
             | '\u{200B}'..='\u{200D}'
             | '\u{2060}'..='\u{2065}'
+            | '\u{206A}'..='\u{206F}'
             | '\u{3164}'
             | '\u{FE00}'..='\u{FE0F}'
             | '\u{FEFF}'
             | '\u{FFA0}'
-            | '\u{E0100}'..='\u{E01EF}'
-            | '\u{E0000}'..='\u{E007F}'
+            | '\u{FFF0}'..='\u{FFFB}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}'
     )
 }
 
@@ -3518,6 +3523,12 @@ mod tests {
             one_line("SKIFF1\u{3164}\u{E0041}\u{FE0F}\u{034F} tern\u{115F}\u{2065}"),
             "SKIFF1 tern",
             "a filler, a tag, a selector or a grapheme joiner beside ASCII was kept"
+        );
+        assert_eq!(
+            one_line("SK\u{FFF9}IFF\u{1BCA0}1\u{1D173}\u{206A} tern\u{E0080}\u{E0FFF}"),
+            "SKIFF1 tern",
+            "an annotation, shorthand, musical or old shaping control, or a tag past \
+             the flags', was kept"
         );
     }
 

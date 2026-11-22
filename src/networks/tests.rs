@@ -1791,6 +1791,16 @@ fn a_name_matching_none_or_several_networks_is_said_plainly() {
 }
 
 #[test]
+fn what_a_name_could_be_names_each_on_one_line() {
+    let (cell, network) = ("ASKS\u{1b}]0;x\u{7}01", "quest.\u{200b}harbor\u{fdd0}");
+    assert_eq!(
+        super::several("as", &[&cell, &network], |each| *each),
+        format!("as could be {} or quest.harbor", one_line(cell)),
+        "a name it could be drew otherwise than on one line"
+    );
+}
+
+#[test]
 fn every_cell_lists_worst_first_and_one_says_its_networks() {
     let mycelium = mycelium();
     let shown = cells(&mycelium, &look(), false, &[]);
@@ -1900,8 +1910,11 @@ fn drawn_whole_a_cell_s_marks_and_breaks_move_no_column() {
 
 #[test]
 fn a_peer_s_escape_break_or_mark_reaches_no_page() {
-    let pages = |title: &str, step: &str, machine: (&str, &str), said: &str| {
-        let [teams, mut sessions, mut machines] = records();
+    // Kelp's own title heads its page and names its network on the
+    // others, so it is dirtied beside its session's.
+    let pages = |(team, title): (&str, &str), step: &str, machine: (&str, &str), said: &str| {
+        let [mut teams, mut sessions, mut machines] = records();
+        teams[1]["title"] = json!(team);
         let mut lent = builders();
         lent[1]["said"] = json!(said);
         for session in &mut sessions {
@@ -1931,14 +1944,14 @@ fn a_peer_s_escape_break_or_mark_reaches_no_page() {
         ]
     };
     let clean = pages(
-        "Kelp's question",
+        ("Kelp: Tides", "Kelp's question"),
         "running the tests",
         ("dinghy", "ready"),
         "nothing is lent",
     );
     assert_eq!(
         pages(
-            "Kelp's\u{200b} question\u{fdd0}",
+            ("Kelp: Ti\u{200b}des\u{fdd0}", "Kelp's\u{200b} question\u{fdd0}"),
             "running\u{fdd1} the tests",
             ("ding\u{200b}hy\u{fdd0}", "ready"),
             "nothing\u{200b} is lent\u{fdd0}",
@@ -1949,13 +1962,14 @@ fn a_peer_s_escape_break_or_mark_reaches_no_page() {
     // An escape's control goes and its visible rest stays, so these pages
     // are held to the same words set on one line, which may run on as
     // any long title does.
-    let (title, step, state, said) = (
+    let (team, title, step, state, said) = (
+        "Kelp: Tides\u{1b}[2J\r\nnow",
         "Kelp's \u{1b}]0;tide\u{7}question",
         "running\u{1b}[2J the\n\ntests",
         "ready\r\n\nlater",
         "nothing\u{1b}]52;c;eA==\u{7} is\nlent",
     );
-    let dirty = pages(title, step, ("dinghy", state), said);
+    let dirty = pages((team, title), step, ("dinghy", state), said);
     for page in &dirty {
         assert!(
             !page.contains(['\u{1b}', '\u{7}', '\r']),
@@ -1965,7 +1979,7 @@ fn a_peer_s_escape_break_or_mark_reaches_no_page() {
     assert_eq!(
         dirty,
         pages(
-            &one_line(title),
+            (&one_line(team), &one_line(title)),
             &one_line(step),
             ("dinghy", &one_line(state)),
             &one_line(said),

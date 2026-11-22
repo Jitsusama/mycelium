@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Standing, Swarm, address, asked, either, listed, names, short_names, title};
+use super::{
+    Standing, Swarm, address, asked, either, listed, names, short_names, title, unmarked,
+};
 
 /// Who a steer is from: the person, as the harness's steers name them.
 const FROM: &str = "person";
@@ -116,13 +118,15 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     match found.as_slice() {
         [] => Err(format!("nothing in the swarm is named {asked}")),
         many => {
-            let typed: Vec<&str> = many
+            // Each is a peer's text, so each is held to one line.
+            let typed: Vec<String> = many
                 .iter()
                 .map(|one| match one {
-                    Named::Team(record) => names::typed(record, &shorts),
-                    Named::Session(record) => title(record),
+                    Named::Team(record) => unmarked(names::typed(record, &shorts)),
+                    Named::Session(record) => unmarked(title(record)),
                 })
                 .collect();
+            let typed: Vec<&str> = typed.iter().map(String::as_str).collect();
             Err(format!("{asked} could be {}", either(&typed)))
         }
     }
@@ -175,7 +179,8 @@ fn team_within<'a>(swarm: &'a Swarm, at: &str) -> Option<&'a str> {
 fn aimed(session: &Value, steer: &Value) -> Aimed {
     Aimed {
         address: session["address"].as_str().unwrap_or_default().to_owned(),
-        name: title(session).to_owned(),
+        // A session's title is a peer's text, said back to the person.
+        name: unmarked(title(session)),
         steer: steer.clone(),
     }
 }
@@ -203,14 +208,14 @@ pub fn aim(swarm: &Swarm, act: Act, asked: &str) -> Result<Aim, String> {
     let (team, sessions) = match named(swarm, asked)? {
         Named::Session(session) if changes(session) => (None, vec![aimed(session, &steer)]),
         Named::Session(session) => {
-            let name = title(session);
+            let name = unmarked(title(session));
             return Err(match act {
                 Act::Resume => format!("{name} isn't paused"),
                 Act::Pause | Act::Say { .. } => format!("{name} is paused already"),
             });
         }
         Named::Team(team) => {
-            let name = title(team);
+            let name = unmarked(title(team));
             let sessions: Vec<Aimed> = match act {
                 Act::Say { .. } => team["lead"]
                     .as_str()
@@ -232,7 +237,7 @@ pub fn aim(swarm: &Swarm, act: Act, asked: &str) -> Result<Aim, String> {
                     Act::Resume => format!("none of {name}'s sessions is paused"),
                 });
             }
-            (Some(name.to_owned()), sessions)
+            (Some(name), sessions)
         }
     };
     Ok(Aim {
@@ -294,7 +299,8 @@ pub fn told(aim: &Aim, answers: &[Result<String, String>]) -> Result<String, Str
     for (aimed, answer) in aim.sessions.iter().zip(answers) {
         match answer {
             Ok(_) => reached.push(aimed.name.as_str()),
-            Err(why) => missed.push(format!("{} wasn't told: {why}", aimed.name)),
+            // The node's reason may carry another machine's words.
+            Err(why) => missed.push(format!("{} wasn't told: {}", aimed.name, unmarked(why))),
         }
     }
     let mut lines = Vec::new();
@@ -331,6 +337,7 @@ mod tests {
     use serde_json::json;
 
     use super::{Act, Aim, Aimed, aim, told};
+    use crate::forage::one_line;
     use crate::swarm::tests::swarm;
 
     /// The addresses `aim` tells, in order.
@@ -420,6 +427,43 @@ mod tests {
                  Busy one wasn't told: no session goes by BUSY now"
                 .to_owned()),
             "one not told is said, and why"
+        );
+    }
+
+    #[test]
+    fn what_a_steer_says_back_holds_peers_words_to_one_line() {
+        let (lead, busy, why) = (
+            "Harbour's \u{1b}]0;x\u{7}lead",
+            "Busy\r\none",
+            "tern said \u{1b}[2Jgone\nlater",
+        );
+        let mut dirty = swarm();
+        for session in &mut dirty.sessions {
+            if session["id"] == "s-lead" {
+                session["title"] = json!(format!("{lead}\u{fdd0}"));
+            }
+            if session["id"] == "s-busy" {
+                session["title"] = json!(busy);
+            }
+        }
+        let aimed = aim(&dirty, Act::Pause, "Harbour").expect("aimed");
+        let said = told(
+            &aimed,
+            &[
+                Ok("skiff".to_owned()),
+                Err(why.to_owned()),
+                Ok("skiff".to_owned()),
+            ],
+        );
+        assert_eq!(
+            said,
+            Err(format!(
+                "paused {} and Kelp's question, in Harbour\n{} wasn't told: {}",
+                one_line(lead),
+                one_line(busy),
+                one_line(why)
+            )),
+            "a session's title, or the node's reason, drew otherwise than on one line"
         );
     }
 

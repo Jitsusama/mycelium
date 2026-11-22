@@ -539,19 +539,25 @@ mod tests {
 
     #[test]
     fn a_machine_s_own_words_reach_no_page_but_as_one_line() {
+        // A builder's name and words are its machine's too, so each is
+        // dirtied alike.
         let named = |name: &str, why: &str| {
             let mut tern = tern();
             tern.name = name.to_owned();
             tern.updated = Some(json!({"step": "failed", "at": "2026-11-12T16:29:02Z",
                 "why": why}));
-            tern
+            let mut skiff = skiff();
+            skiff.name = format!("sk{name}");
+            skiff.said = Some(why.to_owned());
+            (tern, skiff)
         };
-        let pages = |tern: &Machine| {
+        let pages = |(tern, skiff): &(Machine, Builder)| {
             [80, crate::swarm::WHOLE].map(|width| {
                 let look = look(width);
                 [
-                    table(&[osprey(), tern.clone()], &[], &look),
+                    table(&[osprey(), tern.clone()], &[skiff.clone()], &look),
                     one(tern, &look),
+                    one_builder(skiff, &look),
                 ]
             })
         };

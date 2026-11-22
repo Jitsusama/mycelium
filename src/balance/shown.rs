@@ -38,24 +38,27 @@ pub fn said(reading: &Reading, realm: &str, width: usize, colour: bool) -> Strin
             text.to_owned()
         }
     };
-    let mut out = String::new();
+    let mut head = String::new();
     let count = reading.machines.len();
     let noun = if count == 1 { "machine" } else { "machines" };
-    let _ = write!(out, "{realm} · {count} {noun}");
+    let _ = write!(head, "{realm} · {count} {noun}");
     let ready = reading.machines.iter().filter(|one| one.ready).count();
     if ready < count {
-        let _ = write!(out, ", {ready} ready");
+        let _ = write!(head, ", {ready} ready");
     }
     match reading.imbalance {
         Some(spread) if spread > IMBALANCE => {
-            let _ = write!(out, " · loads spread {spread:.2}, past {IMBALANCE:.2}");
+            let _ = write!(head, " · loads spread {spread:.2}, past {IMBALANCE:.2}");
         }
         Some(spread) => {
-            let _ = write!(out, " · loads spread {spread:.2}");
+            let _ = write!(head, " · loads spread {spread:.2}");
         }
         None => {}
     }
-    out.push_str("\n\n");
+    // The head keeps to the width as the table under it does, its later
+    // lines hung under the first.
+    let mut out = crate::swarm::wrapped(&head, "", "  ", width);
+    out.push('\n');
     // A machine's name is its own to say, so it is held to one line and
     // counted as it is drawn.
     let rows: Vec<(&Load, String, [String; 8])> = reading
@@ -564,32 +567,45 @@ mod tests {
 
     #[test]
     fn a_machine_s_name_reaches_the_table_and_sentences_as_one_line() {
+        // Every sentence and the held line name each machine, so each
+        // place a name is drawn is handed the dirty one.
         let realm = |hot: &str, cool: &str| {
-            reading(
+            let flags = vec![
+                Flag::HotWhileCool {
+                    hot: hot.to_owned(),
+                    cool: cool.to_owned(),
+                },
+                Flag::Stranded {
+                    machine: hot.to_owned(),
+                    spent: "memory".to_owned(),
+                },
+                Flag::Stranded {
+                    machine: cool.to_owned(),
+                    spent: "processors".to_owned(),
+                },
+                Flag::Stale {
+                    machine: cool.to_owned(),
+                },
+                Flag::Imbalanced,
+            ];
+            let mut realm = reading(
                 vec![machine(hot, 0.9, 28, 1.75), machine(cool, 0.4, 13, 1.08)],
                 Some(0.25),
-                vec![
-                    Flag::HotWhileCool {
-                        hot: hot.to_owned(),
-                        cool: cool.to_owned(),
-                    },
-                    Flag::Stale {
-                        machine: cool.to_owned(),
-                    },
-                    Flag::Imbalanced,
-                ],
-            )
+                flags.clone(),
+            );
+            realm.held = Some(flags);
+            realm
         };
         let pages = |hot: &str, cool: &str| {
             [40, 80, crate::swarm::WHOLE].map(|width| said(&realm(hot, cool), "work", width, false))
         };
         assert_eq!(
-            pages("kes\u{200B}trel\u{fdd0}", "osprey"),
+            pages("kes\u{200B}trel\u{fdd0}", "osp\u{200B}rey\u{fdd0}"),
             pages("kestrel", "osprey"),
             "what draws nothing, or a mark, in a machine's name moved a column"
         );
-        let dirty = "kestrel\u{1b}]0;x\u{7}\r\nlater";
-        let drawn = pages(dirty, "osprey");
+        let (dirty, cool) = ("kestrel\u{1b}]0;x\u{7}\r\nlater", "osprey\u{1b}[2J");
+        let drawn = pages(dirty, cool);
         assert!(
             !drawn
                 .iter()
@@ -598,11 +614,39 @@ mod tests {
         );
         assert_eq!(
             drawn,
-            pages(&crate::forage::one_line(dirty), "osprey"),
+            pages(
+                &crate::forage::one_line(dirty),
+                &crate::forage::one_line(cool)
+            ),
             "a machine's escape or break drew otherwise than its name on one line"
         );
     }
 
+    #[test]
+    fn in_a_narrow_terminal_a_wide_spread_s_head_wraps_within_its_edge() {
+        let shown = said(
+            &reading(
+                vec![
+                    machine("kestrel", 0.9, 28, 1.75),
+                    machine("osprey", 0.4, 13, 1.08),
+                ],
+                Some(0.25),
+                vec![],
+            ),
+            "work",
+            40,
+            false,
+        );
+        let lines: Vec<&str> = shown.lines().collect();
+        assert_eq!(
+            lines[..3],
+            ["work · 2 machines · loads spread 0.25,", "  past 0.20", ""],
+            "the head passed 40 columns, or hung its rest otherwise:\n{shown}"
+        );
+    }
+
+    /// Names that fit: a name is drawn whole, so one past the width
+    /// passes it.
     #[test]
     fn in_a_narrow_terminal_no_line_passes_its_edge() {
         let shown = said(&two(), "work", 40, false);
