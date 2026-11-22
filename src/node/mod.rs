@@ -2021,7 +2021,9 @@ fn says_who(answered: Reply, within: Option<Result<(), String>>) -> Reply {
 /// records prove it alone ([`asker::session_alone`]), or as none where
 /// none is, saying why, may reopen `reopened` with its fence left behind
 /// (WCJQSG, 19 November): only a session of its own quest, or one this
-/// node's book of `starts` says it or its orchestrator started. The
+/// node's book of `starts` says it or its orchestrator started, read as
+/// every reader of the book reads it, naming a hold's starter only where
+/// one of the living `sessions` claims that hold. The
 /// nearest claim above the asker isn't enough: a pi host's sessions share
 /// its process, so any of them could be named. A proved session's quest,
 /// address and orchestrator are its presence's, which its pi host writes
@@ -2033,6 +2035,7 @@ fn says_who(answered: Reply, within: Option<Result<(), String>>) -> Reply {
 fn reopens_within(
     asker: Result<&Session, &str>,
     reopened: Option<&Session>,
+    sessions: &[Session],
     starts: &starts::Starts,
 ) -> Result<(), String> {
     let who = |reopened: &str, quest: Option<&str>| match quest.map(str::escape_debug) {
@@ -2060,7 +2063,7 @@ fn reopens_within(
         )
     })?;
     let same_quest = asker.quest.is_some() && asker.quest == reopened.quest;
-    let starters = starts.starters();
+    let starters = starts.starters().but_shared(claims(sessions));
     let started_by = reopened
         .held
         .as_deref()
@@ -5426,7 +5429,7 @@ impl<S: Store> Shared<S> {
                 .ok_or("its presence isn't held here"),
             Err(why) => Err(why.as_str()),
         };
-        Some(reopens_within(who_asks, reopened, &self.starts))
+        Some(reopens_within(who_asks, reopened, &all, &self.starts))
     }
 
     /// Whether `machine`'s ground, as it last said it, is looser than
@@ -16758,6 +16761,10 @@ esac
     // only a session of its own quest, or one it or its orchestrator
     // started; another's is held to its ground, and told who may.
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one book's starts and one machine's sessions, each reopened for its own reason"
+    )]
     async fn an_agent_reopens_on_looser_ground_only_its_quests_and_its_orchestrators() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let socket = dir.path().join("skiff").join("work.sock");
@@ -16776,7 +16783,7 @@ esac
                 "{}\n{}\n",
                 booked("h-led", "WCJQSG"),
                 booked("h-own", "HARBOR")
-            ),
+            ) + &format!("{}\n", booked("h-shared", "WCJQSG")),
         )
         .expect("the book is written");
         let store = Memory::default();
@@ -16790,6 +16797,8 @@ esac
             ("s-led", "LED001", "QEST-20261108-OSPHT4", "h-led"),
             ("s-own", "OWN001", "QEST-20261108-OSPHT4", "h-own"),
             ("s-theirs", "THEIRS", "QEST-20261108-OSPHT4", "h-theirs"),
+            ("s-shared", "SHARED", "QEST-20261108-OSPHT4", "h-shared"),
+            ("s-twin", "TWIN01", "QEST-20261108-OSPHT4", "h-shared"),
         ] {
             let presence = json!({"session": session, "addresses": [address], "quest": quest,
                                   "heldAs": held, "at": "2026-11-19T06:00:00Z"});
@@ -16833,6 +16842,16 @@ esac
                     .to_owned()
             ),
             "another quest's session is held to its asker's ground, told who may reopen it"
+        );
+        // As every reader of the book: a hold two living sessions claim
+        // names no starter, so neither is its orchestrator's to reopen.
+        let shared = ask(socket.clone(), reopen("s-shared")).await;
+        assert!(
+            matches!(&shared, Err(why) if why.ends_with(
+                "s-shared is reopened from fenced ground only by an agent of \
+                 QEST-20261108-OSPHT4, one its orchestrator started, or the person"
+            )),
+            "a hold the book can't tie to one claimant is no orchestrator's start: {shared:?}"
         );
         // Round 3 of our council (2026-11-20): a claim proves nothing, so
         // one naming the asker's process lends it no quest. This one's
