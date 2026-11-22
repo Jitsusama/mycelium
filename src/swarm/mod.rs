@@ -879,7 +879,7 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
     } else {
         exactly
     };
-    let by_short = |thing: &&T| {
+    let by_short = |thing: &'a T| {
         naming(thing)
             .short
             .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
@@ -890,7 +890,7 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
         things
             .iter()
             .filter(|thing| {
-                by_address.iter().any(|one| std::ptr::eq(*one, *thing)) || by_short(thing)
+                by_address.iter().any(|one| std::ptr::eq(*one, *thing)) || by_short(*thing)
             })
             .collect()
     };
