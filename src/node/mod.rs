@@ -18375,6 +18375,56 @@ esac
     }
 
     #[tokio::test]
+    async fn an_agent_handed_to_placing_unfenced_is_placed_fenced() {
+        let (to_dial, _) = mpsc::unbounded_channel();
+        let membership = Realm {
+            name: "work".to_owned(),
+            machine: "skiff".to_owned(),
+        };
+        let (shared, _) = Shared::of(
+            Memory::default(),
+            (membership.hello(), "/nowhere/node".into()),
+            bare("/nowhere/steer".into(), None),
+            to_dial,
+        );
+        shared
+            .store
+            .put_machine(&fenced("tern", &[]))
+            .expect("what it said is kept");
+        let toward_tern = Work {
+            prefers: vec![Need::Machine("tern".to_owned())],
+            ..work(Vec::new())
+        };
+        let Placement::Placed { machine, passed } = shared.place(
+            &toward_tern,
+            Counts::Never,
+            Some(crate::declared::Kind::None),
+            Screen::Ground,
+            &Admits::All,
+        ) else {
+            panic!("here takes it");
+        };
+        let said = placement::said(&passed);
+        assert_eq!(machine, "skiff", "tern is judged as an agent's ground");
+        assert!(
+            said.contains("runs no fenced session") && !said.contains("unfenced"),
+            "and judged for the agent fence, never for none: {said}"
+        );
+    }
+
+    #[test]
+    fn only_an_agent_shown_unfenced_starts_through_the_runs_screen() {
+        let agent = By::Agent(crate::declared::Kind::Fence);
+        assert_eq!(held_or_run(true, agent), Screen::Run, "shown unfenced");
+        assert_eq!(held_or_run(false, agent), Screen::Held, "fenced, held");
+        assert_eq!(
+            held_or_run(false, By::Person),
+            Screen::Ground,
+            "the person's, on ground alone"
+        );
+    }
+
+    #[tokio::test]
     async fn with_nothing_booked_a_start_is_held_to_no_asker() {
         let (to_dial, _) = mpsc::unbounded_channel();
         let membership = Realm {

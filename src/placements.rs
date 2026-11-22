@@ -36,9 +36,10 @@ pub struct Record {
     pub machines: Vec<Machine>,
     /// Every machine's load beyond what its room says.
     pub loads: Loads,
-    /// The machines refused before they were judged, and why: those whose
-    /// ground is looser than the asker's fence, so a replay refuses them
-    /// too.
+    /// The machines refused before they were judged, and why: for an
+    /// agent's work, those whose ground is looser than its fence, those
+    /// whose fence runs no command for its run or held start, and every
+    /// Mac for its held start; so a replay refuses them too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refused: Vec<Miss>,
     /// The fence placement held the asker's work to, as the node judged

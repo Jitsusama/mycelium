@@ -1761,15 +1761,24 @@ A record's `fence` is the fence placement held the asker's work to, as
 the node judged the asker: `"fence"` or `"strict"`, since an agent is
 never placed unfenced, not even by a node that is handed one so. Its
 `screen` is what that work was placed through beside its fence: `"run"`,
-or `"held"`, which no Mac takes. An agent's start whose asker is shown
-unfenced is placed through `"run"`, which a Mac may take, so a start
-saying `"run"` is that exemption, not a mistake. Both are left out
-where the work was placed unfenced: the person's work, and a start
-relayed here that this node took as the person's, on the asking
-machine's word. A start relayed here that this node took as
-an agent's says its fence, and `"held"`. A word a build doesn't know,
-in either, as does a `null`, reads as `"unknown"`, never as unfenced,
-and spares the rest of the record.
+or `"held"`, which no Mac takes; `"ground"`, firm ground alone, is read
+but no node writes it beside a fence today. Where a `"Start"` or
+`"Takes"` from an agent shown unfenced weighs the realm's machines, it
+places through `"run"`, which a Mac may take: that exemption, not a
+mistake, though a `"Takes"` says it with `start` false, as a `"Place"`
+does. Every other placing of an agent's start holds it to `"held"`
+however it is shown: `"PlaceToStart"`, a start relayed here, and placing
+again on a machine made for a start. So `"held"` on a start never says
+the exemption was refused. Both are left out where the work was placed
+unfenced: the person's work, and a start relayed here from the person's
+end of a link or by this node's own process. Such a start carries no
+asker, so an agent's start relayed that way says its fence only in the
+record of the node that relayed it. A start relayed here from an end
+this node takes as an agent's says its fence, and `"held"`. A word a build
+doesn't know, in either, as does a `null`, reads as `"unknown"`, never
+as unfenced, and spares the rest of the record. Like the rest of the
+log, both are only as trustworthy as the folder that keeps it, which
+any program of the account may write.
 
 `"Takes"` judges each of `starts`, one after another, as `"Start"`
 would: by the asker as its own declared fence makes it, then the book
