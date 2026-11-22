@@ -596,7 +596,20 @@ fn carried(
             why_not.push(format!("{who}: {}", refused.join("; ")));
             continue;
         }
-        let to = match placement::decide(&work, &peers, here.loads).placement {
+        // Placed as of the reading's own time, so each room is judged heard
+        // or not by when it was read, and the best takes it rather than
+        // one drawn at random from those near it: a carry is one session
+        // at a time, with nothing alike to spread.
+        let to = match placement::decide_as(
+            &work,
+            &peers,
+            here.loads,
+            &[],
+            now,
+            &placement::Weights::STARTING,
+        )
+        .placement
+        {
             Placement::Placed { machine, .. } => machine,
             Placement::Pending { misses } | Placement::Refused { misses } => {
                 why_not.push(format!("{who}: {}", placement::said(&misses)));
