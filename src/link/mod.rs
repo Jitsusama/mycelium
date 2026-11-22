@@ -3176,22 +3176,36 @@ mod tests {
             true,
         );
         let node = dir.path().join("node.sock");
-        let (answer, answered) = oneshot::channel::<()>();
+        let (answer, answered) = tokio::sync::watch::channel(false);
         let listener = tokio::net::UnixListener::bind(&node).expect("the node listens");
+        // The end asks its node other things too, as what it measures the
+        // machine to be, each over a connection of its own, so the node
+        // takes every one and refuses all but who started what.
         tokio::spawn(async move {
-            let Ok((stream, _)) = listener.accept().await else {
-                return;
-            };
-            // The node answers only once the test lets it.
-            let _ = answered.await;
-            let (_reading, mut writing) = stream.into_split();
-            let reply: Reply = Ok(Response::StartedBy(BTreeMap::from([(
-                "5e551011".to_owned(),
-                "OAR001".to_owned(),
-            )])));
-            let mut said = serde_json::to_vec(&reply).expect("a reply");
-            said.push(b'\n');
-            let _ = writing.write_all(&said).await;
+            while let Ok((stream, _)) = listener.accept().await {
+                let mut answered = answered.clone();
+                tokio::spawn(async move {
+                    let (reading, mut writing) = stream.into_split();
+                    let Ok(Some(line)) = BufReader::new(reading).lines().next_line().await else {
+                        return;
+                    };
+                    let asked = serde_json::from_str::<crate::wire::Request>(&line);
+                    let reply: Reply = if matches!(asked, Ok(crate::wire::Request::StartedBy(_))) {
+                        // The node names the starter only once the test
+                        // lets it.
+                        let _ = answered.wait_for(|let_go| *let_go).await;
+                        Ok(Response::StartedBy(BTreeMap::from([(
+                            "5e551011".to_owned(),
+                            "OAR001".to_owned(),
+                        )])))
+                    } else {
+                        Err(format!("not a request this node answers: {line}"))
+                    };
+                    let mut said = serde_json::to_vec(&reply).expect("a reply");
+                    said.push(b'\n');
+                    let _ = writing.write_all(&said).await;
+                });
+            }
         });
         let skiff = Memory::default();
         let (near, far) = tokio::io::duplex(1 << 16);
@@ -3225,7 +3239,7 @@ mod tests {
             Value::Null,
             "the presence goes before the node has said"
         );
-        answer.send(()).expect("the node is let answer");
+        answer.send(true).expect("the node is let answer");
         until(&skiff, |store| {
             store
                 .presences()
