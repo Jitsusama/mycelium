@@ -28,8 +28,9 @@ use crate::facts::Machine;
 use crate::placement::{self, Loads, Placement, Work};
 use crate::record::{Session, State};
 
-/// How long every reading must say a machine is over while another has
-/// room before it eases itself.
+/// How long the readings must say a machine is over while another has
+/// room before it eases itself, through spells saying otherwise shorter
+/// than [`COOL_FOR`].
 pub const HOT_FOR: SignedDuration = SignedDuration::from_mins(10);
 
 /// How long readings must say a machine isn't over before the time it
@@ -206,8 +207,12 @@ impl Default for History {
 
 impl History {
     /// Takes in `reading`, the realm as `here`'s node read it: over since
-    /// the first of a run of readings saying so, which readings saying
-    /// otherwise end only once they have for [`COOL_FOR`], or not over.
+    /// the first of a run of readings saying so, or not over. A spell of
+    /// readings saying otherwise ends the run once [`COOL_FOR`] has passed
+    /// from its first to the next reading, whichever that says, so a gap
+    /// in the readings counts as cool. Once sessions were put to sleep in
+    /// the run, any reading saying otherwise ends it, since that is the
+    /// sleep easing the machine.
     pub fn read(&mut self, here: &str, reading: &Reading) {
         let Ok(at) = reading.at.parse::<Timestamp>() else {
             // A reading whose time can't be told can't say for how long.
@@ -219,15 +224,22 @@ impl History {
             .flags
             .iter()
             .any(|flag| matches!(flag, Flag::HotWhileCool { hot, .. } if hot == here));
+        let cooled = self
+            .cool_since
+            .is_some_and(|cool| at.duration_since(cool) >= COOL_FOR);
+        let slept = self
+            .slept_at
+            .zip(self.hot_since)
+            .is_some_and(|(slept, since)| slept >= since);
+        if cooled || (!hot && slept) {
+            self.hot_since = None;
+            self.cool_since = None;
+        }
         if hot {
             self.hot_since.get_or_insert(at);
             self.cool_since = None;
-            return;
-        }
-        let cool_since = *self.cool_since.get_or_insert(at);
-        if self.hot_since.is_none() || at.duration_since(cool_since) >= COOL_FOR {
-            self.hot_since = None;
-            self.cool_since = None;
+        } else if self.hot_since.is_some() {
+            self.cool_since.get_or_insert(at);
         }
     }
 
@@ -444,7 +456,7 @@ fn over(
     match history.hot_since {
         Some(since) if now.duration_since(since) >= HOT_FOR => Ok(since),
         Some(since) => Err(format!(
-            "{here} has been over only since {since}, not {} minutes straight",
+            "{here} has been over only since {since}, not {} minutes",
             HOT_FOR.as_mins()
         )),
         None => Err(format!("{here}'s last reading doesn't say it is over")),
@@ -672,6 +684,48 @@ pub(super) mod tests {
         reading
     }
 
+    /// What skiff's node remembers after reading each realm the minutes
+    /// ago beside it, oldest first.
+    fn read_all(readings: &[(&[Machine], i64)]) -> History {
+        let mut history = History::default();
+        for (machines, mins) in readings {
+            history.read("skiff", &reading(machines, ago(*mins)));
+        }
+        history.kept_eases(Ok(0));
+        history
+    }
+
+    #[test]
+    fn a_cool_spell_runs_to_the_next_reading_and_a_sleep_ends_the_run() {
+        let realm = realm();
+        let calm = [machine("skiff", 4.6), machine("tern", 4.6)];
+        let lone = read_all(&[
+            (&realm, 20),
+            (&calm, 17),
+            (&realm, 14),
+            (&calm, 11),
+            (&realm, 8),
+            (&realm, 0),
+        ]);
+        assert!(
+            carries(&chose(&realm, &[cell("s1")], &lone)).is_some(),
+            "each hot reading ends the spell before it, so two lone cool ones break nothing"
+        );
+        let gap = read_all(&[(&realm, 30), (&calm, 20), (&realm, 0)]);
+        assert!(
+            why_not(&chose(&realm, &[cell("s1")], &gap)).ends_with("not 10 minutes"),
+            "twenty minutes with no reading after a cool one is a cool spell"
+        );
+        let mut slept = read_all(&[(&realm, 20), (&realm, 9)]);
+        slept.slept(1, ago(8));
+        slept.read("skiff", &reading(&calm, ago(6)));
+        slept.read("skiff", &reading(&realm, now()));
+        assert!(
+            why_not(&chose(&realm, &[cell("s1")], &slept)).ends_with("not 10 minutes"),
+            "a cool reading after the sleep is the sleep easing it, so the ten minutes start again"
+        );
+    }
+
     /// What skiff's node remembers after `mins` minutes over.
     fn hot_for(machines: &[Machine], mins: i64) -> History {
         let mut history = History::default();
@@ -781,8 +835,7 @@ pub(super) mod tests {
     fn a_machine_eases_only_once_over_ten_minutes_straight() {
         let realm = realm();
         assert!(
-            why_not(&chose(&realm, &[cell("s1")], &hot_for(&realm, 9)))
-                .ends_with("not 10 minutes straight"),
+            why_not(&chose(&realm, &[cell("s1")], &hot_for(&realm, 9))).ends_with("not 10 minutes"),
             "nine minutes over isn't ten"
         );
         let calm = [machine("skiff", 4.6), machine("tern", 4.6)];
@@ -790,18 +843,16 @@ pub(super) mod tests {
         flickered.kept_eases(Ok(0));
         flickered.read("skiff", &reading(&realm, ago(14)));
         flickered.read("skiff", &reading(&calm, ago(9)));
-        flickered.read("skiff", &reading(&realm, ago(4)));
+        flickered.read("skiff", &reading(&realm, ago(8)));
         flickered.read("skiff", &reading(&realm, now()));
         assert!(
             carries(&chose(&realm, &[cell("s1")], &flickered)).is_some(),
-            "a lone reading not over between hot ones, minutes apart, breaks nothing"
+            "a lone reading not over between hot ones, a minute apart as easing looks, breaks \
+             nothing"
         );
-        let mut broken = hot_for(&realm, 30);
-        broken.read("skiff", &reading(&calm, ago(9)));
-        broken.read("skiff", &reading(&calm, ago(4)));
-        broken.read("skiff", &reading(&realm, now()));
+        let broken = read_all(&[(&realm, 30), (&calm, 9), (&calm, 4), (&realm, 0)]);
         assert!(
-            why_not(&chose(&realm, &[cell("s1")], &broken)).ends_with("not 10 minutes straight"),
+            why_not(&chose(&realm, &[cell("s1")], &broken)).ends_with("not 10 minutes"),
             "readings not over for five minutes start the ten minutes again"
         );
         assert!(
