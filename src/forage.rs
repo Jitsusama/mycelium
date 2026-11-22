@@ -1371,7 +1371,9 @@ pub fn chosen(records: Vec<Value>, named: Option<&str>) -> Vec<Value> {
 /// read alike or carry what nobody sees. Kept there, one can still part
 /// two names past ASCII that read alike, as a letter from another script
 /// can. Each is judged by what is left once direction marks and controls
-/// are gone, in one pass, so no mark beside it can vouch for it.
+/// are gone, in one pass, so no mark beside it can vouch for it. A run of
+/// emoji keeps at most [`MOST_JOINED`] joiners, so a name chained from
+/// dozens can't count as the two cells one emoji takes.
 pub(crate) fn one_line(text: &str) -> String {
     let plain: Vec<char> = text
         .chars()
@@ -1385,21 +1387,42 @@ pub(crate) fn one_line(text: &str) -> String {
         })
         .collect();
     let mut kept: Vec<char> = Vec::with_capacity(plain.len());
+    // The joiners kept in the run at hand, which a character that follows
+    // no joiner and neither selects nor modifies ends.
+    let mut joined = 0;
     for (at, &each) in plain.iter().enumerate() {
         let before = kept.last().copied();
         let keep = match each {
             '\u{200C}' | '\u{200D}' => {
                 before.is_some_and(|before| spells(before) || selects(before))
                     && plain.get(at + 1).is_some_and(|after| spells(*after))
+                    && (each == '\u{200C}' || joined < MOST_JOINED)
             }
             each if selects(each) => before.is_some_and(spells),
             each => !unseen(each),
         };
         if keep {
             kept.push(each);
+            if each == '\u{200D}' {
+                joined += 1;
+            } else if before != Some('\u{200D}') && !selects(each) && !modifies(each) {
+                joined = 0;
+            }
         }
     }
     kept.into_iter().collect()
+}
+
+/// The most joiners in one of Unicode's emoji sequences, as in a family of
+/// four, or a kiss between two with their skin tones. A terminal draws
+/// only a sequence it knows as one glyph, yet Unicode's widths count a
+/// joined run of any length as two cells.
+const MOST_JOINED: usize = 3;
+
+/// Whether `each` is an emoji modifier, a skin tone, which is drawn as
+/// part of the emoji before it.
+const fn modifies(each: char) -> bool {
+    matches!(each, '\u{1F3FB}'..='\u{1F3FF}')
 }
 
 /// Whether `each` is one of Unicode's marks that turn the direction text
@@ -3587,6 +3610,27 @@ mod tests {
         ] {
             assert_eq!(one_line(spelt), spelt, "a joiner past ASCII was dropped");
         }
+    }
+
+    #[test]
+    fn a_run_of_joined_emoji_keeps_no_more_joiners_than_unicode_s_longest() {
+        let woman = "\u{1F469}";
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+        let kiss =
+            "\u{1F469}\u{1F3FB}\u{200D}\u{2764}\u{FE0F}\u{200D}\u{1F48B}\u{200D}\u{1F468}\u{1F3FC}";
+        for whole in [family, kiss, &format!("{family}{family}")] {
+            assert_eq!(
+                one_line(whole),
+                whole,
+                "a sequence Unicode names lost a joiner"
+            );
+        }
+        let joined = |count: usize| vec![woman; count].join("\u{200D}");
+        assert_eq!(
+            one_line(&joined(7)),
+            format!("{}{}", joined(4), joined(3)),
+            "a joiner past three in a run was kept"
+        );
     }
 
     #[test]

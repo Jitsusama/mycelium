@@ -354,7 +354,8 @@ pub(crate) fn drawn_width(text: &str) -> usize {
 
 /// The longest start of `text` that takes at most `room` cells, as
 /// [`drawn_width`] counts them, so a wide character that would straddle
-/// the edge is left for what follows. A colour's escape is one step, so
+/// the edge is left for what follows. Past [`LONGEST_RUN`] steps with no
+/// fresh start it may keep a little less, never more. A colour's escape is one step, so
 /// a cut never leaves one half written, though it may leave a colour
 /// open, which is why each caller paints after cutting. A joiner left at
 /// the cut goes, as it would join nothing, and a pile of marks past
@@ -370,7 +371,8 @@ pub(crate) fn within(text: &str, room: usize) -> &str {
     // the start it ends by at most a cell, by those rules: a text
     // selector after an emoji, or the letter that closes a Tifinagh,
     // Lisu or Kirat Rai ligature. So a start two cells past the room
-    // never comes back within it, and the walk stops there.
+    // never comes back within it, and the walk stops once a start passes
+    // the room by more than that.
     let mut kept = 0;
     let (mut at, mut from, mut settled, mut since) = (0, 0, 0, 0);
     let mut before: Option<char> = None;
@@ -428,9 +430,13 @@ fn starts_afresh(before: Option<char>, each: char) -> bool {
         // Lisu's tone letters, Kirat Rai's vowels and Tifinagh's joiner.
         | '\u{A4F8}'..='\u{A4FF}' | '\u{16D40}'..='\u{16D7F}' | '\u{2D7F}'
     );
-    !follows_a_joiner
-        && !joins_what_is_before
-        && unicode_width::UnicodeWidthChar::width(each).is_some_and(|cells| cells > 0)
+    !follows_a_joiner && !joins_what_is_before && !draws_nothing(each)
+}
+
+/// Whether `each` takes no cell of its own, as a selector, a joiner or a
+/// mark doesn't, so it draws on the character before it.
+fn draws_nothing(each: char) -> bool {
+    !unicode_width::UnicodeWidthChar::width(each).is_some_and(|cells| cells > 0)
 }
 
 /// Whether a run measured apart before `each` counts at least the cells
@@ -466,6 +472,17 @@ impl Look {
     /// `mark` where it is drawn [`WHOLE`], for [`aligned`]; else nothing.
     pub(crate) const fn mark(&self, mark: &'static str) -> &'static str {
         if self.whole() { mark } else { "" }
+    }
+
+    /// `text` cut to `room`, as [`fit`] cuts it, unless drawn [`WHOLE`],
+    /// where nothing is cut, not even a pile of marks [`fit`] cuts at any
+    /// width, since a reader that greps or saves the text has all of it.
+    pub(crate) fn fitted(&self, text: &str, room: usize) -> String {
+        if self.whole() {
+            text.to_owned()
+        } else {
+            fit(text, room)
+        }
     }
 
     /// `lines` as one text, their columns lined up where it is drawn
@@ -515,7 +532,9 @@ pub(crate) fn fit(text: &str, width: usize) -> String {
 /// `text` wrapped at its spaces to `width` cells, as [`drawn_width`]
 /// counts them, its first line after `first` and each after it after
 /// `rest`. A word wider than a whole line's room, such as a path, is
-/// broken across lines rather than passing it.
+/// broken across lines rather than passing it, never before a character
+/// that draws nothing, and a pile of marks past a cut's cap on steps goes,
+/// as [`fit`] drops it.
 pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> String {
     let room = |at: usize| {
         let indent = if at == 0 { first } else { rest };
@@ -547,9 +566,30 @@ pub(crate) fn wrapped(text: &str, first: &str, rest: &str, width: usize) -> Stri
             if taken.is_empty() {
                 taken = &left[..left.chars().next().map_or(0, char::len_utf8)];
             }
+            // A selector or a mark left to start the next line draws on
+            // nothing, and its base above is drawn wrong, so the break
+            // steps back to before the character it belongs to. Where
+            // that leaves nothing, the cut stopped at its cap on steps in
+            // a pile of marks or joiners, and the rest of the pile goes.
+            let mut back = taken.len();
+            while back > 0
+                && (left[back..].chars().next().is_some_and(draws_nothing)
+                    || left[..back].ends_with('\u{200D}'))
+            {
+                back = left[..back]
+                    .char_indices()
+                    .next_back()
+                    .map_or(0, |(at, _)| at);
+            }
+            let rest = if back > 0 {
+                taken = &left[..back];
+                &left[back..]
+            } else {
+                left[taken.len()..].trim_start_matches(draws_nothing)
+            };
             drawn = drawn_width(taken);
             lines.push(taken.to_owned());
-            left = &left[taken.len()..];
+            left = rest;
         }
     }
     lines
@@ -730,7 +770,7 @@ pub(crate) fn row(
             .max(NARROWEST)
     };
     let lead = label.short.map_or(room, |_| label.width + GAP.len());
-    let name = padded(&fit(&plain, room), room);
+    let name = padded(&look.fitted(&plain, room), room);
     let head = within(&name, lead);
     let tail = &name[head.len()..];
     let mut line = format!(
@@ -1165,7 +1205,7 @@ fn member(look: &Look, standing: Standing, session: &Value) -> String {
     let mut line = format!(
         "{}{GAP}{}",
         look.paint(standing.colour(), &padded(standing.said(), said)),
-        padded(&fit(&name, name_room), name_room)
+        padded(&look.fitted(&name, name_room), name_room)
     );
     if let Some(doing) = doing {
         let left = room.saturating_sub(name_room + GAP.len()).max(NARROWEST);
