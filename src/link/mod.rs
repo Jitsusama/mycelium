@@ -326,7 +326,7 @@ pub async fn run(
     }
     let claim = claimed(&store, &other.machine)?;
     let reach = reach_start(&store, &other.machine);
-    admitted(&store, &other.machine)?;
+    admitted(&store, &other.machine);
     let exchange = shares.map(|places| exchange_with(places, &membership.hello(), &other, worker));
     let (mut asked, _reaching) = asked_of(starting.as_ref(), &other.machine);
     let (answering, mut answered) = mpsc::unbounded_channel();
@@ -347,6 +347,7 @@ pub async fn run(
         // minute, so either hearing nothing for longer knows the other
         // is gone.
         hearing: Hearing::from_now(membership.hello().facts && other.facts),
+        caught_up: false,
         following: inboxes.clone().map(Following::new),
         inboxes,
         held: starting.as_ref().map(|starting| starting.held.clone()),
@@ -644,8 +645,6 @@ fn pinned(store: &impl Store, named: Option<&OnceLock<String>>, said: &str) -> i
     Err(refusal(why))
 }
 
-/// Keeps that this store is linked with `machine` as of now, and forgets
-/// why a link with it was last refused.
 /// This link's hold on `machine`, refused when another link carries it.
 fn claimed(store: &impl Store, machine: &str) -> io::Result<Claim> {
     store
@@ -653,12 +652,13 @@ fn claimed(store: &impl Store, machine: &str) -> io::Result<Claim> {
         .ok_or_else(|| refusal(format!("a link to {machine} already carries it here")))
 }
 
-fn admitted(store: &impl Store, machine: &str) -> io::Result<()> {
-    store.mark_linked(machine, now())?;
+/// Forgets why a link with `machine` was last refused. Being admitted
+/// marks no link as made: what is settled between the two is marked only
+/// once the other end has said what it holds, as [`End::settle`] says.
+fn admitted(store: &impl Store, machine: &str) {
     if let Err(error) = store.link_admitted(machine) {
         eprintln!("{machine} linked, but its last refusal stands: {error}");
     }
-    Ok(())
 }
 
 /// Says this end's hello, saying whether its way in `releases` the other
@@ -744,6 +744,9 @@ struct End<S> {
     handover: Handover,
     /// When this end last heard the other, and whether it should have.
     hearing: Hearing,
+    /// Whether the other end has said what it holds and this end has sent
+    /// it what it lacked, so what was said before is settled between them.
+    caught_up: bool,
     /// This machine's sessions' steer inboxes, if this end carries steers.
     inboxes: Option<PathBuf>,
     /// The talks this end carries back to the other.
@@ -851,9 +854,10 @@ impl<S: Store> End<S> {
     /// Marks the link left as it ends, however it ended, and its machine
     /// out of reach.
     fn leave(&self, result: &io::Result<Ending>) {
-        // Had the link died outright, the last minute's mark would stand.
         let left = now();
-        let _ = self.store.mark_linked(&self.other, left);
+        if let Err(error) = self.settle() {
+            eprintln!("what is settled with {} wasn't kept: {error}", self.other);
+        }
         // A handover is the link's work done, so only a drop counts as one.
         if !matches!(result, Ok(Ending::HandedOver)) {
             let _ = self.store.mark_ended(&self.other, left);
@@ -976,6 +980,7 @@ impl<S: Store> End<S> {
                 store::let_go(&self.store, &self.other, |session| living.contains(session));
                 self.has.extend(messages);
                 self.catch_up(writing).await?;
+                self.caught_up = true;
             }
             Frame::Message { id, body } if self.worker => {
                 self.hear_message(&id, &said_on_worker(body, &self.other));
@@ -1796,14 +1801,28 @@ impl<S: Store> End<S> {
     }
 
     /// Says again that every session this link carried here still stands,
-    /// and marks the link as standing now.
+    /// and marks what is settled with the other end.
     fn keep_carried(&self) -> io::Result<()> {
         for session in &self.carried {
             if let Err(error) = self.store.keep_presence(session, &self.other) {
                 eprintln!("couldn't keep {session} from {}: {error}", self.other);
             }
         }
-        self.store.mark_linked(&self.other, now())
+        self.settle()
+    }
+
+    /// Marks the link as last heard when this end last heard the other,
+    /// once the two have caught up. A message sent after that may have gone
+    /// into a link already dead, whose writes land in a pipe nobody reads
+    /// until a keepalive gives up, so the next link reaches back past it
+    /// and sends it again. Before they have caught up, nothing said is
+    /// known to have crossed, so the earlier mark stands.
+    fn settle(&self) -> io::Result<()> {
+        if self.caught_up {
+            self.store.mark_linked(&self.other, self.hearing.heard)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -1815,8 +1834,9 @@ async fn send(writing: &mut (impl AsyncWrite + Unpin), frame: &Frame) -> io::Res
 }
 
 /// How far back a link to `machine` reaches for messages, in milliseconds
-/// since the epoch: to when the two were last linked, a minute early for a
-/// mark a link killed outright left late, and never past the mesh's week.
+/// since the epoch: to when this end last heard the other on a link that
+/// caught up, a minute early for what was still in the pipe then, and
+/// never past the mesh's week.
 /// Messages from before two machines were ever linked never cross, since
 /// every session hearing them on the other machine would take a week of
 /// talk it was never part of as new.
@@ -1919,7 +1939,7 @@ fn arrived(mut run: Run, from: &str) -> Run {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
+    use tokio::io::{AsyncReadExt, DuplexStream, ReadHalf, WriteHalf};
 
     use super::*;
     use crate::declared::Kind;
@@ -2169,6 +2189,68 @@ mod tests {
         (end(skiff, "skiff", near), end(kestrel, "kestrel", far))
     }
 
+    /// How the pipe between two linked ends stands.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Wire {
+        /// Carrying what each end writes.
+        Open,
+        /// Swallowing it, as a network gone under an ssh link does until
+        /// its keepalive gives up.
+        Silent,
+        /// Closed at both ends.
+        Gone,
+    }
+
+    /// Carries what `from` says to `to` while `wire` is open, swallows it
+    /// while silent, and stops once it's gone or either end closes.
+    async fn carry(
+        mut from: ReadHalf<DuplexStream>,
+        mut to: WriteHalf<DuplexStream>,
+        mut wire: tokio::sync::watch::Receiver<Wire>,
+    ) {
+        let mut bytes = vec![0; 1 << 16];
+        loop {
+            tokio::select! {
+                changed = wire.changed() => {
+                    if changed.is_err() || *wire.borrow() == Wire::Gone {
+                        return;
+                    }
+                }
+                read = from.read(&mut bytes) => {
+                    let Ok(n @ 1..) = read else { return };
+                    let open = *wire.borrow() == Wire::Open;
+                    if open && to.write_all(&bytes[..n]).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Two stores linked through a wire the sender returned can silence
+    /// and then close, with each end's task.
+    fn linked_by_wire(
+        skiff: &Memory,
+        kestrel: &Memory,
+    ) -> (
+        tokio::sync::watch::Sender<Wire>,
+        tokio::task::JoinHandle<io::Result<()>>,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let (near, skiffs_side) = tokio::io::duplex(1 << 16);
+        let (far, kestrels_side) = tokio::io::duplex(1 << 16);
+        let (wire, open) = tokio::sync::watch::channel(Wire::Open);
+        let (from_skiff, to_skiff) = tokio::io::split(skiffs_side);
+        let (from_kestrel, to_kestrel) = tokio::io::split(kestrels_side);
+        tokio::spawn(carry(from_skiff, to_kestrel, open.clone()));
+        tokio::spawn(carry(from_kestrel, to_skiff, open));
+        (
+            wire,
+            end(skiff, "skiff", near),
+            end(kestrel, "kestrel", far),
+        )
+    }
+
     /// Waits on `store`'s changes until `holds` is true of it.
     async fn until(store: &Memory, holds: impl Fn(&Memory) -> bool) {
         let mut changes = store.changes().expect("a memory store tells its changes");
@@ -2264,6 +2346,45 @@ mod tests {
         let _link = linked(&skiff, &kestrel, 64);
         until(&skiff, |store| store.message_ids(0).len() == 2 * many).await;
         until(&kestrel, |store| store.message_ids(0).len() == 2 * many).await;
+    }
+
+    #[tokio::test]
+    async fn a_message_said_into_a_silent_link_crosses_on_the_next() {
+        let skiff = Memory::default();
+        let kestrel = Memory::default();
+        apart_since(&skiff, &kestrel, 60_000);
+        let (wire, skiffs, kestrels) = linked_by_wire(&skiff, &kestrel);
+        let theirs = recent(0, "20KSI7", 0);
+        said(&kestrel, &theirs, "@WCJQSG");
+        until(&skiff, |store| store.message(&theirs).is_some()).await;
+        // Said once skiff has caught up with kestrel, so it crosses as new.
+        let first = recent(0, "WCJQSG", 0);
+        said(&skiff, &first, "@20KSI7");
+        until(&kestrel, |store| store.message(&first).is_some()).await;
+
+        wire.send(Wire::Silent).expect("the wire is carrying");
+        // Long enough for skiff to have taken whatever crossed before.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let lost_at = now();
+        let lost = format!("{lost_at}-WCJQSG-1-1");
+        said(&skiff, &lost, "@20KSI7");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        wire.send(Wire::Gone).expect("the wire is carrying");
+        for ended in [skiffs, kestrels] {
+            let _ = tokio::time::timeout(PATIENCE, ended)
+                .await
+                .expect("an end whose wire closed ends");
+        }
+        assert_eq!(kestrel.message(&lost), None, "the silent wire swallowed it");
+        assert!(
+            skiff
+                .linked_until("kestrel")
+                .is_some_and(|until| until < lost_at),
+            "the link is marked as last heard, not as it ended"
+        );
+
+        let _link = linked(&skiff, &kestrel, 1 << 16);
+        until(&kestrel, |store| store.message(&lost).is_some()).await;
     }
 
     #[tokio::test]
