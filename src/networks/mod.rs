@@ -558,9 +558,10 @@ impl Share {
     /// network's name can't be cut anywhere but its first dot, and saying
     /// its kind, a colon and what it is of, as `quest:<id>`, so its short
     /// name is never another shape's, as no mesh group holds a colon;
-    /// and its folder said. What it is for, and its folder, are made
-    /// [`drawable`] and the first cut to its bound before, in
-    /// [`shares_of`].
+    /// and its folder said. What it is for is held to one line, drops
+    /// what draws nothing, is trimmed and cut to its bound, and its
+    /// folder made [`drawable`], before, in [`shares_of`], so the titles
+    /// voted on and those `-o json` prints are the cleaned ones.
     fn fits(&self) -> bool {
         let keyed = |byte: u8| byte.is_ascii_alphanumeric() || b":-_".contains(&byte);
         let key = self.key.as_bytes();
@@ -778,9 +779,11 @@ impl Mycelium {
     }
 }
 
-/// That `asked` could be any of `many`, each by its `name`.
+/// That `asked` could be any of `many`, each by its `name`, held to one
+/// line, since a cell's name is a peer's text.
 fn several<T>(asked: &str, many: &[&T], name: impl Fn(&T) -> &str) -> String {
-    let names: Vec<&str> = many.iter().map(|each| name(each)).collect();
+    let names: Vec<String> = many.iter().map(|each| swarm::unmarked(name(each))).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
     format!("{asked} could be {}", swarm::either(&names))
 }
 

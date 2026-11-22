@@ -800,14 +800,16 @@ pub(crate) enum Picked<'a, T> {
 
 /// The one of `things` that `asked` names: by its address or its short
 /// name whole, in either case, and else by a part of its title, as
-/// `naming` says each; or none, or each of several.
+/// `naming` says each; or none, or each of several. A short name and a
+/// title are matched as they are drawn, cleaned on both sides, so what a
+/// page or hint shows finds what it names.
 pub(crate) fn picked<'a: 'n, 'n, T>(
     things: &'a [T],
     asked: &str,
     naming: impl Fn(&'a T) -> Naming<'n>,
 ) -> Picked<'a, T> {
     // A short name's words may be typed apart, as `part deux`.
-    let joined = asked.split_whitespace().collect::<Vec<_>>().join("-");
+    let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
     let whole: Vec<&T> = things
         .iter()
         .filter(|thing| {
@@ -815,14 +817,14 @@ pub(crate) fn picked<'a: 'n, 'n, T>(
             named.address.eq_ignore_ascii_case(asked)
                 || named
                     .short
-                    .is_some_and(|short| short.eq_ignore_ascii_case(&joined))
+                    .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
         })
         .collect();
-    let lower = asked.to_lowercase();
+    let lower = unmarked(asked).to_lowercase();
     let found = if whole.is_empty() {
         things
             .iter()
-            .filter(|thing| naming(thing).title.to_lowercase().contains(&lower))
+            .filter(|thing| unmarked(naming(thing).title).to_lowercase().contains(&lower))
             .collect()
     } else {
         whole

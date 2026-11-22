@@ -413,6 +413,29 @@ fn drawn_whole_what_each_session_does_lines_up_after_the_widest_name() {
 }
 
 #[test]
+fn a_session_s_doing_draws_as_its_words_on_one_line() {
+    let doing = |step: &str| {
+        let mut swarm = swarm();
+        swarm.sessions[2]["step"] = json!(step);
+        swarm
+    };
+    let dirty = "running\u{fdd0} the\n\ntests\u{1b}[2J";
+    for look in [look(), whole()] {
+        let shown = team(&doing(dirty), "harb", &look).expect("Harbour is found");
+        assert!(
+            !shown.contains(['\u{1b}', '\u{fdd0}', '\u{fdd1}']),
+            "a doing's escape or mark reached the page:\n{shown}"
+        );
+        assert_eq!(
+            Ok(shown),
+            team(&doing(&super::unmarked(dirty)), "harb", &look),
+            "a doing's mark, break or escape drew otherwise than on one line at {}",
+            look.width
+        );
+    }
+}
+
+#[test]
 fn a_title_holding_a_mark_moves_no_column() {
     // Reef is named in two of Harbour's lines, so its marks would line
     // up with each other if either were kept.
@@ -579,6 +602,16 @@ fn a_short_name_holding_what_draws_nothing_moves_no_title() {
             overview(&named("dock", "ba"), &look),
             "a character a short name loses moved a title, or reached the hint, at {}",
             look.width
+        );
+    }
+    // The name the page shows, as typed, finds its team.
+    let dirty = named("do\u{200B}ck\u{fdd0}", "b\u{200B}a");
+    for (typed, found) in [("dock", "Harbour"), ("BA", "Kelp")] {
+        let shown = team(&dirty, typed, &look())
+            .unwrap_or_else(|why| panic!("{typed}, as the page shows it, found nothing: {why}"));
+        assert!(
+            shown.contains(found),
+            "{typed} found another team than {found}:\n{shown}"
         );
     }
 }

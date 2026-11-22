@@ -168,7 +168,9 @@ The harness mesh's messages and presence, carried between machines:
   A row whose name would push its counts past 80 columns, or a cell's
   past 48 before its doing, runs on alone and sets them on the next
   line, under their column, rather than moving every row's, so a
-  `grep` for such a row wants `-A1` to see its counts.
+  `grep` for such a row wants `-A1` to see its counts. `watch` and
+  `less` wrap a line wider than the terminal unless told not to, so a
+  row stays one line under `watch -w` and `less -S`.
   `-w` on either draws it again in place every two
   seconds, as it changes, until stopped. Both print JSON lines with
   `-o json`, networks first,
