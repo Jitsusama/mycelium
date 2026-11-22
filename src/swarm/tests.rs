@@ -216,6 +216,12 @@ fn a_name_matching_none_or_several_is_said_plainly() {
         Err("dock could be dock (no address to type) or dock (HARBOR)".to_owned()),
         "a peer's address is said only when it is one, so typing it reaches its team"
     );
+    alike.teams[0]["key"] = json!("team:PAUSE");
+    assert_eq!(
+        team(&alike, "dock", &look()),
+        Err("dock could be dock (no address to type) or dock (HARBOR)".to_owned()),
+        "an address swarm reads as an act is not said, as typing it does no steer"
+    );
 }
 
 #[test]
