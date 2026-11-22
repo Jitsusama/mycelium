@@ -104,7 +104,11 @@ impl Dial for Ssh {
 
     fn there(&self, words: &[String]) -> Vec<String> {
         let mut there = vec!["ssh".to_owned(), "-t".to_owned()];
-        for option in &self.options {
+        for option in self
+            .options
+            .iter()
+            .filter(|option| !names_the_links_own(option))
+        {
             there.extend(["-o".to_owned(), option.clone()]);
         }
         there.extend(["--".to_owned(), self.destination.clone()]);
@@ -126,6 +130,26 @@ impl Dial for Ssh {
     fn joins(&self, machine: &str, joins: &[String]) -> Vec<String> {
         rejoin::served(machine, joins, self.there(joins))
     }
+}
+
+/// The SSH options that choose which key the link signs with, the node's
+/// own, as `ssh_config` names keys: a person's terminal leaves them to its
+/// own `ssh_config`, which names that person's way in, since an option
+/// given on the line wins over any `ssh_config` gives (ISXEG8, 21
+/// November).
+const THE_LINKS_OWN: [&str; 2] = ["identityagent", "identitiesonly"];
+
+/// Whether `option`, as `-o` takes it, chooses the link's own key
+/// ([`THE_LINKS_OWN`]).
+fn names_the_links_own(option: &str) -> bool {
+    let name = option
+        .trim_start()
+        .split(|at: char| at == '=' || at.is_whitespace())
+        .next()
+        .unwrap_or_default();
+    THE_LINKS_OWN
+        .iter()
+        .any(|own| own.eq_ignore_ascii_case(name))
 }
 
 /// `word` as a shell reads it back whole.
@@ -350,6 +374,46 @@ mod tests {
         for wrong in ["aquifer-link", ":sandbox-1", "aquifer-link:"] {
             assert!(Program::parse(wrong).is_err(), "{wrong} is refused");
         }
+    }
+
+    // WCJQSG (2026-11-21): a person's window to a Mac was refused, as the
+    // node's own agent, named on the line, beat the one `ssh_config` names
+    // for that Mac.
+    #[test]
+    fn a_terminal_leaves_the_key_to_its_own_ssh_config_but_keeps_the_rest() {
+        let ssh = Ssh {
+            destination: "skiff".to_owned(),
+            options: [
+                "IdentityAgent=SSH_AUTH_SOCK",
+                "AddKeysToAgent=no",
+                "identitiesonly no",
+                "ForwardAgent=no",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            command: "mycelium".to_owned(),
+        };
+        assert_eq!(
+            ssh.there(&[
+                "mycelium".to_owned(),
+                "attach".to_owned(),
+                "5e55".to_owned()
+            ]),
+            [
+                "ssh",
+                "-t",
+                "-o",
+                "AddKeysToAgent=no",
+                "-o",
+                "ForwardAgent=no",
+                "--",
+                "skiff",
+                "mycelium",
+                "attach",
+                "5e55"
+            ],
+            "no key of the link's, and still no agent forwarded or added to"
+        );
     }
 
     #[test]

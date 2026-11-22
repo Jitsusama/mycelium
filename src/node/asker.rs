@@ -490,6 +490,45 @@ pub fn shown_fences(
         .collect()
 }
 
+/// Whether the agent asking from process `asker` shows, by the kernel
+/// alone, that it runs in no fence: its own process neither gains less
+/// than the node nor sees mounts of its own, as a fence's command does,
+/// and each session claiming it, of which there is one at least, shows
+/// unfenced now as [`shown_fence`] reads it. False wherever any of it
+/// can't be read, as on a Mac or for a host whose record can't be, so a
+/// doubt never reads an agent looser.
+pub fn shows_unfenced(
+    asker: Option<i32>,
+    processes: &Processes,
+    claims: &[Claim],
+    hosts: &Path,
+    logs: &Path,
+) -> bool {
+    let (Some(pid), Processes::Folder(procs)) = (asker, processes.kernel()) else {
+        return false;
+    };
+    let above = claimed_above(asker, processes, claims);
+    !above.is_empty()
+        && !gains_less(procs, pid)
+        && !mounts_otherwise(procs, pid)
+        && above
+            .iter()
+            .all(|session| shown_fence(claims, processes, hosts, logs, session) == Ok(Kind::None))
+}
+
+/// Whether `hosts`, as found by its real path, lies in the harness's own
+/// state under `home`, where no fenced command may write, as a hosted
+/// asker's record must for [`shows_unfenced`] to be taken from it
+/// (ISXEG8, 21 November).
+#[must_use]
+pub fn hosts_are_the_harnesses(hosts: &Path, home: &Path) -> bool {
+    let harness = fs::canonicalize(home.join(".local/state/pi/agentic-harness.pi"));
+    match (fs::canonicalize(hosts), harness) {
+        (Ok(hosts), Ok(harness)) => hosts.starts_with(harness),
+        _ => false,
+    }
+}
+
 /// The fence pi `pid`, proved to own `session` alone as it started
 /// `ticks` after boot, shows: `PI_SANDBOX` as its environment began, and
 /// at least the ordinary fence where a bubblewrap runs below it in
@@ -3137,6 +3176,88 @@ mod tests {
                 "as its environment began: {environ:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_asker_shows_unfenced_only_where_nothing_above_or_on_it_shows_a_fence() {
+        let shows = |running: &(tempfile::TempDir, tempfile::TempDir, tempfile::TempDir)| {
+            shows_unfenced(
+                Some(70),
+                &folder(running.0.path()),
+                &[claim("s-own", 58, Some(500), None)],
+                running.2.path(),
+                running.1.path(),
+            )
+        };
+        let loose = fenced_pi("HOME=/home/jsama\0", &[(70, "mycelium", 58)]);
+        assert!(
+            shows(&loose),
+            "an unfenced pi's command, nothing of a fence on it"
+        );
+        let fenced = fenced_pi("PI_SANDBOX=fence\0", &[(70, "mycelium", 58)]);
+        assert!(!shows(&fenced), "a fenced pi's command");
+        let barred = fenced_pi("HOME=/home/jsama\0", &[(70, "mycelium", 58)]);
+        let status = barred.0.path().join("70").join("status");
+        let mut text = fs::read_to_string(&status).expect("its status");
+        text.push_str("NoNewPrivs:\t1\n");
+        fs::write(&status, text).expect("it gains less");
+        assert!(
+            !shows(&barred),
+            "a command that gains less, as a fence sets, under an unfenced pi"
+        );
+        assert!(
+            !shows_unfenced(
+                Some(70),
+                &folder(loose.0.path()),
+                &[],
+                loose.2.path(),
+                loose.1.path()
+            ),
+            "one no session claims"
+        );
+        assert!(
+            !shows_unfenced(
+                None,
+                &folder(loose.0.path()),
+                &[claim("s-own", 58, Some(500), None)],
+                loose.2.path(),
+                loose.1.path()
+            ),
+            "one the kernel names no process at"
+        );
+        assert!(
+            !shows_unfenced(
+                Some(70),
+                &Processes::Listed,
+                &[claim("s-own", 58, Some(500), None)],
+                loose.2.path(),
+                loose.1.path()
+            ),
+            "where processes can't be read, as on a Mac"
+        );
+    }
+
+    #[test]
+    fn only_hosts_in_the_harnesss_own_state_are_taken() {
+        let home = tempfile::tempdir().expect("a home");
+        let harness = home.path().join(".local/state/pi/agentic-harness.pi");
+        fs::create_dir_all(harness.join("hosts")).expect("its hosts");
+        fs::create_dir_all(home.path().join("elsewhere")).expect("another folder");
+        assert!(hosts_are_the_harnesses(&harness.join("hosts"), home.path()));
+        assert!(
+            !hosts_are_the_harnesses(&home.path().join("elsewhere"), home.path()),
+            "a folder outside it"
+        );
+        std::os::unix::fs::symlink(home.path().join("elsewhere"), harness.join("out"))
+            .expect("a link out");
+        assert!(
+            !hosts_are_the_harnesses(&harness.join("out"), home.path()),
+            "one inside by name that resolves outside"
+        );
+        assert!(
+            !hosts_are_the_harnesses(&home.path().join("missing"), home.path()),
+            "one that isn't there"
+        );
     }
 
     #[test]

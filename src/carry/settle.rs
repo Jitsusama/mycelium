@@ -1609,7 +1609,12 @@ mod tests {
         std::thread::spawn(move || {
             drop(fs::OpenOptions::new().write(true).open(&gate));
         });
-        kept.recv_timeout(PATIENCE).expect("it is kept in time");
+        // The settler waits on past its patience, so waiting no longer
+        // than it would fail a loaded machine just as the answer comes
+        // (a Mac's build, 21 November); ten times it fails only one that
+        // never answers.
+        kept.recv_timeout(PATIENCE * 10)
+            .expect("it is kept in time");
         let said = settler.settled().expect("it reads")[&carry.id].clone();
         assert_eq!(
             (&said["did"], &said["why"], &said["again"]),
