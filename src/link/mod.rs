@@ -2310,6 +2310,7 @@ mod tests {
             declared: Some(dir.path().join("declared.json")),
             kit: None,
             saturation: None,
+            lender: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2440,6 +2441,7 @@ mod tests {
             declared: Some(dir.join("declared.json")),
             kit: None,
             saturation,
+            lender: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2481,6 +2483,7 @@ mod tests {
             declared: Some(dir.join("declared.json")),
             kit: Some(kit),
             saturation: None,
+            lender: None,
         };
         let (reading, writing) = tokio::io::split(far);
         let kestrel_end = kestrel.clone();
@@ -2558,6 +2561,7 @@ mod tests {
             declared: None,
             kit: None,
             saturation: None,
+            lender: None,
         };
         let (reading, writing) = tokio::io::split(far);
         tokio::spawn(async move {
@@ -3090,6 +3094,7 @@ mod tests {
             declared: None,
             kit: None,
             saturation: None,
+            lender: None,
         };
         let skiff_end = tokio::spawn(async move {
             run(
@@ -3649,6 +3654,7 @@ mod tests {
             declared: Some(dir.join("declared.json")),
             kit: None,
             saturation: None,
+            lender: None,
         }
     }
 

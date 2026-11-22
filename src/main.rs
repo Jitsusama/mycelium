@@ -583,6 +583,34 @@ enum LendAct {
         #[arg(long)]
         budget: Option<String>,
     },
+    /// Cuts a machine off from this machine's lend, at once: each lend it
+    /// asks from now is refused, and each it is being answered ends
+    /// within a second. It holds until `lend uncut`.
+    #[command(after_help = "Example:\n  mycelium lend cut agents-1\n  mycelium lend cut --all")]
+    Cut(Cutting),
+    /// Lets a machine cut off borrow again; `--all` lets every one.
+    #[command(after_help = "Example:\n  mycelium lend uncut agents-1")]
+    Uncut(Cutting),
+}
+
+/// Which machines a cut names.
+#[derive(clap::Args)]
+struct Cutting {
+    /// The machine, by its name on the realm.
+    #[arg(required_unless_present = "all", conflicts_with = "all")]
+    machine: Option<String>,
+    /// Every machine this one lends to.
+    #[arg(long)]
+    all: bool,
+}
+
+impl From<Cutting> for mycelium::lend::lender::Cut {
+    fn from(cutting: Cutting) -> Self {
+        match cutting.machine {
+            Some(machine) => Self::Machine(machine),
+            None => Self::All,
+        }
+    }
 }
 
 /// What a node or a link's end needs of this machine.
@@ -696,6 +724,13 @@ struct Node {
     /// hands on none.
     #[arg(long)]
     lends_from: Option<String>,
+    /// The sealed file saying what this machine lends the machines it
+    /// made: each by the start of its name, with its budget and how many
+    /// requests it may make a day, and each budget's relay, host, paths
+    /// and key. Read again at every lend; unnamed, every lend asked of
+    /// this machine is refused.
+    #[arg(long)]
+    lend: Option<PathBuf>,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -1589,6 +1624,12 @@ fn run(realm: Option<String>, socket: Option<PathBuf>, action: Action) -> io::Re
         Action::Lend {
             act: LendAct::Serve { listen, budget },
         } => lend_serve(&listen, socket, budget),
+        Action::Lend {
+            act: LendAct::Cut(cutting),
+        } => mycelium::lend::lender::cut(&mycelium::lend::lender::folder(), &cutting.into()),
+        Action::Lend {
+            act: LendAct::Uncut(cutting),
+        } => mycelium::lend::lender::uncut(&mycelium::lend::lender::folder(), &cutting.into()),
         Action::Steer { address } => steer(&socket, address),
         Action::Orchestrates {
             heads,
@@ -1897,7 +1938,6 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let mut here = node.here;
     here.machine = Some(machine);
     let state = here.state.clone().unwrap_or_else(place::state);
-    let refused = state.join("refused");
     // Each realm's node on the machine keeps the one book, its makes named.
     let book = mycelium::made::Book::at(state.join("made.jsonl")).of_realm(&realm);
     let steers = here.steer.clone().unwrap_or_else(place::steer);
@@ -1914,7 +1954,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
     let scratch = Some(shares.scratch.clone());
     let mut given = node::Given {
         sharing: Some(shares),
-        refusals: Refusals::kept_in(refused),
+        refusals: Refusals::kept_in(state.join("refused")),
         steers,
         waiting,
         starter: Some(Starter {
@@ -1963,6 +2003,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
             answers_within: carry::settle::ANSWERS_WITHIN,
         }),
         lends_from: node.lends_from,
+        lend: node.lend,
     };
     tell!(
         "mycelium: {}",
@@ -2015,6 +2056,8 @@ fn run_link(here: Here, realm: String, socket: PathBuf, far: Option<String>) -> 
         kit: None,
         // A dialled link asks the node for its room, verdict and all.
         saturation: None,
+        // A dialled link lends nothing: its machine is lent to, not lending.
+        lender: None,
     };
     match far {
         Some(far) => {

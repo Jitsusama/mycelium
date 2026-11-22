@@ -37,8 +37,9 @@ pub const MOST_HEAD: usize = 64 * 1024;
 pub const MOST_BODY: usize = 32 * 1024 * 1024;
 
 /// The only request headers handed on: those a model's answer turns on.
-/// Every other one, pi's own credentials above all, stays here.
-const HANDED_ON: [&str; 4] = [
+/// Every other one, pi's own credentials above all, stays here, and the
+/// lender carries on these alone too.
+pub const HANDED_ON: [&str; 4] = [
     "content-type",
     "anthropic-version",
     "anthropic-beta",

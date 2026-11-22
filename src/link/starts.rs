@@ -70,6 +70,10 @@ pub struct Starting {
     /// does, so every machine hears the one verdict; read only with
     /// `declared`, since a dialled link asks the node for its room.
     pub saturation: Option<Arc<crate::placement::Saturation>>,
+    /// What this machine lends the other, by which the link's end answers
+    /// each lend it asks; none for a machine lending nothing, which
+    /// refuses every one.
+    pub lender: Option<Arc<crate::lend::lender::Lender>>,
 }
 
 /// How a link carries what this machine's node asks of the other machine.

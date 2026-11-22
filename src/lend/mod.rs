@@ -3,8 +3,10 @@
 //! credentials, which never leave it, answering as the model does. Each
 //! crosses the link both machines' nodes already share.
 //!
-//! [`serve`] is the borrower's side, where pi's requests come in.
+//! [`serve`] is the borrower's side, where pi's requests come in, and
+//! [`lender`] the lender's, where they are carried to its model relay.
 
+pub mod lender;
 pub mod serve;
 
 use serde::{Deserialize, Serialize};

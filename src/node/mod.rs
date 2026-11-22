@@ -531,6 +531,10 @@ pub struct Given {
     /// Named on the node's own command line; with none, a lend asked
     /// here is refused, so a lender's own node hands on no lend.
     pub lends_from: Option<String>,
+    /// The sealed file saying what this machine lends the machines it
+    /// made, if it lends any (`lend::lender`): their links' ends answer
+    /// each lend they ask by it, and refuse every one without it.
+    pub lend: Option<PathBuf>,
 }
 
 /// How long a machine made has to link: a provider's machine is ready in
@@ -1309,6 +1313,8 @@ struct Shared<S> {
     stimuli: Option<PathBuf>,
     /// The machine this one borrows model calls from, if any.
     lends_from: Option<Arc<str>>,
+    /// What this machine lends the machines it made, if it lends any.
+    lender: Option<Arc<crate::lend::lender::Lender>>,
     /// The ids of the signals this node said as its receptors this run,
     /// the only messages from a receptor's name it takes (`signals`).
     spoken: Arc<Mutex<HashSet<String>>>,
@@ -1470,6 +1476,7 @@ impl<S: Clone> Clone for Shared<S> {
             receptors: self.receptors.clone(),
             stimuli: self.stimuli.clone(),
             lends_from: self.lends_from.clone(),
+            lender: self.lender.clone(),
             spoken: Arc::clone(&self.spoken),
             refused: Arc::clone(&self.refused),
             receptors_at: self.receptors_at.clone(),
@@ -2109,7 +2116,14 @@ impl<S: Store> Shared<S> {
             eases: _,
             settles,
             lends_from,
+            lend,
         } = given;
+        let lender = lend.map(|file| {
+            Arc::new(crate::lend::lender::Lender::from_file(
+                file,
+                runs.declarers.clone(),
+            ))
+        });
         let said = Arc::<Said>::default();
         let inner = Arc::new(Mutex::new(Inner::after(&flows, &hello.realm)));
         let forages: forage::Held = Arc::new(Mutex::new(forage::Shelf::with_waits(waiting)));
@@ -2174,6 +2188,7 @@ impl<S: Store> Shared<S> {
             receptors: held,
             stimuli,
             lends_from: lends_from.map(Into::into),
+            lender,
             spoken: Arc::default(),
             refused: Arc::default(),
             receptors_at: receptors,
@@ -3352,6 +3367,7 @@ impl<S: Store> Shared<S> {
             declared: Some(self.declared.clone()),
             kit: self.given_kit().cloned(),
             saturation: Some(self.saturation.clone()),
+            lender: self.lender.clone(),
         }
     }
 
@@ -6531,6 +6547,7 @@ mod tests {
             scratch: None,
             eases: None,
             lends_from: None,
+            lend: None,
         }
     }
 
@@ -6671,6 +6688,7 @@ mod tests {
             eases: None,
             settles,
             lends_from: None,
+            lend: None,
         }
     }
 
@@ -6749,6 +6767,7 @@ mod tests {
                     health: None,
                     kit: None,
                     saturation: None,
+                    lender: None,
                 };
                 // The test judges the link by what crosses it.
                 let _ = if proven {
@@ -7023,6 +7042,7 @@ mod tests {
             declared: Some(dir.path().join("declared.json")),
             kit: None,
             saturation: None,
+            lender: None,
         };
         let membership = Realm {
             name: "work".to_owned(),

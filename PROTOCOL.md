@@ -2156,6 +2156,33 @@ chunk, so pi reads the answer as failed. A pi that hangs up hangs up on
 the node. It holds no key and asks for none, and never answers 421,
 which pi reads as a relay sending it straight to the proxy.
 
+The lending machine's node is started with `--lend FILE`, a file
+sealed as `declared.json` is, read again at every lend:
+`{"vms": [{"prefix", "budget", "requests_a_day"}], "budgets": {NAME:
+{"upstream", "host", "paths", "auth_header", "key"}}}`. A link's end
+answers each lend the other machine asks by it, and a node started
+without one refuses every lend 403. A lend is refused 403 for a
+machine cut off, one no `prefix` starts or more than one does, a
+budget asked that isn't the machine's, a method but `POST` or `GET`,
+or a path not at or below one of `paths`, or holding `.`, `..` or `%`;
+400 for a header or body that can't be read, 413 for a body past
+32 MiB, and 429 once the machine has made its `requests_a_day` that
+day, by UTC, counted in `counts-DAY.json` in the node's state folder's
+`lend/`. One that passes goes to `upstream`, a socket's path, or
+where relative one in the account's runtime folder, for `host`, with
+only the headers the shim hands on and `key`'s command's output in
+`auth_header`, where a key is named: the borrower's own credentials
+never leave it, and the key never crosses to it. A lend file that
+can't be read or an upstream not answering is 503, and a key that
+can't be had is 502. `mycelium lend cut MACHINE`, or `--all`, cuts a
+machine off at once, kept in `lend/cuts.json`: each lend it asks is
+refused, and each being answered ends short within a second, until
+`mycelium lend uncut` lets it back. Each lend, refused or not, is
+written to the node's log as one line, `mycelium-lend:`, a space and
+JSON of its `time`, `lender`, `vm`, `service`, `budget`, `model`,
+`upstream` host, `request_bytes`, `response_bytes`, `status`,
+`duration_ms` and `outcome`, and never its body, headers or key.
+
 ### A Hosted Session's Spawner
 
 A pi host runs many sessions in one process, so its process alone
