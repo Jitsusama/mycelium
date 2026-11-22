@@ -411,12 +411,7 @@ pub async fn run(
             },
             _ = keeping.tick() => end.keep(&mut writing).await,
             Some(ask) = next(&mut asked) => end.ask(ask, &mut writing).await,
-            Some((ask, reply)) = answered.recv() => {
-                // Work started here has reached this machine, however soon
-                // it ends: a minute's keep may never see it running.
-                end.handover.ran |= matches!(reply, Ok(Response::Started(_)));
-                send(&mut writing, &Frame::Started { ask, reply }).await
-            }
+            Some((ask, reply)) = answered.recv() => end.answered(ask, reply, &mut writing).await,
             Some(said) = run_said.recv() => end.run_said(said, &mut writing).await,
             Some(found) = learned.recv() => end.learned(found, &mut writing).await,
             _ = looking.tick() => end.look(&mut writing).await,
@@ -1402,6 +1397,19 @@ impl<S: Store> End<S> {
             window,
             stopped,
         ));
+    }
+
+    /// Sends the other end the answer to a start it asked of this machine.
+    async fn answered(
+        &mut self,
+        ask: u64,
+        reply: Reply,
+        writing: &mut (impl AsyncWrite + Unpin),
+    ) -> io::Result<()> {
+        // Work started here has reached this machine, however soon it
+        // ends: a minute's keep may never see it running.
+        self.handover.ran |= matches!(reply, Ok(Response::Started(_)));
+        send(writing, &Frame::Started { ask, reply }).await
     }
 
     /// Sends the other end what a run said.
@@ -3177,7 +3185,7 @@ mod tests {
             // The node answers only once the test lets it.
             let _ = answered.await;
             let (_reading, mut writing) = stream.into_split();
-            let reply: Reply = Ok(Response::StartedBy(std::collections::BTreeMap::from([(
+            let reply: Reply = Ok(Response::StartedBy(BTreeMap::from([(
                 "5e551011".to_owned(),
                 "OAR001".to_owned(),
             )])));

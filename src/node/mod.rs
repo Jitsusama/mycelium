@@ -13209,7 +13209,7 @@ esac
         // Kestrel's word crossed all the same, beside the presence.
         let crossed = |store: &Memory| {
             store.presences().iter().any(|presence| {
-                presence.session == "0e50" && presence.body[crate::mesh::STARTED_BY_AS] == "OAR001"
+                presence.session == "0e50" && presence.body[mesh::STARTED_BY_AS] == "OAR001"
             })
         };
         let mut changes = near_store
