@@ -247,6 +247,28 @@ fn start(home: &Path, may_cost: bool) -> serde_json::Value {
     serde_json::from_slice(&started.stdout).expect("the start says what it did")
 }
 
+/// Whether the work skiff's node answered of as `said` started on lent,
+/// as `why` says it should: where lent is a Linux machine, it must have.
+/// On a Mac lent is the Mac the test runs on, and the node takes every
+/// asker there for a strictly fenced agent, whose held start a Mac's
+/// holder would run outside any fence, so the start must be refused for
+/// that, and the test has nothing further true to ask of lent.
+fn started_on_lent(said: &serde_json::Value, why: &str) -> bool {
+    if cfg!(target_os = "macos") {
+        let refused = said["Err"].as_str().unwrap_or_default();
+        assert!(
+            refused.contains(
+                "lent is a Mac, where a strictly fenced session started held would run outside \
+                 any fence"
+            ),
+            "on a Mac, an agent's held start is refused there: {said}"
+        );
+        return false;
+    }
+    assert_eq!(said["Ok"]["Started"]["machine"], "lent", "{why}: {said}");
+    true
+}
+
 /// The names of the machines skiff's node at `home` lists.
 fn machines(home: &Path) -> Vec<String> {
     let listed = mycelium(home)
@@ -296,10 +318,9 @@ fn a_machine_made_is_let_go_once_it_hands_over_after_its_work() {
     let _nodes = nodes(&home, &lent, &program);
 
     let said = start(&home, true);
-    assert_eq!(
-        said["Ok"]["Started"]["machine"], "lent",
-        "the work starts on the machine made for it: {said}"
-    );
+    if !started_on_lent(&said, "the work starts on the machine made for it") {
+        return;
+    }
     let lines = book(&home, HANDS_OVER);
     assert_eq!(
         lines[1]["released"]["why"], "its work handed over",
@@ -322,10 +343,9 @@ fn a_start_that_may_cost_has_a_machine_made_for_it_until_its_time() {
     let _nodes = nodes(&home, &lent, &program);
 
     let said = start(&home, true);
-    assert_eq!(
-        said["Ok"]["Started"]["machine"], "lent",
-        "the work starts on the machine made for it: {said}"
-    );
+    if !started_on_lent(&said, "the work starts on the machine made for it") {
+        return;
+    }
     assert_eq!(
         fs::read_to_string(root.join("asked")).expect("the provider was asked to make one"),
         "make small --lasting 3600\n",
@@ -370,10 +390,12 @@ fn a_machine_that_costs_nothing_is_made_for_any_start_and_let_go_after_its_work(
     let _nodes = nodes(&home, &lent, &program);
 
     let said = start(&home, false);
-    assert_eq!(
-        said["Ok"]["Started"]["machine"], "lent",
-        "a start that never said it may cost still has a free machine made for it: {said}"
-    );
+    if !started_on_lent(
+        &said,
+        "a start that never said it may cost still has a free machine made for it",
+    ) {
+        return;
+    }
     let lines = book(&home, HANDS_OVER);
     assert_eq!(
         (
@@ -408,10 +430,9 @@ fn a_node_started_again_links_the_machine_it_made_before() {
     let program = provider(root, &lent, until, COSTS);
     let (_lent_node, first) = nodes(&home, &lent, &program);
     let said = start(&home, true);
-    assert_eq!(
-        said["Ok"]["Started"]["machine"], "lent",
-        "the work starts on the machine made for it: {said}"
-    );
+    if !started_on_lent(&said, "the work starts on the machine made for it") {
+        return;
+    }
     let linked = root.join("linked");
     heard(root, &linked, PATIENCE, |text| !text.is_empty());
     let book = fs::read_to_string(home.join("s").join("mycelium").join("made.jsonl"))
@@ -515,10 +536,9 @@ fn nothing_of_the_askers_environment_reaches_the_work_on_another_machine() {
         .expect("the start runs");
     let said: serde_json::Value =
         serde_json::from_slice(&started.stdout).expect("the start says what it did");
-    assert_eq!(
-        said["Ok"]["Started"]["machine"], "lent",
-        "the work starts on the other machine: {said}"
-    );
+    if !started_on_lent(&said, "the work starts on the other machine") {
+        return;
+    }
     // The work's file comes only as the far end hands over, at its keep a
     // minute in, so it's waited for as a hand-over is, longer than that
     // minute.
