@@ -733,6 +733,13 @@ struct Node {
     /// this machine is refused.
     #[arg(long)]
     lend: Option<PathBuf>,
+    /// Ask the harness to park the sessions `--eases` chooses to put to
+    /// sleep, each by a file named for it in this folder, the harness's
+    /// own, which parks one only once it is idle and its own rule holds;
+    /// each is taken back once the machine is no longer over, and all of
+    /// them as the node starts.
+    #[arg(long, requires = "eases")]
+    eases_sleep: Option<PathBuf>,
 }
 
 /// A machines file of builders to dial, as `--builders` gives it.
@@ -1998,6 +2005,7 @@ fn run_node(node: Node, realm: String, socket: &Path) -> io::Result<()> {
             folder: state.join("eases"),
             every: carry::easing::EVERY,
             carries: node.eases_carry,
+            sleeps: node.eases_sleep,
         }),
         settles: Some(Settles {
             kept: state.join("settles.jsonl"),
@@ -3574,6 +3582,17 @@ mod tests {
         assert!(
             node(&["--eases"]).is_ok(),
             "and one may ease only saying so"
+        );
+        assert_eq!(
+            node(&["--eases-sleep", "/run/park"])
+                .err()
+                .map(|error| error.kind()),
+            Some(clap::error::ErrorKind::MissingRequiredArgument),
+            "nor ask for sleep it doesn't choose"
+        );
+        assert!(
+            node(&["--eases", "--eases-sleep", "/run/park"]).is_ok(),
+            "one that eases can"
         );
     }
 

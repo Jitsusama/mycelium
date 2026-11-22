@@ -2,7 +2,7 @@
 //! stores of the machines discovery finds, holds the sessions and messages
 //! in memory, and serves the local socket every client reads.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -21,7 +21,7 @@ use crate::awake::{self, Awake};
 use crate::builders::{self, Builders};
 use crate::carry::easing::{self, Eases, Easing};
 use crate::carry::settle::{self, Settler, Settles};
-use crate::carry::{chain, ease, ground, kept, ordered, through};
+use crate::carry::{chain, ease, ground, kept, ordered, sleep, through};
 use crate::daemon;
 use crate::facts::{self, Readiness};
 use crate::feed;
@@ -3901,13 +3901,28 @@ impl<S: Store> Shared<S> {
     /// Looks each `eases.every` at what this machine would do to ease
     /// itself (`carry::easing`), keeping each choice in `eases.folder`;
     /// it makes the carries it chooses where `eases.carries` says so,
-    /// and otherwise does none of it. It begins once the carries kept here, which
+    /// asks the harness to park the sessions it chooses to sleep where
+    /// `eases.sleeps` names a folder, taking each back once the machine
+    /// is no longer over, and otherwise does none of it. It begins once
+    /// the carries kept here, which
     /// say what moved lately, and its own lines of the last two days can
     /// be read, saying why while they can't.
     async fn ease(self, eases: Eases) {
         let mut easing = None;
         let mut sampler = easing::Sampler::default();
         let mut unread = None;
+        // What it asked to park; whatever an earlier node asked no longer
+        // stands, since what made it ask isn't known to hold now.
+        let mut parking = BTreeSet::new();
+        if let Some(folder) = eases.sleeps.clone() {
+            let taken = tokio::task::spawn_blocking(move || sleep::withdraw_all(&folder))
+                .await
+                .map_err(|error| io::Error::other(error.to_string()))
+                .and_then(|taken| taken);
+            if let Err(error) = taken {
+                eprintln!("the asks to park an earlier node left can't be taken back: {error}");
+            }
+        }
         let mut every = tokio::time::interval(eases.every);
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -3944,11 +3959,67 @@ impl<S: Store> Shared<S> {
                 .look_to_ease(easing, std::mem::take(&mut sampler), now)
                 .await;
             sampler = back;
+            if let Some(folder) = &eases.sleeps
+                && !easing.over()
+                && !parking.is_empty()
+            {
+                parking = Self::unpark(folder, std::mem::take(&mut parking)).await;
+            }
             if let Some(line) = line {
-                let line = self.act_to_ease(eases.carries, line).await;
+                let mut line = self.act_to_ease(eases.carries, line).await;
+                if let Some(folder) = &eases.sleeps {
+                    self.sleep_to_ease(folder, &mut line, &mut parking, now)
+                        .await;
+                }
                 self.keep_easing(&eases.folder, now, line).await;
             }
         }
+    }
+
+    /// Asks the harness, in `folder`, to park the sessions a sleep `line`
+    /// chose, saying on it which were asked and why each other wasn't,
+    /// and noting those asked in `parking`.
+    async fn sleep_to_ease(
+        &self,
+        folder: &Path,
+        line: &mut serde_json::Value,
+        parking: &mut BTreeSet<String>,
+        now: jiff::Timestamp,
+    ) {
+        let Some(chosen) = sleep::chosen(line) else {
+            return;
+        };
+        let sessions = self.lock().state.sessions();
+        let why = format!("{} is over its room while another machine has some", self.machine);
+        let asks = sleep::asks(&self.machine, &sessions, &chosen);
+        let folder = folder.to_owned();
+        let asked = tokio::task::spawn_blocking(move || {
+            asks.into_iter()
+                .map(|ask| {
+                    let id = ask?;
+                    sleep::ask(&folder, &id, now, &why)
+                        .map(|()| id.clone())
+                        .map_err(|error| format!("{id} can't be asked to park ({error})"))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_else(|error| vec![Err(error.to_string())]);
+        let (asked, refused): (Vec<_>, Vec<_>) = asked.into_iter().partition(Result::is_ok);
+        let asked: Vec<String> = asked.into_iter().filter_map(Result::ok).collect();
+        let refused: Vec<String> = refused.into_iter().filter_map(Result::err).collect();
+        parking.extend(asked.iter().cloned());
+        sleep::acted(line, &asked, &refused);
+    }
+
+    /// Takes back the asks to park `parking` in `folder`, answering those
+    /// still asked for, to take back at the next look.
+    async fn unpark(folder: &Path, parking: BTreeSet<String>) -> BTreeSet<String> {
+        let folder = folder.to_owned();
+        let kept = parking.clone();
+        tokio::task::spawn_blocking(move || sleep::withdraw(&folder, &parking))
+            .await
+            .unwrap_or(kept)
     }
 
     /// `line`, a look's choice, once its carry is made where `carries`
@@ -17093,10 +17164,15 @@ esac
         let steers = dir.path().join("steer");
         let folder = dir.path().join("eases");
         let carries = dir.path().join("carries.jsonl");
+        // An ask to park an earlier node left no longer stands.
+        let parks = dir.path().join("parks");
+        fs::create_dir(&parks).expect("the harness's folder");
+        fs::write(parks.join("s1-own"), "{}\n").expect("an earlier ask");
         let eases = Eases {
             folder: folder.clone(),
             every: Duration::from_millis(10),
             carries: false,
+            sleeps: Some(parks.clone()),
         };
         let given = Given {
             eases: Some(eases),
@@ -17140,6 +17216,10 @@ esac
         assert!(
             !carries.exists(),
             "what it would do never reaches the record of carries"
+        );
+        assert!(
+            !parks.join("s1-own").exists(),
+            "an ask an earlier node left is taken back before it looks"
         );
         let kept = fs::read_to_string(&day).expect("the day's file");
         assert_eq!(
@@ -17198,6 +17278,7 @@ esac
                 folder: folder.clone(),
                 every: Duration::from_millis(10),
                 carries: false,
+                sleeps: None,
             }),
             carries: dir.path().join("carries.jsonl"),
             processes: Processes::Folder(procs),
@@ -17223,6 +17304,7 @@ esac
                 folder: folder.clone(),
                 every: Duration::from_millis(10),
                 carries: false,
+                sleeps: None,
             }),
             carries: dir.path().join("carries.jsonl"),
             ..bare(dir.path().join("steer"), None)

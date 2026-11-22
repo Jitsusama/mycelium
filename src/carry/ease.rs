@@ -259,6 +259,13 @@ impl History {
         self.sleeps
     }
 
+    /// Whether the readings still hold the machine over, however briefly,
+    /// as [`History::read`] keeps it.
+    #[must_use]
+    pub fn over(&self) -> bool {
+        self.hot_since.is_some()
+    }
+
     /// Notes a session moved from or to this machine, by anyone.
     pub fn moved(&mut self, moved: Moved) {
         self.moved.push(moved);

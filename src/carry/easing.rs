@@ -55,6 +55,10 @@ pub struct Eases {
     /// Whether it makes the carries it chooses, under its own name, or
     /// only says them.
     pub carries: bool,
+    /// The folder where it asks its harness to park the sessions it
+    /// chooses to sleep (`carry::sleep`), or none where it only says
+    /// them.
+    pub sleeps: Option<PathBuf>,
 }
 
 /// What a node read for one look at its sessions.
@@ -499,6 +503,13 @@ impl Easing {
             history,
             ..Self::default()
         }
+    }
+
+    /// Whether its last look still held the machine over, as
+    /// [`History::over`] says.
+    #[must_use]
+    pub fn over(&self) -> bool {
+        self.history.over()
     }
 
     /// Takes `why` who orchestrates can't be told, or none once it can,

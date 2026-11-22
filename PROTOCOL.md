@@ -1038,6 +1038,23 @@ An orchestrator's order after the node's carry still stands, as
 one order after another does. A session's harness takes such a carry only from
 its own machine's node, and lands it saying which node chose it.
 
+Run with `--eases-sleep FOLDER` too, the node asks the harness to
+park each session it chose to sleep, rather than only saying so. The
+folder is the harness's: for each session it writes a file named by
+the session's own id, as its presence's `session` says it, holding a
+line of `at` and `why` for whoever reads it, the file mode 600 and
+written whole before it takes its name. The harness parks such a
+session once it is idle and its own park rule holds, so one with
+anything running, queued or waiting on the person stays awake, and it
+takes the file back once the session wakes or closes. The node asks
+for no session in a turn, none of another machine, none whose id
+names more than letters, digits, dashes and underscores, and none
+that neither a holder nor a host keeps, since that is what would wake
+it. It takes back what it asked once its machine is no longer over,
+and everything in the folder as it starts, since what made an earlier
+node ask isn't known to hold. The sleep's line then says
+`would: false`, the ids `asked`, and why each other was `refused`.
+
 Whether its own machine is over it judges only from what the kernel
 says, read afresh each look and kept in memory: the `some` `avg10`
 processor, memory and I/O pressure in `/proc/pressure`, and the memory
