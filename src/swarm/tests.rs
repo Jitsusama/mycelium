@@ -544,8 +544,9 @@ fn a_row_that_runs_on_leaves_no_gap_and_spaces_out_no_figure() {
 #[test]
 fn a_title_s_own_leading_spaces_set_no_figure_under_a_header() {
     // Two teams of one title share its short name, so neither shows one,
-    // and the title alone leads each row.
-    for space in [" ", "\u{3000}", "\u{2800}"] {
+    // and the title alone leads each row. A braille blank never counts
+    // as an indent, so it isn't one of these.
+    for space in [" ", "\u{3000}"] {
         let title = format!("{}1{}{}", space.repeat(36), " ".repeat(20), "x".repeat(30));
         let mut swarm = swarm();
         swarm.teams[0]["title"] = json!(title);

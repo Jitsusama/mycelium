@@ -163,7 +163,8 @@ The harness mesh's messages and presence, carried between machines:
   counting the rest; `--all` unfolds it, and a name opens any one.
   `mycelium cells --standing needs-you,stuck` lists only the cells
   standing so. Into a pipe, as `watch` and `less` read it, swarm's,
-  networks', cells' and machines' tables are drawn whole: nothing is
+  networks' and cells' tables, and machines' asked for with `-o
+  text`, are drawn whole: nothing is
   cut, every column is there, and each is as wide as what is in it.
   A row whose name would push its counts past 80 columns, or a cell's
   past 48 before its doing, runs on alone and sets them on the next
