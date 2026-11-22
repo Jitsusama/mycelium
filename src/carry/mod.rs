@@ -2185,16 +2185,16 @@ mod tests {
             );
             assert!(unordered_arrival(&start.command).is_some(), "as an arrival");
         }
-        let mut realm = Realm {
+        let mut ordering = Realm {
             by: Some("WCJQSG".to_owned()),
-            ..realm()
+            ..super::tests::realm()
         };
-        ordered(&mut realm).0.expect("carried");
-        let [asked] = realm.asked_takes.as_slice() else {
-            panic!("asked once: {:?}", realm.asked_takes);
+        ordered(&mut ordering).0.expect("carried");
+        let [asked] = ordering.asked_takes.as_slice() else {
+            panic!("asked once: {:?}", ordering.asked_takes);
         };
         assert!(asked.ordered, "an ordered carry says so");
-        for start in &realm.started {
+        for start in &ordering.started {
             let unordered = &start.command[..8];
             assert!(
                 asked

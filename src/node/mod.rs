@@ -14175,7 +14175,7 @@ esac
             once: None,
             strict: false,
         };
-        let takes = || {
+        let asking = || {
             Request::Takes(Taking {
                 starts: vec![held.clone()],
                 ordered: false,
@@ -14184,7 +14184,7 @@ esac
         let book = socket.with_file_name("starts.jsonl");
         let kept = || fs::read_to_string(&book).map_or(0, |kept| kept.lines().count());
         let before = kept();
-        let taken = ask(socket.clone(), takes()).await;
+        let taken = ask(socket.clone(), asking()).await;
         assert_eq!(kept(), before, "the ask keeps nothing in the book");
         assert!(
             matches!(&taken, Err(why) if why.contains("starts nothing held on a Mac")),
@@ -14198,7 +14198,7 @@ esac
         assert!(kept() > before, "which the start keeps");
         let stop = socket.with_file_name("starts.stopped");
         fs::write(&stop, "").expect("the person's stop");
-        let stopped = ask(socket.clone(), takes()).await;
+        let stopped = ask(socket.clone(), asking()).await;
         assert!(
             matches!(&stopped, Err(why) if why.starts_with("the person stopped agents")),
             "the person's stop on agents' starts is weighed first: {stopped:?}"
@@ -14206,7 +14206,7 @@ esac
         fs::remove_file(&stop).expect("resumed");
         asks_as_person(&socket);
         let Ok(Response::Placement(Placement::Placed { machine, .. })) =
-            ask(socket.clone(), takes()).await
+            ask(socket.clone(), asking()).await
         else {
             panic!("the person's start is taken");
         };
