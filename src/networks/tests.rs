@@ -2220,6 +2220,30 @@ fn builders() -> Vec<Value> {
 }
 
 #[test]
+fn a_wide_builder_name_keeps_what_follows_in_line() {
+    let mut lent = builders();
+    lent[0]["name"] = json!("港湾港湾");
+    let mycelium = mycelium().with_builders(&lent);
+    let shown = cells(&mycelium, &look(), false, &[]);
+    // Measured by Unicode's widths directly, not by the code under test,
+    // as nothing here is coloured.
+    let at = |name: &str, said: &str| {
+        shown
+            .lines()
+            .find(|line| line.starts_with(&format!("  {name}")))
+            .and_then(|line| {
+                line.find(said)
+                    .map(|at| <str as unicode_width::UnicodeWidthStr>::width(&line[..at]))
+            })
+    };
+    assert!(
+        at("kestrel", "standing").is_some()
+            && at("kestrel", "standing") == at("港湾港湾", "standing"),
+        "a wide builder name moved what follows it:\n{shown}"
+    );
+}
+
+#[test]
 fn builders_are_drawn_beside_the_machines_and_are_none_of_them() {
     let mycelium = mycelium().with_builders(&builders());
     let machines = mycelium.network("machines").expect("the machines' network");

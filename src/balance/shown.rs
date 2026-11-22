@@ -733,8 +733,8 @@ mod tests {
 
     #[test]
     fn a_wide_name_keeps_the_columns_in_line_and_within_the_edge() {
-        // Seven characters, each two cells wide, as a name in Han takes.
-        let wide = "港湾港湾港湾港";
+        // Twelve characters, each two cells wide, as a name in Han takes.
+        let wide = "港湾港湾港湾港湾港湾港湾";
         let shown = said(
             &reading(
                 vec![
@@ -763,15 +763,15 @@ mod tests {
             stands(wide).is_some() && stands(wide) == stands("osprey"),
             "a wide name moved the columns after it:\n{shown}"
         );
-        // The name takes 14 cells, so per core is the first column past
-        // 80, and no column that fits is left out with it.
+        // The name takes 24 cells, so busy ends at 76 and idle would end
+        // at 82; counted as 12 characters, idle and per core would fit.
         assert!(
             shown
                 .lines()
-                .any(|line| line.trim_end().ends_with(" busy  idle"))
+                .any(|line| line.trim_end().ends_with(" stall  busy"))
                 && shown
                     .lines()
-                    .any(|line| line == "  left out to fit: per core, facts"),
+                    .any(|line| line == "  left out to fit: idle, per core, facts"),
             "the columns kept were not those 80 cells hold:\n{shown}"
         );
     }
