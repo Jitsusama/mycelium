@@ -454,6 +454,22 @@ impl Starts {
         Err(refused.unwrap_or_default())
     }
 
+    /// Why `asked` would be refused as [`Self::admit`] judges it now,
+    /// where waiting `waits` milliseconds for the limits to let it
+    /// wouldn't do: keeping, counting and holding nothing as going, so a
+    /// carry can ask before it tells any session to end.
+    pub fn would_refuse(&self, asked: &Kept, waits: i64) -> Option<String> {
+        let mut asked = bounded(asked.clone());
+        let book = self.lock();
+        Self::coming_back(&book, &asked).or_else(|| {
+            Self::once_an_hour(&book, &mut asked);
+            match self.refusal(&book, &asked)? {
+                (_, Some(room)) if room <= asked.at + waits => None,
+                (why, _) => Some(why),
+            }
+        })
+    }
+
     /// Keeps `asked` as refused for `why`, a reason the node found
     /// outside the book, such as its session being parked for its holder
     /// to wake, so every refusal is in the book whatever refused it; and

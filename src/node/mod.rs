@@ -5340,15 +5340,17 @@ impl<S: Store> Shared<S> {
 
     /// Where `asked` would be placed as [`Self::started`] places it,
     /// starting and counting nothing: the machine, or the refusal its
-    /// start would answer. It judges the realm's machines alone, so work
-    /// none of them takes is refused here even where a start of it would
-    /// make a machine from an offer; nor does it weigh the hour's limits,
-    /// which a start meets only as it is asked.
+    /// start would answer, the book of starts' among them, waiting for
+    /// room as long as a start would. It judges the realm's machines
+    /// alone, so work none of them takes is refused here even where a
+    /// start of it would make a machine from an offer; and this node
+    /// alone, so a machine it relays the start to may still refuse it.
     async fn would_take(&self, asked: &Start) -> Reply {
         if asked.command.is_empty() {
             return Err("nothing to start: name a program".to_owned());
         }
-        let (by, _, _) = self.judged_declaring(asked.work.fence).await?;
+        let (by, _, charged) = self.judged_declaring(asked.work.fence).await?;
+        let asked = self.booked_as((by, charged), asked)?;
         let unfenced = self.unfenced_asking(by, asked.work.fence).await;
         let screen = held_or_run(unfenced.is_some(), by);
         let fence = fence_of(by);
@@ -5358,6 +5360,57 @@ impl<S: Store> Shared<S> {
             Placement::Pending { misses } => Err(nowhere_now(&misses)),
             Placement::Refused { misses } => Err(fenced_out(&asked.work, &misses, fence)
                 .unwrap_or_else(|| format!("nowhere: {}", placement::said(&misses)))),
+        }
+    }
+
+    /// `asked`, from the asker judged `by` whose start counts toward
+    /// `charged`'s cell, as [`Self::counted`] would place it, pinned to
+    /// the machine of a session it brings back; or why it would refuse
+    /// it before placing it: left to its holder, or by the book of
+    /// starts, waiting for room up to [`START_WAITS_MOST`]. Nothing is
+    /// kept, counted or held as going.
+    fn booked_as(
+        &self,
+        (by, charged): (By, Option<String>),
+        asked: &Start,
+    ) -> Result<Start, String> {
+        let mut asked = asked.clone();
+        asked.carries = marks_a_carry(by, &asked.command);
+        let Judged {
+            started_by,
+            reopened,
+            reopens,
+            on,
+            parked,
+            turning,
+        } = self.weighed((by, charged), &asked, Whither::Placed);
+        if let Some(why) = left_to_its_holder(parked, turning) {
+            return Err(why);
+        }
+        let started_by = started_by.filter(|_| by != By::Person);
+        let resumes = Self::brought_there(reopened, on, &mut asked, Whither::Placed);
+        let carried = self.carried_by_order(by, started_by.as_deref(), &asked, Whither::Placed);
+        let kept = starts::Kept {
+            at: jiff::Timestamp::now().as_millisecond(),
+            by,
+            started_by,
+            folder: asked.folder.clone(),
+            program: asked.command.first().cloned(),
+            resumes,
+            reopens,
+            carried,
+            machine: None,
+            held: None,
+            failed: None,
+            refused: None,
+            once: None,
+            joined: 0,
+            again: false,
+            declared: asked.work.fence,
+        };
+        match self.starts.would_refuse(&kept, START_WAITS_MOST) {
+            Some(why) => Err(why),
+            None => Ok(asked),
         }
     }
 
@@ -5825,12 +5878,7 @@ impl<S: Store> Shared<S> {
         let admits = self.admits().await;
         let machine = match self.place(&asked.work, Counts::Never, fence, Screen::Run, &admits) {
             Placement::Placed { machine, .. } => machine,
-            Placement::Pending { misses } => {
-                return Err(format!(
-                    "nowhere now, though a machine out of reach would do: {}",
-                    placement::said(&misses)
-                ));
-            }
+            Placement::Pending { misses } => return Err(nowhere_now(&misses)),
             Placement::Refused { misses } => return Err(self.run_refused(&asked, by, &misses)),
         };
         let from = asked.from.clone().unwrap_or_else(|| self.machine.clone());
@@ -14086,11 +14134,29 @@ esac
             once: None,
             strict: false,
         };
-        assert_eq!(
-            ask(socket.clone(), Request::Takes(held.clone())).await,
-            ask(socket.clone(), Request::Start(held.clone())).await,
-            "an agent's is refused as its start is"
+        let book = socket.with_file_name("starts.jsonl");
+        let kept = || fs::read_to_string(&book).map_or(0, |kept| kept.lines().count());
+        let before = kept();
+        let taken = ask(socket.clone(), Request::Takes(held.clone())).await;
+        assert_eq!(kept(), before, "the ask keeps nothing in the book");
+        assert!(
+            matches!(&taken, Err(why) if why.contains("starts nothing held on a Mac")),
+            "an agent's is refused for the Mac it names: {taken:?}"
         );
+        assert_eq!(
+            taken,
+            ask(socket.clone(), Request::Start(held.clone())).await,
+            "as its start is"
+        );
+        assert!(kept() > before, "which the start keeps");
+        let stop = socket.with_file_name("starts.stopped");
+        fs::write(&stop, "").expect("the person's stop");
+        let stopped = ask(socket.clone(), Request::Takes(held.clone())).await;
+        assert!(
+            matches!(&stopped, Err(why) if why.starts_with("the person stopped agents")),
+            "the person's stop on agents' starts is weighed first: {stopped:?}"
+        );
+        fs::remove_file(&stop).expect("resumed");
         asks_as_person(&socket);
         let Ok(Response::Placement(Placement::Placed { machine, .. })) =
             ask(socket.clone(), Request::Takes(held.clone())).await

@@ -15,11 +15,12 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::cell::{self, Brought};
-use super::{Done, Hands, PI_CARRY, Refused};
+use super::{Done, Hands, PI_CARRY, Refused, Untaken};
 use crate::client::Client;
+use crate::placement::Placement;
 use crate::record::Session;
 use crate::share::exchange::Places;
-use crate::wire::{Request, Response, Start, Started};
+use crate::wire::{Reply, Request, Response, Start, Started};
 
 /// How long between looks at what a carry waits for.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
@@ -184,13 +185,11 @@ impl Hands for Through {
         }
     }
 
-    fn takes(&mut self, start: &Start) -> Result<(), String> {
-        match self.ask(&Request::Takes(start.clone()))? {
-            Response::Placement(_) => Ok(()),
-            other => Err(format!(
-                "the node answered {other:?} for whether a start is taken"
-            )),
-        }
+    fn takes(&mut self, start: &Start) -> Result<(), Untaken> {
+        let answer = Client::connect(&self.socket)
+            .and_then(|mut client| client.ask(&Request::Takes(start.clone())))
+            .map_err(|error| Untaken::Unasked(format!("it didn't answer: {error}")))?;
+        untaken(answer)
     }
 
     fn wait(&mut self) -> bool {
@@ -533,6 +532,25 @@ fn failed_why(output: &[u8], errors: &[u8]) -> String {
     }
 }
 
+/// Whether the node's `answer` to `"Takes"` finds the starts taken: only
+/// a placement on a machine does. A node too old to know the ask refuses
+/// it as no request, which says nothing of the machine the carry goes to.
+fn untaken(answer: Reply) -> Result<(), Untaken> {
+    match answer {
+        Ok(Response::Placement(Placement::Placed { .. })) => Ok(()),
+        Err(why) if why.starts_with("not a request") && why.contains("`Takes`") => {
+            Err(Untaken::Unasked(
+                "it runs a mycelium too old to know the ask, so update it and carry again"
+                    .to_owned(),
+            ))
+        }
+        Err(why) => Err(Untaken::Refused(why)),
+        Ok(other) => Err(Untaken::Unasked(format!(
+            "it answered {other:?} for whether a start is taken"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -544,10 +562,48 @@ mod tests {
 
     use super::{
         UNREADABLE_REFUSAL, Unreadable, failed_why, forget_stale, handover, left, mark_started,
-        put_brought, refusals, refused, short_host, unstarted,
+        put_brought, refusals, refused, short_host, unstarted, untaken,
     };
-    use crate::carry::Refused;
     use crate::carry::cell::Brought;
+    use crate::carry::{Refused, Untaken};
+    use crate::placement::Placement;
+    use crate::wire::Response;
+
+    #[test]
+    fn only_a_placement_on_a_machine_finds_starts_taken() {
+        let placed = Placement::Placed {
+            machine: "tern".to_owned(),
+            passed: Vec::new(),
+        };
+        assert_eq!(untaken(Ok(Response::Placement(placed))), Ok(()));
+        assert!(
+            matches!(
+                untaken(Ok(Response::Placement(Placement::Pending {
+                    misses: Vec::new()
+                }))),
+                Err(Untaken::Unasked(_))
+            ),
+            "a placement nowhere isn't taken"
+        );
+        assert_eq!(
+            untaken(Err("nowhere: tern is a Mac".to_owned())),
+            Err(Untaken::Refused("nowhere: tern is a Mac".to_owned())),
+            "a refusal is the machine's, as said"
+        );
+    }
+
+    #[test]
+    fn a_node_too_old_to_know_the_ask_is_said_as_this_machines() {
+        let old = "not a request: unknown variant `Takes`, expected one of `Start`, `Run`";
+        let Err(Untaken::Unasked(why)) = untaken(Err(old.to_owned())) else {
+            panic!("an older node's refusal is no refusal of the machine");
+        };
+        assert!(why.contains("too old"), "saying why: {why}");
+        assert!(
+            !why.contains("expected one of"),
+            "without serde's list: {why}"
+        );
+    }
 
     /// Writes `session`'s done file in `handover`, as the harness does.
     fn write_done(handover: &Path, session: &str) {

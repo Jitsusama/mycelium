@@ -154,6 +154,16 @@ pub struct Ordered {
     pub why: String,
 }
 
+/// Why a carry's starts weren't found taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Untaken {
+    /// This machine's node would refuse them, as it says.
+    Refused(String),
+    /// This machine's node couldn't say, as said: one too old to know
+    /// the ask, or one that didn't answer.
+    Unasked(String),
+}
+
 /// What a carry does to the world.
 pub trait Hands {
     /// The other machines of the realm this one reaches, by name.
@@ -270,8 +280,9 @@ pub trait Hands {
     ///
     /// # Errors
     ///
-    /// When it wouldn't be, with the refusal its start would answer.
-    fn takes(&mut self, start: &Start) -> Result<(), String>;
+    /// When it wouldn't be, with the refusal its start would answer, or
+    /// when this machine's node couldn't say.
+    fn takes(&mut self, start: &Start) -> Result<(), Untaken>;
     /// Waits a moment before what is waited for is looked at again, and
     /// says whether there is patience left for another look.
     fn wait(&mut self) -> bool;
@@ -480,7 +491,13 @@ fn find(
     };
     hands
         .takes(&arriving(quest, here, to, &own, None))
-        .map_err(|why| format!("{quest}'s sessions wouldn't start on {to}: {why}"))?;
+        .map_err(|untaken| match untaken {
+            Untaken::Refused(why) => format!("{quest}'s sessions wouldn't start on {to}: {why}"),
+            Untaken::Unasked(why) => format!(
+                "{quest} isn't carried, since this machine's node couldn't say whether {to} \
+                 would start its sessions: {why}"
+            ),
+        })?;
     let boot = hands.boot();
     let sessions: Vec<Session> = hands
         .sessions()?
@@ -935,7 +952,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::cell::Brought;
-    use super::{Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, carry, runs_on};
+    use super::{
+        Carried, Done, Failed, Hands, Ordered, PI_CARRY, Refused, Step, Untaken, carry, runs_on,
+    };
     use crate::placement::Need;
     use crate::record::{Session, State};
     use crate::wire::{Start, Started};
@@ -1001,7 +1020,7 @@ mod tests {
         /// Why the quest may not be shared from here, where it may not.
         unshareable: Option<String>,
         /// Why `to` wouldn't take the sessions' starts, where it wouldn't.
-        untaken: Option<String>,
+        untaken: Option<Untaken>,
         /// Each start asked whether it would be taken.
         asked_takes: Vec<Start>,
         /// Why an earlier carry's cells can't be taken away, where not.
@@ -1174,7 +1193,7 @@ mod tests {
                 attach: vec!["mycelium".to_owned(), "attach".to_owned(), held],
             })
         }
-        fn takes(&mut self, start: &Start) -> Result<(), String> {
+        fn takes(&mut self, start: &Start) -> Result<(), Untaken> {
             self.asked_takes.push(start.clone());
             self.untaken.clone().map_or(Ok(()), Err)
         }
@@ -2047,7 +2066,7 @@ mod tests {
     fn a_carry_whose_starts_would_be_refused_there_tells_no_session() {
         let why = "this asks as a fenced agent, so it starts nothing held on a Mac: tern is a Mac";
         let mut realm = Realm {
-            untaken: Some(why.to_owned()),
+            untaken: Some(Untaken::Refused(why.to_owned())),
             ..realm()
         };
         let (done, lines) = carried(&mut realm, "tern");
@@ -2066,6 +2085,33 @@ mod tests {
             "no session told, and nothing shared or started"
         );
         assert!(realm.rest.is_none(), "and nothing carried");
+    }
+
+    #[test]
+    fn a_carry_this_node_cant_judge_tells_no_session_and_blames_no_machine() {
+        let why = "it runs a mycelium too old to know the ask, so update it and carry again";
+        let mut realm = Realm {
+            untaken: Some(Untaken::Unasked(why.to_owned())),
+            ..realm()
+        };
+        let (done, lines) = carried(&mut realm, "tern");
+        assert_eq!(
+            done,
+            Err(Failed { step: Step::Find }),
+            "refused at the find"
+        );
+        assert_eq!(
+            last_said(&lines),
+            format!(
+                "{QUEST} isn't carried, since this machine's node couldn't say whether tern \
+                 would start its sessions: {why}"
+            ),
+            "saying it was this machine's node that couldn't say"
+        );
+        assert!(
+            realm.steered.is_empty() && realm.shared.is_empty() && realm.started.is_empty(),
+            "no session told, and nothing shared or started"
+        );
     }
 
     #[test]

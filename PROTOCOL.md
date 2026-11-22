@@ -1637,11 +1637,15 @@ A processor reading that isn't a number counts as none, so every
 
 `"Takes"` judges a start as `"Start"` would place it, by the same
 asker and screen, and answers the placement, or the refusal that start
-would answer, starting and counting nothing. It weighs the realm's
-machines alone, never a machine made from an offer, nor the hour's
-limits, which a start meets only as it is asked. A carry asks it before
-any session is told (Carrying a Quest); a node from before it refuses
-it as a request it doesn't know, which refuses the carry too.
+would answer, starting, counting and keeping nothing. It weighs the
+book of starts as `"Start"` does: the person's stop on agents' starts,
+and the hour's limits, past which a start would wait longer than a
+minute. It weighs the realm's machines alone, never a machine made from
+an offer, and only this node's judgement: a machine the start is relayed
+to judges it again, and may still refuse it once the carry's sessions
+have ended. A carry asks it before any session is told (Carrying a
+Quest). A node from before it refuses it as a request it doesn't know,
+which refuses the carry too, saying this machine's node is too old.
 
 `"Start"` places `work` as `"PlaceToStart"` does (as `"Place"`,
 an agent's start held to `runs` too) and starts `command` held
