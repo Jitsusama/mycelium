@@ -1564,7 +1564,7 @@ fn closed(document: &Value) -> bool {
 /// its row would pass `width`. Unless drawn `whole`, the closed ones are
 /// counted in a line of their own, saying how `cell`'s are listed.
 fn documents_drawn(documents: &[Value], cell: &str, whole: bool, width: usize) -> String {
-    use crate::swarm::{fit, wrapped};
+    use crate::swarm::{drawn_width, fit, padded, wrapped};
     if documents.is_empty() {
         return wrapped("No research, plans or reports yet.", "  ", "  ", width);
     }
@@ -1574,16 +1574,17 @@ fn documents_drawn(documents: &[Value], cell: &str, whole: bool, width: usize) -
         .filter(|each| whole || !closed(each))
         .collect();
     // Padded to the longest, up to a stage's length, so one long kind or
-    // stage, uncut into a pipe, makes its own row long and no other.
-    let padded = |field: &str| {
+    // stage, uncut into a pipe, makes its own row long and no other. A
+    // peer writes both, so each is counted in the cells it draws.
+    let widest = |field: &str| {
         shown
             .iter()
-            .map(|each| text(&each[field]).len())
+            .map(|each| drawn_width(&text(&each[field])))
             .max()
             .unwrap_or(0)
             .min(PADDED_MOST)
     };
-    let (kinds, stages) = (padded("kind"), padded("stage"));
+    let (kinds, stages) = (widest("kind"), widest("stage"));
     let mut drawn = String::new();
     for document in &shown {
         let (ticked, open) = (
@@ -1596,9 +1597,9 @@ fn documents_drawn(documents: &[Value], cell: &str, whole: bool, width: usize) -
             format!("{ticked} of {} ticked", ticked + open)
         };
         let row = format!(
-            "  {:kinds$}  {:stages$}  {steps:<16}  {}",
-            text(&document["kind"]),
-            text(&document["stage"]),
+            "  {}  {}  {steps:<16}  {}",
+            padded(&text(&document["kind"]), kinds),
+            padded(&text(&document["stage"]), stages),
             text(&document["title"]),
         );
         // Writing to a String never fails.
@@ -2940,6 +2941,28 @@ mod tests {
         assert!(
             drawn.contains("1 closed, none open"),
             "a stage drawn concluded was listed open: {drawn}"
+        );
+    }
+
+    #[test]
+    fn a_wide_kind_or_stage_keeps_the_titles_in_line() {
+        let mut cell = forage("KESTRL", "kestrel", "QEST-1");
+        cell["documents"] = json!([
+            {"kind": "調査", "title": "Hover", "stage": "build", "ticked": 2, "open": 2},
+            {"kind": "plan", "title": "Wind", "stage": "計画", "ticked": 1, "open": 1},
+        ]);
+        let drawn = draw(&[cell], None, 80);
+        // Measured by Unicode's widths directly, not by the code under
+        // test, as nothing here is coloured.
+        let cells = <str as unicode_width::UnicodeWidthStr>::width;
+        let at = |title: &str| {
+            drawn
+                .lines()
+                .find_map(|line| line.find(title).map(|at| cells(&line[..at])))
+        };
+        assert!(
+            at("Hover").is_some() && at("Hover") == at("Wind"),
+            "a wide kind or stage moved its title out of line:\n{drawn}"
         );
     }
 
