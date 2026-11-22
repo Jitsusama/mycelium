@@ -83,13 +83,16 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
             .filter(|session| Standing::of(session).is_some())
     };
     let shorts = short_names(&swarm.teams);
-    // A short name's words may be typed apart, as `part deux`.
-    let joined = asked.split_whitespace().collect::<Vec<_>>().join("-");
+    // A short name's words may be typed apart, as `part deux`. Short
+    // names and titles are matched as the swarm's pages draw them,
+    // cleaned on both sides, as `picked` matches them, so the name a page
+    // shows steers the team it names.
+    let joined = unmarked(&asked.split_whitespace().collect::<Vec<_>>().join("-"));
     if let Some(team) = swarm.teams.iter().find(|team| {
         address(team).eq_ignore_ascii_case(asked)
             || shorts
                 .get(address(team))
-                .is_some_and(|short| short.eq_ignore_ascii_case(&joined))
+                .is_some_and(|short| unmarked(short).eq_ignore_ascii_case(&joined))
     }) {
         return Ok(Named::Team(team));
     }
@@ -100,8 +103,8 @@ fn named<'a>(swarm: &'a Swarm, asked: &str) -> Result<Named<'a>, String> {
     }) {
         return Ok(Named::Session(session));
     }
-    let lower = asked.to_lowercase();
-    let matches = |record: &&Value| title(record).to_lowercase().contains(&lower);
+    let lower = unmarked(asked).to_lowercase();
+    let matches = |record: &&Value| unmarked(title(record)).to_lowercase().contains(&lower);
     let teams: Vec<&Value> = swarm.teams.iter().filter(matches).collect();
     let mut found: Vec<Named<'_>> = if teams.is_empty() {
         living().filter(matches).map(Named::Session).collect()
@@ -463,6 +466,23 @@ mod tests {
             )),
             "a session's title, or the node's reason, drew otherwise than on one line"
         );
+    }
+
+    #[test]
+    fn a_steer_finds_a_team_by_the_name_its_page_shows() {
+        let mut short = swarm();
+        short.teams[1]["swarm"] = json!("do\u{200B}ck\u{fdd0}");
+        let mut titled = swarm();
+        titled.teams[1]["title"] = json!("Harb\u{200B}ou\u{fdd0}r");
+        for (swarm, asked) in [(short, "dock"), (titled, "arbou")] {
+            let aimed = aim(&swarm, Act::Pause, asked)
+                .unwrap_or_else(|why| panic!("{asked}, as the page shows it, missed: {why}"));
+            assert_eq!(
+                addresses(&aimed),
+                ["LEAD", "BUSY", "ASK"],
+                "{asked} steered another than Harbour"
+            );
+        }
     }
 
     #[test]
