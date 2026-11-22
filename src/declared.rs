@@ -118,6 +118,27 @@ pub struct Doors {
     /// run (`launcher`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<String>,
+    /// The doors another machine, by its name, may open beyond these for
+    /// a session carried from here in this fence, each allowed by the
+    /// person; none where every door there must be no wider than here.
+    /// The machine there still declares each door it opens, so what is
+    /// allowed is said, never hidden by a narrower declaration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accepts: BTreeMap<String, Accepted>,
+}
+
+/// The doors of each kind a session carried from here may gain there.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Accepted {
+    /// The machines it may build on.
+    #[serde(default)]
+    pub builders: BTreeSet<String>,
+    /// The forges it may push to and fetch from.
+    #[serde(default)]
+    pub forges: BTreeSet<String>,
+    /// The secrets it may reach.
+    #[serde(default)]
+    pub secrets: BTreeSet<String>,
 }
 
 /// A fence as declared, or none where it isn't in the shape this build
@@ -1106,6 +1127,7 @@ mod tests {
             forges: BTreeSet::new(),
             secrets: BTreeSet::new(),
             runs: Vec::new(),
+            accepts: BTreeMap::new(),
         };
         assert_eq!(
             read(&file).and_then(|declared| declared.fence),

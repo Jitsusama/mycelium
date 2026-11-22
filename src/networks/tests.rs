@@ -313,6 +313,9 @@ fn reading_only_what_the_networks_read_makes_the_same_mycelium() {
     for held in &mut sessions[..2] {
         held["presence"]["trees"] = json!([tides()]);
     }
+    // Each starter a cell says is read from what the networks read.
+    sessions[0]["orchestrated_by"] = json!("BUSY01");
+    sessions[1]["started_by"] = json!("ASKS01");
     let kept = |records: &[Value]| -> Vec<Value> {
         records.iter().map(|each| pruned(each, &RECORD)).collect()
     };
@@ -321,6 +324,18 @@ fn reading_only_what_the_networks_read_makes_the_same_mycelium() {
     assert!(
         whole.networks.iter().any(|each| each.shape == Shape::Tree),
         "the harbour's two cells share a tree"
+    );
+    let starter = |address: &str| {
+        let cell = whole.cell(address).expect("its cell");
+        (cell.started_by.clone(), cell.started_by_from)
+    };
+    assert_eq!(
+        (starter("ASKS01"), starter("BUSY01")),
+        (
+            (Some("BUSY01".to_owned()), Some("presence")),
+            (Some("ASKS01".to_owned()), Some("book"))
+        ),
+        "each cell says its starter"
     );
     assert_eq!(lean[1].get("landings"), None);
     assert_eq!(lean[1]["presence"].get("owner"), None);
@@ -1151,6 +1166,98 @@ fn a_session_here_whose_process_ended_is_dormant_only_on_its_nodes_word() {
         ],
         "one here ended with nothing to wake it is no cell; one here still running, one \
          elsewhere and one from a node that says no here are dormant as their presences say"
+    );
+}
+
+#[test]
+fn a_cells_starter_is_its_machines_books_else_its_orchestrators_and_only_an_address() {
+    let saying = |address: &str, n: u8, fields: Value| {
+        let mut one = session(address, n, address, "busy", &[]);
+        for (key, value) in fields.as_object().expect("fields") {
+            one[key] = value.clone();
+        }
+        one
+    };
+    let sessions = [
+        saying(
+            "BOOK01",
+            1,
+            json!({"started_by": "OAR001", "orchestrated_by": "WCJQSG"}),
+        ),
+        saying("PRES01", 2, json!({"orchestrated_by": "WCJQSG"})),
+        saying("NONE01", 3, json!({"orchestrated_by": "not an address"})),
+        saying(
+            "ODDS01",
+            4,
+            json!({"started_by": "not an address", "orchestrated_by": "WCJQSG"}),
+        ),
+        saying(
+            "SELF01",
+            5,
+            json!({"started_by": "SELF01", "orchestrated_by": "SELF01"}),
+        ),
+        saying(
+            "ALSO01",
+            6,
+            json!({
+                "started_by": "ALSO02",
+                "orchestrated_by": "ALSO02",
+                "presence": {"addresses": ["ALSO01", "ALSO02"]},
+            }),
+        ),
+        saying(
+            "CASE01",
+            7,
+            json!({
+                "started_by": "case01",
+                "orchestrated_by": "case02",
+                "presence": {"addresses": ["CASE01", "CASE02"]},
+            }),
+        ),
+        saying(
+            "OWNS01",
+            8,
+            json!({"started_by": "OWNS01", "orchestrated_by": "WCJQSG"}),
+        ),
+    ];
+    let mycelium = Mycelium::of("work", &[], &sessions, &[]);
+    let starter = |address: &str| {
+        let cell = mycelium.cell(address).expect("its cell");
+        (cell.started_by.as_deref(), cell.started_by_from)
+    };
+    assert_eq!(
+        starter("BOOK01"),
+        (Some("OAR001"), Some("book")),
+        "the book's, over its orchestrator"
+    );
+    assert_eq!(
+        starter("PRES01"),
+        (Some("WCJQSG"), Some("presence")),
+        "its orchestrator, with no book's"
+    );
+    assert_eq!(starter("NONE01"), (None, None), "no address, no starter");
+    assert_eq!(
+        starter("ODDS01"),
+        (Some("WCJQSG"), Some("presence")),
+        "a book's word that is no address gives way to its orchestrator"
+    );
+    assert_eq!(starter("SELF01"), (None, None), "no cell starts itself");
+    assert_eq!(starter("ALSO01"), (None, None), "by any address it goes by");
+    assert_eq!(starter("CASE01"), (None, None), "in any case");
+    assert_eq!(
+        starter("OWNS01"),
+        (Some("WCJQSG"), Some("presence")),
+        "a book naming the cell itself gives way to its orchestrator"
+    );
+    let line = mycelium
+        .lines()
+        .into_iter()
+        .find(|line| line["name"] == "BOOK01")
+        .expect("its line");
+    assert_eq!(
+        (&line["started_by"], &line["started_by_from"]),
+        (&json!("OAR001"), &json!("book")),
+        "as its line says: {line}"
     );
 }
 

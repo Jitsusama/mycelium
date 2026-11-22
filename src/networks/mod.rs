@@ -362,6 +362,14 @@ pub struct Cell {
     /// The quest a session works on, by its id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quest: Option<String>,
+    /// The cell that started a session, by its address: the one its
+    /// machine's node's book says asked for its start, else the
+    /// orchestrator its presence names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
+    /// Where `started_by` was read: `book` or `presence`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_by_from: Option<&'static str>,
     /// What a session's plan does next and what it chose last, as its
     /// presence's `doing` says: `plan`, `item`, `next`, `chose` and `at`.
     #[serde(skip_serializing_if = "Option::is_none")]

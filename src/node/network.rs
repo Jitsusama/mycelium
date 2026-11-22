@@ -187,6 +187,8 @@ fn lean(session: &Session, machine: &str, standing: Option<&str>) -> Value {
     put("state", json_of(&session.state));
     put("step", session.step.as_deref().into());
     put("quest", session.quest.as_deref().into());
+    put("started_by", session.started_by.as_deref().into());
+    put("orchestrated_by", session.orchestrated_by.as_deref().into());
     put("wants", json_of(&session.wants));
     put("doing", json_of(&session.doing));
     put("presence", networks::kept_presence(&session.presence));

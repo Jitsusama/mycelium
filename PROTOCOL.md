@@ -17,6 +17,15 @@ implementation today and room for the next.
 - **Session, peer, group, address:** as the harness mesh means them. A
   session is a session wherever it runs; one on another machine is a
   session whose machine is elsewhere.
+- **Fold:** a provider's asker cut to lowercase letters and digits, at
+  most 16, as a made machine's name holds it. A fold is held for one
+  asker until its VM end, so no two askers share one.
+- **VM end:** the second a made machine's run ends, which its provider
+  keeps and tells the machine, so it can declare when it leaves.
+- **Logged image:** the image a provider boots, named by the id its image
+  maker logged, so a machine is never made of another of the same name.
+- **Openings:** a provider's record of each run on a made machine, and
+  each one refused, with its time, place and asker.
 
 ## What Is Kept
 
@@ -129,10 +138,26 @@ same code, each line a JSON value:
    from before the machines were linked was never its to hear.
 3. `{"Message": {"id", "body"}}`: a message the other end lacks, first
    for each the Have didn't list, then each new one as it lands.
-4. `{"Presence": {"session", "body", "leases", "held"}}`: a living
-   session of the sending end's machine, again whenever it, its leases
-   or its `held` id change. `held` is the id a holder there keeps it by,
-   which the other end writes into the carried presence as `heldAs`.
+4. `{"Presence": {"session", "body", "leases", "held", "started_by"}}`:
+   a living session of the sending end's machine, again whenever it, its
+   leases, its `held` id or its starter change. `held` is the id a
+   holder there keeps it by, which the other end writes into the carried
+   presence as `heldAs`. `started_by` is the cell that machine's node's
+   book of starts says asked for that hold, which the other end writes
+   into the presence as `startedByAs`, only where it is an address, the
+   presence names a `held` id, and the sending end is no worker, whose
+   node is whoever runs on the machine lent. Either field a presence
+   says of itself is dropped first, by the sender and again by the
+   other end, so neither is ever the session's own word. The end asks
+   its node with `{"StartedBy": [held]}` apart from the link's other
+   work, sending each presence with the starters known
+   so far and again once one more is named; a hold named none is asked
+   about again after 30 seconds, with the next presence or the next
+   minute's keep, and a node that can't say is told of once on the
+   end's standard error, and told again once it answers. A link opened
+   afresh knows no starter until its node first answers, so the other
+   end says none for that long: about 5 seconds, or for a node that
+   can't answer, until it can. An end older than `started_by` says none.
    `leases` are the mesh's `change` leases it and its hands hold on a
    repository's files, named as `core.nix:flake.nix`, so a session in
    another clone there is told it overlaps; one named by an absolute
@@ -744,7 +769,8 @@ session says of itself:
   in the fence the carried session's presence names as its `fence`
   (`none`, `fence` or `strict`), and this machine's own declaration
   runs that fence too, with no door of it there wider than here: each
-  of its `builders`, `forges` and `secrets` is one here's opens. A
+  of its `builders`, `forges` and `secrets` is one here's opens, or
+  one here's fence `accepts` for `to` by name. A
   session that names no fence, or a machine that declares none for it,
   is refused, since where it lands can't be told. A refusal names the
   doors that are wider, as `tern's strictly fenced session opens
@@ -983,28 +1009,35 @@ or not, though nothing is done on that reading itself; a second in a
 row starts the ten minutes again, as does a reading five minutes or
 more after the lone one. While it is held over while another has
 room, in the latest reading too, and the readings five minutes after
-any sleep still say over, it would carry one session to a peer with
-room in the watch and in the latest reading, straight away where it
-put none to sleep; while none has room it carries nothing. It
-carries the smallest log first, placed as any work is and onto
-ground as firm. A session in a turn, on the person's screen,
-orchestrating other sessions, holding a lease or a heavy run, or whose
-quest runs elsewhere too stays. So does one it can't tell any of these
-of. A session waiting on a secret's release or a password prompt waits
-inside its turn, so it stays as one in a turn. What a session is part
+the first sleep of its spell over still say over, it would carry one
+session to a peer with room in the watch and in the latest reading,
+straight away where it put none to sleep; while none has room it
+carries nothing. Sessions that wait anew meanwhile sleep too without
+putting the carry off, and once the five minutes are past they sleep
+only where nothing is carried; while it is short of memory, one that
+has never slept is never carried. It carries the smallest log first,
+placed as any work is and onto ground as firm. A session in a turn,
+on the person's screen, orchestrating other sessions, holding a lease
+or a heavy run, or whose quest runs elsewhere too stays. So does one
+it can't tell any of these of. A session waiting on a secret's release
+or a password prompt waits inside its turn, so it stays as one in a
+turn. What a session is part
 way through is told only once its presence says `"leases":
 {"background": true}`, its harness keeping a lease for each background
 run. After a carry it would carry none for half an hour, and it would
 carry at most six in a day. A session moved by anyone stays put for a
 day, by the carries kept here, and nothing goes to a machine a session
-came from within the hour.
+came from within the hour, nor to a Mac but a session shown unfenced
+(see The Socket).
 
 Each choice to sleep or carry, and each change in why it does nothing,
 is a JSON line in the state folder's `eases`, a file each day of at
 most 8 MiB but for carries, the folder its owner's alone. Each line
 holds `at`, `would: true`, `choice` (`nothing` with `why`, `sleep`
 with `sessions`, or `carry` with `session`, `to` and `why`) and the
-`reading` it was chosen by. A carry's line adds `holds`, what the
+`reading` it was chosen by. A sleep made only because no carry could
+go adds `why`, why none of those already asleep was carried. A
+carry's line adds `holds`, what the
 session's own process holds where it has one: `memory` resident in
 bytes, and `cpu` in cores over the last ten minutes. What it would
 have done counts in its memory, and a carry in its lines too, so a
@@ -1208,6 +1241,7 @@ JSON line and reads one reply, `{"Ok": ...}` or `{"Err": "why"}`.
 | `"Machine"` | `{"Machine": machine}`, this machine as measured now |
 | `"Machines"` | `{"Machines": [machine]}`, this machine first, then each other |
 | `"Builders"` | `{"Builders": [builder]}`, the builders it sends Nix builds to |
+| `{"StartedBy": [held]}` | `{"StartedBy": {held: address}}`, the starter its book names for each held id here, the rest left out |
 | `"Offers"` | `{"Offers": {"offers", "unanswered"}}`, asked of each provider now |
 | `{"Place": work}` | `{"Placement": placement}`, where the work goes |
 | `{"PlaceToStart": work}` | `{"Placement": placement}`, as `"Place"` for a start, counted here as one |
@@ -1309,6 +1343,11 @@ holder keeps, as one started with `mycelium holds add -- pi` is, says
 machine. It is
 known by the holder's program being the session's own process, which
 only its own machine sees, so a link carries it with the presence. A
+held session says `started_by` where a book of starts names who asked
+for its hold: this node's, for a start asked of it here or relayed to
+another machine, else that machine's node's, as its link carried it.
+A start relayed is booked only where it was asked, so only that
+machine's records name its starter by a book. A
 held session of this machine's has as its `window` the latest window
 joined to its holder that is still joined, or none. A held session says
 `attach` too, the words that join it from a terminal on this machine, to
@@ -1498,7 +1537,12 @@ kind (`none`, `fence` or `strict`), each with the doors it opens:
 `{"strict": {"builders": [...], "forges": [...], "secrets": [...]}}`,
 each door by the name the machine's configuration gives it, and with
 `runs`, the words that start a command as that fence runs its
-sessions, such as its launcher and the fence's rules. A node says a
+sessions, such as its launcher and the fence's rules. With
+`accepts`, `{"<machine>": {"secrets": [...]}}`, it names the doors
+another machine may open beyond these for a session carried from
+here in that fence, each allowed by the person; the machine there
+still declares every door it opens, so a gain is said, never hidden.
+A node says a
 fence's `runs` in its `Machine` only where its own launcher takes them
 (below), and none where it refuses them, so another machine judges it
 as a run there is judged. A fence
@@ -2230,7 +2274,10 @@ node's own mounts) and from each of those sessions, a hosted one's
 record read only from the harness's own state. Anything that can't be
 read refuses, as on a Mac itself, and each start let through is told
 in the node's log with who asked, their quests, what it declared, its
-folder and its program. The person's start is
+folder and its program. A carry to a Mac, ordered or made by a node
+easing itself, is refused before any session ends unless the session
+claims and has shown no fence and was never seen stricter, and the
+Mac's `none` fence is still judged as firm as here. The person's start is
 relayed as theirs, but a machine no person works at, or one where the
 link's end can't be named, judges it an agent's, so there it needs that
 machine's launcher too, and a refusal of any start judged so says it
@@ -2684,7 +2731,17 @@ same records as the `network` kind, less its `kind`: its `type`
 `moving`, `quiet` or `dormant`), `doing`, `asks`, `repo`, the
 `subjects` its presence declares (the first 12 strings of at most 120
 characters a terminal draws as plain text), `usage`, the networks it
-`leads`, `machine`, `since`, `quest`, `plan`, `cwd`, the
+`leads`, `machine`, `since`, `quest`, `started_by` (the cell its
+session's record says a book of starts names, else the orchestrator it
+names, each only as an address other than its own) with
+`started_by_from` (`book` or `presence`; only `book` is a node's word,
+as `presence` is the session's own claim; for a session elsewhere,
+`book` is its own machine's node's word as this machine's store keeps
+it, which its link writes there, so whatever can write that store can
+say it, as it can any presence; a hold two living sessions claim
+takes no starter from this node's book, which can't say which of them
+it started),
+`plan`, `cwd`, the
 `trees` it holds, the folders it `shares`, a machine's or a
 receptor's `state`, a machine's `busy` and the sessions it `runs`, a
 receptor's `counts`, and the `networks` it joined. A session's `quest`

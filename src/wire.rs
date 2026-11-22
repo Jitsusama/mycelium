@@ -31,6 +31,10 @@ pub enum Request {
     /// The builders this machine sends Nix builds to, which are no
     /// machines of the realm, each as it was last heard.
     Builders,
+    /// The cell this node's book says started each session held on this
+    /// machine under the ids given, for an end of a link to say beside
+    /// their presences, as one SSH started runs apart from the node.
+    StartedBy(Vec<String>),
     /// The shapes of machine this node's providers' programs could make,
     /// each asked now.
     Offers,
@@ -438,6 +442,9 @@ pub enum Response {
     Machines(Vec<Machine>),
     /// The builders this machine sends Nix builds to.
     Builders(Vec<crate::builders::Builder>),
+    /// The starter of each held id asked about that the book names one
+    /// for, by held id; an id it names none for is left out.
+    StartedBy(BTreeMap<String, String>),
     /// What the node's providers offer.
     Offers(Offers),
     /// Where the work asked about goes.

@@ -708,6 +708,7 @@ where
                 shared.read_sessions();
                 shared.keep_awake(&mut awake, power.as_ref());
             }
+            () = shared.rejudge.notified() => shared.read_sessions(),
             // A park's marker says nothing of the session itself, so only
             // how it stands, which records read from the markers, moves.
             Some(()) = parks.recv() => shared.said.sessions_moved(),
@@ -1243,6 +1244,9 @@ struct Shared<S> {
     runs: Arc<run::Given>,
     /// Each session it started or refused to, beside its runs.
     starts: Arc<starts::Starts>,
+    /// Told when a start's book line may name a session's starter, so the
+    /// node's loop, the one judge of sessions, judges them again.
+    rejudge: Arc<Notify>,
     /// Each start asked under a name, so an ask again joins it.
     onces: Arc<once::Onces>,
     /// Why runs here were told no session, said once for each reason.
@@ -1451,6 +1455,7 @@ impl<S: Clone> Clone for Shared<S> {
             unreadable: Arc::clone(&self.unreadable),
             runs: self.runs.clone(),
             starts: Arc::clone(&self.starts),
+            rejudge: Arc::clone(&self.rejudge),
             onces: Arc::clone(&self.onces),
             untold: Arc::clone(&self.untold),
             spawners: Arc::clone(&self.spawners),
@@ -2055,12 +2060,13 @@ fn reopens_within(
         )
     })?;
     let same_quest = asker.quest.is_some() && asker.quest == reopened.quest;
+    let starters = starts.starters();
     let started_by = reopened
         .held
         .as_deref()
-        .and_then(|held| starts.started_by(&reopened.machine, held));
+        .and_then(|held| starters.of(&reopened.machine, held));
     let started_within = started_by.is_some_and(|cell| {
-        cell == asker.address || asker.orchestrated_by.as_deref() == Some(cell.as_str())
+        cell == asker.address || asker.orchestrated_by.as_deref() == Some(cell)
     });
     if same_quest || started_within {
         Ok(())
@@ -2099,6 +2105,14 @@ fn judged_as(by: By, claims: &[String], unclaimed: &str) -> String {
     }
 }
 
+/// The machine and hold of each of `sessions` that names one, which the
+/// book's starters are held to ([`starts::Starters::but_shared`]).
+fn claims(sessions: &[Session]) -> impl Iterator<Item = (&str, &str)> {
+    sessions
+        .iter()
+        .filter_map(|session| Some((session.machine.as_str(), session.held.as_deref()?)))
+}
+
 /// The cells of `machine` that work on a quest, each with what its forage
 /// is made of, ordered by address. A cell was started by the cell this
 /// node's book of `starts` says asked for its hold, by the session that
@@ -2107,16 +2121,19 @@ fn judged_as(by: By, claims: &[String], unclaimed: &str) -> String {
 /// cells its presence names, and serves and relies on the needs it lists,
 /// each kept only where it reads.
 fn forage_cells(inner: &Inner, machine: &str, starts: &starts::Starts) -> Vec<forage::Cell> {
-    let mut cells: Vec<forage::Cell> = inner
-        .state
-        .sessions()
+    // The book names a hold's starter only where one living session
+    // claims it, as every reader of it here does.
+    let sessions = inner.state.sessions();
+    let starters = starts.starters().but_shared(claims(&sessions));
+    let mut cells: Vec<forage::Cell> = sessions
         .into_iter()
         .filter(|session| session.machine == machine)
         .filter_map(|session| {
             let started = session
                 .held
                 .as_deref()
-                .and_then(|held| starts.started_by(machine, held));
+                .and_then(|held| starters.of(machine, held))
+                .map(str::to_owned);
             let lineage = &session.presence["lineage"];
             let split_from = lineage["split_from"]
                 .as_str()
@@ -2288,6 +2305,7 @@ impl<S: Store> Shared<S> {
             hostname: rustix::system::uname().nodename().to_string_lossy().into(),
             unreadable: Arc::default(),
             starts,
+            rejudge: Arc::default(),
             onces: Arc::default(),
             runs: Arc::new(runs),
             untold: Arc::default(),
@@ -2387,7 +2405,7 @@ impl<S: Store> Shared<S> {
     /// held on this machine, which the node also watches.
     fn read_sessions(&self) {
         let held = hold::held(&self.held);
-        let sessions = self
+        let mut sessions: Vec<_> = self
             .store
             .presences()
             .iter()
@@ -2397,6 +2415,22 @@ impl<S: Store> Shared<S> {
                 Some(session)
             })
             .collect();
+        // This node's own book names the starts it was asked, on this
+        // machine or relayed to another; past it, a session elsewhere is
+        // told its starter by its own machine's book, as the link carried
+        // it. A hold two sessions claim is named by neither, since the
+        // book can't say which of them it started.
+        let starters = self.starts.starters().but_shared(claims(&sessions));
+        let booked: Vec<Option<String>> = sessions
+            .iter()
+            .map(|session| {
+                let held = session.held.as_deref()?;
+                starters.of(&session.machine, held).map(str::to_owned)
+            })
+            .collect();
+        for (session, booked) in sessions.iter_mut().zip(booked) {
+            session.started_by = booked.or(session.started_by.take());
+        }
         let mut inner = self.lock();
         let events = inner.state.set_sessions(sessions);
         if !events.is_empty() {
@@ -3475,6 +3509,18 @@ impl<S: Store> Shared<S> {
             Request::Machine => Ok(Response::Machine(Box::new(self.measure()))),
             Request::Machines => Ok(Response::Machines(self.machines())),
             Request::Builders => Ok(Response::Builders(self.builders.builders())),
+            Request::StartedBy(held) => {
+                let sessions = self.lock().state.sessions();
+                let starters = self.starts.starters().but_shared(claims(&sessions));
+                Ok(Response::StartedBy(
+                    held.into_iter()
+                        .filter_map(|held| {
+                            let by = starters.of(&self.machine, &held)?.to_owned();
+                            Some((held, by))
+                        })
+                        .collect(),
+                ))
+            }
             Request::Place(_) | Request::PlaceToStart(_) => {
                 Err("a placement is answered by `place_asked`".to_owned())
             }
@@ -4870,11 +4916,12 @@ impl<S: Store> Shared<S> {
             there.as_ref(),
         )?;
         // The start that brings it back there is an agent's, so it is
-        // refused unless its fence runs a command there. Refused here
-        // first, before any session is told to carry and ends.
+        // refused unless its fence runs a command there, and on a Mac
+        // unless the session is shown unfenced. Refused here first,
+        // before any session is told to carry and ends.
         let declared = there.as_ref().and_then(|machine| machine.declared.as_ref());
         let system = there.as_ref().and_then(|machine| machine.system.as_deref());
-        if let Some(why) = ground::brought_back(to, declared, system) {
+        if let Some(why) = ground::brought_back(to, declared, system, kind) {
             return Err(format!(
                 "{address} isn't carried to {to}, as the start that brings it back there would \
                  be refused: {why}"
@@ -5229,7 +5276,7 @@ impl<S: Store> Shared<S> {
         let started_by = started_by.filter(|_| by != By::Person);
         let at = jiff::Timestamp::now().as_millisecond();
         let once = asked.once.take();
-        let (lead, again) = match &once {
+        let (mut lead, again) = match &once {
             Some(said) => {
                 match self
                     .named(by, started_by.as_deref(), said, &mut asked, at)
@@ -5271,15 +5318,11 @@ impl<S: Store> Shared<S> {
             Some(why) => Err(self.starts.refuse(kept, why)),
             None => self.admitted(kept, waits).await,
         };
-        let admitted = match admitted {
-            Ok(admitted) => admitted,
-            Err(refused) => {
-                if let Some(lead) = lead {
-                    lead.ends(at, &Err(refused.clone()));
-                }
-                return Err(refused);
+        let admitted = admitted.inspect_err(|refused| {
+            if let Some(lead) = lead.take() {
+                lead.ends(at, &Err(refused.clone()));
             }
-        };
+        })?;
         let answered = match (whither, again) {
             (Whither::Placed, Some((machine, reopened))) => {
                 self.asked_again(machine, reopened, dropped, reopening.as_ref(), asked)
@@ -5317,6 +5360,13 @@ impl<S: Store> Shared<S> {
                 .map_err(Clone::clone),
             joined,
         );
+        if started.is_ok() {
+            // Its session may be judged already, its presence written
+            // before its holder answered, so it is judged again now its
+            // book's line names its starter, by the node's loop, so no
+            // older judgement lands after it.
+            self.rejudge.notify_one();
+        }
         started.map(Response::Started)
     }
 
@@ -7394,6 +7444,11 @@ mod tests {
 
     /// Session `id` once the node at `socket` lists it.
     async fn listed(socket: PathBuf, id: &'static str) -> Session {
+        listed_as(socket, id, |_| true).await
+    }
+
+    /// Session `id` once the node at `socket` lists it as `holds` says.
+    async fn listed_as(socket: PathBuf, id: &'static str, holds: fn(&Session) -> bool) -> Session {
         let listed = tokio::task::spawn_blocking(move || {
             let mut client = Client::connect(&socket).expect("the client connects");
             // Nothing tells a client when the link has carried a session,
@@ -7402,7 +7457,7 @@ mod tests {
                 let Ok(Ok(Response::Sessions(all))) = client.ask(&Request::Sessions) else {
                     panic!("the node lists its sessions");
                 };
-                if let Some(one) = all.into_iter().find(|one| one.id == id) {
+                if let Some(one) = all.into_iter().find(|one| one.id == id && holds(one)) {
                     return one;
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -9396,6 +9451,7 @@ esac
                 "/nix/store/0000-fence/bin/fence".to_owned(),
                 "--".to_owned(),
             ],
+            accepts: BTreeMap::new(),
         };
         facts::Machine {
             declared: Some(crate::declared::Declared {
@@ -13546,6 +13602,113 @@ esac
             json!(["ended:napper"]),
             "once the quest isn't active, nobody is told its work stopped: {changed}"
         );
+    }
+
+    // KP0L6A for XUBK2E (2026-11-22): a cell's starter, as the book of the
+    // node that started it says, is told on every machine's cell records,
+    // so a map of the realm draws who started whom across machines.
+    #[tokio::test]
+    async fn a_cells_starter_by_its_machines_book_is_told_on_every_machine() {
+        // Skiff's book names none, so skiff says kestrel's word as its
+        // link carried it; then OAR002, as a start skiff relayed there
+        // would book it, which skiff's node says first.
+        for skiffs in [None, Some("OAR002")] {
+            a_cells_starter_is_told_on_both_machines(skiffs).await;
+        }
+    }
+
+    /// Kestrel's node has started `0e50`'s hold for OAR001 and skiff's
+    /// book says `skiffs` started it, and each machine's cell records say
+    /// the starter its own book names, else the one carried from
+    /// kestrel's.
+    async fn a_cells_starter_is_told_on_both_machines(skiffs: Option<&str>) {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let far_socket = dir.path().join("kestrel").join("work.sock");
+        let near_socket = dir.path().join("skiff").join("work.sock");
+        // Made as the node makes it, open to nobody else, so its socket goes
+        // there.
+        for machine in ["kestrel", "skiff"] {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir.path().join(machine))
+                .expect("the node's folder");
+        }
+        // Kestrel's book says OAR001 asked for the hold SAK9FZ runs in.
+        let near = skiffs.unwrap_or("OAR001");
+        let books = [(&far_socket, Some("OAR001")), (&near_socket, skiffs)];
+        for (socket, by) in books
+            .iter()
+            .filter_map(|(socket, by)| Some((*socket, (*by)?)))
+        {
+            let started = json!({
+                "at": jiff::Timestamp::now().as_millisecond(), "by": {"Agent": "fence"},
+                "started_by": by, "machine": "kestrel", "held": "5e551011",
+            });
+            fs::write(
+                socket.with_file_name("starts.jsonl"),
+                format!("{started}\n"),
+            )
+            .expect("a book");
+        }
+        let far_store = Memory::default();
+        let held = hold_a_session(dir.path(), &far_store);
+        // Kestrel's node reads its holds where its link's end does.
+        std::os::unix::fs::symlink(&held, held_of(&far_socket)).expect("the holds are linked");
+        let _far = alone(&far_store, "kestrel", &far_socket);
+        let dial = Piped {
+            store: far_store,
+            socket: far_socket.clone(),
+            held,
+            proven: false,
+            asks_back: false,
+            shares: None,
+        };
+        let near_store = Memory::default();
+        let _near = node(&near_store, "skiff", vec![dial], None, &near_socket);
+        known_to(&near_store, "kestrel").await;
+        // Kestrel's word crosses beside the presence, whatever skiff's book
+        // says, and skiff's own book outranks it once it has.
+        let crossed = |store: &Memory| {
+            store.presences().iter().any(|presence| {
+                presence.session == "0e50" && presence.body[mesh::STARTED_BY_AS] == "OAR001"
+            })
+        };
+        let mut changes = near_store
+            .changes()
+            .expect("a memory store tells its changes");
+        tokio::time::timeout(PATIENCE, async {
+            while !crossed(&near_store) {
+                changes.changes.recv().await;
+            }
+        })
+        .await
+        .expect("kestrel's end says the starter kestrel's book holds");
+        let carried = listed_as(near_socket.clone(), "0e50", |one| one.started_by.is_some()).await;
+        assert_eq!(
+            carried.started_by.as_deref(),
+            Some(near),
+            "the session carried says the starter skiff's own book holds, else kestrel's"
+        );
+
+        for (socket, by) in [(&far_socket, "OAR001"), (&near_socket, near)] {
+            let (mut client, _hello) = Speaking::hello(socket).await;
+            client
+                .ask(json!({"id": 2, "ask": "watch", "kind": "cell"}))
+                .await;
+            let cell = tokio::time::timeout(
+                PATIENCE,
+                watched_until(&mut client, "cell:SAK9FZ", |one| {
+                    one["started_by_from"] == "book"
+                }),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{} says SAK9FZ's starter in time", socket.display()));
+            assert_eq!(
+                cell["started_by"], by,
+                "each machine's cell record says its starter, from its book: {cell}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -622,8 +622,10 @@ impl Easing {
                 }
                 self.said = Some(said);
             }
-            Choice::Sleep { sessions } => {
-                self.said = None;
+            Choice::Sleep { sessions, why } => {
+                // A sleep that says why no carry went has said it, as a
+                // line doing nothing for that reason would have.
+                self.said = why.clone().map(|why| (why, self.doubt.clone()));
                 self.asleep.extend(sessions.iter().cloned());
                 if !self.acts_on_sleep {
                     self.history.slept(sessions.len(), now);
@@ -1740,6 +1742,97 @@ mod tests {
                 .as_str()
                 .is_some_and(|why| why.starts_with("it carried s1 at")),
             "after the carry it waits out its cooldown: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn sessions_going_idle_each_minute_hold_no_carry_off() {
+        let machines: Vec<Machine> = short_realm();
+        let declared = declaring(&[Kind::Fence]);
+        let here = Here {
+            name: "skiff",
+            declared: Some(&declared),
+            machines: &machines,
+            loads: &Loads::new(),
+        };
+        let mut easing = Easing::default();
+        let doubt = "the quest records have not been read yet";
+        // One more goes idle each minute until the 30th, listed newest
+        // first so one never slept would be the first carried, and who
+        // orchestrates comes into doubt at the 35th.
+        let lines: Vec<Value> = (0..=50)
+            .filter_map(|minute: i64| {
+                let at = ago(50 - minute);
+                if minute == 35 {
+                    easing.doubt(Some(doubt.to_owned()));
+                }
+                let cells = (0..=minute.min(30))
+                    .rev()
+                    .map(|one| Cell {
+                        asleep: false,
+                        ..cell(&format!("s{one}"))
+                    })
+                    .collect();
+                easing.look(
+                    &here,
+                    balance::read(&machines, &[], at),
+                    cells,
+                    &BTreeMap::new(),
+                    Ok(0),
+                    at,
+                )
+            })
+            .collect();
+        let carries: Vec<usize> = (0..lines.len())
+            .filter(|&at| lines[at]["choice"] == "carry")
+            .collect();
+        let [first, second] = carries[..] else {
+            panic!("two carries among {:?}", chosen(&lines));
+        };
+        assert_eq!(
+            [&lines[first]["at"], &lines[second]["at"]],
+            [&json!(ago(35).to_string()), &json!(ago(5).to_string())],
+            "five minutes after the first sleep, though one slept each minute \
+             since, and again once the cooldown is out"
+        );
+        for carry in [first, second] {
+            let session = &lines[carry]["session"];
+            assert!(
+                lines[..carry].iter().any(|line| line["choice"] == "sleep"
+                    && line["sessions"]
+                        .as_array()
+                        .is_some_and(|slept| slept.contains(session))),
+                "{session} slept before it was carried: {lines:?}"
+            );
+        }
+        assert!(
+            lines[..first]
+                .iter()
+                .filter(|line| line["choice"] == "sleep")
+                .all(|line| line.get("why").is_none()),
+            "a sleep while it settles says no why: {lines:?}"
+        );
+        let cooling = &lines[first + 1..second];
+        let said = format!(
+            "it carried {} at",
+            lines[first]["session"].as_str().expect("a session")
+        );
+        let (sleeping, said_again): (Vec<&Value>, Vec<&Value>) =
+            cooling.iter().partition(|line| line["choice"] == "sleep");
+        assert!(
+            !sleeping.is_empty()
+                && sleeping.iter().all(|line| line["why"]
+                    .as_str()
+                    .is_some_and(|why| why.starts_with(&said))),
+            "within the cooldown each sleep says why: {cooling:?}"
+        );
+        assert_eq!(
+            said_again
+                .iter()
+                .map(|line| (&line["at"], &line["orchestrators_unknown"]))
+                .collect::<Vec<_>>(),
+            [(&json!(ago(15).to_string()), &json!(doubt))],
+            "nothing says a sleep's why again until a doubt arises: {cooling:?}"
         );
     }
 

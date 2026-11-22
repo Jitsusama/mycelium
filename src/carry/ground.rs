@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::declared::{Declared, Doors, Effect, Kind, Taint, Unrunnable};
+use crate::declared::{Accepted, Declared, Doors, Effect, Kind, Taint, Unrunnable};
 use crate::facts::{Machine, Readiness};
 use crate::placement::{Because, LIFTS_FENCE, LOOSER_GROUND, Miss, RUNS_NOTHING};
 
@@ -218,12 +218,21 @@ pub fn runs_nothing_offered(kind: Kind, to: &str, there: Option<&Declared>) -> O
 /// whichever of fence and strict its asker runs, and each kind declares
 /// its own `runs`, so a carry is refused when either declared runs
 /// nothing. It is held too, so a carry to a Mac, a `system` machine as
-/// [`lifts_fence`] judges one, is refused whatever it declares.
+/// [`lifts_fence`] judges one, is refused whatever it declares, unless
+/// the session runs in `kind` [`Kind::None`]: one already unfenced here
+/// runs no looser unfenced there, and [`firm`] still holds its doors to
+/// this machine's. A session whose fence can't be told is refused.
 #[must_use]
-pub fn brought_back(to: &str, declared: Option<&Declared>, system: Option<&str>) -> Option<String> {
-    if system == Some(MAC) {
+pub fn brought_back(
+    to: &str,
+    declared: Option<&Declared>,
+    system: Option<&str>,
+    kind: Option<Kind>,
+) -> Option<String> {
+    if system == Some(MAC) && kind != Some(Kind::None) {
         return Some(format!(
-            "{to} is a Mac, where a session brought back held would run outside any fence"
+            "{to} is a Mac, where a fenced session brought back held would run outside any \
+             fence"
         ));
     }
     [Kind::Fence, Kind::Strict]
@@ -272,7 +281,8 @@ fn said_word(word: &str) -> String {
 
 /// Whether `there`, what `to` declares as it last said itself, runs
 /// sessions in the fence `kind` with no door wider than this machine's,
-/// as `here` declares it.
+/// as `here` declares it, but those here's `accepts` allows for `to` by
+/// name.
 fn stands(
     kind: Option<Kind>,
     here: Option<&Declared>,
@@ -296,7 +306,7 @@ fn stands(
         .ok_or_else(|| {
             format!("this machine declares no {kind} session, so {to}'s can't be judged against it")
         })?;
-    let opened = wider(theirs, ours);
+    let opened = wider(theirs, ours, ours.accepts.get(to));
     if opened.is_empty() {
         Ok(())
     } else {
@@ -308,20 +318,33 @@ fn stands(
     }
 }
 
-/// What `there` opens that `here` doesn't, each kind of door named with
-/// its names, such as `builders big`.
-fn wider(there: &Doors, here: &Doors) -> Vec<String> {
-    let beyond = |theirs: &BTreeSet<String>, ours: &BTreeSet<String>| {
-        theirs
-            .difference(ours)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+/// What `there` opens that `here` doesn't and `accepted` doesn't allow,
+/// each kind of door named with its names, such as `builders big`.
+fn wider(there: &Doors, here: &Doors, accepted: Option<&Accepted>) -> Vec<String> {
+    let none = Accepted::default();
+    let accepted = accepted.unwrap_or(&none);
+    let beyond =
+        |theirs: &BTreeSet<String>, ours: &BTreeSet<String>, allowed: &BTreeSet<String>| {
+            theirs
+                .iter()
+                .filter(|name| !ours.contains(*name) && !allowed.contains(*name))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
     [
-        ("builders", beyond(&there.builders, &here.builders)),
-        ("forges", beyond(&there.forges, &here.forges)),
-        ("secrets", beyond(&there.secrets, &here.secrets)),
+        (
+            "builders",
+            beyond(&there.builders, &here.builders, &accepted.builders),
+        ),
+        (
+            "forges",
+            beyond(&there.forges, &here.forges, &accepted.forges),
+        ),
+        (
+            "secrets",
+            beyond(&there.secrets, &here.secrets, &accepted.secrets),
+        ),
     ]
     .into_iter()
     .filter(|(_, names)| !names.is_empty())
@@ -399,6 +422,7 @@ mod tests {
             forges: names(forges),
             secrets: names(secrets),
             runs: Vec::new(),
+            accepts: BTreeMap::new(),
         }
     }
 
@@ -527,6 +551,55 @@ mod tests {
                     .to_owned()
             ),
             "a machine whose doors are wider names each"
+        );
+    }
+
+    #[test]
+    fn a_carry_gains_only_the_doors_here_accepts_for_that_machine() {
+        let mut ours = doors(&[], &["github"], &[]);
+        ours.accepts = BTreeMap::from([(
+            "tern".to_owned(),
+            Accepted {
+                secrets: BTreeSet::from(["tokens".to_owned()]),
+                ..Accepted::default()
+            },
+        )]);
+        let here = declaring(Some(BTreeMap::from([(Kind::None, ours)])));
+        let unfenced = |builders: &[&str], secrets: &[&str]| {
+            Some(BTreeMap::from([(
+                Kind::None,
+                doors(builders, &["github"], secrets),
+            )]))
+        };
+        let tokens = tern(unfenced(&[], &["tokens"]), Readiness::Ready);
+        assert_eq!(
+            firm(Some(Kind::None), Some(&here), "tern", Some(&tokens)),
+            Ok(()),
+            "the door accepted for tern is no wider there"
+        );
+        assert_eq!(
+            firm(
+                Some(Kind::None),
+                Some(&here),
+                "wren",
+                Some(&named("wren", tokens.clone()))
+            ),
+            Err(
+                "wren's unfenced session opens secrets tokens, which here's doesn't, so the \
+                 session would land looser there"
+                    .to_owned()
+            ),
+            "what is accepted for tern is accepted for no other machine"
+        );
+        let more = tern(unfenced(&["big"], &["tokens", "cloud"]), Readiness::Ready);
+        assert_eq!(
+            firm(Some(Kind::None), Some(&here), "tern", Some(&more)),
+            Err(
+                "tern's unfenced session opens builders big and secrets cloud, which here's \
+                 doesn't, so the session would land looser there"
+                    .to_owned()
+            ),
+            "any door beyond what is accepted still refuses, named alone"
         );
     }
 
@@ -728,18 +801,41 @@ mod tests {
             (Kind::Strict, running(&[FENCE, "--"])),
         ]);
         let declared = declaring(Some(runs));
+        let fenced = Some(Kind::Fence);
         assert_eq!(
-            brought_back("osprey", Some(&declared), Some("linux")),
+            brought_back("osprey", Some(&declared), Some("linux"), fenced),
             None,
             "a machine whose fences run a command takes the carry"
         );
+        let refused = Some(
+            "osprey is a Mac, where a fenced session brought back held would run outside any \
+             fence"
+                .to_owned(),
+        );
         assert_eq!(
-            brought_back("osprey", Some(&declared), Some(MAC)),
-            Some(
-                "osprey is a Mac, where a session brought back held would run outside any fence"
-                    .to_owned()
-            ),
+            brought_back("osprey", Some(&declared), Some(MAC), fenced),
+            refused,
             "but a Mac declaring the same is refused by its system"
+        );
+        assert_eq!(
+            brought_back("osprey", Some(&declared), Some(MAC), Some(Kind::Strict)),
+            refused,
+            "as is a strict session"
+        );
+        assert_eq!(
+            brought_back("osprey", Some(&declared), Some(MAC), None),
+            refused,
+            "and one whose fence can't be told"
+        );
+        assert_eq!(
+            brought_back("osprey", Some(&declared), Some(MAC), Some(Kind::None)),
+            None,
+            "but an unfenced session runs no looser there"
+        );
+        let shut = declaring(Some(BTreeMap::from([(Kind::Fence, running(&[]))])));
+        assert!(
+            brought_back("osprey", Some(&shut), Some(MAC), Some(Kind::None)).is_some(),
+            "though a Mac whose fence runs nothing still refuses it"
         );
     }
 }

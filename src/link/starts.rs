@@ -210,6 +210,14 @@ impl Asks {
                 .send(machine, asked(start), Some(ANSWERED_WITHIN))
                 .await?
             {
+                // A start relayed there starts there or nowhere, so an
+                // answer naming another machine is refused: its node's
+                // book would keep it as that machine's session's start.
+                Ok(Response::Started(started)) if started.machine != machine => Err(format!(
+                    "{machine} answered a start as {}'s, which it can't start; whatever it \
+                     started there goes unbooked here",
+                    started.machine
+                )),
                 Ok(Response::Started(started)) => Ok(Response::Started(Started {
                     attach: there(machine, &started.attach),
                     ..started
@@ -617,5 +625,51 @@ mod tests {
                 "only a node naming its kit can meet a {asked}'s need for a tool"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_start_answered_as_another_machines_is_refused() {
+        let start = Start {
+            work: wanting_gcloud(),
+            folder: None,
+            strict: false,
+            command: vec!["true".to_owned()],
+            may_cost: false,
+            carries: false,
+            once: None,
+        };
+        let mut answered = Vec::new();
+        for machine in ["tern", "kestrel"] {
+            let asks = Asks::default();
+            let there: There = Arc::new(|_: &str, words: &[String]| words.to_vec());
+            let (mut asked, _reaching) = asks.reach("kestrel", there);
+            let (reply, ()) = tokio::join!(asks.ask("kestrel", start.clone()), async {
+                let Ask { answer, .. } = asked.recv().await.expect("kestrel is asked");
+                let _ = answer.send(Ok(Response::Started(Started {
+                    machine: machine.to_owned(),
+                    held: "h-1".to_owned(),
+                    folder: PathBuf::new(),
+                    attach: Vec::new(),
+                })));
+            });
+            answered.push(
+                reply
+                    .expect("kestrel answered")
+                    .map(|said| matches!(said, Response::Started(_))),
+            );
+        }
+        assert_eq!(
+            answered,
+            [
+                Err(
+                    "kestrel answered a start as tern's, which it can't start; whatever \
+                     it started there goes unbooked here"
+                        .to_owned()
+                ),
+                Ok(true)
+            ],
+            "a start relayed to kestrel is kestrel's or none, so no other machine's \
+             session is booked on its word"
+        );
     }
 }
